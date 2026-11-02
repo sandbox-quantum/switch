@@ -343,6 +343,24 @@ version of their own to them without also giving them a release of their own.
   The first lookup that misses reads all of them, where each room, sender and
   agent was read on its own, so in a large workspace most messages no longer
   cost a lookup.
+- **Registering, renaming or deleting an agent no longer makes every process
+  read every client and agent.** The change now names the clients it touched,
+  and each process reads only those, where it read every client of the
+  workspace and, with a messaging app connected, every agent as well. The
+  30-second re-check reads every client only when a fingerprint of the
+  workspace's clients and agents has changed since its last full read, where
+  it read them all every time.
+- **The 30-second re-check of which controller runs each agent reads one
+  query, and nothing when no placement changed.** Every process read every
+  placed agent's definition, document included, then each controller with a
+  query of its own. It now reads the columns a binding is made of in one
+  query per workspace, and only when a fingerprint of the placements has
+  changed since its last full read.
+- **The 30-second re-check of who holds each controller's socket no longer
+  reads every controller each time.** It compares a fingerprint of their
+  connections and of the live processes first, and when it reads, reads only
+  the connection columns, where it read every row with its status and
+  platform, and the rooms of every agent on a controller another process held.
 
 #### Fixed
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's

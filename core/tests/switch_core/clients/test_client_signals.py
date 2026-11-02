@@ -21,7 +21,7 @@ from sqlalchemy.pool import NullPool
 
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.clients.client_signals import ClientSignals
+from switch_core.clients.client_signals import CLIENT_CHANGED_SIGNAL, ClientSignals
 from switch_core.db.models import TENANT_ZERO_ID, Agent, Client
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -140,7 +140,7 @@ class TestAcrossProcesses:
         agent = await _register(session_factory)
         assert agent.client_id is not None
 
-        here.announce(TENANT_ZERO_ID)
+        here.announce(TENANT_ZERO_ID, [agent.client_id])
 
         await _eventually(lambda: there.get(agent.client_id) is not None)  # type: ignore[arg-type]
         # The announcing process re-reads too, and starts what it lacks.
@@ -158,10 +158,12 @@ class TestAcrossProcesses:
         agent = await _register(session_factory)
         client_id = agent.client_id
         assert client_id is not None
-        here.announce(TENANT_ZERO_ID)
+        here.announce(TENANT_ZERO_ID, [client_id])
         await _eventually(lambda: there.get(client_id) is not None)
-        told: list[str] = []
-        there.add_agents_changed_listener(told.append)
+        told: list[tuple[str, frozenset[str] | None]] = []
+        there.add_agents_changed_listener(
+            lambda tenant_id, client_ids: told.append((tenant_id, client_ids))
+        )
 
         # As `AgentCore.rename_agent` does: rename the client row, announce.
         async with session_factory() as session:
@@ -169,14 +171,14 @@ class TestAcrossProcesses:
             assert client is not None
             client.display_name = "renamed-agent"
             await session.commit()
-        here.announce(TENANT_ZERO_ID)
+        here.announce(TENANT_ZERO_ID, [client_id])
 
         await _eventually(
             lambda: (
                 getattr(there.get(client_id), "display_name", None) == "renamed-agent"
             )
         )
-        await _eventually(lambda: TENANT_ZERO_ID in told)
+        await _eventually(lambda: (TENANT_ZERO_ID, frozenset({client_id})) in told)
 
     async def test_a_client_deleted_in_one_process_stops_in_the_other(
         self,
@@ -187,17 +189,62 @@ class TestAcrossProcesses:
         agent = await _register(session_factory)
         client_id = agent.client_id
         assert client_id is not None
-        here.announce(TENANT_ZERO_ID)
+        here.announce(TENANT_ZERO_ID, [client_id])
         await _eventually(lambda: there.get(client_id) is not None)
         copy = there.get(client_id)
 
         # As `AgentCore.delete_agent` does: stop here, delete, announce.
         await here.stop(client_id)
         await _delete(session_factory, agent)
-        here.announce(TENANT_ZERO_ID)
+        here.announce(TENANT_ZERO_ID, [client_id])
 
         await _eventually(lambda: there.get(client_id) is None)
         assert isinstance(copy, _Consumer) and copy.stopped
+
+    async def test_a_change_reads_only_the_clients_it_names(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        two_processes: tuple[ClientLifecycleService, ClientLifecycleService],
+    ) -> None:
+        """With thousands of agents, a change that made every process read
+        every client of the tenant kept every process busy for as long as
+        agents were being created."""
+        here, there = two_processes
+        # The read every process makes once its signal connection is up.
+        await _eventually(lambda: TENANT_ZERO_ID in there._fingerprints)
+        full_reads = _count_full_reads(there)
+        agent = await _register(session_factory)
+        client_id = agent.client_id
+        assert client_id is not None
+        told: list[tuple[str, frozenset[str] | None]] = []
+        there.add_agents_changed_listener(
+            lambda tenant_id, client_ids: told.append((tenant_id, client_ids))
+        )
+
+        here.announce(TENANT_ZERO_ID, [client_id])
+
+        await _eventually(lambda: there.get(client_id) is not None)
+        await _eventually(lambda: (TENANT_ZERO_ID, frozenset({client_id})) in told)
+        assert full_reads == []
+
+    async def test_a_signal_naming_no_clients_reads_the_whole_tenant(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        two_processes: tuple[ClientLifecycleService, ClientLifecycleService],
+    ) -> None:
+        """What a process from before signals named their clients sends,
+        during a rolling deploy."""
+        _here, there = two_processes
+        agent = await _register(session_factory)
+        older = _bus(postgres_url, session_factory)
+        await older.start()
+        try:
+            older.publish(CLIENT_CHANGED_SIGNAL, tenant_id=TENANT_ZERO_ID)
+
+            await _eventually(lambda: there.get(agent.client_id) is not None)  # type: ignore[arg-type]
+        finally:
+            await older.stop()
 
 
 class TestReconcile:
@@ -278,11 +325,11 @@ class TestReconcile:
         lifecycle = _lifecycle(session_factory)
         await lifecycle.start_all()
         store = lifecycle._client_store
-        real_get_all = store.get_all
+        real_get_running = store.get_running
         registered: list[str] = []
 
-        async def read_then_register(session: Any) -> Any:
-            records = await real_get_all(session)
+        async def read_then_register(session: Any, *args: Any) -> Any:
+            records = await real_get_running(session, *args)
             if not registered:
                 # As `AgentCore._create_agent` does: commit, then start.
                 agent = await _register(session_factory)
@@ -293,11 +340,96 @@ class TestReconcile:
                 registered.append(record.id)
             return records
 
-        store.get_all = read_then_register  # type: ignore[method-assign]
+        store.get_running = read_then_register  # type: ignore[method-assign]
         try:
             await lifecycle.reconcile_tenant(TENANT_ZERO_ID)
         finally:
-            store.get_all = real_get_all  # type: ignore[method-assign]
+            store.get_running = real_get_running  # type: ignore[method-assign]
 
         assert lifecycle.get(registered[0]) is not None
         await lifecycle.stop_all()
+
+    async def test_a_named_client_stopped_on_purpose_stays_stopped(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """As above, for a re-read of the named clients only."""
+        agent = await _register(session_factory)
+        assert agent.client_id is not None
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        await lifecycle.stop(agent.client_id)
+
+        await lifecycle.reconcile_clients(TENANT_ZERO_ID, [agent.client_id])
+
+        assert lifecycle.get(agent.client_id) is None
+
+
+class TestRecheck:
+    """The periodic re-check, which every process runs every 30 seconds:
+    a read of every client of every tenant, until it compared fingerprints
+    first."""
+
+    async def test_with_nothing_changed_it_reads_no_client(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        await lifecycle.reconcile_all()
+        full_reads = _count_full_reads(lifecycle)
+
+        await lifecycle.recheck_all()
+
+        assert full_reads == []
+        await lifecycle.stop_all()
+
+    async def test_it_starts_a_client_whose_signal_was_missed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        await lifecycle.reconcile_all()
+        agent = await _register(session_factory)
+
+        await lifecycle.recheck_all()
+
+        assert lifecycle.get(agent.client_id) is not None  # type: ignore[arg-type]
+        await lifecycle.stop_all()
+
+    async def test_an_agent_edited_with_no_signal_is_read_again_by_the_bridges(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """An agent's description edited in another process sends no signal,
+        and a bridge here keeps the description with the agent's platform
+        handle."""
+        agent = await _register(session_factory)
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        await lifecycle.reconcile_all()
+        told: list[tuple[str, frozenset[str] | None]] = []
+        lifecycle.add_agents_changed_listener(
+            lambda tenant_id, client_ids: told.append((tenant_id, client_ids))
+        )
+        async with session_factory() as session:
+            row = await session.get(Agent, agent.id)
+            assert row is not None
+            row.description = "does something else now"
+            await session.commit()
+
+        await lifecycle.recheck_all()
+
+        assert told == [(TENANT_ZERO_ID, None)]
+        await lifecycle.stop_all()
+
+
+def _count_full_reads(lifecycle: ClientLifecycleService) -> list[str]:
+    """The tenants `lifecycle` reads every client of from now on."""
+    reads: list[str] = []
+    store = lifecycle._client_store
+    real_get_running = store.get_running
+
+    async def counted(session: Any, tenant_id: str, *args: Any) -> Any:
+        reads.append(tenant_id)
+        return await real_get_running(session, tenant_id, *args)
+
+    store.get_running = counted  # type: ignore[method-assign]
+    return reads
