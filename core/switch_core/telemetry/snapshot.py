@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from switch_core import messaging_platforms
-from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
+from switch_core.clients.admin_messages import AUTO_REPLY_FLAG, SENDER_IS_APP_MARKER
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -130,6 +130,20 @@ class UsageCounts:
     chat_identity_count: int = 0
     chat_identity_active_1d: int = 0
     chat_identity_active_7d: int = 0
+    # The same chat identities split by who is behind them. An identity whose
+    # posts the platform marked as an app's (a Slack app, a Discord bot or
+    # webhook, a Mattermost bot account: alerts, CI, another Switch server's
+    # agents) is a bot. Every other identity is a person, linked to a Switch
+    # account or not. `chat_identity_active_*` counted both, which is why these
+    # are new names rather than a new meaning for the old ones.
+    person_identity_active_1d: int = 0
+    person_identity_active_7d: int = 0
+    bot_identity_active_1d: int = 0
+    bot_identity_active_7d: int = 0
+    # `user_active_*` under the name it should have had: Switch accounts, from
+    # the same ids. Bots never link an account, so it needs no bot rule.
+    account_active_1d: int = 0
+    account_active_7d: int = 0
     # The other tiers, as chat identities like `chat_identity_active_*`:
     # anyone who said anything in any room, and anyone Switch has seen in a
     # room — see `_activity_tiers` for what that can and cannot see.
@@ -188,6 +202,12 @@ class UsageCounts:
             "chat_identity_count": self.chat_identity_count,
             "chat_identity_active_1d": self.chat_identity_active_1d,
             "chat_identity_active_7d": self.chat_identity_active_7d,
+            "person_identity_active_1d": self.person_identity_active_1d,
+            "person_identity_active_7d": self.person_identity_active_7d,
+            "bot_identity_active_1d": self.bot_identity_active_1d,
+            "bot_identity_active_7d": self.bot_identity_active_7d,
+            "account_active_1d": self.account_active_1d,
+            "account_active_7d": self.account_active_7d,
             "chat_identity_posted_1d": self.chat_identity_posted_1d,
             "chat_identity_posted_7d": self.chat_identity_posted_7d,
             "chat_identity_in_room_count": self.chat_identity_in_room_count,
@@ -398,6 +418,46 @@ def _active_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]]
     )
 
 
+def _active_bots(tenant_id: str, since: datetime) -> Select[tuple[str | None]]:
+    """The identities among `_active_humans` that posted as an app since
+    `since`: a post the bridge marked `SENDER_IS_APP_MARKER` because its
+    platform said an integration, not a person, sent it."""
+    return (
+        select(distinct(Message.sender_client_id))
+        .join(Client, Client.id == Message.sender_client_id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= since,
+            *_human_activity_conditions(tenant_id),
+            Message.content.has_key(SENDER_IS_APP_MARKER),
+        )
+    )
+
+
+def _active_people(tenant_id: str, since: datetime) -> Select[tuple[str | None]]:
+    """`_active_humans` less every identity that posted as an app in the same
+    window, not just its marked posts.
+
+    By identity rather than by post, because a bot's posts from before its
+    bridge marked them carry no marker: once it has posted once with one, the
+    rest of its window is a bot's too, rather than a person who is counted
+    until the old posts age out.
+    """
+    return (
+        select(distinct(Message.sender_client_id))
+        .join(Client, Client.id == Message.sender_client_id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= since,
+            *_human_activity_conditions(tenant_id),
+            ~Message.content.has_key(SENDER_IS_APP_MARKER),
+            Message.sender_client_id.not_in(
+                _active_bots(tenant_id, since).scalar_subquery()
+            ),
+        )
+    )
+
+
 def _activity_tiers(
     tenant_id: str, day_ago: datetime, week_ago: datetime
 ) -> Select[tuple[int, int, int]]:
@@ -501,6 +561,18 @@ async def collect_tenant_counts(
     )
     counts.chat_identity_active_7d += await _count(
         session, _active_humans(tenant_id, week_ago)
+    )
+    counts.person_identity_active_1d += await _count(
+        session, _active_people(tenant_id, day_ago)
+    )
+    counts.person_identity_active_7d += await _count(
+        session, _active_people(tenant_id, week_ago)
+    )
+    counts.bot_identity_active_1d += await _count(
+        session, _active_bots(tenant_id, day_ago)
+    )
+    counts.bot_identity_active_7d += await _count(
+        session, _active_bots(tenant_id, week_ago)
     )
     posted_1d, posted_7d, in_room = (
         await session.execute(_activity_tiers(tenant_id, day_ago, week_ago))
@@ -839,6 +911,8 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
         "user_internal_count",
         "user_active_1d",
         "user_active_7d",
+        "account_active_1d",
+        "account_active_7d",
         "user_internal_active_1d",
         "user_internal_active_7d",
         "active_user_ids_1d",
@@ -935,6 +1009,8 @@ async def collect_usage(
         )
     counts.user_active_1d = len(counts.active_user_ids_1d)
     counts.user_active_7d = len(counts.active_user_ids_7d)
+    counts.account_active_1d = counts.user_active_1d
+    counts.account_active_7d = counts.user_active_7d
     counts.duration_ms = round((time.monotonic() - started) * 1000)
     return counts
 

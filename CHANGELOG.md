@@ -195,6 +195,23 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Usage telemetry tells people from bots.** Slack, Discord and Mattermost
+  posts from an integration (an app, a bot account, a webhook that isn't
+  Switch's own) were counted as people. The bridge now marks them, and the
+  daily snapshot reports `person_identity_active_*`, `bot_identity_active_*`
+  and `account_active_*` beside the old `chat_identity_active_*` and
+  `user_active_*`, which are still sent for one more stable release. Room and
+  agent message events report such posts as `sender_kind = bot`. An app's post
+  on Discord or Mattermost also no longer answers a request card or wakes an
+  agent following the conversation, as already on Slack.
+- **Agent telemetry says connection where it meant one.**
+  `agent_connected`, `agent_disconnected` and the `first_agent_connected`
+  milestone are sent alongside `agent_session_started`, `agent_session_ended`
+  and `first_session_started`, which measured an agent coming online, not a
+  coding-agent session. The old names stay for one more stable release. The
+  new `first_agent_session` milestone is the first session a host reports. A
+  deployment that already passed either milestone claims it at startup
+  without reporting it.
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and
   downgrade the database before rolling back.** Every existing workspace gets
   an organization of its own, and its owners become the organization's admins.

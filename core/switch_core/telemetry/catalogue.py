@@ -147,10 +147,13 @@ LOOKED_UP_AGENT_TYPE = one_of(*KNOWN_AGENT_TYPE.values, "unknown")
 
 ACTOR_KIND = one_of("user", "agent", "system")
 
-# Who said a message. `platform` is Switch itself speaking — a template's
-# kickoff, or a request it carries on a person's behalf — and `unknown` a
-# sender whose client could not be looked up.
-SENDER_KIND = one_of("user", "agent", "platform", "unknown")
+# Who said a message. `user` is a person on a messaging platform; `bot` is an
+# integration posting there (a Slack app, a Discord bot or webhook, a
+# Mattermost bot account, another Switch server's agent), which until this
+# value existed was counted as `user`. `platform` is Switch itself speaking — a
+# template's kickoff, or a request it carries on a person's behalf — and
+# `unknown` a sender whose client could not be looked up.
+SENDER_KIND = one_of("user", "bot", "agent", "platform", "unknown")
 
 OUTCOME = one_of("success", "failure")
 
@@ -199,13 +202,28 @@ _SNAPSHOT_COUNTS = (
     "user_count",
     "user_internal_count",
     # Switch accounts, not chat identities — see `chat_identity_*` for those.
+    # Superseded by `account_active_*`, which is the same count; kept for one
+    # stable release so charts can move across.
     "user_active_1d",
     "user_active_7d",
     "user_internal_active_1d",
     "user_internal_active_7d",
     "chat_identity_count",
+    # Superseded by `person_identity_active_*` plus `bot_identity_active_*`:
+    # this counts an integration's identity as a person. Kept for one stable
+    # release.
     "chat_identity_active_1d",
     "chat_identity_active_7d",
+    # Who used a room with an agent, split three ways. People: chat identities
+    # that never posted as an app, linked to a Switch account or not (the
+    # headline). Bots: identities whose platform marked their posts as an
+    # app's. Accounts: Switch accounts whose linked identity spoke (the floor).
+    "person_identity_active_1d",
+    "person_identity_active_7d",
+    "bot_identity_active_1d",
+    "bot_identity_active_7d",
+    "account_active_1d",
+    "account_active_7d",
     # `room_count` is the headline: rooms a *person* made. The other two keep
     # agent scratch rooms and adopted channels out of it.
     "room_count",
@@ -301,7 +319,20 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         **_SINCE_INSTALL,
         "known_agent_type": KNOWN_AGENT_TYPE,
     },
+    # An agent's first live connection, which is all this ever measured.
+    # Superseded by `first_agent_connected`, the same moment under an honest
+    # name; kept for one stable release.
     "first_session_started": {**_SINCE_INSTALL, "known_agent_type": KNOWN_AGENT_TYPE},
+    "first_agent_connected": {**_SINCE_INSTALL, "known_agent_type": KNOWN_AGENT_TYPE},
+    # The first coding-agent session a host reported (`session_started`): an
+    # agent doing work, not just coming online. A deployment that had already
+    # done either before this existed claims it without reporting, so it never
+    # announces a "first" months in (`settle_superseded_milestones`).
+    "first_agent_session": {
+        **_SINCE_INSTALL,
+        "known_agent_type": KNOWN_AGENT_TYPE,
+        "start_source": one_of("user", "room", "automation", "unknown"),
+    },
     # ── Lifecycle ────────────────────────────────────────────────────────────
     # The version is a resource attribute, so this is the upgrade curve.
     "deployment_started": {"tenant_count": NUMBER},
@@ -366,7 +397,10 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # An agent coming online: its first live connection. No "start source": the
     # server sees an authenticated connection whether a person launched the
     # session or Console spawned it. `session_started` is the one that says.
+    # Superseded by `agent_connected`, the same event under a name that says
+    # what it is; kept for one stable release.
     "agent_session_started": {"known_agent_type": KNOWN_AGENT_TYPE},
+    "agent_connected": {"known_agent_type": KNOWN_AGENT_TYPE},
     # A coding-agent session starting, as its host reports it once, when the
     # session is new. `start_source` is what the launcher stamped on it: `user`
     # a person starting one in Console, `room` the agent being addressed in a
@@ -379,7 +413,15 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     },
     # No runtime: the connection registry is the only thing that knows a
     # session ended and it holds none. Starts carry it.
+    # Superseded by `agent_disconnected`, the same event renamed; kept for one
+    # stable release.
     "agent_session_ended": {
+        "duration_seconds": NUMBER,
+        "reason": one_of(
+            "normal", "heartbeat_lapsed", "replaced", "room_claimed", "error"
+        ),
+    },
+    "agent_disconnected": {
         "duration_seconds": NUMBER,
         "reason": one_of(
             "normal", "heartbeat_lapsed", "replaced", "room_claimed", "error"

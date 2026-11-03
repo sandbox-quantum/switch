@@ -344,13 +344,19 @@ never invisible.
 | `duration_ms` | number | wall time to collect the pass, on a monotonic clock. Roughly fifteen queries per tenant against the database that is also serving rooms, and a background task is invisible to `switch.http.request.duration` — so this is the only place "what does the snapshot cost at scale" can be answered from |
 | `user_count` | number | user accounts that exist |
 | `user_internal_count` | number | of those, accounts on the company's own email domains — see "Internal usage" |
-| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account |
-| `user_active_7d` | number | same over 7 days |
+| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account. Superseded by `account_active_1d`, the same figure; sent for one more stable release |
+| `user_active_7d` | number | same over 7 days. Superseded by `account_active_7d` |
 | `user_internal_active_1d` | number | of `user_active_1d`, accounts on the company's own email domains |
 | `user_internal_active_7d` | number | same over 7 days |
 | `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
-| `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d` |
-| `chat_identity_active_7d` | number | same over 7 days |
+| `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d`. Counts integrations as well as people; superseded by `person_identity_active_1d` plus `bot_identity_active_1d`, and sent for one more stable release |
+| `chat_identity_active_7d` | number | same over 7 days. Superseded likewise |
+| `person_identity_active_1d` | number | **the headline count of people** — distinct chat identities that used a room with an agent in 24h and never posted as an app in that window, linked to a Switch account or not. One person on two platforms is two identities. See "People, bots and accounts" |
+| `person_identity_active_7d` | number | same over 7 days |
+| `bot_identity_active_1d` | number | distinct chat identities that posted as an app in a room with an agent in 24h: an integration such as an alerting or CI app, or another Switch server's agent. See "People, bots and accounts" |
+| `bot_identity_active_7d` | number | same over 7 days |
+| `account_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h, the same figure as `user_active_1d` under the name it keeps. The floor of the people count: an account exists only for someone who linked one |
+| `account_active_7d` | number | same over 7 days |
 | `chat_identity_posted_1d` | number | distinct chat identities that said anything in any room in 24h, agent or no agent |
 | `chat_identity_posted_7d` | number | same over 7 days |
 | `chat_identity_in_room_count` | number | distinct chat identities Switch has seen in a room: a member of at least one unarchived room of any origin, or anyone who said anything in the last 7 days. Not a channel's whole audience — see "Tiers of activity" |
@@ -393,6 +399,22 @@ platform set is closed and small, and because Amplitude charts a property far
 more easily than it charts a nested object. They count **configured** bridges,
 whether or not each is currently connected — which is up is process state, and
 `bridge_connected` / `bridge_disconnected` are how that is reported.
+
+**People, bots and accounts.** A messaging platform relays posts from more
+than people: an alerting or CI integration, a workflow, and another Switch
+server's agents sharing the channel all post there. Switch relays them into
+the room like any post, through the same kind of chat identity a person gets,
+so `chat_identity_active_*` counted them as people. Where the platform says a
+post came from an app (a Slack app, a Discord bot or a webhook that is not
+Switch's own, a Mattermost bot account or incoming webhook), the bridge marks
+it, and that identity counts in `bot_identity_active_*` rather than
+`person_identity_active_*` for the whole window. Telegram never delivers
+another bot's posts and Teams does not mark them, so nothing there is counted
+as a bot. A post relayed before its bridge marked app posts carries no mark,
+so for the first week after upgrading, an integration that has not posted
+since can still count as a person. `account_active_*` is the floor:
+integrations never link a Switch account, and most people never link one
+either.
 
 **What counts as a message.** Every durable event is a row in the message log:
 arrivals, tool- and LLM-call reports and task transitions sit beside the
@@ -459,7 +481,18 @@ deployments installed after this ships — see
 | `first_room_created` | the first **user-created** room is created | `channel_type`, `bridge_platform` |
 | `first_room_active` | that room sees its first interaction | `bridge_platform`, `seconds_since_room_created` |
 | `first_agent_registered` | the first agent registers | `known_agent_type` |
-| `first_session_started` | the first agent session opens | `known_agent_type` |
+| `first_session_started` | the first agent comes online: its first live connection. Superseded by `first_agent_connected`, the same moment; sent for one more stable release | `known_agent_type` |
+| `first_agent_connected` | the first agent comes online | `known_agent_type` |
+| `first_agent_session` | a host reports the first coding-agent session (`session_started`): an agent doing work | `known_agent_type`, `start_source` |
+
+`first_agent_connected` and `first_agent_session` were added after deployments
+were already running. One that had already passed them claims them at boot
+without reporting, so it is never reported as doing for the first time what it
+did long ago: `first_agent_connected` once `first_session_started` was claimed,
+and `first_agent_session` once `first_room_active` was claimed or a session was
+reported in the last 7 days. A deployment whose only sessions were started
+from Switch Console, more than a week before upgrading, with no person ever
+using a room with an agent, reports `first_agent_session` late.
 
 The two room milestones track user-created rooms only, for the reason given
 under [Definitions](#definitions): a room an agent made for itself is not the
@@ -594,6 +627,11 @@ that as `false` would misfile a lookup failure as a failed setup.
 | `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
 
+**`agent_connected`** — `known_agent_type`, and **`agent_disconnected`** —
+the properties of `agent_session_ended` below. The same two events as
+`agent_session_started` and `agent_session_ended`, under names that say what
+they measure. Both pairs are sent for one more stable release.
+
 **`agent_session_started`** — `known_agent_type`. An agent *coming online*: its
 first live connection, not a session a person began. Sessions share their
 agent's one connection, held by Switch Console or a remote host's sidecar, so
@@ -686,7 +724,7 @@ the person said.
 
 | Property | Type |
 |---|---|
-| `sender_kind` | `user` \| `agent` — only people and agents are metered, so `platform` does not occur here |
+| `sender_kind` | `user` \| `bot` \| `agent` — only participants are metered, so `platform` does not occur here. `bot` is an integration's post (see "People, bots and accounts"); before that value existed those were `user` |
 | `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
 | `channel_type` | channel type, or `unknown` if the room could not be read |
 | `room_user_count` | number — human members of the room, `-1` if it could not be read |
@@ -716,7 +754,7 @@ the requests an agent could act on as they arrived.
 
 | Property | Type |
 |---|---|
-| `sender_kind` | `user` \| `agent` \| `platform` \| `unknown` |
+| `sender_kind` | `user` \| `bot` \| `agent` \| `platform` \| `unknown` — `bot` as for `room_message_sent` |
 | `known_agent_type` | the receiving agent's runtime |
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
@@ -796,8 +834,10 @@ it today; the room events read the type from a row they already hold.
 four built-in types; a user-defined type's slug is free text, so it reports as
 `other`.
 
-`sender_kind`: `user` | `agent` | `platform` | `unknown`. `platform` is Switch
-itself speaking; `unknown` a sender whose client could not be looked up.
+`sender_kind`: `user` | `bot` | `agent` | `platform` | `unknown`. `user` is a
+person on a messaging platform and `bot` an integration posting there (see
+"People, bots and accounts"); `platform` is Switch itself speaking; `unknown` a
+sender whose client could not be looked up.
 
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
@@ -992,15 +1032,21 @@ Two things to set up first, or a third of the list cannot fire at all:
 
 **Sessions** — `bridges/agent/api/handlers.py`, and the connection registry
 
-- `agent_session_started` — an agent opening its event stream. A supervisor
-  reattaching to a connection it already had correctly emits nothing.
-- `first_session_started` — the same, once ever.
-- `agent_session_ended` — kill an agent and wait for the heartbeat sweep
-  (a few seconds). Reported through a listener on the registry, so every path
-  that closes a connection reports, not just the sweep.
+- `agent_session_started` and `agent_connected` — an agent opening its event
+  stream; both are sent. A supervisor reattaching to a connection it already
+  had correctly emits nothing.
+- `first_session_started` and `first_agent_connected` — the same, once ever.
+  On a deployment that claimed `first_session_started` before this release,
+  `first_agent_connected` is claimed at boot and never sent.
+- `agent_session_ended` and `agent_disconnected` — kill an agent and wait for
+  the heartbeat sweep (a few seconds). Reported through a listener on the
+  registry, so every path that closes a connection reports, not just the sweep.
 - `session_started` — `POST /agent-sessions/{id}/started` from a session host
   (`bridges/agent/api/activity_routes.py`), with a UUID id. A repeat for the
   same agent and session emits nothing, across restarts, for 7 days.
+- `first_agent_session` — the first `session_started` a deployment sends, once
+  ever; claimed at boot without sending on a deployment that already had
+  sessions (see the milestone table).
 
 **Messages** — `telemetry/messages.py`, fed by `transport/postgres.py` and
 `delivery/recipient.py`

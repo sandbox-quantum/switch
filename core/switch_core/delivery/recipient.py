@@ -54,6 +54,7 @@ from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
     AUTO_REPLY_FLAG,
     PLATFORM_MARKER,
+    SENDER_IS_APP_MARKER,
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
@@ -1710,6 +1711,7 @@ class AgentRecipient:
                 room_id=meta.room_id,
                 sender_transport_user_id=event.sender,
                 from_platform=PLATFORM_MARKER in event.content,
+                from_app=event.content.get(SENDER_IS_APP_MARKER) is True,
                 agent_metadata=self.agent.metadata_,
                 agent_live=agent_live,
                 has_attachment=has_attachment,

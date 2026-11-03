@@ -16,13 +16,31 @@ import logging
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import DeploymentIdentity, TelemetryMilestone
 
 logger = logging.getLogger(__name__)
+
+# The prefix of the claims `session_started` takes per session
+# (`telemetry/session_start.py`), here because the milestones below read them.
+SESSION_START_CLAIM_PREFIX = "session_started:"
+
+# Milestones added after deployments were already running, each with the
+# claims that show a deployment passed it before it existed: exact milestone
+# names, or a prefix ending in `*`. `settle_superseded_milestones` claims them
+# without reporting, so a deployment that did this long ago is never reported
+# as doing it for the first time now.
+SUPERSEDED_MILESTONES: dict[str, tuple[str, ...]] = {
+    # The same moment as `first_session_started`, under the name that says it
+    # is a connection.
+    "first_agent_connected": ("first_session_started",),
+    # A person using a room with an agent in it, or a session reported in the
+    # last week (those claims are kept that long), means sessions have run.
+    "first_agent_session": ("first_room_active", f"{SESSION_START_CLAIM_PREFIX}*"),
+}
 
 
 class DeploymentIdentityMissingError(RuntimeError):
@@ -149,3 +167,61 @@ async def claim_milestone(
             "Could not record the %s telemetry milestone; not reporting it.", name
         )
         return False
+
+
+async def settle_superseded_milestones(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> list[str]:
+    """Claim, without reporting, each `SUPERSEDED_MILESTONES` entry this
+    deployment has already passed. Returns the names it claimed.
+
+    Run once at boot, before anything can report one of them: on a new
+    deployment there is no evidence yet, so each is reported normally the first
+    time it happens. A failure claims nothing and is logged, leaving the
+    milestone to be reported when it next happens — late rather than lost.
+    """
+    settled: list[str] = []
+    try:
+        async with session_factory() as session:
+            for milestone, evidence in SUPERSEDED_MILESTONES.items():
+                exact = [name for name in evidence if not name.endswith("*")]
+                prefixes = [name[:-1] for name in evidence if name.endswith("*")]
+                found = await session.scalar(
+                    select(TelemetryMilestone.name)
+                    .where(
+                        or_(
+                            TelemetryMilestone.name.in_(exact),
+                            *(
+                                TelemetryMilestone.name.startswith(
+                                    prefix, autoescape=True
+                                )
+                                for prefix in prefixes
+                            ),
+                        )
+                    )
+                    .limit(1)
+                )
+                if found is None:
+                    continue
+                claimed = await session.scalar(
+                    pg_insert(TelemetryMilestone)
+                    .values(name=milestone)
+                    .on_conflict_do_nothing(index_elements=["name"])
+                    .returning(TelemetryMilestone.name)
+                )
+                if claimed is not None:
+                    settled.append(milestone)
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "Could not settle telemetry milestones superseded by newer ones; "
+            "each will be reported when it next happens."
+        )
+        return []
+    if settled:
+        logger.info(
+            "Telemetry milestones already passed before they existed, claimed "
+            "without reporting: %s",
+            ", ".join(settled),
+        )
+    return settled

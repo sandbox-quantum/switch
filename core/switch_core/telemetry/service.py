@@ -20,7 +20,11 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.telemetry.catalogue import PropertyValue, validate, wire_name
-from switch_core.telemetry.deployment import claim_milestone, seconds_since_install
+from switch_core.telemetry.deployment import (
+    claim_milestone,
+    seconds_since_install,
+    settle_superseded_milestones,
+)
 from switch_core.telemetry.sink import TelemetryRecord, TelemetrySink
 
 logger = logging.getLogger(__name__)
@@ -92,6 +96,15 @@ class TelemetryService:
                 timestamp_ns=time.time_ns(),
             )
         )
+
+    async def settle_superseded_milestones(self) -> None:
+        """Claim without reporting the milestones this deployment passed
+        before they existed (`deployment.SUPERSEDED_MILESTONES`). Once, at boot,
+        before anything can report one. Nothing while telemetry is off, for the
+        reason `emit_milestone` gives."""
+        if not self._enabled or self._session_factory is None:
+            return
+        await settle_superseded_milestones(self._session_factory)
 
     async def emit_milestone(self, event: str, **properties: PropertyValue) -> None:
         """Report a once-ever activation milestone, if it has not been reported.

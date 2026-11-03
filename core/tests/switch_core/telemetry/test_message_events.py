@@ -9,6 +9,7 @@ there would be a wrong chart with no error anywhere.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 import uuid
 from types import SimpleNamespace
@@ -163,6 +164,7 @@ def _said(world: _World, sender_client_id: str, role: str) -> ParticipantMessage
         room_id=world.room.id,
         sender_client_id=sender_client_id,
         sender_role=role,
+        sender_is_app=False,
         has_attachment=False,
         in_thread=False,
     )
@@ -176,6 +178,7 @@ def _said_in(
         room_id=room_id,
         sender_client_id=sender_client_id,
         sender_role=sender_role,
+        sender_is_app=False,
         has_attachment=False,
         in_thread=False,
     )
@@ -251,6 +254,25 @@ class TestRoomMessageSent:
             )
         ]
 
+    async def test_an_integration_posting_is_a_bot_not_a_user(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The bridge writes an app's post through a human actor like anyone
+        else's; its mark is what keeps it out of the people count."""
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.observe(
+            dataclasses.replace(
+                _said(world, world.humans[0].id, "human"), sender_is_app=True
+            )
+        )
+
+        reported = await _reported(messages, service, sink)
+        assert [p["sender_kind"] for _, p in reported] == ["bot"]
+
     async def test_an_internal_room_has_no_platform(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -269,6 +291,7 @@ class TestRoomMessageSent:
                 room_id=room.id,
                 sender_client_id=human.id,
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=True,
                 in_thread=True,
             )
@@ -295,6 +318,7 @@ class TestRoomMessageSent:
                 room_id=str(uuid.uuid4()),
                 sender_client_id="whoever",
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=False,
                 in_thread=False,
             )
@@ -366,6 +390,7 @@ class TestAgentMessageReceived:
             room_id=world.room.id,
             sender_transport_user_id=world.humans[0].transport_user_id,
             from_platform=False,
+            from_app=False,
             agent_metadata={"known_agent_type": "claude-code"},
             agent_live=True,
             has_attachment=False,
@@ -406,6 +431,7 @@ class TestAgentMessageReceived:
                 room_id=world.room.id,
                 sender_transport_user_id=sender,
                 from_platform=from_platform,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=False,
                 has_attachment=False,
@@ -418,6 +444,28 @@ class TestAgentMessageReceived:
             "unknown",
         ]
         assert {p["known_agent_type"] for _, p in reported} == {"none"}
+
+    async def test_an_integration_asking_an_agent_is_a_bot(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.agent_addressed(
+            tenant_id=TENANT_ZERO,
+            room_id=world.room.id,
+            sender_transport_user_id=world.humans[0].transport_user_id,
+            from_platform=False,
+            from_app=True,
+            agent_metadata=None,
+            agent_live=True,
+            has_attachment=False,
+        )
+
+        reported = await _reported(messages, service, sink)
+        assert [p["sender_kind"] for _, p in reported] == ["bot"]
 
 
 class TestFailingLookups:
@@ -485,6 +533,7 @@ class TestFailingLookups:
                 room_id="elsewhere",
                 sender_client_id="someone",
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=False,
                 in_thread=False,
             )
@@ -575,6 +624,7 @@ class TestCaching:
                 room_id=world.room.id,
                 sender_transport_user_id=world.humans[0].transport_user_id,
                 from_platform=False,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=True,
                 has_attachment=False,
@@ -663,6 +713,7 @@ class TestCaching:
                 room_id=world.room.id,
                 sender_transport_user_id=late_sender,
                 from_platform=False,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=True,
                 has_attachment=False,
@@ -721,6 +772,7 @@ class TestTheWholeWorkspace:
             room_id=other.id,
             sender_transport_user_id=world.humans[1].transport_user_id,
             from_platform=False,
+            from_app=False,
             agent_metadata=None,
             agent_live=True,
             has_attachment=False,
@@ -893,6 +945,7 @@ class TestFailingSenderAndRuntimeLookups:
                 room_id="room",
                 sender_transport_user_id=sender,
                 from_platform=False,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=True,
                 has_attachment=False,
@@ -1041,6 +1094,7 @@ class TestFailingReports:
                 room_id=world.room.id,
                 sender_transport_user_id="@nobody-we-know:test",
                 from_platform=False,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=True,
                 has_attachment=False,
@@ -1071,6 +1125,7 @@ class TestShutdown:
                         room_id="room",
                         sender_client_id="someone",
                         sender_role="human",
+                        sender_is_app=False,
                         has_attachment=False,
                         in_thread=False,
                     )
@@ -1151,6 +1206,7 @@ class TestShutdown:
                 room_id="room",
                 sender_client_id="someone",
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=False,
                 in_thread=False,
             )
@@ -1197,6 +1253,7 @@ class TestOff:
             room_id=world.room.id,
             sender_transport_user_id=world.humans[0].transport_user_id,
             from_platform=False,
+            from_app=False,
             agent_metadata=None,
             agent_live=False,
             has_attachment=False,

@@ -2994,6 +2994,10 @@ class DiscordAdapter(PlatformAdapter):
                 attachments=attachments,
                 attachment_failures=attachment_failures,
                 self_mention_token=str(bot_user_id) if self_mention else None,
+                # Another bot, or a webhook that is not one of ours (ours were
+                # dropped above): an integration posting, not a person.
+                sender_is_app=bool(getattr(author, "bot", False))
+                or getattr(message, "webhook_id", None) is not None,
             )
         )
 
