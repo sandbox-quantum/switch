@@ -35,14 +35,17 @@ import {
   type AddServerParams,
   type BundledChatSignIn,
   type ClearTrustSettingsResult,
+  type CreatedRegistrationKey,
   type FetchTrustSettingsResult,
   type PasswordLoginParams,
   type RenameServerParams,
   type ServerConnectionStatus,
   type SignupParams,
   type SignupResult,
+  type SwitchApiKey,
   type SwitchAuthConfig,
   type SwitchServer,
+  type SwitchUser,
   type UpdateServerParams,
   type UpdateServerResult,
   type UpdateTrustSettingsParams,
@@ -77,7 +80,13 @@ import {
   createOrganization,
   createOrganizationWorkspace,
   fetchAuthConfig,
+  changeMyPassword,
+  createRegistrationKey,
+  deleteApiKey,
   deleteMyAccount,
+  fetchMyApiKeys,
+  revealApiKey,
+  updateMyName,
   fetchMe,
   fetchJoinableWorkspaces,
   fetchPendingInvitations,
@@ -644,6 +653,49 @@ export const switchServersController = createRPCController({
     const server = await getServer(serverId).catch(() => null);
     await forgetSession(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
+  },
+
+  /** Change the signed-in person's display name; refreshes the signed-in status after. */
+  updateMyName: async (params: { serverId: string; name: string }): Promise<SwitchUser> => {
+    const server = await requireReachableServer(params.serverId);
+    return updateMyName(server, params.name);
+  },
+
+  /** Change the signed-in person's password. Refusals carry the server's reason. */
+  changeMyPassword: async (params: {
+    serverId: string;
+    currentPassword: string;
+    newPassword: string;
+  }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await changeMyPassword(server, params.currentPassword, params.newPassword);
+  },
+
+  /** The signed-in person's own API keys. */
+  listMyApiKeys: async (serverId: string): Promise<SwitchApiKey[]> => {
+    const server = await requireReachableServer(serverId);
+    return fetchMyApiKeys(server);
+  },
+
+  /** Make a registration key; the answer is the only time its value is shown. */
+  createRegistrationKey: async (params: {
+    serverId: string;
+    label: string;
+  }): Promise<CreatedRegistrationKey> => {
+    const server = await requireReachableServer(params.serverId);
+    return createRegistrationKey(server, params.label);
+  },
+
+  /** One of the signed-in person's keys in full, for copying. */
+  revealApiKey: async (params: { serverId: string; keyId: string }): Promise<string> => {
+    const server = await requireReachableServer(params.serverId);
+    return revealApiKey(server, params.keyId);
+  },
+
+  /** Delete one of the signed-in person's keys. */
+  deleteApiKey: async (params: { serverId: string; keyId: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await deleteApiKey(server, params.keyId);
   },
 
   /** Delete the signed-in account on the server, then forget its session here. */

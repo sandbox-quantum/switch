@@ -199,6 +199,24 @@ export type SwitchServerDeclaration = {
 };
 
 /** The authenticated user, as returned by `GET /gateway/auth/me`. */
+/**
+ * One of the signed-in person's API keys (mirrors the gateway `ApiKeyDetail`).
+ * `type` is `registration` for a key they made to register agents with,
+ * `agent` for one of their agents' own keys, or `bootstrap` for the
+ * deployment's seeded registration key. `keyPrefix` is the start of the key's
+ * hash, which identifies it without revealing it.
+ */
+export type SwitchApiKey = {
+  id: string;
+  label: string;
+  type: string;
+  keyPrefix: string;
+  createdAt: string;
+};
+
+/** A registration key just made: the one time its full value is shown. */
+export type CreatedRegistrationKey = { id: string; label: string; key: string; createdAt: string };
+
 export type SwitchUser = {
   id: string;
   name: string;
