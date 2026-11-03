@@ -3,8 +3,8 @@
  * under what they reach, and a workspace admin's switch for each service,
  * drawn as tiles. A switch asks before it reaches other people, shows what
  * the server says rather than what was asked, and keeps its place when it
- * flips. The server's operator also has the apps connectors sign in
- * through, under Server, each opening to its own profile. Someone who
+ * flips. Whoever runs a Switch with no web gateway also has the apps
+ * connectors sign in through, under Server, each opening to its own profile. Someone who
  * administers nothing is told whom to ask.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -36,7 +36,7 @@ const switchServers = vi.hoisted(() => ({
   saveConnectorApp: vi.fn(),
   getConnectorAppImpact: vi.fn(),
 }));
-const admin = vi.hoisted(() => ({ administers: true, operator: false }));
+const admin = vi.hoisted(() => ({ administers: true, operator: false, servesGateway: false }));
 /** The dialogs asked for, by id; each is answered by the test. */
 const modals = vi.hoisted(
   () =>
@@ -67,6 +67,11 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { servers: [{ id: 'server', name: 'Dev Server' }] },
+}));
+
+// Connector apps are in the web gateway; Admin keeps them for a Switch without one.
+vi.mock('@renderer/features/switch-servers/server-gateway', () => ({
+  servesWebGateway: () => admin.servesGateway,
 }));
 
 vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
@@ -142,6 +147,7 @@ beforeEach(() => {
   navigation.reset();
   admin.administers = true;
   admin.operator = false;
+  admin.servesGateway = false;
   modals.length = 0;
   for (const mock of Object.values(workspaces)) mock.mockReset();
   for (const mock of Object.values(switchServers)) mock.mockReset();
@@ -367,6 +373,17 @@ it("gives the server's operator Connector apps under Server, the app needing set
     mode: 'set_up',
     app: { slug: 'github' },
   });
+});
+
+it('leaves the apps to the web gateway where the server serves one', async () => {
+  admin.operator = true;
+  admin.servesGateway = true;
+  workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
+  const page = await render();
+  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
+
+  expect(page.querySelector('nav [role="group"][aria-label="Server"]')).toBeNull();
+  expect(switchServers.getConnectorApps).not.toHaveBeenCalled();
 });
 
 it('keeps the apps from a workspace admin who does not run the server', async () => {

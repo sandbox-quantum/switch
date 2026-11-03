@@ -155,8 +155,9 @@ function openServerSettings(serverId: string): void {
 }
 
 /**
- * Admin is for the workspace's admins, and for whoever runs the server, who
- * finds its Status page there; anyone else lands on the home and is told why.
+ * Admin is for the workspace's admins. Whoever runs the server without
+ * administering it is looking for its status, and is sent there; anyone else
+ * lands on the home and is told why.
  */
 function openAdmin(serverId: string, tab: string | null): void {
   if (!administersWorkspaceInScope(serverId)) {

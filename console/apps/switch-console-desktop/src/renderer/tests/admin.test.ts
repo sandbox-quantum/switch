@@ -44,54 +44,41 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
 describe('the Admin page’s sections', () => {
   const person = {
     administers: false,
-    operator: false,
+    operatesGatewaylessServer: false,
     serviceConnections: true,
-    managed: false,
   };
 
-  it('shows the workspace switches to its admins, and the apps under Server to the operator alone', () => {
+  it('shows the workspace switches to its admins', () => {
     expect(adminGroups({ ...person, administers: true })).toEqual([
       { scope: 'workspace', items: ['connectors'] },
-    ]);
-    expect(adminGroups({ ...person, administers: true, operator: true })).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
-      { scope: 'server', items: ['apps'] },
     ]);
     expect(adminGroups(person)).toEqual([]);
   });
 
-  it('puts the status of a server this Console runs first under Server, for whoever runs it', () => {
-    expect(adminGroups({ ...person, administers: true, operator: true, managed: true })).toEqual([
+  it('keeps the connector apps only for whoever runs a Switch with no gateway to set them in', () => {
+    expect(adminGroups({ ...person, administers: true, operatesGatewaylessServer: true })).toEqual([
       { scope: 'workspace', items: ['connectors'] },
-      { scope: 'server', items: ['status', 'apps'] },
-    ]);
-    expect(adminGroups({ ...person, managed: true })).toEqual([
-      { scope: 'server', items: ['status'] },
+      { scope: 'server', items: ['apps'] },
     ]);
   });
 
-  it('keeps the connector sections behind service connections, but not the status', () => {
-    const off = { ...person, serviceConnections: false, administers: true, operator: true };
-    expect(adminGroups(off)).toEqual([]);
-    expect(adminGroups({ ...off, managed: true })).toEqual([
-      { scope: 'server', items: ['status'] },
-    ]);
+  it('keeps every section behind service connections', () => {
+    expect(
+      adminGroups({
+        administers: true,
+        operatesGatewaylessServer: true,
+        serviceConnections: false,
+      })
+    ).toEqual([]);
   });
 
   it('opens the section asked for when the person may use it, otherwise the first', () => {
-    const operator = adminGroups({ ...person, administers: true, operator: true });
+    const operator = adminGroups({ ...person, administers: true, operatesGatewaylessServer: true });
     const admin = adminGroups({ ...person, administers: true });
     expect(shownAdminSection(operator, 'apps')).toBe('apps');
     expect(shownAdminSection(admin, 'apps')).toBe('connectors');
     expect(shownAdminSection(admin, undefined)).toBe('connectors');
     expect(shownAdminSection([], 'connectors')).toBeNull();
-  });
-
-  it('never opens the status as one of the page’s own sections', () => {
-    const runner = adminGroups({ ...person, managed: true });
-    expect(shownAdminSection(runner, undefined)).toBeNull();
-    const operator = adminGroups({ ...person, administers: true, operator: true, managed: true });
-    expect(shownAdminSection(operator, undefined)).toBe('connectors');
   });
 });
 

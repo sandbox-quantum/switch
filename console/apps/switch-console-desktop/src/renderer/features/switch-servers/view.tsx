@@ -32,13 +32,11 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { GuardrailsSection } from './GuardrailsSection';
 import { localServerStore } from './local-server-store';
 import { MessagingAppsCard } from './MessagingAppsCard';
-import { openServerPage } from './open-server-page';
 import { remoteServerStore } from './remote-server-store';
-import { servesWebGateway } from './server-gateway';
 import { serverIcon } from './server-icon';
 import { serverPlacementLabel } from './server-presentation';
 import { ServerSectionTitlebar } from './server-section-titlebar';
@@ -54,6 +52,7 @@ import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { myIdentitiesQueryKey } from './use-my-identities';
+import { administersWorkspaceInScope } from './workspace-admin';
 
 /** Whether a managed server's stack is currently running (via the store that
  * owns its lifecycle). Non-managed servers are always "reachable". */
@@ -178,7 +177,6 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   // button asks for, so the page should not look idle while one is in flight.
   const busy = refreshingPage || store.refreshing.has(serverId);
   const unreachable = store.isUnreachable(serverId);
-  const servesNoDashboard = !servesWebGateway(server);
   const PlacementIcon = serverIcon(server);
   const title = workspaceTitle(server);
 
@@ -306,29 +304,13 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             )}
 
             {connected && <ServerStatTiles serverId={serverId} />}
-            {connected && <MessagingAppsCard serverId={serverId} />}
+            {/* Your own accounts in each app are linked in Settings; what is
+                left here is the workspace's side, for its admins. */}
+            {connected && administersWorkspaceInScope(serverId) && (
+              <MessagingAppsCard serverId={serverId} />
+            )}
             {connected && <GuardrailsSection serverId={serverId} />}
           </>
-        )}
-
-        {detailsVisible && !unreachable && !servesNoDashboard && (
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0 space-y-0.5">
-              <h3 className="text-sm font-medium text-foreground">Full admin interface</h3>
-              <p className="text-xs text-foreground-muted">
-                Configure resources, API keys and users.
-              </p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0"
-              onClick={() => void openServerPage(server.id, dashboardOrigin(server))}
-            >
-              <ExternalLink className="size-4" />
-              Open
-            </Button>
-          </div>
         )}
       </div>
     </div>
@@ -336,7 +318,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 });
 
 /**
- * Who you are on this server, and the way out.
+ * Who you are on this server. Signing out and the rest of your account are in
+ * Settings.
  *
  * The account leads with a face and a name because that is the question being
  * answered — which of your identities this server sees — rather than with the
@@ -345,8 +328,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 const SignedInCard = observer(function SignedInCard({ serverId }: { serverId: string }) {
   const store = switchServersStore;
   const user = store.statusFor(serverId)?.user;
-  const showDeleteAccount = useShowModal('deleteAccountModal');
-  const serverName = store.serverById(serverId)?.name ?? 'this server';
+  const { navigate } = useNavigate();
   const displayName = user?.name || user?.email || 'Signed in';
   const initial = displayName.trim().charAt(0).toUpperCase() || '?';
 
@@ -368,18 +350,12 @@ const SignedInCard = observer(function SignedInCard({ serverId }: { serverId: st
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {user?.role && <Badge variant="secondary">{user.role}</Badge>}
-        {user?.email && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-destructive hover:text-destructive"
-            onClick={() => showDeleteAccount({ serverId, serverName, email: user.email })}
-          >
-            Delete account
-          </Button>
-        )}
-        <Button variant="outline" size="sm" onClick={() => void store.logout(serverId)}>
-          Sign out
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate('settings', { tab: 'account' })}
+        >
+          Your account
         </Button>
       </div>
     </div>

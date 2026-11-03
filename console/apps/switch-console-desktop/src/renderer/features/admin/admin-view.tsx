@@ -10,7 +10,6 @@ import {
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { operatesServer } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent } from '@renderer/lib/components/page-layout';
@@ -43,14 +42,12 @@ const AdminTitlebar = observer(function AdminTitlebar() {
 });
 
 /**
- * What the workspace's admins, and the server's operator, manage for other
- * people. Laid out like Settings: its sections down the side, grouped by
- * what they reach, each shown only to the role that may use it. Its own
- * sections are about connectors, so like the Connectors page they are behind
- * the server's `service_connections` flag. A server this Console runs also
- * has its status in the menu, drawn by the `managedServer` view: whoever has
- * no section of their own here is sent there, and, where there is no status
- * either and the flag is off, to Your Agents.
+ * What the workspace's admins, and whoever runs a Switch with no gateway,
+ * manage for other people that the web gateway does not have yet. Laid out
+ * like Settings: its sections down the side, grouped by what they reach,
+ * each shown only to the role that may use it. Its sections are about
+ * connectors, so like the Connectors page they are behind the server's
+ * `service_connections` flag; with the flag off it sends you to Your Agents.
  */
 const AdminPanel = observer(function AdminPanel() {
   const { params } = useParams('admin');
@@ -60,15 +57,8 @@ const AdminPanel = observer(function AdminPanel() {
   const workspace = workspacesStore.onServerInScope(serverId);
   const groups = adminGroupsInScope(serverId, access === 'shown');
   const section = shownAdminSection(groups, params.section);
-  const hasStatus = groups.some((group) => group.items.includes('status'));
   const redirect =
-    access === 'loading' || section !== null
-      ? null
-      : hasStatus
-        ? 'managedServer'
-        : access === 'absent'
-          ? 'serverAgents'
-          : null;
+    access === 'loading' || section !== null ? null : access === 'absent' ? 'serverAgents' : null;
   useEffect(() => {
     if (redirect !== null) navigate(redirect, { serverId });
   }, [redirect, navigate, serverId]);
@@ -79,7 +69,8 @@ const AdminPanel = observer(function AdminPanel() {
         <Spinner />
       </ServerPage>
     );
-  const operator = operatesServer(serverId);
+  // The apps are read only where the menu offers them.
+  const operator = groups.some((group) => group.items.includes('apps'));
   if (section === null)
     return (
       <ServerPage width={880} title="Admin" description="Ask a workspace admin to change these.">
