@@ -6,6 +6,9 @@ changes them calls `changed` once the change has committed: this process
 forgets its settings at once, and every other process when the signal reaches
 it. A process whose listening connection was down forgets them once it is back,
 and a signal lost some other way costs at most `SETTINGS_MAX_AGE_SECONDS`.
+
+The agent inventory sync forgets what it sent at the same moments, so the
+process running it sends every tenant again under the new settings.
 """
 
 from __future__ import annotations
@@ -14,13 +17,17 @@ from typing import Any
 
 from switch_core.signals import SignalBus
 from switch_core.trust.client import DynamicTrustClient
+from switch_core.trust.inventory import InventorySync
 
 TRUST_SETTINGS_CHANGED_SIGNAL = "trust.settings_changed"
 
 
 class TrustSettingsSignals:
-    def __init__(self, *, client: DynamicTrustClient, bus: SignalBus) -> None:
+    def __init__(
+        self, *, client: DynamicTrustClient, inventory: InventorySync, bus: SignalBus
+    ) -> None:
         self._client = client
+        self._inventory = inventory
         self._bus = bus
         bus.handle(TRUST_SETTINGS_CHANGED_SIGNAL, self._on_changed)
         bus.on_resync(self._forget)
@@ -28,10 +35,13 @@ class TrustSettingsSignals:
     def changed(self) -> None:
         """The settings changed and the change has committed."""
         self._client.forget()
+        self._inventory.forget()
         self._bus.publish(TRUST_SETTINGS_CHANGED_SIGNAL)
 
     def _on_changed(self, _signal: dict[str, Any]) -> None:
         self._client.forget()
+        self._inventory.forget()
 
     async def _forget(self) -> None:
         self._client.forget()
+        self._inventory.forget()

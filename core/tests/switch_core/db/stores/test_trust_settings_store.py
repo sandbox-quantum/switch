@@ -23,6 +23,7 @@ class TestTrustSettingsStore:
                 endpoint="https://trust.example",
                 policy_id="pol_123",
                 api_key_encrypted="enc:k",
+                share_agent_instructions=None,
             )
             await session.commit()
 
@@ -42,12 +43,14 @@ class TestTrustSettingsStore:
                 endpoint="https://trust.example",
                 policy_id="pol_123",
                 api_key_encrypted="enc:k",
+                share_agent_instructions=None,
             )
             await store.upsert(
                 session,
                 endpoint="https://other.example",
                 policy_id="pol_456",
                 api_key_encrypted="enc:k2",
+                share_agent_instructions=None,
             )
             await session.commit()
 
@@ -67,12 +70,14 @@ class TestTrustSettingsStore:
                 endpoint="https://trust.example",
                 policy_id="pol_123",
                 api_key_encrypted="enc:k",
+                share_agent_instructions=None,
             )
             await store.upsert(
                 session,
                 endpoint="https://trust2.example",
                 policy_id="pol_123",
                 api_key_encrypted="enc:k",
+                share_agent_instructions=None,
             )
             await session.commit()
 
@@ -95,12 +100,14 @@ class TestTrustSettingsStore:
                 endpoint="https://trust.example",
                 policy_id="pol_123",
                 api_key_encrypted="enc:k",
+                share_agent_instructions=None,
             )
             await store.upsert(
                 session,
                 endpoint="https://trust2.example",
                 policy_id="pol_123",
                 api_key_encrypted=None,
+                share_agent_instructions=None,
             )
             await session.commit()
 
@@ -108,6 +115,48 @@ class TestTrustSettingsStore:
             assert settings is not None
             assert settings.api_key_encrypted == "enc:k"
             assert settings.endpoint == "https://trust2.example"
+
+    async def test_sharing_instructions_is_off_until_turned_on_and_kept_when_omitted(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = TrustSettingsStore()
+        async with session_factory() as session:
+            created = await store.upsert(
+                session,
+                endpoint="https://trust.example",
+                policy_id=None,
+                api_key_encrypted="enc:k",
+                share_agent_instructions=None,
+            )
+            assert created.share_agent_instructions is False
+
+            turned_on = await store.upsert(
+                session,
+                endpoint="https://trust.example",
+                policy_id=None,
+                api_key_encrypted=None,
+                share_agent_instructions=True,
+            )
+            assert turned_on.share_agent_instructions is True
+
+            # A client from before the setting saves without it.
+            kept = await store.upsert(
+                session,
+                endpoint="https://trust2.example",
+                policy_id=None,
+                api_key_encrypted=None,
+                share_agent_instructions=None,
+            )
+            assert kept.share_agent_instructions is True
+
+            turned_off = await store.upsert(
+                session,
+                endpoint="https://trust2.example",
+                policy_id=None,
+                api_key_encrypted=None,
+                share_agent_instructions=False,
+            )
+            assert turned_off.share_agent_instructions is False
 
     async def test_clear_removes_the_row(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -119,6 +168,7 @@ class TestTrustSettingsStore:
                 endpoint="https://trust.example",
                 policy_id="pol_123",
                 api_key_encrypted="enc:k",
+                share_agent_instructions=None,
             )
             await session.commit()
 

@@ -58,10 +58,13 @@ interception point further down the stack.
    on the guardrails external processor (server side) — with headers
    `x-guardrails-policy-id`, `x-flintai-api-key`, and three
    always-set identity headers Switch Trust uses to group checks:
-   - `x-agent-name`: a constant, `Switch Rooms Agents` — Switch has no single agent
-     to attribute a check to (a room can hold several, and a human-authored
-     message has none at all), so every check is reported under one identity
-     rather than inventing a per-sender one Switch Trust has no use for.
+   - `x-agent-name` (and `x-agent-id`): who wrote the message. An agent's
+     send carries that agent's identity: `x-agent-id` is its fingerprint in
+     Switch Trust, the one the agent inventory lists it under (§Agent
+     inventory), and `x-agent-name` its display name, or its name when it has
+     none. A person's message relayed from a platform has no agent behind
+     it, so it carries no `x-agent-id` and the constant name
+     `Switch Rooms Agents`.
    - `x-agent-session-id`: the Switch room id — a room is the closest thing
      Switch has to an agentic session.
    - `x-agent-turn-id`: a fresh UUID per check. Switch has no stable
@@ -198,9 +201,10 @@ bootstrap stopgap, never a real deployment's config, and are gone: see
   headers, confirmed as-is.
 - `x-agent-name` / `x-agent-session-id` / `x-agent-turn-id` are always set,
   never omitted: a deployment-side bug report showed a check going out with no
-  agent attribution at all. `x-agent-name` is a fixed constant rather than
-  per-caller, since nothing in Switch maps cleanly to the "one agent" these
-  headers assume — see the header list above. `TrustClient.check` takes
+  agent attribution at all. `x-agent-name` was first a fixed constant for
+  every check; once Switch Trust could list Switch's agents (§Agent
+  inventory), an agent's send carries its own identity, and only a person's
+  message keeps the constant — see the header list above. `TrustClient.check` takes
   `room_id` as a required parameter (no default) precisely so a call site
   cannot forget it; the other two headers need no caller input at all.
 - The hook point moved from the originally-sketched `Actor.send_message` to
@@ -295,3 +299,59 @@ ID" and "Switch Trust API key" rather than the gateway's own field names, to
 read as Switch Trust's settings rather than generic form fields; the timeout
 is not surfaced at all. The key field shows "configured, ending •••1234"
 instead of ever prefilling the real value, matching the write-only API above.
+
+## Agent inventory
+
+Switch Trust keeps an inventory of AI agents. Switch sends it its own, so the
+agents behind the checks are listed with what they are made of, and so a
+deployment can see its agents in Switch Trust whether or not they send any
+message. Listing agents costs nothing there; only checks count toward usage.
+
+**Transport.** `POST {endpoint}/integrations/switch-rooms/agents/sync` with
+`Authorization: ApiKey <key>`, the key and endpoint from `trust_settings`.
+Nothing is sent while no key is stored; a policy id is not needed. One
+request per tenant, carrying a complete snapshot of its agents: Switch Trust
+replaces its view of that tenant with each one, so an agent missing from it
+drops out. A tenant that is deleted is sent once more with no agents.
+
+**Snapshot.** The deployment (`server.id`, `server.name` = `ID_SERVER_NAME`,
+`server.version`), the tenant (`id`, `name`), and for each agent:
+
+| Field | From |
+|---|---|
+| `id`, `name`, `display_name`, `description` | `agents` (`description` cut to 4096 bytes) |
+| `runtime` | `agents.metadata.known_agent_type` |
+| `kind` | `managed` with an `agent_definitions` row, else `registered` |
+| `model`, `auto_mode`, `auto_approve` | the definition (managed only) |
+| `permission_mode` | the definition's `advanced_config.permissionMode` |
+| `instructions` | the definition, only with `share_agent_instructions` on |
+| `addressing` | `policy_kind(agents.addressing_policy)` |
+| `owner` | the owner's `users.name` |
+| `tools` | the provider's own tools (managed), then the agent's `tools` rows |
+| `mcp_servers` | `service_grants`: the service and its access level |
+
+No credential, message or file is ever sent. A tenant over Switch Trust's
+limits (1000 agents, 200 tools or 100 services per agent) is not sent, and
+the reason is logged: a partial snapshot would drop the agents it left out.
+
+**Identity.** `deployment_identity.client_id` names the deployment. It is
+seeded once by the migrations and never changes, which matters because it is
+part of every agent's fingerprint:
+`agn_` + hex(SHAKE-256(`switch_rooms:<server>/<tenant>/<agent>`)[:16])
+(`trust/identity.py`). Switch Trust derives the same value; the sync compares
+the fingerprints it answers with and fails on a difference, since checks from
+that agent would then land elsewhere. A test pins one vector on each side.
+
+**When.** One process runs the sync (owned work, `ownership.py`). Every
+minute it builds each tenant's snapshot and sends it if it changed since the
+last one sent, or six hours have passed. Polling the tables rather than
+hooking each place an agent, definition or grant changes means no change can
+be missed, in whichever process makes it. Saving or clearing the settings
+sends everything again on the next pass (`trust/signals.py`).
+
+**Instructions.** `trust_settings.share_agent_instructions`, off by default,
+set through `PUT /trust-settings` and the Console's Switch Trust settings. A
+deployment that configured Switch Trust for message checks did not agree to
+send its agents' prompts. A save that omits the field leaves it as it is, so
+an older Console can still save the rest.
+

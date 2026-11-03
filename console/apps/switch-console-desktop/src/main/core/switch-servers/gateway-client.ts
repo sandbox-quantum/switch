@@ -491,6 +491,7 @@ type TrustSettingsJson = {
   has_api_key: boolean;
   api_key_last4: string | null;
   enabled: boolean;
+  share_agent_instructions?: boolean;
 };
 
 function mapTrustSettings(json: TrustSettingsJson): TrustSettings {
@@ -500,6 +501,7 @@ function mapTrustSettings(json: TrustSettingsJson): TrustSettings {
     hasApiKey: json.has_api_key,
     apiKeyLast4: json.api_key_last4,
     enabled: json.enabled,
+    shareAgentInstructions: json.share_agent_instructions ?? null,
   };
 }
 
@@ -524,6 +526,9 @@ export async function updateTrustSettings(
       endpoint: params.endpoint,
       policy_id: params.policyId,
       ...(params.apiKey !== undefined ? { api_key: params.apiKey } : {}),
+      ...(params.shareAgentInstructions !== undefined
+        ? { share_agent_instructions: params.shareAgentInstructions }
+        : {}),
     },
   });
   return mapTrustSettings((await res.json()) as TrustSettingsJson);

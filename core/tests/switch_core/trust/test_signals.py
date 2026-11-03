@@ -1,6 +1,7 @@
-"""Every process forgets the Switch Trust settings it read once they change,
-however it hears of it: from its own gateway route, from another process's
-signal, or by reconnecting after it may have missed one."""
+"""Every process forgets the Switch Trust settings it read, and the agent
+inventory it sent under them, once they change, however it hears of it: from
+its own gateway route, from another process's signal, or by reconnecting after
+it may have missed one."""
 
 from __future__ import annotations
 
@@ -37,33 +38,40 @@ class _Bus:
         self.published.append(kind)
 
 
-def _signals() -> tuple[TrustSettingsSignals, _Client, _Bus]:
-    client, bus = _Client(), _Bus()
-    signals = TrustSettingsSignals(client=client, bus=bus)  # type: ignore[arg-type]
-    return signals, client, bus
+def _signals() -> tuple[TrustSettingsSignals, _Client, _Client, _Bus]:
+    client, inventory, bus = _Client(), _Client(), _Bus()
+    signals = TrustSettingsSignals(
+        client=client,  # type: ignore[arg-type]
+        inventory=inventory,  # type: ignore[arg-type]
+        bus=bus,  # type: ignore[arg-type]
+    )
+    return signals, client, inventory, bus
 
 
 def test_a_change_here_is_forgotten_here_and_sent_to_the_others() -> None:
-    signals, client, bus = _signals()
+    signals, client, inventory, bus = _signals()
 
     signals.changed()
 
     assert client.forgotten == 1
+    assert inventory.forgotten == 1
     assert bus.published == [TRUST_SETTINGS_CHANGED_SIGNAL]
 
 
 def test_a_change_elsewhere_is_forgotten_here() -> None:
-    _, client, bus = _signals()
+    _, client, inventory, bus = _signals()
 
     bus.handlers[TRUST_SETTINGS_CHANGED_SIGNAL]({"kind": TRUST_SETTINGS_CHANGED_SIGNAL})
 
     assert client.forgotten == 1
+    assert inventory.forgotten == 1
 
 
 async def test_reconnecting_forgets_what_a_lost_signal_would_have() -> None:
-    _, client, bus = _signals()
+    _, client, inventory, bus = _signals()
 
     for resync in bus.resyncs:
         await resync()
 
     assert client.forgotten == 1
+    assert inventory.forgotten == 1

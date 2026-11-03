@@ -21,6 +21,8 @@ class TrustSettingsStore:
     ``ON CONFLICT`` clause itself via ``COALESCE``, not in a caller that reads
     the row first: two saves racing each other can't have one silently
     overwrite the other's key with a value it read before the write.
+    ``share_agent_instructions=None`` leaves the stored choice untouched the
+    same way, and is off for a row it creates.
     """
 
     async def get(self, session: AsyncSession) -> TrustSettings | None:
@@ -36,18 +38,24 @@ class TrustSettingsStore:
         endpoint: str,
         policy_id: str | None,
         api_key_encrypted: str | None,
+        share_agent_instructions: bool | None,
     ) -> TrustSettings:
         insert_stmt = insert(TrustSettings).values(
             id=_ROW_ID,
             endpoint=endpoint,
             policy_id=policy_id,
             api_key_encrypted=api_key_encrypted,
+            share_agent_instructions=bool(share_agent_instructions),
         )
         stmt = insert_stmt.on_conflict_do_update(
             index_elements=[TrustSettings.id],
             set_={
                 "endpoint": endpoint,
                 "policy_id": policy_id,
+                "share_agent_instructions": func.coalesce(
+                    share_agent_instructions,
+                    TrustSettings.share_agent_instructions,
+                ),
                 "api_key_encrypted": func.coalesce(
                     insert_stmt.excluded.api_key_encrypted,
                     TrustSettings.api_key_encrypted,

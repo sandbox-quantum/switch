@@ -2658,6 +2658,12 @@ class TrustSettings(Base):
     endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     policy_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Whether the agent inventory sent to Switch Trust carries each managed
+    # agent's instructions (`trust/inventory.py`). Off unless an operator
+    # turns it on.
+    share_agent_instructions: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", default=False, nullable=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

@@ -21,6 +21,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import RoomDescriptor
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Agent,
     ApiKey,
     Client,
@@ -300,7 +301,12 @@ class TestSendMessage:
         sent: list[tuple[str, str]] = []
 
         class _Client:
-            agent = SimpleNamespace(name="member")
+            agent = SimpleNamespace(
+                id=member_id,
+                tenant_id=TENANT_ZERO_ID,
+                name="member",
+                display_name=None,
+            )
 
             async def send_message(
                 self, transport_room_id: str, content: str, **_kwargs: Any
