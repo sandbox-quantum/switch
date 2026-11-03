@@ -143,8 +143,10 @@ async function listenOn(listener: Server, name: string, ports: number[] | null):
 /**
  * The vendor's refusal, worded as Core words it (`vendor_refusal` in
  * `connections/sign_in_flows.py`): a bare `access_denied` is the person
- * declining at the vendor; anything else is the vendor refusing, in its own
- * words where it gave any.
+ * declining at the vendor. Vendors also send `access_denied` with a
+ * description, both for a person declining (GitHub) and for a policy
+ * refusing, so that reads as either, in the vendor's words. Anything else is
+ * the vendor refusing, in its own words where it gave any.
  */
 export function vendorRefusal(
   name: string,
@@ -154,8 +156,13 @@ export function vendorRefusal(
   const said = vendorText(description ?? '', MAX_VENDOR_DESCRIPTION);
   const code = vendorText(error, MAX_VENDOR_ERROR);
   let message: string;
-  if (said) message = `${name} refused the sign-in: ${said}${/[.!?…]$/.test(said) ? '' : '.'}`;
-  else if (code === '' || code === 'access_denied') message = `${name} sign-in was cancelled.`;
+  if (said) {
+    const lead =
+      code === 'access_denied'
+        ? `${name} sign-in was cancelled or refused`
+        : `${name} refused the sign-in`;
+    message = `${lead}: ${said}${/[.!?…]$/.test(said) ? '' : '.'}`;
+  } else if (code === '' || code === 'access_denied') message = `${name} sign-in was cancelled.`;
   else message = `${name} refused the sign-in (${code}).`;
   return { error: code, description: said || null, message };
 }

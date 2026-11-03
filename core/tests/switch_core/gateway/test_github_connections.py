@@ -545,15 +545,18 @@ async def test_callback_is_taken_once_and_a_cancelled_consent_fails(github_app):
     assert response.status_code == 400
     flow_id = await authorize(client)
     response = await client.get(
-        BASE + "/callback", params={"state": flow_id, "error": "access_denied"}
+        BASE + "/callback",
+        params={
+            "state": flow_id,
+            "error": "access_denied",
+            "error_description": "The user has denied your application access.",
+        },
     )
     assert response.status_code == 400
-    assert "GitHub sign-in was cancelled." in response.text
+    said = "GitHub sign-in was cancelled or refused: The user has denied your application access."
+    assert said in response.text
     flow = (await client.get(BASE + f"/flows/{flow_id}")).json()
-    assert (flow["status"], flow["error"]) == (
-        "failed",
-        "GitHub sign-in was cancelled.",
-    )
+    assert (flow["status"], flow["error"]) == ("failed", said)
     github.exchange.assert_not_called()
 
 
