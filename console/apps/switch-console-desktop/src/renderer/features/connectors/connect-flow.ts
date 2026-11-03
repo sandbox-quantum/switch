@@ -1,17 +1,23 @@
 import type {
   ConnectionCatalogEntry,
+  PasteMethodName,
   ServiceKeyField,
+  ServicePasteMethod,
 } from '@shared/core/switch-servers/connection-catalog';
-import type { ServiceFlow } from '@shared/core/switch-servers/service-connection';
+import type { ServiceFlow, ServicePaste } from '@shared/core/switch-servers/service-connection';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
+import { lifetimeText } from './connectors-catalog';
 
 /**
- * A service sign-in as the dialog holds it: the flow Switch is running for
- * it, if any, the server's callback where the browser returns through it, and
- * what the person is shown.
+ * A service sign-in as the dialog holds it: the paste step open in place of
+ * the sign-in, if any, the flow Switch is running for the sign-in, if any,
+ * the server's callback where the browser returns through it, and what the
+ * person is shown.
  */
 export type ConnectFlowState = {
   connected: boolean;
+  /** The method whose paste step is open; null while the dialog shows the sign-in. */
+  pasting: PasteMethodName | null;
   flowId: string | null;
   flow: ServiceFlow | null;
   callbackUrl: string | null;
@@ -21,13 +27,15 @@ export type ConnectFlowState = {
 };
 
 export type ConnectFlowEvent =
-  /** An action begins: start, cancel or disconnect. */
+  /** An action begins: start, cancel, paste or disconnect. */
   | { type: 'act' }
+  /** The paste step opens for `method`, or, for null, the sign-in shows again. */
+  | { type: 'paste'; method: PasteMethodName | null }
   | { type: 'started'; flowId: string; callbackUrl: string | null }
   /** The flow is still under way, or failed; `failure` is what to say if it failed without saying why. */
   | { type: 'polled'; flow: ServiceFlow; failure: string }
   | { type: 'poll_failed'; error: string }
-  /** The server kept the connection; the flow is over. */
+  /** The server kept the connection, signed in or pasted; the flow is over. */
   | { type: 'connected'; warning: string | null }
   | { type: 'cancelled' }
   | { type: 'cancel_failed'; cause: unknown; error: string }
@@ -35,9 +43,17 @@ export type ConnectFlowEvent =
   /** Starting or disconnecting failed; nothing about a flow changes. */
   | { type: 'failed'; error: string };
 
-export function initialConnectFlow(connected: boolean): ConnectFlowState {
+/**
+ * Where the dialog opens: on the sign-in, or on the paste step for a method
+ * (to paste a new token in place of one the service refused).
+ */
+export function initialConnectFlow(start: {
+  connected: boolean;
+  pasting: PasteMethodName | null;
+}): ConnectFlowState {
   return {
-    connected,
+    connected: start.connected,
+    pasting: start.pasting,
     flowId: null,
     flow: null,
     callbackUrl: null,
@@ -62,6 +78,8 @@ export function connectFlowReducer(
   switch (event.type) {
     case 'act':
       return { ...state, busy: true, error: null };
+    case 'paste':
+      return { ...state, pasting: event.method, error: null, warning: null };
     case 'started':
       return {
         ...state,
@@ -80,7 +98,14 @@ export function connectFlowReducer(
     case 'poll_failed':
       return { ...state, ...NO_FLOW, error: event.error };
     case 'connected':
-      return { ...state, ...NO_FLOW, busy: false, connected: true, warning: event.warning };
+      return {
+        ...state,
+        ...NO_FLOW,
+        busy: false,
+        connected: true,
+        pasting: null,
+        warning: event.warning,
+      };
     case 'cancelled':
       return { ...state, ...NO_FLOW, busy: false, error: null };
     case 'cancel_failed':
@@ -146,6 +171,71 @@ export function signInChoicesReady(
     ready[field.name] = value;
   }
   return ready;
+}
+
+/**
+ * The links under the sign-in that open the paste step in its place, one for
+ * each credential the server lets the service take pasted.
+ */
+export function pasteLinks(
+  paste: ServicePasteMethod[]
+): { method: PasteMethodName; text: string }[] {
+  return paste.map(({ method }) => ({
+    method,
+    text: method === 'token' ? 'Use a token instead' : 'Use API keys instead',
+  }));
+}
+
+/**
+ * The one short line under each way to connect, on how long what Switch
+ * keeps lasts: a sign-in's token, which Switch refreshes; a token the person
+ * made, which its vendor ends on the date they set; keys, which only the
+ * vendor can revoke. Null for a sign-in whose token's lifetime the server
+ * does not say.
+ */
+export function safetyLine(
+  connection: Pick<ConnectionCatalogEntry, 'name' | 'token_lifetime'>,
+  way: ServicePasteMethod | 'sign_in'
+): string | null {
+  if (way === 'sign_in')
+    return connection.token_lifetime === null
+      ? null
+      : `Expires: ${lifetimeText(connection.token_lifetime)}, refreshed by Switch`;
+  return way.expires === 'vendor'
+    ? `Expires: on the date you set in ${connection.name}`
+    : `Never expires; only ${connection.name} can revoke it`;
+}
+
+/**
+ * What a paste sends: each of the method's fields, trimmed, and what was
+ * picked for the sign-in's choices; null while a field is empty or a choice
+ * is not picked (`choices` null), which keeps the dialog from sending it.
+ */
+export function pasteReady(
+  method: ServicePasteMethod,
+  values: Record<string, string>,
+  choices: Record<string, string> | null
+): ServicePaste | null {
+  if (choices === null) return null;
+  const fields: Record<string, string> = {};
+  for (const field of method.fields) {
+    const value = (values[field.name] ?? '').trim();
+    if (value === '') return null;
+    fields[field.name] = value;
+  }
+  return { method: method.method, fields, choices };
+}
+
+/**
+ * The method to paste a new credential with, for a connection whose pasted
+ * one the service refused (`token_refused`): its own, where the server still
+ * offers it; null otherwise, and for any other connection.
+ */
+export function pasteAgainMethod(
+  connection: Pick<ConnectionCatalogEntry, 'reconnect_code' | 'method' | 'paste'>
+): PasteMethodName | null {
+  if (connection.reconnect_code !== 'token_refused') return null;
+  return connection.paste.find((offered) => offered.method === connection.method)?.method ?? null;
 }
 
 /**

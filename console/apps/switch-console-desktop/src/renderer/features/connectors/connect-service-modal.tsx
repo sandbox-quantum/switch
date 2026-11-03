@@ -71,6 +71,7 @@ export function ConnectServiceModal({
     <ServiceConnectStep
       calls={calls}
       connection={connection}
+      startOn={null}
       onBack={onClose}
       onConnected={connected}
     />
