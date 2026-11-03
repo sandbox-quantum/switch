@@ -354,8 +354,9 @@ jobs:
         run: >-
           node -e "const {spawnSync}=require('node:child_process');
           const e={...process.env}; const v=e.PATH; delete e.PATH; e.Path=v;
-          const r=spawnSync('pnpm exec vitest run --project node src/main/core/managed-switch-server/native/postgres-cluster.windows',
-          {env:e, stdio:'inherit', shell:true}); process.exit(r.status ?? 1)"
+          const r=spawnSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--project', 'node',
+          'src/main/core/managed-switch-server/native/postgres-cluster.windows'],
+          {env:e, stdio:'inherit'}); process.exit(r.status ?? 1)"
 
   artifacts:
     name: Artifact registry
