@@ -687,6 +687,67 @@ describe('room creation', () => {
     expect(room.ownerId).toBe('u1');
   });
 
+  it('asks for a private channel, a group and an access level when chosen', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_private',
+        agent_count: 0,
+        bridge_display_name: 'Slack',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: 'b1',
+      agentIds: [],
+      channel: { kind: 'new', private: true },
+      groupId: 'g1',
+      access: 'read_only',
+    });
+
+    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({
+      channel_type: 'channel_private',
+      group_id: 'g1',
+      read_visibility: 'public',
+      write_visibility: 'private',
+    });
+  });
+
+  it('binds an existing channel by id and leaves its type and access to the server', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_public',
+        agent_count: 0,
+        bridge_display_name: 'Slack',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: 'b1',
+      agentIds: [],
+      channel: { kind: 'existing', externalChannelId: 'C123' },
+    });
+
+    const body = bodyOf(fetchMock.mock.calls[0]);
+    expect(body).toMatchObject({ external_channel_id: 'C123' });
+    expect(body).not.toHaveProperty('channel_type');
+    expect(body).not.toHaveProperty('read_visibility');
+    expect(body).not.toHaveProperty('group_id');
+  });
+
   it('sends blank instructions as null rather than an empty string', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({

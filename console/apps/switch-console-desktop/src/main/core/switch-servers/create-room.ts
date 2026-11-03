@@ -42,6 +42,9 @@ export async function createRoomOnServer(
       instructions: params.instructions,
       bridgeId: params.bridgeId,
       agentIds: params.agentIds,
+      channel: params.channel,
+      groupId: params.groupId,
+      access: params.access,
     });
     return { kind: 'created', room };
   } catch (cause) {

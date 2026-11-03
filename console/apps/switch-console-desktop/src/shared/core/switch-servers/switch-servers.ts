@@ -1204,7 +1204,18 @@ export type CreateRoomParams = {
   /** Switch agent ids to add as members. May be empty — a room is valid with
    * no agents, and members can be invited later. */
   agentIds: string[];
+  /** The bridged room's channel: a new one, public unless asked, or an existing one by its id. */
+  channel?: NewRoomChannel;
+  /** The group to file the room under; none when absent. */
+  groupId?: string | null;
+  /** Who may see and change the room; the server's default when absent. */
+  access?: RoomAccess;
 };
+
+/** A bridged room's channel, as the New room dialog asks for it. */
+export type NewRoomChannel =
+  | { kind: 'new'; private: boolean }
+  | { kind: 'existing'; externalChannelId: string };
 
 /**
  * Outcome of creating a room. `created` carries the new room; every other

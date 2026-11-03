@@ -34,12 +34,16 @@ import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { CreateRoomOptions } from './create-room-options';
 import { MessagingAppSelector, SWITCH_CONSOLE } from './messaging-app-selector';
 import {
   CreateRequestIds,
   canCreate,
+  DEFAULT_ROOM_OPTIONS,
   dropsStartingAgent,
+  type RoomCreateOptions,
   roomCreateRequest,
+  roomOptionsReady,
   startingAgentResolution,
 } from './room-create-request';
 import { RoomNameInput } from './room-name-input';
@@ -81,6 +85,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const [description, setDescription] = useState('');
   const [instructions, setInstructions] = useState('');
   const [where, setWhere] = useState(SWITCH_CONSOLE);
+  const [options, setOptions] = useState<RoomCreateOptions>(DEFAULT_ROOM_OPTIONS);
   const [picked, setPicked] = useState<Participant[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -184,6 +189,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     startingAgentState !== 'pending' &&
     !nowhere &&
     canCreate({ name }) &&
+    (selectedBridge === null || roomOptionsReady(options)) &&
     !isSubmitting;
 
   async function handleSubmit() {
@@ -204,6 +210,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         agentIds,
         memberUserIds,
         requestId: requestIds.for({ bridgeId, name, agentIds, memberUserIds }),
+        options,
       });
       if (request.kind === 'chat') {
         const chat = await rpc.chats.create(request.params);
@@ -279,9 +286,9 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             />
             {/* What the name becomes, where it becomes it: a bridged room is a
                 channel of the same name in its app. */}
-            {trimmedName !== '' && selectedBridge && (
+            {trimmedName !== '' && selectedBridge && options.channel.kind === 'new' && (
               <span className="text-xs text-foreground-muted">
-                Created as #{trimmedName} in {selectedBridge.displayName}.
+                {`Created as ${options.channel.private ? 'private ' : ''}#${trimmedName} in ${selectedBridge.displayName}.`}
               </span>
             )}
           </Field>
@@ -343,6 +350,15 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                   rows={3}
                 />
               </Field>
+              <CreateRoomOptions
+                workspaceId={workspaceId}
+                bridge={selectedBridge}
+                value={options}
+                onChange={(next) => {
+                  setOptions(next);
+                  setError(null);
+                }}
+              />
             </>
           )}
 
