@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { LogOut, Pencil, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
@@ -98,6 +98,12 @@ const Account = observer(function Account({
 function DisplayName({ serverId, name }: { serverId: string; name: string }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
+  const input = useRef<HTMLInputElement>(null);
+  // The field is the same element read-only and editable, so it is focused
+  // here rather than by autoFocus, which only acts when an element mounts.
+  useEffect(() => {
+    if (editing) input.current?.select();
+  }, [editing]);
   const save = useMutation({
     mutationFn: () => rpc.switchServers.updateMyName({ serverId, name: draft.trim() }),
     onSuccess: async () => {
@@ -123,10 +129,10 @@ function DisplayName({ serverId, name }: { serverId: string; name: string }) {
       <div className="flex max-w-md items-center gap-2">
         <Input
           id="account-name"
+          ref={input}
           value={editing ? draft : name}
           readOnly={!editing}
           maxLength={255}
-          autoFocus={editing}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Escape') setEditing(false);
