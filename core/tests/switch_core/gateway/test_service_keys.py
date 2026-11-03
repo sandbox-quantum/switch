@@ -211,6 +211,8 @@ class TestConnect:
             )
         entry = next(e for e in listed.json()["connections"] if e["slug"] == "example")
         assert (entry["method"], entry["choices"]) == ("keys", {})
+        # A key connection has no sign-in level, so nothing is said in its place.
+        assert entry["access_note"] is None
 
     async def test_a_key_is_neither_checked_nor_stored(
         self, service, vendor: KeyVendor
