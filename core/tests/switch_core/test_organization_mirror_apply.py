@@ -71,6 +71,7 @@ def _revocation(session_factory: async_sessionmaker[AsyncSession]) -> AccessRevo
             keyring=_KEYRING,
             catalog=CATALOG,
             adapters={},
+            organization_apps=None,
             disabled={},
             store=ServiceConnectionStore(),
             token_retention=timedelta(days=30),
