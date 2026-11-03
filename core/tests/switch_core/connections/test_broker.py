@@ -1432,7 +1432,7 @@ class TestPassThrough:
             warning = await pt.broker.finish_disconnect(
                 session,
                 pt.world.owner.id,
-                [("unset", SignIn(ConnectionSecret({}), None, {}))],
+                [("unset", SignIn(ConnectionSecret({}), None, {}, "oauth"))],
             )
         assert warning is not None
         assert "unset is not set up here" in warning
@@ -1475,7 +1475,7 @@ class TestPassThrough:
         )
         await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
 
-        async def refuses(secret: ConnectionSecret) -> None:
+        async def refuses(secret: ConnectionSecret, method: str) -> None:
             raise ServiceAdapterError("Example refused to revoke the sign-in.")
 
         monkeypatch.setattr(pt.vendor, "revoke_connection", refuses)
@@ -2061,7 +2061,7 @@ class TestReplacedClient:
     ) -> None:
         world = await _world(session_factory)
 
-        async def refused(secret: object) -> None:
+        async def refused(secret: object, method: str) -> None:
             raise ServiceAdapterError("GitHub answered 500.")
 
         vendor.revoke_connection = refused  # type: ignore[method-assign]

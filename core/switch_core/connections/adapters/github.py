@@ -296,7 +296,7 @@ class GitHubAdapter:
         except GitHubError as error:
             raise _vendor_error(error) from None
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None:
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> None:
         token = secret.access_token
         if token is None:
             return

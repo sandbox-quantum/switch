@@ -41,6 +41,7 @@ from tests.switch_core.connections.fake_datadog import (
     WRITE_PERMISSIONS,
     FakeDatadog,
 )
+from tests.switch_core.connections.standing import reconnect_reason
 from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.management.harness import (
     Harness,
@@ -528,43 +529,65 @@ NEVER_EXPIRES = (
 )
 
 
-class TestKeysConnectedBefore:
-    """A connection made with Datadog's API and application keys, when Datadog
-    was connected with keys, is never used where the server does not allow
-    keys that never expire."""
+CONNECTED_BEFORE = "Datadog was connected before it asked for a site."
+FORGOTTEN_KEYS = (
+    "Switch has forgotten the pasted Datadog keys but cannot revoke them. "
+    "Revoke them in Datadog to stop them working."
+)
 
-    async def test_reads_as_needing_reconnecting_and_is_never_used(
-        self, session_factory
-    ) -> None:
-        world = _world(session_factory, public_url=None, named=None)
-        ada = await add_member(session_factory, "ada")
-        token = json.dumps(
-            {
-                "secret": {"api_key": "SYNTHETIC-KEY", "application_key": "SYNTHETIC"},
-                "public": {"site": "datadoghq.eu"},
-            },
-            separators=(",", ":"),
-            sort_keys=True,
+
+async def _connected_with_keys_before(
+    session_factory: async_sessionmaker[AsyncSession], owner: User
+) -> None:
+    """A connection made with Datadog's API and application keys when Datadog
+    was connected with keys: its row names no site, and its secret records
+    neither the method nor the choices, only the site inside its token."""
+    token = json.dumps(
+        {
+            "secret": {"api_key": "SYNTHETIC-KEY", "application_key": "SYNTHETIC"},
+            "public": {"site": "datadoghq.eu"},
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    async with session_factory() as session:
+        await STORE.save_connection(
+            session,
+            user_id=owner.id,
+            service="datadog",
+            consent="write",
+            granted_scopes=[],
+            account_id="dd-key",
+            external_identity="Datadog key · datadoghq.eu",
+            encrypted_secret=TEST_KEYRING.encrypt(json.dumps({"access_token": token})),
+            oauth_client_id=None,
+            method="keys",
+            choices={},
         )
+        await session.commit()
+
+
+class TestKeysConnectedBefore:
+    """A connection made with Datadog's API and application keys before
+    Datadog asked for a site is not filled in from its secret: it must be
+    made again, whether or not the server allows keys that never expire."""
+
+    @pytest.mark.parametrize("allow_non_expiring_keys", [False, True])
+    async def test_reads_as_needing_reconnecting_and_is_never_used(
+        self, session_factory, allow_non_expiring_keys
+    ) -> None:
+        world = _world(
+            session_factory,
+            public_url=None,
+            named=None,
+            allow_non_expiring_keys=allow_non_expiring_keys,
+        )
+        ada = await add_member(session_factory, "ada")
+        await _connected_with_keys_before(session_factory, ada)
         async with session_factory() as session:
-            await STORE.save_connection(
-                session,
-                user_id=ada.id,
-                service="datadog",
-                consent="write",
-                granted_scopes=[],
-                account_id="dd-key",
-                external_identity="Datadog key · datadoghq.eu",
-                encrypted_secret=TEST_KEYRING.encrypt(
-                    json.dumps({"access_token": token})
-                ),
-                oauth_client_id=None,
-                method="keys",
-                choices={},
-            )
-            await session.commit()
             agent = await _grant(session, ada, "dd-key")
             agent_id = agent.id
+            # Its grant is kept, and left out of every session's grants.
             assert (
                 await world.broker.grants_for(session, agent, Principal.agent_key())
                 == []
@@ -581,8 +604,8 @@ class TestKeysConnectedBefore:
                     resources={},
                 )
         assert (regranted.value.status_code, regranted.value.message) == (
-            422,
-            NEVER_EXPIRES,
+            409,
+            f"{CONNECTED_BEFORE} Reconnect Datadog under Connectors first.",
         )
         async with world.harness.client() as client:
             listed = next(
@@ -597,16 +620,73 @@ class TestKeysConnectedBefore:
         assert (
             listed["status"],
             listed["method"],
+            listed["choices"],
             listed["reconnect_code"],
             listed["reconnect_reason"],
-        ) == ("needs_reauthorization", "keys", "method_not_offered", NEVER_EXPIRES)
+        ) == (
+            "needs_reauthorization",
+            "keys",
+            {},
+            "choices_missing",
+            f"{CONNECTED_BEFORE} Connect it again.",
+        )
         async with session_factory() as session:
             with pytest.raises(ServiceError) as refused:
                 await world.broker.issue(
                     session, agent_id, Principal.agent_key(), "datadog"
                 )
-        assert (refused.value.status_code, refused.value.message) == (
-            403,
-            NEVER_EXPIRES,
+        assert (refused.value.status_code, refused.value.code) == (
+            409,
+            "connector_revoked",
         )
+        assert refused.value.message == (
+            f"{CONNECTED_BEFORE} The agent's owner must reconnect Datadog from "
+            "Connectors in Switch Console."
+        )
+        async with session_factory() as session:
+            with pytest.raises(ServiceError) as owners:
+                await world.broker.connection_access_token(session, ada.id, "datadog")
+        assert owners.value.message == (
+            f"{CONNECTED_BEFORE} Reconnect Datadog from Connectors in Switch Console."
+        )
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        # Nothing was filled in, and Datadog was never called.
+        assert (connection.status, connection.choices) == ("active", {})
         assert all(not site.paths for site in world.datadog.sites.values())
+
+    async def test_disconnecting_it_says_switch_cannot_revoke_the_keys(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, public_url=None, named=None)
+        ada = await add_member(session_factory, "ada")
+        await _connected_with_keys_before(session_factory, ada)
+        async with world.harness.client() as client:
+            removed = await client.delete(
+                "/gateway/service-connections/datadog", cookies=cookies_for(ada)
+            )
+
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["warning"] == FORGOTTEN_KEYS
+        assert await _connection(session_factory, ada.id) is None
+
+    async def test_signing_in_replaces_it_and_says_switch_cannot_revoke_the_keys(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, public_url=None, named=None)
+        ada = await add_member(session_factory, "ada")
+        await _connected_with_keys_before(session_factory, ada)
+        async with world.harness.client() as client:
+            completed = await _connect(
+                world, Console(client, ada), "datadoghq.eu", full=True
+            )
+
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["warning"] == FORGOTTEN_KEYS
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.method, connection.choices) == (
+            "oauth",
+            {"site": "datadoghq.eu"},
+        )
+        assert await reconnect_reason(world.broker, connection) is None
