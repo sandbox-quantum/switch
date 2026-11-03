@@ -1,0 +1,118 @@
+slug: azure-devops
+name: Azure DevOps
+category: Source control
+description: Read and update Azure DevOps work items, repos and pipelines, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Entra hands out a new refresh token on each refresh and does not revoke
+  # the one it was given (documented, not measured).
+  refresh: reusable
+  oauth:
+    # Entra ID offers no dynamic client registration, so each server's
+    # operator registers a Microsoft Entra app (a Web client with a secret)
+    # and saves it under Connector apps, or names its settings in
+    # AZURE_DEVOPS_CLIENT_CONFIG_PATH. The app must accept accounts in any
+    # organizational directory: the endpoints below are Entra's multi-tenant
+    # `organizations` ones, so there is no per-tenant setting.
+    #
+    # What the vendor needs turned on, in each tenant whose people connect:
+    # - The Azure DevOps organization is backed by that Microsoft Entra
+    #   tenant. Organizations of personal Microsoft accounts are refused, and
+    #   so are guest (B2B) accounts, which the server takes only on an
+    #   organization's own URL.
+    # - The "Azure DevOps MCP" enterprise application (app id
+    #   2a72489c-aab2-4b65-b93a-a91edccf33b8) exists in the tenant. Where it
+    #   does not, an Application Administrator creates it with
+    #   `az ad sp create --id 2a72489c-aab2-4b65-b93a-a91edccf33b8`.
+    # - The operator's app holds the delegated permissions named under
+    #   access, and Microsoft Graph's offline_access, and an administrator
+    #   granted admin consent for them.
+    # - Location-based Conditional Access allows the server's addresses,
+    #   20.125.155.22 and 40.74.28.81.
+    registration: static
+    client_settings: AZURE_DEVOPS
+    # Back to Core's own callback, as Google's and Airtable's. Its Web
+    # redirect URI is <GATEWAY_PUBLIC_URL>/gateway/service-connections/azure-devops/flows/callback.
+    redirect: [core]
+    # Named, not discovered: Entra's metadata does not list its PKCE methods,
+    # which discovery requires. With named endpoints no RFC 8707 `resource`
+    # goes with the scopes, which Entra refuses (AADSTS9010010).
+    authorization_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize
+    token_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/token
+    # Not consent: the permissions are admin-consented, and a person who may
+    # not consent for themselves would be stopped by the prompt. The account
+    # chooser comes first, so a browser signed in to another Microsoft
+    # account does not pick it unasked.
+    prompt: select_account
+    unchecked: >-
+      Switch can't check the redirect URI, the app's Azure DevOps MCP
+      permissions or the tenant's admin consent. Connect once to confirm.
+    # Entra has no revocation endpoint. Its refresh tokens last 90 days past
+    # their last use unless revoked; access tokens already handed out last
+    # until they expire.
+    remove_access: >-
+      Ask your Microsoft Entra administrator to revoke your sign-in sessions
+      (Revoke sessions, on your user in the Microsoft Entra admin center).
+      Until then, or until it lapses after 90 days unused, the sign-in still
+      works.
+  identity:
+    # Azure DevOps' own profile service, asked with the MCP server's token.
+    # Unverified: the token is issued for the MCP server, and this service
+    # may refuse a token issued for another audience.
+    url: https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1
+    account_id: id
+    label: emailAddress
+# Entra documents a default access-token lifetime of 60 to 90 minutes, chosen
+# at random per token, for APIs registered in a tenant; Azure DevOps MCP is
+# Microsoft's own API, which that page leaves out. Not measured. A longer one
+# is held back until it has run down to 90 minutes.
+token: { kind: pass_through, max_lifetime: 5400 }
+mcp:
+  servers:
+    # The organization-free address: the connection reaches every
+    # organization the person can, and each tool call names the one it acts
+    # on. The host is fixed, so nothing a person types becomes part of it.
+    - { name: azure-devops, url: "https://mcp.dev.azure.com/" }
+access:
+  # The Azure DevOps MCP API's delegated permissions, under the resource the
+  # server advertises (https://mcp.dev.azure.com/.default in its protected
+  # resource metadata). A call succeeds only where both the permission and
+  # the person's own Azure DevOps permissions allow it. Microsoft's pages do
+  # not list the permission names; these are as the API exposes them in a
+  # tenant, and unverified here: Ado.Mcp.Tools is the server's own, and each
+  # area has read, write and manage. Only work items (wit), repos and
+  # pipelines are asked for; not manage, the widest of each area, nor wiki,
+  # work, testplan, advsec or elm (Enterprise Live Migration). Their tools
+  # still pass through, and Azure DevOps refuses them.
+  #
+  # Unverified: the level is read by comparing these with the scopes Entra's
+  # token answer names, and Entra's own example answer leaves offline_access
+  # out of them.
+  #
+  # Entra's consent takes every scope asked for or none, so each connection
+  # takes the write level; read records what reading alone needs. Writing
+  # reaches the server's write tools in those areas: creating, updating,
+  # linking and commenting on work items (closing one is an update); creating
+  # branches and pull requests, commenting and voting; queuing, cancelling
+  # and retrying pipeline runs and creating pipeline definitions. The server
+  # has no tool that deletes a work item, repository or pipeline.
+  read:
+    scopes:
+      - https://mcp.dev.azure.com/Ado.Mcp.Tools
+      - https://mcp.dev.azure.com/wit.read
+      - https://mcp.dev.azure.com/repos.read
+      - https://mcp.dev.azure.com/pipelines.read
+      - offline_access
+  write:
+    scopes:
+      - https://mcp.dev.azure.com/Ado.Mcp.Tools
+      - https://mcp.dev.azure.com/wit.read
+      - https://mcp.dev.azure.com/wit.write
+      - https://mcp.dev.azure.com/repos.read
+      - https://mcp.dev.azure.com/repos.write
+      - https://mcp.dev.azure.com/pipelines.read
+      - https://mcp.dev.azure.com/pipelines.write
+      - offline_access
+tools: { mode: pass_through }

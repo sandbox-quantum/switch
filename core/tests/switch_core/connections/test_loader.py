@@ -8,6 +8,7 @@ from switch_core.connections.loader import (
     MAX_SKILL_BYTES,
     CatalogError,
     load_catalog,
+    template_fields,
 )
 
 PLACEHOLDERS = {
@@ -25,17 +26,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_its_connectors_and_keeps_the_rest_placeholders():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "github",
         "google-workspace",
@@ -44,6 +47,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["azure-devops"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -225,6 +229,90 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+AZURE_DEVOPS_MCP = "https://mcp.dev.azure.com/"
+
+
+def test_the_shipped_azure_devops_entry_signs_in_as_microsoft_documents_it():
+    definition = CATALOG["azure-devops"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Entra offers no dynamic registration, so each server's operator
+    # registers an Entra app, and sign-ins come back to Core's own callback.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "AZURE_DEVOPS"
+    assert oauth.loopback_ports is None
+    # Named on Entra's multi-tenant endpoint rather than discovered: Entra's
+    # metadata lists no PKCE methods, and a discovered endpoint would send a
+    # `resource` Entra refuses beside the scopes.
+    assert (oauth.authorization_url, oauth.token_url) == (
+        "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+        "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+    )
+    # Admin-consented permissions: asking for consent again would stop
+    # people who may not consent for themselves.
+    assert oauth.prompt == "select_account"
+    assert oauth.authorization_params == {}
+    # Entra has no revocation endpoint, so people are told how to remove it.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None and "Revoke sessions" in oauth.remove_access
+    assert oauth.unchecked is not None and "admin consent" in oauth.unchecked
+    # Entra's refresh tokens survive their use.
+    assert definition.auth.refresh == "reusable"
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == (
+        "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1"
+    )
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "id",
+        "emailAddress",
+    )
+    assert definition.token is not None
+    # Entra's default access tokens live 60 to 90 minutes.
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        90 * 60,
+    )
+    # The organization-free server: each call names its organization, and no
+    # field anyone types reaches the URL.
+    assert definition.mcp is not None and definition.cli is None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("azure-devops", AZURE_DEVOPS_MCP)
+    ]
+    assert template_fields(definition.mcp.servers[0].url) == []
+    assert definition.auth.api_key is None
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+
+
+def test_the_shipped_azure_devops_entry_asks_only_for_work_items_repos_and_pipelines():
+    access = CATALOG["azure-devops"].definition.access
+    assert access is not None and access.write is not None
+    # The Azure DevOps MCP server's own permissions, named one by one: never
+    # .default, which takes whatever the operator's app holds, nor manage,
+    # nor the wiki, test plan, iteration, security or migration areas.
+    # offline_access, for a refresh token, is Entra's own.
+    read = ["Ado.Mcp.Tools", "wit.read", "repos.read", "pipelines.read"]
+    assert access.read.scopes == [
+        *(AZURE_DEVOPS_MCP + name for name in read),
+        "offline_access",
+    ]
+    assert access.write.scopes == [
+        AZURE_DEVOPS_MCP + name
+        for name in [
+            "Ado.Mcp.Tools",
+            "wit.read",
+            "wit.write",
+            "repos.read",
+            "repos.write",
+            "pipelines.read",
+            "pipelines.write",
+        ]
+    ] + ["offline_access"]
 
 
 @pytest.fixture
