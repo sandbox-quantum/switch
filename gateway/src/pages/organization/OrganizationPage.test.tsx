@@ -211,6 +211,7 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
     });
 
     render(<OrganizationPage />);

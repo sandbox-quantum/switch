@@ -426,7 +426,7 @@ async def list_organization_issues(
     (`organization_issues.py`), read from how things stand rather than from
     the audit log, so an issue is gone once fixed. `org_admin` only, and the
     platform operator while the organization has none."""
-    access = await _require_organization_admin(
+    access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
     issues, admins = await organization_wide_issues(session, access.organization_id)
