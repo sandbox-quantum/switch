@@ -52,6 +52,19 @@ _UPSTREAM = (
     "9d41b7e2c6a3",  # organization audit events
 )
 
+# Main's 8 revisions between `473c2e64b` and `0f7f96732`, which the merge
+# head `_HEAD` brings in beside ours. Checked by being on the upgrade's path.
+_MAIN = (
+    "f2a9c7d41e08",  # announce each message's type
+    "bad5099ef32b",  # auth_rows_notify
+    "063652bcb450",  # index room_agents on agent_id
+    "4103210581d6",  # room_access_notify
+    "ad15e53358fe",  # announce after commit
+    "3b81c0e5d9a7",  # external user link requests
+    "22e1d92cfd4c",  # drop older links to shared accounts
+    _MAIN_HEAD,  # organization connector apps
+)
+
 # (revision, what to look for, SQL returning 1 when it is there)
 _OBJECTS = (
     (
@@ -223,8 +236,9 @@ async def test_a_fresh_database_upgrades_to_the_head(postgres_url: str) -> None:
 async def test_the_test_servers_database_upgrades_through_both_chains(
     postgres_url: str,
 ) -> None:
-    """Stopped at `a90e3df4fe3f`, as the test server is: the next upgrade runs
-    our `e11b7c3d9a2f`, all 12 of upstream's and the merge, and nothing else."""
+    """Stopped at `a90e3df4fe3f`, as the test server was: the next upgrade runs
+    our `e11b7c3d9a2f`, all 12 of upstream's and their merge, main's 8 and the
+    merge with main, and nothing else."""
     engine = await _engine(postgres_url)
     try:
         async with engine.begin() as connection:
@@ -236,8 +250,14 @@ async def test_the_test_servers_database_upgrades_through_both_chains(
         ran: list[str] = []
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade("head", ran))
-        assert set(ran) == {*_UPSTREAM, _OURS_AFTER_TEST_SERVER, _HEAD}
-        assert len(ran) == len(_UPSTREAM) + 2
+        assert set(ran) == {
+            *_UPSTREAM,
+            _OURS_AFTER_TEST_SERVER,
+            _UPSTREAM_MERGE,
+            *_MAIN,
+            _HEAD,
+        }
+        assert len(ran) == len(_UPSTREAM) + len(_MAIN) + 3
         assert ran[-1] == _HEAD
         assert await _version(engine) == [_HEAD]
         assert await _missing(engine) == []

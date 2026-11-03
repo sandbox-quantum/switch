@@ -193,6 +193,7 @@ def _wire(monkeypatch, tmp_path, tenants_json: str | None):
         controller_release=None,
         agent_auth_cache_ttl_seconds=1,
         agent_auth_cache_max_entries=16,
+        controller_auth_cache_max_agents=16,
         hosted_controller_config_path=path,
         hosted_wait_limit_minutes=10,  # visibility V2's wait limit, sent in every status answer
     )
@@ -275,6 +276,7 @@ def test_the_cloud_machine_list_never_narrows_agent_management(monkeypatch, tmp_
         controller_release=None,
         agent_auth_cache_ttl_seconds=1,
         agent_auth_cache_max_entries=16,
+        controller_auth_cache_max_agents=16,
         hosted_controller_config_path=str(file),
         hosted_wait_limit_minutes=10,  # visibility V2's wait limit, sent in every status answer
     )
