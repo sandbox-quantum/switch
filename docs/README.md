@@ -28,6 +28,8 @@ the one users act on.
 
 ## Reference pages at this level
 
+- [`agent-controller-guide.md`](agent-controller-guide.md): install and operate
+  the headless agent controller on a server or workstation.
 - [`TEMPLATES.md`](TEMPLATES.md): the template language, the one YAML
   document that describes agents and rooms to create and the params a
   deployer fills in. The bundled Switch expert (`switch-expert/template.yaml`)

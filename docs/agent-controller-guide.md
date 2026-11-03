@@ -57,6 +57,13 @@ switch-agent-controller enroll \
   --description "Build agents"
 ```
 
+If the installer says its bin directory is not on `PATH`, add the printed
+directory before running these commands. For the common `$HOME/.local` fallback:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
 The name defaults to the machine's host name. The description is optional and
 can be changed later in the gateway. On Windows, Switch Console manages the
 controller; the shell installer and `install-service` command are not
@@ -102,9 +109,12 @@ later command, for example `switch-agent-controller status --data-dir /srv/sw`.
 
 ## Sign in to provider CLIs
 
-The service uses the provider login available to its operating system user.
-Sign in to the provider CLI before installing the service, then confirm it is
-on that user's `PATH`.
+In the default mode, the service uses the provider login available to the
+controller's operating system user. Sign in to the provider CLI before
+installing the service, then confirm it is on that user's `PATH`. With Linux
+`--separate-users`, agents run under isolated users and cannot use the
+controller user's local CLI login. Install provider CLIs system-wide and put
+provider API keys or settings in the service environment file.
 
 For API keys or cloud provider settings, put the required variables in a
 private environment file and pass it when installing the service:
@@ -129,6 +139,13 @@ after changing it. Do not put keys in a shell command, share the file, or commit
 it to a repository. To check provider readiness with the same file, run
 `switch-agent-controller doctor --env-file /path/to/agents.env`.
 
+For Linux `--separate-users`, pass the file when installing the service. The
+controller supplies its provider settings to the agent users:
+
+```bash
+sudo switch-agent-controller install-service --separate-users --env-file /path/to/agents.env
+```
+
 ## Agent isolation and workspaces
 
 An agent's isolation mode is set in its Switch definition:
@@ -145,8 +162,8 @@ with separate directories; it requires systemd, polkit, root access, and
 system-wide Node and provider installations. See the controller package README
 for the setup and removal commands.
 
-When an agent definition does not specify a working directory, its workspace
-is created under:
+In the default shared-user mode, when an agent definition does not specify a
+working directory, its workspace is created under:
 
 ```text
 ~/.switch/agents/<server-host>/<agent-name>
@@ -155,8 +172,16 @@ is created under:
 The server folder is based on its host name; a local server such as
 `http://localhost:8000` uses `localhost-8000`.
 
-The controller's state directory is separate and contains its database,
-credential, and agent runtime state. It defaults to:
+With Linux `--separate-users`, workspaces instead live under
+`/var/lib/switch-agents/<controller-uid>/agent/`; each agent gets its own
+directory there. The base path changes if you set `--agents-dir` during setup.
+
+The controller's data directory holds its database and service state. In the
+default shared-user mode it also holds agent runtime state. A file-stored
+controller credential is kept there on Linux by default; with the `keychain` or
+`secret-service` store, the credential is in the OS keychain or keyring instead.
+Back up that store separately if you need to preserve the credential. The data
+directory defaults to:
 
 | Operating system | State directory                                                                        |
 | ---------------- | -------------------------------------------------------------------------------------- |
@@ -165,8 +190,11 @@ credential, and agent runtime state. It defaults to:
 | Windows          | `%LOCALAPPDATA%\Switch\agent-controller`                                               |
 
 Set `SWITCH_CONTROLLER_DATA_DIR` or pass `--data-dir` to use another location.
-Keep the state directory private and back it up if you need to preserve local
-controller and agent state.
+Keep the data directory private and back it up for local controller state. In
+Linux `--separate-users` mode, also back up the agents directory (default
+`/var/lib/switch-agents/<controller-uid>`), which holds agent homes and
+workspaces. The service environment file may contain provider secrets; back it
+up securely if needed.
 
 ## Update
 
@@ -196,9 +224,9 @@ in the state directory.
 
 | Reason                                       | What to check or fix                                                                                                                                                                                                                |
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider_not_installed`                     | Install the provider CLI for the controller user and make sure it is on that user's `PATH`. Reinstall the service if its `PATH` changed.                                                                                            |
+| `provider_not_installed`                     | In default mode, install the provider CLI for the controller user and make sure it is on that user's `PATH`. With Linux `--separate-users`, install CLIs system-wide.                                                               |
 | `provider_version_unsupported`               | Upgrade the provider CLI to a supported version.                                                                                                                                                                                    |
-| `provider_login_missing`                     | Sign in as the controller user or configure the provider's API key in the service environment file.                                                                                                                                 |
+| `provider_login_missing`                     | In default mode, sign in as the controller user or configure the provider in the service environment file. With Linux `--separate-users`, use system-wide provider CLIs and provide credentials/settings in that file.              |
 | `provider_login_expired`                     | Renew the provider login or key, then run `doctor` again.                                                                                                                                                                           |
 | `definition_invalid`                         | Correct the agent's provider settings or working directory in Switch. A custom working directory must exist.                                                                                                                        |
 | `capacity_exceeded`                          | Stop or move an agent, or increase the configured separate-user pool.                                                                                                                                                               |
