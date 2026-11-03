@@ -791,6 +791,30 @@ class TestGitHubReadOnly:
             "connector_app.saved"
         ]
 
+    async def test_a_check_that_fails_the_read_level_stores_nothing(
+        self, world: World, operator, session_factory
+    ) -> None:
+        """A save would have refused those permissions, so a check keeps
+        what was saved rather than store them."""
+        await world.install()
+        world.github.permissions = {"contents": "read", "pull_requests": "read"}
+        async with world.harness.client() as client:
+            cookies = cookies_for(operator)
+            saved = await client.put(
+                f"{APPS}/github", json=_github_body(world), cookies=cookies
+            )
+            assert saved.status_code == 200, saved.text
+            [before] = await _rows(session_factory)
+            world.github.permissions = {"contents": "write"}
+            checked = await client.post(f"{APPS}/github/check", cookies=cookies)
+        assert checked.status_code == 200, checked.text
+        assert checked.json()["ok"] is False
+        [after] = await _rows(session_factory)
+        assert (after.settings, after.updated_at) == (
+            before.settings,
+            before.updated_at,
+        )
+
     async def test_an_app_from_configuration_is_taken_to_write(
         self, world: World, operator, session_factory, tmp_path: Path
     ) -> None:

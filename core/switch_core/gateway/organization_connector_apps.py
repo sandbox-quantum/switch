@@ -62,6 +62,7 @@ from switch_core.gateway.connector_apps import (
     checked_save,
     checks_body,
     entry_body,
+    fields_changed,
     get_connector_apps,
     refuse_while_blocked,
     saved_app,
@@ -347,6 +348,7 @@ async def check_organization_connector_app(
     service: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
+    organization_apps: Annotated[OrganizationApps, Depends(get_organization_apps)],
     store: Annotated[
         OrganizationAppCredentialStore, Depends(get_organization_app_store)
     ],
@@ -354,7 +356,9 @@ async def check_organization_connector_app(
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> dict[str, Any]:
-    """Ask the vendor about the organization's app; nothing is stored."""
+    """Ask the vendor about the organization's app. What it says of an app
+    that passes the check is stored again where it changed, and in use at
+    once, as the server's check does."""
     organization_id = await _admin_of(session, user_store, organization_store, user)
     spec = app_spec(apps, service)
     refuse_while_blocked(spec, apps.public_url)
@@ -366,9 +370,28 @@ async def check_organization_connector_app(
         raise HTTPException(
             409, read.load_error or f"{spec.name}'s app cannot be read."
         )
-    result = await check_values(
-        apps, spec, read.values, saved_app_redirects(apps, spec)
-    )
+    values = read.values
+    result = await check_values(apps, spec, values, saved_app_redirects(apps, spec))
+    if result.ok and result.settings and result.settings != values.settings:
+        recorded = await store.record_settings(
+            session,
+            organization_id=organization_id,
+            service=service,
+            client_id=values.client_id,
+            settings=result.settings,
+            updated_by=user.id,
+        )
+        await session.commit()
+        if recorded is not None:
+            organization_apps.changed(organization_id, service)
+            logger.warning(
+                "Checking an organization's %s app stored what the vendor now "
+                "says of it: organization=%s user=%s fields=%s",
+                spec.name,
+                organization_id,
+                user.id,
+                fields_changed(values, values.client_id, result.settings, {}),
+            )
     return {"ok": result.ok, "checks": checks_body(result)}
 
 
