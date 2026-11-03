@@ -65,7 +65,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog"}
+    assert set(adapters) == {"github", "atlassian", "datadog", "linear"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
@@ -102,6 +102,36 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
         "search:confluence:agent-interface write:jira:agent-interface "
         "write:confluence:agent-interface"
     )
+
+
+def test_linear_needs_no_settings_and_registers_loopback_and_core_redirects() -> None:
+    local_adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    local_adapter = local_adapters["linear"]
+    assert isinstance(local_adapter, OAuthAdapter)
+    assert isinstance(local_adapter._client, RegisteredClient)
+    assert local_adapter._client._request["redirect_uris"] == [
+        "http://127.0.0.1/switch-services/callback"
+    ]
+    assert local_adapter._client._request["scope"] == "read write"
+
+    public_reg = ClientRegistration(
+        session_factory=async_sessionmaker(),
+        keyring=TEST_KEYRING,
+        public_url="https://switch.example.test",
+        server_name="switch.local",
+    )
+    public_adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=public_reg
+    )
+    public_adapter = public_adapters["linear"]
+    assert isinstance(public_adapter, OAuthAdapter)
+    assert isinstance(public_adapter._client, RegisteredClient)
+    assert public_adapter._client._request["redirect_uris"] == [
+        "http://127.0.0.1/switch-services/callback",
+        "https://switch.example.test/gateway/service-connections/linear/flows/callback",
+    ]
 
 
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:
