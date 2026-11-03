@@ -32,6 +32,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "pagerduty",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "pagerduty",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["pagerduty"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -945,6 +948,33 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_pagerduty_entry_pastes_a_key_and_picks_a_region():
+    definition = CATALOG["pagerduty"].definition
+    assert definition.adapter == "api_key"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("api_key", True),
+        ("region", False),
+    ]
+    assert sign_in.choice_names() == {"region"}
+    # PagerDuty's hosted MCP server takes the key in Authorization: Token
+    # token=<key>; EU accounts live under mcp.eu.
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url == "https://mcp.{region}/mcp"
+    assert server.headers == {"Authorization": "Token token={api_key}"}
+    assert sign_in.identity.method == "GET"
+    assert sign_in.identity.url == "https://api.{region}/users/me"
+    assert (sign_in.identity.account_id, sign_in.identity.label) == (
+        "user.id",
+        "user.email",
+    )
+    # A key never expires, so it is never handed to an agent.
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
 
 
 def test_loads_an_api_key_entry(catalog_copy):

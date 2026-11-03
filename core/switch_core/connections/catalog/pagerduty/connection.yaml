@@ -1,0 +1,45 @@
+slug: pagerduty
+name: PagerDuty
+category: Observability
+description: Work with PagerDuty incidents, services, schedules and on-calls, with your key.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: API key
+        secret: true
+        help: User Settings, Create API User Token. A user token acts as you, with your access.
+      - name: region
+        label: Service region
+        secret: false
+        help: The region your PagerDuty account is in.
+        choices:
+          - pagerduty.com
+          - eu.pagerduty.com
+    # Checks the key against the REST API's current user, which a user API
+    # token can read; the hosted MCP server does not support dynamic client
+    # registration, so a key is the simplest shape here.
+    identity:
+      method: GET
+      url: "https://api.{region}/users/me"
+      headers:
+        Authorization: "Token token={api_key}"
+      account_id: user.id
+      label: user.email
+    help_url: https://support.pagerduty.com/main/docs/api-access-keys
+# A key does not expire, and only PagerDuty can revoke it, so it is never
+# handed to an agent: whatever runs beside the agent could keep it for good.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    # The PagerDuty-hosted MCP server takes a user API key in an
+    # Authorization: Token token=<key> header. EU accounts use mcp.eu.
+    - name: pagerduty
+      url: "https://mcp.{region}/mcp"
+      headers:
+        Authorization: "Token token={api_key}"
+tools: { mode: pass_through }
