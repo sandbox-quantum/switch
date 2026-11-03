@@ -32,10 +32,16 @@ function detailKey(workspaceId: string, roomId: string) {
   return ['remote-room-detail', workspaceId, roomId] as const;
 }
 
+/**
+ * The room's read and write access as people read them. Write access is who
+ * may change the room in Switch — its settings, who is in it, its resources —
+ * not who may post: posting in a bridged room is up to its channel. A room
+ * nobody else may read is still readable by whoever takes part in it.
+ */
 export const ACCESS_LABELS: Record<RoomAccess, string> = {
-  public: 'Everyone in the workspace can see and post',
-  read_only: 'Everyone can see it; only the owner and admins post',
-  private: 'Only the owner and admins',
+  public: 'Everyone in the workspace can see and change it',
+  read_only: 'Everyone can see it; only the owner and admins can change it',
+  private: 'Only those taking part and admins can see it; only the owner and admins can change it',
 };
 
 const ACCESS_ORDER: RoomAccess[] = ['public', 'read_only', 'private'];
@@ -54,7 +60,7 @@ function WriteStatus({ state }: { state: WriteState }) {
 }
 
 /**
- * Who may see and post in the room, and the group it is filed under. Each
+ * Who may see and change the room, and the group it is filed under. Each
  * saves as soon as it is picked: a choice from a list is already a decision,
  * unlike half-typed text, so there is nothing to confirm.
  *
@@ -98,7 +104,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
   return (
     <div className="grid grid-cols-2 gap-4">
       <div className="flex flex-col gap-1.5">
-        <span className="text-sm text-foreground-muted">Who can see and post</span>
+        <span className="text-sm text-foreground-muted">Who can see and change it</span>
         {permissions.canManage ? (
           <Select
             value={access}
@@ -116,7 +122,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
               )
             }
           >
-            <SelectTrigger className="w-full" aria-label="Who can see and post">
+            <SelectTrigger className="w-full" aria-label="Who can see and change it">
               <SelectValue>{ACCESS_LABELS[access]}</SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -533,8 +539,8 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
         </h3>
         <p className="text-xs text-foreground-muted">
           {room.archived
-            ? 'Puts the room back in the room lists, with everything in it.'
-            : 'Takes the room out of the room lists and stops agents joining it. Nothing in it is deleted, and you can unarchive it from Your Rooms.'}
+            ? 'Puts the room back in the room lists.'
+            : 'Hides the room from room lists, yours and its agents’. Everything else stays as it is: who is in it, its history and its channel. You can unarchive it from Your Rooms.'}
         </p>
         {error !== null && <p className="text-xs text-destructive">{error}</p>}
       </div>

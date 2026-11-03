@@ -175,7 +175,7 @@ async function type(field: HTMLInputElement | HTMLTextAreaElement, value: string
 describe('room settings for someone who may write to the room', () => {
   it('shows access as a control for its manager, and leaves who is in the room to the side', async () => {
     const el = await renderPanel();
-    expect(el.querySelector('[aria-label="Who can see and post"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Who can see and change it"]')).not.toBeNull();
     expect(el.textContent).toContain('C123');
     expect(el.textContent).not.toContain('Notify on join');
   });
@@ -242,7 +242,7 @@ describe('room settings for someone who may only read the room', () => {
     expect(el.textContent).toContain(
       'Only Ada or a workspace admin can change this room’s settings.'
     );
-    expect(el.querySelector('[aria-label="Who can see and post"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Who can see and change it"]')).toBeNull();
     expect(button(el, /^Add agent$/)).toBeUndefined();
     expect(button(el, /^Archive$/)).toBeUndefined();
     expect(el.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.disabled).toBe(true);

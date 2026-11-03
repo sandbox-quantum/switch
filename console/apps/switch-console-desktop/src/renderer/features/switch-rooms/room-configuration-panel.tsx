@@ -168,7 +168,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
           <RoomHeading serverId={switchRoomsStore.roomServerId(roomId)} room={room} />
           {room.archived && (
             <Notice icon={<Archive className="size-3.5" />}>
-              This room is archived. It is out of the room lists and agents cannot join it.
+              This room is archived, so it is hidden from room lists. Everything in it is kept.
             </Notice>
           )}
           {!permissions.canWrite && (
