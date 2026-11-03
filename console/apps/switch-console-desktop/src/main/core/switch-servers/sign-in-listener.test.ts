@@ -11,7 +11,12 @@ it.each([
   [
     'access_denied',
     'The user has denied your application access.',
-    'Example refused the sign-in: The user has denied your application access.',
+    'Example sign-in was cancelled or refused: The user has denied your application access.',
+  ],
+  [
+    'access_denied',
+    'Your administrator has not approved this app',
+    'Example sign-in was cancelled or refused: Your administrator has not approved this app.',
   ],
   [
     'server_error',
