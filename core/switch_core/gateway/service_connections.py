@@ -92,13 +92,20 @@ async def _grant_view(
     }
 
 
-def _status(standing: ServiceStanding, connection: ServiceConnection | None) -> str:
+def _status(
+    broker: ServiceBroker,
+    standing: ServiceStanding,
+    connection: ServiceConnection | None,
+) -> str:
     """The connection's status, as a person acts on it: one made through an
-    app this server has since replaced needs reconnecting before anyone uses
-    it and finds out."""
+    app this server has since replaced, or granted other scopes than this
+    server now asks for, needs reconnecting before anyone uses it and finds
+    out."""
     if connection is None:
         return "not_connected"
-    if connection.status == "active" and standing.client_replaced(connection):
+    if connection.status == "active" and (
+        standing.client_replaced(connection) or broker.scopes_changed(connection)
+    ):
         return "needs_reauthorization"
     return connection.status
 
@@ -164,7 +171,7 @@ async def list_service_connections(
                 # What a person pastes to connect a service connected with a
                 # key, and where they make one; null for any other.
                 "key": _key_form(definition),
-                "status": _status(standing, connection),
+                "status": _status(broker, standing, connection),
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (
                     None if connection is None else connection.external_identity

@@ -19,7 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ConnectionSecret
 from switch_core.connections.adapters.oauth import OAuthAdapter, OAuthClientCredentials
-from switch_core.connections.broker import Principal, ServiceBroker
+from switch_core.connections.broker import (
+    Principal,
+    ServiceBroker,
+    ServiceError,
+    _scopes_changed,
+)
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import (
     CATALOG,
@@ -365,6 +370,117 @@ class TestTheDriveFileProfile:
             grant["skill"]["content"]
             == CATALOG[SERVICE].skill_files["drive-file/SKILL.md"]
         )
+
+
+async def _status(world: World, client: httpx.AsyncClient, user: User) -> str:
+    listed = await client.get("/gateway/service-connections", cookies=cookies_for(user))
+    assert listed.status_code == 200, listed.text
+    [google] = [c for c in listed.json()["connections"] if c["slug"] == SERVICE]
+    return google["status"]
+
+
+class TestTheProfileChanging:
+    """A connection made before the server changed SERVICE_ACCESS_PROFILES
+    holds scopes its sign-in no longer asks for, or lacks ones it does."""
+
+    @pytest.mark.parametrize(
+        ("before", "after", "unticked"),
+        [
+            (CATALOG, DRIVE_FILE, set()),
+            # Still holds drive.readonly, which drive-file avoids.
+            (CATALOG, DRIVE_FILE, WRITE_ONLY),
+            (DRIVE_FILE, CATALOG, set()),
+            (DRIVE_FILE, CATALOG, WRITE_ONLY_DRIVE_FILE),
+        ],
+        ids=[
+            "full-write-to-drive-file",
+            "full-read-to-drive-file",
+            "drive-file-write-to-full",
+            "drive-file-read-to-full",
+        ],
+    )
+    async def test_a_connection_out_of_step_needs_reconnecting(
+        self, session_factory, before, after, unticked
+    ) -> None:
+        world = _world(session_factory, catalog=before)
+        world.google.unticked = set(unticked)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+        async with session_factory() as session:
+            agent = await add_agent(session, name="planner", owner_id=ada.id)
+            await STORE.save_grant(
+                session,
+                agent_id=agent.id,
+                owner_id=ada.id,
+                service=SERVICE,
+                access=connection.consent,
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id=connection.account_id,
+                created_by=ada.id,
+            )
+            await session.commit()
+
+        later = _world(session_factory, catalog=after)
+        async with later.harness.client() as client:
+            assert await _status(later, client, ada) == "needs_reauthorization"
+        async with session_factory() as session:
+            with pytest.raises(ServiceError) as issuing:
+                await later.broker.issue(
+                    session, agent.id, Principal.agent_key(), SERVICE
+                )
+            with pytest.raises(ServiceError) as granting:
+                await later.broker.set_grant(
+                    session,
+                    agent=agent,
+                    actor_id=ada.id,
+                    service=SERVICE,
+                    access=None,
+                    tool_mode=None,
+                    tools=None,
+                    resources={},
+                )
+        for refused in (issuing.value, granting.value):
+            assert (refused.status_code, refused.code) == (409, "connector_revoked")
+        assert issuing.value.message == (
+            "The agent's owner must reconnect Google Workspace: this server now "
+            "asks for other Google Workspace access than the sign-in granted. "
+            "Reconnect it under Settings, Connections."
+        )
+        assert granting.value.message == (
+            "Reconnect Google Workspace under Settings, Connections first."
+        )
+        assert later.google.token_requests == []
+
+    @pytest.mark.parametrize(
+        ("catalog", "unticked"),
+        [
+            (CATALOG, set()),
+            (CATALOG, WRITE_ONLY),
+            (DRIVE_FILE, set()),
+            (DRIVE_FILE, WRITE_ONLY_DRIVE_FILE),
+        ],
+        ids=["full-write", "full-read", "drive-file-write", "drive-file-read"],
+    )
+    async def test_a_connection_in_step_stays_active(
+        self, session_factory, catalog, unticked
+    ) -> None:
+        world = _world(session_factory, catalog=catalog)
+        world.google.unticked = set(unticked)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            assert await _status(world, client, ada) == "active"
+
+    @pytest.mark.parametrize("service", ["atlassian", "airtable"])
+    def test_an_entry_without_access_profiles_is_not_checked(self, service) -> None:
+        connection = ServiceConnection(
+            service=service, consent="write", granted_scopes=["not-asked-for"]
+        )
+        assert not _scopes_changed(connection, DRIVE_FILE[service])
 
 
 class TestAgents:

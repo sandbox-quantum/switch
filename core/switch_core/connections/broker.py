@@ -69,6 +69,7 @@ from switch_core.connections.organization_apps import (
     OrganizationApp,
     OrganizationApps,
 )
+from switch_core.connections.registry import every_scope
 from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
@@ -208,6 +209,25 @@ def _client_replaced(
         and current is not None
         and current != connection.oauth_client_id
     )
+
+
+def _scopes_changed(connection: ServiceConnection, entry: Connection) -> bool:
+    """Whether `connection` was granted other scopes than a sign-in to
+    `entry` asks for now, so it must reconnect: it lacks one its level needs,
+    or holds one no level asks for. Only an entry with access profiles is
+    checked, as only there does the server choose what a sign-in asks for
+    (`SERVICE_ACCESS_PROFILES`)."""
+    definition = entry.definition
+    if not definition.access_profiles or definition.access is None:
+        return False
+    level = (
+        definition.access.write
+        if _consent(connection) == "write"
+        else definition.access.read
+    )
+    granted = set(connection.granted_scopes)
+    needed = set(level.scopes or []) if level is not None else set()
+    return not needed <= granted or not granted <= set(every_scope(definition))
 
 
 @dataclass(frozen=True)
@@ -751,6 +771,15 @@ class ServiceBroker:
                 CONNECTOR_REVOKED,
                 f"The agent's owner must reconnect {name}: its sign-in was "
                 "revoked or has lapsed. Reconnect it under Settings, Connections.",
+                retryable=False,
+            )
+        if _scopes_changed(connection, entry):
+            raise ServiceError(
+                409,
+                CONNECTOR_REVOKED,
+                f"The agent's owner must reconnect {name}: this server now asks "
+                f"for other {name} access than the sign-in granted. Reconnect it "
+                "under Settings, Connections.",
                 retryable=False,
             )
         if grant.account_id != connection.account_id:
@@ -1356,6 +1385,12 @@ class ServiceBroker:
             source=choice.source,
         )
 
+    def scopes_changed(self, connection: ServiceConnection) -> bool:
+        """Whether `connection` was granted other scopes than a sign-in asks
+        for on this server now, so it must reconnect."""
+        entry = self._catalog.get(connection.service)
+        return entry is not None and _scopes_changed(connection, entry)
+
     def replace_adapter(self, service: str, adapter: ServiceAdapter | None) -> None:
         """Use `adapter` for `service` from the next call on, or none, where
         the server's app applies.
@@ -1478,7 +1513,7 @@ class ServiceBroker:
                 f"Connect {name} under Settings, Connections first.",
                 retryable=False,
             )
-        if connection.status != "active":
+        if connection.status != "active" or _scopes_changed(connection, entry):
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
