@@ -28,7 +28,7 @@ auth:
       account_id: user.id
       label: user.email
     help_url: https://support.pagerduty.com/main/docs/api-access-keys
-token: { kind: pass_through, max_lifetime: 3600 }
+token: { kind: pass_through, max_lifetime: null }
 mcp:
   servers:
     - name: pagerduty
