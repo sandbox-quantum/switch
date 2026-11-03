@@ -273,3 +273,11 @@ def test_switch_buddy_makes_every_private_room_private_in_switch():
     for item in private_rooms:
         item = " ".join(item.split())
         assert '`read_visibility` and `write_visibility` "private"' in item, item
+
+
+def test_switch_buddy_has_itself_invited_to_a_chat_the_person_makes():
+    """A chat the person makes holds only the agents they invite, and buddy
+    must be in it to hand off there."""
+    text = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
+    assert "`/invite_agent @<your-name>`" in text
+    assert "`!invite-agent @<your-name>`" in text

@@ -48,8 +48,8 @@ on?". Do not repeat it either; their answer starts the next section.
 If they'll stay in Switch Console or have no chat app connected, don't push one:
 ask "What do you mostly work on?" and run "Their first agent" here in the Welcome
 chat. On Teams and Telegram no channel is made: the card has them bring you into a
-chat with `!invite-agent` (Telegram: `/invite_agent`); once you are there, greet
-them and ask the same.
+chat with `!invite-agent` (Telegram: `/invite_agent`). Joining does not wake you:
+they mention you there with what they work on, and you answer as above.
 
 ## Their first agent
 
@@ -71,20 +71,22 @@ The goal: a useful answer from their own agent, in as few messages as you can.
      `write_visibility` "private". It is in their chats in Switch Console; they
      @-mention the agent there.
    - **Telegram:** bots can't create chats; they make a group with the bot and send
-     `/invite_agent @<agent-name>` in it (it sees only commands). If
+     `/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it (it
+     sees only commands). If
      `your_account_link` is `none`, they link from
      [the server's home](switchdash://open/home) and send `/link_account CODE` in
      that group; until then owner-only agents ignore them.
    - **Teams:** as below if the connection has a default team and
      `can_create_channels`; else they add the Switch app to a chat or channel and
-     send `!invite-agent @<agent-name>` there.
+     send `!invite-agent @<agent-name>` and `!invite-agent @<your-name>` there.
    - **Otherwise:** `create_room` with the chat's `bridge_id` (`get_room_detail` of
      the room `list_rooms` marks `connected`), `channel_type` "channel_private",
      `read_visibility` and `write_visibility` "private", their username in
      `user_names` (see "Adding people to a room").
-6. **Get the first answer.** `connect_to_room` the new room, ask the agent the
-   example question with `send_targeted_message`, `connect_to_room` this chat
-   again, and tell them to look there.
+6. **Get the first answer.** A room they made is yours to enter only once
+   `list_rooms` shows it; until then wait for them. `connect_to_room` it, ask the
+   agent the example question with `send_targeted_message`, `connect_to_room`
+   this chat again, and tell them to look there.
 
 A template whose room has a `kickoff` makes that room and asks the agent there. If
 `run_template` gives that agent `listening` false, it may have missed it: once it is
