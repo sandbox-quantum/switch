@@ -28,6 +28,8 @@ interface WorkspaceLayoutProps {
   banner: ReactNode;
   /** Classes for the view and the persistent layer under the banner. */
   contentClassName: string | undefined;
+  /** The strip across the top of the window, above the card: search and docs. */
+  topBar?: ReactNode;
 }
 
 export function WorkspaceLayout({
@@ -36,6 +38,7 @@ export function WorkspaceLayout({
   persistentLayer = null,
   banner,
   contentClassName,
+  topBar = null,
 }: WorkspaceLayoutProps) {
   const { leftPanelRef, syncLeftOpenFromPanel, isLeftOpen } = useWorkspaceLayoutContext();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -88,12 +91,15 @@ export function WorkspaceLayout({
             own corner under the close button. */}
         <div
           className={cn(
-            'relative h-full w-full overflow-hidden pr-2 pb-2 [-webkit-app-region:drag]',
-            isLeftOpen ? 'pt-2 pl-px' : 'pl-2',
-            !isLeftOpen && (isMac ? 'pt-9' : 'pt-2')
+            'relative flex h-full w-full flex-col overflow-hidden pr-2 pb-2 [-webkit-app-region:drag]',
+            isLeftOpen ? 'pl-px' : 'pl-2',
+            // The top bar is the gap above the card, and clears the macOS window
+            // buttons itself; without one, the card keeps its own inset.
+            topBar === null && (isLeftOpen ? 'pt-2' : isMac ? 'pt-9' : 'pt-2')
           )}
         >
-          <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[var(--panel-radius)] shadow-[0_0_0_0.5px_var(--hair)] [-webkit-app-region:no-drag]">
+          {topBar}
+          <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-[var(--panel-radius)] shadow-[0_0_0_0.5px_var(--hair)] [-webkit-app-region:no-drag]">
             {banner}
             <div className={cn('relative min-h-0 w-full flex-1', contentClassName)}>
               {mainContent}

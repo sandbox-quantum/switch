@@ -38,6 +38,7 @@ import { localServerStore } from './local-server-store';
 import { MessagingAppsCard } from './MessagingAppsCard';
 import { openServerPage } from './open-server-page';
 import { remoteServerStore } from './remote-server-store';
+import { servesWebGateway } from './server-gateway';
 import { serverIcon } from './server-icon';
 import { serverPlacementLabel } from './server-presentation';
 import { ServerSectionTitlebar } from './server-section-titlebar';
@@ -177,10 +178,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   // button asks for, so the page should not look idle while one is in flight.
   const busy = refreshingPage || store.refreshing.has(serverId);
   const unreachable = store.isUnreachable(serverId);
-  // A local server run without Docker has no dashboard: switch-core runs there
-  // without the dashboard's pages, so its address serves the API alone.
-  const servesNoDashboard =
-    server.managed && server.managementKind === 'local' && localServerStore.isNative;
+  const servesNoDashboard = !servesWebGateway(server);
   const PlacementIcon = serverIcon(server);
   const title = workspaceTitle(server);
 
