@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.agent_invites import AgentInviteDenied, AgentInviter
 from switch_core.agent_templates import plan_template
 from switch_core.authz import Action, Principal, can, require, require_manage
 from switch_core.bridges.agent.operations.agent_management import management_port
@@ -414,9 +415,12 @@ async def create_room(
         read_visibility=req.read_visibility,
         write_visibility=req.write_visibility,
         roles=([RoleSpec(**r.model_dump()) for r in req.roles] if req.roles else None),
+        acting_user_id=user.id,
     )
     try:
         result = await room_service.create_room(config)
+    except AgentInviteDenied as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except BridgeOperationError as e:
@@ -1064,7 +1068,10 @@ async def post_room_agents(
             agent_ids=req.agent_ids,
             include_subagents_for=req.include_subagents_for,
             join_event_listeners=req.join_event_listeners,
+            inviter=AgentInviter(kind="user", subject=user.id),
         )
+    except AgentInviteDenied as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await session.commit()

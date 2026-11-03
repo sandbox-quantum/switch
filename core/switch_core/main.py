@@ -1157,6 +1157,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # streams held here too (`chats/signals.py`).
     ChatSignals(service=chat_service, bus=signal_bus)
     room_service.on_room_agents_changed(chat_service.sync_room)
+    room_service.set_invite_owner_notifier(chat_service.notify_invite_owner)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
 

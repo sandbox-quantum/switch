@@ -18,10 +18,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_invites import AgentInvitePolicy, AgentInviter
 from switch_core.aliases import validate_alias_format, validate_alias_map
 from switch_core.authz import Principal, can, validate_visibility_pair
 from switch_core.bridges.collaboration.models import (
@@ -30,8 +32,9 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients.admin_messages import AdminMessageType, admin_extra_content
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.db.models import Room, RoomGroup, RoomRole
+from switch_core.db.models import Agent, Room, RoomGroup, RoomRole
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -143,6 +146,7 @@ class RoomCreateConfig(BaseModel):
     # `{agent_id, body}`: what that agent says as it joins, in place of its
     # usual line. Stamped with the room, so it is there before the agent is.
     agent_greeting: dict[str, str] | None = None
+    inviter: AgentInviter | None = None
 
 
 class RoomCreateResult(BaseModel):
@@ -165,6 +169,7 @@ class RoomService:
     # None as "report nothing".
     _telemetry: TelemetryService | None = None
     _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
+    _invite_owner_notifier: Callable[[str, str, str], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -199,6 +204,45 @@ class RoomService:
     ) -> None:
         """Call `listener(tenant_id, room_id)` after a room's agents change."""
         self._room_agents_listeners = (*self._room_agents_listeners, listener)
+
+    def set_invite_owner_notifier(
+        self, notifier: Callable[[str, str, str], Awaitable[None]]
+    ) -> None:
+        self._invite_owner_notifier = notifier
+
+    async def post_invite_notice(self, room: Room, body: str) -> None:
+        admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
+        if not admins:
+            raise RuntimeError(
+                "No Switch admin is available to post the invite warning"
+            )
+        event_id = await admins[0].send_message(
+            room.transport_room_id,
+            body,
+            metered=False,
+            format="text",
+            extra_content=admin_extra_content(AdminMessageType.INVITE_NOTICE),
+        )
+        if event_id is None:
+            raise RuntimeError("The invite warning could not be posted")
+
+    async def _warn_unverified_invites(self, room: Room, agents: list[Agent]) -> None:
+        for agent in agents:
+            body = (
+                f"Switch could not verify who added agent '{agent.name}' to "
+                f"'{room.name}' ({room.id}). Its owner can remove it. "
+                "This join does not grant anyone permission to address the agent."
+            )
+            logger.warning(
+                "Unverified platform invite: agent %s, room %s", agent.id, room.id
+            )
+            await self.post_invite_notice(room, body)
+            if agent.owner_id is None:
+                logger.warning("Cannot notify the owner of unowned agent %s", agent.id)
+            elif self._invite_owner_notifier is None:
+                raise RuntimeError("The agent invite owner notifier is not configured")
+            else:
+                await self._invite_owner_notifier(room.tenant_id, agent.owner_id, body)
 
     async def room_agents_changed(self, tenant_id: str, room_id: str) -> None:
         """Tell the listeners a room's agents (or their owners) changed.
@@ -526,6 +570,26 @@ class RoomService:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
+        room_id = str(uuid4())
+        inviter = config.inviter
+        if inviter is None:
+            if config.from_template and config.acting_user_id:
+                inviter = AgentInviter(kind="user", subject=config.acting_user_id)
+            elif config.created_by_agent_id:
+                inviter = AgentInviter(kind="agent", subject=config.created_by_agent_id)
+            elif config.acting_user_id or config.created_by:
+                inviter = AgentInviter(
+                    kind="user", subject=config.acting_user_id or config.created_by
+                )
+        invite_policy = AgentInvitePolicy(self._agent_store, self._room_store)
+        async with self._session_factory() as session:
+            await invite_policy.require(
+                session,
+                agent_ids=agent_ids,
+                room_id=room_id,
+                group_id=config.group_id,
+                inviter=inviter,
+            )
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
@@ -610,6 +674,7 @@ class RoomService:
             )
 
             room = Room(
+                id=room_id,
                 transport_room_id=transport_room_id,
                 name=config.name,
                 description=config.description,
@@ -650,6 +715,13 @@ class RoomService:
                 if config.group_id is not None:
                     await self._room_store.set_group(session, room.id, config.group_id)
                 if agent_ids:
+                    unverified = await invite_policy.require(
+                        session,
+                        agent_ids=agent_ids,
+                        room_id=room.id,
+                        group_id=config.group_id,
+                        inviter=inviter,
+                    )
                     await self._room_store.add_agents(
                         session,
                         room.id,
@@ -794,6 +866,7 @@ class RoomService:
                 failed_attachments,
             )
 
+        await self._warn_unverified_invites(room, unverified if agent_ids else [])
         return RoomCreateResult(room=room, failed_attachments=failed_attachments)
 
     async def _seed_aliases(
@@ -957,6 +1030,7 @@ class RoomService:
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
         added_by_kind: Literal["user", "agent", "system"] = "user",
+        inviter: AgentInviter | None = None,
     ) -> None:
         by_name = agent_ids is None and agent_names is not None
         if by_name:
@@ -999,6 +1073,15 @@ class RoomService:
         # and an arrival message) all belong to this room's tenant.
         with tenant_scope(room.tenant_id):
             async with self._session_factory() as session:
+                unverified = await AgentInvitePolicy(
+                    self._agent_store, self._room_store
+                ).require(
+                    session,
+                    agent_ids=new_agent_ids,
+                    room_id=room.id,
+                    group_id=room.group_id,
+                    inviter=inviter,
+                )
                 await self._room_store.add_agents(
                     session,
                     room.id,
@@ -1026,6 +1109,7 @@ class RoomService:
 
         logger.info("Added %d agents to room %s", len(agent_ids), room_id)
         await self.room_agents_changed(room.tenant_id, room.id)
+        await self._warn_unverified_invites(room, unverified)
 
         emit_safely(
             self._telemetry,
