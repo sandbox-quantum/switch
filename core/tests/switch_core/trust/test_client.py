@@ -298,6 +298,24 @@ async def test_an_agents_message_carries_the_agents_own_identity():
 
 
 @pytest.mark.asyncio
+async def test_a_name_beyond_ascii_goes_out_as_utf8():
+    raw: dict[str, bytes] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw["agent_name"] = dict(request.headers.raw)[b"x-agent-name"]
+        return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+
+    await _client(handler).check(
+        role="assistant",
+        content="hi",
+        room_id="room-1",
+        agent=TrustAgent(tenant_id="ten-1", agent_id="a1", label="Café 🤖\r\nbot"),
+    )
+
+    assert raw["agent_name"] == "Café 🤖bot".encode()
+
+
+@pytest.mark.asyncio
 async def test_a_message_no_agent_wrote_carries_no_agent_id():
     seen: dict[str, str | None] = {}
 

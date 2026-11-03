@@ -89,7 +89,11 @@ version of their own to them without also giving them a release of their own.
   Switch sends Switch Trust the agents of every workspace, so they appear in
   its AI inventory: each agent's coding agent, model, tools, granted services,
   permission settings, who may address it, and its owner. Changes reach it
-  within a minute, and a deleted agent leaves the inventory. A managed agent's
+  within a minute or two, and a deleted agent or workspace leaves the
+  inventory. Clearing the Switch Trust settings, or pointing them at another
+  endpoint or key, removes the agents from the Switch Trust they named
+  before. Clearing them keeps the endpoint and the **Share agent
+  instructions** choice, so turning Switch Trust back on does not reset it. A managed agent's
   instructions are included only when a deployment operator turns on **Share
   agent instructions** (`share_agent_instructions` on `PUT /trust-settings`,
   off by default). Listing agents does not count toward guardrails usage.

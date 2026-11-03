@@ -114,7 +114,7 @@ async def delete_trust_settings(
     config: Annotated[SwitchConfig, Depends(get_config)],
     _admin: Annotated[User, Depends(require_admin)],
 ) -> TrustSettingsResponse:
-    await TrustSettingsStore().clear(session)
+    settings = await TrustSettingsStore().clear(session)
     await session.commit()
     trust_settings_changed()
-    return _to_response(None, config)
+    return _to_response(settings, config)

@@ -17,8 +17,21 @@ deployment (`own_inventory_sync`, owned work in `ownership.py`). Every
 `SYNC_INTERVAL_SECONDS` it builds each tenant's snapshot and sends it only if
 it differs from the last one sent, or `REFRESH_EVERY_SECONDS` have passed.
 Reading the tables beats hooking every place an agent, its definition or its
-grants can change, in whichever process changes them: none can be missed. A
-settings change (`trust/signals.py`) sends everything again on the next pass.
+grants can change, in whichever process changes them: none can be missed.
+
+**What was sent is stored** (`trust_inventory_sent`), per Switch Trust and
+tenant, so a restart or the sync moving to another process neither sends
+everything again nor forgets a tenant that has since been deleted. A snapshot
+Switch Trust refused, or could not take, is held off with a growing delay
+(`retry_delay`) until it changes. The rows are written under the sync's lease
+(`Fence`), and a process that has lost it stops before its next send.
+
+**A Switch Trust the settings stop naming is emptied.** Each endpoint and key
+the inventory went to is a `trust_inventory_targets` row. When the settings
+are cleared or point elsewhere, the sync sends every tenant it listed there
+once more with no agents, under the key stored with that row, and then
+deletes the row and the key. A withdrawal that keeps failing is given up after
+`MAX_WITHDRAW_FAILURES`.
 
 **What is sent.** Names, description, the runtime, the model, the permission
 settings, the addressing preset, the owner's name, tools and granted
@@ -37,9 +50,9 @@ import contextlib
 import hashlib
 import json
 import logging
-import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -53,16 +66,21 @@ from switch_core.db.models import (
     ServiceGrant,
     Tenant,
     Tool,
+    TrustInventorySent,
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.trust_inventory_store import (
+    InventoryFenceLost,
+    TrustInventoryStore,
+)
 from switch_core.db.stores.trust_settings_store import TrustSettingsStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.keys import Keyring
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.providers.registry import UnknownProvider, agent_provider
 from switch_core.tenant_context import no_tenant
-from switch_core.trust.identity import agent_fingerprint
+from switch_core.trust.identity import agent_fingerprint, agent_label
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +94,15 @@ REFRESH_EVERY_SECONDS = 6 * 3600.0
 
 # A snapshot can be large and is not on any message's path.
 SYNC_TIMEOUT_SECONDS = 30.0
+
+# Tenants built and sent at once, so one slow tenant or a slow Switch Trust
+# does not hold up every other tenant's pass.
+SYNC_CONCURRENCY = 4
+
+# A withdrawal still failing after this many attempts, about a day with
+# `retry_delay`, is given up and logged: the key may have been revoked, and
+# nothing else can empty that Switch Trust.
+MAX_WITHDRAW_FAILURES = 12
 
 # Switch Trust's limits on a snapshot. Over the agent, tool or service limit,
 # the tenant is not sent at all and the reason is logged: a partial snapshot
@@ -107,21 +134,40 @@ class InventoryTarget:
     api_key: str
     share_instructions: bool
 
+    @property
+    def id(self) -> str:
+        """The `trust_inventory_targets` id: one per endpoint and key."""
+        return target_id(self.endpoint, self.api_key)
 
-async def read_target(
+
+def target_id(endpoint: str, api_key: str) -> str:
+    body = f"{endpoint.rstrip('/')}\n{api_key}"
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class _Settings:
+    target: InventoryTarget
+    api_key_encrypted: str
+
+
+async def _read_settings(
     session_factory: async_sessionmaker[AsyncSession],
     store: TrustSettingsStore,
     keyring: Keyring,
-) -> InventoryTarget | None:
+) -> _Settings | None:
     """Where to send the inventory, or None while no API key is stored."""
     async with session_factory() as session:
         settings = await store.get(session)
     if settings is None or not settings.api_key_encrypted:
         return None
-    return InventoryTarget(
-        endpoint=settings.endpoint,
-        api_key=keyring.decrypt(settings.api_key_encrypted),
-        share_instructions=settings.share_agent_instructions,
+    return _Settings(
+        target=InventoryTarget(
+            endpoint=settings.endpoint,
+            api_key=keyring.decrypt(settings.api_key_encrypted),
+            share_instructions=settings.share_agent_instructions,
+        ),
+        api_key_encrypted=settings.api_key_encrypted,
     )
 
 
@@ -133,11 +179,15 @@ def _cut_to_bytes(text: str, limit: int) -> str:
 
 
 def _definition_tools(definition: dict[str, Any]) -> list[dict[str, str]]:
+    name = definition.get("provider")
+    if not isinstance(name, str):
+        # A malformed definition. Its agent is still listed; only the
+        # provider's tools are unknown.
+        return []
     try:
-        provider = agent_provider(definition["provider"])
+        provider = agent_provider(name)
     except UnknownProvider:
         # A definition stored for a provider this release no longer runs.
-        # Its agent is still listed; only the provider's tools are unknown.
         return []
     return [{"name": t.name, "description": t.description} for t in provider.tools]
 
@@ -156,8 +206,10 @@ def _agent_entry(
         "kind": "managed" if definition is not None else "registered",
         "addressing": policy_kind(agent.addressing_policy),
     }
-    if agent.display_name:
-        entry["display_name"] = agent.display_name
+    # The name guardrail checks carry too, so neither renames the other.
+    label = agent_label(agent.name, agent.display_name)
+    if label != agent.name:
+        entry["display_name"] = label
     if agent.description:
         entry["description"] = _cut_to_bytes(agent.description, MAX_DESCRIPTION_BYTES)
     metadata = agent.metadata_ or {}
@@ -270,11 +322,8 @@ async def build_snapshot(
             ).all()
         }
 
-    server_entry: dict[str, str] = {"id": server.id, "name": server.name}
-    if server.version:
-        server_entry["version"] = server.version
     return {
-        "server": server_entry,
+        "server": _server_entry(server),
         "tenant": {"id": tenant.id, "name": tenant.name},
         "agents": [
             _agent_entry(
@@ -290,12 +339,16 @@ async def build_snapshot(
     }
 
 
-def empty_snapshot(server: ServerIdentity, tenant_id: str) -> dict[str, Any]:
-    """The snapshot of a tenant that no longer exists: no agents."""
-    server_entry: dict[str, str] = {"id": server.id, "name": server.name}
+def _server_entry(server: ServerIdentity) -> dict[str, str]:
+    entry = {"id": server.id, "name": server.name}
     if server.version:
-        server_entry["version"] = server.version
-    return {"server": server_entry, "tenant": {"id": tenant_id}, "agents": []}
+        entry["version"] = server.version
+    return entry
+
+
+def empty_snapshot(server: ServerIdentity, tenant_id: str) -> dict[str, Any]:
+    """The snapshot of a tenant whose agents are to leave the inventory."""
+    return {"server": _server_entry(server), "tenant": {"id": tenant_id}, "agents": []}
 
 
 def over_limits(snapshot: dict[str, Any]) -> str | None:
@@ -358,22 +411,36 @@ async def post_snapshot(
             )
 
 
-def _digest(target: InventoryTarget, snapshot: dict[str, Any]) -> str:
-    body = json.dumps(
-        {"endpoint": target.endpoint, "snapshot": snapshot}, sort_keys=True
-    )
+def _digest(snapshot: dict[str, Any]) -> str:
+    body = json.dumps(snapshot, sort_keys=True)
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-@dataclass
-class _Sent:
-    digest: str
-    at: float
+def retry_delay(failures: int) -> timedelta:
+    """How long a refused or failed snapshot is held off after its
+    `failures`th attempt: one interval, doubling, at most the refresh."""
+    seconds = SYNC_INTERVAL_SECONDS * 2 ** min(failures - 1, 16)
+    return timedelta(seconds=min(seconds, REFRESH_EVERY_SECONDS))
+
+
+def _due(row: TrustInventorySent | None, digest: str, now: datetime) -> bool:
+    if row is None:
+        return True
+    if (
+        row.digest == digest
+        and row.sent_at is not None
+        and now - row.sent_at < timedelta(seconds=REFRESH_EVERY_SECONDS)
+    ):
+        return False
+    return not (
+        row.failed_digest == digest and row.retry_at is not None and now < row.retry_at
+    )
 
 
 class InventorySync:
-    """Sends each tenant's snapshot when it changed. One instance per process;
-    it runs only in the process that owns the sync."""
+    """Sends each tenant's snapshot when it changed, and empties a Switch
+    Trust the settings no longer name. Runs only in the process holding the
+    sync's lease."""
 
     def __init__(
         self,
@@ -386,82 +453,257 @@ class InventorySync:
     ) -> None:
         self._session_factory = session_factory
         self._store = store
+        self._sent = TrustInventoryStore()
         self._keyring = keyring
         self._client = client
         self._server = server
-        self._sent: dict[str, _Sent] = {}
 
-    def forget(self) -> None:
-        """Send every tenant again on the next pass: the settings changed."""
-        self._sent.clear()
+    async def sync_once(self, fence: Fence, held: Callable[[], bool]) -> None:
+        """One pass. `held` says whether this process still holds `fence`;
+        it is asked before every send, and every write names the fence, so
+        a process that lost the sync stops (`InventoryFenceLost`)."""
+        settings = await _read_settings(
+            self._session_factory, self._store, self._keyring
+        )
+        current = settings.target if settings is not None else None
+        if settings is not None:
+            async with self._session_factory() as session:
+                await self._sent.add_target(
+                    session,
+                    fence,
+                    target_id=settings.target.id,
+                    endpoint=settings.target.endpoint,
+                    api_key_encrypted=settings.api_key_encrypted,
+                )
+                await session.commit()
+        async with self._session_factory() as session:
+            targets = await self._sent.targets(session)
+        for retired in targets:
+            if current is not None and retired.id == current.id:
+                continue
+            try:
+                await self._withdraw(
+                    fence,
+                    held,
+                    InventoryTarget(
+                        endpoint=retired.endpoint,
+                        api_key=self._keyring.decrypt(retired.api_key_encrypted),
+                        share_instructions=False,
+                    ),
+                )
+            except InventoryFenceLost:
+                raise
+            except Exception:
+                # The current Switch Trust is still sent to.
+                logger.exception(
+                    "Removing the agent inventory from Switch Trust at %s failed",
+                    retired.endpoint,
+                )
+        if current is not None:
+            await self._sync_target(fence, held, current)
 
-    async def sync_once(self) -> None:
-        """One pass over every tenant."""
-        target = await read_target(self._session_factory, self._store, self._keyring)
-        if target is None:
-            self._sent.clear()
-            return
+    async def _sync_target(
+        self, fence: Fence, held: Callable[[], bool], target: InventoryTarget
+    ) -> None:
+        async with self._session_factory() as session:
+            sent = await self._sent.sent(session, target.id)
         tenant_ids = await all_tenant_ids(self._session_factory)
-        for tenant_id in tenant_ids:
-            try:
-                async with tenant_session(self._session_factory, tenant_id) as session:
-                    snapshot = await build_snapshot(
-                        session,
-                        server=self._server,
-                        tenant_id=tenant_id,
-                        share_instructions=target.share_instructions,
+
+        async def build(tenant_id: str) -> dict[str, Any]:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                return await build_snapshot(
+                    session,
+                    server=self._server,
+                    tenant_id=tenant_id,
+                    share_instructions=target.share_instructions,
+                )
+
+        async def gone(tenant_id: str) -> dict[str, Any]:
+            return empty_snapshot(self._server, tenant_id)
+
+        work = [(t, build, False) for t in tenant_ids]
+        work += [(t, gone, True) for t in sorted(set(sent) - set(tenant_ids))]
+        await self._run(fence, held, target, sent, work)
+
+    async def _withdraw(
+        self, fence: Fence, held: Callable[[], bool], target: InventoryTarget
+    ) -> None:
+        async with self._session_factory() as session:
+            sent = await self._sent.sent(session, target.id)
+
+        async def gone(tenant_id: str) -> dict[str, Any]:
+            return empty_snapshot(self._server, tenant_id)
+
+        work = [(t, gone, True) for t in sorted(sent)]
+        await self._run(fence, held, target, sent, work)
+        async with self._session_factory() as session:
+            await self._sent.drop_target_if_done(session, fence, target_id=target.id)
+            await session.commit()
+
+    async def _run(
+        self,
+        fence: Fence,
+        held: Callable[[], bool],
+        target: InventoryTarget,
+        sent: dict[str, TrustInventorySent],
+        work: Sequence[tuple[str, Callable[[str], Awaitable[dict[str, Any]]], bool]],
+    ) -> None:
+        limit = asyncio.Semaphore(SYNC_CONCURRENCY)
+
+        async def one(
+            tenant_id: str,
+            snapshot_of: Callable[[str], Awaitable[dict[str, Any]]],
+            withdrawing: bool,
+        ) -> None:
+            async with limit:
+                try:
+                    snapshot = await snapshot_of(tenant_id)
+                    await self._send(
+                        fence,
+                        held,
+                        target,
+                        tenant_id,
+                        snapshot,
+                        sent.get(tenant_id),
+                        withdrawing=withdrawing,
                     )
-                await self._send(target, tenant_id, snapshot)
-            except Exception:
-                # One tenant's failure must not keep the others' inventory stale.
-                logger.exception(
-                    "Switch Trust agent inventory sync failed for tenant %s",
-                    tenant_id,
-                )
-        for tenant_id in set(self._sent) - set(tenant_ids):
-            try:
-                await self._send(
-                    target, tenant_id, empty_snapshot(self._server, tenant_id)
-                )
-            except Exception:
-                logger.exception(
-                    "Clearing the Switch Trust agent inventory of deleted "
-                    "tenant %s failed",
-                    tenant_id,
-                )
-            else:
-                del self._sent[tenant_id]
+                except InventoryFenceLost:
+                    raise
+                except Exception:
+                    # One tenant's failure must not keep the others' stale.
+                    logger.exception(
+                        "Switch Trust agent inventory sync failed for tenant %s",
+                        tenant_id,
+                    )
+
+        # Every tenant runs to the end even when one finds the fence lost:
+        # the others find it too before their next send.
+        results = await asyncio.gather(
+            *(one(*item) for item in work), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     async def _send(
-        self, target: InventoryTarget, tenant_id: str, snapshot: dict[str, Any]
+        self,
+        fence: Fence,
+        held: Callable[[], bool],
+        target: InventoryTarget,
+        tenant_id: str,
+        snapshot: dict[str, Any],
+        row: TrustInventorySent | None,
+        *,
+        withdrawing: bool,
     ) -> None:
-        digest = _digest(target, snapshot)
-        last = self._sent.get(tenant_id)
-        now = time.monotonic()
-        if (
-            last is not None
-            and last.digest == digest
-            and now - last.at < REFRESH_EVERY_SECONDS
-        ):
+        digest = _digest(snapshot)
+        now = datetime.now(UTC)
+        if not _due(row, digest, now):
             return
-        reason = over_limits(snapshot)
-        if reason is not None:
-            raise InventorySyncError(
-                f"Tenant {tenant_id}'s agent inventory was not sent: {reason}"
+        if not held():
+            raise InventoryFenceLost(f"{fence.kind} lease token {fence.token}")
+        try:
+            reason = over_limits(snapshot)
+            if reason is not None:
+                raise InventorySyncError(f"not sent: {reason}")
+            await post_snapshot(self._client, target=target, snapshot=snapshot)
+        except InventorySyncError as error:
+            await self._failed(
+                fence,
+                target,
+                tenant_id,
+                digest,
+                row,
+                now,
+                error,
+                withdrawing=withdrawing,
             )
-        await post_snapshot(self._client, target=target, snapshot=snapshot)
-        self._sent[tenant_id] = _Sent(digest=digest, at=now)
+            return
+        async with self._session_factory() as session:
+            if withdrawing:
+                await self._sent.forget_tenant(
+                    session, fence, target_id=target.id, tenant_id=tenant_id
+                )
+            else:
+                await self._sent.record_sent(
+                    session,
+                    fence,
+                    target_id=target.id,
+                    tenant_id=tenant_id,
+                    digest=digest,
+                    at=now,
+                )
+            await session.commit()
         logger.info(
-            "Sent tenant %s's agent inventory (%d agents) to Switch Trust",
+            "Sent tenant %s's agent inventory (%d agents) to Switch Trust at %s",
             tenant_id,
             len(snapshot["agents"]),
+            target.endpoint,
         )
 
-    async def run_forever(self) -> None:
+    async def _failed(
+        self,
+        fence: Fence,
+        target: InventoryTarget,
+        tenant_id: str,
+        digest: str,
+        row: TrustInventorySent | None,
+        now: datetime,
+        error: InventorySyncError,
+        *,
+        withdrawing: bool,
+    ) -> None:
+        failures = 1
+        if row is not None and row.failed_digest == digest:
+            failures = row.failures + 1
+        async with self._session_factory() as session:
+            if withdrawing and failures >= MAX_WITHDRAW_FAILURES:
+                await self._sent.forget_tenant(
+                    session, fence, target_id=target.id, tenant_id=tenant_id
+                )
+                await session.commit()
+                logger.error(
+                    "Gave up removing tenant %s's agents from the Switch Trust "
+                    "inventory at %s after %d attempts; they stay listed there "
+                    "until removed in Switch Trust. Last error: %s",
+                    tenant_id,
+                    target.endpoint,
+                    failures,
+                    error,
+                )
+                return
+            retry_at = now + retry_delay(failures)
+            await self._sent.record_failure(
+                session,
+                fence,
+                target_id=target.id,
+                tenant_id=tenant_id,
+                digest=digest,
+                failures=failures,
+                retry_at=retry_at,
+            )
+            await session.commit()
+        logger.warning(
+            "Tenant %s's agent inventory was not taken by Switch Trust at %s "
+            "(attempt %d); next attempt after %s unless it changes: %s",
+            tenant_id,
+            target.endpoint,
+            failures,
+            retry_at.isoformat(timespec="seconds"),
+            error,
+        )
+
+    async def run_forever(self, fence: Fence, held: Callable[[], bool]) -> None:
         with no_tenant():
             while True:
                 try:
-                    await self.sync_once()
+                    await self.sync_once(fence, held)
+                except InventoryFenceLost:
+                    logger.info(
+                        "Switch Trust agent inventory sync stopped: this "
+                        "process no longer holds it"
+                    )
+                    return
                 except Exception:
                     logger.exception("Switch Trust agent inventory sync failed")
                 await asyncio.sleep(SYNC_INTERVAL_SECONDS)
@@ -475,25 +717,33 @@ SYNC_KEY = "all"
 
 def own_inventory_sync(ownership: Ownership, sync: InventorySync) -> OwnedKind:
     """Register the inventory sync as owned work, wanted by this process; it
-    runs here only while this process holds it."""
+    runs here only while this process holds it, under the hold's fence."""
     running: dict[str, asyncio.Task[None]] = {}
 
-    def launch(key: str) -> None:
-        task = asyncio.create_task(sync.run_forever(), name="trust-inventory-sync")
-        running[key] = task
-        task.add_done_callback(lambda done: ended(key, done))
+    def launch(key: str, fence: Fence) -> None:
+        def held() -> bool:
+            return kind.fence(key) == fence
 
-    def ended(key: str, task: asyncio.Task[None]) -> None:
+        task = asyncio.create_task(
+            sync.run_forever(fence, held), name="trust-inventory-sync"
+        )
+        running[key] = task
+        task.add_done_callback(lambda done: ended(key, fence, done))
+
+    def ended(key: str, fence: Fence, task: asyncio.Task[None]) -> None:
         if task.cancelled() or running.get(key) is not task:
+            return
+        if task.exception() is None:
+            # Returned because the fence was lost; `stop` follows.
             return
         logger.error(
             "Switch Trust agent inventory sync stopped unexpectedly; restarting",
             exc_info=task.exception(),
         )
-        launch(key)
+        launch(key, fence)
 
     async def start(key: str, fence: Fence) -> None:
-        launch(key)
+        launch(key, fence)
 
     async def stop(key: str) -> None:
         task = running.pop(key, None)

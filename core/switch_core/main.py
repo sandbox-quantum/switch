@@ -798,9 +798,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     trust_client, trust_inventory, trust_http = await build_trust_client(
         session_factory, config
     )
-    trust_signals = TrustSettingsSignals(
-        client=trust_client, inventory=trust_inventory, bus=signal_bus
-    )
+    trust_signals = TrustSettingsSignals(client=trust_client, bus=signal_bus)
     own_inventory_sync(ownership, trust_inventory)
 
     # ── Resource service ─────────────────────────────────────────────────────

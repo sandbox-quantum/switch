@@ -158,7 +158,7 @@ class TestTrustSettingsStore:
             )
             assert turned_off.share_agent_instructions is False
 
-    async def test_clear_removes_the_row(
+    async def test_clear_drops_the_key_and_keeps_the_sharing_choice(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         store = TrustSettingsStore()
@@ -168,11 +168,15 @@ class TestTrustSettingsStore:
                 endpoint="https://trust.example",
                 policy_id="pol_123",
                 api_key_encrypted="enc:k",
-                share_agent_instructions=None,
+                share_agent_instructions=True,
             )
             await session.commit()
 
-            await store.clear(session)
+            cleared = await store.clear(session)
             await session.commit()
 
-            assert await store.get(session) is None
+            assert cleared is not None
+            assert cleared.api_key_encrypted is None
+            assert cleared.policy_id is None
+            assert cleared.endpoint == "https://trust.example"
+            assert cleared.share_agent_instructions is True

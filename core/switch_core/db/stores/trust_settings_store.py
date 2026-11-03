@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,8 +16,7 @@ class TrustSettingsStore:
     check is off — see ``switch_core.trust.client.DynamicTrustClient``.
     ``endpoint``/``policy_id`` are written exactly as given; ``upsert``'s
     ``api_key_encrypted=None`` means "leave whatever is already stored
-    untouched" (there is no request shape that means "clear the key but keep
-    the row" — ``clear()`` drops the whole row). That merge happens in the
+    untouched"; ``clear()`` is what drops the key, with the policy id. That merge happens in the
     ``ON CONFLICT`` clause itself via ``COALESCE``, not in a caller that reads
     the row first: two saves racing each other can't have one silently
     overwrite the other's key with a value it read before the write.
@@ -78,6 +77,19 @@ class TrustSettingsStore:
         )
         return result.scalar_one()
 
-    async def clear(self, session: AsyncSession) -> None:
-        await session.execute(delete(TrustSettings).where(TrustSettings.id == _ROW_ID))
+    async def clear(self, session: AsyncSession) -> TrustSettings | None:
+        """Turn the check and the inventory off: drop the key and the policy
+        id. The endpoint and the sharing choice stay, so turning it back on
+        does not quietly reset what an operator chose to share."""
+        await session.execute(
+            update(TrustSettings)
+            .where(TrustSettings.id == _ROW_ID)
+            .values(policy_id=None, api_key_encrypted=None, updated_at=func.now())
+        )
         await session.flush()
+        result = await session.execute(
+            select(TrustSettings)
+            .where(TrustSettings.id == _ROW_ID)
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()

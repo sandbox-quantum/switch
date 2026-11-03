@@ -228,6 +228,14 @@ class DynamicTrustClient:
         return checker
 
 
+def header_text(text: str) -> str:
+    """`text` without the characters no header value may carry: line breaks
+    and other control characters, which would otherwise fail the request
+    while it is built, before `check_message` could fail open. The rest goes
+    out as UTF-8, which Switch Trust reads header values as."""
+    return "".join(c for c in text if c.isprintable())
+
+
 class HttpTrustClient:
     """Posts to `{base_url}/guardrails/check`. One client, reused.
 
@@ -264,14 +272,14 @@ class HttpTrustClient:
             "x-agent-id": agent_fingerprint(
                 self._server_id, agent.tenant_id, agent.agent_id
             ),
-            "x-agent-name": agent.label,
+            "x-agent-name": header_text(agent.label),
         }
 
     async def check(
         self, *, role: Role, content: str, room_id: str, agent: TrustAgent | None
     ) -> TrustCheckResult:
         payload = {"messages": [{"role": role, "content": content}]}
-        headers = {
+        fields = {
             **self._headers,
             **self._agent_headers(agent),
             "x-agent-session-id": room_id,
@@ -281,6 +289,9 @@ class HttpTrustClient:
             # relies on it being stable across retries.
             "x-agent-turn-id": str(uuid.uuid4()),
         }
+        # Encoded here, as UTF-8: httpx would encode a `str` value as ASCII
+        # and refuse an agent named `Café bot` while building the request.
+        headers = {name.encode(): value.encode() for name, value in fields.items()}
         try:
             response = await self._client.post(
                 self._url,

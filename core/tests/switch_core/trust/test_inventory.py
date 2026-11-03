@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -26,12 +28,23 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
+from switch_core.db.stores.trust_inventory_store import (
+    InventoryFenceLost,
+    TrustInventoryStore,
+)
 from switch_core.db.stores.trust_settings_store import TrustSettingsStore
+from switch_core.ownership import Fence
+from switch_core.process_lease import LEASE_TTL
 from switch_core.tenant_context import no_tenant
 from switch_core.trust.identity import agent_fingerprint
 from switch_core.trust.inventory import (
     MAX_AGENTS,
     MAX_DESCRIPTION_BYTES,
+    REFRESH_EVERY_SECONDS,
+    SYNC_INTERVAL_SECONDS,
+    SYNC_KEY,
+    SYNC_KIND,
     InventorySync,
     InventorySyncError,
     InventoryTarget,
@@ -39,8 +52,11 @@ from switch_core.trust.inventory import (
     build_snapshot,
     over_limits,
     post_snapshot,
+    retry_delay,
+    target_id,
 )
 from tests.conftest import TEST_KEYRING
+from tests.ownership import process_lease_on
 
 SERVER = ServerIdentity(id="srv-1", name="switch.example", version="1.2.3")
 
@@ -261,6 +277,52 @@ class TestBuildSnapshot:
 
         assert set(_by_name(snapshot)) == {"here"}
 
+    async def test_names_an_agent_as_its_checks_do(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            await _agent(session, name="padded", owner=None, display_name="  Bot  ")
+            await _agent(session, name="blank", owner=None, display_name="   ")
+            await session.commit()
+            snapshot = await build_snapshot(
+                session,
+                server=SERVER,
+                tenant_id=TENANT_ZERO_ID,
+                share_instructions=False,
+            )
+
+        agents = _by_name(snapshot)
+        assert agents["padded"]["display_name"] == "Bot"
+        assert "display_name" not in agents["blank"]
+
+    async def test_a_definition_without_a_provider_still_lists_its_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            owner = await _user(session, "Ada")
+            agent = await _agent(session, name="old", owner=owner)
+            session.add(
+                AgentDefinition(
+                    agent_id=agent.id,
+                    owner_id=owner.id,
+                    revision=1,
+                    desired_state="running",
+                    definition={"model": "opus"},
+                )
+            )
+            await session.commit()
+            snapshot = await build_snapshot(
+                session,
+                server=SERVER,
+                tenant_id=TENANT_ZERO_ID,
+                share_instructions=False,
+            )
+
+        old = _by_name(snapshot)["old"]
+        assert old["kind"] == "managed"
+        assert old["model"] == "opus"
+        assert "tools" not in old
+
     async def test_a_long_description_is_cut_to_fit(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -359,115 +421,207 @@ class _Recorder:
 
 
 async def _configure(
-    session_factory: async_sessionmaker[AsyncSession], *, with_key: bool
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    with_key: bool,
+    endpoint: str = "https://trust.example",
+    api_key: str = "sk_test",
 ) -> None:
     async with session_factory() as session:
         await TrustSettingsStore().upsert(
             session,
-            endpoint="https://trust.example",
+            endpoint=endpoint,
             policy_id=None,
-            api_key_encrypted=TEST_KEYRING.encrypt("sk_test") if with_key else None,
+            api_key_encrypted=TEST_KEYRING.encrypt(api_key) if with_key else None,
             share_agent_instructions=None,
         )
         await session.commit()
 
 
 def _sync(
-    session_factory: async_sessionmaker[AsyncSession], recorder: _Recorder
+    session_factory: async_sessionmaker[AsyncSession],
+    handler: Callable[[httpx.Request], httpx.Response],
 ) -> InventorySync:
     return InventorySync(
         session_factory=session_factory,
         store=TrustSettingsStore(),
         keyring=TEST_KEYRING,
-        client=httpx.AsyncClient(transport=httpx.MockTransport(recorder)),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         server=SERVER,
     )
 
 
+@pytest.fixture
+async def fence(session_factory: async_sessionmaker[AsyncSession]) -> Fence:
+    """The sync's lease, held by a test process as `own_inventory_sync`'s
+    process would hold it."""
+    lease = process_lease_on(session_factory)
+    await lease.renew()
+    async with session_factory() as session:
+        claimed = await OwnershipLeaseStore().claim(
+            session,
+            kind=SYNC_KIND,
+            keys=[SYNC_KEY],
+            process_id=lease.process_id,
+            lease_ttl=LEASE_TTL,
+        )
+        await session.commit()
+    return Fence(
+        kind=SYNC_KIND,
+        key=SYNC_KEY,
+        process_id=lease.process_id,
+        token=claimed[SYNC_KEY],
+    )
+
+
+def _held() -> bool:
+    return True
+
+
+async def _pass(sync: InventorySync, fence: Fence) -> None:
+    with no_tenant():
+        await sync.sync_once(fence, _held)
+
+
+async def _add_tenant(
+    session_factory: async_sessionmaker[AsyncSession], tenant_id: str
+) -> None:
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+        await session.commit()
+
+
+async def _delete_tenant(
+    session_factory: async_sessionmaker[AsyncSession], tenant_id: str
+) -> None:
+    async with tenant_session(session_factory, tenant_id) as session:
+        await session.delete(await session.get_one(Tenant, tenant_id))
+        await session.commit()
+
+
+def _empty(tenant_id: str) -> dict[str, Any]:
+    return {
+        "server": {"id": "srv-1", "name": "switch.example", "version": "1.2.3"},
+        "tenant": {"id": tenant_id},
+        "agents": [],
+    }
+
+
 class TestInventorySync:
     async def test_sends_nothing_without_an_api_key(
-        self, session_factory: async_sessionmaker[AsyncSession]
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
     ) -> None:
         await _configure(session_factory, with_key=False)
         recorder = _Recorder()
 
-        with no_tenant():
-            await _sync(session_factory, recorder).sync_once()
+        await _pass(_sync(session_factory, recorder), fence)
 
         assert recorder.snapshots == []
 
     async def test_sends_each_tenant_once_until_something_changes(
-        self, session_factory: async_sessionmaker[AsyncSession]
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
     ) -> None:
         await _configure(session_factory, with_key=True)
+        await _add_tenant(session_factory, "ten-other")
         async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
-            session.add(Tenant(id="ten-other", slug="ten-other", name="Other"))
             await _agent(session, name="first", owner=None)
             await session.commit()
         recorder = _Recorder()
-        sync = _sync(session_factory, recorder)
 
-        with no_tenant():
-            await sync.sync_once()
-            assert sorted(s["tenant"]["id"] for s in recorder.snapshots) == sorted(
-                [TENANT_ZERO_ID, "ten-other"]
-            )
+        await _pass(_sync(session_factory, recorder), fence)
+        assert sorted(s["tenant"]["id"] for s in recorder.snapshots) == sorted(
+            [TENANT_ZERO_ID, "ten-other"]
+        )
 
-            recorder.snapshots.clear()
-            await sync.sync_once()
-            assert recorder.snapshots == []
+        # What was sent is stored: a restarted process sends nothing again.
+        recorder.snapshots.clear()
+        await _pass(_sync(session_factory, recorder), fence)
+        assert recorder.snapshots == []
 
-            async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
-                await _agent(session, name="second", owner=None)
-                await session.commit()
-            await sync.sync_once()
-            [changed] = recorder.snapshots
-            assert changed["tenant"]["id"] == TENANT_ZERO_ID
-            assert {a["name"] for a in changed["agents"]} == {"first", "second"}
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            await _agent(session, name="second", owner=None)
+            await session.commit()
+        await _pass(_sync(session_factory, recorder), fence)
+        [changed] = recorder.snapshots
+        assert changed["tenant"]["id"] == TENANT_ZERO_ID
+        assert {a["name"] for a in changed["agents"]} == {"first", "second"}
 
-            recorder.snapshots.clear()
-            sync.forget()
-            await sync.sync_once()
-            assert len(recorder.snapshots) == 2
-
-    async def test_a_tenant_that_is_gone_is_sent_once_with_no_agents(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    async def test_turning_sharing_on_sends_again(
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
     ) -> None:
         await _configure(session_factory, with_key=True)
         async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
-            session.add(Tenant(id="ten-gone", slug="ten-gone", name="Gone"))
+            await _managed_agent(session, await _user(session, "Ada"))
             await session.commit()
         recorder = _Recorder()
-        sync = _sync(session_factory, recorder)
+        await _pass(_sync(session_factory, recorder), fence)
 
-        with no_tenant():
-            await sync.sync_once()
-            async with tenant_session(session_factory, "ten-gone") as session:
-                await session.delete(await session.get_one(Tenant, "ten-gone"))
-                await session.commit()
-            recorder.snapshots.clear()
-            await sync.sync_once()
-            await sync.sync_once()
+        async with session_factory() as session:
+            await TrustSettingsStore().upsert(
+                session,
+                endpoint="https://trust.example",
+                policy_id=None,
+                api_key_encrypted=None,
+                share_agent_instructions=True,
+            )
+            await session.commit()
+        recorder.snapshots.clear()
+        await _pass(_sync(session_factory, recorder), fence)
 
-        assert recorder.snapshots == [
-            {
-                "server": {
-                    "id": "srv-1",
-                    "name": "switch.example",
-                    "version": "1.2.3",
-                },
-                "tenant": {"id": "ten-gone"},
-                "agents": [],
-            }
-        ]
+        [resent] = recorder.snapshots
+        assert "instructions" in _by_name(resent)["reviewer"]
 
-    async def test_one_tenants_failure_does_not_stop_the_others(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    async def test_a_tenant_deleted_across_a_restart_is_sent_once_with_no_agents(
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
     ) -> None:
         await _configure(session_factory, with_key=True)
+        await _add_tenant(session_factory, "ten-gone")
+        recorder = _Recorder()
+        await _pass(_sync(session_factory, recorder), fence)
+
+        await _delete_tenant(session_factory, "ten-gone")
+        recorder.snapshots.clear()
+        await _pass(_sync(session_factory, recorder), fence)
+        await _pass(_sync(session_factory, recorder), fence)
+
+        assert recorder.snapshots == [_empty("ten-gone")]
+
+    async def test_a_refused_snapshot_is_held_off_until_it_changes(
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
+    ) -> None:
+        await _configure(session_factory, with_key=True)
+        posted: list[dict[str, Any]] = []
+
+        def refuse(request: httpx.Request) -> httpx.Response:
+            posted.append(json.loads(request.content))
+            return httpx.Response(400, json={"error": "agents[0].name: required"})
+
+        sync = _sync(session_factory, refuse)
+        await _pass(sync, fence)
+        assert len(posted) == 1
+        await _pass(sync, fence)
+        assert len(posted) == 1
+
+        async with session_factory() as session:
+            [row] = (
+                await TrustInventoryStore().sent(
+                    session, target_id("https://trust.example", "sk_test")
+                )
+            ).values()
+        assert row.failures == 1
+        assert row.digest is None
+
         async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
-            session.add(Tenant(id="ten-other", slug="ten-other", name="Other"))
+            await _agent(session, name="new", owner=None)
             await session.commit()
+        await _pass(sync, fence)
+        assert len(posted) == 2
+
+    async def test_one_tenants_failure_does_not_stop_the_others(
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
+    ) -> None:
+        await _configure(session_factory, with_key=True)
+        await _add_tenant(session_factory, "ten-other")
         sent: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -477,14 +631,99 @@ class TestInventorySync:
             sent.append(snapshot["tenant"]["id"])
             return httpx.Response(200, json=_answer(snapshot))
 
-        sync = InventorySync(
-            session_factory=session_factory,
-            store=TrustSettingsStore(),
-            keyring=TEST_KEYRING,
-            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-            server=SERVER,
-        )
-        with no_tenant():
-            await sync.sync_once()
+        await _pass(_sync(session_factory, handler), fence)
 
         assert sent == ["ten-other"]
+
+    async def test_clearing_the_settings_empties_the_switch_trust_they_named(
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
+    ) -> None:
+        await _configure(session_factory, with_key=True)
+        await _add_tenant(session_factory, "ten-other")
+        seen: list[tuple[str | None, dict[str, Any]]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            snapshot = json.loads(request.content)
+            seen.append((request.headers.get("authorization"), snapshot))
+            return httpx.Response(200, json=_answer(snapshot))
+
+        sync = _sync(session_factory, handler)
+        await _pass(sync, fence)
+        async with session_factory() as session:
+            await TrustSettingsStore().clear(session)
+            await session.commit()
+        seen.clear()
+        await _pass(sync, fence)
+
+        assert sorted(seen, key=lambda s: s[1]["tenant"]["id"]) == [
+            ("ApiKey sk_test", _empty(t)) for t in sorted([TENANT_ZERO_ID, "ten-other"])
+        ]
+        async with session_factory() as session:
+            assert await TrustInventoryStore().targets(session) == []
+
+        seen.clear()
+        await _pass(sync, fence)
+        assert seen == []
+
+    async def test_a_new_endpoint_gets_everything_and_the_old_one_is_emptied(
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
+    ) -> None:
+        await _configure(session_factory, with_key=True)
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            await _agent(session, name="kept", owner=None)
+            await session.commit()
+        seen: list[tuple[str, dict[str, Any]]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            snapshot = json.loads(request.content)
+            seen.append((request.url.host, snapshot))
+            return httpx.Response(200, json=_answer(snapshot))
+
+        sync = _sync(session_factory, handler)
+        await _pass(sync, fence)
+        await _configure(
+            session_factory,
+            with_key=True,
+            endpoint="https://other-trust.example",
+            api_key="sk_other",
+        )
+        seen.clear()
+        await _pass(sync, fence)
+
+        by_host = dict(seen)
+        assert by_host["trust.example"] == _empty(TENANT_ZERO_ID)
+        assert {a["name"] for a in by_host["other-trust.example"]["agents"]} == {"kept"}
+
+    async def test_a_process_that_lost_the_sync_sends_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
+    ) -> None:
+        await _configure(session_factory, with_key=True)
+        recorder = _Recorder()
+
+        with no_tenant(), pytest.raises(InventoryFenceLost):
+            await _sync(session_factory, recorder).sync_once(fence, lambda: False)
+
+        assert recorder.snapshots == []
+
+    async def test_a_stale_fence_writes_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession], fence: Fence
+    ) -> None:
+        await _configure(session_factory, with_key=True)
+        stale = Fence(
+            kind=fence.kind,
+            key=fence.key,
+            process_id=fence.process_id,
+            token=fence.token - 1,
+        )
+
+        with pytest.raises(InventoryFenceLost):
+            await _pass(_sync(session_factory, _Recorder()), stale)
+
+        async with session_factory() as session:
+            assert await TrustInventoryStore().targets(session) == []
+
+
+def test_a_refused_snapshot_waits_longer_each_time_up_to_the_refresh() -> None:
+    assert retry_delay(1) == timedelta(seconds=SYNC_INTERVAL_SECONDS)
+    assert retry_delay(2) == timedelta(seconds=2 * SYNC_INTERVAL_SECONDS)
+    assert retry_delay(100) == timedelta(seconds=REFRESH_EVERY_SECONDS)

@@ -43,6 +43,7 @@ from switch_core.db.models import (
     ServiceOAuthClient,
     ServiceTokenIssuance,
     SignInFlow,
+    TrustInventoryTarget,
     TrustSettings,
 )
 from switch_core.db.session_scope import tenant_session
@@ -69,11 +70,12 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (SignInFlow, "encrypted_result"),
 )
 # In tables no tenant holds (`db/rls_ddl.py`, GLOBAL_TABLES), one row set for
-# the whole deployment (`trust_settings`, `service_oauth_clients`,
-# `service_app_credentials`): rewritten
+# the whole deployment (`trust_settings`, `trust_inventory_targets`,
+# `service_oauth_clients`, `service_app_credentials`): rewritten
 # once, in a session bound to no tenant, rather than once per tenant.
 _GLOBAL_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (TrustSettings, "api_key_encrypted"),
+    (TrustInventoryTarget, "api_key_encrypted"),
     (ServiceOAuthClient, "encrypted_secret"),
     (ServiceAppCredential, "encrypted_secrets"),
 )

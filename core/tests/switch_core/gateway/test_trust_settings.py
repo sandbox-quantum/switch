@@ -184,7 +184,23 @@ async def test_delete_turns_it_off(
 
     assert delete_resp.status_code == 200
     assert delete_resp.json()["enabled"] is False
+    assert delete_resp.json()["has_api_key"] is False
     assert get_resp.json()["enabled"] is False
+
+
+async def test_turning_it_back_on_keeps_the_sharing_choice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    admin = await _add_user(session_factory, name="op", role="admin")
+    async with _client(session_factory, admin) as client:
+        await client.put(
+            "/trust-settings",
+            json={**_CONFIGURED_BODY, "share_agent_instructions": True},
+        )
+        await client.delete("/trust-settings")
+        back_on = await client.put("/trust-settings", json=_CONFIGURED_BODY)
+
+    assert back_on.json()["share_agent_instructions"] is True
 
 
 async def test_saving_and_clearing_tell_every_process(

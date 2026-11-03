@@ -343,11 +343,35 @@ the fingerprints it answers with and fails on a difference, since checks from
 that agent would then land elsewhere. A test pins one vector on each side.
 
 **When.** One process runs the sync (owned work, `ownership.py`). Every
-minute it builds each tenant's snapshot and sends it if it changed since the
-last one sent, or six hours have passed. Polling the tables rather than
-hooking each place an agent, definition or grant changes means no change can
-be missed, in whichever process makes it. Saving or clearing the settings
-sends everything again on the next pass (`trust/signals.py`).
+minute it builds each tenant's snapshot, four tenants at a time, and sends it
+if it changed since the last one sent, or six hours have passed. Polling the
+tables rather than hooking each place an agent, definition or grant changes
+means no change can be missed, in whichever process makes it.
+
+**What was sent is stored.** `trust_inventory_sent` keeps, per Switch Trust
+and tenant, the digest of the snapshot it last took, so a restart or the sync
+moving to another process sends nothing again, and a tenant deleted while no
+process was looking is still emptied. A snapshot refused (over the limits, a
+4xx, a fingerprint mismatch) or not delivered is held off for one minute,
+doubling up to six hours, until it changes. Every write names the sync's
+lease token, and the sync asks whether it still holds the lease before every
+send, so a process that lost it stops rather than racing the new owner.
+
+**Withdrawal.** Each endpoint and key the inventory went to is a
+`trust_inventory_targets` row, its key encrypted like the settings' own (and
+re-encrypted with it, `db/key_rotation.py`). When the settings are cleared
+(`DELETE /trust-settings`, which drops the key and policy id but keeps the
+endpoint and the sharing choice) or name another endpoint or key, the next
+pass sends every tenant listed at the old one a snapshot with no agents, then
+deletes the row and its key. One that still fails after twelve attempts,
+about a day, is given up and logged as an error: the key may have been
+revoked, and only Switch Trust can then remove the agents.
+
+**Name.** Checks and the inventory name an agent the same way (its display
+name, trimmed, else its identifier; `trust/identity.py`), so neither renames
+the agent the other wrote. A changed display name reaches the running agent's
+checks at once (`update_bridge_identities` refreshes its actor), as a rename
+already did. Names go out as UTF-8 header bytes, without control characters.
 
 **Instructions.** `trust_settings.share_agent_instructions`, off by default,
 set through `PUT /trust-settings` and the Console's Switch Trust settings. A

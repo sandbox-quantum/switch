@@ -2672,6 +2672,64 @@ class TrustSettings(Base):
     )
 
 
+class TrustInventoryTarget(Base):
+    """A Switch Trust the agent inventory is sent to (`trust/inventory.py`).
+
+    One row per endpoint and API key the inventory has been sent under,
+    keyed by a hash of the two. The settings name only the current one, so
+    when they change or are cleared, the key that can still withdraw the
+    agents from the previous Switch Trust lives here until the sync has done
+    so, and the row goes with it. Not tenant-scoped: the settings are
+    server-global, and so is where they point.
+    """
+
+    __tablename__ = "trust_inventory_targets"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TrustInventorySent(Base):
+    """What one tenant's inventory last did at one Switch Trust.
+
+    `digest` is the snapshot it last took, so an unchanged one is not sent
+    again; `failed_digest`, `failures` and `retry_at` hold off a snapshot it
+    refused, or could not be reached with, without holding off a changed one.
+    `tenant` is a tenant's id, deliberately not a `tenant_id` foreign key: the
+    row has to outlive its tenant, since it is how the sync knows a deleted
+    tenant's agents are still listed there. Kept by the process holding the sync's lease, under its
+    fence. Not tenant-scoped, for the same reason.
+    """
+
+    __tablename__ = "trust_inventory_sent"
+
+    target_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey(
+            "trust_inventory_targets.id",
+            name="fk_trust_inventory_sent_target",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    tenant: Mapped[str] = mapped_column(Text, primary_key=True)
+    digest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failed_digest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failures: Mapped[int] = mapped_column(
+        Integer, server_default="0", default=0, nullable=False
+    )
+    retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ── Messages ─────────────────────────────────────────────────────────────────
 
 

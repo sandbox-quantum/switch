@@ -124,6 +124,10 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # Switch Trust's one guardrails policy for the whole deployment.
             # A policy that varied per tenant would be a new scoped table.
             "trust_settings",
+            # Where that deployment's agent inventory went and what each
+            # tenant's last did there, kept by the one process that sends it.
+            "trust_inventory_targets",
+            "trust_inventory_sent",
             # The OAuth client Core registered for itself at a vendor: the
             # vendor sees one Switch, so one client per deployment and
             # service, holding no person's account.
