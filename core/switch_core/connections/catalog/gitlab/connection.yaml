@@ -1,7 +1,52 @@
 slug: gitlab
 name: GitLab
 category: Source control
-description: Work with GitLab projects, merge requests and issues.
-enabled: false
+description: Work with GitLab projects, issues, merge requests and pipelines, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # GitLab invalidates the old pair on every refresh and returns a new one.
+  refresh: rotating
+  oauth:
+    # GitLab's MCP server supports OAuth dynamic client registration, so Core
+    # registers its own client and discovers the endpoints from the server.
+    # An instance admin can turn DCR off; a self-managed or Dedicated instance
+    # also differs by host (https://<host>/api/v4/mcp), so a static client is
+    # the fallback there. This entry targets gitlab.com.
+    registration: dynamic
+    redirect: [loopback, core]
+    revocation_discovered: true
+  # The OAuth token reads the authenticated user from GitLab's REST API.
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+# GitLab's access tokens expire after two hours by default.
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  servers:
+    # gitlab.com's MCP server. A top-level group owner must allow MCP access
+    # for the group before clients can connect. The MCP endpoint requires the
+    # token to carry the `mcp` scope (requested below); the other scopes govern
+    # the REST API the tools call underneath.
+    - name: gitlab
+      url: "https://gitlab.com/api/v4/mcp"
+access:
+  # Least access that works: read_api for API reads, read_user so the identity
+  # call can name the account, read_repository for repository contents, and
+  # mcp for the MCP endpoint itself. Write adds api (full read/write API) and
+  # write_repository. No admin, sudo or org-wide scopes.
+  read:
+    scopes:
+      - mcp
+      - read_user
+      - read_api
+      - read_repository
+  write:
+    scopes:
+      - mcp
+      - read_user
+      - api
+      - write_repository
+tools: { mode: pass_through }
