@@ -453,7 +453,11 @@ Then:
 arguments, instead of an authenticated JSON GET `url`. Exactly one source is
 required. Core validates the advertised tool is read-only with no arguments
 before calling it. The configured `account_id` must resolve to one nonempty
-string or integer in the JSON object. Missing ids, arrays and multiple-account
+string or integer in the JSON object. `account_id` also accepts a nonempty
+list of paths, for example `[userId, hubId]`. Every component must resolve to
+one nonempty string or integer; each component is percent-encoded and joined
+with `:` so separators in vendor ids cannot create collisions. The original
+single-path form preserves the vendor id unchanged. Missing ids, arrays and multiple-account
 results fail sign-in; no first-account selection is performed. Calls are
 bounded to 15 seconds and 64 KiB, refuse redirects and sanitize vendor errors
 and identity-transport diagnostics. Other entries keep their REST identity.

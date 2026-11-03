@@ -168,7 +168,13 @@ class ConnectionIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    account_id: (
+        Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+        | Annotated[
+            list[Annotated[str, Field(pattern=JSON_PATH_PATTERN)]],
+            Field(min_length=1, max_length=8),
+        ]
+    )
     label: str = Field(pattern=JSON_PATH_PATTERN)
 
     @model_validator(mode="after")

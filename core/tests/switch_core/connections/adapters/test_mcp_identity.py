@@ -326,3 +326,70 @@ async def test_optional_identity_selector_is_never_supplied(monkeypatch):
         result = await _adapter(http).identify("example-bearer-value")
     assert result.account_id == "current-account"
     assert calls == ["me"]
+
+
+@pytest.mark.parametrize("paths", [[], ["data.id[0]"], [""], [False], "data.id[0]"])
+def test_composite_identity_rejects_invalid_paths(paths):
+    with pytest.raises(ValidationError):
+        ConnectionIdentity(mcp_tool="get_user", account_id=paths, label="name")
+
+
+@pytest.mark.parametrize("source", ["mcp", "rest"])
+@pytest.mark.parametrize(
+    "parts, expected",
+    [
+        ({"user": "example-user", "org": 42}, "example-user:42"),
+        ({"user": "a:b", "org": "c"}, "a%3Ab:c"),
+        ({"user": "a", "org": "b:c"}, "a:b%3Ac"),
+        ({"user": "a%3Ab", "org": "c"}, "a%253Ab:c"),
+    ],
+)
+async def test_composite_identity_protocol(monkeypatch, source, parts, expected):
+    server = FastMCP("composite-identity-test")
+
+    @server.tool(annotations={"readOnlyHint": True})
+    def get_user() -> ToolResult:
+        return ToolResult(content=[], structured_content=parts)
+
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=parts))
+    async with httpx.AsyncClient(transport=transport) as http:
+        adapter = _adapter(http)
+        source_fields = (
+            {"mcp_tool": "get_user"}
+            if source == "mcp"
+            else {"url": "https://example.com/me"}
+        )
+        adapter._identity = ConnectionIdentity(
+            **source_fields, account_id=["user", "org"], label="user"
+        )
+        identity = await adapter.identify("example-bearer-value")
+    assert identity.account_id == expected
+    assert identity.label == parts["user"]
+
+
+@pytest.mark.parametrize("bad", [None, "", "  ", [], ["one", "two"], {}, False, 1.5])
+async def test_composite_identity_refuses_any_invalid_component(bad):
+    payload = {"user": "example-user", "org": bad}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    async with httpx.AsyncClient(transport=transport) as http:
+        adapter = _adapter(http)
+        adapter._identity = ConnectionIdentity(
+            url="https://example.com/me", account_id=["user", "org"], label="user"
+        )
+        with pytest.raises(ServiceAdapterError, match="account's id"):
+            await adapter.identify("example-bearer-value")
+
+
+async def test_composite_identity_changes_with_account():
+    payload = {"user": "same-user", "org": "first-account"}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    async with httpx.AsyncClient(transport=transport) as http:
+        adapter = _adapter(http)
+        adapter._identity = ConnectionIdentity(
+            url="https://example.com/me", account_id=["user", "org"], label="user"
+        )
+        first = await adapter.identify("example-bearer-value")
+        payload["org"] = "second-account"
+        second = await adapter.identify("example-bearer-value")
+    assert first.account_id != second.account_id
