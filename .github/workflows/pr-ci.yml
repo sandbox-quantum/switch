@@ -347,6 +347,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/embedded-controller src/main/core/execution-context
 
+      - name: Real initdb, spawned as Console spawns it
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/managed-switch-server/native/postgres-cluster.windows
+
   artifacts:
     name: Artifact registry
     # Every artifact carries a compiled-in copy of artifacts.yaml, so the copies

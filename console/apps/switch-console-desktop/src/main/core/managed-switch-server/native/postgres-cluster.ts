@@ -34,7 +34,7 @@ function literal(password: string): string {
   return `'${password}'`;
 }
 
-function pgEnv(binaries: PostgresBinaries): NodeJS.ProcessEnv {
+export function pgEnv(binaries: PostgresBinaries): NodeJS.ProcessEnv {
   // The portable build finds its own shared libraries through rpath; an
   // inherited PGDATA/PGPORT must not redirect anything.
   const env: NodeJS.ProcessEnv = { ...process.env, LC_ALL: 'C', LANG: 'C' };
