@@ -894,14 +894,13 @@ class ServiceBroker:
                 retryable=False,
             )
         if connection.status != "active":
+            if connection.error_code != TOKEN_REFUSED:
+                raise _reconnect(name, _lapsed(name, connection), "agent")
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
                 f"{_pasted_refused(name, connection.method)} The agent's owner "
-                f"must paste {_paste_again(connection.method)} under Connectors."
-                if connection.error_code == TOKEN_REFUSED
-                else f"The agent's owner must reconnect {name}: its sign-in was "
-                "revoked or has lapsed. Reconnect it under Connectors.",
+                f"must paste {_paste_again(connection.method)} under Connectors.",
                 retryable=False,
             )
         missing = self._choices_refusal(connection)

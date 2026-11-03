@@ -367,7 +367,10 @@ class TestIssue:
         )
         again = await _refused(broker, session_factory, world.agent.id)
         assert again.code == "connector_revoked"
-        assert "under Connectors" in again.message
+        assert again.message == (
+            "The GitHub sign-in was revoked or has lapsed. The agent's owner must "
+            "reconnect GitHub from Connectors in Switch Console."
+        )
         assert vendor.refreshes == 1
         assert vendor.issued == []
 
@@ -2052,6 +2055,22 @@ class TestReplacedClient:
             "needs_reauthorization",
             CLIENT_REPLACED,
         )
+
+    async def test_the_agent_is_told_the_same_reason_on_every_request(
+        self, broker, session_factory, vendor
+    ) -> None:
+        """Once as the replaced client is found, and again once it is recorded."""
+        world = await _world(session_factory, expires_in=60)
+        await self._recorded(session_factory, world, "old-client")
+        vendor.client_id = "new-client"
+        for _ in range(2):
+            refused = await _refused(broker, session_factory, world.agent.id)
+            assert refused.code == CONNECTOR_REVOKED
+            assert refused.message == (
+                "GitHub was connected through an app this server no longer uses. "
+                "The agent's owner must reconnect GitHub from Connectors in Switch "
+                "Console."
+            )
 
     async def test_the_owner_is_told_to_reconnect_it_themselves(
         self, broker, session_factory, vendor
