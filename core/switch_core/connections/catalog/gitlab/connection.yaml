@@ -1,7 +1,48 @@
 slug: gitlab
 name: GitLab
 category: Source control
-description: Work with GitLab projects, merge requests and issues.
-enabled: false
+description: Read and update GitLab projects, issues, merge requests and pipelines, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # GitLab's OAuth 2.0 refresh tokens rotate with every use, and access tokens
+  # expire after 7200 seconds (2 hours).
+  refresh: rotating
+  oauth:
+    # Each server's operator registers a GitLab OAuth application and names its
+    # settings in GITLAB_CLIENT_CONFIG_PATH. Dynamic client registration on
+    # GitLab's MCP server was measured to grant only the 'mcp' scope without refresh
+    # tokens, preventing identity retrieval, read-only scoping, and automatic token renewal.
+    registration: static
+    client_settings: GITLAB
+    redirect: [core]
+    # GitLab checks redirect URIs strictly during the OAuth flow.
+    unchecked: >-
+      Switch can't check the redirect URI or that the application is
+      trusted. Connect once to confirm.
+    authorization_url: https://gitlab.com/oauth/authorize
+    token_url: https://gitlab.com/oauth/token
+    revocation_url: https://gitlab.com/oauth/revoke
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+# GitLab access tokens expire after 2 hours (7200 seconds).
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  servers:
+    - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
+access:
+  read:
+    scopes:
+      - read_api
+      - read_user
+      - openid
+  write:
+    scopes:
+      - api
+      - read_api
+      - read_user
+      - openid
+tools: { mode: pass_through }
