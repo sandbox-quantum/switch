@@ -70,7 +70,8 @@ class TestList:
                         "help": (
                             "Personal Settings, Access Tokens. Scopes: mcp_read, "
                             "mcp_write for writes; user_access_read lets Switch "
-                            "name the account."
+                            "name the account, and keeps agents' grants when you "
+                            "paste a new token."
                         ),
                         "choices": None,
                     }
