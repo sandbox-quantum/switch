@@ -1672,8 +1672,8 @@ class ServiceBroker:
         self, standing: ServiceStanding, connection: ServiceConnection | None
     ) -> str:
         """A connection's status as people and agents act on it, where its
-        service stands as `standing`: "not_connected", "active",
-        "needs_reauthorization" or "error". One made through a client its
+        service stands as `standing`: "not_connected", "active" or
+        "needs_reauthorization". One made through a client its
         service no longer uses, in a way its service no longer offers, before
         its service asked for a choice it now needs, or with a pasted
         credential this server no longer takes, needs reconnecting before
