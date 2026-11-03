@@ -362,7 +362,10 @@ async def connect_with_paste(
     vendor says the credential acts as, or by the credential where it will
     not say. It reaches whatever the credential allows at the vendor, so its
     consent is `write` and a grant on it is on or off. Pasting again, or
-    signing in, replaces it in place, keeping the grants.
+    signing in, replaces it in place. The grants keep working where the
+    vendor names the same account. Where the connection is named by the
+    credential, a new credential is another account, so each agent must be
+    granted again (`grant_account_changed`).
     """
     try:
         await broker.require_workspace_enabled(session, service)
