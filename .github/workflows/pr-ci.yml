@@ -349,6 +349,7 @@ jobs:
 
       - name: Real initdb, spawned as Console spawns it
         if: ${{ !cancelled() }}
+        shell: pwsh
         run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/managed-switch-server/native/postgres-cluster.windows
 
   artifacts:

@@ -2,10 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { generateSecrets } from '../secret-values';
 import { nativeLayout } from './native-paths';
-import { resolvePostgres } from './postgres-binaries';
-import { initCluster, pgEnv } from './postgres-cluster';
+import { downloadPostgres } from './postgres-binaries';
+import { pgEnv, runInitdb } from './postgres-cluster';
 
 vi.mock('@main/lib/logger', () => ({
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
@@ -36,17 +35,13 @@ describe.runIf(process.platform === 'win32')('initdb on Windows', () => {
     expect(caseInsensitiveDuplicates(env)).toEqual([]);
   });
 
-  it('creates a cluster', { timeout: 10 * 60 * 1000 }, async () => {
+  it('runs the portable initdb', { timeout: 10 * 60 * 1000 }, async () => {
     root = await mkdtemp(path.join(os.tmpdir(), 'switch-initdb-'));
     const layout = nativeLayout(root);
     const log = (line: string) => process.stdout.write(`  ${line}\n`);
-    const postgres = await resolvePostgres(layout, null, log);
-    const secrets = generateSecrets();
-    await initCluster(
-      postgres,
-      layout,
-      { owner: secrets.dbPassword, runtime: secrets.dbRuntimePassword },
-      log
-    );
+    // The portable build Console bundles, not whatever the machine has.
+    const postgres = await downloadPostgres(layout, log);
+    log(`path keys: ${Object.keys(pgEnv(postgres)).filter((k) => k.toUpperCase() === 'PATH')}`);
+    await runInitdb(postgres, layout, layout.pgdata, 'pw-for-the-test', log);
   });
 });

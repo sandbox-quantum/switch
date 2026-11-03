@@ -86,6 +86,39 @@ export async function clusterExists(layout: NativeLayout): Promise<boolean> {
   }
 }
 
+/** Run initdb into `pgdata` with the owner role and its password. */
+export async function runInitdb(
+  binaries: PostgresBinaries,
+  layout: NativeLayout,
+  pgdata: string,
+  ownerPassword: string,
+  onLog: (line: string) => void
+): Promise<void> {
+  await rm(pgdata, { recursive: true, force: true });
+  await mkdir(layout.run, { recursive: true });
+  const pwfile = path.join(layout.run, 'initdb-password');
+  await writeFile(pwfile, ownerPassword, { mode: 0o600 });
+  try {
+    await runCommand(
+      postgresBin(binaries, 'initdb'),
+      [
+        '-D',
+        pgdata,
+        '-U',
+        OWNER_ROLE,
+        '--auth=scram-sha-256',
+        `--pwfile=${pwfile}`,
+        '-E',
+        'UTF8',
+        '--locale=C',
+      ],
+      { cwd: layout.root, env: pgEnv(binaries), onLine: onLog, timeoutMs: 300_000 }
+    );
+  } finally {
+    await rm(pwfile, { force: true });
+  }
+}
+
 /**
  * Create the cluster: the owner role with its password, then the runtime role
  * and the `switch` database. Built in a staging directory and moved into place
@@ -103,29 +136,7 @@ export async function initCluster(
   onLog: (line: string) => void
 ): Promise<void> {
   const staging = `${layout.pgdata}.init`;
-  await rm(staging, { recursive: true, force: true });
-  await mkdir(layout.run, { recursive: true });
-  const pwfile = path.join(layout.run, 'initdb-password');
-  await writeFile(pwfile, passwords.owner, { mode: 0o600 });
-  try {
-    await runCommand(
-      postgresBin(binaries, 'initdb'),
-      [
-        '-D',
-        staging,
-        '-U',
-        OWNER_ROLE,
-        '--auth=scram-sha-256',
-        `--pwfile=${pwfile}`,
-        '-E',
-        'UTF8',
-        '--locale=C',
-      ],
-      { cwd: layout.root, env: pgEnv(binaries), onLine: onLog, timeoutMs: 300_000 }
-    );
-  } finally {
-    await rm(pwfile, { force: true });
-  }
+  await runInitdb(binaries, layout, staging, passwords.owner, onLog);
   await appendFile(
     path.join(staging, 'postgresql.conf'),
     `\n# Written by Switch Console: listen address and port.\ninclude_if_exists = '${CONSOLE_CONF}'\n`

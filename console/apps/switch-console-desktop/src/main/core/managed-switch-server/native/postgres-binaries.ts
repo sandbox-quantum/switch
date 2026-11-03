@@ -256,7 +256,7 @@ async function hydrateSymlinks(root: string): Promise<void> {
   }
 }
 
-async function downloadPostgres(
+export async function downloadPostgres(
   layout: NativeLayout,
   onMessage: (message: string) => void
 ): Promise<PostgresBinaries> {
