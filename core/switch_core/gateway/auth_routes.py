@@ -84,6 +84,7 @@ from switch_core.gateway.schemas import (
     SignupMachine,
     SignupRequest,
     SignupResponse,
+    UpdateMeRequest,
     UserResponse,
 )
 from switch_core.providers.hosted import HostedControllerSettings
@@ -526,6 +527,23 @@ async def delete_my_account(
         raise HTTPException(status_code=409, detail=str(refused)) from None
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
+
+
+@router.patch("/auth/me")
+async def update_me(
+    req: UpdateMeRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> SessionUserResponse:
+    """Change the signed-in person's display name.
+
+    Like the password change, this writes the `User` that `get_current_user`
+    handed over and commits the session `get_session` handed over, which are
+    the same object within a request.
+    """
+    user.name = req.name
+    await session.commit()
+    return _session_response(user)
 
 
 @router.put("/auth/me/password")
