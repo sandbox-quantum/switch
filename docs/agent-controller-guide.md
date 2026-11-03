@@ -12,6 +12,7 @@ Before installing the controller, check the following:
 - A supported operating system: macOS, Linux, or Windows 10/11.
 - A supported agent provider CLI installed and available on `PATH`, or provider credentials supplied through an environment file.
 - Access to a Switch instance with Agent Management enabled.
+- The Switch server must have the `agent_management` feature enabled through `FEATURE_FLAGS_ENABLED`.
 - Network access to the Switch API. If a reverse proxy is used, it must route `/v1` requests to `switch-core`.
 
 The controller uses Node.js built-in SQLite support, which requires Node.js 22.13 or later.
@@ -169,7 +170,9 @@ The supported provider login commands are:
 | Antigravity | `antigravity-acp --login` |
 | Cursor | `agent login` |
 
-Run the appropriate login command as the same operating-system user that runs the controller.
+In the default shared-user mode, sign in as the same operating-system user that runs the controller.
+
+In Linux separate-user mode, agents run under dedicated operating-system users and do not inherit the controller user's local provider login. Configure provider credentials and settings through the service environment file, and install provider CLIs system-wide so the agent users can access them.
 
 For Cursor, the controller uses the `agent` binary and launches it in ACP mode.
 
@@ -279,7 +282,15 @@ If neither is configured, the default locations are:
 
 The controller data directory is created with restrictive permissions where supported.
 
-Keep this directory protected because it contains sensitive controller state and credentials. Back it up securely if you need to preserve the machine's local state.
+The location of the controller credential depends on the configured secret store:
+
+- **File store:** The credential is stored in the controller data directory under `secrets/controller-credential`. Protect this file and its parent directory.
+- **macOS keychain:** The credential is stored in the operating-system keychain, not directly in the controller data directory.
+- **Linux Secret Service:** The credential is stored in the operating-system keyring, not directly in the controller data directory.
+
+Back up the controller data directory and the configured operating-system keychain or keyring separately when applicable. In Linux separate-user mode, also account for agent runtime state under the configured agents directory.
+
+Do not assume that backing up the controller data directory alone preserves every credential or agent state.
 
 Do not manually delete or modify its contents while the controller is running.
 
@@ -306,6 +317,32 @@ Each agent receives an agent-scoped relay credential.
 ### Linux separate-user mode
 
 On Linux, an advanced separate-user mode is available. It runs agents under dedicated operating-system users to provide stronger process and filesystem isolation.
+
+Create `/etc/switch/agents.env` before installing the service. Add the provider API keys or supported cloud-provider settings required by your agents.
+
+Protect the environment file because it contains sensitive credentials:
+
+```bash
+sudo chmod 600 /etc/switch/agents.env
+```
+
+Install Node.js, the controller, and provider CLIs in system-wide locations so the dedicated agent users can access them.
+
+Agents do not inherit the controller user's local provider login. Configure the required provider credentials through the service environment file.
+
+Install separate-user mode using:
+
+```bash
+sudo switch-agent-controller install-service --separate-users --env-file /etc/switch/agents.env
+```
+
+In this mode, the default agent workspace is under:
+
+```text
+/var/lib/switch-agents/<uid>/agent/workspace
+```
+
+The agent runtime state is stored under the configured agents directory rather than the controller's default data directory.
 
 This mode requires additional system configuration and should be enabled only by administrators who understand its operational requirements.
 
