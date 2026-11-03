@@ -298,6 +298,17 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         **{name: NUMBER for name in _SNAPSHOT_COUNTS},
         "duration_ms": NUMBER,
     },
+    # One per finished UTC day, ISO week and calendar month, dated to its
+    # middle: distinct use over exactly that period, so the events of one
+    # period kind add up across deployments where the snapshot's trailing
+    # `*_7d` counts, summed over days, count each room up to seven times.
+    "usage_period": {
+        "period": one_of("day", "week", "month"),
+        "room_active": NUMBER,
+        "person_identity_active": NUMBER,
+        "account_active": NUMBER,
+        "tenant_failed_count": NUMBER,
+    },
     # ── Milestones ───────────────────────────────────────────────────────────
     # At most once per deployment, and only for one installed after this
     # shipped. Together they are the activation funnel.

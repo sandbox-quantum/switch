@@ -204,6 +204,14 @@ version of their own to them without also giving them a release of their own.
   agent message events report such posts as `sender_kind = bot`. An app's post
   on Discord or Mattermost also no longer answers a request card or wakes an
   agent following the conversation, as already on Slack.
+- **Usage telemetry counts each finished day, week and month.** The daily
+  snapshot's `*_7d` counts are a trailing week, so a chart adding them up
+  over a week counted a room once for every day it was active. A new
+  `usage_period` event is sent once per finished UTC day, ISO week and
+  calendar month, with distinct active rooms, people and accounts for exactly
+  that period, dated to its middle. Summed at the matching interval it is the
+  real figure. A server that was off sends the periods it missed, up to 35
+  days back, when it next runs.
 - **Agent telemetry says connection where it meant one.**
   `agent_connected`, `agent_disconnected` and the `first_agent_connected`
   milestone are sent alongside `agent_session_started`, `agent_session_ended`

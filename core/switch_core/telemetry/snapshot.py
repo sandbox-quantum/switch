@@ -362,21 +362,27 @@ def _human_message_conditions(tenant_id: str) -> tuple[Any, ...]:
     )
 
 
-def _human_interaction(tenant_id: str, since: datetime) -> Select[tuple[str]]:
-    """Room ids a human used since `since`. See `_human_activity_conditions`."""
+def _human_interaction(
+    tenant_id: str, since: datetime, until: datetime
+) -> Select[tuple[str]]:
+    """Room ids a human used in `[since, until)`. See
+    `_human_activity_conditions`."""
     return (
         select(distinct(Message.room_id))
         .join(Client, Client.id == Message.sender_client_id)
         .where(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
+            Message.sent_at < until,
             *_human_activity_conditions(tenant_id),
         )
     )
 
 
-def _active_accounts(tenant_id: str, since: datetime) -> Select[tuple[str]]:
-    """Distinct Switch accounts that used a room since `since`: an account
+def _active_accounts(
+    tenant_id: str, since: datetime, until: datetime
+) -> Select[tuple[str]]:
+    """Distinct Switch accounts that used a room in `[since, until)`: an account
     is active when a chat account it has claimed spoke. A chat account several
     people claim makes each of them active. See `_human_activity_conditions`."""
     return (
@@ -399,13 +405,16 @@ def _active_accounts(tenant_id: str, since: datetime) -> Select[tuple[str]]:
         .where(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
+            Message.sent_at < until,
             *_human_activity_conditions(tenant_id),
         )
     )
 
 
-def _active_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]]:
-    """Distinct human clients who used a room since `since`. See
+def _active_humans(
+    tenant_id: str, since: datetime, until: datetime
+) -> Select[tuple[str | None]]:
+    """Distinct human clients who used a room in `[since, until)`. See
     `_human_activity_conditions`."""
     return (
         select(distinct(Message.sender_client_id))
@@ -413,28 +422,34 @@ def _active_humans(tenant_id: str, since: datetime) -> Select[tuple[str | None]]
         .where(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
+            Message.sent_at < until,
             *_human_activity_conditions(tenant_id),
         )
     )
 
 
-def _active_bots(tenant_id: str, since: datetime) -> Select[tuple[str | None]]:
-    """The identities among `_active_humans` that posted as an app since
-    `since`: a post the bridge marked `SENDER_IS_APP_MARKER` because its
-    platform said an integration, not a person, sent it."""
+def _active_bots(
+    tenant_id: str, since: datetime, until: datetime
+) -> Select[tuple[str | None]]:
+    """The identities among `_active_humans` that posted as an app in
+    `[since, until)`: a post the bridge marked `SENDER_IS_APP_MARKER` because
+    its platform said an integration, not a person, sent it."""
     return (
         select(distinct(Message.sender_client_id))
         .join(Client, Client.id == Message.sender_client_id)
         .where(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
+            Message.sent_at < until,
             *_human_activity_conditions(tenant_id),
             Message.content.has_key(SENDER_IS_APP_MARKER),
         )
     )
 
 
-def _active_people(tenant_id: str, since: datetime) -> Select[tuple[str | None]]:
+def _active_people(
+    tenant_id: str, since: datetime, until: datetime
+) -> Select[tuple[str | None]]:
     """`_active_humans` less every identity that posted as an app in the same
     window, not just its marked posts.
 
@@ -449,10 +464,11 @@ def _active_people(tenant_id: str, since: datetime) -> Select[tuple[str | None]]
         .where(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
+            Message.sent_at < until,
             *_human_activity_conditions(tenant_id),
             ~Message.content.has_key(SENDER_IS_APP_MARKER),
             Message.sender_client_id.not_in(
-                _active_bots(tenant_id, since).scalar_subquery()
+                _active_bots(tenant_id, since, until).scalar_subquery()
             ),
         )
     )
@@ -545,10 +561,10 @@ async def collect_tenant_counts(
     week_ago = now - _WEEK
 
     counts.active_user_ids_1d |= set(
-        (await session.execute(_active_accounts(tenant_id, day_ago))).scalars()
+        (await session.execute(_active_accounts(tenant_id, day_ago, now))).scalars()
     )
     counts.active_user_ids_7d |= set(
-        (await session.execute(_active_accounts(tenant_id, week_ago))).scalars()
+        (await session.execute(_active_accounts(tenant_id, week_ago, now))).scalars()
     )
     counts.chat_identity_count += await _scalar(
         session,
@@ -557,22 +573,22 @@ async def collect_tenant_counts(
         .where(Client.tenant_id == tenant_id, Client.type == HUMAN_CLIENT_TYPE),
     )
     counts.chat_identity_active_1d += await _count(
-        session, _active_humans(tenant_id, day_ago)
+        session, _active_humans(tenant_id, day_ago, now)
     )
     counts.chat_identity_active_7d += await _count(
-        session, _active_humans(tenant_id, week_ago)
+        session, _active_humans(tenant_id, week_ago, now)
     )
     counts.person_identity_active_1d += await _count(
-        session, _active_people(tenant_id, day_ago)
+        session, _active_people(tenant_id, day_ago, now)
     )
     counts.person_identity_active_7d += await _count(
-        session, _active_people(tenant_id, week_ago)
+        session, _active_people(tenant_id, week_ago, now)
     )
     counts.bot_identity_active_1d += await _count(
-        session, _active_bots(tenant_id, day_ago)
+        session, _active_bots(tenant_id, day_ago, now)
     )
     counts.bot_identity_active_7d += await _count(
-        session, _active_bots(tenant_id, week_ago)
+        session, _active_bots(tenant_id, week_ago, now)
     )
     posted_1d, posted_7d, in_room = (
         await session.execute(_activity_tiers(tenant_id, day_ago, week_ago))
@@ -581,10 +597,10 @@ async def collect_tenant_counts(
     counts.chat_identity_posted_7d += posted_7d
     counts.chat_identity_in_room_count += in_room
     counts.room_active_1d += await _count(
-        session, _human_interaction(tenant_id, day_ago)
+        session, _human_interaction(tenant_id, day_ago, now)
     )
     counts.room_active_7d += await _count(
-        session, _human_interaction(tenant_id, week_ago)
+        session, _human_interaction(tenant_id, week_ago, now)
     )
 
     # A room predating the stamp reads as user-created, the conservative
@@ -1012,6 +1028,69 @@ async def collect_usage(
     counts.account_active_1d = counts.user_active_1d
     counts.account_active_7d = counts.user_active_7d
     counts.duration_ms = round((time.monotonic() - started) * 1000)
+    return counts
+
+
+@dataclass
+class PeriodCounts:
+    """Distinct use over one finished period (`periods.Period`), by the same
+    definitions as the snapshot's `room_active_*`, `person_identity_active_*`
+    and `account_active_*`, so a period and a trailing window agree on what
+    counts."""
+
+    room_active: int = 0
+    person_identity_active: int = 0
+    account_ids: set[str] = field(default_factory=set)
+    tenant_failed_count: int = 0
+
+    @property
+    def account_active(self) -> int:
+        return len(self.account_ids)
+
+
+async def collect_period_counts(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    start: datetime,
+    end: datetime,
+) -> PeriodCounts:
+    """Every tenant's distinct use in `[start, end)`, summed like
+    `collect_usage`: one tenant's failure leaves nothing of it behind and is
+    disclosed in `tenant_failed_count`. Accounts are a set across tenants, so
+    one account active in two counts once."""
+    counts = PeriodCounts()
+    tenant_ids = await all_tenant_ids(session_factory)
+    failed_tenants: list[str] = []
+    for tenant_id in tenant_ids:
+        try:
+            async with tenant_session(session_factory, tenant_id) as session:
+                rooms = await _count(session, _human_interaction(tenant_id, start, end))
+                people = await _count(session, _active_people(tenant_id, start, end))
+                accounts = set(
+                    (
+                        await session.execute(_active_accounts(tenant_id, start, end))
+                    ).scalars()
+                )
+        except Exception:
+            logger.exception(
+                "Usage period: failed to collect counts for tenant %s", tenant_id
+            )
+            failed_tenants.append(tenant_id)
+            continue
+        counts.room_active += rooms
+        counts.person_identity_active += people
+        counts.account_ids |= accounts
+    if failed_tenants:
+        logger.error(
+            "Usage period %s to %s: excluded %d of %d tenant(s): %s. Its counts "
+            "read low, and tenant_failed_count on the event says so.",
+            start.isoformat(),
+            end.isoformat(),
+            len(failed_tenants),
+            len(tenant_ids),
+            ", ".join(failed_tenants),
+        )
+    counts.tenant_failed_count = len(failed_tenants)
     return counts
 
 

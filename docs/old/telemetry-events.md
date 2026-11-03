@@ -235,6 +235,10 @@ the relay receives for it.
 **A daily snapshot**, one per deployment, carrying the counts that describe the
 installation. This answers "how much".
 
+**Period counts**, one per deployment per finished day, week and month, each
+counting distinct rooms and people over exactly that period. This answers "how
+many this week" in a way that adds up across deployments.
+
 **Milestone events**, emitted at most once per deployment, each carrying the
 seconds elapsed since install. This answers "how fast to value".
 
@@ -466,6 +470,47 @@ problem can never make messaging less reliable. These counts are therefore
 near-complete, not exact. That is fine for "how much, and is it growing", and it
 should be said plainly wherever the number is presented rather than discovered
 later.
+
+### `usage_period` — once per finished day, week and month
+
+The snapshot's `*_7d` counts are a trailing week, sent every day. A chart that
+adds them up at a weekly interval counts a room once for every day it was in
+the window, up to seven times. A daily interval avoids that, but a server that
+is off on a given day, as laptops often are, sends nothing for it. `usage_period` is counted over a fixed
+calendar period instead, and sent once per period, so at the matching interval
+the sum across deployments is the real figure.
+
+| Property | Type | Meaning |
+|---|---|---|
+| `period` | `day` / `week` / `month` | a UTC day, an ISO week (Monday to Monday, UTC), or a calendar month |
+| `room_active` | number | distinct rooms a person used with an agent in the period: `room_active_*`'s definition |
+| `person_identity_active` | number | distinct people who did, bots excluded: `person_identity_active_*`'s definition |
+| `account_active` | number | distinct Switch accounts among them: `account_active_*`'s definition, deduplicated across tenants |
+| `tenant_failed_count` | number | tenants whose counts could not be read, left out of the three above, as on the snapshot |
+
+**Chart it at its own interval.** Filter on one `period`, set the interval to
+match, and sum each property: weekly active rooms is the sum of
+`room_active` over `usage_period` where `period = week`, at a weekly interval.
+At any other interval the sum is wrong again — weeks summed into a month count a
+room once per week — so each interval has its own chart. Across deployments the
+sum counts a person who uses two servers twice, as every per-deployment figure
+does.
+
+**Dated to the middle of the period**, not to when it was sent: noon for a day,
+Thursday noon for a week, the middle of the month. A server that was off sends
+what it missed when it next runs, and an event dated "now" would land in a later
+bucket than the period it describes. The middle is inside the same day, week and
+month whichever day a chart starts its weeks on and in any timezone it is drawn
+in. Datadog's log intake refuses records dated more than 18 hours back, so its
+copy of the relay's events has few of these; Amplitude takes them.
+
+**Sent with the snapshot**, for every period that ended since the previous
+snapshot, so each is sent once. Not on a deployment's first pass, which has no
+previous snapshot to measure from. A server back after a long time off sends
+only the periods that ended in the last 35 days, which still covers the month
+before for a laptop that was off for most of the month after. Like
+`room_became_active`, a server whose telemetry was switched off and on again
+sends the periods that ended in between, within those 35 days.
 
 ### Milestone events — at most once per deployment
 

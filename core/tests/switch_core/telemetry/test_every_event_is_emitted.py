@@ -29,11 +29,11 @@ def _emitted_names() -> set[str]:
 
     Matched on the call rather than on the bare string, so a name that appears
     only in a comment, a docstring or a reason map does not count as an
-    emitter. The three shapes in the tree are `telemetry.emit("x", ...)`,
-    `await telemetry.emit_milestone("x", ...)` and
-    `emit_safely(target, "x", {...})`.
+    emitter. The shapes in the tree are `telemetry.emit("x", ...)`,
+    `telemetry.emit_at("x", at, ...)`, `await telemetry.emit_milestone("x",
+    ...)` and `emit_safely(target, "x", {...})`.
     """
-    emitters = {"emit", "emit_milestone", "emit_safely"}
+    emitters = {"emit", "emit_at", "emit_milestone", "emit_safely"}
     found: set[str] = set()
     for path in _PACKAGE_ROOT.rglob("*.py"):
         if path == _CATALOGUE:

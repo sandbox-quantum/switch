@@ -15,7 +15,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -28,6 +28,8 @@ from switch_core.telemetry.deployment import (
 from switch_core.telemetry.sink import TelemetryRecord, TelemetrySink
 
 logger = logging.getLogger(__name__)
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class TelemetryService:
@@ -82,6 +84,17 @@ class TelemetryService:
 
     def emit(self, event: str, **properties: PropertyValue) -> None:
         """Report one event. Never blocks; raises only on a malformed event."""
+        self._emit(event, time.time_ns(), properties)
+
+    def emit_at(self, event: str, at: datetime, **properties: PropertyValue) -> None:
+        """`emit`, dated `at` rather than now: for an event about a time that
+        has passed, which a chart must place where it happened."""
+        microseconds = (at - _EPOCH) // timedelta(microseconds=1)
+        self._emit(event, microseconds * 1_000, properties)
+
+    def _emit(
+        self, event: str, timestamp_ns: int, properties: dict[str, PropertyValue]
+    ) -> None:
         # Validated even when disabled, so a mistake in a rarely-taken branch
         # is caught by whichever test exercises it rather than lying dormant
         # until the day a deployment switches telemetry on.
@@ -93,7 +106,7 @@ class TelemetryService:
                 name=wire_name(event),
                 properties=dict(properties),
                 resource=dict(self._resource),
-                timestamp_ns=time.time_ns(),
+                timestamp_ns=timestamp_ns,
             )
         )
 
