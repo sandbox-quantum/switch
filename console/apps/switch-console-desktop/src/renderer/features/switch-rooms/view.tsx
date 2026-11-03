@@ -2,7 +2,12 @@ import { DoorOpen, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useLayoutEffect, useRef } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { ConsoleChatRedirect } from '@renderer/features/chats/console-chat-redirect';
+import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
+import {
+  ConsoleChatRedirect,
+  opensAsConsoleChat,
+} from '@renderer/features/chats/console-chat-redirect';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -96,7 +101,8 @@ export const RoomTabs = observer(function RoomTabs({
  */
 const RoomTitlebar = observer(function RoomTitlebar() {
   const { params } = useParams('room');
-  const name = switchRoomsStore.roomNameById(params.roomId);
+  const name =
+    switchRoomsStore.roomNameById(params.roomId) ?? chatsStore.chat(params.roomId)?.name ?? null;
   const bridgeType = switchRoomsStore.roomBridgeTypeById(params.roomId);
 
   return (
@@ -128,15 +134,25 @@ const RoomTitlebar = observer(function RoomTitlebar() {
   );
 });
 
-/** Settings when the room is showing them; otherwise nothing, and the
- * conversation drawn by `RoomEmbedLayer` above shows through. */
+/** A Console chat's conversation, drawn here rather than by `RoomEmbedLayer`. */
+const ConsoleChat = observer(function ConsoleChat({ roomId }: { roomId: string }) {
+  const serverId = chatsStore.serverId;
+  if (!serverId || !opensAsConsoleChat(roomId)) return null;
+  return <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />;
+});
+
+/** Settings when the room is showing them; otherwise a Console chat's
+ * conversation, or nothing, and the conversation drawn by `RoomEmbedLayer`
+ * above shows through. */
 const RoomMainPanel = observer(function RoomMainPanel(): React.JSX.Element {
   const { params } = useParams('room');
   return (
     <>
       <ConsoleChatRedirect roomId={params.roomId} />
-      {roomTabStore.tabFor(params.roomId, 'chat') === 'configuration' && (
+      {roomTabStore.tabFor(params.roomId, 'chat') === 'configuration' ? (
         <RoomConfigurationPanel roomId={params.roomId} />
+      ) : (
+        <ConsoleChat roomId={params.roomId} />
       )}
     </>
   );
@@ -165,8 +181,10 @@ export const EmbeddedRoom = observer(function EmbeddedRoom({ roomId }: { roomId:
   }, [roomId]);
   return (
     <div ref={ref} data-testid="embedded-room" className="min-h-0 flex-1">
-      {roomTabStore.tabFor(roomId, embeddedRoomFallbackTab(roomId)) === 'configuration' && (
+      {roomTabStore.tabFor(roomId, embeddedRoomFallbackTab(roomId)) === 'configuration' ? (
         <RoomConfigurationPanel roomId={roomId} />
+      ) : (
+        <ConsoleChat roomId={roomId} />
       )}
     </div>
   );

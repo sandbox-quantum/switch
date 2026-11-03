@@ -105,7 +105,7 @@ def test_terminated_then_not_found_remains_safely_stopped_and_deletable(
             {"Reservations": [{"Instances": [terminal_instance(cloud, claim)]}]},
             {"InstanceIds": [machine.instance_id]},
         )
-        first = Reconciler(store, cloud).reconcile(machine.machine_id)
+        first = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert first.instance_terminal_observed
     assert first.observed_state is ObservedState.STOPPED
 
@@ -115,7 +115,7 @@ def test_terminated_then_not_found_remains_safely_stopped_and_deletable(
             service_error_code="InvalidInstanceID.NotFound",
             expected_params={"InstanceIds": [machine.instance_id]},
         )
-        second = Reconciler(store, cloud).reconcile(machine.machine_id)
+        second = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert second.observed_state is ObservedState.STOPPED
     assert second.observed_revision == second.desired_revision
     assert second.observed_operation_id == second.operation_id
@@ -175,7 +175,7 @@ def test_start_callback_cannot_publish_stale_success_or_error(tmp_path: Path, st
     store.set_observed(machine, ObservedState.STOPPED)
     cloud = StartRaceCloud(cfg.state_db_path, cfg.fingerprint(), fail=start_fails)
 
-    Reconciler(store, cloud).reconcile_all()
+    Reconciler(store, cloud, instance_type=None).reconcile_all()
 
     current = store.get(machine.machine_id)
     assert cloud.start_calls == 1
@@ -243,7 +243,7 @@ def test_retained_stops_running_before_termination_and_keeps_volume(
     machine = record_compute(store, machine, cfg.availability_zone)
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
     cloud = DeletionCloud(["running", "stopped", "terminated"])
-    reconciler = Reconciler(store, cloud)
+    reconciler = Reconciler(store, cloud, instance_type=None)
 
     assert reconciler.reconcile(machine.machine_id).observed_state is ObservedState.STOPPING
     assert cloud.calls == ["stop-instance"]
@@ -269,7 +269,7 @@ def test_retained_with_a_missing_volume_needs_attention(tmp_path: Path):
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
     cloud = DeletionCloud(["terminated"])
     cloud.volume_exists = False
-    result = Reconciler(store, cloud).reconcile(machine.machine_id)
+    result = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert result.observed_state is ObservedState.NEEDS_ATTENTION
     assert result.error == "recorded data volume cannot be found"
     store.close()
@@ -302,12 +302,14 @@ def test_running_after_retained_launches_the_next_instance_on_the_kept_volume(tm
     store, machine = store_and_machine(cfg)
     first = record_compute(store, machine, cfg.availability_zone)
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
-    Reconciler(store, DeletionCloud(["terminated"])).reconcile(machine.machine_id)
+    Reconciler(store, DeletionCloud(["terminated"]), instance_type=None).reconcile(
+        machine.machine_id
+    )
     bundled = with_bundle(store, machine.machine_id, 2)
     store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
     cloud = LaunchCloud()
 
-    relaunched = Reconciler(store, cloud).reconcile(machine.machine_id)
+    relaunched = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
 
     assert relaunched.instance_id == "i-0000000000000000b"
     assert relaunched.data_volume_id == first.data_volume_id
@@ -329,12 +331,14 @@ def test_a_new_instance_moves_onto_the_configured_image(tmp_path: Path):
     store, machine = store_and_machine(cfg)
     first = record_compute(store, machine, cfg.availability_zone)
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
-    Reconciler(store, DeletionCloud(["terminated"])).reconcile(machine.machine_id)
+    Reconciler(store, DeletionCloud(["terminated"]), instance_type=None).reconcile(
+        machine.machine_id
+    )
     with_bundle(store, machine.machine_id, 2)
     store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
     cloud = LaunchCloud(image_id="ami-22222222222222222")
 
-    relaunched = Reconciler(store, cloud).reconcile(machine.machine_id)
+    relaunched = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
 
     [launched] = cloud.launched
     assert first.image_id == cfg.image_id
@@ -343,13 +347,40 @@ def test_a_new_instance_moves_onto_the_configured_image(tmp_path: Path):
     store.close()
 
 
-def test_the_image_of_an_issued_launch_is_not_changed(tmp_path: Path):
+@pytest.mark.parametrize(
+    "configured, expected", [("r7i.2xlarge", "r7i.2xlarge"), (None, "m6i.large")]
+)
+def test_a_new_instance_moves_onto_the_configured_instance_type(
+    tmp_path: Path, configured, expected
+):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    first = record_compute(store, machine, cfg.availability_zone)
+    store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
+    Reconciler(store, DeletionCloud(["terminated"]), instance_type=None).reconcile(
+        machine.machine_id
+    )
+    with_bundle(store, machine.machine_id, 2)
+    store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
+    cloud = LaunchCloud()
+
+    relaunched = Reconciler(store, cloud, instance_type=configured).reconcile(machine.machine_id)
+
+    [launched] = cloud.launched
+    assert first.instance_type == "m6i.large"
+    assert launched.instance_type == relaunched.instance_type == expected
+    assert relaunched.data_volume_id == first.data_volume_id
+    store.close()
+
+
+def test_the_image_and_type_of_an_issued_launch_are_not_changed(tmp_path: Path):
     cfg = config(tmp_path)
     store, machine = store_and_machine(cfg)
     machine = store.record_volume(machine.machine_id, "vol-0123456789abcdef0", "us-east-1a")
     machine = store.mark_instance_launch_intent(machine)
     machine = store.mark_instance_launch_issued(machine, datetime.now(UTC))
-    assert store.use_image(machine, "ami-22222222222222222").image_id == cfg.image_id
+    unchanged = store.use_launch_spec(machine, "ami-22222222222222222", "r7i.2xlarge")
+    assert (unchanged.image_id, unchanged.instance_type) == (cfg.image_id, "m6i.large")
     store.close()
 
 
@@ -360,7 +391,7 @@ def test_deleted_keeps_the_volume_until_retain_until(tmp_path: Path, monkeypatch
     retain_until = datetime(2026, 1, 8, tzinfo=UTC)
     accept_delete(store, machine, retain_until)
     cloud = DeletionCloud(["terminated", None, None, None])
-    reconciler = Reconciler(store, cloud)
+    reconciler = Reconciler(store, cloud, instance_type=None)
 
     monkeypatch.setattr(reconciler_module, "utcnow", lambda: retain_until - timedelta(seconds=1))
     assert reconciler.reconcile(machine.machine_id).observed_state is ObservedState.DELETING
@@ -384,7 +415,7 @@ def test_accepted_delete_waits_for_pending_and_deletes_volume_only_after_termina
     machine = record_compute(store, machine, cfg.availability_zone)
     accept_delete(store, machine, None)
     cloud = DeletionCloud(["pending", "stopped", "terminated", None])
-    reconciler = Reconciler(store, cloud)
+    reconciler = Reconciler(store, cloud, instance_type=None)
 
     assert reconciler.reconcile(machine.machine_id).observed_state is ObservedState.DELETING
     assert cloud.calls == []
@@ -453,7 +484,7 @@ def test_deletion_completes_after_terminated_instance_is_purged(tmp_path: Path):
             {"VolumeIds": [machine.data_volume_id]},
         )
         stubber.add_response("delete_volume", {}, {"VolumeId": machine.data_volume_id})
-        deleting = Reconciler(store, cloud).reconcile(machine.machine_id)
+        deleting = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
         stubber.add_response(
             "describe_instances", {"Reservations": []}, {"InstanceIds": [machine.instance_id]}
         )
@@ -462,14 +493,14 @@ def test_deletion_completes_after_terminated_instance_is_purged(tmp_path: Path):
             service_error_code="InvalidVolume.NotFound",
             expected_params={"VolumeIds": [machine.data_volume_id]},
         )
-        deleted = Reconciler(store, cloud).reconcile(machine.machine_id)
+        deleted = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
         stubber.assert_no_pending_responses()
     assert deleting.observed_state is ObservedState.DELETING
     assert deleted.observed_state is ObservedState.DELETED
     assert deleted.error is None
 
     with Stubber(client):
-        again = Reconciler(store, cloud).reconcile(machine.machine_id)
+        again = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert again.observed_state is ObservedState.DELETED
     store.close()
 
@@ -483,7 +514,7 @@ def test_purged_instance_without_terminal_evidence_needs_attention(tmp_path: Pat
         stubber.add_response(
             "describe_instances", {"Reservations": []}, {"InstanceIds": [machine.instance_id]}
         )
-        result = Reconciler(store, cloud).reconcile(machine.machine_id)
+        result = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert result.observed_state is ObservedState.NEEDS_ATTENTION
     assert result.error == "recorded instance state is unknown during deletion"
     store.close()
@@ -496,7 +527,7 @@ def test_completed_deletion_is_not_reconciled_again(tmp_path: Path):
     accept_delete(store, machine, None)
     cloud = DeletionCloud(["terminated"])
     cloud.volume_exists = False
-    reconciler = Reconciler(store, cloud)
+    reconciler = Reconciler(store, cloud, instance_type=None)
     assert reconciler.reconcile(machine.machine_id).observed_state is ObservedState.DELETED
     calls = list(cloud.calls)
 

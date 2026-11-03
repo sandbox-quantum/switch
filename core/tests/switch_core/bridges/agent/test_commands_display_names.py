@@ -102,6 +102,12 @@ def _build_client(
     async def _list_for_room(_session, _room_id):  # type: ignore[no-untyped-def]
         return list(documents or [])
 
+    async def _get_many(_session, _ids):  # type: ignore[no-untyped-def]
+        return []
+
+    async def _no_packages(_session, _room_id):  # type: ignore[no-untyped-def]
+        return []
+
     async def _fresh_agent(_session):  # type: ignore[no-untyped-def]
         return this_agent
 
@@ -117,7 +123,10 @@ def _build_client(
         _room_role_store=SimpleNamespace(
             list_roles=_list_roles, live_holders_for_room=_live_holders_for_room
         ),
-        _document_store=SimpleNamespace(list_for_room=_list_for_room),
+        _document_store=SimpleNamespace(
+            list_for_room=_list_for_room, get_many=_get_many
+        ),
+        _package_store=SimpleNamespace(list_for_room=_no_packages),
         _connections=SimpleNamespace(live_connection_ids=lambda: set()),
     )
     return client, posted

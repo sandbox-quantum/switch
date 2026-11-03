@@ -69,7 +69,7 @@ export function systemdUnit(spec: ServiceSpec): string {
   const quote = (value: string) => `"${value.replace(/(["\\])/g, '\\$1')}"`;
   return [
     '[Unit]',
-    'Description=Switch agents controller',
+    'Description=Switch agent controller',
     'After=network-online.target',
     'Wants=network-online.target',
     '',

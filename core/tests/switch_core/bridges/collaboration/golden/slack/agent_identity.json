@@ -1,0 +1,50 @@
+[
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "Generated face, display name.",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://images.example.com/reviewer.png",
+      "text": "Own icon, marked-up name.",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Reviewer <QA> & *co*"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": null,
+      "text": "Icon URL over Slack's limit.",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "wide-icon"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://ui-avatars.com/api/?name=jane&background=random&size=128",
+      "text": "Not an agent: lettered badge.",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "jane"
+    },
+    "method": "chat.postMessage"
+  }
+]

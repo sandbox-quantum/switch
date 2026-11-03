@@ -461,6 +461,7 @@ export default function GroupsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editGroup, setEditGroup] = useState<RoomGroupDetail | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RoomGroupDetail | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const groupList = useMemo(() => groups ?? [], [groups]);
   const roomList = useMemo(() => rooms ?? [], [rooms]);
@@ -480,11 +481,22 @@ export default function GroupsPage() {
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
-    await deleteRoomGroup(deleteTarget.id);
+    setDeleteError(null);
+    try {
+      await deleteRoomGroup(deleteTarget.id);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Failed to delete group");
+      return;
+    }
     if (selectedId === deleteTarget.id) setSelectedId(null);
     setDeleteTarget(null);
     refetchAll();
   }, [deleteTarget, selectedId, refetchAll]);
+
+  const closeDelete = useCallback(() => {
+    setDeleteTarget(null);
+    setDeleteError(null);
+  }, []);
 
   return (
     <Box>
@@ -552,16 +564,21 @@ export default function GroupsPage() {
         onSaved={refetchAll}
       />
 
-      <Dialog open={deleteTarget !== null} onClose={() => setDeleteTarget(null)}>
+      <Dialog open={deleteTarget !== null} onClose={closeDelete}>
         <DialogTitle>Delete group?</DialogTitle>
         <DialogContent>
+          {deleteError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {deleteError}
+            </Alert>
+          )}
           <Typography variant="body2">
             Delete <b>{deleteTarget?.name}</b>? Its rooms become standalone and any
             subgroups move up to this group's parent. This cannot be undone.
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
+          <Button onClick={closeDelete}>Cancel</Button>
           <Button color="error" variant="contained" onClick={handleDelete}>
             Delete
           </Button>

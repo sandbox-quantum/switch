@@ -298,7 +298,7 @@ be loaded.
 
 A Console agent can be handed to Switch's agent management ("Move to managed"
 on the agent's Room watcher panel, or Move all on a machine's card): it then
-runs on an agents controller instead of Console's own watcher, and "Stop
+runs on an agent controller instead of Console's own watcher, and "Stop
 managing" brings it back. A local agent moves onto this computer's embedded
 controller; an agent on an SSH host onto the controller Console installs on
 that host (`src/main/core/host-controllers/`, the "This host as a machine"

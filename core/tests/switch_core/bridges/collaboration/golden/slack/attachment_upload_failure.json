@@ -1,0 +1,26 @@
+[
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "file": {
+        "$bytes_base64": "Ynl0ZXM="
+      },
+      "filename": "plot.png",
+      "initial_comment": "*Scout*: the plot",
+      "thread_ts": "1700000000.000100"
+    },
+    "method": "files.upload_v2"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "the plot\n_sent an attachment that couldn't be relayed: plot.png_",
+      "thread_ts": "1700000000.000100",
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  }
+]

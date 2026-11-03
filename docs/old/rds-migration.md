@@ -157,8 +157,9 @@ investigated.
 
 Two related points for whoever watches this:
 
-- `pool_pre_ping` is on, so pooled connections recover on their own after a
-  failover rather than serving one error each.
+- `pool_pre_ping` is off by default since switch#1111. After a failover the
+  first query on each pod fails, along with any query that was running, and
+  SQLAlchemy then replaces every connection the pool held.
 - The notification queue is bounded (8 GB) and fills only if a listener sits in
   a long transaction. Ours does not, but a queue-full alarm is cheap.
 

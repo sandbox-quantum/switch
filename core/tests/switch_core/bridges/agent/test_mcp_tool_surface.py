@@ -163,8 +163,8 @@ def _indexed_tools(skill: Path) -> list[str]:
 
     One tool per bullet, opening with the backticked name. Read from the body
     rather than the frontmatter: the `description:` is always-resident context
-    on the hosts that load it as a skill (and Codex truncates it to fit a
-    budget), so it carries a trigger rather than an inventory.
+    on a host that loads it as a skill file, so it carries a trigger rather
+    than an inventory.
 
     Every bullet in the section must parse. A tool silently dropping out
     because someone bolded it, indented it, or folded two onto one line is the

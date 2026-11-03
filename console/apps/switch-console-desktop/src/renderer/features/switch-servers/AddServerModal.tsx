@@ -32,6 +32,7 @@ import {
   urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { ConnectionsStep } from './connections-step';
+import { DOCKER_RECHECK_MS, recheckDocker } from './docker-recheck';
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
@@ -532,6 +533,15 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   const native = store.runtime === 'native';
   const needsDocker = store.runtime === 'docker';
   const canStart = running || (store.runtime !== null && (!needsDocker || dockerReady));
+
+  // People install or start Docker while this step is open, so keep asking
+  // until it answers. Leaving the step, starting the server or Docker
+  // answering ends it.
+  const waitingForDocker = dockerUnavailable !== null && idle;
+  useEffect(() => {
+    if (!waitingForDocker) return;
+    return recheckDocker(() => store.checkDocker(), window, DOCKER_RECHECK_MS);
+  }, [store, waitingForDocker]);
 
   // The pager's back arrow only ever repeats the footer's Back, so the two read
   // one const. Open during the install too: the store is a singleton the main

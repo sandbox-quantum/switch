@@ -40,6 +40,7 @@ import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from switch_core.agent_runs import AgentOrigin, kickoff_fingerprint
+from switch_core.authz import Principal, can
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
@@ -77,6 +78,18 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # box. The value is the name a template would write: an agent's name, a
 # bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
+
+
+@dataclass(frozen=True)
+class RoomReader:
+    """Who a template runs as, which decides the rooms its `room` params may
+    name: the rooms `principal` may read, plus the rooms `agent_id` is in when
+    an agent runs it. Any other room reads as missing, so a template cannot
+    confirm or fill in the name of a room its runner cannot see."""
+
+    principal: Principal
+    agent_id: str | None = None
+
 
 # Param types that say how an agent the template creates runs: the coding
 # agent that runs it, where it runs (`location`, a Console answer: this
@@ -408,6 +421,28 @@ ExternalReferenceEntry = (
 )
 
 
+# A package in a room spec is always one that exists: a template attaches
+# packages but never defines or changes one, so there is no inline shape.
+
+
+class ExistingPackageById(BaseModel):
+    """Attach an existing package by id (exact, unambiguous)."""
+
+    model_config = {"extra": "forbid"}
+    id: str
+
+
+class ExistingPackageByName(BaseModel):
+    """Attach an existing package by name (resolved over the caller's owned +
+    public packages; ambiguity is an error)."""
+
+    model_config = {"extra": "forbid"}
+    name: str
+
+
+PackageEntry = ExistingPackageById | ExistingPackageByName
+
+
 class DocSpec(BaseModel):
     name: str
     description: str
@@ -428,6 +463,7 @@ class RoomSpec(BaseModel):
     users: list[str] = []
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
+    packages: list[PackageEntry] = []
     docs: list[DocSpec] = []
     # Agent name to the alias it can be addressed by in this room.
     aliases: dict[str, str] | None = None
@@ -503,6 +539,7 @@ class ProvisionResult(BaseModel):
     room_id: str
     room_name: str
     attached_reference_ids: list[str] = []
+    attached_package_ids: list[str] = []
     created_reference_ids: list[str] = []
     created_document_ids: list[str] = []
     role_names: list[str] = []
@@ -728,7 +765,9 @@ class RoomYamlService:
 
     # ── Entity params ─────────────────────────────────────────────────────
 
-    async def check_entity_params(self, parsed: ParsedTemplate) -> None:
+    async def check_entity_params(
+        self, parsed: ParsedTemplate, *, reader: RoomReader
+    ) -> None:
         """Every entity-typed param must name something this server has.
 
         Raises ``ValueError`` in the ``param 'x': ...`` form the Console maps
@@ -773,7 +812,7 @@ class RoomYamlService:
                             f"param {param!r}: messaging app {value!r} is not running"
                         )
             if "room" in wanted:
-                rooms = {r.name for r in await self._room_store.get_all(session)}
+                rooms = set(await self._readable_room_names(session, reader))
                 for param, value in wanted["room"]:
                     if value not in rooms:
                         raise ValueError(
@@ -807,13 +846,14 @@ class RoomYamlService:
                     )
 
     async def resolve_defaults(
-        self, text: str, inputs: dict[str, Any] | None
+        self, text: str, inputs: dict[str, Any] | None, *, reader: RoomReader
     ) -> dict[str, Any] | None:
         """Turn each list default into an input, for params sent no value.
 
         The candidates are tried in order and the first one the server has
         wins: a bridge by display name, an agent or room by name, ``$first``
-        for the default messaging app or the first agent or room by name. A
+        for the default messaging app or the first agent or room by name. Only
+        rooms `reader` may name count (see ``RoomReader``). A
         chain with no hit leaves the param as it was, for ``resolve_params``
         to report. Runs before ``builtins_for``, because the bridge decides
         which messaging app ``{$creator}`` is looked up on. A document that
@@ -849,7 +889,7 @@ class RoomYamlService:
             names: dict[str, list[str]] = {}
             for name, spec in chains.items():
                 if spec.type not in names:
-                    names[spec.type] = await self._names_of(session, spec.type)
+                    names[spec.type] = await self._names_of(session, spec.type, reader)
                 have = names[spec.type]
                 for candidate in spec.default:  # type: ignore[union-attr]
                     if candidate == FIRST and have:
@@ -860,7 +900,9 @@ class RoomYamlService:
                         break
         return filled if filled != given else inputs
 
-    async def _names_of(self, session: AsyncSession, param_type: str) -> list[str]:
+    async def _names_of(
+        self, session: AsyncSession, param_type: str, reader: RoomReader
+    ) -> list[str]:
         """What the server has of one entity type, the ``$first`` one first."""
         if param_type == "bridge":
             active = [
@@ -877,7 +919,27 @@ class RoomYamlService:
             )
         if param_type == "agent":
             return sorted(a.name for a in await self._agent_store.get_all(session))
-        return sorted(r.name for r in await self._room_store.get_all(session))
+        return sorted(await self._readable_room_names(session, reader))
+
+    async def _readable_room_names(
+        self, session: AsyncSession, reader: RoomReader
+    ) -> list[str]:
+        """Names of the rooms `reader` may name in a `room` param."""
+        member_of = (
+            {
+                r.id
+                for r in await self._room_store.get_rooms_for_agent(
+                    session, reader.agent_id
+                )
+            }
+            if reader.agent_id is not None
+            else set()
+        )
+        return [
+            r.name
+            for r in await self._room_store.get_all(session)
+            if r.id in member_of or can(reader.principal, "read", r)
+        ]
 
     async def builtins_for(
         self,
@@ -1007,6 +1069,9 @@ class RoomYamlService:
         attached_ref_ids, inline_refs = await self._resolve_references(
             spec.references, user_id=user_id, is_admin=is_admin
         )
+        attached_package_ids = await self._resolve_packages(
+            spec.packages, user_id=user_id, is_admin=is_admin
+        )
 
         config = RoomCreateConfig(
             name=spec.name,
@@ -1031,6 +1096,7 @@ class RoomYamlService:
             write_visibility=spec.write_visibility,
             roles=spec.roles or None,
             reference_ids=attached_ref_ids or None,
+            package_ids=attached_package_ids or None,
             aliases=spec.aliases,
         )
         result = await self._rooms.create_room(config)
@@ -1064,6 +1130,7 @@ class RoomYamlService:
             room_id=room_id,
             room_name=result.room.name,
             attached_reference_ids=attached_ref_ids,
+            attached_package_ids=attached_package_ids,
             created_reference_ids=created_ref_ids,
             created_document_ids=created_doc_ids,
             role_names=[r.name for r in spec.roles],
@@ -1231,6 +1298,44 @@ class RoomYamlService:
                     )
                     inline.append(entry)
         return attached_ids, inline
+
+    async def _resolve_packages(
+        self, entries: list[PackageEntry], *, user_id: str, is_admin: bool
+    ) -> list[str]:
+        """Resolve the packages to attach up front, failing loud on a missing,
+        ambiguous or unreadable one, so the room is not created without it.
+        Attaching needs read access, as it does by hand."""
+        attached_ids: list[str] = []
+        async with self._session_factory() as session:
+            visible = await self._resources.list_packages_for_user(session, user_id)
+            by_name: dict[str, list[str]] = {}
+            for pkg in visible:
+                by_name.setdefault(pkg.name, []).append(pkg.id)
+            for entry in entries:
+                if isinstance(entry, ExistingPackageById):
+                    try:
+                        await self._resources.get_package_for_user(
+                            session, entry.id, user_id, is_admin=is_admin
+                        )
+                    except PermissionError as e:
+                        raise PermissionError(
+                            f"Cannot attach package {entry.id!r}: {e}"
+                        ) from e
+                    attached_ids.append(entry.id)
+                else:
+                    matches = by_name.get(entry.name, [])
+                    if not matches:
+                        raise ValueError(
+                            f"No package named {entry.name!r} is accessible"
+                        )
+                    if len(matches) > 1:
+                        raise ValueError(
+                            f"Ambiguous package name {entry.name!r}: "
+                            f"{len(matches)} matches; attach by 'id' instead"
+                        )
+                    attached_ids.append(matches[0])
+        # A package named twice (by id and by name, say) is attached once.
+        return list(dict.fromkeys(attached_ids))
 
     async def _create_inline_references(
         self,
@@ -1415,14 +1520,17 @@ class RoomYamlService:
         agents: bool = True,
         users: bool = True,
         references: bool = True,
+        packages: bool = True,
         docs: bool = True,
         roles: bool = True,
     ) -> str:
         """Read a live room back into the import surface and dump it to YAML.
 
-        References export as attach-by-``id``. Only room-scoped documents are
-        exported (as inline docs) — they are the only docs the import surface
-        can recreate. Each section can be dropped via its toggle.
+        References and packages export as attach-by-``id``. Only room-scoped
+        documents are exported (as inline docs): they are the only docs the
+        import surface can recreate. A package's own references and documents
+        are not exported, since attaching the package brings them. Each
+        section can be dropped via its toggle.
         """
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
@@ -1498,6 +1606,11 @@ class RoomYamlService:
                 refs = await self._resources.list_room_references(session, room.id)
                 if refs:
                     data["references"] = [{"id": r.id} for r in refs]
+
+            if packages:
+                pkgs = await self._resources.list_room_packages(session, room.id)
+                if pkgs:
+                    data["packages"] = [{"id": p.id} for p in pkgs]
 
             if docs:
                 room_docs = await self._resources.list_room_documents(session, room.id)

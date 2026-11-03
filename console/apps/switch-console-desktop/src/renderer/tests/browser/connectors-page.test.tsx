@@ -43,7 +43,12 @@ const featureFlags = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { workspaces, featureFlags, switchServers },
+  rpc: {
+    workspaces,
+    featureFlags,
+    switchServers,
+    userChanges: { watch: async () => false, unwatch: async () => {} },
+  },
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
@@ -66,6 +71,8 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
         { id: 'server', name: 'Dev Server', managed: server.managed, managementKind: 'local' },
       ];
     },
+    isConnected: () => true,
+    statusFor: () => undefined,
   },
 }));
 
@@ -579,7 +586,7 @@ it('shows a connection the workspace has switched off as off, not as connected',
   expect(page.querySelector('[aria-label="Atlassian connected"]')).toBeNull();
   expect(button(/^Atlassian/, grid(page)!)!.textContent).toContain('Off in this workspace');
   expect(button(/^Atlassian/, grid(page)!)!.textContent).toContain(
-    'A workspace admin has switched it off.'
+    'Ask a workspace admin to turn it on.'
   );
 });
 

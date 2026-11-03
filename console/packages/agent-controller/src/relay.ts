@@ -191,10 +191,10 @@ export class LocalRelay {
     const agentId = token ? this.tokens.get(hashToken(token)) : undefined;
     if (agentId) return agentId;
     if (!this.ready)
-      return new HttpRefusal(503, 'The agents controller is starting; retry in a moment.');
+      return new HttpRefusal(503, 'The agent controller is starting; retry in a moment.');
     return new HttpRefusal(
       401,
-      'This token is not one the agents controller issued, or its agent is no longer assigned to this machine.'
+      'This token is not one the agent controller issued, or its agent is no longer assigned to this machine.'
     );
   }
 
@@ -225,7 +225,7 @@ export class LocalRelay {
       if (CONNECTION_ROUTE.test(url.pathname))
         throw new HttpRefusal(
           410,
-          `The agents controller no longer serves the agent connection; its agent hosts hear their events on ${HUB_PATH}. Restart the agent host.`
+          `The agent controller no longer serves the agent connection; its agent hosts hear their events on ${HUB_PATH}. Restart the agent host.`
         );
       this.checkForwardable(url, raw, agentId);
       await this.deps.forwarder.forward(req, res, {
@@ -242,7 +242,7 @@ export class LocalRelay {
   private checkForwardable(url: URL, raw: string, agentId: string): void {
     const rawPath = raw.split('?')[0]!;
     if (/%2f|%5c/i.test(rawPath) || !FORWARDED.test(url.pathname))
-      throw new HttpRefusal(404, `The agents controller does not relay ${url.pathname}.`);
+      throw new HttpRefusal(404, `The agent controller does not relay ${url.pathname}.`);
     const segment = /^\/agents\/([^/]+)\//.exec(url.pathname)?.[1];
     if (segment === undefined) return;
     const named = decodeURIComponent(segment);

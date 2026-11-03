@@ -5,8 +5,9 @@ repository** (`sandbox-quantum/switch`). The repo is public, so the downloads
 need no account, token or sign-up. No need to build from source.
 
 > Builds are currently **macOS arm64 (Apple Silicon) and x64 (Intel)**, **Linux
-> x64 and arm64** and **Windows x64**. Windows builds are not code signed — see
-> [Install (Windows x64)](#install-windows-x64).
+> x64 and arm64** and **Windows x64**. On Windows, an agent runs on the PC
+> itself as a managed agent, on a server with agent management on; otherwise it
+> needs an SSH host — see [Install (Windows x64)](#install-windows-x64).
 
 ## Download
 
@@ -137,12 +138,24 @@ Two caveats:
 The `.msi` supports the usual `msiexec` flow if you would rather not run the
 installer interactively.
 
-### Docker-backed features are not available on Windows
+### Where agents run on Windows
 
-Switch Console can manage a local or remote Switch server through Docker. That
-path is **macOS/Linux only** — Docker CLI discovery does not resolve
-`docker.exe` on Windows. Connecting to a Switch server that is already running
-elsewhere is unaffected.
+On a server with agent management on (a local server Console runs has it), a
+new agent on **This computer** runs on the PC as a managed agent: Console's
+built-in agents controller runs it, once **Run managed agents on this computer**
+is on. Antigravity has no Windows build, so it can't run there.
+
+On a server without agent management, Console runs the agent itself, and those
+sessions need a POSIX execution host, so Windows Console asks you to pick an SSH
+host instead: a Linux or macOS machine you can reach over SSH, set up from
+**Settings → Remote hosts**. Connecting to a Switch server and working in rooms
+are unaffected either way.
+
+### Running a server through Docker
+
+Switch Console looks for Docker Desktop and Rancher Desktop on Windows, so it can
+find `docker.exe` for a local server. Running a local server from Windows Console
+has not been exercised end to end yet; please report what happens if you try it.
 
 Windows support is new and less exercised than the other platforms; please report
 anything that misbehaves.

@@ -2,7 +2,7 @@ import { toast } from 'sonner';
 import type { AdminSection } from '@renderer/features/admin/admin-sections';
 import { isAgentSection } from '@renderer/features/managed-agents/agent-sections';
 import type { SettingsPageTab } from '@renderer/features/settings/components/SettingsPage';
-import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
+import { findBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -182,7 +182,7 @@ function openAdmin(serverId: string, tab: string | null): void {
  */
 async function openBuddy(serverId: string, tab: string | null): Promise<void> {
   const agents = await rpc.managedAgents.list(serverId).catch(() => null);
-  const buddy = agents?.find(isBuddy) ?? null;
+  const buddy = findBuddy(agents);
   if (buddy === null) {
     appState.navigation.navigate('switchBuddy', { serverId });
     return;

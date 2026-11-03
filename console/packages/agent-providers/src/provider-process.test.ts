@@ -42,6 +42,17 @@ function writeCmdCli(name: string, script: string): string {
   return join(dir, `${name}.cmd`);
 }
 
+describe('execProvider', () => {
+  it('closes the CLI’s stdin, so one that reads it to the end does not wait forever', async () => {
+    const { stdout } = await execProvider(
+      process.execPath,
+      ['-e', "process.stdin.resume(); process.stdin.on('end', () => console.log('ended'))"],
+      { timeout: 5000 }
+    );
+    expect(stdout.trim()).toBe('ended');
+  });
+});
+
 describe.runIf(process.platform === 'win32')('on Windows', () => {
   it('finds a .cmd CLI by its bare name, and not npm’s extensionless shell script', async () => {
     writeFileSync(join(dir, 'tool'), '#!/bin/sh\n');

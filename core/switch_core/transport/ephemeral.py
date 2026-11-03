@@ -21,8 +21,8 @@ value, and a missed one costs a briefly stale indicator rather than data.
 **It is in-process.** Membership changes, which used to share this
 limitation, now reach every process through a trigger on `client_rooms` and
 the signal bus (`transport/membership_signals.py`). Presence has not followed
-yet: a second replica needs it carried the same way (`signals.py`), which is
-one reason switch-core runs as a single replica until then.
+yet: with more than one replica, an announcement reaches only the clients on
+the replica that made it, until it is carried the same way (`signals.py`).
 """
 
 from __future__ import annotations

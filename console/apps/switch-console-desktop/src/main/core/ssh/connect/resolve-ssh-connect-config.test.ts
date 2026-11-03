@@ -81,6 +81,15 @@ function parseOtherFixturePublicKey(): ParsedKey {
   return parsed;
 }
 
+/**
+ * ECDSA rather than ed25519: ssh2's ed25519 generator strips a leading zero
+ * byte from the public key, so about one ed25519 key in 256 comes out
+ * malformed and `parseKey` rejects it. Its ECDSA keys always parse.
+ */
+function generateParseableKeyPair() {
+  return utils.generateKeyPairSync('ecdsa', { bits: 256 });
+}
+
 describe('resolveSshConnectConfig', () => {
   it('uses ssh -G as authoritative for alias-backed ProxyCommand', async () => {
     const spawned: string[] = [];
@@ -682,7 +691,7 @@ describe('resolveSshConnectConfig', () => {
   });
 
   it('offers an unencrypted IdentityFile key from disk alongside the agent (gcloud/IAP)', async () => {
-    const keyPair = utils.generateKeyPairSync('ed25519');
+    const keyPair = generateParseableKeyPair();
     const readFiles: string[] = [];
     const result = await resolveSshConnectConfig(
       {
@@ -718,7 +727,7 @@ describe('resolveSshConnectConfig', () => {
   });
 
   it('uses an on-disk IdentityFile key when the agent socket is unavailable', async () => {
-    const keyPair = utils.generateKeyPairSync('ed25519');
+    const keyPair = generateParseableKeyPair();
     const result = await resolveSshConnectConfig(
       {
         kind: 'transient',

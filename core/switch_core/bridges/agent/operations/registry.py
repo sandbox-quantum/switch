@@ -36,6 +36,10 @@ def _input_schema(fn: OperationFn) -> dict[str, Any]:
     Built here rather than taken from a transport library, so the schema a
     client sees is the same whichever door it came through — and so the
     operations layer stays free of transport dependencies.
+
+    Closed to other arguments (`additionalProperties: false`), as the call
+    path is: an argument the operation does not take is refused, so the
+    schema says so rather than inviting the guess.
     """
     fields: dict[str, Any] = {}
     for name, param in inspect.signature(fn).parameters.items():
@@ -46,11 +50,12 @@ def _input_schema(fn: OperationFn) -> dict[str, Any]:
         fields[name] = (annotation, default)
 
     if not fields:
-        return {"type": "object", "properties": {}}
+        return {"type": "object", "properties": {}, "additionalProperties": False}
 
     model = create_model(f"{fn.__name__}_arguments", **fields)  # type: ignore[call-overload]
     schema = model.model_json_schema()
     schema.pop("title", None)
+    schema["additionalProperties"] = False
     return schema
 
 

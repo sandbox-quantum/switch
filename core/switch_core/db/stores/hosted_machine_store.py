@@ -28,7 +28,7 @@ MACHINES_FULL = "Every Switch cloud machine on this server is in use. Try again 
 MACHINE_BEING_REMOVED = (
     "Your previous cloud machine is being removed. Try again in a minute."
 )
-#: How many workspaces one machine serves: each runs its own agents controller.
+#: How many workspaces one machine serves: each runs its own agent controller.
 MAX_MACHINE_WORKSPACES = 8
 MACHINE_WORKSPACES_FULL = (
     f"Your cloud machine already serves {MAX_MACHINE_WORKSPACES} workspaces, the most "

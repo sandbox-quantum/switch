@@ -195,12 +195,7 @@ export const DependencyInstallationStatusCard = observer(function DependencyInst
                   variant="destructive"
                   disabled={isUninstalling}
                   onClick={() => {
-                    const name = agentPayload?.name ?? 'Agent';
-                    void toast.promise(uninstall(), {
-                      loading: `Uninstalling ${name}...`,
-                      success: `${name} successfully uninstalled`,
-                      error: `Failed to uninstall ${name}`,
-                    });
+                    void uninstall();
                   }}
                 >
                   Uninstall

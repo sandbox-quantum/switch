@@ -134,7 +134,13 @@ export type CheckoutBuild = {
  * unread host must not render as one that agrees.
  */
 export type DeployedTelemetry =
-  | { known: true; enabled: boolean }
+  | {
+      known: true;
+      enabled: boolean;
+      /** Whether it sends to the relay this build reports to. A stack set up by
+       * an older build may name none and run on its own version's default. */
+      endpointCurrent: boolean;
+    }
   | { known: false; reason: string };
 
 /**
@@ -185,9 +191,11 @@ export type LocalServerStatus = {
    * available. A Docker server always runs it, so this is null there. */
   mattermost: boolean | null;
   /** How the Mattermost beside a native server is doing since the last start:
-   * it comes up after the server does. Null when it is off, or when nothing has
-   * been seen of it since Console launched. */
-  mattermostState: 'starting' | 'running' | 'failed' | null;
+   * it comes up after the server does. `off` when the running server is going
+   * without it: turned off, or left out at start because Docker was not there.
+   * Null when the server is not running, or when nothing has been seen of it
+   * since Console launched. */
+  mattermostState: 'off' | 'starting' | 'running' | 'failed' | null;
   /** Something the last start could not do that did not stop it (Mattermost
    * skipped or failed, say), for the server page to say; else null. */
   notice: string | null;
@@ -221,9 +229,10 @@ export type LocalServerStatus = {
   /** Populated only when `phase === 'error'`. */
   error: string | null;
   /** What failed when `phase === 'error'` and it was not a start: a stop or a
-   * reset that broke partway. Null for a failed start, and whenever the phase
-   * is anything else. */
-  failedTo: 'stop' | 'reset' | null;
+   * reset that broke partway, or (`run`) a server that was running and then
+   * stopped or stopped answering on its own. Null for a failed start, and
+   * whenever the phase is anything else. */
+  failedTo: 'stop' | 'reset' | 'run' | null;
 };
 
 /**
@@ -251,7 +260,7 @@ export class ManagedServerStoppedError extends Error {
 /** Human-readable one-liner for a stopped managed stack, used in errors and the UI. */
 export function managedServerStoppedReason(serverName: string, phase: LocalServerPhase): string {
   if (phase === 'error') {
-    return `${serverName} isn't running: its last start or stop failed. See the server's page.`;
+    return `${serverName} isn't running: it failed to start or stop, or stopped unexpectedly. See the server's page.`;
   }
   return `${serverName}'s Switch stack is not running. Start it from the server's page, then retry.`;
 }
@@ -309,7 +318,14 @@ export type ConnectRemoteServerResult =
   | { kind: 'error'; message: string };
 
 /** Something that happened to the stack on this computer, as Console recorded it. */
-export type LocalActivityAction = 'started' | 'stopped' | 'start-failed' | 'updated' | 'reset';
+export type LocalActivityAction =
+  | 'started'
+  | 'stopped'
+  | 'start-failed'
+  | 'updated'
+  | 'reset'
+  /** The running server stopped, or stopped answering, without being asked. */
+  | 'crashed';
 
 /** One entry of the local stack's history. Only this Console acts on it, so
  * there is no "who". */
@@ -317,7 +333,8 @@ export type LocalActivityEntry = {
   /** ISO timestamp. */
   at: string;
   action: LocalActivityAction;
-  /** The version an update moved to, or why a start failed; else null. */
+  /** The version an update moved to, or why a start failed or the server
+   * stopped; else null. */
   detail: string | null;
 };
 

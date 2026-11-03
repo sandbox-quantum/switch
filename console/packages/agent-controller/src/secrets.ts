@@ -278,7 +278,7 @@ export class SecretServiceStore implements SecretStore {
       [
         'store',
         '--label',
-        'Switch agents controller',
+        'Switch agent controller',
         'service',
         SERVICE,
         'account',

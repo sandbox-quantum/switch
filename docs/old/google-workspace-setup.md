@@ -75,9 +75,10 @@ shown to the server's operator only, and only with the server's
 `service_connections` flag on. Choose **Set up Google Workspace**. The dialog
 shows the redirect URI to register, with a copy button; paste the client's
 **Client ID** and **Client secret** as Google Cloud labels them, and choose
-**Check and save**. Switch first asks Google whether the two belong together
-(and, where Google says so, whether the redirect URI is registered), and
-saves only if they do. The secret is stored encrypted, like every other
+**Check and save**. Switch first asks Google whether the two belong together,
+and saves only if they do. Google does not say whether the redirect URI is
+registered until someone signs in, so connect once to confirm it: a missing
+one shows as "Error 400: redirect_uri_mismatch" on Google's page. The secret is stored encrypted, like every other
 stored credential (see [key rotation](key-rotation.md)), and is in use at
 once: nobody needs to restart anything.
 
@@ -170,3 +171,15 @@ its app has passed Google's review.
 - A granted agent's token is its owner's own, shared by every agent they
   grant; it cannot be narrowed or revoked per agent. Turning an agent off stops
   its sessions within an hour; disconnecting stops every agent at once.
+
+## An organization's own Google client
+
+With the `organization_connector_apps` flag on (with `service_connections`),
+an organization's admins can save its own under **Organization**,
+**Connectors** in the dashboard, with the same callback, checks and
+encryption as above. Every workspace in that organization then signs in
+through the organization's client instead of the server's; the others keep
+using the server's. If the organization's client stops working, its
+workspaces see Google Workspace as unavailable, with the reason, rather than falling
+back to the server's. Removing it sends them back to the server's client, and
+people connected through it reconnect once. The flag is off by default.

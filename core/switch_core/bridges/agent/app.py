@@ -24,6 +24,7 @@ from switch_core.bridges.agent.mcp import create_mcp_app
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -39,8 +40,10 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.ui import GatewayUi, GatewayUiMiddleware
 from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware
+from switch_core.open_gate import OpenGate
 from switch_core.refusal_breaker import RefusalBreaker
 from switch_core.request_context import RequestContextMiddleware
+from switch_core.request_validation import public_errors
 from switch_core.room_service import RoomService
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.sessions.errors import SessionError
@@ -49,6 +52,47 @@ from switch_core.telemetry import TelemetryService
 from switch_core.trust.client import TrustClient
 
 logger = logging.getLogger(__name__)
+
+
+def http_error_level(status_code: int) -> int:
+    """How loudly to log a refused request.
+
+    A 4xx is the caller's mistake (an argument the tool does not take, a room
+    it is not in): the server worked, so it is a warning. A 5xx is the
+    server's own failure and an error.
+    """
+    return logging.ERROR if status_code >= 500 else logging.WARNING
+
+
+async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONResponse:
+    if exc.status_code >= 400:
+        logger.log(
+            http_error_level(exc.status_code),
+            "%s %s → %d: %s",
+            request.method,
+            request.url.path,
+            exc.status_code,
+            exc.detail,
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
+async def log_validation_errors(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    # The log gets what the response gets and no more: the body that was sent,
+    # or an error's `input`, would put message text and secrets in the logs.
+    errors = public_errors(exc)
+    logger.warning(
+        "%s %s → 422 validation: errors=%s",
+        request.method,
+        request.url.path,
+        errors,
+    )
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 def create_agent_bridge_app(
@@ -71,6 +115,7 @@ def create_agent_bridge_app(
     trust_client: TrustClient,
     gateway_ui: GatewayUi | None,
     connections: AgentConnectionRegistry | None = None,
+    room_access: RoomAccessCache | None = None,
     telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, AgentCore]:
     # One registry for the whole process: the live connection set is the source
@@ -106,6 +151,7 @@ def create_agent_bridge_app(
         config=config,
         approval_outcomes=approval_outcomes,
         trust_client=trust_client,
+        room_access=room_access,
         telemetry=telemetry,
     )
 
@@ -118,34 +164,8 @@ def create_agent_bridge_app(
 
     app = FastAPI(title="Switch Agent Bridge API")
 
-    @app.exception_handler(HTTPException)
-    async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONResponse:
-        if exc.status_code >= 400:
-            logger.error(
-                "%s %s → %d: %s",
-                request.method,
-                request.url.path,
-                exc.status_code,
-                exc.detail,
-            )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": exc.detail},
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def log_validation_errors(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        logger.error(
-            "%s %s → 422 validation: errors=%s body=%r",
-            request.method,
-            request.url.path,
-            exc.errors(),
-            exc.body,
-        )
-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
-
+    app.add_exception_handler(HTTPException, log_http_exceptions)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, log_validation_errors)  # type: ignore[arg-type]
     app.add_exception_handler(SessionError, session_error_response)
     app.include_router(activity_router, tags=["session activity"])
     app.include_router(api_router, prefix="/agents", tags=["api"])
@@ -176,6 +196,9 @@ def create_agent_bridge_app(
         session_factory=session_factory,  # type: ignore[arg-type]
         controller_auth=controller_auth,
     )
+    # Outside the bearer middleware, so an open the process cannot take yet is
+    # told when to come back before its credential is looked up.
+    app.add_middleware(OpenGate, limit=config.agent_open_limit, clock=time.monotonic)
     # Outside the bearer middleware, so a caller that keeps repeating a refused
     # request is answered before its credential is looked up again.
     app.add_middleware(RefusalBreaker, clock=time.monotonic)

@@ -31,7 +31,7 @@ export type HostedCredential = z.infer<typeof hostedCredentialSchema>;
  * use `credential`: the provider's token variable, or the directory
  * `materializeHostedProvider` writes its login file into under `root`, or for
  * Claude on Vertex AI the project, the region and that file. What
- * an agents controller puts in the agent's configuration, so the sessions
+ * an agent controller puts in the agent's configuration, so the sessions
  * get it whatever environment they would otherwise inherit.
  */
 export function providerLoginEnvironment(

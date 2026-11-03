@@ -1,0 +1,38 @@
+[
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "<@U0JANE> please look, cc <!subteam^S0REVIEWER> and @nobody. Not @app-bot.",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "Defused: @​channel, @​here, &lt;!here&gt;, &lt;!channel|all&gt;. In code: `<@U0JANE>` and\n```\n<!subteam^S0REVIEWER> @channel\n```",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "<!channel> deploy starts in *5 minutes*",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  }
+]

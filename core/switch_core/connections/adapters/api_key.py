@@ -9,8 +9,10 @@ headers, a CLI run's environment) and redacts every secret one.
 
 A key is the owner's own and does not expire, so nothing is refreshed and
 nothing can be revoked: disconnecting forgets it, and only the vendor can
-revoke it. Each issue hands it out for an hour, so the grant is checked again
-at least hourly, as for any pass-through token.
+revoke it. For the same reason it is never handed to an agent: whatever ran
+beside the agent could keep it for good, and neither a removed grant nor a
+disconnect would end it. The catalog says so (`token.max_lifetime: null`),
+and the broker refuses before it gets here.
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -44,8 +45,6 @@ from switch_core.connections.loader import (
 # single header value or argument; longer than this is not a key.
 FIELD_VALUE_RE = re.compile(r"^[\x21-\x7e]{1,1024}$")
 MAX_IDENTITY_BYTES = 256 * 1024
-# How long one issue hands the key out: the grant is checked again by then.
-USE_WINDOW = timedelta(hours=1)
 
 
 class InvalidKeyError(ServiceAdapterError):
@@ -82,7 +81,7 @@ def _path_value(document: Any, path: str) -> Any:
 
 
 class ApiKeyAdapter:
-    can_issue = True
+    can_issue = False
 
     def __init__(self, definition: ConnectionDefinition, http: httpx.AsyncClient):
         sign_in = definition.auth.api_key
@@ -216,12 +215,8 @@ class ApiKeyAdapter:
         return {}
 
     async def issue(self, access: AccessToken, request: IssueRequest) -> IssuedToken:
-        await self.check_grant(access.token, request)
-        return IssuedToken(
-            token=access.token,
-            expires_at=datetime.now(UTC) + USE_WINDOW,
-            resources={},
-            revocable=False,
+        raise ServiceAdapterError(
+            f"A {self._name} key does not expire, so it is never handed to an agent."
         )
 
     async def revoke_issued(self, token: str) -> None:

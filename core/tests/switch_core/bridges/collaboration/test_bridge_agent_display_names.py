@@ -264,6 +264,9 @@ def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
         def set_channel_type_handler(self, handler: Any) -> None:
             return None
 
+        def set_channel_rename_handler(self, handler: Any) -> None:
+            pass
+
         def set_agent_presentation_resolver(self, resolver: Any) -> None:
             installed.append(resolver)
 
@@ -1618,8 +1621,10 @@ class _MattermostBot:
     def login(self) -> None:
         return None
 
-    async def init_websocket(self, handler: Any) -> None:
-        await asyncio.Event().wait()
+    def init_websocket(self, handler: Any) -> asyncio.AbstractEventLoop:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(asyncio.Event().wait())
+        return loop
 
 
 def _mattermost_identity_adapter(

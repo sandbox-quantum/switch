@@ -11,7 +11,7 @@ import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/even
  * Runs a provider's own sign-in command on this computer, one attempt at a
  * time, relaying what it writes.
  *
- * It runs through the login shell, as the agents controller and its sessions
+ * It runs through the login shell, as the agent controller and its sessions
  * find the CLI, so the CLI signed in is the one they will use. Stdin is kept
  * open rather than closed: a command that waits for its browser round trip
  * would read a closed stdin as being cancelled.

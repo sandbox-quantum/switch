@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { ConnectorApp, ConnectorAppCheck } from '@shared/core/switch-servers/connector-apps';
+import type { ConnectorApp } from '@shared/core/switch-servers/connector-apps';
 import {
   type DetailRow,
   STATE_BADGE,
@@ -23,6 +23,7 @@ import {
   appDetails,
   attention,
   cardState,
+  changeBlocked,
   configuredSentence,
   menuActions,
   menuLabel,
@@ -31,7 +32,8 @@ import {
   stateLabel,
   usedBy,
 } from './connector-apps';
-import { changeBlocked, useConnectorAppDialogs } from './connector-apps-tab';
+import { useLastChecks } from './connector-apps-queries';
+import { useConnectorAppDialogs } from './connector-apps-tab';
 import { CopyButton } from './copy-button';
 
 /**
@@ -57,7 +59,7 @@ export function ConnectorAppProfile({
   onBack: () => void;
 }) {
   const open = useConnectorAppDialogs(serverId, publicUrl);
-  const [checks, setChecks] = useState<ConnectorAppCheck[] | null>(null);
+  const [checks, setChecks] = useLastChecks(serverId, app.slug);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -171,7 +173,14 @@ export function ConnectorAppProfile({
               ) : (
                 <CircleX aria-label="Failed" className="mt-0.5 size-4 shrink-0 text-destructive" />
               )}
-              {c.message}
+              <span className="flex flex-col gap-0.5">
+                <span>{c.message}</span>
+                {c.note && (
+                  <span className="text-foreground-muted">
+                    <strong className="font-semibold text-foreground">Note:</strong> {c.note}
+                  </span>
+                )}
+              </span>
             </li>
           ))}
         </ul>

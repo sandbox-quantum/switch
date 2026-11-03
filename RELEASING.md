@@ -62,10 +62,18 @@ peer still on it, and it can never be raised past what is running in the field.
 ## Cutting a release
 
 1. **Bump the version** in `core/pyproject.toml` (`[project].version`).
+   With it, **record the official templates' revisions**: `just
+   record-template-revisions` adds one for each template that comes with
+   Switch (switch-buddy, the Switch expert) whose files changed since the last
+   release. Agents those templates created are brought up to the new revision
+   when the released server starts; see "Installs and updates" in
+   `docs/TEMPLATES.md`. The workflow refuses the tag while a change is
+   unrecorded.
 2. **Update `CHANGELOG.md`**: under the `## switch-core` section, move the
    `### [Unreleased]` items under a new `### [X.Y.Z]` heading and note the date.
    (The desktop app has its own `## switch-console` section, versioned separately.)
-3. **Commit** the bump + changelog on a release branch and merge to `main`.
+3. **Commit** the bump, the revisions and the changelog on a release branch and
+   merge to `main`.
 4. **Tag and push**: the tag MUST be `switch-v<version>` and match
    `core/pyproject.toml` (the workflow verifies this and fails on mismatch):
    ```bash
@@ -77,7 +85,7 @@ peer still on it, and it can never be raised past what is running in the field.
    - builds multi-arch (`linux/amd64`, `linux/arm64`) images for `switch-core`,
      `gateway`, and `setup` and pushes them to the container registry tagged
      `<version>` and `latest`;
-   - builds, tests and packs the agents controller at the same version and
+   - builds, tests and packs the agent controller at the same version and
      publishes it as the `switch-agent-controller-v<version>` GitHub release
      (see "The controller a Switch release names" below);
    - once the images are pushed, writes each image's digest into the chart's
@@ -141,7 +149,7 @@ building from source at deploy time.
   before the next release or RC. The server reports `0.29.1.dev512` (PEP 440),
   stamped on the runner like an RC. A semver pre-release, so `helm install`
   skips it unless given that exact `--version`. No compose artifact.
-- **A dev controller too.** The run publishes the agents controller at the dev
+- **A dev controller too.** The run publishes the agent controller at the dev
   version as a GitHub *prerelease*, `switch-agent-controller-v<dev version>`
   (package only, no `install.sh`), and pins it into the dev switch chart's
   `switchCore.controllerRelease`, so the dev environment's controllers follow
@@ -272,7 +280,7 @@ canary installs find no update until the next canary is tagged.
 
 ## switch-agent-controller release (separate)
 
-The headless agents controller (`console/packages/agent-controller`), which runs
+The headless agent controller (`console/packages/agent-controller`), which runs
 managed agents on a customer's own Linux or macOS machine, releases on its own tag,
 `switch-agent-controller-v<version>`, via
 `.github/workflows/agent-controller-release.yml`:
@@ -287,7 +295,9 @@ git push origin switch-agent-controller-v0.2.0
   to Switch and compares it with newer releases.
 - **What it publishes:** a GitHub Release holding
   `switch-agent-controller-<version>.tgz` (one npm package with the CLI and the
-  shared-host bundle, no dependencies) and `install.sh`. It is never marked Latest,
+  shared-host bundle, no dependencies), its signature
+  `switch-agent-controller-<version>.tgz.sig` (see [Release signing](#release-signing))
+  and `install.sh`. It is never marked Latest,
   so Switch Console's stable updater never sees it.
 - **How installs find it:** `install.sh` and `switch-agent-controller update` list the
   repository's releases and take the highest non-draft, non-prerelease controller tag
@@ -297,7 +307,58 @@ git push origin switch-agent-controller-v0.2.0
 - **Not gated:** the workflow needs no approval. It tests the controller, packs it,
   installs the package and runs it once before releasing.
 
-`workflow_dispatch` runs everything except the release, for verification.
+`workflow_dispatch` runs everything except signing and the release, for
+verification, and needs no secret.
+
+### Release signing
+
+Controllers install only a release signed with a key built into them, so neither
+a compromised Switch server nor its chart values can make them run a package the
+release workflows did not publish. Both `agent-controller-release.yml` and the
+`controller` job of `switch-release.yml` sign each package they publish (stable,
+RC and dev builds alike) with `scripts/sign-release.mjs`, which writes
+`<package>.tgz.sig`: the Ed25519 signature, base64, of
+`switch-agent-controller-release-v1\n<version>\n<sha256>\n`. The private key is
+the `CONTROLLER_RELEASE_SIGNING_KEY` GitHub Actions secret (PKCS#8 PEM). A
+publishing run without it fails, and so does one whose key's public half is not in
+`console/packages/agent-controller/src/release-keys.ts`. A re-run of a release
+that is already published with the same package uploads the signature if the
+release lacks it.
+
+The controller (`run`, `update`) and `install.sh` check the signature against the
+trusted keys in `src/release-keys.ts` (`install.sh` carries a copy between its
+`TRUSTED RELEASE KEYS` markers; `release-keys.test.ts` fails when they differ).
+With no trusted key, they install nothing.
+
+**Generating the first key.** On a machine you trust:
+
+```bash
+cd console/packages/agent-controller
+node scripts/generate-release-signing-key.mjs release-<yyyy>-<mm>
+```
+
+It prints three things: the entry for `TRUSTED_RELEASE_KEYS` in
+`src/release-keys.ts`, the same key as a line for `install.sh`, and the private
+key. Paste the first two and merge them; store the private key as the repository
+secret `CONTROLLER_RELEASE_SIGNING_KEY` (Settings → Secrets and variables →
+Actions, or `gh secret set CONTROLLER_RELEASE_SIGNING_KEY < key.pem` from a file
+you then delete), and keep no other copy outside a password manager or vault.
+No release can be published while the list is empty: `sign-release.mjs` refuses
+a key that is not in it. Controllers from before release signing check only the
+SHA-256 Switch names, so they update to the first signed release as before and
+verify signatures from then on.
+
+**Rotating.** Generate a new key with a new id, add it to both lists beside the
+old one, and release: controllers on that release trust both. Once they have
+moved to it (the owner's controller list shows `release.current`), replace the
+secret with the new private key, and in a later release remove the old public
+key. A controller that skipped the release trusting both cannot verify releases
+signed only with the new key; reinstall it by hand.
+
+**If the private key leaks.** Remove its public key from both lists, add a new
+one, replace the secret, and release. Controllers still on releases that trust
+the leaked key keep trusting it until they update, so treat them as exposed until
+they run the new release.
 
 ### The controller a Switch release names
 
@@ -317,8 +378,9 @@ The chart from that release names the package in `switchCore.controllerRelease`
 `CONTROLLER_RELEASE_VERSION`, `_URL` and `_SHA256` and hands every controller in
 its status answer (except Switch Console's own, which updates with Console). A
 controller running another version downloads the package,
-refuses it unless its SHA-256 matches, and installs it and restarts once none of
-its agents has a session running. The owner's controller list
+refuses it unless its SHA-256 matches and its signature (`<url>.sig`) verifies
+against a key built into the controller, and installs it and restarts once none
+of its agents has a session running. The owner's controller list
 (`GET /gateway/management/controllers`, `release.current`) shows which are not yet
 on it.
 
@@ -326,6 +388,8 @@ on it.
   version, its `.../switch-agent-controller-v<old>/switch-agent-controller-<old>.tgz`
   URL, and the SHA-256 in its release notes) and upgrade the chart. Setting none of
   them stops telling controllers anything; they keep the version they have.
+  The previous release must carry a signature a controller trusts: one published
+  before release signing, or signed only with a key since removed, is refused.
 - **Versions now follow Switch.** Controllers released this way carry the Switch
   version, which is well above the controller's own earlier `0.1.x` line. A
   controller release tagged by hand still works, but take its version from the

@@ -6,10 +6,11 @@
  * operator can copy values across. The gateway dashboard's page reads the
  * same rules from its own copy, until that page is retired.
  */
-import type {
-  ConnectorApp,
-  ConnectorAppField,
-  ConnectorAppImpact,
+import {
+  redirectUris,
+  type ConnectorApp,
+  type ConnectorAppField,
+  type ConnectorAppImpact,
 } from '@shared/core/switch-servers/connector-apps';
 
 export type CardState = 'ready' | 'not_set_up' | 'configured' | 'attention';
@@ -37,10 +38,12 @@ export type Audience = 'internal' | 'external';
 
 export interface Instruction {
   text: string;
-  /** A value to paste at the vendor, offered with a copy button. */
-  copy: string | null;
+  /** Values to paste at the vendor, each offered with a copy button. */
+  copy: string[];
   /** The vendor's page for this step, where it has one of its own. */
   link: { label: string; href: string } | null;
+  /** Values to pick at the vendor, one per line. */
+  items: string[];
 }
 
 export interface SecretField {
@@ -51,6 +54,7 @@ export interface SecretField {
 }
 
 const GOOGLE = 'google-workspace';
+const AIRTABLE = 'airtable';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -248,6 +252,25 @@ export function audienceText(audience: Audience): string {
 
 const GOOGLE_CLOUD = 'https://console.cloud.google.com';
 
+/** The addresses to register, in one step: a vendor that matches the port needs every one. */
+function redirectStep(intro: string, redirects: string[]): Instruction {
+  return { text: intro, copy: redirects, link: null, items: [] };
+}
+
+/** Scopes one row per resource, its read and write side by side. */
+function scopeRows(scopes: string[]): string[] {
+  const rows = new Map<string, string[]>();
+  for (const scope of scopes) {
+    const resource = scope.slice(0, scope.lastIndexOf(':'));
+    rows.set(resource, [...(rows.get(resource) ?? []), scope]);
+  }
+  return [...rows.values()].map((row) => row.join(', '));
+}
+
+function present(value: string | null): string[] {
+  return value === null ? [] : [value];
+}
+
 /** Step 1 of setting up: creating the app at the vendor, one page at a time. */
 export function setupInstructions(
   app: ConnectorApp,
@@ -259,72 +282,127 @@ export function setupInstructions(
     return [
       {
         text: "In GitHub, create a new GitHub App: Settings, Developer settings, GitHub Apps. For an App owned by an organization, start from the organization's settings instead.",
-        copy: null,
+        copy: [],
         link: { label: 'Open GitHub', href: 'https://github.com/settings/apps/new' },
+        items: [],
       },
-      { text: "Set the Homepage URL to Switch's public URL:", copy: publicUrl, link: null },
-      { text: 'Set the Callback URL to:', copy: redirect, link: null },
-      { text: 'Keep Expire user authorization tokens turned on.', copy: null, link: null },
+      {
+        text: "Set the Homepage URL to Switch's public URL:",
+        copy: present(publicUrl),
+        link: null,
+        items: [],
+      },
+      { text: 'Set the Callback URL to:', copy: present(redirect), link: null, items: [] },
+      {
+        text: 'Keep Expire user authorization tokens turned on.',
+        copy: [],
+        link: null,
+        items: [],
+      },
       {
         text: "Under Webhook, untick Active. Switch doesn't use GitHub's webhooks, and GitHub asks for a webhook URL while it is ticked.",
-        copy: null,
+        copy: [],
         link: null,
+        items: [],
       },
       {
         text: 'Under Repository permissions, set Contents and Pull requests to Read and write.',
-        copy: null,
+        copy: [],
         link: null,
+        items: [],
       },
       {
         text: "Under Where can this GitHub App be installed, choose Any account, so people can install it on their own accounts and organizations. Choose Only on this account only if every member's repositories are in your own organization.",
-        copy: null,
+        copy: [],
         link: null,
+        items: [],
       },
       {
         text: 'Create the GitHub App. On its page, generate a client secret, then a private key, and keep the downloaded .pem file.',
-        copy: null,
+        copy: [],
         link: null,
+        items: [],
+      },
+    ];
+  if (app.slug === AIRTABLE)
+    return [
+      {
+        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that stops every connection.",
+        copy: [],
+        link: { label: 'Open Builder Hub', href: 'https://airtable.com/create/oauth' },
+        items: [],
+      },
+      {
+        text: "Name it as people should see it on Airtable's consent page, for example Switch.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep('Under OAuth redirect URLs, add this one:', redirectUris(app)),
+      {
+        text: 'Under Scopes, tick exactly these:',
+        copy: [],
+        link: null,
+        items: scopeRows(app.scopes),
+      },
+      {
+        text: 'Register the integration. On its page, generate a client secret, and copy the Client ID and the secret.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'Fill in its support email, privacy policy URL and terms of service URL. Until all three are set, Airtable lets only the owner connect.',
+        copy: [],
+        link: null,
+        items: [],
       },
     ];
   if (app.slug === GOOGLE)
     return [
       {
         text: 'In Google Cloud, create a project for Switch, or pick an existing one.',
-        copy: null,
+        copy: [],
         link: { label: 'Create a project', href: `${GOOGLE_CLOUD}/projectcreate` },
+        items: [],
       },
       {
         text: 'In Google Auth Platform, under Branding, enter an app name people will recognise and a support email.',
-        copy: null,
+        copy: [],
         link: { label: 'Open Branding', href: `${GOOGLE_CLOUD}/auth/branding` },
+        items: [],
       },
       {
         text: audienceText(audience),
-        copy: null,
+        copy: [],
         link: { label: 'Open Audience', href: `${GOOGLE_CLOUD}/auth/audience` },
+        items: [],
       },
       {
         text: 'Under Clients, create a client of type Web application.',
-        copy: null,
+        copy: [],
         link: { label: 'Open Clients', href: `${GOOGLE_CLOUD}/auth/clients` },
+        items: [],
       },
       {
         text: 'Add this under Authorized redirect URIs, create the client, and copy its Client ID and Client secret:',
-        copy: redirect,
+        copy: present(redirect),
         link: null,
+        items: [],
       },
       {
         text: 'Enable the Google Drive, Docs, Sheets, Slides and Calendar APIs for the project.',
-        copy: null,
+        copy: [],
         link: { label: 'Open the API Library', href: `${GOOGLE_CLOUD}/apis/library` },
+        items: [],
       },
     ];
+  const redirects = redirectUris(app);
   return [
-    {
-      text: `Register an OAuth client for Switch at ${app.name}, with this redirect URI:`,
-      copy: redirect,
-      link: null,
-    },
+    redirectStep(
+      `Register an OAuth client for Switch at ${app.name}, with ${redirects.length > 1 ? 'these redirect URIs' : 'this redirect URI'}:`,
+      redirects
+    ),
   ];
 }
 
@@ -359,6 +437,7 @@ export interface ChecklistItem {
 const HELM_VALUES: Record<string, string> = {
   github: 'switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath',
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
+  [AIRTABLE]: 'switchCore.airtableClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */
@@ -375,6 +454,34 @@ export function moveChecklist(app: ConnectorApp): ChecklistItem[] {
 }
 
 export const sentBackTo = (publicUrl: string): string => `People are sent back to ${publicUrl}.`;
+
+/**
+ * Whether an app can be set up or changed here now: a vendor that sends people
+ * back to the server needs the public URL first.
+ */
+export interface Confirmation {
+  label: string;
+  /** What goes wrong when it isn't so. */
+  why: string;
+}
+
+/** What the operator confirms before the check, because asking the vendor cannot show it. */
+export function confirmBeforeCheck(app: Pick<ConnectorApp, 'slug'>): Confirmation | null {
+  if (app.slug !== AIRTABLE) return null;
+  return {
+    label: "I've filled in its support details in Builder Hub.",
+    why: "Support email, privacy policy URL and terms of service URL. Until all three are set, only the integration's owner can connect.",
+  };
+}
+
+export function changeBlocked(app: ConnectorApp, publicUrl: string | null): boolean {
+  return (publicUrl === null && app.needs_public_url) || app.setup_blocked !== null;
+}
+
+/** Whether the page warns that GATEWAY_PUBLIC_URL is unset: only an app that needs it is held up. */
+export function missingPublicUrl(apps: ConnectorApp[], publicUrl: string | null): boolean {
+  return publicUrl === null && apps.some((app) => app.needs_public_url);
+}
 
 export const PUBLIC_URL_BANNER =
   'Set GATEWAY_PUBLIC_URL first: Google and GitHub need to know where to send people back to Switch.';
@@ -487,10 +594,20 @@ export function appDetails(
           : 'Not set up'
     ),
   ];
-  if (app.redirect_uri !== null)
+  const redirects = redirectUris(app);
+  redirects.forEach((redirect, index) =>
     setup.push(
-      row(app.kind === 'github_app' ? 'Callback URL' : 'Redirect URI', app.redirect_uri, true)
-    );
+      row(
+        app.kind === 'github_app'
+          ? 'Callback URL'
+          : redirects.length > 1
+            ? `Redirect URI ${index + 1}`
+            : 'Redirect URI',
+        redirect,
+        true
+      )
+    )
+  );
   if (app.updated_at !== null)
     setup.push(
       row(
@@ -500,7 +617,8 @@ export function appDetails(
     );
 
   const people: DetailRow[] = [];
-  if (publicUrl !== null) people.push(row('Sent back to', publicUrl));
+  if (!app.needs_public_url) people.push(row('Sent back to', 'Switch Console, on their computer'));
+  else if (publicUrl !== null) people.push(row('Sent back to', publicUrl));
   if (app.install_url !== null)
     people.push(row('Install page', app.install_url, false, app.install_url));
   if (app.stale_connections > 0)

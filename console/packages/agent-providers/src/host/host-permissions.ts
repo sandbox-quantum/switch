@@ -1,7 +1,7 @@
 /**
  * Modes for the files and directories an agent host writes into its state.
  *
- * Private to the agent's own user by default. An agents controller that runs
+ * Private to the agent's own user by default. An agent controller that runs
  * each agent as a Linux user of its own sets `SWITCH_HOST_SHARED_GROUP=1`: the
  * agent's primary group is then one the controller belongs to and no other
  * user does, so what the agent host writes is group-readable for the

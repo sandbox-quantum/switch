@@ -17,7 +17,7 @@ import { randomBytes } from 'node:crypto';
  * before it, still passed so the server can read what it wrote back then.
  *
  * `controllerTokenSecret` is switch-core's `CONTROLLER_TOKEN_SECRET`: what it
- * signs agents controllers' hour-long access tokens with. Agent management
+ * signs agent controllers' hour-long access tokens with. Agent management
  * refuses to start without one. */
 export type LocalServerSecrets = {
   dbPassword: string;

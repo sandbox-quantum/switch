@@ -140,7 +140,7 @@ export function flushPendingDeeplink(): void {
 
 /** Pull a `switchdash://…` arg out of a process argv list (Windows/Linux pass
  * the deeplink as a launch argument rather than via the open-url event). */
-function deeplinkFromArgv(argv: string[]): string | undefined {
+export function deeplinkFromArgv(argv: string[]): string | undefined {
   return argv.find((arg) => arg.startsWith(`${DEEPLINK_SCHEME}://`));
 }
 

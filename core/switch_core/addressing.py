@@ -306,6 +306,27 @@ def default_agent_policy() -> AddressingPolicy:
     return owner_and_owner_agents_policy()
 
 
+AddressingKind = Literal["owner_only", "owner_and_owner_agents", "anyone", "custom"]
+
+
+def policy_kind(raw: dict | None) -> AddressingKind:
+    """Which of the choices Switch Console offers a stored policy is.
+
+    "owner_only", "owner_and_owner_agents" and "anyone" are the three
+    shortcuts; "custom" is every other rule set, including owner-only with
+    agents granted by id. "anyone" is an open policy, which still turns the
+    platform's own messages away.
+    """
+    policy = parse_policy(raw)
+    if policy.is_open():
+        return "anyone"
+    if policy == owner_only_policy([]):
+        return "owner_only"
+    if policy == owner_and_owner_agents_policy():
+        return "owner_and_owner_agents"
+    return "custom"
+
+
 def platform_allowed_policy() -> AddressingPolicy:
     """A policy that admits the platform sender.
 

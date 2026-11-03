@@ -1,0 +1,28 @@
+# A short explanation, then a follow-up that only makes sense with it: the
+# agent keeps the thread of a conversation across turns in the room.
+id: explain-then-follow-up
+owner: platform
+covers: [post_message]
+persona: |
+  A backend developer, two weeks into the team, who has heard the term
+  "race condition" in a code review and wants to understand it quickly.
+  Friendly, a little hurried, types short messages.
+goal: |
+  Understand what a race condition is, then see one tiny concrete example in
+  Python. Once there is an example that makes sense, the goal is met.
+opening: Quick one, what's a race condition? Two or three sentences is plenty.
+max_turns: 3
+facts:
+  - id: explains-timing
+    turn: first
+    matches: '\b(concurren|simultaneous|same time|race|ordering|order of|timing|interleav)'
+  - id: shows-python
+    turn: any
+    matches: '```|import (threading|asyncio|multiprocessing)|def [a-z_]+\('
+rubric:
+  - id: answers-briefly
+    criterion: The first reply explains what a race condition is, correctly, in a few sentences rather than an essay.
+  - id: example-follows-on
+    criterion: A later reply gives a short Python example that illustrates a race condition, consistent with the earlier explanation.
+  - id: answers-in-the-room
+    criterion: Every reply addresses the human's question directly, without saying it cannot see the message or asking them to repeat it.

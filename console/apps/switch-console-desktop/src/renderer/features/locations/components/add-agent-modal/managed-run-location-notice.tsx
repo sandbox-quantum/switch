@@ -1,5 +1,5 @@
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert, Server } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -8,6 +8,7 @@ import {
 } from '@renderer/features/managed-agents/managed-agent-changes';
 import { useAdvancedConfigSchema } from '@renderer/features/managed-agents/use-managed-agents';
 import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
+import { invalidateHostProviderReadiness } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -40,6 +41,7 @@ export function ManagedRunLocationNotice({
   workspaceId: string;
   onEnabled: () => void;
 }) {
+  const queryClient = useQueryClient();
   const [enabling, setEnabling] = useState(false);
   const [autoTried, setAutoTried] = useState<string | null>(null);
   const notice = newAgentMachineNotice(machine, { label, sshHost });
@@ -81,8 +83,12 @@ export function ManagedRunLocationNotice({
   async function enable() {
     setEnabling(true);
     try {
-      if (sshHost) await rpc.hostControllers.enable({ sshHost, serverId, workspaceId });
-      else await rpc.embeddedController.enable({ serverId, workspaceId });
+      if (sshHost) {
+        await rpc.hostControllers.enable({ sshHost, serverId, workspaceId });
+        // Making it a machine puts Switch's shared host there, which is what
+        // checks a provider's sign-in on it.
+        void invalidateHostProviderReadiness(queryClient, sshHost);
+      } else await rpc.embeddedController.enable({ serverId, workspaceId });
       onEnabled();
     } catch (error) {
       const { headline, detail } = describeFailure(

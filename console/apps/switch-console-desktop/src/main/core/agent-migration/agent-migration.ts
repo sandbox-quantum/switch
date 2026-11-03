@@ -250,7 +250,7 @@ async function resolveSshHost(
     );
   if (!overview.enrollment)
     return refuse(
-      `Make ${sshHost} a machine for this server first: managed agents run on the agents controller Console installs there.`,
+      `Make ${sshHost} a machine for this server first: managed agents run on the agent controller Console installs there.`,
       remote?.kind === 'ok'
     );
   if (overview.phase.kind === 'installing' || overview.phase.kind === 'removing')
@@ -626,7 +626,7 @@ async function buildDefinition(agent: MigrationAgent) {
 
 let localControllerProtocol: Promise<string> | null = null;
 
-/** The controller protocol this Console's agents controller speaks, as the bundle reports it. */
+/** The controller protocol this Console's agent controller speaks, as the bundle reports it. */
 function controllerProtocol(): Promise<string> {
   localControllerProtocol ??= execute(
     process.execPath,
@@ -634,7 +634,7 @@ function controllerProtocol(): Promise<string> {
     { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 15_000 }
   ).then(({ stdout }) => {
     const protocol = stdout.trim();
-    if (!protocol) throw new Error('The agents controller did not report its protocol.');
+    if (!protocol) throw new Error('The agent controller did not report its protocol.');
     return protocol;
   });
   localControllerProtocol.catch(() => {
@@ -660,7 +660,7 @@ async function controllerRefusal(serverId: string): Promise<string | null> {
   });
   if (response.status !== 426) return null;
   const accepts = response.headers.get('switch-controller-protocol-accepts');
-  return `${server.name} accepts agents controller protocol ${accepts ?? 'older than this Console’s'}, but this Console’s controller speaks ${protocol}. Upgrade the server to move agents onto it.`;
+  return `${server.name} accepts agent controller protocol ${accepts ?? 'older than this Console’s'}, but this Console’s controller speaks ${protocol}. Upgrade the server to move agents onto it.`;
 }
 
 /** Repairs the controller an agent's machine runs for its server; see `AgentMigrationDeps.targets.heal`. */
@@ -734,7 +734,7 @@ async function healMachine(agent: MigrationAgent): Promise<MachineHealth> {
     );
   if (overview.phase.kind === 'update_required')
     throw new Error(
-      'This Switch server needs a newer agents controller than this Console carries. Update Switch Console, then try again.'
+      'This Switch server needs a newer agent controller than this Console carries. Update Switch Console, then try again.'
     );
   if (overview.phase.kind !== 'running' && overview.phase.kind !== 'restarting') {
     await embeddedControllerService.restart(serverId);

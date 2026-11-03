@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.adapters.github import GitHubAdapter, load_github_app
-from switch_core.connections.adapters.oauth import OAuthAdapter, OAuthClientCredentials
+from switch_core.connections.adapters.oauth import (
+    OAuthAdapter,
+    OAuthClientCredentials,
+    StaticClient,
+)
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
 from switch_core.connections.oauth_clients import RegisteredClient
@@ -27,6 +31,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.adapters.test_github import _app_files, _config
+from tests.switch_core.connections.standing import availability, connectable, standing
 from tests.switch_core.connections.test_loader import (
     CLI_ENTRY,
     OAUTH_ENTRY,
@@ -100,11 +105,32 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
     )
 
 
+def test_airtable_is_set_up_by_its_operators_own_client() -> None:
+    assert "airtable" not in build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapters = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={
+            "airtable": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
+        http=HTTP,
+        registration=REG,
+    )
+    adapter = adapters["airtable"]
+    assert isinstance(adapter, OAuthAdapter)
+    assert isinstance(adapter._client, StaticClient)
+    assert adapter._client.client.client_id == "c"
+
+
 def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:
     adapters = build_adapters(
         _catalog(tmp_path, STATIC),
         github_app=None,
-        oauth_clients={"example": OAuthClientCredentials("c", "SYNTHETIC")},
+        oauth_clients={
+            "example": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
         http=HTTP,
         registration=REG,
     )
@@ -116,7 +142,9 @@ def test_a_cli_entry_gets_the_generic_adapter_with_its_client(tmp_path: Path) ->
     adapters = build_adapters(
         catalog,
         github_app=None,
-        oauth_clients={"example": OAuthClientCredentials("c", "SYNTHETIC")},
+        oauth_clients={
+            "example": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
         http=HTTP,
         registration=REG,
     )
@@ -174,6 +202,7 @@ def _broker(
         keyring=TEST_KEYRING,
         catalog=catalog,
         adapters=adapters,
+        organization_apps=None,
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
@@ -183,7 +212,7 @@ def _broker(
     )
 
 
-def test_an_app_not_set_up_here_says_who_sets_it_up(
+async def test_an_app_not_set_up_here_says_who_sets_it_up(
     tmp_path: Path, session_factory
 ) -> None:
     broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
@@ -191,70 +220,119 @@ def test_an_app_not_set_up_here_says_who_sets_it_up(
         "{} is not set up on this server. Whoever runs your Switch server can "
         "set it up in Switch Console, under Admin → Connector apps."
     )
-    assert broker.availability("example") == reason.format("Example")
-    assert broker.availability("github") == reason.format("GitHub")
-    assert broker.connectable("example") is False
+    assert await availability(broker, "example") == reason.format("Example")
+    assert await availability(broker, "github") == reason.format("GitHub")
+    assert await connectable(broker, "example") is False
     for service in ("example", "github"):
-        unavailable = broker.unavailable(service)
+        unavailable = (await standing(broker, service)).unavailable
         assert unavailable is not None and unavailable.code == "app_not_set_up"
-        assert broker.server_setup_needed(service) is True
+        assert (await standing(broker, service)).server_setup_needed is True
 
 
-def test_github_cannot_work_on_a_server_without_an_https_address(
+async def test_a_service_signing_in_only_through_the_server_needs_its_public_url(
+    tmp_path: Path, session_factory
+) -> None:
+    core_only = STATIC.replace("redirect: [loopback, core]", "redirect: [core]")
+    broker = _broker(_catalog(tmp_path, core_only), session_factory, {}, None)
+    example = (await standing(broker, "example")).unavailable
+    assert example is not None
+    assert example.code == "needs_public_url"
+    assert example.reason == (
+        "Example can't be connected on this server: it needs the server's "
+        "public address (GATEWAY_PUBLIC_URL)."
+    )
+    assert (await standing(broker, "example")).server_setup_needed is False
+    # GitHub's App names its own callback, so it isn't held up the same way.
+    github = (await standing(broker, "github")).unavailable
+    assert github is not None and github.code == "app_not_set_up"
+    with_url = _broker(
+        _catalog(tmp_path / "again", core_only),
+        session_factory,
+        {},
+        "https://switch.example.test",
+    )
+    example = (await standing(with_url, "example")).unavailable
+    assert example is not None and example.code == "app_not_set_up"
+
+
+async def test_github_cannot_work_on_a_server_without_an_https_address(
     tmp_path: Path, session_factory
 ) -> None:
     catalog = _catalog(tmp_path, STATIC)
     broker = _broker(catalog, session_factory, {}, "http://127.0.0.1:8000")
-    github = broker.unavailable("github")
+    github = (await standing(broker, "github")).unavailable
     assert github is not None
     assert github.code == "needs_https"
     assert github.reason == (
         "GitHub can't be used on this server: it needs the server to have an "
         "https address."
     )
-    assert broker.server_setup_needed("github") is False
+    assert (await standing(broker, "github")).server_setup_needed is False
     # Google and the like take an http address back, so their app still can be.
-    example = broker.unavailable("example")
+    example = (await standing(broker, "example")).unavailable
     assert example is not None and example.code == "app_not_set_up"
 
     https = _broker(catalog, session_factory, {}, "https://switch.example.com")
-    github = https.unavailable("github")
+    github = (await standing(https, "github")).unavailable
     assert github is not None and github.code == "app_not_set_up"
 
 
-def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
+async def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
     tmp_path: Path, session_factory
 ) -> None:
     broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
-    datadog = broker.unavailable("datadog")
-    assert datadog is not None
-    assert (datadog.code, datadog.reason) == (
+    atlassian = (await standing(broker, "atlassian")).unavailable
+    assert atlassian is not None
+    assert (atlassian.code, atlassian.reason) == (
         "not_set_up",
-        "Datadog is not set up on this server.",
+        "Atlassian is not set up on this server.",
     )
-    assert broker.server_setup_needed("datadog") is False
-    asana = broker.unavailable("asana")
+    assert (await standing(broker, "atlassian")).server_setup_needed is False
+    asana = (await standing(broker, "asana")).unavailable
     assert asana is not None and asana.code == "coming_soon"
 
 
-def test_a_replaced_adapter_is_used_at_once(tmp_path: Path, session_factory) -> None:
+async def test_a_key_that_never_expires_is_neither_connected_nor_granted(
+    tmp_path: Path, session_factory
+) -> None:
+    catalog = _catalog(tmp_path, STATIC)
+    adapters = build_adapters(
+        catalog, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    broker = _broker(catalog, session_factory, adapters, None)
+    datadog = (await standing(broker, "datadog")).unavailable
+    assert datadog is not None
+    assert (datadog.code, datadog.reason) == (
+        "key_never_expires",
+        "Datadog keys do not expire and only Datadog can revoke them, so Switch "
+        "does not hand them to agents.",
+    )
+    assert await connectable(broker, "datadog") is False
+    assert (await standing(broker, "datadog")).server_setup_needed is False
+
+
+async def test_a_replaced_adapter_is_used_at_once(
+    tmp_path: Path, session_factory
+) -> None:
     catalog = _catalog(tmp_path, STATIC)
     broker = _broker(catalog, session_factory, {}, None)
     adapter = build_adapters(
         catalog,
         github_app=None,
-        oauth_clients={"example": OAuthClientCredentials("c", "SYNTHETIC")},
+        oauth_clients={
+            "example": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
         http=HTTP,
         registration=REG,
     )["example"]
 
     broker.replace_adapter("example", adapter)
-    assert broker.availability("example") is None
-    assert broker.connectable("example") is True
+    assert await availability(broker, "example") is None
+    assert await connectable(broker, "example") is True
 
     broker.replace_adapter("example", None)
-    assert broker.availability("example") is not None
-    assert broker.connectable("example") is False
+    assert await availability(broker, "example") is not None
+    assert await connectable(broker, "example") is False
 
     with pytest.raises(ValueError, match="No service named"):
         broker.replace_adapter("nowhere", None)

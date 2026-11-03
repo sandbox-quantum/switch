@@ -1,0 +1,14 @@
+[
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "*Release notes*\n*Changes*\n• first item with *bold* and ~struck~ text\n• second item with _italic_ and a <https://example.com/a|link>\n- dash item stays as written\n  • nested item\n<https://example.com/d.png|diagram>\n\n───\nInline `code with *stars*` and a <tag> & ampersand.\n```python\ndef f(x):\n    return x ** 2  # **not bold** [not](a link)\n```",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  }
+]

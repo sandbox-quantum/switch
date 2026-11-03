@@ -5,7 +5,7 @@ import { db } from '@main/db/client';
 import { appSettings } from '@main/db/schema';
 
 /**
- * The Console agents that were moved onto an agents controller ("Move to
+ * The Console agents that were moved onto an agent controller ("Move to
  * managed"), keyed by Console agent id.
  *
  * While an agent is here, Console does not run its watcher: boot, a restored

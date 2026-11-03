@@ -1,8 +1,7 @@
 """A process shutting down hands over the work it owns before its lease goes.
 
 The other processes may take over a process's owned work (a client's
-consumer, a bridge's connection, a server-side connector) as soon as its
-lease reads as stopped. So the lease is marked stopped only after that work
+consumer, a bridge's connection) as soon as its lease reads as stopped. So the lease is marked stopped only after that work
 has stopped here; if it cannot be stopped, the lease is left to lapse on its
 own, which gives the work time to end before anyone else starts it.
 """

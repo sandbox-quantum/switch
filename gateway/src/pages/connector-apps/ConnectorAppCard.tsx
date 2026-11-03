@@ -22,6 +22,7 @@ import { useState } from "react";
 import {
   type ConnectorApp,
   type ConnectorAppCheck,
+  type SavedConnectorApp,
   checkConnectorApp,
   importConnectorApp,
 } from "../../data/api";
@@ -32,6 +33,7 @@ import {
   type CardAction,
   cardState,
   type CardState,
+  changeBlocked,
   configuredSentence,
   type MenuAction,
   menuActions,
@@ -44,6 +46,7 @@ import {
   usedBy,
 } from "./connectorApps";
 import RemoveDialog from "./RemoveDialog";
+import { useConnectorAppScope } from "./scope";
 import SetupDialog, { type SetupMode } from "./SetupDialog";
 import UpdateSecretDialog from "./UpdateSecretDialog";
 
@@ -158,6 +161,7 @@ export default function ConnectorAppCard({
   onCheckFailure: (message: string | null) => void;
   onChanged: (message: string) => void;
 }) {
+  const scope = useConnectorAppScope();
   const [menu, setMenu] = useState<HTMLElement | null>(null);
   const [setup, setSetup] = useState<SetupMode | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -172,13 +176,13 @@ export default function ConnectorAppCard({
   const primary = primaryAction(app, checkFailure);
   const actions = menuActions(app);
   const summary = secretSummary(app);
-  const blocked = publicUrl === null || app.setup_blocked !== null;
+  const blocked = changeBlocked(app, publicUrl);
 
   const check = async () => {
     setChecking(true);
     setError(null);
     try {
-      const result = await checkConnectorApp(app.slug);
+      const result = await checkConnectorApp(scope, app.slug);
       setChecks(result.checks);
       onCheckFailure(result.ok ? null : (result.checks.find((c) => !c.ok)?.message ?? null));
     } catch (err) {
@@ -203,10 +207,10 @@ export default function ConnectorAppCard({
     else setRemoving(true);
   };
 
-  const saved = (message: string) => {
+  const saved = (message: string, result: SavedConnectorApp) => {
     setSetup(null);
     setUpdating(false);
-    setChecks(null);
+    setChecks(result.checks.length > 0 ? result.checks : null);
     onCheckFailure(null);
     onChanged(message);
   };
@@ -263,6 +267,11 @@ export default function ConnectorAppCard({
             {checks.map((c) => (
               <Alert key={c.name} severity={c.ok ? "success" : "error"} variant="outlined">
                 {c.message}
+                {c.note && (
+                  <Typography variant="body2" sx={{ mt: 0.5 }}>
+                    <strong>Note:</strong> {c.note}
+                  </Typography>
+                )}
               </Alert>
             ))}
           </Stack>
@@ -308,7 +317,7 @@ export default function ConnectorAppCard({
           mode={setup}
           open
           onClose={() => setSetup(null)}
-          onSaved={() => saved(`${app.name} is ready.`)}
+          onSaved={(result) => saved(`${app.name} is ready.`, result)}
         />
       )}
       {updating && (
@@ -316,7 +325,9 @@ export default function ConnectorAppCard({
           app={app}
           open
           onClose={() => setUpdating(false)}
-          onSaved={() => saved(`${app.name}'s secret is updated. Nobody was disconnected.`)}
+          onSaved={(result) =>
+            saved(`${app.name}'s secret is updated. Nobody was disconnected.`, result)
+          }
         />
       )}
       {removing && (

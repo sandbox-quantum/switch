@@ -34,7 +34,7 @@ export function newAgentMachineNotice(
     name && name !== location.label ? `${location.label} (machine “${name}”)` : location.label;
   return {
     kind: 'managed',
-    text: `Runs as a managed agent on ${where}: Switch places it on the machine’s agents controller, which runs it. You can bring it back to this Console later from its settings.`,
+    text: `Runs as a managed agent on ${where}: Switch places it on the machine’s agent controller, which runs it. You can bring it back to this Console later from its settings.`,
   };
 }
 

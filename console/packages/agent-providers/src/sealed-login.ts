@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { parseVertexLogin } from './vertex-login';
 
 /**
- * Provider logins sealed to an agents controller's own key, so Switch stores
+ * Provider logins sealed to an agent controller's own key, so Switch stores
  * and relays only ciphertext. The controller makes an X25519 keypair and
  * gives Switch the public half; Console seals a login to it; only the
  * controller can open it. Switch Core checks the envelope's shape and the key

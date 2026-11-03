@@ -81,6 +81,7 @@ describe.skipIf(!process.env.SWITCH_MIGRATION_INTEGRATION)('moving off Docker', 
         telemetryEnabled: false,
         telemetryEnvironment: 'local',
         telemetryInternal: false,
+        telemetryEndpoint: 'https://relay.example.test',
       })
     );
 

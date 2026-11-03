@@ -8,16 +8,18 @@ import type { DeployedTelemetry } from '@shared/core/managed-switch-server/manag
  * gave and the answer the server is acting on can differ, and this is where
  * that gap is turned into something to show.
  *
- * The three outcomes are deliberately distinct. A server in step says nothing.
+ * The outcomes are deliberately distinct. A server in step says nothing.
  * A server out of step says which way, because "not sharing yet" and "still
  * sharing after you said no" are not the same news. And a server we could not
  * read says so rather than borrowing either answer — the whole point of
- * checking is that assuming was what went wrong.
+ * checking is that assuming was what went wrong. A server sending somewhere
+ * other than this build's relay is out of step too.
  */
 export type ManagedTelemetryNotice =
   | { kind: 'in-step' }
   | { kind: 'unknown'; reason: string }
-  | { kind: 'stale'; consent: boolean };
+  | { kind: 'stale'; consent: boolean }
+  | { kind: 'stale-endpoint' };
 
 export function managedTelemetryNotice(args: {
   /** Whether the managed stack is up. A stopped server transmits nothing, so it
@@ -36,6 +38,7 @@ export function managedTelemetryNotice(args: {
   const { running, deployed, consent, sharedWithOthers } = args;
   if (!running || deployed === null) return { kind: 'in-step' };
   if (!deployed.known) return { kind: 'unknown', reason: deployed.reason };
+  if (deployed.enabled && consent && !deployed.endpointCurrent) return { kind: 'stale-endpoint' };
   if (deployed.enabled === consent) return { kind: 'in-step' };
   if (consent && sharedWithOthers) return { kind: 'in-step' };
   return { kind: 'stale', consent };

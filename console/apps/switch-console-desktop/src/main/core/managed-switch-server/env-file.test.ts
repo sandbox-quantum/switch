@@ -41,6 +41,7 @@ describe('buildEnvFile', () => {
     telemetryEnabled: false,
     telemetryEnvironment: 'prod',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
   const vars = Object.fromEntries(
     env
@@ -205,6 +206,7 @@ describe('buildEnvFile', () => {
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
       telemetryInternal: false,
+      telemetryEndpoint: 'https://relay.example.test',
     });
     expect(sharing).toContain('TELEMETRY_ENABLED=true');
   });
@@ -221,6 +223,7 @@ describe('buildEnvFile', () => {
       telemetryEnabled: true,
       telemetryEnvironment: 'local',
       telemetryInternal: false,
+      telemetryEndpoint: 'https://relay.example.test',
     });
 
     expect(fromDevBuild).toContain('TELEMETRY_ENVIRONMENT=local');
@@ -239,11 +242,17 @@ describe('buildEnvFile', () => {
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
       telemetryInternal: true,
+      telemetryEndpoint: 'https://relay.example.test',
     });
 
     expect(forStaff).toContain('TELEMETRY_INTERNAL=true');
     expect(vars.TELEMETRY_INTERNAL).toBe('false');
     expect(composeYaml).toMatch(/^\s+TELEMETRY_INTERNAL:\s*$/m);
+  });
+
+  it('names the relay the server reports to, rather than leaving it to the server’s default', () => {
+    expect(vars.TELEMETRY_ENDPOINT).toBe('https://relay.example.test');
+    expect(composeYaml).toMatch(/^\s+TELEMETRY_ENDPOINT:\s*$/m);
   });
 
   it('is the only thing the compose file needs to forward the gate', () => {
@@ -273,6 +282,7 @@ describe('readStackEnv', () => {
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
 
   it('reads back exactly what buildEnvFile wrote', () => {
@@ -387,6 +397,7 @@ describe('keysDisagreeing', () => {
     telemetryEnabled: true,
     telemetryEnvironment: 'prod',
     telemetryInternal: false,
+    telemetryEndpoint: 'https://relay.example.test',
   });
 
   it('finds nothing wrong with a copy of the same settings', () => {

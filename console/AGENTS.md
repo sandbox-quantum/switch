@@ -432,10 +432,10 @@ pnpm run lint
   a restart offered, never applied by restarting the user's server for them. Whether it
   is out of step is read off the running container, not inferred from what we last wrote —
   and a host that cannot be read is reported as unknown, never as agreeing.
-- **The toggle defaults to off.** The payload carries a random per-install id, which makes
-  it pseudonymous personal data under GDPR/nFADP; an opt-out default does not cover that.
-  Flipping the default back to on is a product decision that requires the id to go first,
-  not a code change.
+- **The toggle defaults to on.** Usage data is opt-out: a first-run notice says what is
+  shared and carries the off switch, and the same toggle lives in Settings. That default is
+  a product decision, and so is what identifies an install (today, only the random
+  per-install id). Changing either is a product and privacy call, not a code change.
 - **What a telemetry payload may contain.** Add an event only by adding it to the closed
   catalogue in `src/main/core/telemetry/events.ts`: its property types are literal unions,
   numbers and booleans, and `TELEMETRY_EVENT_PROPERTIES` names the same fields as data, which
@@ -537,7 +537,7 @@ pnpm run lint
     `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
     Moving it out is tracked separately; it is deliberately not solved by
     writing it to a second location as well.
-- **The embedded agents controller's credential** (`embedded-controller/`) lives only in
+- **The embedded agent controller's credential** (`embedded-controller/`) lives only in
   the encrypted app secrets store. It reaches the controller child on stdin
   (`--credential-stdin`), never on argv, in the environment or in a file, so the
   watchers and sessions the controller starts cannot inherit it. Keep it that way.

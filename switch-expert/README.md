@@ -38,10 +38,8 @@ only its owner.
 Run it somewhere that stays up. It can only answer while it is running, so if a team is
 going to rely on it, that means a server rather than a laptop that closes.
 
-> Without Switch Console, the connector's `configure` step can register a plain terminal
-> session as an agent. It works, but it is deliberately not feature-complete — no
-> auto-started sessions, no pushing a message into a running session, and **no per-agent
-> instructions**, which are the whole point of an expert agent. Treat it as a fallback.
+> Switch supports agents run from Switch Console, its sidecar or its agent controller; a
+> CLI started by hand gets no Switch tools of its own.
 
 ## What it reads
 
@@ -57,7 +55,7 @@ going to rely on it, that means a server rather than a laptop that closes.
 
 It also reads the rest of this repository — the root `README.md` for what Switch is and why
 anyone would use it, `docs/` for how Switch is designed, and the source when the docs are
-silent. How rooms and messaging mechanically work comes from the connector skill it is
+silent. How rooms and messaging mechanically work comes from the Switch skill it is
 handed when it joins a room, so it never needs to go looking for that.
 
 ## How this stays current
@@ -72,7 +70,7 @@ place someone has to remember to update.
 
 **It re-reads rather than remembers.** The agent pulls this repository at the start of
 every conversation. The fastest-moving material — how rooms and messaging work — is not
-copied into these files at all; it comes from the connector skill, which ships and is
+copied into these files at all; it comes from the Switch skill, which ships and is
 versioned with the server and is loaded into the agent when it joins a room. Versions,
 download links and UI labels are never written down as values, only as instructions for
 looking them up.

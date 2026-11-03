@@ -30,7 +30,7 @@ export function resolveSharedHostBundlePath(): string {
 }
 
 /**
- * The agents controller Console runs as a child process for "Run managed
+ * The agent controller Console runs as a child process for "Run managed
  * agents on this computer", built beside the shared host by
  * `pnpm run build:sidecar`.
  */

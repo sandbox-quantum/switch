@@ -87,7 +87,8 @@ class RegisteredClient:
     gets a new registration rather than a client that no longer fits.
 
     The client asks for no secret: PKCE protects its sign-ins. A vendor that
-    issues one anyway, for a client registered without one, has it ignored.
+    issues one anyway, for a client registered without one, has it ignored;
+    one that registers the client to authenticate with it is answered so.
     """
 
     def __init__(
@@ -215,11 +216,16 @@ def _credentials(answer: dict[str, Any]) -> OAuthClientCredentials:
     client_id = answer.get("client_id")
     if not isinstance(client_id, str) or not client_id:
         raise ServiceAdapterError("The vendor's registration named no client.")
-    # Asked for as a public client; a secret is used only where the vendor
-    # says it registered the client to authenticate with one.
-    method = answer.get("token_endpoint_auth_method", "none")
+    # Asked for as a public client, but the answer says how the vendor
+    # registered it (RFC 7591 §3.2.1), and one naming no method means Basic
+    # (§2). Atlassian answers `none` and issues a secret all the same.
+    method = answer.get("token_endpoint_auth_method", "client_secret_basic")
     secret = answer.get("client_secret")
-    return OAuthClientCredentials(
-        client_id,
-        secret if method != "none" and isinstance(secret, str) and secret else None,
-    )
+    if method == "none" or not isinstance(secret, str) or not secret:
+        return OAuthClientCredentials(client_id, None, authentication=None)
+    if method not in ("client_secret_basic", "client_secret_post"):
+        raise ServiceAdapterError(
+            f"The vendor registered Switch to authenticate with {method}, "
+            "which Switch does not support."
+        )
+    return OAuthClientCredentials(client_id, secret, authentication=method)

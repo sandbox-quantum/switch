@@ -32,6 +32,7 @@ import { assertedTenant } from './asserted-tenant';
 import {
   forgetServerSession,
   withReachableWorkspaceSession,
+  withWorkspaceIfSelected,
   withWorkspaceSession,
 } from './workspace-session';
 
@@ -308,5 +309,58 @@ describe('withReachableWorkspaceSession', () => {
       'answered'
     );
     expect(switchTenant).toHaveBeenCalledWith(expect.anything(), 'tenant-a');
+  });
+});
+
+describe('withWorkspaceIfSelected', () => {
+  it('runs against the workspace the session already selects', async () => {
+    workspace('ws-a', 'tenant-a');
+    selected = 'tenant-a';
+
+    await expect(withWorkspaceIfSelected('ws-a', async () => 'read')).resolves.toBe('read');
+    expect(switchTenant).not.toHaveBeenCalled();
+  });
+
+  it('never switches back to a workspace the person has moved on from', async () => {
+    workspace('ws-a', 'tenant-a');
+    workspace('ws-b', 'tenant-b');
+    selected = 'tenant-b';
+    const ran = vi.fn();
+
+    await expect(withWorkspaceIfSelected('ws-a', ran)).resolves.toBeNull();
+    expect(ran).not.toHaveBeenCalled();
+    expect(switchTenant).not.toHaveBeenCalled();
+  });
+
+  it('holds no lease, so a switch the person starts does not wait for it', async () => {
+    workspace('ws-a', 'tenant-a');
+    workspace('ws-b', 'tenant-b');
+    selected = 'tenant-a';
+    const read = deferred<string>();
+
+    const describing = withWorkspaceIfSelected('ws-a', () => read.promise);
+    await settle();
+    const moving = withWorkspaceSession('ws-b', async () => 'moved');
+
+    await expect(moving).resolves.toBe('moved');
+    expect(selected).toBe('tenant-b');
+    read.resolve('late');
+    await expect(describing).resolves.toBe('late');
+  });
+
+  it('runs on a server holding one workspace, which selects nothing', async () => {
+    workspace('ws-only', null);
+
+    await expect(withWorkspaceIfSelected('ws-only', async () => 'read')).resolves.toBe('read');
+  });
+
+  it('does nothing while the managed host is down', async () => {
+    workspace('ws-a', 'tenant-a');
+    selected = 'tenant-a';
+    hostUnreachable.mockReturnValue(new Error('build-box is not reachable'));
+    const ran = vi.fn();
+
+    await expect(withWorkspaceIfSelected('ws-a', ran)).resolves.toBeNull();
+    expect(ran).not.toHaveBeenCalled();
   });
 });

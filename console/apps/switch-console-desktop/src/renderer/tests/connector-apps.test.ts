@@ -6,9 +6,12 @@ import {
   audienceText,
   cardOrder,
   cardState,
+  changeBlocked,
   configuredSentence,
+  confirmBeforeCheck,
   menuActions,
   menuLabel,
+  missingPublicUrl,
   moveChecklist,
   peopleIn,
   primaryAction,
@@ -21,7 +24,11 @@ import {
   tileAction,
   tileStanding,
 } from '@renderer/features/admin/connector-apps';
-import type { ConnectorApp } from '@shared/core/switch-servers/connector-apps';
+import {
+  connectorAppSchema,
+  redirectUris,
+  type ConnectorApp,
+} from '@shared/core/switch-servers/connector-apps';
 
 /** A connector app as the server lists it, with placeholder values. */
 function app(overrides: Partial<ConnectorApp> = {}): ConnectorApp {
@@ -41,6 +48,11 @@ function app(overrides: Partial<ConnectorApp> = {}): ConnectorApp {
     load_error: null,
     redirect_uri:
       'https://switch.example.test/gateway/service-connections/google-workspace/flows/callback',
+    redirect_uris: [
+      'https://switch.example.test/gateway/service-connections/google-workspace/flows/callback',
+    ],
+    needs_public_url: true,
+    scopes: [],
     setup_blocked: null,
     install_url: null,
     updated_by_name: 'Ada',
@@ -284,7 +296,7 @@ describe('wording', () => {
       'https://console.cloud.google.com/apis/library',
     ]);
     expect(steps[1]!.text).toMatch(/app name .* support email/);
-    expect(steps[4]!.copy).toBe(NONE.redirect_uri);
+    expect(steps[4]!.copy).toEqual([NONE.redirect_uri]);
     expect(steps[5]!.text).toBe(
       'Enable the Google Drive, Docs, Sheets, Slides and Calendar APIs for the project.'
     );
@@ -297,10 +309,7 @@ describe('wording', () => {
       href: 'https://github.com/settings/apps/new',
     });
     expect(steps.slice(1).every((s) => s.link === null)).toBe(true);
-    expect(steps.map((s) => s.copy).filter((c) => c !== null)).toEqual([
-      PUBLIC_URL,
-      GITHUB.redirect_uri,
-    ]);
+    expect(steps.flatMap((s) => s.copy)).toEqual([PUBLIC_URL, GITHUB.redirect_uri]);
     const texts = steps.map((s) => s.text);
     expect(texts[1]).toMatch(/^Set the Homepage URL/);
     expect(texts[2]).toMatch(/^Set the Callback URL/);
@@ -319,6 +328,106 @@ describe('wording', () => {
     expect(
       links.every((href) => /^https:\/\/(console\.cloud\.google\.com|github\.com)\//.test(href))
     ).toBe(true);
+  });
+});
+
+const LOOPBACK_REDIRECTS = [39231, 39232, 39233, 39234, 39235].map(
+  (port) => `http://127.0.0.1:${port}/switch-services/callback`
+);
+
+const AIRTABLE_CALLBACK = `${PUBLIC_URL}/gateway/service-connections/airtable/flows/callback`;
+
+const AIRTABLE = app({
+  slug: 'airtable',
+  name: 'Airtable',
+  source: 'none',
+  client_id: null,
+  saved_client_id: null,
+  configuration_variables: ['AIRTABLE_CLIENT_CONFIG_PATH'],
+  secrets: { client_secret: { set: false, last4: null } },
+  redirect_uri: AIRTABLE_CALLBACK,
+  redirect_uris: [AIRTABLE_CALLBACK],
+  needs_public_url: true,
+  scopes: ['data.records:read', 'data.records:write'],
+  updated_at: null,
+  connected_members: 0,
+  workspaces: 0,
+});
+
+/** An app whose sign-ins return to Switch Console, on one of several ports. */
+const LOOPBACK = app({
+  ...AIRTABLE,
+  slug: 'example',
+  name: 'Example',
+  redirect_uri: LOOPBACK_REDIRECTS[0]!,
+  redirect_uris: LOOPBACK_REDIRECTS,
+  needs_public_url: false,
+});
+
+describe('Airtable, and an app that sends people back to Switch Console', () => {
+  it('asks the operator to confirm what no check can see: that the integration is published', () => {
+    expect(confirmBeforeCheck(AIRTABLE)?.label).toBe(
+      "I've filled in its support details in Builder Hub."
+    );
+    expect(confirmBeforeCheck(AIRTABLE)?.why).toMatch(
+      /privacy policy URL and terms of service URL\. Until all three are set, only the integration's owner can connect/
+    );
+    expect(confirmBeforeCheck(NONE)).toBeNull();
+  });
+
+  it("walks Airtable's Builder Hub, with its redirect to paste and the scopes to tick", () => {
+    const steps = setupInstructions(AIRTABLE, 'internal', null);
+    expect(steps[0]!.link).toEqual({
+      label: 'Open Builder Hub',
+      href: 'https://airtable.com/create/oauth',
+    });
+    expect(steps[0]!.text).toMatch(/account your organization owns/);
+    expect(steps.flatMap((s) => s.copy)).toEqual([AIRTABLE_CALLBACK]);
+    expect(new Set(steps.map((s) => s.text)).size).toBe(steps.length);
+    const texts = steps.map((s) => s.text);
+    expect(steps.find((s) => s.text === 'Under Scopes, tick exactly these:')?.items).toEqual([
+      'data.records:read, data.records:write',
+    ]);
+    expect(steps.filter((s) => s.copy.length > 0)).toHaveLength(1);
+    expect(texts.at(-1)).toMatch(/support email, privacy policy URL and terms of service URL/);
+  });
+
+  it('an app that sends people back to Switch Console needs no public URL, and raises no banner', () => {
+    expect(changeBlocked(LOOPBACK, null)).toBe(false);
+    expect(changeBlocked(NONE, null)).toBe(true);
+    expect(missingPublicUrl([LOOPBACK], null)).toBe(false);
+    expect(missingPublicUrl([LOOPBACK, NONE], null)).toBe(true);
+    expect(missingPublicUrl([LOOPBACK, NONE], PUBLIC_URL)).toBe(false);
+    expect(changeBlocked(AIRTABLE, null)).toBe(true);
+  });
+
+  it('lists every redirect, and sends people back to Switch Console', () => {
+    const details = appDetails(LOOPBACK, PUBLIC_URL, (iso) => iso);
+    const setup = details.find((section) => section.title === 'Setup')!;
+    expect(setup.rows.filter((r) => r.code).map((r) => [r.label, r.value])).toEqual(
+      LOOPBACK_REDIRECTS.map((redirect, index) => [`Redirect URI ${index + 1}`, redirect])
+    );
+    expect(details.at(-1)!.rows.map((r) => [r.label, r.value])).toEqual([
+      ['Sent back to', 'Switch Console, on their computer'],
+    ]);
+  });
+
+  it("names Airtable's Helm value when moving off configuration", () => {
+    expect(moveChecklist(app({ ...AIRTABLE, source: 'configuration' }))[1]!.text).toBe(
+      "Remove AIRTABLE_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.airtableClientSecret."
+    );
+  });
+
+  it('reads a server older than these fields as it always did', () => {
+    const { redirect_uris, needs_public_url, scopes, ...older } = app();
+    void redirect_uris;
+    void needs_public_url;
+    void scopes;
+    const parsed = connectorAppSchema.parse(older);
+    expect(parsed.needs_public_url).toBe(true);
+    expect(parsed.scopes).toEqual([]);
+    expect(redirectUris(parsed)).toEqual([older.redirect_uri]);
+    expect(redirectUris({ redirect_uri: null, redirect_uris: undefined })).toEqual([]);
   });
 });
 

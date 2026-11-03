@@ -88,6 +88,8 @@ class DiscordGatewayClient:
         self._task: asyncio.Task[None] | None = None
         # The socket as owned work, once `own` has registered it.
         self._owned: OwnedKind | None = None
+        # Channels whose update has been routed since this process started.
+        self._channel_names_seen: set[int] = set()
         # command_guild_id=None → commands register globally, once for the
         # application across every guild (decision #7); guild-scoped registration
         # is the self-registered adapter's, which serves one guild.
@@ -144,6 +146,7 @@ class DiscordGatewayClient:
         # (guard G4).
         self._connection.set_guild_message_handler(self._on_guild_message)
         self._connection.set_interaction_handler(self._on_interaction)
+        self._connection.set_channel_update_handler(self._on_channel_update)
         self._connection.set_guild_lifecycle_handlers(
             on_remove=self._on_guild_remove,
             on_join=self._on_guild_join,
@@ -161,15 +164,19 @@ class DiscordGatewayClient:
         await self._bring_up(listen=True)
 
     async def _bring_up(self, *, listen: bool) -> None:
-        """Open the socket, or log in for the API alone, retrying with backoff
-        until it succeeds, then attach the bridges.
+        """Open the socket, or log in for the API alone, and attach the
+        bridges, retrying the whole with backoff until it succeeds.
 
         Run in the background so a configured-but-unreachable Discord app
         never blocks or fails boot, or a take-over. Only the *initial* connect
         is retried here — once it is up, discord.py reconnects transient drops
         on its own (the same connection object, so attached bridges keep
-        working). On success `on_connected` fires, which walks the running
-        bridges and attaches the ones on a shared connection.
+        working). Once connected, `on_connected` walks the running bridges and
+        attaches the ones on a shared connection. A walk that raises is a
+        failed bring-up like a connect that does: the connection is closed and
+        the whole is tried again. Otherwise a process holding the socket would
+        keep it open with no bridge attached, and Discord would go silent
+        everywhere until the socket next moved.
         """
         delay = _INITIAL_RETRY_DELAY
         while True:
@@ -178,7 +185,12 @@ class DiscordGatewayClient:
                     await self.start()
                 else:
                     await self._connection.login()
-                break
+                # Before the walk, with no await between: a bridge starting
+                # from here on is attached as it starts, and every one started
+                # before is in the walk, so none falls between the two.
+                self._live = True
+                await self._on_connected(self._connection)
+                return
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -188,14 +200,10 @@ class DiscordGatewayClient:
                     "Gateway connection" if listen else "API log-in",
                     delay,
                 )
+                self._live = False
                 await self._connection.close()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, _MAX_RETRY_DELAY)
-        # Before the walk, with no await between: a bridge starting from here
-        # on is attached as it starts, and every one started before is in the
-        # walk, so none falls between the two.
-        self._live = True
-        await self._on_connected(self._connection)
 
     def own(self, ownership: Ownership) -> None:
         """Make the socket owned work: opened in the one process that holds
@@ -238,9 +246,8 @@ class DiscordGatewayClient:
     async def _close(self) -> None:
         """Stop whatever is being brought up, and close the connection.
 
-        Closed even when the bring-up failed after connecting, in
-        `on_connected`, and its error is raised from here: the ownership logs
-        a hand-over that raises and releases the socket's lease all the same,
+        Closed even when stopping the bring-up raises: the ownership logs a
+        hand-over that raises and releases the socket's lease all the same,
         and the next holder opens a socket of its own.
         """
         task, self._task = self._task, None
@@ -307,6 +314,29 @@ class DiscordGatewayClient:
             # handling and outbound posting run against the one socket.
             adapter.attach_shared_connection(self._connection)
             await adapter.dispatch_inbound(message)
+
+    async def _on_channel_update(
+        self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel
+    ) -> None:
+        """Route a guild channel's change to the bridge its guild resolves to,
+        fresh and with no tenant bound, as a message is (G1). A guild with no
+        install is dropped. Only a rename, or a channel's first update since
+        this process started, is resolved; the adapter makes the same cut."""
+        if before.name == after.name and after.id in self._channel_names_seen:
+            return
+        self._channel_names_seen.add(after.id)
+        with no_tenant():
+            try:
+                target = await self._install_service.resolve_by_workspace(
+                    platform=_PLATFORM, workspace_id=str(after.guild.id)
+                )
+            except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable):
+                return
+            adapter = target.adapter
+            if not isinstance(adapter, DiscordAdapter):
+                return
+            adapter.attach_shared_connection(self._connection)
+            await adapter.dispatch_channel_update(before, after)
 
     async def _on_slash(
         self,

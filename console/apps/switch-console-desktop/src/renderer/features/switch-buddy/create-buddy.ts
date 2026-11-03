@@ -1,6 +1,7 @@
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
-import { BUDDY_TEMPLATE_ID, buddyAgentName, isBuddy } from './buddy-identity';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
+import { BUDDY_TEMPLATE_ID, buddyAgentName, findBuddy } from './buddy-identity';
 import { reportBuddyStep } from './buddy-telemetry';
 
 /** How many names to try when someone else in the workspace already has the one picked. */
@@ -22,6 +23,8 @@ export async function createBuddy(input: {
   machineId: string;
   provider: string;
   person: { name: string | null; email: string | null };
+  /** Where the person set the buddy up: the first run, or the buddy's chat later. */
+  entryPoint: UiEntryPoint;
 }): Promise<{ agentId: string; name: string }> {
   try {
     const created = await createBuddyAgent(input);
@@ -39,9 +42,10 @@ async function createBuddyAgent(input: {
   machineId: string;
   provider: string;
   person: { name: string | null; email: string | null };
+  entryPoint: UiEntryPoint;
 }): Promise<{ agentId: string; name: string }> {
   const existing = (await rpc.managedAgents.list(input.serverId)) ?? [];
-  const mine = existing.find(isBuddy);
+  const mine = findBuddy(existing);
   if (mine) return { agentId: mine.agentId, name: mine.name };
   const template = await rpc.workspaces.getTemplateDetail({
     workspaceId: input.workspaceId,
@@ -55,6 +59,8 @@ async function createBuddyAgent(input: {
       inputs: { agent_name: name, provider: input.provider, machine: input.machineId },
       filled: {},
       templateName: template.name,
+      templateId: BUDDY_TEMPLATE_ID,
+      entryPoint: input.entryPoint,
     });
     if (result.kind === 'created') {
       const created = result.createdAgents[0];

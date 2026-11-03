@@ -92,10 +92,6 @@
                         {
                             "title": "/list-switch-agents",
                             "description": "List every agent on this Switch, to find one to invite"
-                        },
-                        {
-                            "title": "/room-url",
-                            "description": "Show this room's address in Switch"
                         }
                     ]
                 },
@@ -156,10 +152,6 @@
                         {
                             "title": "list-switch-agents",
                             "description": "List every agent on this Switch, to find one to invite"
-                        },
-                        {
-                            "title": "room-url",
-                            "description": "Show this room's address in Switch"
                         }
                     ]
                 }

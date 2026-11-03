@@ -2,7 +2,7 @@ import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderDefinition } from '@shared/core/providers/agent-provider-registry';
 
 /**
- * Where a provider stands on this computer, as its agents controller last
+ * Where a provider stands on this computer, as its agent controller last
  * reported it to Switch: what Switch checks before it will create an agent
  * with it, so the one answer the buddy pages go by.
  *
@@ -17,6 +17,8 @@ export type BuddyProvider = {
   state: BuddyProviderState;
   /** What the machine said about its login, when it is not ready; null when nothing. */
   detail: string | null;
+  /** False when signing in would not make it ready: `detail` says what would. */
+  loginHelps: boolean;
 };
 
 export function buddyProviders(
@@ -34,7 +36,13 @@ export function buddyProviders(
           : reported.problem === 'login not checked yet'
             ? 'checking'
             : 'sign-in';
-    return { id: provider.id, name: provider.name, state, detail: reported?.detail ?? null };
+    return {
+      id: provider.id,
+      name: provider.name,
+      state,
+      detail: reported?.detail ?? null,
+      loginHelps: reported?.loginHelps ?? true,
+    };
   });
 }
 

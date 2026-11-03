@@ -30,8 +30,9 @@ class ReauthorizationRequiredError(ServiceAdapterError):
 
 
 class ConnectionNotRevocable(ServiceAdapterError):
-    """Switch cannot revoke this kind of credential (a pasted key): only the
-    vendor can. The message tells the person to, and is shown as it is."""
+    """Switch cannot revoke this kind of credential (a pasted key, or a
+    sign-in at a vendor with no revocation endpoint): only the vendor can. The
+    message tells the person to, and is shown as it is."""
 
 
 @dataclass(frozen=True)

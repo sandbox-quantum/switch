@@ -668,7 +668,7 @@ export default function MachinesPage() {
           <Box>
             <Typography variant="h5">Machines</Typography>
             <Typography variant="body2" color="text.secondary">
-              Computers running an agents controller. Each one runs the agents you place on it
+              Computers running an agent controller. Each one runs the agents you place on it
               and reports what it sees.
             </Typography>
           </Box>

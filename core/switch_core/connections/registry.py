@@ -91,7 +91,7 @@ class ClientRegistration:
     server_name: str
 
 
-def _every_scope(definition: ConnectionDefinition) -> list[str]:
+def every_scope(definition: ConnectionDefinition) -> list[str]:
     """Every scope the entry's levels name, in order, each once."""
     access = definition.access
     assert access is not None
@@ -144,7 +144,7 @@ def build_adapter(
                         registration.public_url, registration.server_name
                     ),
                     redirect_uris=uris,
-                    scopes=_every_scope(definition),
+                    scopes=every_scope(definition),
                 ),
                 http,
             )

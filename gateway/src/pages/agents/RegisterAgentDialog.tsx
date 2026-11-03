@@ -16,15 +16,12 @@ import {
 } from "@mui/material";
 import { useCallback, useState } from "react";
 import {
-  type ConnectorResult,
-  type ConnectorTypeConfigSchema,
   type KnownAgentType,
   type RegisterResult,
-  createConnector,
   registerKnownAgent,
   registerOtherAgent,
 } from "../../data/api";
-import { useConnectorTypes, useKnownAgentTypes } from "../../data/hooks";
+import { useKnownAgentTypes } from "../../data/hooks";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 
 interface Props {
@@ -33,7 +30,7 @@ interface Props {
   onRegistered: () => void;
 }
 
-type SelectedKind = "known" | "connector" | "other" | null;
+type SelectedKind = "known" | "other" | null;
 
 const OTHER_KEY = "__other__";
 
@@ -43,10 +40,10 @@ export default function RegisterAgentDialog({
   onRegistered,
 }: Props) {
   const { data: knownTypes } = useKnownAgentTypes();
-  const { data: connectorTypes } = useConnectorTypes();
 
   const [selectedKey, setSelectedKey] = useState("");
-  const [selectedKind, setSelectedKind] = useState<SelectedKind>(null);
+  const selectedKind: SelectedKind =
+    selectedKey === "" ? null : selectedKey === OTHER_KEY ? "other" : "known";
 
   // Known agent / Other fields
   const [name, setName] = useState("");
@@ -57,33 +54,21 @@ export default function RegisterAgentDialog({
     Record<string, unknown>
   >({});
 
-  // Connector fields
-  const [displayName, setDisplayName] = useState("");
-  const [connectorConfig, setConnectorConfig] = useState<Record<string, string>>(
-    {},
-  );
-
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [agentResult, setAgentResult] = useState<RegisterResult | null>(null);
-  const [connectorResult, setConnectorResult] =
-    useState<ConnectorResult | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
-  const hasResult = agentResult !== null || connectorResult !== null;
+  const hasResult = agentResult !== null;
 
   const reset = useCallback(() => {
     setSelectedKey("");
-    setSelectedKind(null);
     setName("");
     setDescription("");
     setKnownAgentOptions({});
-    setDisplayName("");
-    setConnectorConfig({});
     setSubmitting(false);
     setError(null);
     setAgentResult(null);
-    setConnectorResult(null);
     setCopied(null);
   }, []);
 
@@ -96,19 +81,10 @@ export default function RegisterAgentDialog({
   const handleTypeChange = useCallback(
     (value: string) => {
       setSelectedKey(value);
-      let kind: SelectedKind;
-      if (value === OTHER_KEY) {
-        kind = "other";
-      } else {
-        const isKnown = knownTypes?.some((t) => t.key === value);
-        kind = isKnown ? "known" : "connector";
-      }
-      setSelectedKind(kind);
-      setConnectorConfig({});
 
       // Seed type-specific options with their schema defaults so unchecking a
       // box explicitly sets `false` rather than dropping the field.
-      if (kind === "known") {
+      if (value !== OTHER_KEY) {
         const spec = knownTypes?.find((t) => t.key === value);
         setKnownAgentOptions(extractDefaults(spec?.options_schema));
       } else {
@@ -118,26 +94,7 @@ export default function RegisterAgentDialog({
     [knownTypes],
   );
 
-  const selectedConnectorType = connectorTypes?.find(
-    (c) => c.key === selectedKey,
-  );
-  const configSchema: ConnectorTypeConfigSchema | null =
-    selectedKind === "connector" && selectedConnectorType
-      ? selectedConnectorType.config_schema
-      : null;
-
-  const canSubmit =
-    selectedKind === "known"
-      ? selectedKey && name
-      : selectedKind === "other"
-        ? name
-        : selectedKind === "connector"
-          ? selectedKey &&
-            displayName &&
-            (configSchema?.required ?? []).every(
-              (field) => connectorConfig[field]?.trim(),
-            )
-          : false;
+  const canSubmit = selectedKind !== null && name !== "";
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -145,25 +102,16 @@ export default function RegisterAgentDialog({
     setError(null);
 
     try {
-      if (selectedKind === "known") {
-        const res = await registerKnownAgent(
-          selectedKey,
-          name,
-          description,
-          knownAgentOptions,
-        );
-        setAgentResult(res);
-      } else if (selectedKind === "other") {
-        const res = await registerOtherAgent(name, description);
-        setAgentResult(res);
-      } else {
-        const config: Record<string, string> = {};
-        for (const [key, value] of Object.entries(connectorConfig)) {
-          if (value) config[key] = value;
-        }
-        const res = await createConnector(selectedKey, displayName, config);
-        setConnectorResult(res);
-      }
+      const res =
+        selectedKind === "known"
+          ? await registerKnownAgent(
+              selectedKey,
+              name,
+              description,
+              knownAgentOptions,
+            )
+          : await registerOtherAgent(name, description);
+      setAgentResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed.");
     } finally {
@@ -176,8 +124,6 @@ export default function RegisterAgentDialog({
     name,
     description,
     knownAgentOptions,
-    displayName,
-    connectorConfig,
   ]);
 
   const handleCopy = useCallback((value: string, label: string) => {
@@ -202,7 +148,6 @@ export default function RegisterAgentDialog({
   );
 
   const hasKnown = knownTypes && knownTypes.length > 0;
-  const hasConnectors = connectorTypes && connectorTypes.length > 0;
 
   const copyAdornment = (value: string, label: string) => (
     <InputAdornment position="end">
@@ -271,31 +216,6 @@ export default function RegisterAgentDialog({
                 />
               )}
             </>
-          ) : connectorResult ? (
-            <>
-              <Alert severity="success">
-                Connector created. Agents are being discovered and registered
-                automatically.
-              </Alert>
-              <TextField
-                label="Connector ID"
-                value={connectorResult.connector_id}
-                fullWidth
-                slotProps={{ input: { readOnly: true } }}
-              />
-              <TextField
-                label="Display Name"
-                value={connectorResult.display_name}
-                fullWidth
-                slotProps={{ input: { readOnly: true } }}
-              />
-              <TextField
-                label="Status"
-                value={connectorResult.status}
-                fullWidth
-                slotProps={{ input: { readOnly: true } }}
-              />
-            </>
           ) : (
             <>
               {error && <Alert severity="error">{error}</Alert>}
@@ -320,21 +240,13 @@ export default function RegisterAgentDialog({
                     {t.key}
                   </MenuItem>
                 ))}
-                {hasConnectors && (
-                  <ListSubheader>Server Connectors</ListSubheader>
-                )}
-                {(connectorTypes ?? []).map((c) => (
-                  <MenuItem key={c.key} value={c.key}>
-                    {c.key}
-                  </MenuItem>
-                ))}
                 <ListSubheader>Other</ListSubheader>
                 <MenuItem value={OTHER_KEY}>
                   External agent
                 </MenuItem>
               </TextField>
 
-              {(selectedKind === "known" || selectedKind === "other") && (
+              {selectedKind !== null && (
                 <>
                   <TextField
                     label="Name"
@@ -357,49 +269,6 @@ export default function RegisterAgentDialog({
                       selectedType.options_schema,
                       knownAgentOptions,
                       setKnownAgentOptions,
-                    )}
-                </>
-              )}
-
-              {selectedKind === "connector" && (
-                <>
-                  <TextField
-                    label="Display Name"
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                    fullWidth
-                    required
-                  />
-                  {configSchema &&
-                    Object.entries(configSchema.properties).map(
-                      ([field, prop]) => {
-                        const isRequired =
-                          configSchema.required?.includes(field) ?? false;
-                        const label =
-                          prop.title ??
-                          field
-                            .replace(/_/g, " ")
-                            .replace(/\b\w/g, (c) => c.toUpperCase());
-                        return (
-                          <TextField
-                            key={field}
-                            label={label}
-                            type={
-                              prop.format === "password" ? "password" : "text"
-                            }
-                            value={connectorConfig[field] ?? ""}
-                            onChange={(e) =>
-                              setConnectorConfig((prev) => ({
-                                ...prev,
-                                [field]: e.target.value,
-                              }))
-                            }
-                            fullWidth
-                            required={isRequired}
-                            helperText={prop.description}
-                          />
-                        );
-                      },
                     )}
                 </>
               )}

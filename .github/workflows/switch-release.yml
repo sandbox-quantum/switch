@@ -46,7 +46,10 @@ name: switch release
 # release (a prerelease for an RC or a dev build; switch-dev-cleanup.yml prunes
 # only the dev ones), and pins
 # that package into the switch chart's switchCore.controllerRelease, so Core
-# tells controllers to run the controller of the Switch they talk to.
+# tells controllers to run the controller of the Switch they talk to. The
+# package is published with its signature (`.tgz.sig`, made with the
+# CONTROLLER_RELEASE_SIGNING_KEY secret), which controllers verify before they
+# install it; a publishing run without the secret fails.
 #
 # Artifacts go to GHCR by default, and the packages are public alongside the
 # repo. REGISTRY / IMAGE_NAMESPACE are the only things to change to retarget
@@ -181,6 +184,21 @@ jobs:
             echo "channel=$channel"
           } | tee -a "$GITHUB_OUTPUT"
 
+      - name: Set up uv
+        if: ${{ steps.version.outputs.channel == 'release' }}
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Refuse an official template change with no revision
+        # A release records a revision for each official template it changed
+        # (RELEASING.md); the agents an older revision created are brought up
+        # to it when the released server starts. Only on a release tag: an RC
+        # or a dev build serves a changed template under its last revision.
+        if: ${{ steps.version.outputs.channel == 'release' }}
+        run: uv run --project core python -m switch_core.official_templates.revisions check
+
       - name: List the images
         # scripts/pin_chart_images.py is the one list of first-party images; the
         # build matrix, the pin and the recorded pins all come from it.
@@ -306,7 +324,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # The agents controller (console/packages/agent-controller) at this release's
+  # The agent controller (console/packages/agent-controller) at this release's
   # version, published as the `switch-agent-controller-v<version>` GitHub
   # release that `install.sh` and `switch-agent-controller update` already read.
   # The chart below is pinned to it (switchCore.controllerRelease), so Core
@@ -316,7 +334,7 @@ jobs:
   # of a deployment running an RC, or the dev environment, follow it. A dry run
   # builds, tests and packs the controller but publishes nothing.
   controller:
-    name: Package & publish agents controller
+    name: Package & publish agent controller
     needs: prep
     runs-on: ubuntu-latest
     permissions:
@@ -381,7 +399,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           prefix="$(mktemp -d)"
-          npm install --global --prefix "$prefix" "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
+          npm install --global --ignore-scripts --prefix "$prefix" "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
           test "$("$prefix/bin/switch-agent-controller" --version)" = "$VERSION"
           "$prefix/bin/switch-agent-controller" --help > /dev/null
 
@@ -392,6 +410,15 @@ jobs:
         run: |
           sha256="$(sha256sum "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" | cut -d' ' -f1)"
           echo "sha256=$sha256" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Sign the package
+        # Controllers install only a release signed with a key built into them
+        # (src/release-keys.ts); see "Release signing" in RELEASING.md.
+        if: needs.prep.outputs.push == 'true'
+        env:
+          CONTROLLER_RELEASE_SIGNING_KEY: ${{ secrets.CONTROLLER_RELEASE_SIGNING_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node packages/agent-controller/scripts/sign-release.mjs "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" "$VERSION"
 
       - name: Release
         # The tag is created from this commit by the release itself. A tag
@@ -417,15 +444,22 @@ jobs:
               echo "::error::$TAG is already released with a different package (sha256 $published, this build $SHA256). Delete that release and its tag, then re-run."
               exit 1
             fi
-            echo "$TAG is already released with this package."
+            # Its signature must be there too, or no controller installs it.
+            if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
+              grep -Fqx "switch-agent-controller-$VERSION.tgz.sig"; then
+              gh release upload "$TAG" "$package.sig" --repo "$GITHUB_REPOSITORY"
+              echo "$TAG is already released with this package; uploaded its signature."
+              exit 0
+            fi
+            echo "$TAG is already released with this package and its signature."
             exit 0
           fi
           if [ "$CHANNEL" = rc ]; then
-            gh release create "$TAG" "$package" \
+            gh release create "$TAG" "$package" "$package.sig" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "switch-agent-controller $VERSION (release candidate)" \
-              --notes "The Switch agents controller built for the release candidate Switch $VERSION, at $GITHUB_SHA. Controllers connected to a Switch running that candidate update to it on their own once idle; bake it into a machine image for that candidate. \`install.sh\` and \`switch-agent-controller update\` leave it out.
+              --notes "The Switch agent controller built for the release candidate Switch $VERSION, at $GITHUB_SHA. Controllers connected to a Switch running that candidate update to it on their own once idle; bake it into a machine image for that candidate. \`install.sh\` and \`switch-agent-controller update\` leave it out.
 
             SHA-256: \`$SHA256\`" \
               --prerelease \
@@ -433,26 +467,26 @@ jobs:
             exit 0
           fi
           if [ "$CHANNEL" = dev ]; then
-            gh release create "$TAG" "$package" \
+            gh release create "$TAG" "$package" "$package.sig" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "switch-agent-controller $VERSION (dev build of main)" \
-              --notes "The Switch agents controller built from main at $GITHUB_SHA, for the dev environment, whose controllers update to it on their own. Not for installing by hand; switch-dev-cleanup prunes it.
+              --notes "The Switch agent controller built from main at $GITHUB_SHA, for the dev environment, whose controllers update to it on their own. Not for installing by hand; switch-dev-cleanup prunes it.
 
             SHA-256: \`$SHA256\`" \
               --prerelease \
               --latest=false
             exit 0
           fi
-          gh release create "$TAG" "$package" packages/agent-controller/install.sh \
+          gh release create "$TAG" "$package" "$package.sig" packages/agent-controller/install.sh \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "switch-agent-controller $VERSION" \
-            --notes "The Switch agents controller $VERSION, released with Switch $VERSION, for running managed agents on your own Linux or macOS machines.
+            --notes "The Switch agent controller $VERSION, released with Switch $VERSION, for running managed agents on your own Linux or macOS machines.
 
           SHA-256: \`$SHA256\`
 
-          Install (Node 22.13 or later): \`npm install --global https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/switch-agent-controller-$VERSION.tgz\`, or run \`install.sh\`. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. A controller connected to Switch $VERSION updates to this release on its own once it is idle." \
+          Install (Node 22.13 or later) with \`install.sh\`, which checks the package's signature (\`switch-agent-controller-$VERSION.tgz.sig\`) before installing it. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. A controller connected to Switch $VERSION updates to this release on its own once it is idle." \
             --latest=false
 
   chart:

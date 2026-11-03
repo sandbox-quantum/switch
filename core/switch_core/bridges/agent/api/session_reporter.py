@@ -2,8 +2,8 @@
 
 Two ordinary things make an agent hold a succession of short connections while
 being continuously present: a stream rejected at the room claim and retried,
-and a stream whose heartbeat lapsed (six seconds) closing itself so the client
-reopens. Per connection, both read as a session every few seconds.
+and a stream whose heartbeat lapsed (`HEARTBEAT_TTL_SECONDS`) closing itself so
+the client reopens. Per connection, both read as a session every few seconds.
 
 So this reports on the **agent**: a session begins when one that had no live
 connection acquires its first, and ends only once it has had none for

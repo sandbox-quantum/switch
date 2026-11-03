@@ -127,7 +127,7 @@ async def test_creating_a_chat_with_an_agent_no_controller_hosts_starts_nothing(
     ]
 
 
-async def test_a_warm_reaches_the_agents_controller(chats: _Harness) -> None:
+async def test_a_warm_reaches_the_agent_controller(chats: _Harness) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     controller = _on_controller(chats.connections, agent)
     room_id = await chats.new_chat(chats.alice, agent, "c1")

@@ -315,6 +315,10 @@ which you need either way.
                             "description": "Add an existing agent: /invite-agent @agent-name"
                         },
                         {
+                            "title": "/remove-agent",
+                            "description": "Remove an agent from this room: /remove-agent @agent-name"
+                        },
+                        {
                             "title": "/agents-greet",
                             "description": "Have the agents here introduce themselves"
                         },
@@ -341,10 +345,6 @@ which you need either way.
                         {
                             "title": "/list-switch-agents",
                             "description": "List every agent on this Switch, to find one to invite"
-                        },
-                        {
-                            "title": "/room-url",
-                            "description": "Show this room's address in Switch"
                         }
                     ]
                 },
@@ -375,6 +375,10 @@ which you need either way.
                             "description": "Add an existing agent: /invite-agent @agent-name"
                         },
                         {
+                            "title": "remove-agent",
+                            "description": "Remove an agent from this room: /remove-agent @agent-name"
+                        },
+                        {
                             "title": "agents-greet",
                             "description": "Have the agents here introduce themselves"
                         },
@@ -401,10 +405,6 @@ which you need either way.
                         {
                             "title": "list-switch-agents",
                             "description": "List every agent on this Switch, to find one to invite"
-                        },
-                        {
-                            "title": "room-url",
-                            "description": "Show this room's address in Switch"
                         }
                     ]
                 }

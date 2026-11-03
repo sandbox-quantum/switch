@@ -8,7 +8,7 @@ const machineCapacitySchema = z
   .nullable();
 
 /**
- * The owner's cloud machine. It runs the agents controller, and its agents are
+ * The owner's cloud machine. It runs the agent controller, and its agents are
  * managed agents placed on `controller_id` (null until it has enrolled).
  * `sleeping` is Core's reading of desired `stopped` for `idle`; `disk` and
  * `memory` come from the machine's last heartbeat.

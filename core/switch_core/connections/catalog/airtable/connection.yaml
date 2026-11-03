@@ -1,0 +1,67 @@
+slug: airtable
+name: Airtable
+category: Knowledge base
+description: Read and update records in the Airtable bases you share, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Each refresh returns a new refresh token, and the previous access token
+  # stops working at once.
+  refresh: rotating
+  oauth:
+    # Each server's operator registers an Airtable OAuth integration and names
+    # its settings in AIRTABLE_CLIENT_CONFIG_PATH. Airtable offers dynamic
+    # registration too, but files the client under the Builder Hub of the
+    # first person to authorize it, where it stays limited to development
+    # (only they can authorize it) and they can delete it from under everyone.
+    # On Enterprise plans an admin may have to allowlist the client id.
+    registration: static
+    client_settings: AIRTABLE
+    # Back to Core's own https callback, as Google's: the server needs
+    # GATEWAY_PUBLIC_URL, and nothing listens on people's computers.
+    redirect: [core]
+    # Airtable compares the redirect only with a real code, and nothing short
+    # of someone else's sign-in shows whether the integration is published.
+    unchecked: >-
+      Switch can't check the redirect URL or that the integration is
+      published. Have someone else connect once to confirm.
+    # Airtable has no revocation endpoint, so a sign-in Switch drops lives on
+    # there. Each sign-in is its own grant, and Airtable gives the integration
+    # every base any of them shared: one left behind widens the next.
+    remove_access: >-
+      Remove it in Airtable under Integrations, Third-party integrations, in
+      your account menu, where each sign-in is listed separately. Until then,
+      any Airtable connection you make reaches the bases it shared too.
+  identity:
+    url: https://api.airtable.com/v0/meta/whoami
+    account_id: id
+    # Airtable returns the email only with user.email:read, which its MCP
+    # server does not offer, so the connection is named by the account id.
+    label: email
+# Airtable's access tokens live 60 minutes (measured).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: airtable, url: "https://mcp.airtable.com/mcp" }
+access:
+  # Airtable's consent screen picks bases and workspaces, not scopes, so every
+  # connection is granted the write level. Not asked for: schema.bases:write,
+  # which creates and changes bases, tables, fields and interfaces; without it
+  # Airtable refuses those tools, though the server still lists them.
+  # data.records:write includes deleting records.
+  read:
+    scopes:
+      - data.records:read
+      - schema.bases:read
+      - data.recordComments:read
+      - workspacesAndBases:read
+  write:
+    scopes:
+      - data.records:read
+      - data.records:write
+      - schema.bases:read
+      - data.recordComments:read
+      - data.recordComments:write
+      - workspacesAndBases:read
+tools: { mode: pass_through }

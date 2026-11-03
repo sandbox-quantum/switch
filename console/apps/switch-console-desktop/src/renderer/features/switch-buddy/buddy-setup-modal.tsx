@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { ProviderSetup } from './provider-setup';
+import { useThisComputer } from './use-this-computer';
 
 type Args = { serverId: string; workspaceId: string };
 
@@ -17,13 +18,20 @@ export function BuddySetupModal({
   onSuccess,
   onClose,
 }: Args & BaseModalProps<{ agentId: string; name: string }>) {
+  const thisComputer = useThisComputer(serverId, workspaceId);
   return (
     <>
       <DialogHeader>
         <DialogTitle>Connect an AI provider to switch-buddy</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
-        <ProviderSetup serverId={serverId} workspaceId={workspaceId} onCreated={onSuccess} />
+        <ProviderSetup
+          serverId={serverId}
+          workspaceId={workspaceId}
+          entryPoint="switch_buddy"
+          onCreated={onSuccess}
+          thisComputer={thisComputer}
+        />
       </DialogContentArea>
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>

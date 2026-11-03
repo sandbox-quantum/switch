@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.api_key_cache import ApiKeyCache
+from switch_core.bridges.agent.api_key_cache import EXPIRY_JITTER, ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -30,6 +30,7 @@ from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.keys import Keyring
+from tests.session_counting import CountingSessionFactory
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -38,21 +39,6 @@ _PROFILE = IntegrationProfile(
     post_invocation_mediation=[],
     event_reporting=[],
 )
-
-
-class _CountingSessionFactory:
-    """Wraps the real factory and counts how many sessions are opened.
-
-    A session is a pool checkout, so this is the number the incident is about.
-    """
-
-    def __init__(self, inner: async_sessionmaker[AsyncSession]) -> None:
-        self._inner = inner
-        self.opened = 0
-
-    def __call__(self) -> Any:
-        self.opened += 1
-        return self._inner()
 
 
 class _FakeClientLifecycle:
@@ -74,7 +60,7 @@ class _FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         self.started.append(client.id)
 
-    def announce(self, tenant_id: str) -> None:
+    def announce(self, tenant_id: str, client_ids: object = None) -> None:
         return None
 
     async def stop(self, client_id: str) -> None:
@@ -189,6 +175,9 @@ class TestCacheUnit:
         monkeypatch.setattr(
             "switch_core.bridges.agent.api_key_cache.time.monotonic", lambda: now[0]
         )
+        monkeypatch.setattr(
+            "switch_core.bridges.agent.api_key_cache.random.uniform", lambda a, b: 1.0
+        )
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         cache.put("h", SimpleNamespace(), SimpleNamespace(id="a"))  # type: ignore[arg-type]
 
@@ -196,6 +185,30 @@ class TestCacheUnit:
         assert cache.get("h") is not None
         now[0] = 1005.0
         assert cache.get("h") is None
+
+    def test_expiries_are_spread_so_a_restart_does_not_repeat_its_herd(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        now = [1000.0]
+        monkeypatch.setattr(
+            "switch_core.bridges.agent.api_key_cache.time.monotonic", lambda: now[0]
+        )
+        cache = ApiKeyCache(ttl_seconds=5, max_entries=500)
+        for index in range(200):
+            cache.put(f"h{index}", SimpleNamespace(), SimpleNamespace(id="a"))  # type: ignore[arg-type]
+
+        expiries = [expires for expires, _, _ in cache._entries.values()]
+        assert min(expiries) >= 1000.0 + 5 * (1 - EXPIRY_JITTER)
+        assert max(expiries) <= 1000.0 + 5 * (1 + EXPIRY_JITTER)
+        # Spread, not stacked: with a fixed lifetime every entry shares one.
+        assert len(set(expiries)) > 100
+
+    def test_the_jitter_counts_against_the_heartbeat_ttl(self) -> None:
+        """The longest an entry can live is what must stay below the TTL."""
+        just_too_long = HEARTBEAT_TTL_SECONDS / (1 + EXPIRY_JITTER)
+        with pytest.raises(ValueError, match="heartbeat TTL"):
+            ApiKeyCache(ttl_seconds=just_too_long, max_entries=8)
+        ApiKeyCache(ttl_seconds=just_too_long * 0.99, max_entries=8)
 
     def test_invalidate_agent_drops_every_token_for_that_agent(self) -> None:
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
@@ -215,7 +228,7 @@ class TestResolutionHitsAndMisses:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _seed_agent(session_factory, "tok")
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         mw = _middleware(counting, ApiKeyCache(ttl_seconds=5, max_entries=8))
 
@@ -243,7 +256,7 @@ class TestResolutionHitsAndMisses:
         # on a tenant_session to read the row itself. What the cache above
         # saves is these two round trips, not one.
         await _seed_agent(session_factory, "tok")
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         mw = _middleware(counting, ApiKeyCache(ttl_seconds=0, max_entries=8))
 
@@ -258,7 +271,7 @@ class TestResolutionHitsAndMisses:
         # tenant to open the second, row-reading session under. This is the
         # load-shape that matters — an unauthenticated flood never reaches
         # the second query.
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         mw = _middleware(counting, cache)
 
@@ -271,7 +284,7 @@ class TestResolutionHitsAndMisses:
         # A token that does not resolve must reach Postgres every time, or a
         # key that starts existing would keep failing — and, far worse, the
         # memo would become a place to park an attacker-chosen string.
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         mw = _middleware(counting, cache)
 
@@ -291,7 +304,7 @@ class TestResolutionHitsAndMisses:
             key_type="registration",
             with_agent=False,
         )
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         mw = _middleware(counting, cache)
@@ -310,7 +323,7 @@ class TestResolutionHitsAndMisses:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _seed_agent(session_factory, "orphan", name="orphan", with_agent=False)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         mw = _middleware(counting, cache)
@@ -327,7 +340,7 @@ class TestResolutionHitsAndMisses:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _seed_agent(session_factory, "tok")
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         mw = _middleware(counting, ApiKeyCache(ttl_seconds=0, max_entries=8))
 
@@ -346,7 +359,7 @@ class TestResolutionHitsAndMisses:
         monkeypatch.setattr(
             "switch_core.bridges.agent.api_key_cache.time.monotonic", lambda: now[0]
         )
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         mw = _middleware(counting, ApiKeyCache(ttl_seconds=5, max_entries=8))
 
@@ -466,6 +479,14 @@ class TestAuthCacheConfig:
     def test_a_negative_ttl_fails_at_startup(self) -> None:
         with pytest.raises(ValueError, match="AGENT_AUTH_CACHE_TTL_SECONDS"):
             _config(agent_auth_cache_ttl_seconds=-1)
+
+    def test_a_ttl_whose_jitter_reaches_the_heartbeat_ttl_fails_at_startup(
+        self,
+    ) -> None:
+        longest = HEARTBEAT_TTL_SECONDS / (1 + EXPIRY_JITTER)
+        assert _config(agent_auth_cache_ttl_seconds=longest - 0.1)
+        with pytest.raises(ValueError, match="AGENT_AUTH_CACHE_TTL_SECONDS"):
+            _config(agent_auth_cache_ttl_seconds=longest)
 
     def test_an_unbounded_cache_fails_at_startup(self) -> None:
         with pytest.raises(ValueError, match="AGENT_AUTH_CACHE_MAX_ENTRIES"):

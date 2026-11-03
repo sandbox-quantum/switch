@@ -81,12 +81,12 @@ export function matchQuality(text: string, term: string): MatchQuality {
 export interface CommandPaletteQuery {
   query: string;
   /**
-   * Whether Console's own sessions are results, as matches and as recents.
-   * Off on a server that runs agent management, where those sessions are the
-   * legacy way agents run and the palette offers agents, rooms and chats
-   * instead.
+   * Whether Console's own agents and sessions are results, sessions as matches
+   * and as recents. Off on a server that runs agent management, where those
+   * are the legacy way agents run and the palette offers managed agents, rooms
+   * and chats instead.
    */
-  includeSessions: boolean;
+  includeLegacy: boolean;
   context?: {
     sessionId?: string;
     locationId?: string;

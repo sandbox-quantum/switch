@@ -10,6 +10,7 @@ from cursors it stores, writing the ones it has none for.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import ClientRoom, Room
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.transport.cursors import DeliveryProgress, FromHead
+from switch_core.transport.postgres import logger as transport_logger
 from tests.ownership import start_holder
 from tests.switch_core.statement_counts import StatementCounts
 from tests.switch_core.transport.test_postgres_transport import (
@@ -164,3 +166,25 @@ async def test_a_failed_batch_read_releases_every_claim(
 
     assert transport._watching == {}
     assert transport._cursors == {}
+
+
+async def test_starting_in_no_room_is_not_reported_as_a_problem(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A new workspace's admin client, or an agent not placed anywhere yet,
+    starts in no room. That is a state, not a fault, and must not reach the
+    warning or error log that alerting and the end-to-end harness read."""
+    client_id, user_id, _ = await _client_in_rooms(session_factory, 0)
+    transport = _transport(session_factory, client_id=client_id, user_id=user_id)
+    with caplog.at_level(logging.INFO, logger=transport_logger.name):
+        task = asyncio.create_task(transport.receive_forever(FromHead(MessageStore())))
+        for _ in range(300):
+            if any(user_id in record.getMessage() for record in caplog.records):
+                break
+            await asyncio.sleep(0.01)
+        await transport.close()
+        task.cancel()
+
+    about_it = [record for record in caplog.records if user_id in record.getMessage()]
+    assert [record.levelno for record in about_it] == [logging.INFO]

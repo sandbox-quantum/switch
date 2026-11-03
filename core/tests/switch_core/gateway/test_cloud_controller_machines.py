@@ -1,4 +1,4 @@
-"""Switch cloud machines that run the agents controller, end to end against Postgres.
+"""Switch cloud machines that run the agent controller, end to end against Postgres.
 
 The hosted controller prepares a cloud machine; Core hands it a
 one-time enrollment code (the same one on every retry of a revision); the

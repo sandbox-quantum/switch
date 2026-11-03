@@ -6,10 +6,10 @@ import {
   type SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
-import type { AgentEventStream, OpenAgentStream } from './agent-host';
+import type { AgentEventStream, AgentStreamDeps, OpenAgentStream } from './agent-host';
 
 /**
- * The agents controller's hub, over a WebSocket on the controller's loopback
+ * The agent controller's hub, over a WebSocket on the controller's loopback
  * relay: how an agent host in a process of its own (an `isolated` agent) hears
  * its agent's events. The controller holds the agent's connection to Switch
  * and hands each event to the hub; the hub hands it here, one at a time, and
@@ -56,7 +56,8 @@ export type HubServerMessage =
   | { type: 'gap'; id: number; gap: HubGap }
   | { type: 'session_command'; id: number; command: SessionCommand }
   | { type: 'approval_outcome'; id: number; outcome: ApprovalOutcome }
-  | { type: 'result'; id: number; error?: string };
+  | { type: 'room_gone'; id: number; roomId: string; sessionId: string }
+  | { type: 'result'; id: number; error?: string; refusedRooms?: string[] };
 
 /** Node's WebSocket, which, unlike a browser's, takes request headers. */
 type HeaderedWebSocket = new (url: string, init: { headers: Record<string, string> }) => WebSocket;
@@ -76,20 +77,25 @@ export function openHubStream(url: string): OpenAgentStream {
 class HubEventStream implements AgentEventStream {
   /** The agent host, not Switch, tells a room when it starts a session for it. */
   readonly announcesSessionStarts = true;
+  /** The controller's relay names each call's room from the placements. */
+  readonly placementsNameCallRooms = true;
   private started = false;
   private socket: WebSocket | null = null;
   /** The last sequence this side has handled; sent on every hello. */
   private cursor: number | null;
   private placements: Record<string, string> = {};
   private nextId = 0;
-  private readonly calls = new Map<number, (error: string | undefined) => void>();
+  private readonly placementCalls = new Map<
+    number,
+    (answer: { error?: string; refusedRooms?: string[] }) => void
+  >();
   /** Requests are handled one at a time, in the order they came. */
   private handling: Promise<void> = Promise.resolve();
   private standingDown = false;
 
   constructor(
     private readonly url: string,
-    private readonly deps: SwitchEventStreamDeps
+    private readonly deps: AgentStreamDeps
   ) {
     this.cursor = deps.startCursor ?? null;
   }
@@ -103,17 +109,22 @@ class HubEventStream implements AgentEventStream {
   // Switch decides who may start a session from the agent's binding.
   setSpawnCapable(): void {}
 
-  async replacePlacements(placements: Record<string, string>): Promise<void> {
+  async replacePlacements(placements: Record<string, string>): Promise<{ refusedRooms: string[] }> {
     this.placements = { ...placements };
     const socket = this.socket;
-    // Not connected: the next hello carries them.
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    // Not connected: the next hello carries them, but until then the relay
+    // names no room for the sessions they move.
+    if (!socket || socket.readyState !== WebSocket.OPEN)
+      throw new Error(
+        'the agent controller hub is not connected; the placements are stated when it reconnects'
+      );
     const id = ++this.nextId;
-    const error = await new Promise<string | undefined>((resolve) => {
-      this.calls.set(id, resolve);
+    const answer = await new Promise<{ error?: string; refusedRooms?: string[] }>((resolve) => {
+      this.placementCalls.set(id, resolve);
       socket.send(JSON.stringify({ type: 'placements', id, placements }));
     });
-    if (error !== undefined) throw new Error(error);
+    if (answer.error !== undefined) throw new Error(answer.error);
+    return { refusedRooms: answer.refusedRooms ?? [] };
   }
 
   private async run(): Promise<void> {
@@ -132,7 +143,7 @@ class HubEventStream implements AgentEventStream {
         });
         return;
       }
-      const error = reason || `the agents controller hub closed (${code})`;
+      const error = reason || `the agent controller hub closed (${code})`;
       this.deps.onDisconnected?.({ error });
       if (helloed) {
         backoff = INITIAL_BACKOFF_MS;
@@ -141,7 +152,7 @@ class HubEventStream implements AgentEventStream {
       failures++;
       // The first failure, then powers of two: a long outage costs a few lines.
       if ((failures & (failures - 1)) === 0)
-        log.warn(`The agents controller hub is unreachable (${error}); retrying.`);
+        log.warn(`The agent controller hub is unreachable (${error}); retrying.`);
       const wait = code === HUB_CLOSE.restarting ? INITIAL_BACKOFF_MS : backoff;
       await sleep(Math.round(wait * (0.5 + Math.random() * 0.5)), signal);
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
@@ -152,7 +163,7 @@ class HubEventStream implements AgentEventStream {
   private connectOnce(): Promise<{ code: number; reason: string; helloed: boolean }> {
     return new Promise((resolve) => {
       const Socket = (globalThis as { WebSocket?: HeaderedWebSocket }).WebSocket;
-      if (!Socket) throw new Error('The agents controller hub needs Node 22 or newer.');
+      if (!Socket) throw new Error('The agent controller hub needs Node 22 or newer.');
       const socket = new Socket(this.url, {
         headers: { Authorization: `Bearer ${this.deps.creds.token}` },
       });
@@ -176,13 +187,13 @@ class HubEventStream implements AgentEventStream {
         try {
           parsed = JSON.parse(String(message.data)) as HubServerMessage;
         } catch {
-          this.deps.log.error('Dropped a message from the agents controller hub that is not JSON');
+          this.deps.log.error('Dropped a message from the agent controller hub that is not JSON');
           return;
         }
         if (parsed.type === 'result') {
-          const call = this.calls.get(parsed.id);
-          this.calls.delete(parsed.id);
-          call?.(parsed.error);
+          const call = this.placementCalls.get(parsed.id);
+          this.placementCalls.delete(parsed.id);
+          call?.({ error: parsed.error, refusedRooms: parsed.refusedRooms });
           return;
         }
         this.handling = this.handling.then(() => this.handle(socket, parsed));
@@ -191,8 +202,12 @@ class HubEventStream implements AgentEventStream {
         this.deps.signal.removeEventListener('abort', abort);
         if (this.socket === socket) this.socket = null;
         // The placements a call was sending go again with the next hello.
-        for (const call of this.calls.values()) call(undefined);
-        this.calls.clear();
+        for (const call of this.placementCalls.values())
+          call({
+            error:
+              'the agent controller hub closed before it took the placements; they are stated again when it reconnects',
+          });
+        this.placementCalls.clear();
         resolve({ code: event.code, reason: event.reason, helloed });
       });
       // A failed handshake also closes; the close says what happened.
@@ -222,6 +237,9 @@ class HubEventStream implements AgentEventStream {
           break;
         case 'approval_outcome':
           await deps.onApprovalOutcome?.(message.outcome);
+          break;
+        case 'room_gone':
+          await deps.onRoomGone?.({ roomId: message.roomId, sessionId: message.sessionId });
           break;
       }
     } catch (failure) {

@@ -1,6 +1,6 @@
-# Agents controller contract, v1 (draft)
+# Agent controller contract, v1 (draft)
 
-The full contract between an **agents controller** and the Switch server (**Management** plus **Core**).
+The full contract between an **agent controller** and the Switch server (**Management** plus **Core**).
 Step 1 of the roadmap turns this into OpenAPI and JSON Schema files plus recorded fixtures. The types below are the source for those files.
 
 ---

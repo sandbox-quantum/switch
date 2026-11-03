@@ -7,7 +7,8 @@ import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
 import { FakeAppServer, type FakeJsonRpcMessage } from './fake-app-server';
 
 const servers: FakeAppServer[] = [];
-let authenticated = true;
+let account: Record<string, unknown> | null = { type: 'apiKey' };
+let requiresOpenaiAuth = true;
 
 vi.mock('node:child_process', () => ({
   spawn: (_command: string, args: string[]) => {
@@ -15,8 +16,8 @@ vi.mock('node:child_process', () => ({
     Object.assign(server, { spawnArgs: args });
     server.replyAlways('initialize', () => ({ userAgent: 'fake' }));
     server.replyAlways('account/read', () => ({
-      account: authenticated ? { type: 'apiKey' } : null,
-      requiresOpenaiAuth: true,
+      account,
+      requiresOpenaiAuth,
     }));
     server.replyAlways('thread/start', () => ({ thread: { id: 'thread-1' } }));
     servers.push(server);
@@ -24,7 +25,7 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
-const { createCodexAdapter } = await import('./codex-adapter');
+const { CODEX_SIGN_IN_REQUIRED, createCodexAdapter } = await import('./codex-adapter');
 
 const THREAD = 'thread-1';
 
@@ -61,7 +62,8 @@ function turnNotification(id: string, status: string) {
 describe('CodexAdapter', () => {
   beforeEach(() => {
     servers.length = 0;
-    authenticated = true;
+    account = { type: 'apiKey' };
+    requiresOpenaiAuth = true;
   });
 
   it('checks authentication on the session process before opening a thread', async () => {
@@ -74,9 +76,66 @@ describe('CodexAdapter', () => {
   });
 
   it('rejects signed-out startup without opening a thread', async () => {
-    authenticated = false;
+    account = null;
     await expect(start()).rejects.toThrow('codex login');
     expect(servers[0].received.some((m) => m.method === 'thread/start')).toBe(false);
+  });
+
+  it('asks for a sign-in, and reads no keyring, when the session had an auth.json to copy', async () => {
+    account = null;
+    const exited = vi.fn();
+    const failed = start();
+    servers.at(-1)?.on('exit', exited);
+    const error = await failed.catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message.endsWith(`Error: ${CODEX_SIGN_IN_REQUIRED}`)).toBe(true);
+    expect(servers).toHaveLength(1);
+    expect(servers[0].received.map((m) => m.method)).toEqual([
+      'initialize',
+      'initialized',
+      'account/read',
+    ]);
+    expect((servers[0] as unknown as { spawnArgs: string[] }).spawnArgs.join(' ')).not.toContain(
+      'cli_auth_credentials_store'
+    );
+    expect(exited).toHaveBeenCalled();
+  });
+
+  it('keeps the diagnostic static, with nothing from the session environment in it', async () => {
+    account = null;
+    const marker = 'placeholder-secret-marker';
+    const adapter = createCodexAdapter();
+    const failure = adapter.startSession({
+      sessionId: 'session-1',
+      cwd: `/work/${marker}`,
+      runtimeMode: 'full-access',
+      env: { PATH: '/usr/bin', CODEX_HOME: `/home/${marker}`, OPENAI_API_KEY: marker },
+      mcpServers: {},
+      connectorMcpServers: [],
+    });
+    await expect(failure).rejects.toThrow(CODEX_SIGN_IN_REQUIRED);
+    await expect(failure).rejects.not.toThrow(marker);
+    await expect(adapter.interruptTurn('session-1')).rejects.toThrow(/unknown or stopped session/);
+  });
+
+  it('starts with a recognized login even when the backend requires OpenAI sign-in', async () => {
+    for (const recognized of [
+      { type: 'apiKey' },
+      { type: 'chatgpt', email: null, planType: null },
+    ]) {
+      account = recognized;
+      const { adapter, session } = await start();
+      expect(session.nativeSessionId).toBe(THREAD);
+      await adapter.stopAll();
+    }
+  });
+
+  it('starts without a login when the backend does not require OpenAI sign-in', async () => {
+    account = null;
+    requiresOpenaiAuth = false;
+    const { adapter, session } = await start();
+    expect(session.nativeSessionId).toBe(THREAD);
+    await adapter.stopAll();
   });
 
   it('initializes, opens a thread and reports the thread id as the native session', async () => {
@@ -115,6 +174,88 @@ describe('CodexAdapter', () => {
         approvalPolicy: 'never',
       });
       await adapter.stopAll();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the account’s default when the configuration names a model this sign-in cannot use', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'codex-home-'));
+    try {
+      await writeFile(join(home, 'config.toml'), 'model = "gpt-6.1-sol"\n');
+      const adapter = createCodexAdapter();
+      const events: ProviderRuntimeEvent[] = [];
+      adapter.subscribe((event) => events.push(event));
+      const pending = adapter.startSession({
+        sessionId: 'inherits',
+        cwd: '/work',
+        runtimeMode: 'full-access',
+        env: { PATH: '/usr/bin', CODEX_HOME: home },
+        mcpServers: {},
+        connectorMcpServers: [],
+      });
+      const server = servers.at(-1)!;
+      server.replyAlways('model/list', () => ({
+        data: [
+          { model: 'gpt-6-astra', isDefault: true },
+          { model: 'gpt-6-sol', isDefault: false },
+        ],
+        nextCursor: null,
+      }));
+      await pending;
+      const opened = server.received.find((message) => message.method === 'thread/start');
+      expect(opened?.params).toMatchObject({ model: 'gpt-6-astra' });
+      expect(eventsOf(events, 'runtime.warning').map((event) => event.message)).toEqual([
+        expect.stringContaining('cannot use gpt-6.1-sol'),
+      ]);
+      // Said again once the first turn runs, where the chat shows it, and only then.
+      for (const [turnId, native] of [
+        ['first', 'native-1'],
+        ['second', 'native-2'],
+      ] as const) {
+        server.reply('turn/start', { turn: { id: native, status: 'inProgress' } });
+        await adapter.sendTurn({ sessionId: 'inherits', turnId, text: 'hi' });
+        server.notify('turn/started', turnNotification(native, 'inProgress'));
+        server.notify('turn/completed', turnNotification(native, 'completed'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const kinds = events
+        .filter((event) => event.type === 'turn.started' || event.type === 'runtime.warning')
+        .map((event) => event.type);
+      expect(kinds.slice(1)).toEqual(['turn.started', 'runtime.warning', 'turn.started']);
+      await adapter.stopAll();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a configured model this sign-in can use, and a chosen model, alone', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'codex-home-'));
+    try {
+      await writeFile(join(home, 'config.toml'), 'model = "gpt-6-sol"\n');
+      for (const model of [undefined, { id: 'gpt-6-luna', options: {} }]) {
+        const adapter = createCodexAdapter();
+        const pending = adapter.startSession({
+          sessionId: 'configured',
+          cwd: '/work',
+          runtimeMode: 'full-access',
+          env: { PATH: '/usr/bin', CODEX_HOME: home },
+          mcpServers: {},
+          connectorMcpServers: [],
+          ...(model ? { model } : {}),
+        });
+        const server = servers.at(-1)!;
+        server.replyAlways('model/list', () => ({
+          data: [{ model: 'gpt-6-sol', isDefault: false }],
+          nextCursor: null,
+        }));
+        await pending;
+        const opened = server.received.find((message) => message.method === 'thread/start');
+        if (model) expect(opened?.params).toMatchObject({ model: 'gpt-6-luna' });
+        else expect(opened?.params).not.toHaveProperty('model');
+        if (model) expect(server.received.some((m) => m.method === 'model/list')).toBe(false);
+        await adapter.stopAll();
+      }
     } finally {
       await rm(home, { recursive: true, force: true });
     }

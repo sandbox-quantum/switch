@@ -53,6 +53,9 @@ services:
   mattermost:
     image: mattermost/mattermost-team-edition:latest
     platform: linux/amd64
+    # It calls back to switch-core on the host for button presses; see `setup`.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:8065:8065"
     volumes:
@@ -99,6 +102,10 @@ services:
       context: .
       dockerfile: deploy/shared_resources/images/Dockerfile.setup
     restart: on-failure
+    # Docker Desktop and OrbStack define host.docker.internal; Linux Docker
+    # (a CI runner) only does when asked.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SWITCH_URL: http://host.docker.internal:8000
       MATTERMOST_URL: http://mattermost:8065

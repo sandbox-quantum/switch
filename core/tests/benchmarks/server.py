@@ -36,7 +36,10 @@ from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventListener
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import (
+    EventBuffer,
+    session_slots_for,
+)
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
 )
@@ -472,6 +475,7 @@ async def _serve(
         sequence_base=event_boot << 32,
         rooms=message_listener,
         retention_seconds=config.agent_event_retention_seconds,
+        session_slots=session_slots_for(config.db_pool_size, config.db_max_overflow),
     )
     agent_event_listener = AgentEventListener(
         lambda: create_unpooled_engine(config), event_buffer
@@ -519,6 +523,7 @@ async def _serve(
             room_store=session_env.room_store,
             document_store=session_env.document_store,
             reference_store=session_env.reference_store,
+            package_store=session_env.package_store,
             agent_session_store=session_env.agent_session_store,
             room_role_store=session_env.room_role_store,
             external_user_store=session_env.external_user_store,

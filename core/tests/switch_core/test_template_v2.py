@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from switch_core.agent_templates import agent_slots, plan_template, template_kind
+from switch_core.rooms_yaml import ExistingPackageById, ExistingPackageByName, RoomSpec
 from switch_core.template_lint import lint_template
 from switch_core.template_v2 import TemplateError, compile_v2, holds
 
@@ -110,6 +111,30 @@ def test_a_reference_to_a_resource_that_is_off_is_refused():
         TemplateError, match="expert_room, which this run does not create"
     ):
         _compiled({}, text)
+
+
+def test_a_rooms_packages_pass_through_to_the_room_block():
+    text = """\
+version: 2
+params:
+  context: { type: string, default: Payments context }
+resources:
+  work:
+    type: room
+    name: Work
+    description: d
+    packages: [{id: pkg-1}, {name: "{context}"}]
+"""
+    compiled = compile_v2(text, {}, {"$creator": "ada"})
+    doc = yaml.safe_load(compiled.document)
+    assert doc["room"]["packages"] == [{"id": "pkg-1"}, {"name": "{context}"}]
+    room = RoomSpec.model_validate(
+        {**doc["room"], "packages": [{"id": "pkg-1"}, {"name": "Payments context"}]}
+    )
+    assert room.packages == [
+        ExistingPackageById(id="pkg-1"),
+        ExistingPackageByName(name="Payments context"),
+    ]
 
 
 def test_several_rooms_need_a_group_and_links_name_rooms_by_key():

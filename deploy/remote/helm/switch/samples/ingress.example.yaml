@@ -52,7 +52,7 @@ spec:
           - path: /deeplink
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
-          # Agents controllers: enrollment, tokens, assignment, status and
+          # Agent controllers: enrollment, tokens, assignment, status and
           # their event stream (/v1/management/..., /v1/controllers/...).
           - path: /v1
             pathType: Prefix

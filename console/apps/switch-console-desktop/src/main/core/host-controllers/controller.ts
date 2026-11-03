@@ -2,7 +2,7 @@ import type { HostControllerOverview } from '@shared/core/host-controllers/host-
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { hostControllerService } from './host-controllers';
 
-/** An SSH host as a machine for a Switch server: its agents controller, and the agents moved onto it. */
+/** An SSH host as a machine for a Switch server: its agent controller, and the agents moved onto it. */
 export const hostControllersController = createRPCController({
   getOverview: (params: {
     sshHost: string;

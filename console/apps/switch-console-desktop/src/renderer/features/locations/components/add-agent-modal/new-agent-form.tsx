@@ -3,10 +3,15 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cloud, Monitor, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isMachineAsleep } from '@renderer/features/cloud-agents/cloud-machine-state';
 import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
-import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
+import {
+  MANAGED_AGENTS_KEY,
+  refreshEvery,
+} from '@renderer/features/managed-agents/use-managed-agents';
+import { useUserChangesLive } from '@renderer/features/managed-agents/use-user-changes';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import {
@@ -148,6 +153,11 @@ export const NewAgentForm = observer(function NewAgentForm({
   const cloudMachines = useCloudMachines(cloudOffered ? selectedServerId : null);
   const cloudAvailable = cloudOffered && Array.isArray(cloudMachines.data);
   const cloudNotSetUp = cloudOffered && cloudMachines.data === null;
+  // A sleeping machine is not listed as a machine of its own, so the Switch
+  // cloud entry says it is there: choosing it wakes it.
+  const cloudAsleep =
+    Array.isArray(cloudMachines.data) &&
+    cloudMachines.data.some((machine) => isMachineAsleep(machine, Date.now()));
   const isCloudRun = runHost === 'cloud';
   // Why the form moved off Switch cloud by itself, said under the picker.
   const [cloudFallback, setCloudFallback] = useState<string | null>(null);
@@ -156,6 +166,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // every machine the user owns there. Null when it does not run management.
   const askForMachines =
     !!selectedServerId && !!workspacesStore.idOnServerInScope(selectedServerId);
+  const machinesPushed = useUserChangesLive(askForMachines ? selectedServerId : null);
   const machinesQuery = useQuery({
     queryKey: [
       MANAGED_AGENTS_KEY,
@@ -165,12 +176,13 @@ export const NewAgentForm = observer(function NewAgentForm({
     ],
     queryFn: () => rpc.managedAgents.machines(selectedServerId!),
     enabled: askForMachines,
-    refetchInterval: (query) => (query.state.data ? 5000 : false),
+    refetchInterval: (query) =>
+      query.state.data ? refreshEvery(5000, machinesPushed, query.state.status === 'error') : false,
   });
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;
   // Choosing Switch cloud claims the owner's cloud machine and starts it. Once
-  // its agents controller has enrolled and is online, the agent is placed on it
+  // its agent controller has enrolled and is online, the agent is placed on it
   // like on any machine.
   const cloudMachineQuery = useQuery({
     queryKey: ['cloud-machine-ensure', selectedServerId],
@@ -792,7 +804,9 @@ export const NewAgentForm = observer(function NewAgentForm({
                   <span className="flex-1">Switch cloud</span>
                   <span className="text-xs text-foreground-muted">
                     {cloudAvailable
-                      ? 'preview'
+                      ? cloudAsleep
+                        ? 'asleep, wakes when chosen'
+                        : 'preview'
                       : cloudNotSetUp
                         ? 'not set up on this server'
                         : 'checking…'}

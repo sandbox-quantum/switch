@@ -38,11 +38,24 @@ function isBeingDeleted(machine: CloudMachine, now: number): boolean {
   );
 }
 
+/**
+ * Asleep, as the machine card would say: a sleeping machine that is also being
+ * deleted, in error or retained is shown as that instead.
+ */
+export function isMachineAsleep(machine: CloudMachine, now: number): boolean {
+  return (
+    machine.sleeping &&
+    !isBeingDeleted(machine, now) &&
+    machine.state !== 'error' &&
+    !isRetained(machine)
+  );
+}
+
 function machineLabel(machine: CloudMachine, now: number): string {
   if (isBeingDeleted(machine, now)) return 'Deleting disk…';
   if (machine.state === 'error') return 'Error';
   if (isRetained(machine)) return 'Retained';
-  if (machine.sleeping) return 'Sleeping';
+  if (isMachineAsleep(machine, now)) return 'Sleeping';
   if (machine.desired_state === 'stopped')
     return machine.state === 'stopped' ? 'Stopped' : 'Stopping…';
   if (machine.state === 'ready') return 'Ready';

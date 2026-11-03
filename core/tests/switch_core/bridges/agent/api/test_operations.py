@@ -76,8 +76,19 @@ def test_operations_advertise_a_json_schema_for_their_arguments() -> None:
     assert schema["properties"]["include_general_instructions"]["default"] is True
     # Transport details are not arguments an agent supplies.
     assert "ctx" not in schema["properties"]
+    # An argument the operation does not take is refused, and the schema says so.
+    assert schema["additionalProperties"] is False
     # The full docstring is the tool description an agent reads.
     assert "Connect this session to a room" in op["description"]
+
+
+def test_every_operation_refuses_arguments_it_does_not_take_in_its_schema() -> None:
+    open_schemas = [
+        name
+        for name, op in list_operations().items()
+        if op["input_schema"].get("additionalProperties") is not False
+    ]
+    assert open_schemas == []
 
 
 async def test_unknown_operation_names_what_is_available() -> None:

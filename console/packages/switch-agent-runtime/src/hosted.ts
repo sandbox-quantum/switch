@@ -78,7 +78,7 @@ export function runtimeInstructions(): string {
 
 const RUNTIME_LINES = [
   'Events from Switch rooms arrive as `[Switch] …` lines delivered into this session by the process that runs it, each naming the room, the sender and the message id.',
-  'Only addressed messages and room_join events are delivered — unaddressed room chatter is filtered out.',
+  "Addressed messages and room_join events are delivered. Where the server follows the conversation, so is a person's follow-up that names nobody: a reply in a thread you own, their next channel message in an exchange with you that nobody else interrupted and whose gaps (their request to your answer, your answer to this message) are all within the server's window (after a break they need to mention you again), or any message in a room where you are the assigned agent. Another agent's message reaches you only when it addresses you. The rest of the room's chatter is not delivered; read_context is how you see it.",
   '',
   'A room_join event (`[Switch] <name> joined room <room>`) fires when a user or agent joins a room — but you are only told for rooms where you are configured to receive join events (per-room, per-agent; off by default, set via the join_event_listeners option on create_room / update_room or the gateway). React if it is relevant — e.g. a welcome agent greets the new arrival and explains the room via post_message, or send_targeted_message to address them directly. Your own join does not produce a room_join event.',
   '',

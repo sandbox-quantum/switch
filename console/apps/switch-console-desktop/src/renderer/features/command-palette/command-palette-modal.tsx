@@ -4,6 +4,9 @@ import { Activity, DoorOpen, Globe, type LucideIcon, MessageSquare, Server } fro
 import { observer, useObserver } from 'mobx-react-lite';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { agentChatsFlag } from '@renderer/features/chats/stores/agent-chats-flag';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { REMOTE_HOSTS_QUERY_KEY } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { getSessionStore } from '@renderer/features/sessions/stores/session-selectors';
 import { useAgentManagementMode } from '@renderer/features/sidebar/sidebar-grouped-list';
@@ -15,7 +18,9 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { commandRegistry } from '@renderer/lib/commands/registry';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useDebounce } from '@renderer/lib/hooks/useDebounce';
+import { useFeatureFlagsKnown } from '@renderer/lib/hooks/useFeatureFlags';
 import { getEffectiveHotkey } from '@renderer/lib/hooks/useKeyboardShortcuts';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -27,20 +32,25 @@ import { Shortcut } from '@renderer/lib/ui/shortcut';
 import { cn } from '@renderer/utils/utils';
 import { ALL_COMMAND_DEFS, type CommandDef } from '@shared/commands';
 import type { CommandId } from '@shared/commands';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type { SearchItem, SearchResult } from '@shared/core/search';
 import { getCommandIcon } from './command-icons';
-import { PaletteAgentItem } from './palette-agent-item';
+import { PaletteAgentItem, PaletteManagedAgentItem } from './palette-agent-item';
 import { PALETTE_ITEM_CLASS } from './palette-item-styles';
 import { PaletteSessionItem } from './palette-session-item';
 import { ResourceMonitorView } from './resource-monitor-view';
 import {
   applyContextAffinity,
   indexedSearchLabel,
+  instantMatchLabel,
+  matchDirectChats,
   matchHosts,
+  matchManagedAgents,
   matchRooms,
   matchServers,
   paletteSearchPlaceholder,
   sectionResults,
+  withoutLegacy,
 } from './search-utils';
 
 interface CommandPaletteProps {
@@ -187,9 +197,13 @@ export function CommandPaletteModal({
   const debouncedQuery = useDebounce(query, 100);
   const { navigate } = useNavigate();
   const queryClient = useQueryClient();
-  // Under agent management the sidebar files Console's own sessions under
-  // Legacy; the palette leaves them out entirely.
-  const includeSessions = !useAgentManagementMode();
+  // Under agent management the sidebar files Console's own agents and
+  // sessions under Legacy; the palette leaves them out entirely and offers the
+  // server's managed agents instead.
+  const managementMode = useAgentManagementMode();
+  // Until the flags are read, management mode is not known: legacy rows wait rather than flash.
+  const includeLegacy = useFeatureFlagsKnown(switchServersStore.activeServerId) && !managementMode;
+  const managedAgents = useManagedAgents(managementMode ? switchServersStore.activeServerId : null);
 
   const handleClose = onClose;
 
@@ -208,11 +222,11 @@ export function CommandPaletteModal({
   // Prefetch recents immediately on mount so the empty-query view is instant.
   useEffect(() => {
     void queryClient.prefetchQuery({
-      queryKey: ['cmdk-search', '', includeSessions, locationId, sessionId],
+      queryKey: ['cmdk-search', '', includeLegacy, locationId, sessionId],
       queryFn: () =>
         rpc.search.commandPalette({
           query: '',
-          includeSessions,
+          includeLegacy,
           context: { locationId, sessionId },
         }),
       staleTime: 5_000,
@@ -221,17 +235,19 @@ export function CommandPaletteModal({
   }, []);
 
   const { data: searchResult = EMPTY_RESULT } = useQuery({
-    queryKey: ['cmdk-search', debouncedQuery, includeSessions, locationId, sessionId],
+    queryKey: ['cmdk-search', debouncedQuery, includeLegacy, locationId, sessionId],
     queryFn: () =>
       rpc.search.commandPalette({
         query: debouncedQuery,
-        includeSessions,
+        includeLegacy,
         context: { locationId, sessionId },
       }),
     // Keep results fresh for 5 s — re-opening the palette with the same query
     // returns cached data instantly rather than waiting for a round-trip.
     staleTime: 5_000,
-    placeholderData: (prev) => prev,
+    // Kept only while the same kinds are searched for, so legacy rows never linger once left out.
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey[2] === includeLegacy ? prev : undefined,
   });
 
   const registryActions = useObserver((): PaletteAction[] =>
@@ -278,7 +294,9 @@ export function CommandPaletteModal({
       .slice(0, 7);
   }, [registryActions, resourceMonitorAction, sessionId]);
 
-  const rankedDb = applyContextAffinity(searchResult.items, { locationId });
+  const rankedDb = applyContextAffinity(withoutLegacy(searchResult.items, includeLegacy), {
+    locationId,
+  });
   const actionResults = actions;
 
   // Rooms and servers come from MobX stores rather than the FTS index, read
@@ -295,6 +313,9 @@ export function CommandPaletteModal({
     )
   );
   const serverResults = useObserver(() => matchServers(switchServersStore.servers, debouncedQuery));
+  const chatResults = useObserver(() =>
+    matchDirectChats([...chatsStore.chats.values()], debouncedQuery)
+  );
 
   const { data: hosts = [] } = useQuery({
     queryKey: REMOTE_HOSTS_QUERY_KEY,
@@ -302,7 +323,15 @@ export function CommandPaletteModal({
     staleTime: 30_000,
   });
   const hostResults = matchHosts(hosts, debouncedQuery);
-  const rendererMatchCount = roomResults.length + serverResults.length + hostResults.length;
+  const managedAgentResults = managementMode
+    ? matchManagedAgents(managedAgents.data ?? [], debouncedQuery)
+    : [];
+  const rendererMatchCount =
+    managedAgentResults.length +
+    chatResults.length +
+    roomResults.length +
+    serverResults.length +
+    hostResults.length;
 
   const q = debouncedQuery.toLowerCase();
   const matchedResourceMonitor =
@@ -366,6 +395,23 @@ export function CommandPaletteModal({
       sidebarStore.ensureGroupExpanded(agentExpandKey(item.id));
       navigate('location', { locationId, agentName: item.title });
     });
+  };
+
+  const handleNavigateToManagedAgent = (agent: ManagedAgentView) => {
+    handleClose();
+    navigate('managedAgent', {
+      serverId: agent.serverId,
+      agentId: agent.agentId,
+      name: managedAgentLabel(agent),
+    });
+  };
+
+  const handleOpenChat = (item: SearchItem) => {
+    const serverId = chatsStore.serverId;
+    const chat = chatsStore.chat(item.id);
+    if (!serverId || !chat) return;
+    handleClose();
+    navigate('chat', { serverId, roomId: chat.roomId, agentId: chat.agents[0]?.id ?? null });
   };
 
   const handleNavigateToRoom = (item: SearchItem) => {
@@ -455,7 +501,7 @@ export function CommandPaletteModal({
         <Command.Input
           value={query}
           onValueChange={setQuery}
-          placeholder={paletteSearchPlaceholder(includeSessions)}
+          placeholder={paletteSearchPlaceholder(includeLegacy)}
           className="w-full bg-transparent px-3 py-3 text-sm outline-none placeholder:text-foreground/40"
           autoFocus
         />
@@ -474,11 +520,17 @@ export function CommandPaletteModal({
                 the log for details.
               </div>
             )}
+            {managementMode && managedAgents.error && (
+              <div className="px-3 py-2 text-xs text-destructive">
+                {failureText(managedAgents.error, 'Managed agents could not be listed.')} Agents are
+                missing from these results.
+              </div>
+            )}
             {searchResult.status === 'query-too-short' && (
               <div className="px-3 py-6 text-center text-sm text-foreground/40">
-                Type at least 3 characters to search {indexedSearchLabel(includeSessions)}.
+                Type at least 3 characters to search {indexedSearchLabel(includeLegacy)}.
                 {rendererMatchCount > 0 &&
-                  ' Rooms, servers and hosts are matched from the first character.'}
+                  ` ${instantMatchLabel(includeLegacy)} are matched from the first character.`}
               </div>
             )}
             <PaletteResultGroup
@@ -486,9 +538,33 @@ export function CommandPaletteModal({
               items={indexed.agent}
               onSelect={handleNavigateToAgent}
             />
+            {managedAgentResults.length > 0 && (
+              <Command.Group heading="Agents" className={GROUP_CLASS}>
+                {managedAgentResults.map((agent) => (
+                  <PaletteManagedAgentItem
+                    key={`managed-agent:${agent.agentId}`}
+                    value={`managed-agent:${agent.agentId}`}
+                    agent={agent}
+                    onSelect={() => handleNavigateToManagedAgent(agent)}
+                  />
+                ))}
+              </Command.Group>
+            )}
             {indexed.session.length > 0 && (
               <Command.Group heading="Sessions" className={GROUP_CLASS}>
                 {indexed.session.map(renderSessionResult)}
+              </Command.Group>
+            )}
+            {chatResults.length > 0 && (
+              <Command.Group heading="Chats" className={GROUP_CLASS}>
+                {chatResults.map((item) => (
+                  <PaletteItem
+                    key={`chat:${item.id}`}
+                    value={`chat:${item.id}`}
+                    item={item}
+                    onSelect={() => handleOpenChat(item)}
+                  />
+                ))}
               </Command.Group>
             )}
             <PaletteResultGroup

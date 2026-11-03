@@ -41,7 +41,7 @@ async function isFile(path: string): Promise<boolean> {
 
 /**
  * What sessions here last found of each vendor tool: installed, failed, or
- * without a build for this machine, which the agents controller reports.
+ * without a build for this machine, which the agent controller reports.
  */
 async function record(base: string, binary: string, entry: ToolRecord): Promise<void> {
   const path = join(base, STATUS_FILE);

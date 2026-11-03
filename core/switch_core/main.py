@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import logging
 import os
 import signal
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -35,7 +37,10 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventListener
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import (
+    EventBuffer,
+    session_slots_for,
+)
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
     BOOTSTRAP_KEY_TYPE,
@@ -45,14 +50,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     RETIRED_KEY_TYPE,
     ensure_bootstrap_owner,
 )
-from switch_core.bridges.agent.server_connectors.lifecycle import (
-    ServerSideConnectorLifecycleService,
-)
-from switch_core.bridges.agent.server_connectors.opencode.connector import (
-    OpenCodeConnectionConfig,
-    OpenCodeConnector,
-)
-from switch_core.bridges.agent.server_connectors.signals import ConnectorSignals
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -110,6 +108,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
+from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
@@ -156,6 +155,10 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.organization_app_credential_store import (
+    OrganizationAppCredentialStore,
+)
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
@@ -164,7 +167,6 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.service_app_credential_store import ServiceAppCredentialStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
@@ -177,11 +179,13 @@ from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import GROUP_SWEEP_SECONDS, MessageRouter
+from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
+from switch_core.management.template_updates import TemplateUpdates
 from switch_core.management.wiring import Management, create_management
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
@@ -202,10 +206,11 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
+from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
-    maintenance_loop as session_activity_maintenance_loop,
+    own_maintenance as own_session_activity_maintenance,
 )
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService
@@ -221,6 +226,8 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.setup import build_trust_client
+from switch_core.trust.signals import TrustSettingsSignals
+from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -242,6 +249,46 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 # regardless. Anything with a deadline of its own must fit inside it — see
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
 _FORCED_EXIT_GRACE_SECONDS = 3.0
+
+
+class _Server(uvicorn.Server):
+    """uvicorn's server without uvicorn's own signal handling.
+
+    `run` stops the process on SIGTERM and SIGINT itself (`_shutdown`): it
+    hands the owned work over and drains before it tells uvicorn to stop.
+    uvicorn's handlers would stop serving at once, skipping that, and re-raise
+    the signal once serving ended, starting a second shutdown. asyncio
+    delivers a signal to both, so uvicorn's are not installed at all.
+    """
+
+    @contextmanager
+    def capture_signals(self) -> Iterator[None]:
+        yield
+
+
+class _ShutdownOnSignal:
+    """The process's stop-signal handler: the first signal starts the one
+    shutdown, and `finish` waits for it, which ends in `os._exit`. A second
+    signal while it runs exits at once, as a second Ctrl-C is meant to."""
+
+    def __init__(self, start: Callable[[], Coroutine[None, None, None]]) -> None:
+        self._start = start
+        self._task: asyncio.Task[None] | None = None
+
+    def __call__(self) -> None:
+        if self._task is not None:
+            logger.warning(
+                "A second stop signal arrived while shutting down; exiting now "
+                "without finishing the shutdown."
+            )
+            os._exit(1)
+        self._task = asyncio.get_running_loop().create_task(self._start())
+
+    async def finish(self) -> None:
+        """Wait for the shutdown a signal started; return at once if none did."""
+        if self._task is not None:
+            await self._task
+
 
 # With several replicas, how long a process keeps serving after it is told to
 # stop and has taken itself out of readiness: long enough for the Service to
@@ -630,12 +677,17 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     session_activity_listener = AgentSessionActivityListener(
         lambda: create_unpooled_engine(config)
     )
+    # Every `NOTIFY` this process sends from its own code, after the commits
+    # they announce, one transaction per batch (`announcer.py`): the router's
+    # messages and own events, and the signals below.
+    announcer = Announcer(session_factory)
     # Signals between switch-core processes (see `signals.py`): the same
     # arrangement again, carrying "who should look" rather than a room's rows.
     signal_bus = SignalBus(
         session_factory,
         lambda: create_unpooled_engine(config),
         process_id=process_id,
+        announcer=announcer,
     )
     # This process's row in `switch_core_processes`, claimed before anything
     # can record a connection against it and held until the process drains.
@@ -661,6 +713,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         store=OwnershipLeaseStore(),
         processes=SwitchCoreProcessStore(),
     )
+    own_session_activity_maintenance(ownership, session_factory)
     # Every owned consumer's progress, written in batches
     # (`transport/cursors.py`).
     cursor_writer = CursorWriter(
@@ -689,6 +742,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     api_key_store = ApiKeyStore()
     invitation_store = InvitationStore()
     join_domain_store = JoinDomainStore()
+    organization_store = OrganizationStore()
     tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
@@ -726,13 +780,13 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         sequence_base=event_boot << 32,
         rooms=message_listener,
         retention_seconds=config.agent_event_retention_seconds,
+        session_slots=session_slots_for(config.db_pool_size, config.db_max_overflow),
     )
     # Listens for the `NOTIFY` that each insert into `agent_events` sends, and
     # wakes this process's streams for that agent, whichever process wrote it.
     agent_event_listener = AgentEventListener(
         lambda: create_unpooled_engine(config), event_buffer
     )
-    connector_store = ServerConnectorStore()
 
     # ── Product telemetry ────────────────────────────────────────────────────
     # Before the services that report through it, switched on or not.
@@ -745,6 +799,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
     trust_client, trust_http = build_trust_client(session_factory, config)
+    trust_signals = TrustSettingsSignals(client=trust_client, bus=signal_bus)
 
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
@@ -813,12 +868,14 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             room_store=room_store,
             document_store=document_store,
             reference_store=reference_store,
+            package_store=package_store,
             agent_session_store=agent_session_store,
             room_role_store=room_role_store,
             external_user_store=external_user_store,
             connections=connections,
             frontend_base_url=config.dashboard_base_url,
             message_telemetry=message_telemetry,
+            announcer=announcer,
         ),
         message_store=message_store,
         client_store=client_store,
@@ -837,13 +894,14 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     signal_bus.on_recheck(lambda: _recheck_agent_rooms(session_factory, router))
 
     # ── Provisioning ─────────────────────────────────────────────────────────
-    provisioning: Provisioning = PostgresProvisioning(
+    postgres_provisioning = PostgresProvisioning(
         session_factory=session_factory,
         room_store=room_store,
         client_store=client_store,
         router=router,
         invites=invites,
     )
+    provisioning: Provisioning = postgres_provisioning
 
     # One shared read per room for every client in this process.
     room_cache = RoomDeliveryCache(
@@ -895,6 +953,18 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Clients registered or deleted in another process are started or stopped
     # here too (`clients/client_signals.py`).
     ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
+    # Every process runs each tenant's admin actor, so the process that wrote
+    # a message posts the heads-up it owes (`clients/mention_warnings.py`).
+    router.use_admin(
+        lambda tenant_id: next(
+            (
+                client
+                for client in client_lifecycle.get_by_type("admin", tenant_id)
+                if isinstance(client, SystemActor)
+            ),
+            None,
+        )
+    )
 
     # ── Collaboration bridge lifecycle ───────────────────────────────────────
     collab_lifecycle = CollaborationBridgeLifecycleService(
@@ -971,11 +1041,33 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
+    # Change notices for signed-in users' Consoles (`gateway/changes.py`): the
+    # sockets this process holds, reached from every process over the bus.
+    user_changes = LocalUserChanges()
+    user_change_publisher = SignalUserChanges(local=user_changes, bus=signal_bus)
+    room_changes = RoomChanges(
+        session_factory=session_factory,
+        publisher=user_change_publisher,
+        window_seconds=COALESCE_SECONDS,
+    )
+    room_service.on_room_changed(room_changes.room_changed)
+    postgres_provisioning.on_membership_changed(room_changes.room_changed)
     management = create_management(
-        config, session_factory, connections.controllers, signal_bus, process_lease
+        config,
+        session_factory,
+        connections.controllers,
+        signal_bus,
+        process_lease,
+        user_change_publisher,
     )
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
+    # What every post checks first, kept until a signal says it changed.
+    room_access = RoomAccessCache(
+        ttl_seconds=config.agent_auth_cache_ttl_seconds,
+        max_entries=config.room_access_cache_max_entries,
+    )
+    room_access.follow(signal_bus)
     agent_bridge_app, protocol = create_agent_bridge_app(
         agent_store=agent_store,
         agent_session_store=agent_session_store,
@@ -995,6 +1087,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         ),
         controller_auth=management.authenticator if management is not None else None,
         connections=connections,
+        room_access=room_access,
         telemetry=telemetry,
         trust_client=trust_client,
         gateway_ui=(
@@ -1008,22 +1101,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
-
-    # ── Server-side connector lifecycle ─────────────────────────────────────
-    connector_lifecycle = ServerSideConnectorLifecycleService(
-        connector_store=connector_store,
-        api_key_store=api_key_store,
-        protocol=protocol,
-        session_factory=session_factory,
-        keyring=config.keyring,
-        telemetry=telemetry,
-        outbound_policy=config.outbound_policy,
-        ownership=ownership,
-    )
-    ConnectorSignals(lifecycle=connector_lifecycle, bus=signal_bus)
-    connector_lifecycle.register_connector_type(
-        "opencode", OpenCodeConnector, OpenCodeConnectionConfig
-    )
 
     # ── Messaging app installs ──────────────────────────────────────────────
     # Registration is the feature flag. An installer exists for a platform when
@@ -1125,6 +1202,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         id_server_name=config.id_server_name,
         media_max_bytes=config.agent_media_max_bytes,
         agent_chats_enabled=config.agent_chats_enabled,
+        group_chats_enabled=config.group_chats_enabled,
+        buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
     )
     # Changes to people's chats made in another process wake the Console
@@ -1133,6 +1212,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
+    chat_service.on_agent_room_changed(room_changes.rooms_changed)
+    room_service.on_room_changed(chat_service.room_changed)
 
     # ── Connector app credentials ─────────────────────────────────────────────
     # Each connector's app, from configuration or a row the operator saved,
@@ -1164,8 +1245,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         bridge_store=bridge_store,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
-        connector_lifecycle=connector_lifecycle,
-        connector_store=connector_store,
         event_buffer=event_buffer,
         session_factory=session_factory,
         user_store=user_store,
@@ -1173,6 +1252,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         api_key_store=api_key_store,
         invitation_store=invitation_store,
         join_domain_store=join_domain_store,
+        organization_store=organization_store,
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,
@@ -1184,9 +1264,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             if config.invite_email_enabled
             else None
         ),
+        user_changes=user_changes,
         chat_service=chat_service,
         connector_apps=connector_apps,
         config=config,
+        trust_settings_changed=trust_signals.changed,
     )
 
     register_platforms(collab_lifecycle)
@@ -1275,19 +1357,27 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
         consumers_running=client_lifecycle.running_count,
-        connectors_running=connector_lifecycle.running_count,
-        connectors_configured=connector_lifecycle.expected_count,
         agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
         room_cache_stats=room_cache.stats,
     )
 
-    # ── Lifespan: start server-side connectors once HTTP is serving ────────
+    # ── Lifespan ──────────────────────────────────────────────────────────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
     # A service is issued only where this server is set up for it, as its
     # catalog entry's adapter says (`connections/registry.py`). Without any,
     # the broker's upkeep still revokes and prunes whatever records exist.
+    # With `organization_connector_apps` on, a workspace whose organization
+    # saved its own app goes through that one (`connections/organization_apps.py`).
+    organization_apps = (
+        OrganizationApps(
+            apps=connector_apps,
+            store=OrganizationAppCredentialStore(config.keyring),
+        )
+        if config.organization_connector_apps_enabled
+        else None
+    )
     service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=config.keyring,
@@ -1299,6 +1389,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             http=service_http,
             registration=service_registration,
         ),
+        organization_apps=organization_apps,
         disabled=config.disabled_services,
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=config.service_token_retention_days),
@@ -1308,9 +1399,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    gateway_app.state.organization_apps = organization_apps
     # A connector app the operator saves or removes, put to work in every process.
     ConnectorAppSignals(
         apps=connector_apps,
+        organization_apps=organization_apps,
         broker=service_broker,
         state=gateway_app.state,
         bus=signal_bus,
@@ -1339,16 +1432,12 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 process_id=process_id,
                 db_server_engine=lambda: create_unpooled_engine(config),
             )
-            asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             retention_task = asyncio.create_task(
                 _agent_event_retention_loop(session_factory, event_buffer)
             )
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
-            )
-            session_activity_task = asyncio.create_task(
-                session_activity_maintenance_loop(session_factory)
             )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
@@ -1363,6 +1452,23 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if management is not None
                 else None
             )
+            # Once per start, in the background: a new release may bring a
+            # new revision of an official template, and the agents an older
+            # one created are brought up to it (`template_updates`).
+            template_updates_task = (
+                asyncio.create_task(
+                    TemplateUpdates(
+                        engine=engine,
+                        session_factory=session_factory,
+                        management=management.service,
+                        protocol=protocol,
+                        agent_management=config.feature_flags[AGENT_MANAGEMENT],
+                        switch_buddy=config.feature_flags[SWITCH_BUDDY],
+                    ).run(tenant_ids)
+                )
+                if management is not None
+                else None
+            )
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
@@ -1370,6 +1476,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if telemetry.enabled
                 else None
             )
+            await announcer.start()
             await message_listener.start()
             await session_activity_listener.start()
             await agent_event_listener.start()
@@ -1381,7 +1488,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 retention_task.cancel()
                 attachment_group_task.cancel()
                 router.close()
-                session_activity_task.cancel()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
                 if snapshot_task is not None:
@@ -1389,6 +1495,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 shared_connections_task.cancel()
                 if management_task is not None:
                     management_task.cancel()
+                if template_updates_task is not None:
+                    template_updates_task.cancel()
                 ownership_task.cancel()
                 # The lease goes on being renewed while the owned work is
                 # handed over, which can take a few seconds: it must not lapse
@@ -1403,6 +1511,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
                 await signal_bus.stop()
+                # Last of them: what the router and the bus handed it is sent,
+                # for a few seconds at most, before the pool closes.
+                await announcer.stop()
                 # Before the operational flush, and bounded: the whole
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.
@@ -1415,6 +1526,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 observability = None
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
+
+    # Before the runtime starts: what follows is the clients, bridges and work
+    # this process owns, which ownership hands to another replica as replicas
+    # come and go, so it must stay collectable.
+    _freeze_boot_objects()
 
     # ── Start runtime ────────────────────────────────────────────────────────
     await client_lifecycle.start_all()
@@ -1510,30 +1626,28 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         log_level="info",
         log_config=None,
     )
-    server = uvicorn.Server(server_config)
+    server = _Server(server_config)
 
     loop = asyncio.get_event_loop()
 
-    def _begin_shutdown() -> None:
-        asyncio.create_task(
-            _shutdown(
-                server,
-                draining.set,
-                lambda: _release_process(
-                    ownership, shared_connections, management, process_lease
-                ),
-                _DRAIN_SECONDS if config.core_replicas > 1 else 0.0,
-                connections.controllers,
-                client_lifecycle,
-                collab_lifecycle,
-                connector_lifecycle,
-                provisioning,
-                discord_gateway,
-                teams_app,
-                telegram_app,
-                telegram_app_task,
-            )
+    _begin_shutdown = _ShutdownOnSignal(
+        lambda: _shutdown(
+            server,
+            draining.set,
+            lambda: _release_process(
+                ownership, shared_connections, management, process_lease
+            ),
+            _DRAIN_SECONDS if config.core_replicas > 1 else 0.0,
+            connections.controllers,
+            client_lifecycle,
+            collab_lifecycle,
+            provisioning,
+            discord_gateway,
+            teams_app,
+            telegram_app,
+            telegram_app_task,
         )
+    )
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -1549,6 +1663,35 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             )
 
     await server.serve()
+    # uvicorn returns once its own part is done, while `_shutdown` is still
+    # stopping the rest; returning here would end the loop under it.
+    await _begin_shutdown.finish()
+
+
+def _freeze_boot_objects() -> None:
+    """Take everything boot created out of the garbage collector's way.
+
+    A full collection walks every tracked object while holding the interpreter
+    lock, and most of the heap is what boot built and keeps for the life of the
+    process: modules, the ORM's mappers, the app's routes. Walking that once a
+    minute is what stalls the event loop for hundreds of milliseconds.
+    `gc.freeze` moves it to a permanent generation the collector skips, so
+    full collections only walk what was allocated since.
+
+    Called before the runtime starts, not once it is serving. A frozen object
+    is still freed when its last reference goes, but one caught in a reference
+    cycle never is, and the clients and bridges a process runs are full of
+    cycles (tasks, callbacks, sessions). With several replicas, ownership moves
+    that work between processes whenever one joins or leaves, so freezing it
+    would keep every client and bridge this process started at boot alive
+    after it hands them over.
+    """
+    gc.collect()
+    gc.freeze()
+    logger.info(
+        "Froze %d objects created during boot out of garbage collection.",
+        gc.get_freeze_count(),
+    )
 
 
 async def _seed_admin_and_bootstrap_key(
@@ -2048,7 +2191,6 @@ async def _shutdown(
     controllers: ControllerPresence,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    connector_lifecycle: ServerSideConnectorLifecycleService,
     provisioning: Provisioning,
     discord_gateway: DiscordGatewayClient | None,
     teams_app: TeamsSharedApp | None,
@@ -2062,16 +2204,19 @@ async def _shutdown(
     # Before uvicorn closes the sockets, so the controllers' are recorded as
     # closed by the server.
     controllers.begin_shutdown()
-    # Also before the sockets close, and not left to the lifespan's teardown:
+    # Serve through the drain still owning the work and the lease, so the
+    # agents and controllers connected here read online everywhere while the
+    # Service moves new requests to the other replicas.
+    if drain_seconds:
+        await asyncio.sleep(drain_seconds)
+    # Before the sockets close, and not left to the lifespan's teardown:
     # uvicorn runs that only once every connection has closed, and a stream
     # still open when the process is killed would mean it never runs. Every
     # other process reads this one's machines offline from here, and has taken
-    # over the consumers, bridges and connectors it owned.
+    # over the consumers and bridges it owned, so the sockets close straight
+    # after and their clients reconnect to a process that holds them.
     await release()
-    if drain_seconds:
-        await asyncio.sleep(drain_seconds)
     server.should_exit = True
-    await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()
     # The API log-in of a process that did not hold the socket; the socket
     # itself was closed with the rest of the owned work in `release`. `stop`
@@ -2217,6 +2362,17 @@ def migrate() -> None:
     asyncio.run(_migrate_and_grant(config))
 
 
+def _event_loop_factory() -> Callable[[], asyncio.AbstractEventLoop] | None:
+    """uvloop's event loop where it is installed, which is every platform but
+    Windows, and None (asyncio's own) where it is not. uvloop does the loop's
+    scheduling and its socket reads and writes in C."""
+    try:
+        import uvloop
+    except ImportError:
+        return None
+    return uvloop.new_event_loop
+
+
 def main() -> None:
     config = SwitchConfig()
     running_version = switch_core_version()
@@ -2236,7 +2392,7 @@ def main() -> None:
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    asyncio.run(run(config, process_id))
+    asyncio.run(run(config, process_id), loop_factory=_event_loop_factory())
 
 
 if __name__ == "__main__":

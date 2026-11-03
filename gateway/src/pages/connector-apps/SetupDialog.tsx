@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -25,11 +26,13 @@ import {
   type ConnectorAppImpact,
   ConnectorAppRefusal,
   fetchConnectorAppImpact,
+  type SavedConnectorApp,
   saveConnectorApp,
 } from "../../data/api";
 import {
   type Audience,
   asksWhoConnects,
+  confirmBeforeCheck,
   peopleIn,
   type SecretField,
   secretFields,
@@ -37,6 +40,7 @@ import {
   switchWarning,
   vendorName,
 } from "./connectorApps";
+import { useConnectorAppScope } from "./scope";
 
 export type SetupMode = "set_up" | "switch" | "enter_again";
 
@@ -142,8 +146,9 @@ export default function SetupDialog({
   mode: SetupMode;
   open: boolean;
   onClose: () => void;
-  onSaved: (saved: ConnectorApp) => void;
+  onSaved: (saved: SavedConnectorApp) => void;
 }) {
+  const scope = useConnectorAppScope();
   const first = mode === "switch" ? 0 : 1;
   const [step, setStep] = useState(first);
   const [audience, setAudience] = useState<Audience>("internal");
@@ -153,10 +158,12 @@ export default function SetupDialog({
   const [field, setField] = useState<ConnectorAppField | null>(null);
   const [busy, setBusy] = useState(false);
   const [impact, setImpact] = useState<ConnectorAppImpact | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setStep(first);
+    setConfirmed(false);
     setClientId(mode === "enter_again" ? (app.saved_client_id ?? "") : "");
     setSecrets({});
     setError(null);
@@ -165,20 +172,27 @@ export default function SetupDialog({
   }, [open, first, mode, app.saved_client_id]);
 
   const fields = secretFields(app);
-  const complete = clientId.trim() !== "" && fields.every((f) => (secrets[f.name] ?? "") !== "");
+  const confirmation = confirmBeforeCheck(app);
+  const complete =
+    clientId.trim() !== "" &&
+    fields.every((f) => (secrets[f.name] ?? "") !== "") &&
+    (confirmation === null || confirmed);
   const replacing = app.saved_client_id !== null && clientId.trim() !== app.saved_client_id;
+  // An organization taking its own app over from the server's moves everyone
+  // connected through that, as switching does.
+  const movesPeople = mode === "switch" || (mode === "set_up" && app.server_app === true);
 
   const save = async () => {
     setBusy(true);
     setError(null);
     setField(null);
     try {
-      if (mode === "switch" && impact === null) {
-        setImpact(await fetchConnectorAppImpact(app.slug, clientId.trim()));
+      if (movesPeople && impact === null) {
+        setImpact(await fetchConnectorAppImpact(scope, app.slug, clientId.trim()));
         setBusy(false);
         return;
       }
-      const saved = await saveConnectorApp(app.slug, {
+      const saved = await saveConnectorApp(scope, app.slug, {
         client_id: clientId.trim(),
         ...secrets,
         replace: mode === "switch",
@@ -256,7 +270,23 @@ export default function SetupDialog({
                         </>
                       )}
                     </Typography>
-                    {instruction.copy && <Copyable value={instruction.copy} />}
+                    {instruction.items.length > 0 && (
+                      <Box component="ul" sx={{ pl: 2.5, my: 0.5 }}>
+                        {instruction.items.map((item) => (
+                          <Typography
+                            component="li"
+                            key={item}
+                            variant="body2"
+                            sx={{ fontFamily: "monospace" }}
+                          >
+                            {item}
+                          </Typography>
+                        ))}
+                      </Box>
+                    )}
+                    {instruction.copy.map((value) => (
+                      <Copyable key={value} value={value} />
+                    ))}
                   </Box>
                 ))}
               </Box>
@@ -286,6 +316,28 @@ export default function SetupDialog({
                 <Typography variant="caption" color="text.secondary">
                   The App&apos;s name is read from GitHub when Switch checks it.
                 </Typography>
+              )}
+              {confirmation && (
+                <FormControlLabel
+                  sx={{ alignItems: "flex-start" }}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={confirmed}
+                      onChange={(event) => setConfirmed(event.target.checked)}
+                    />
+                  }
+                  label={
+                    <Box sx={{ pt: 0.75 }}>
+                      <Typography variant="body2" fontWeight={500}>
+                        {confirmation.label}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {confirmation.why}
+                      </Typography>
+                    </Box>
+                  }
+                />
               )}
               {error && <Alert severity="error">{error}</Alert>}
               {mode === "enter_again" && replacing && (
@@ -328,9 +380,11 @@ export default function SetupDialog({
           >
             {busy
               ? "Checking…"
-              : mode === "switch"
+              : movesPeople
                 ? impact
-                  ? "Switch app"
+                  ? mode === "switch"
+                    ? "Switch app"
+                    : "Check and save"
                   : "Check who reconnects"
                 : "Check and save"}
           </Button>

@@ -1,7 +1,7 @@
 # Collaboration bridge setup
 
 A **collaboration bridge** is a two-way relay between an external chat platform
-(Slack, Mattermost, Microsoft Teams, Discord, Telegram) and Switch's internal Matrix
+(Slack, Mattermost, Microsoft Teams, Discord, Telegram) and Switch's internal
 rooms. Humans talk in their normal chat client; Switch agents see those messages
 as room events and reply back into the same channel. Each external channel maps
 to a Switch room, and each Switch agent is presented in the channel under the

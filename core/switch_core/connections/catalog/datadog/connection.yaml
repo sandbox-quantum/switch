@@ -35,9 +35,9 @@ auth:
       url: "https://api.{site}/api/v1/validate"
       headers: { DD-API-KEY: "{api_key}" }
     help_url: https://docs.datadoghq.com/account_management/api-app-keys/
-# A key does not expire; each issue hands it out for an hour, so the grant is
-# checked again at least hourly.
-token: { kind: pass_through, max_lifetime: 3600 }
+# A key does not expire, and only Datadog can revoke it, so it is never handed
+# to an agent: whatever runs beside the agent could keep it for good.
+token: { kind: pass_through, max_lifetime: null }
 mcp:
   servers:
     # Datadog's remote MCP server takes the keys in headers named with

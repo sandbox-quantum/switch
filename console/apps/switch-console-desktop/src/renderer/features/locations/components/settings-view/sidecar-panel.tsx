@@ -42,7 +42,7 @@ export const SidecarPanel = observer(function SidecarPanel() {
 
 /**
  * This Console's own watcher for the agent. A managed agent has none: Switch
- * runs it on a machine's agents controller.
+ * runs it on a machine's agent controller.
  */
 function ConsoleWatcher({ agentId }: { agentId: string }) {
   const queryClient = useQueryClient();
@@ -61,7 +61,7 @@ function ConsoleWatcher({ agentId }: { agentId: string }) {
   if (runner.data === 'managed')
     return (
       <p className="text-sm text-foreground-muted">
-        Switch runs this agent on a machine’s agents controller, so this Console does not watch its
+        Switch runs this agent on a machine’s agent controller, so this Console does not watch its
         rooms.
       </p>
     );

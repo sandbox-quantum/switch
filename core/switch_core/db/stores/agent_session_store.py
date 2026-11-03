@@ -37,16 +37,17 @@ class AgentSessionStore:
     a schema change.
     """
 
-    # always_on agents (server-side connectors) refresh their heartbeat as a
-    # side effect of re-entering poll_events, so the gap between beats is
-    # bounded below by the poll long-poll timeout — 30s for the server
-    # connector (see CONNECTOR_POLL_TIMEOUT_SECONDS) — and grows further while
-    # the agent is busy handling an event. 90s gives that 30s cadence ~3x
-    # headroom so always_on agents stay live across idle long-polls and slow
-    # event handling, while a genuinely crashed agent still drops within 90s.
+    # always_on agents refresh their heartbeat as a side effect of re-entering
+    # poll_events (`GET /agents/{id}/events`), so the gap between beats is
+    # bounded below by the long-poll timeout the agent asks for (10s unless it
+    # says otherwise) and grows further while it is busy handling an event.
+    # 90s leaves room for long-polls of up to about 30s plus slow event
+    # handling, while a genuinely crashed agent still drops within 90s. A
+    # client that asks for a timeout near or past the TTL reads as
+    # disconnected between its polls.
     ALWAYS_ON_TTL = timedelta(seconds=90)
 
-    # session_addressable agents (the Claude Code plugin) renew their heartbeat
+    # session_addressable agents on the old Claude Code plugin renew their heartbeat
     # on a dedicated fast cadence (POST /connection/renew every 2s from the
     # channel process), decoupled from polling. A much lower TTL is therefore
     # safe and desirable: a closed/crashed session drops to "no session" within
@@ -155,7 +156,7 @@ class AgentSessionStore:
         session-close signal, so the binding lingers after a session ends.
         Paired with a liveness check by the caller: a binding present while the
         agent is not live means a session_addressable session is connected but
-        not reporting in (e.g. launched without the dev-channels flag).
+        not reporting in.
         """
         result = await session.execute(
             select(AgentSession.agent_id)

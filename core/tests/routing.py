@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import insert, select
 
+from switch_core.announcer import Announcer
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import (
     EventBuffer,
@@ -49,6 +50,7 @@ from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -196,10 +198,13 @@ def router_on(
     connections: AgentConnectionRegistry | None = None,
     telemetry: RecordedTelemetry | None = None,
     conversation: ConversationSettings | None = None,
+    announcer: Announcer | None = None,
 ) -> MessageRouter:
     """A router on the test database with real stores. A test that has no
     agent in its rooms can write through it with nothing else set up.
-    Following the conversation is off unless `conversation` turns it on."""
+    Following the conversation is off unless `conversation` turns it on.
+    With `announcer`, it announces its rows after their commits, as the
+    server's does; without, the triggers announce them."""
     return MessageRouter(
         services=RecipientServices(
             session_factory=session_factory,
@@ -210,6 +215,7 @@ def router_on(
             room_store=RoomStore(),
             document_store=DocumentStore(),
             reference_store=ReferenceStore(),
+            package_store=PackageStore(),
             agent_session_store=AgentSessionStore(),
             room_role_store=RoomRoleStore(),
             external_user_store=ExternalUserStore(),
@@ -220,6 +226,7 @@ def router_on(
             message_telemetry=telemetry  # type: ignore[arg-type]
             if telemetry is not None
             else RecordedTelemetry(),
+            announcer=announcer,
         ),
         message_store=MessageStore(),
         client_store=ClientStore(),
@@ -242,6 +249,7 @@ def process_on(
     rooms: RoomAnnouncements | None = None,
     connections: AgentConnectionRegistry | None = None,
     conversation: ConversationSettings | None = None,
+    announcer: Announcer | None = None,
 ) -> Process:
     """A process's routing on the test database: real stores, its own
     registry and buffer, telemetry that records. A test of presence across
@@ -260,6 +268,7 @@ def process_on(
         connections=connections,
         telemetry=telemetry,
         conversation=conversation,
+        announcer=announcer,
     )
     invites = InviteBus()
     factory = ClientFactory(

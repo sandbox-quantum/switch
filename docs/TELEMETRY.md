@@ -89,12 +89,12 @@ id, no IP field, no Switch identity.
 
 | Field | Complete set of possible values |
 |---|---|
-| `outcome` | `success`, `failure` (on `session_ended`: `normal`, `failed`) |
+| `outcome` | `success`, `failure` (on `session_ended`: `normal`, `failed`; on `bridge_identity_claimed`, also `pending`) |
 | `agent_type` | the AI provider, from a fixed registry: `claude`, `codex`, `gemini`, `cursor`, `copilot`, `opencode`, `grok`, `devin`, `qwen`, `droid`, `amp`, `goose`, `cline`, `continue`, `mistral`, `kiro`, `junie`, … and `unknown`. **Never an agent's name.** |
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`. **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
-| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `unknown` |
+| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `template`, `switch_buddy`, `unknown` |
 | `target` | `local`, `remote`, `unknown` |
 
 ### 3.3 Every event and its fields
@@ -109,15 +109,15 @@ id, no IP field, no Switch identity.
 | `update_downloaded` | `outcome`: `success` / `failure` |
 | `update_install_started` | `outcome`: `success` / `failure` |
 | `telemetry_consent_changed` | `source`: `first_run` / `settings` · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
-| `setting_changed` | `setting_key`, one of exactly 15: `theme`, `notifications`, `terminal`, `defaultAgent`, `sessions`, `location`, `localLocation`, `openIn`, `interface`, `browser`, `browserPreview`, `changesViewMode`, `remote`, `onboarding`, `telemetry`. **The new value is never sent** — we learn that someone changed their theme, not to what. |
+| `setting_changed` | `setting_key`, one of exactly 12: `localLocation`, `sessions`, `defaultAgent`, `notifications`, `theme`, `openIn`, `interface`, `browserPreview`, `browser`, `changesViewMode`, `onboarding`, `telemetry`. **The new value is never sent** — we learn that someone changed their theme, not to what. |
 | `search_performed` | `status`: `ok` / `recents` / `query-too-short` / `failed` · `result_count`: `0`, `3`, `17`. **The query is never sent.** |
 
 **Navigation and onboarding**
 
 | Event | Fields, with example values |
 |---|---|
-| `view_opened` | `view_id`, one of exactly 18: `home`, `location`, `session`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture` |
-| `command_executed` | `command_id`, one of 28 known commands: `app.settings`, `app.newSession`, `app.addServer`, `app.toggleTheme`, `session.newTerminal`, `session.gitPush`, … · `invoked_by`: `palette` / `shortcut` |
+| `view_opened` | `view_id`, one of exactly 21: `home`, `location`, `session`, `chat`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture`, `switchBuddy`, `admin` |
+| `command_executed` | `command_id`, one of exactly 9: `app.settings`, `app.newLocation`, `app.addServer`, `app.toggleTheme`, `app.navigateBack`, `app.navigateForward`, `session.pin`, `session.nextSession`, `session.prevSession` · `invoked_by`: `palette` / `shortcut` |
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
 | `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |
 | `onboarding_checklist_dismissed` | *(no fields)* |
@@ -131,7 +131,7 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `agent_created` | `agent_type`: `codex` · `location`: `remote` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `name_conflict` / `credentials_conflict` / `already_configured` / `invalid_name` / `directory_unusable` / `not_configured` / `agent_not_on_server` / `error` · `entry_point`: `sidebar` |
+| `agent_created` | `agent_type`: `codex` · `location`: `remote` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `name_conflict` / `credentials_conflict` / `already_configured` / `invalid_name` / `directory_unusable` / `not_configured` / `agent_not_on_server` / `refused` / `invalid` / `error` · `entry_point`: `sidebar` |
 | `agent_removed` | `agent_type` · `location` · `delete_in_switch`: `true` · `trigger`: `user` / `server_teardown` · `outcome` · `failure_reason`: `none` / `not_linked_to_switch` / `gateway_unauthorized` / `gateway_http` / `gateway_network` / `error` |
 | `agent_reset` | `agent_type` · `outcome` · `failure_reason`: `none` / `agent_not_found` / `not_remote` / `connect` / `error` |
 | `agent_cli_action` | `agent_type` · `target`: `local` / `remote` · `install_method`: `homebrew` / `npm` / `winget` / `powershell` / `apt` / `curl` / `pip` / `cargo` / `installer-macos` / `installer-windows` / `installer-linux` / `other` / `unspecified` · `action`: `install` / `update` / `uninstall` · `outcome` · `failure_reason`: `none` / `unknown_dependency` / `no_install_command` / `no_update_strategy` / `no_uninstall_strategy` / `no_uninstall_command` / `permission_denied` / `command_failed` / `process_open_failed` / `not_detected_after_install` / `not_detected_after_update` / `still_present` / `error` · `duration_ms`: `8421` |
@@ -171,14 +171,26 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 |---|---|
 | `bridge_connected` | `bridge`: `collaboration` · `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
 | `bridge_disconnected` | `bridge`: `collaboration` · `bridge_platform`: `mattermost` · `outcome` |
-| `bridge_identity_claimed` | `bridge_platform` · `outcome` |
-| `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `error` |
+| `bridge_identity_claimed` | `bridge_platform` · `outcome`: `success` (linked) / `pending` (waiting for a one-time code to be posted from the account, which is what confirms the link) / `failure` |
+| `bridge_identity_confirmed` | `bridge_platform` · `link_kind`: `new` (a link that was waiting on its code) / `existing` (a link made before links had to be confirmed, which worked all along) / `unknown` — sent when the code is posted and the link confirmed, after asking the server that it is |
+| `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `error` · `source`: `dialog` / `template` |
 | `room_deleted` | `server_kind` · `outcome` |
 | `room_agents_added` | `agent_count`: `2` · `direction`: `agents_to_room` / `room_to_agents` |
 
 A room creation tells us *"someone made a Slack-bridged room with 3 agents and it
 worked"*. It does not tell us the room name, the channel, the workspace, or which
 agents.
+
+`source` says whether the room came from the Create room dialog or from a
+template. A template run reports each room it made, and each agent as
+`agent_created` with `entry_point` `template` — or, for switch-buddy, `onboarding`
+from the first run and `switch_buddy` from its chat later. What a run does not
+already say — a room's platform, agent count and whether it has instructions, the
+provider of an agent the server chose — is read back from the server once it
+exists, only when sharing is on, and only while the run's workspace is still the
+one open: the app never switches back to it just to describe the run. A template
+run that fails reports nothing: it made nothing, and how many rooms it would have
+made is not known.
 
 **Remote hosts**
 
@@ -240,7 +252,11 @@ Switch Console can run a Switch server for the user — as containers on their o
 machine, or on a host they have given it over SSH. That server has product-usage
 telemetry of its own, off unless its configuration turns it on, and the Console's
 toggle is what turns it on: the answer is written into the server's configuration
-every time the Console starts it, in both directions. "No" is written down
+every time the Console starts it, in both directions, together with the address
+to send to — the same relay the app reports to, rather than whatever the
+server's own version defaults to. A server that was already running when the
+Console started naming the address is flagged on its page like any other
+out-of-step setting, with the restart offered. "No" is written down
 explicitly rather than left out, because a stack started under a "yes" would
 otherwise keep the setting it started with.
 

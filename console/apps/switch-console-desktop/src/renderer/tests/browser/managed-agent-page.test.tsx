@@ -38,7 +38,12 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { managedAgents, workspaces, agents: { modelCatalogue } },
+  rpc: {
+    managedAgents,
+    workspaces,
+    agents: { modelCatalogue },
+    userChanges: { watch: async () => false, unwatch: async () => {} },
+  },
 }));
 vi.mock(
   '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section',
@@ -100,7 +105,7 @@ const AGENT: ManagedAgentView = {
 const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
-  providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
+  providers: [{ provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true }],
   acceptsLogins: false,
   cloud: false,
   workspacesDir: '/home/me/workspaces',
@@ -189,8 +194,7 @@ it('lays out the agent the way a Console agent’s page does', () => {
   expect(text).toContain('on laptop');
   expect(text).toContain('Writes PRDs');
   expect(container.querySelector('textarea')?.value).toBe('Be brief.');
-  for (const heading of ['General', 'Sessions'])
-    expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain(heading);
+  expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain('General');
   for (const row of [
     'Auto mode',
     'Bypass permissions',

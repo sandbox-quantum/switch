@@ -21,19 +21,8 @@ init-env:
       echo "   Delete it first if you really want to regenerate every secret." >&2
       exit 1
     fi
-    if ! command -v openssl >/dev/null 2>&1; then
-      echo "openssl is required to generate secrets but was not found on PATH." >&2
-      exit 1
-    fi
     cp .env.example .env
-    for key in DB_PASSWORD DB_OWNER_PASSWORD \
-               AGENT_REGISTRATION_TOKEN GATEWAY_ADMIN_PASSWORD \
-               MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
-      secret="$(openssl rand -hex 24)"
-      sed -i.bak "s|^${key}=.*|${key}=${secret}|" .env
-    done
-    sed -i.bak "s|^SECRET_KEYS=.*|SECRET_KEYS=local:$(openssl rand -hex 32)|" .env
-    rm -f .env.bak
+    deploy/local/generate-env-secrets.sh .env local
     echo "✅ Wrote .env with freshly generated secrets."
     echo "   Gateway admin login: $(grep '^GATEWAY_ADMIN_EMAIL=' .env | cut -d= -f2-) / $(grep '^GATEWAY_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
     echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose it)."
@@ -141,6 +130,13 @@ artifacts:
 artifacts-check:
     uv run --project core python scripts/gen_artifacts.py --check
 
+# ── Record the official templates' revisions, at release time ─────────────────
+# Adds a revision to revisions.json for each official template (switch-buddy,
+# the Switch expert) whose files changed since its last one; commit it with the
+# version bump. The release workflow refuses a release tag while any changed.
+record-template-revisions:
+    uv run --project core python -m switch_core.official_templates.revisions record-all
+
 # ── Build the Teams app package an operator uploads ───────────────────────────
 # Every route into a tenant wants a .zip — Developer Portal Import app, Upload a
 # custom app, the admin centre — and none takes a bare manifest.json. Pass the
@@ -170,6 +166,46 @@ test *args:
 # `--keep` leaves it running to try by hand. Output: build/e2e/follow-the-conversation.
 e2e-follow-ups *args:
     core/tests/e2e/follow_the_conversation/run.sh {{ args }}
+
+# ── End-to-end harness, fast lane, on a throwaway stack ────────────────────────
+# Fresh Postgres and Mattermost, switch-core from this checkout, then the
+# provider-free scenarios in console/tooling-e2e, then teardown. Needs Docker
+# and your local stack stopped. `--keep` leaves it running; arguments after
+# `--` go to vitest. Output: build/e2e/ephemeral.
+e2e-fast *args:
+    console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
+
+# ── End-to-end harness, provider lane, on a throwaway stack ────────────────────
+# As e2e-fast, plus a headless agent controller that runs the agent's sessions
+# with a real provider CLI (installed and signed in, or its key in the file
+# SWITCH_E2E_PROVIDER_ENV_FILE names). SWITCH_E2E_AGENT_TYPE picks the provider.
+# Spends real model calls.
+e2e-provider *args:
+    SWITCH_E2E_LANE=provider console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
+
+# ── End-to-end harness, browser lane, on a throwaway stack ─────────────────────
+# As e2e-fast, plus the gateway UI built from gateway/ and served on :4173, then
+# the browser scenarios in headless Chromium (installed by Playwright on first
+# run). Screenshots of failed pages: build/e2e/ephemeral/screenshots.
+e2e-browser *args:
+    SWITCH_E2E_LANE=browser console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
+
+# ── End-to-end harness, agentic lane, on a throwaway stack ─────────────────────
+# As e2e-provider, then the scenario files in console/tooling-e2e/agentic: a
+# driver model plays the human, a judge model grades the conversation. Needs
+# SWITCH_E2E_DRIVER_MODEL, SWITCH_E2E_JUDGE_MODEL (exact model ids) and
+# SWITCH_E2E_AGENTIC_BUDGET_USD. Spends real model calls, up to that limit.
+e2e-agentic *args:
+    SWITCH_E2E_LANE=agentic console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
+
+# ── Regenerate the server surface the E2E coverage gate reads ─────────────────
+# Every agent operation and gateway route, written to
+# console/tooling-e2e/surface/server-surface.json. CI fails when it is stale;
+# after regenerating, the gate (pnpm test in console/tooling-e2e) says what a
+# new operation or route needs: a scenario, or an exemption with its reason.
+# Regenerate the server surface snapshot the E2E coverage gate reads
+e2e-surface:
+    uv run --project core python scripts/e2e_surface.py
 
 # ── Run integration tests (real Postgres via testcontainers) ───────────────────
 # DOCKER_HOST is auto-resolved from the active docker context in conftest, so this

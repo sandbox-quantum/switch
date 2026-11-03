@@ -55,7 +55,7 @@ export const nodeWebSocket: OpenWebSocket = (url, headers) => {
   ).WebSocket;
   if (!Socket)
     throw new ConfigurationError(
-      `The agents controller needs Node 22 or newer to connect to Switch (this is ${process.version}, with no WebSocket).`
+      `The agent controller needs Node 22 or newer to connect to Switch (this is ${process.version}, with no WebSocket).`
     );
   return new Socket(url, { headers });
 };

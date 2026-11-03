@@ -2,7 +2,7 @@
 
 Status: in progress. This is the implementation spec for the first slice of the
 agent-controller design. It covers the **Core management module behind a flag** and the
-**headless agents controller**. The full target contract is
+**headless agent controller**. The full target contract is
 `controller-contract-v1.md` (to be added alongside); this file says what v1 builds, and
 where it deliberately stops short.
 
@@ -12,7 +12,7 @@ where it deliberately stops short.
   `agent_management` feature flag is on): the source of truth for managed agents. It holds agent
   definitions, which controller each one runs on, controller enrollment and credentials,
   controller status, and operations.
-- **Agents controller** (`console/packages/agent-controller`, a Node CLI): one per
+- **Agent controller** (`console/packages/agent-controller`, a Node CLI): one per
   machine. It pulls its assignment, runs each assigned agent through the existing
   shared-host agent host (the same `--watch-*` runtime the Console sidecar uses), and reports
   status.
@@ -318,7 +318,7 @@ has not reported recently, the provider is not installed or not logged in there,
 ends with the reason code in parentheses. Another person's machine, by id or name, gets
 exactly the answer a missing one does.
 
-## Headless agents controller (`console/packages/agent-controller`)
+## Headless agent controller (`console/packages/agent-controller`)
 
 - CLI `switch-agent-controller`, released as its own npm package on
   `switch-agent-controller-v*` GitHub releases, with an `install.sh` (see RELEASING.md):
@@ -510,7 +510,7 @@ stream. The flag and everything else above stay as they are.
   owner stopped it and has to set it running, or its machine (the
   controller's name, carried on the binding) is offline or reconnecting, or
   has been removed once it is revoked. A controller-backed agent is never
-  offered the terminal command or told to open Switch Console.
+  told to open Switch Console.
   In-room session commands (`!reset`, `!compact`) are still relayed on the
   controller's stream with the room, and the controller picks the session.
 - **Liveness** is "socket attached and a pong within 6 s"; the connection sweep

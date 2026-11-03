@@ -159,7 +159,7 @@ async function main(): Promise<void> {
         login,
         config.execution?.binaryPath ?? config.start.provider
       );
-    // An agents controller running this agent host in a process of its own
+    // An agent controller running this agent host in a process of its own
     // names its hub: the agent's events come from there, not from Switch.
     const hub = config.execution
       ? (await readSharedCredentials(config)).SWITCH_AGENT_HUB

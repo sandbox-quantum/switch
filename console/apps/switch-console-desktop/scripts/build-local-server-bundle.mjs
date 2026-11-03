@@ -23,7 +23,17 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -61,12 +71,21 @@ if (!platform) {
   process.exit(0);
 }
 
+// cryptography publishes no wheel for Intel Macs from 49 on, so uv builds it
+// from source there. Left to find OpenSSL itself, that build links whatever the
+// build machine has (Homebrew's, on the release runner), at a path a clean Mac
+// lacks.
+const buildsOpenssl = platform === 'darwin-x64';
+// Electron's own minimum: Console runs on nothing older.
+const MACOS_DEPLOYMENT_TARGET = '12.0';
+
 const wanted = {
   bundle: pins.BUNDLE_FORMAT,
   platform,
   switchVersion,
   uvVersion: pins.UV_VERSION,
   postgresVersion: pins.postgresArchive(platform) ? pins.POSTGRES_VERSION : null,
+  opensslVersion: buildsOpenssl ? pins.OPENSSL_VERSION : null,
   python: pins.SWITCH_CORE_PYTHON,
 };
 
@@ -248,6 +267,51 @@ const requirements = execFileSync(
 );
 const requirementsFile = path.join(work, 'requirements.txt');
 await writeFile(requirementsFile, requirements);
+// Where cryptography is built here, it is given an OpenSSL built for it and
+// links it in statically, and never reuses a build of it cached from before.
+const sourceBuildEnv = {};
+if (buildsOpenssl) {
+  console.log(`local-server bundle: OpenSSL ${pins.OPENSSL_VERSION}, to build cryptography with`);
+  const opensslSource = path.join(work, 'openssl-src');
+  const openssl = path.join(work, 'openssl');
+  await unpackPinned(pins.opensslSourceArchive(), opensslSource);
+  const env = { ...process.env, MACOSX_DEPLOYMENT_TARGET: MACOS_DEPLOYMENT_TARGET };
+  // Configured as cryptography's own macOS wheels are (pyca/infra's
+  // build-macos-openssl.yml): `no-module` builds the legacy provider into
+  // libcrypto, where cryptography loads it, and the OpenSSL directory is the
+  // one those wheels name. It holds only an optional openssl.cnf.
+  execFileSync(
+    './Configure',
+    [
+      'darwin64-x86_64-cc',
+      'no-zlib',
+      'no-shared',
+      'no-module',
+      'no-comp',
+      'no-apps',
+      'no-docs',
+      'no-tests',
+      'no-sm2-precomp',
+      'no-atexit',
+      'enable-ec_nistp_64_gcc_128',
+      `--prefix=${openssl}`,
+      '--openssldir=/usr/local/etc/openssl@3',
+      '--libdir=lib',
+    ],
+    { cwd: opensslSource, stdio: 'inherit', env }
+  );
+  // Compiler errors arrive on stderr; stdout is a line per source file.
+  const make = (args) =>
+    execFileSync('make', args, { cwd: opensslSource, stdio: ['ignore', 'ignore', 'inherit'], env });
+  make([`-j${os.availableParallelism()}`]);
+  make(['install_sw']);
+  Object.assign(sourceBuildEnv, {
+    OPENSSL_DIR: openssl,
+    OPENSSL_STATIC: '1',
+    MACOSX_DEPLOYMENT_TARGET: MACOS_DEPLOYMENT_TARGET,
+    UV_NO_CACHE: '1',
+  });
+}
 // Installed, not as wheels: notarization inspects every compiled library in
 // the app, archives included, and only a plain file can be signed with it.
 // The environment made at first start reaches these through a .pth file.
@@ -265,7 +329,7 @@ execFileSync(
     '-r',
     requirementsFile,
   ],
-  { stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } }
+  { stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', ...sourceBuildEnv } }
 );
 // What installing switch-core itself (editable) builds with: pure-Python
 // wheels, so nothing in them needs signing.
@@ -316,6 +380,68 @@ execFileSync(python, ['-c', 'import ssl, sqlite3, ctypes, asyncio, venv, zlib'],
   stdio: 'inherit',
   env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
 });
+
+// Prove nothing in the bundle loads a library a clean Mac lacks: every one it
+// links is the system's own or ships beside it, and so is every run path an
+// `@rpath` library is looked up in. A library built against the build
+// machine's Homebrew passes every other check here and fails only on a user's
+// Mac, at the first import.
+if (process.platform === 'darwin') {
+  const MACHO_MAGICS = new Set([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe]);
+  const SYSTEM = /^(\/usr\/lib\/|\/System\/Library\/)/;
+  const BESIDE = /^@(loader_path|executable_path)(\/|$)/;
+  const outside = [];
+  for (const entry of await readdir(stage, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const file = path.join(entry.parentPath, entry.name);
+    const handle = await open(file);
+    const magic = Buffer.alloc(4);
+    const { bytesRead } = await handle.read(magic, 0, 4, 0);
+    await handle.close();
+    if (bytesRead < 4 || !MACHO_MAGICS.has(magic.readUInt32BE(0))) continue;
+    const { libraries, rpaths } = loadPaths(file);
+    for (const library of libraries) {
+      if (SYSTEM.test(library) || BESIDE.test(library) || library.startsWith('@rpath/')) continue;
+      outside.push(`${path.relative(stage, file)} -> ${library}`);
+    }
+    for (const rpath of rpaths) {
+      if (SYSTEM.test(rpath) || BESIDE.test(rpath)) continue;
+      outside.push(`${path.relative(stage, file)} -> run path ${rpath}`);
+    }
+  }
+  if (outside.length > 0) {
+    throw new Error(
+      `The bundle links libraries outside macOS and itself:\n  ${outside.join('\n  ')}`
+    );
+  }
+}
+
+/**
+ * The libraries a Mach-O file loads and the run paths `@rpath` resolves
+ * against, from the load commands of every architecture in it: a bare otool
+ * reads only the slice matching the machine running it when there is one,
+ * which need not be the one a user's Mac loads.
+ */
+function loadPaths(file) {
+  const libraries = new Set();
+  const rpaths = new Set();
+  let into = null;
+  const commands = execFileSync('otool', ['-arch', 'all', '-l', file], { encoding: 'utf8' });
+  for (const line of commands.split('\n')) {
+    const command = line.match(/^\s*cmd (\S+)/);
+    if (command) {
+      if (/^LC_(LOAD|LOAD_WEAK|REEXPORT|LAZY_LOAD|LOAD_UPWARD)_DYLIB$/.test(command[1])) {
+        into = libraries;
+      } else {
+        into = command[1] === 'LC_RPATH' ? rpaths : null;
+      }
+      continue;
+    }
+    const value = into && line.match(/^\s*(?:name|path) (.+) \(offset \d+\)$/);
+    if (value) into.add(value[1]);
+  }
+  return { libraries, rpaths };
+}
 
 const manifest = { ...wanted, builtAt: new Date().toISOString() };
 await writeFile(path.join(stage, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);

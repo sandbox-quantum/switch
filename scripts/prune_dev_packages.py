@@ -2,7 +2,7 @@
 """Delete old dev builds from GHCR, and the dev controller releases.
 
 Every push to main publishes the images and chart under `<owner>/dev/…`
-(see .github/workflows/switch-release.yml), and the agents controller as a
+(see .github/workflows/switch-release.yml), and the agent controller as a
 GitHub prerelease tagged `switch-agent-controller-v<x.y.z>-dev.<n>.g<sha>`. Those packages hold nothing but dev
 builds, so pruning them cannot touch a release. A version is deleted when it is
 older than `--max-age-days` AND older than the `--keep` newest tagged builds,

@@ -1,6 +1,6 @@
 """Controller-backed agents: who runs them, and whether that runner is there.
 
-An agent placed on an agents controller has no connection of its own. Its
+An agent placed on an agent controller has no connection of its own. Its
 controller holds one stream for every agent bound to it, and the agent is
 reachable exactly while that stream is: attached, and beating within the same
 TTL an agent connection beats in (`connections.HEARTBEAT_TTL_SECONDS`). Core

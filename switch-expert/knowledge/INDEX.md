@@ -27,7 +27,7 @@ about is newer than that, say so in your answer.
 ## What is deliberately not here
 
 - **How rooms, messaging, roles, attachments and the tools mechanically work.** That is the
-  connector skill, which you already have — it is handed to you when you join a room and is
+  Switch skill, which you already have — it is handed to you when you join a room and is
   versioned with the server, so it is fresher than anything here could be. Use it from
   context; there is no file to go and open.
 
@@ -43,7 +43,7 @@ about is newer than that, say so in your answer.
 
 ## Precedence when sources disagree
 
-1. The connector skill in your context, then the repository clone — `README.md` for what
+1. The Switch skill in your context, then the repository clone — `README.md` for what
    Switch is, `docs/` for how it works, then the source.
 2. These knowledge files.
 

@@ -14,9 +14,11 @@ import {
   type ConnectorApp,
   type ConnectorAppField,
   ConnectorAppRefusal,
+  type SavedConnectorApp,
   saveConnectorApp,
 } from "../../data/api";
 import { menuLabel, secretFields, UPDATE_SECRET_NOTE } from "./connectorApps";
+import { useConnectorAppScope } from "./scope";
 import { SecretInputs } from "./SetupDialog";
 
 /**
@@ -32,8 +34,9 @@ export default function UpdateSecretDialog({
   app: ConnectorApp;
   open: boolean;
   onClose: () => void;
-  onSaved: (saved: ConnectorApp) => void;
+  onSaved: (saved: SavedConnectorApp) => void;
 }) {
+  const scope = useConnectorAppScope();
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [field, setField] = useState<ConnectorAppField | null>(null);
@@ -55,7 +58,7 @@ export default function UpdateSecretDialog({
     setField(null);
     try {
       onSaved(
-        await saveConnectorApp(app.slug, { client_id: app.client_id, ...given, replace: false }),
+        await saveConnectorApp(scope, app.slug, { client_id: app.client_id, ...given, replace: false }),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

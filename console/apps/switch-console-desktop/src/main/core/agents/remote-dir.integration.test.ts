@@ -44,7 +44,9 @@ vi.mock('@main/core/locations/location-transport', () => ({
 const { inspectRemoteDir } = await import('./remote-dir');
 
 beforeAll(async () => {
-  const { private: hostKey } = utils.generateKeyPairSync('ed25519');
+  // Not ed25519: ssh2's ed25519 generator strips a leading zero byte from the
+  // public key, so about one key in 256 is malformed. ECDSA keys always parse.
+  const { private: hostKey } = utils.generateKeyPairSync('ecdsa', { bits: 256 });
 
   server = new Server({ hostKeys: [hostKey] }, (conn) => {
     conn.on('authentication', (ctx) => ctx.accept());

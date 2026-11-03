@@ -1,7 +1,5 @@
-import type {
-  ControllerProviderReport,
-  ManagementController,
-} from '@main/core/switch-servers/gateway-client';
+import type { ControllerProviderReport } from '@main/core/switch-servers/controller-provider-report';
+import type { ManagementController } from '@main/core/switch-servers/gateway-client';
 import {
   isCloudMachine,
   type MachineProvider,
@@ -33,6 +31,7 @@ export function machineProvider(report: ControllerProviderReport): MachineProvid
     ready: problem === null,
     problem,
     detail: problem === null ? null : report.problem,
+    loginHelps: report.loginHelps,
   };
 }
 
@@ -63,6 +62,17 @@ export function ownedMachines(
               : null,
       };
     });
+}
+
+/**
+ * `serverIds` with `preferred` moved to the front when it is among them: the
+ * server Console is on now, whose report is the one its screens are about,
+ * since controllers on different servers can each say something different.
+ */
+export function preferredFirst(serverIds: readonly string[], preferred: string | null): string[] {
+  return preferred && serverIds.includes(preferred)
+    ? [preferred, ...serverIds.filter((serverId) => serverId !== preferred)]
+    : [...serverIds];
 }
 
 /**

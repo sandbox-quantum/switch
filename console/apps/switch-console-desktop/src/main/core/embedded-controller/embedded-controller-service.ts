@@ -94,8 +94,13 @@ export type EmbeddedControllerDeps = {
 
 const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
 
-/** Every provider's sign-in check runs at once; the slowest allows itself 15 seconds. */
-const RECHECK_TIMEOUT_MS = 60_000;
+/**
+ * Every provider is checked at once. Claude Code's is the slowest: its status
+ * command (up to 15 seconds), then a test prompt (up to 30), then the report
+ * to Switch, so the wait leaves room for all three and resolves on the
+ * report that has them rather than timing out ahead of it.
+ */
+const RECHECK_TIMEOUT_MS = 90_000;
 
 function providerSeedArgs(file: string | null): string[] {
   return file === null ? [] : ['--provider-seed', file];
@@ -112,7 +117,7 @@ type Runner = { supervisor: ControllerSupervisor; phase: EmbeddedControllerPhase
 
 /**
  * "Run managed agents on this computer", per signed-in Switch server: enrolls
- * this Console as an agents controller of kind `console`, keeps its credential
+ * this Console as an agent controller of kind `console`, keeps its credential
  * in the encrypted secrets store, and runs the agent-controller CLI as a
  * child process for as long as it is on.
  *
@@ -258,7 +263,7 @@ export class EmbeddedControllerService {
           await this.revokeQuietly(workspaceId, enrolled.controllerId);
           throw error;
         }
-        this.deps.log.info('Enrolled this computer as an agents controller', {
+        this.deps.log.info('Enrolled this computer as an agent controller', {
           serverId,
           controllerId: enrolled.controllerId,
         });
@@ -538,7 +543,7 @@ export class EmbeddedControllerService {
   private async onFinal(serverId: string, exit: ControllerFinalExit): Promise<void> {
     if (exit === 'upgrade_required') {
       this.deps.log.error(
-        'Switch needs a newer agents controller than this Console carries; not restarting it until Console is updated',
+        'Switch needs a newer agent controller than this Console carries; not restarting it until Console is updated',
         { serverId }
       );
       this.setRunnerPhase(serverId, {

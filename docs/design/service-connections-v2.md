@@ -40,7 +40,8 @@ auth:
     # authorization_params: { access_type: offline }   # also sent with every
     #   authorization; only keys Core does not set itself (access_type,
     #   include_granted_scopes)
-    revocation_discovered: true   # or revocation_url: https://…
+    revocation_discovered: true   # or revocation_url: https://…; with neither,
+                                  # remove_access: where people remove Switch
   identity:                   # GET with the token; dotted paths in its JSON
     url: https://api.atlassian.com/me
     account_id: account_id
@@ -127,7 +128,12 @@ A removed grant stops a running session within a minute: the agent host reads
 the grants again at most every 30 seconds while it holds a token, drops one
 whose grant has moved on or gone, and the next ask is refused. While Core
 cannot be reached that check cannot run, and `use_until` bounds it to the
-hour. A token already handed out stays valid at the vendor until it expires.
+hour. A token already handed out stays valid at the vendor until it expires:
+for a pass-through service nothing can revoke the owner's token alone (for
+Google, revoking it would end the owner's whole sign-in), so its issuance
+record is marked withdrawn and the change's `warning` says until when it may
+keep working, up to the entry's `max_lifetime` (an hour for Google, eight
+hours for Atlassian, whose tokens cannot be asked for shorter).
 
 ## Connecting
 
@@ -222,7 +228,7 @@ reads `.zip` too on Windows) and installs it under
 `~/.local/state/switch/tools/<binary>/<sha256>/`, once per machine. Upgrading a
 tool is a catalog change; a machine without a build is told so when the tool
 is called. What each install found (installed, failed, no build here) is kept
-in that folder's `status.json`, and the agents controller reports it with `git`
+in that folder's `status.json`, and the agent controller reports it with `git`
 and `gh` in its status (`ok`, `missing` or `unsupported`).
 
 Pinning the build in the catalog means Core names a binary that session hosts
@@ -278,8 +284,11 @@ disconnecting still works. A slug outside the catalog stops the server.
 
 A workspace admin switches each catalog service on or off for the workspace
 (`GET` and `PUT /gateway/workspace/services[/{service}]`, admins and owners,
-and the operator in a workspace they belong to). A service with no setting is
-on, so an upgraded server behaves as before; a row is written only when an
+and the operator in a workspace they belong to). A service with no setting
+takes the workspace's default, `tenants.services_on_by_default`: off for every
+workspace made since services started off, so a new workspace has none until
+an admin switches each on, and on for the workspaces that already had members
+then, so nothing they used stopped working. A row is written only when an
 admin touches the switch, and each change is audited
 (`workspace_service.enabled` / `.disabled`). The switch applies only with the
 `service_connections` flag on; with it off, GitHub works as it always has.
@@ -296,7 +305,8 @@ service out, so a running session loses the service within half a minute, as
 it does a removed grant: its host restarts it without the service. A token
 already handed out may be used until that restart, except GitHub's, which the
 switch queues and revokes before it answers (`warning` when some could not be
-yet; the five-minute tick keeps trying). On again, the grants come back with
+yet; the five-minute tick keeps trying). A pass-through token is marked
+withdrawn, and the `warning` says until when it may keep working. On again, the grants come back with
 no re-grant.
 
 The service list (`GET /gateway/service-connections`) carries
@@ -318,6 +328,11 @@ what each person can do about it (`UnavailableCode` in
 - `not_set_up`: nothing on this server connects it, and no app would.
 - `not_fully_set_up`: it can be connected but not granted: its app lacks a
   part (a GitHub App configured with no signing key).
+- `key_never_expires`: it connects with a key that never expires
+  (`token.max_lifetime: null`), which Switch never hands to an agent, so it
+  can be neither connected nor granted. One already connected can still be
+  disconnected, and an existing grant is refused at issue time (403
+  `forbidden`).
 
 `get_my_context`'s `services` carry the same code.
 
@@ -346,7 +361,7 @@ auth:
       account_id: user.id       # optional: without it, the key's SHA-256
       label: user.email         # optional: without it, the name and choices
     help_url: https://docs.example.com/keys
-token: { kind: pass_through, max_lifetime: 3600 }   # handed out an hour at a time
+token: { kind: pass_through, max_lifetime: null }   # never handed to an agent
 mcp:
   servers:
     - name: example
@@ -358,7 +373,15 @@ tools: { mode: pass_through }
 
 The loader refuses a template naming an unknown field, a URL naming a secret
 one, a server without headers, an entry naming `access` (a key reaches
-whatever its vendor let it), and a token handed out for longer than an hour.
+whatever its vendor let it), and a `max_lifetime` other than null.
+
+**A key is never handed to an agent.** It does not expire and only its vendor
+can revoke it, so whatever ran beside the agent could keep it for good, past a
+removed grant or a disconnect. The broker refuses to issue one (403
+`forbidden`), the services list marks it `key_never_expires`, and it can be
+neither connected nor granted; one already connected can be disconnected.
+What follows describes the connection as it was built, which stays in place
+for a later server-side use of the key.
 
 - **Connecting.** Switch Console shows the entry's fields (the services list
   carries them as `key`) and sends them to
@@ -368,10 +391,9 @@ whatever its vendor let it), and a token handed out for longer than an hour.
   the vendor accepts them; a refusal names the fields to check. One account
   is linked to one person in a workspace, as for a sign-in. Re-pasting
   replaces the key in place, keeping the grants.
-- **The token.** The connection's secret is the token a session host is
-  handed: compact JSON, `{"public": {...}, "secret": {...}}`. Each issue
-  hands it out for an hour, so the grant checks run at least hourly, and the
-  host's grant check reaches running sessions within half a minute.
+- **The token.** The connection's secret is compact JSON,
+  `{"public": {...}, "secret": {...}}`, the shape a session host would render
+  into its templates.
 - **Sessions.** The host renders each MCP server's `url` and `headers`, or the
   tool's `env`, from the token, and redacts every secret field on its own as
   well as the whole token. The key never reaches the coding tool.
@@ -437,7 +459,9 @@ settings:
   Atlassian matches the loopback port exactly, hence the five fixed ports.
 - Consenting to Jira's scopes alone fails after Accept unless the request also
   carries the identity scopes, `offline_access` and `prompt=consent`. Atlassian
-  enforces the result: a read-only sign-in hides the write tools.
+  reflects the result: a read-only sign-in still lists `executeWrite` and
+  `executeDestructive`, but `discover` returns no write operations and
+  `getAccessibleAtlassianResources` reports each product as read-only.
 - Access tokens live 8 hours; refresh tokens rotate.
 - The default server lists a few tools, `discover`, and `executeRead`,
   `executeWrite` and `executeDestructive`; those pass through unchanged.
@@ -454,6 +478,65 @@ settings:
 To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
+## Airtable
+
+Built from sign-in runs against free Airtable accounts; the operator's setup
+is in [`docs/old/airtable-setup.md`](../old/airtable-setup.md).
+
+- Each server's operator registers an Airtable OAuth integration and saves it
+  under Connector apps, or names it in `AIRTABLE_CLIENT_CONFIG_PATH`. The
+  browser comes back to Core's own callback, as Google's does, so the server
+  needs `GATEWAY_PUBLIC_URL` and nothing listens on people's computers; a
+  loopback redirect would work on any server, but the operator chose the
+  https callback. The Connector apps entry lists the callback and the scopes
+  the integration must tick, and is checked with a made-up code and verifier
+  sent to the callback: Airtable
+  answers `invalid_grant` for the right client ID and secret, `invalid_client`
+  otherwise, and compares the redirect only with a real code, so the first
+  connection confirms it. Airtable offers dynamic registration, but
+  files the registered client under the Builder Hub of the first person to
+  authorize it. There it stays limited to development, so Airtable refuses
+  everyone else ("cannot be used outside of development"), and deleting it
+  leaves Core with a client Airtable refuses on its own consent page, where
+  Core never sees the error. An integration the operator owns and publishes
+  (support email, privacy policy, terms of service) avoids both.
+- The endpoints are discovered from the MCP server, whose 401 names its
+  metadata, which lists `client_secret_basic` and `none` as the token
+  endpoint's methods. An integration with a secret must send it as HTTP
+  Basic: in the body Airtable refuses it, even when right (`invalid_client`).
+  The adapter sends a secret as Basic wherever the metadata lists Basic and
+  not `client_secret_post`, and in the body everywhere else, Google included.
+  Airtable asks for the PKCE verifier before it looks at the client.
+- Airtable's consent screen chooses bases, interfaces and workspaces, not
+  scopes: a person cannot leave the write scopes out, at sign-in or later. So
+  every connection is granted the write level, and what an agent reaches is
+  narrowed on Airtable's side, by the bases shared and the person's base role.
+- Not asked for: `schema.bases:write`. Without it Airtable refuses creating or
+  changing tables and fields, though its server lists those tools anyway.
+  `data.records:write` includes deleting records.
+- Access tokens live 60 minutes, and no `offline_access` is needed for a
+  refresh token. Each refresh returns a new refresh token and ends the
+  previous access token at once, so a host still holding it is refused once
+  and asks again. whoami (`api.airtable.com/v0/meta/whoami`) accepts the MCP
+  server's token; it returns no email without a scope the server does not
+  offer, so a connection is named by its account id.
+- Airtable has no revocation endpoint. Each sign-in is its own grant there,
+  and the integration reaches every base any of a person's grants shared, so
+  a sign-in Switch drops (a disconnect, a reconnect, one a switched-off
+  workspace refuses) still works and widens the next. Its entry's
+  `remove_access`, which an OAuth entry without revocation must have, tells
+  the person to revoke it under Integrations, Third-party integrations.
+- `list_secrets` is account-wide and returns each automation secret's id, name
+  and creation time, never its value.
+- On Enterprise plans an admin may allowlist third-party clients by client id:
+  the operator's integration has one, the same for everyone on the server. Not
+  tried: no Enterprise account was at hand.
+
+To connect: Settings, Connections in Switch Console, then Airtable. To roll
+back, add `airtable` to `DISABLED_SERVICES`, remove its client under
+Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
+`enabled: false`.
 
 ## Google Workspace
 
@@ -482,8 +565,9 @@ Built from a spike against a test Workspace with an Internal app:
   browser signed in to another Google account (a personal one, or another
   organization's) does not pick it unasked. `prompt` takes several values,
   space-separated, as OAuth writes them.
-- **Tokens.** Access tokens lived 3,599 s; `max_lifetime` is 3,920, Google's
-  documented sample. Agents still ask again hourly.
+- **Tokens.** Access tokens lived 3,599 s, so `max_lifetime` is 3,600: a
+  token handed out never has more than an hour left, and one Google issued
+  for longer is refused rather than handed out.
 - **The account** is OpenID's `sub`, labelled by `email`, from userinfo.
 - **Scopes as Google names them.** Google answers with full scope URLs
   (`email` comes back as `.../auth/userinfo.email`), and the level is read by

@@ -161,6 +161,7 @@ class ConsolePage:
 # with the names a person reads. A test holds the two together.
 CONSOLE_PAGES: Mapping[str, ConsolePage] = {
     "home": ConsolePage("the server's home"),
+    "server": ConsolePage("this server's own settings"),
     "agents": ConsolePage("the list of agents"),
     "agents/new": ConsolePage("the page to add a new agent"),
     "agent": ConsolePage(
@@ -195,6 +196,13 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
     "messaging-apps/connect": ConsolePage("the page to connect a messaging app"),
     "connections": ConsolePage("your connectors"),
     "invite": ConsolePage("the page to invite people to the workspace"),
+    "admin": ConsolePage(
+        "the workspace's admin page",
+        tabs={
+            "connectors": "the connectors the workspace offers",
+            "apps": "the apps connectors sign in through",
+        },
+    ),
     "settings": ConsolePage(
         "Switch Console's settings",
         tabs={

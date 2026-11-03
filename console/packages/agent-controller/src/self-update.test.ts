@@ -14,10 +14,13 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ConfigurationError } from './errors';
 import { silentLogger } from './log';
+import { NO_TRUSTED_KEYS } from './release-signing';
 import { packageDir } from './releases';
 import {
   type ControllerReleaseTarget,
+  downloadPackage,
   downloadVerified,
   type InstallRunner,
   type NpmSetup,
@@ -26,11 +29,14 @@ import {
   type ReleaseInstaller,
   ReleasesDirInstaller,
   RETRY_AFTER_MS,
+  SELF_UPDATE_OFF,
   SelfUpdater,
+  selfUpdateTurnedOff,
   type UpdateAttempt,
   type UpdateHost,
   unavailableInstaller,
 } from './self-update';
+import { signRelease, testSigningKey } from './testing/release-signing';
 
 let dir: string;
 
@@ -83,6 +89,7 @@ describe('readControllerRelease', () => {
       'latest',
       { version: '0.31', url: 'https://example.invalid/a.tgz', sha256: SHA },
       { version: '0.31.0', url: 'ftp://example.invalid/a.tgz', sha256: SHA },
+      { version: '0.31.0', url: 'http://example.invalid/a.tgz', sha256: SHA },
       { version: '0.31.0', url: 'https://example.invalid/a.tgz', sha256: 'abc' },
       { version: '../../etc', url: 'https://example.invalid/a.tgz', sha256: SHA },
       { version: '0.31.0-dev..1', url: 'https://example.invalid/a.tgz', sha256: SHA },
@@ -95,13 +102,44 @@ describe('readControllerRelease', () => {
   });
 });
 
-function serving(body: Buffer, headers: Record<string, string> = {}): typeof fetch {
-  return (async () => new Response(new Uint8Array(body), { status: 200, headers })) as typeof fetch;
+const KEY = testSigningKey('release-test');
+const KEYS = [KEY.trusted];
+
+/**
+ * Serves `body` at the package URL and, at `<url>.sig`, `signature` (by
+ * default the release signature of `body` as `release` names it); 404 for it
+ * when `signature` is null. Records the URLs fetched.
+ */
+function serving(
+  body: Buffer | (() => Response),
+  options: { headers?: Record<string, string>; signature?: string | null; version?: string } = {}
+) {
+  const fetched: string[] = [];
+  const version = options.version ?? '0.31.0';
+  const fetchImpl = (async (requested: string | URL | Request) => {
+    const url = String(requested);
+    fetched.push(url);
+    if (url.endsWith('.sig')) {
+      const signature =
+        options.signature === undefined
+          ? Buffer.isBuffer(body)
+            ? signRelease(KEY, version, createHash('sha256').update(body).digest('hex'))
+            : null
+          : options.signature;
+      return signature === null
+        ? new Response('not found', { status: 404 })
+        : new Response(signature, { status: 200 });
+    }
+    return Buffer.isBuffer(body)
+      ? new Response(new Uint8Array(body), { status: 200, headers: options.headers ?? {} })
+      : body();
+  }) as typeof fetch;
+  return { fetch: fetchImpl, fetched };
 }
 
 /** A body sent in chunks, with no Content-Length to go by. */
-function streaming(chunks: Buffer[]): typeof fetch {
-  return (async () =>
+function streaming(chunks: Buffer[]): () => Response {
+  return () =>
     new Response(
       new ReadableStream({
         start(controller) {
@@ -110,7 +148,7 @@ function streaming(chunks: Buffer[]): typeof fetch {
         },
       }),
       { status: 200 }
-    )) as typeof fetch;
+    );
 }
 
 function releaseOf(body: Buffer, version = '0.31.0'): ControllerReleaseTarget {
@@ -122,67 +160,137 @@ function releaseOf(body: Buffer, version = '0.31.0'): ControllerReleaseTarget {
 }
 
 describe('downloadVerified', () => {
-  it('keeps a package whose SHA-256 is the one Switch named', async () => {
-    const body = Buffer.from('a package');
-    const file = await downloadVerified({
-      fetch: serving(body),
-      release: releaseOf(body),
+  const download = (
+    served: ReturnType<typeof serving>,
+    release: ControllerReleaseTarget,
+    keys = KEYS
+  ) =>
+    downloadVerified({
+      fetch: served.fetch,
+      release,
+      keys,
       dir: join(dir, 'updates'),
       maxBytes: 1024,
       signal: null,
     });
+
+  it('keeps a package whose SHA-256 is the one Switch named and whose signature verifies', async () => {
+    const body = Buffer.from('a package');
+    const served = serving(body);
+    const file = await download(served, releaseOf(body));
     expect(readFileSync(file)).toEqual(body);
     expect(dirname(file)).toBe(join(dir, 'updates'));
+    expect(served.fetched).toEqual([
+      'https://example.invalid/switch-agent-controller-0.31.0.tgz',
+      'https://example.invalid/switch-agent-controller-0.31.0.tgz.sig',
+    ]);
   });
 
   it('deletes a package whose SHA-256 differs', async () => {
     const body = Buffer.from('a package');
     await expect(
-      downloadVerified({
-        fetch: serving(Buffer.from('another package')),
-        release: releaseOf(body),
-        dir: join(dir, 'updates'),
-        maxBytes: 1024,
-        signal: null,
-      })
+      download(serving(Buffer.from('another package')), releaseOf(body))
     ).rejects.toThrow(/not the [0-9a-f]{64} Switch named/);
     expect(readdirSync(join(dir, 'updates'))).toEqual([]);
+  });
+
+  it('deletes a package with no signature', async () => {
+    const body = Buffer.from('a package');
+    await expect(download(serving(body, { signature: null }), releaseOf(body))).rejects.toThrow(
+      /has no signature.*404.*was deleted/
+    );
+    expect(readdirSync(join(dir, 'updates'))).toEqual([]);
+  });
+
+  it('deletes a package signed by a key this controller does not trust', async () => {
+    const body = Buffer.from('a package');
+    const sha256 = createHash('sha256').update(body).digest('hex');
+    const signature = signRelease(testSigningKey('someone-else'), '0.31.0', sha256);
+    await expect(download(serving(body, { signature }), releaseOf(body))).rejects.toThrow(
+      /does not verify.*\(release-test\).*was deleted/
+    );
+    expect(readdirSync(join(dir, 'updates'))).toEqual([]);
+  });
+
+  it('deletes a package whose signature is for another version', async () => {
+    const body = Buffer.from('a package');
+    // Switch names a signed 0.30.0 package as 0.31.0, and gives its true SHA-256.
+    await expect(
+      download(serving(body, { version: '0.30.0' }), releaseOf(body, '0.31.0'))
+    ).rejects.toThrow(/does not verify switch-agent-controller 0.31.0/);
+    expect(readdirSync(join(dir, 'updates'))).toEqual([]);
+  });
+
+  it('deletes a package when Switch and the signature agree on a SHA-256 the bytes do not have', async () => {
+    const body = Buffer.from('a package');
+    const tampered = Buffer.from('a package, tampered');
+    await expect(
+      download(
+        serving(tampered, { signature: signRelease(KEY, '0.31.0', releaseOf(body).sha256) }),
+        releaseOf(body)
+      )
+    ).rejects.toThrow(/not the [0-9a-f]{64} Switch named/);
+    expect(readdirSync(join(dir, 'updates'))).toEqual([]);
+  });
+
+  it('downloads nothing while it trusts no signing key', async () => {
+    const body = Buffer.from('a package');
+    const served = serving(body);
+    await expect(download(served, releaseOf(body), [])).rejects.toThrow(NO_TRUSTED_KEYS);
+    expect(served.fetched).toEqual([]);
   });
 
   it('refuses a package larger than the cap, declared or sent', async () => {
     const body = Buffer.alloc(2048, 1);
     await expect(
-      downloadVerified({
-        fetch: serving(body, { 'content-length': '2048' }),
-        release: releaseOf(body),
-        dir: join(dir, 'updates'),
-        maxBytes: 1024,
-        signal: null,
-      })
+      download(serving(body, { headers: { 'content-length': '2048' } }), releaseOf(body))
     ).rejects.toThrow(/2048 bytes, more than the 1024/);
     await expect(
-      downloadVerified({
-        fetch: streaming([body.subarray(0, 1000), body.subarray(1000)]),
-        release: releaseOf(body),
-        dir: join(dir, 'updates'),
-        maxBytes: 1024,
-        signal: null,
-      })
+      download(serving(streaming([body.subarray(0, 1000), body.subarray(1000)])), releaseOf(body))
     ).rejects.toThrow(/more than the 1024 bytes/);
     expect(readdirSync(join(dir, 'updates'))).toEqual([]);
   });
 
   it('fails loud when the server refuses', async () => {
-    const refusing = (async () => new Response('gone', { status: 404 })) as typeof fetch;
     await expect(
-      downloadVerified({
-        fetch: refusing,
-        release: releaseOf(Buffer.from('x')),
+      download(
+        serving(() => new Response('gone', { status: 404 })),
+        releaseOf(Buffer.from('x'))
+      )
+    ).rejects.toThrow(/404/);
+  });
+});
+
+describe('downloadPackage', () => {
+  it('refuses a URL that is not https, fetching nothing', async () => {
+    const served = serving(Buffer.from('a package'));
+    await expect(
+      downloadPackage({
+        fetch: served.fetch,
+        url: 'http://example.invalid/switch-agent-controller-0.31.0.tgz',
         dir: join(dir, 'updates'),
         maxBytes: 1024,
         signal: null,
       })
-    ).rejects.toThrow(/404/);
+    ).rejects.toThrow(/over https only/);
+    expect(served.fetched).toEqual([]);
+  });
+});
+
+describe('selfUpdateTurnedOff', () => {
+  it('is off by the flag or SWITCH_CONTROLLER_SELF_UPDATE=off, on otherwise', () => {
+    expect(selfUpdateTurnedOff(false, {})).toBe(false);
+    expect(selfUpdateTurnedOff(false, { SWITCH_CONTROLLER_SELF_UPDATE: 'on' })).toBe(false);
+    expect(selfUpdateTurnedOff(false, { SWITCH_CONTROLLER_SELF_UPDATE: '' })).toBe(false);
+    expect(selfUpdateTurnedOff(false, { SWITCH_CONTROLLER_SELF_UPDATE: 'off' })).toBe(true);
+    expect(selfUpdateTurnedOff(false, { SWITCH_CONTROLLER_SELF_UPDATE: ' OFF ' })).toBe(true);
+    expect(selfUpdateTurnedOff(true, {})).toBe(true);
+  });
+
+  it('fails loud on a value it does not know', () => {
+    expect(() => selfUpdateTurnedOff(false, { SWITCH_CONTROLLER_SELF_UPDATE: 'no' })).toThrow(
+      ConfigurationError
+    );
   });
 });
 
@@ -266,6 +374,7 @@ describe.skipIf(process.platform === 'win32')('ReleasesDirInstaller', () => {
       'npm',
       'install',
       '--global',
+      '--ignore-scripts',
       '--prefix',
       join(releases, '0.31.0.partial'),
       join(dir, 'package-0.31.0.tgz'),
@@ -331,7 +440,14 @@ describe('PrefixInstaller', () => {
     expect(npm.calls).toEqual([]);
     await installer.activate('0.31.0', packageFile('0.31.0'));
     expect(npm.calls.map((call) => call.slice(1))).toEqual([
-      ['install', '--global', '--prefix', prefix, join(dir, 'package-0.31.0.tgz')],
+      [
+        'install',
+        '--global',
+        '--ignore-scripts',
+        '--prefix',
+        prefix,
+        join(dir, 'package-0.31.0.tgz'),
+      ],
       [cli, '--version'],
     ]);
   });
@@ -506,6 +622,40 @@ describe('SelfUpdater', () => {
       target: '0.31.0',
       state: 'failed',
       problem: 'This controller runs from a checkout.',
+    });
+  });
+
+  it('with self-update turned off, installs nothing and says so', async () => {
+    const { self, downloads } = updater({ installer: unavailableInstaller(SELF_UPDATE_OFF) });
+    const idle = host();
+    await self.offer(named, idle.lent);
+    expect(downloads).toEqual([]);
+    expect(idle.restarts()).toBe(0);
+    expect(self.status()).toEqual({
+      target: '0.31.0',
+      state: 'failed',
+      problem: expect.stringMatching(
+        /Self-update is turned off .*SWITCH_CONTROLLER_SELF_UPDATE=off/
+      ),
+    });
+  });
+
+  it('reports a release whose signature does not verify as failed, and does not install it', async () => {
+    const { installer, calls } = recordingInstaller();
+    const { self } = updater({
+      installer,
+      download: async () => {
+        throw new Error('The release signature does not verify switch-agent-controller 0.31.0.');
+      },
+    });
+    const idle = host();
+    await self.offer(named, idle.lent);
+    expect(calls).toEqual([]);
+    expect(idle.restarts()).toBe(0);
+    expect(self.status()).toEqual({
+      target: '0.31.0',
+      state: 'failed',
+      problem: 'The release signature does not verify switch-agent-controller 0.31.0.',
     });
   });
 

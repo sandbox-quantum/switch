@@ -31,31 +31,17 @@ class UnknownProvider(ValueError):
 
 
 @dataclass(frozen=True)
-class TerminalStart:
-    """The operator starts a session by running `command` in the agent's
-    directory; `{prompt}` in it stands for the connect prompt."""
-
-    command: str
-
-
-@dataclass(frozen=True)
-class ConsoleStart:
-    """The operator starts a session from Switch Console. `runtime` names the
-    runtime to enable in the agent's advanced settings there and
-    `sign_in_command` the command that signs the CLI in; None when there is
-    nothing to say."""
-
-    runtime: str | None
-    sign_in_command: str | None
-
-
-@dataclass(frozen=True)
 class AgentProvider:
     id: str
     """What a definition, a launch and a provider connection name it by."""
 
     label: str
     """How people see it named."""
+
+    sign_in_command: str
+    """What its owner runs, on the machine an agent runs on, to sign the CLI
+    in: Switch Console's `loginCommand` for the provider, which a test holds
+    this to."""
 
     known_agent_type: str = ""
     """The known-agent spec its agents register through, stored on each agent
@@ -71,12 +57,6 @@ class AgentProvider:
     tools: tuple[ToolSpec, ...] = ()
     """The built-in tools its agents register."""
 
-    session_start: TerminalStart | ConsoleStart = ConsoleStart(
-        runtime=None, sign_in_command=None
-    )
-    """How the operator starts a session when the agent is addressed with none
-    running."""
-
     def __post_init__(self) -> None:
         if not self.known_agent_type:
             object.__setattr__(self, "known_agent_type", self.id)
@@ -85,11 +65,10 @@ class AgentProvider:
 
 
 AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
-    # Claude Code's known agent (`ClaudeCodeKnownAgent`) builds its own launch
-    # command, so `session_start` is not read for it.
     AgentProvider(
         id="claude",
         label="Claude Code",
+        sign_in_command="claude auth login",
         known_agent_type="claude-code",
         advanced_fields=CLAUDE_FIELDS,
         tools=(
@@ -112,6 +91,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     AgentProvider(
         id="codex",
         label="Codex",
+        sign_in_command="codex login",
         connector_type="Codex CLI",
         advanced_fields=CODEX_FIELDS,
         tools=(
@@ -119,11 +99,11 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="ApplyPatch", description="Applies patches to files"),
             ToolSpec(name="Read", description="Reads file contents"),
         ),
-        session_start=TerminalStart(command='codex "{prompt}"'),
     ),
     AgentProvider(
         id="opencode",
         label="OpenCode",
+        sign_in_command="opencode auth login",
         connector_type="OpenCode CLI",
         advanced_fields=OPENCODE_FIELDS,
         tools=(
@@ -137,13 +117,11 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="WebFetch", description="Fetches web pages"),
             ToolSpec(name="Task", description="Spawns a sub-agent"),
         ),
-        # OpenCode reads its first positional argument as the project
-        # directory, so the prompt has to go through `--prompt`.
-        session_start=TerminalStart(command='opencode --prompt "{prompt}"'),
     ),
     AgentProvider(
         id="antigravity",
         label="Antigravity",
+        sign_in_command="antigravity-acp --login",
         connector_type="Antigravity CLI",
         tools=(
             ToolSpec(name="run_command", description="Executes shell commands"),
@@ -162,11 +140,11 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="call_mcp_tool", description="Calls a tool on an MCP server"),
             ToolSpec(name="invoke_subagent", description="Delegates to a subagent"),
         ),
-        session_start=ConsoleStart(runtime="Antigravity CLI", sign_in_command="agy"),
     ),
     AgentProvider(
         id="cursor",
         label="Cursor CLI",
+        sign_in_command="agent login",
         tools=(
             ToolSpec(name="shell", description="Executes shell commands"),
             ToolSpec(name="read_file", description="Reads file contents"),
@@ -175,7 +153,6 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="grep", description="Searches file contents"),
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
-        session_start=ConsoleStart(runtime="Cursor CLI ACP", sign_in_command="agent"),
     ),
 )
 

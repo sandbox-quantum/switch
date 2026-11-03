@@ -1,3 +1,4 @@
+import { managedAgentLocator } from '@main/core/agent-migration/managed-agent-location';
 import { appService } from '@main/core/app/service';
 import { backfillAgentIcons } from '@main/core/switch-servers/backfill-agent-icons';
 import { withResolvedHomeUrls } from '@main/core/switch-servers/bridge-home-url';
@@ -35,8 +36,11 @@ import {
   beginMessagingAppInstall,
   fetchBridgeTypes,
   fetchConnectedChats,
+  fetchManagedAgent,
   fetchMessagingApps,
   fetchMyIdentities,
+  fetchMyPendingIdentities,
+  fetchUnconfirmedLinks,
   fetchRoomAgentIds,
   fetchRoomDetail,
   fetchRoomGroups,
@@ -73,11 +77,15 @@ import {
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
+  syncRoomName,
   updateRoom,
   updateTemplate,
 } from '@main/core/switch-servers/gateway-client';
 import {
+  cancelLinkRequestOnServer,
   claimIdentityOnServer,
+  issueLinkCodeOnServer,
+  requireLinkConfirmationOnServer,
   searchDirectoryOnServer,
 } from '@main/core/switch-servers/identities';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
@@ -89,17 +97,25 @@ import {
 } from '@main/core/switch-servers/service-browser-flow';
 import { saveTeamsPackage } from '@main/core/switch-servers/teams-package';
 import { updateBridgeOnServer } from '@main/core/switch-servers/update-bridge';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
   TelemetryBridgeFailure,
   TelemetryBridgePlatform,
+  TelemetryIdentityClaimOutcome,
   TelemetryOutcome,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
+  TelemetryRoomCreateSource,
   TelemetryServerKind,
 } from '@main/core/telemetry/events';
-import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
-import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import {
+  entryPointOf,
+  identityLinkKindOf,
+  roomAgentsDirectionOf,
+} from '@main/core/telemetry/narrow';
+import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
+import { log } from '@main/lib/logger';
 import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
@@ -113,6 +129,7 @@ import type {
   AgentIconBackfill,
   AgentVerifyResult,
   BridgeDirectorySearchResult,
+  CancelLinkRequestResult,
   ChatClaim,
   ClaimIdentityParams,
   ConnectedChat,
@@ -123,8 +140,12 @@ import type {
   CreateRoomResult,
   DeleteBridgeParams,
   DeleteBridgeResult,
+  IssueLinkCodeResult,
   LinkedIdentity,
   MessagingApps,
+  PendingIdentity,
+  RequireLinkConfirmationResult,
+  UnconfirmedLink,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -140,8 +161,10 @@ import type {
   TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
+  SyncRoomNameParams,
   UpdateRoomParams,
 } from '@shared/core/switch-servers/switch-servers';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
@@ -155,6 +178,7 @@ import {
 import { listServersWithoutMembership } from './reconcile-workspaces';
 import {
   withReachableWorkspaceSession,
+  withWorkspaceIfSelected,
   withWorkspaceSession,
   workspaceServer,
 } from './workspace-session';
@@ -236,13 +260,14 @@ function bridgePlatformOnServer(
  * Report once the platform is known, without anyone waiting for it.
  *
  * The event arrives a moment after the action rather than with it, which costs
- * nothing: it carries its own timestamp, taken when the work happened.
+ * nothing: it carries its own timestamp, taken here, when the work happened.
  */
 function reportWithBridge(
   platform: Promise<TelemetryBridgePlatform>,
-  emit: (platform: TelemetryBridgePlatform) => void
+  emit: (platform: TelemetryBridgePlatform, at: number) => void
 ): void {
-  void platform.then(emit).catch(() => {});
+  const at = Date.now();
+  void platform.then((known) => emit(known, at)).catch(() => {});
 }
 
 /** The same, for a room create whose other properties are already known. */
@@ -254,15 +279,163 @@ function reportRoomCreated(
     agent_count: number;
     has_instructions: boolean;
     failure_reason: TelemetryRoomCreateFailure;
+    source: TelemetryRoomCreateSource;
   }
 ): void {
-  reportWithBridge(bridgePlatformOf(workspaceId, bridgeId), (bridge_platform) =>
-    trackEvent('room_created', {
-      ...rest,
-      bridge_platform,
-      outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
-    })
+  reportWithBridge(bridgePlatformOf(workspaceId, bridgeId), (bridge_platform, at) =>
+    trackEventAt(
+      'room_created',
+      {
+        ...rest,
+        bridge_platform,
+        outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
+      },
+      at
+    )
   );
+}
+
+/** The rooms a template run made: one, a group's, or none for a run with no room half. */
+function templateRoomIds(room: ProvisionFromTemplateResult | null): string[] {
+  if (room === null) return [];
+  return room.kind === 'room' ? [room.roomId] : room.rooms.map((r) => r.roomId);
+}
+
+type CreatedTemplateAgent = Extract<
+  TemplateRunResult,
+  { kind: 'created' }
+>['createdAgents'][number];
+
+/** What a template made, as the reports below need it. */
+type TemplateMade = {
+  room: ProvisionFromTemplateResult | null;
+  /** Null for a template that makes rooms only. */
+  agents: {
+    created: CreatedTemplateAgent[];
+    /** Each agent's provider by slot, where the caller declared it. */
+    declaredProviders: ReadonlyMap<string, string>;
+    /** Where the run was started. */
+    entryPoint: UiEntryPoint;
+  } | null;
+};
+
+function logUnreported(what: string, error: unknown): void {
+  log.warn(`${what} a template made could not be read back to report it`, {
+    event: 'telemetry_template_made',
+    errorCode: error instanceof GatewayError ? error.kind : 'error',
+    error: String(error),
+  });
+}
+
+/**
+ * Report each room and agent a template made. What the run's result does not
+ * say is read back, only when an event could be sent and only while the run's
+ * workspace is still selected; what cannot be read is logged, not guessed.
+ */
+async function reportTemplateMade(
+  workspaceId: string,
+  server: SwitchServer,
+  made: TemplateMade,
+  at: number
+): Promise<void> {
+  const roomIds = templateRoomIds(made.room);
+  const agents = made.agents;
+  if (roomIds.length === 0 && (agents === null || agents.created.length === 0)) return;
+  if (!(await telemetryService.canSend())) return;
+
+  const read = await withWorkspaceIfSelected(workspaceId, (selected) =>
+    Promise.all([
+      Promise.allSettled(roomIds.map((roomId) => fetchRoomDetail(selected, roomId))),
+      Promise.allSettled(
+        (agents?.created ?? []).map(async (agent) => {
+          const declared = agents?.declaredProviders.get(agent.slot);
+          if (declared !== undefined) return declared;
+          const managed = await fetchManagedAgent(selected, agent.agentId);
+          if (!managed) throw new Error('The agent the run made is not a managed agent.');
+          return managed.provider;
+        })
+      ),
+    ])
+  );
+  if (read === null) {
+    log.warn('What a template made was not reported: its workspace is no longer selected', {
+      event: 'telemetry_template_made',
+      errorCode: 'workspace_not_selected',
+    });
+    return;
+  }
+  const [rooms, providers] = read;
+
+  const serverKind = serverKindOf(server);
+  for (const room of rooms) {
+    if (room.status === 'rejected') {
+      logUnreported('A room', room.reason);
+      continue;
+    }
+    trackEventAt(
+      'room_created',
+      {
+        server_kind: serverKind,
+        bridge_platform: bridgePlatformOfType(room.value.bridgeType),
+        agent_count: room.value.agentCount,
+        has_instructions: (room.value.instructions?.trim().length ?? 0) > 0,
+        outcome: 'success',
+        failure_reason: 'none',
+        source: 'template',
+      },
+      at
+    );
+  }
+
+  if (agents === null || agents.created.length === 0) return;
+  const locate = await managedAgentLocator(server.id);
+  for (const [i, provider] of providers.entries()) {
+    if (provider.status === 'rejected') {
+      logUnreported('An agent', provider.reason);
+      continue;
+    }
+    trackEventAt(
+      'agent_created',
+      {
+        agent_type: agentTypeOf(provider.value),
+        location: locate(agents.created[i].machine.id),
+        outcome: 'success',
+        failure_reason: 'none',
+        entry_point: entryPointOf(agents.entryPoint),
+      },
+      at
+    );
+  }
+}
+
+/** Run a template call, then report what it made (null: nothing) without waiting. */
+async function runTemplateReported<R>(
+  workspaceId: string,
+  run: (server: SwitchServer) => Promise<R>,
+  made: (result: R) => TemplateMade | null
+): Promise<R> {
+  const { result, server } = await withWorkspaceSession(workspaceId, async (leased) => ({
+    result: await run(leased),
+    server: leased,
+  }));
+  const report = made(result);
+  if (report !== null) {
+    void reportTemplateMade(workspaceId, server, report, Date.now()).catch((error: unknown) =>
+      logUnreported('What', error)
+    );
+  }
+  return result;
+}
+
+/** What a run that may create agents made: nothing when it was refused. */
+function madeByRun(agents: {
+  entryPoint: UiEntryPoint;
+  declaredProviders: ReadonlyMap<string, string>;
+}): (result: TemplateRunResult) => TemplateMade | null {
+  return (result) =>
+    result.kind === 'created'
+      ? { room: result.room, agents: { created: result.createdAgents, ...agents } }
+      : null;
 }
 
 /**
@@ -404,11 +577,31 @@ export const workspacesController = createRPCController({
    * connection may create channels. Admin-only, like registering one; see
    * `updateBridgeOnServer` for the recoverable-failure mapping.
    */
-  updateBridge: (params: UpdateBridgeParams): Promise<UpdateBridgeResult> =>
+  updateBridge: (
+    params: Omit<UpdateBridgeParams, 'connectionConfig'>
+  ): Promise<UpdateBridgeResult> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       updateBridgeOnServer(server, {
         bridgeId: params.bridgeId,
         channelCreationEnabled: params.channelCreationEnabled,
+      })
+    ),
+
+  /**
+   * Put new tokens on a connection to the workspace's own bot, after the old
+   * ones were rotated or leaked. The server keeps the rest of the connection's
+   * settings and restarts it with them; its rooms are untouched. Admin-only.
+   * The tokens go to the server and nowhere else.
+   */
+  replaceBridgeTokens: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    tokens: Record<string, string>;
+  }): Promise<UpdateBridgeResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateBridgeOnServer(server, {
+        bridgeId: params.bridgeId,
+        connectionConfig: params.tokens,
       })
     ),
 
@@ -532,6 +725,7 @@ export const workspacesController = createRPCController({
         agent_count: params.agentIds.length,
         has_instructions: (params.instructions?.trim().length ?? 0) > 0,
         failure_reason,
+        source: 'dialog',
       });
 
     const unreachable = hostUnreachable(known);
@@ -566,8 +760,10 @@ export const workspacesController = createRPCController({
     inputs: Record<string, string | number | boolean>,
     templateName: string
   ): Promise<ProvisionFromTemplateResult> =>
-    withWorkspaceSession(workspaceId, (server) =>
-      createRoomFromTemplate(server, yamlText, inputs, templateName)
+    runTemplateReported(
+      workspaceId,
+      (server) => createRoomFromTemplate(server, yamlText, inputs, templateName),
+      (room) => ({ room, agents: null })
     ),
 
   /**
@@ -582,9 +778,19 @@ export const workspacesController = createRPCController({
       yamlText: string | null;
       inputs: Record<string, string | number | boolean>;
       templateName: string;
+      /** Where the run was started, for the agents it makes. */
+      entryPoint: UiEntryPoint;
     }
-  ): Promise<TemplateRunResult> =>
-    withWorkspaceSession(workspaceId, (server) => runTemplateWithAgents(server, body)),
+  ): Promise<TemplateRunResult> => {
+    const { entryPoint, ...run } = body;
+    // The caller named each agent's provider, so none has to be read back.
+    const declaredProviders = new Map(run.agents.map((agent) => [agent.slot, agent.provider]));
+    return runTemplateReported(
+      workspaceId,
+      (server) => runTemplateWithAgents(server, run),
+      madeByRun({ entryPoint, declaredProviders })
+    );
+  },
 
   /** Run a template from its document: the server works the agents and rooms out of it. */
   runTemplateDocument: (
@@ -594,9 +800,20 @@ export const workspacesController = createRPCController({
       inputs: Record<string, string | number | boolean>;
       filled: Record<string, string>;
       templateName: string;
+      /** The template the document is, when it is one; see `runTemplateDocument`. */
+      templateId: string | null;
+      /** Where the run was started, for the agents it makes. */
+      entryPoint: UiEntryPoint;
     }
-  ): Promise<TemplateRunResult> =>
-    withWorkspaceSession(workspaceId, (server) => runTemplateDocument(server, body)),
+  ): Promise<TemplateRunResult> => {
+    const { entryPoint, ...run } = body;
+    // The server picks providers from the document's conditions, so they are read back.
+    return runTemplateReported(
+      workspaceId,
+      (server) => runTemplateDocument(server, run),
+      madeByRun({ entryPoint, declaredProviders: new Map() })
+    );
+  },
 
   /** The runs the user may see, or null when the server does not record runs. */
   listTemplateRuns: (params: { workspaceId: string }): Promise<TemplateRun[] | null> =>
@@ -688,9 +905,16 @@ export const workspacesController = createRPCController({
    * write access to the room needs the gateway's refusal, not a saved-looking
    * field holding a value the server never took.
    */
+  /** Name a room after its linked channel. Refusals propagate in the gateway's own words. */
+  syncRoomName: (params: SyncRoomNameParams): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      syncRoomName(server, params.roomId)
+    ),
+
   updateRoom: (params: UpdateRoomParams): Promise<RemoteRoomDetail> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       updateRoom(server, params.roomId, {
+        name: params.name,
         description: params.description,
         instructions: params.instructions,
       })
@@ -785,7 +1009,9 @@ export const workspacesController = createRPCController({
       searchDirectoryOnServer(server, params.bridgeId, params.query)
     ),
 
-  /** Claim a messaging-app account as the signed-in Switch user's own. */
+  /** Claim a messaging-app account as the signed-in Switch user's own. A
+   * current server holds the link pending until a code is posted from the
+   * account, and the result carries that code. */
   claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> => {
     const result = await withReachableWorkspaceSession(params.workspaceId, (server) =>
       claimIdentityOnServer(server, {
@@ -794,23 +1020,107 @@ export const workspacesController = createRPCController({
         username: params.username,
       })
     );
+    const outcome: TelemetryIdentityClaimOutcome =
+      result.kind === 'claimed' ? 'success' : result.kind === 'pending' ? 'pending' : 'failure';
     // Reported after the lease, not inside it: the platform lookup takes a lease
     // of its own, and the bridge is still there to read afterwards.
-    reportWithBridge(bridgePlatformOf(params.workspaceId, params.bridgeId), (bridge_platform) =>
-      trackEvent('bridge_identity_claimed', {
-        bridge_platform,
-        outcome: result.kind === 'claimed' ? 'success' : 'failure',
-      })
+    reportWithBridge(bridgePlatformOf(params.workspaceId, params.bridgeId), (bridge_platform, at) =>
+      trackEventAt('bridge_identity_claimed', { bridge_platform, outcome }, at)
     );
     return result;
   },
 
-  /** Give up a claim on a messaging-app account, leaving any other user's claim
-   * on it in place. `userId` is whose claim to drop — null for the signed-in
-   * user, which is the only one this app offers. Failures propagate: unclaiming
-   * is a deliberate act, and reporting success for one that did not happen
-   * would leave the user thinking an agent is no longer reachable by them when
-   * it still is. */
+  /** A fresh code confirming the signed-in user's link to a messaging-app
+   * account — one still pending, or one made before links had to be confirmed.
+   * Replaces any code issued before. */
+  issueIdentityLinkCode: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    identityId: string;
+  }): Promise<IssueLinkCodeResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      issueLinkCodeOnServer(server, params.bridgeId, params.identityId)
+    ),
+
+  /**
+   * Report that a link the confirmation screen was waiting on is confirmed.
+   *
+   * The code is posted in the chat app, so the screen watching for it is the
+   * only thing that sees this happen; it says so, and `kind` is its own name for
+   * the link. The server is asked before anything is reported, so a screen that
+   * is wrong reports nothing — and nothing at all is asked while sharing is off.
+   * Never fails: a report that cannot be made is logged and dropped.
+   */
+  reportIdentityConfirmed: async (params: {
+    workspaceId: string;
+    bridgeId: string;
+    identityId: string;
+    kind: string;
+  }): Promise<void> => {
+    const at = Date.now();
+    try {
+      if (!(await telemetryService.canSend())) return;
+      const identities = await withWorkspaceSession(params.workspaceId, fetchMyIdentities);
+      const confirmed = identities.find(
+        (i) => i.id === params.identityId && i.bridgeId === params.bridgeId && i.verified
+      );
+      if (confirmed === undefined) return;
+      trackEventAt(
+        'bridge_identity_confirmed',
+        {
+          bridge_platform: bridgePlatformOfType(confirmed.bridgeType),
+          link_kind: identityLinkKindOf(params.kind),
+        },
+        at
+      );
+    } catch (error) {
+      log.warn('A confirmed link could not be checked to report it', {
+        event: 'telemetry_identity_confirmed',
+        errorCode: error instanceof GatewayError ? error.kind : 'error',
+        error: String(error),
+      });
+    }
+  },
+
+  /** The links on a messaging app made before links had to be confirmed, which
+   * still count. Admin only; empty on a server that predates them. */
+  listUnconfirmedLinks: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<UnconfirmedLink[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchUnconfirmedLinks(server, params.bridgeId)
+    ),
+
+  /** Stop trusting a messaging app's older links until each owner confirms
+   * theirs with a code. Admin only. */
+  requireLinkConfirmation: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    /** The links the admin was shown; only these move. */
+    links: Pick<UnconfirmedLink, 'id' | 'userId'>[];
+  }): Promise<RequireLinkConfirmationResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      requireLinkConfirmationOnServer(server, params.bridgeId, params.links)
+    ),
+
+  /** Withdraw the signed-in user's confirmation waiting on a code. A link that
+   * already works stays; unlinking is {@link releaseBridgeIdentity}. */
+  cancelIdentityLinkRequest: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    identityId: string;
+  }): Promise<CancelLinkRequestResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      cancelLinkRequestOnServer(server, params.bridgeId, params.identityId)
+    ),
+
+  /** Give up a claim on a messaging-app account, along with any confirmation
+   * waiting on it, leaving any other user's claim on it in place. `userId` is
+   * whose claim to drop — null for the signed-in user, which is the only one
+   * this app offers. Failures propagate: unclaiming is a deliberate act, and
+   * reporting success for one that did not happen would leave the user thinking
+   * an agent is no longer reachable by them when it still is. */
   releaseBridgeIdentity: (params: {
     workspaceId: string;
     bridgeId: string;
@@ -821,9 +1131,16 @@ export const workspacesController = createRPCController({
       releaseBridgeIdentity(server, params.bridgeId, params.identityId, params.userId)
     ),
 
-  /** The messaging accounts the signed-in user has claimed in this workspace. */
+  /** The messaging accounts linked to the signed-in user in this workspace —
+   * only links that count; see {@link listMyPendingIdentities} for the rest. */
   listMyIdentities: (workspaceId: string): Promise<LinkedIdentity[]> =>
     withWorkspaceSession(workspaceId, fetchMyIdentities),
+
+  /** The messaging accounts waiting for a code to confirm a link to the
+   * signed-in user in this workspace. Empty on a server that predates
+   * confirming links. */
+  listMyPendingIdentities: (workspaceId: string): Promise<PendingIdentity[]> =>
+    withWorkspaceSession(workspaceId, fetchMyPendingIdentities),
 
   /** Whether the signed-in user owns an agent here that is set to answer its
    * owner, which is what makes an unlinked messaging account worth warning

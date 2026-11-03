@@ -2,12 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   applyContextAffinity,
   indexedSearchLabel,
+  instantMatchLabel,
+  matchDirectChats,
   matchHosts,
+  matchManagedAgents,
   matchRooms,
   matchServers,
   paletteSearchPlaceholder,
   sectionResults,
+  withoutLegacy,
 } from '@renderer/features/command-palette/search-utils';
+import type { ChatSummary } from '@shared/core/chats/chats';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type { SearchItem } from '@shared/core/search';
 import type { RemoteRoomSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
@@ -266,6 +272,120 @@ describe('palette copy', () => {
 
   it('still names the kinds that stay searchable', () => {
     expect(paletteSearchPlaceholder(false)).toBe('Search agents, rooms, servers, actions…');
-    expect(indexedSearchLabel(false)).toBe('agents and commands');
+    expect(indexedSearchLabel(false)).toBe('commands');
+  });
+
+  it('names managed agents among the kinds matched from the first character', () => {
+    expect(instantMatchLabel(false)).toBe('Agents, rooms, servers and hosts');
+    expect(instantMatchLabel(true)).toBe('Rooms, servers and hosts');
+  });
+});
+
+function managedAgent(
+  over: Pick<ManagedAgentView, 'agentId' | 'name'> & Partial<ManagedAgentView>
+): ManagedAgentView {
+  return {
+    serverId: 'server-1',
+    workspaceId: 'workspace-1',
+    displayName: null,
+    iconUrl: null,
+    description: '',
+    machine: null,
+    desiredState: 'running',
+    revision: 1,
+    definition: {
+      provider: 'claude',
+      model: null,
+      advancedConfig: {},
+      instructions: '',
+      autoMode: true,
+      autoApprove: false,
+      directory: null,
+      isolation: 'shared',
+    },
+    status: null,
+    ...over,
+  };
+}
+
+describe('matchManagedAgents', () => {
+  const agents = [
+    managedAgent({ agentId: 'a-1', name: 'notes-helper', displayName: 'Notes Helper' }),
+    managedAgent({ agentId: 'a-2', name: 'switch-buddy-ada' }),
+    managedAgent({ agentId: 'a-3', name: 'release-notes' }),
+  ];
+
+  it('matches nothing for an empty query', () => {
+    expect(matchManagedAgents(agents, '  ')).toEqual([]);
+  });
+
+  it('matches the shown name and the Switch name, prefix matches first', () => {
+    expect(matchManagedAgents(agents, 'notes').map((agent) => agent.agentId)).toEqual([
+      'a-1',
+      'a-3',
+    ]);
+    expect(matchManagedAgents(agents, 'notes-help').map((agent) => agent.agentId)).toEqual(['a-1']);
+  });
+
+  it('matches queries shorter than the index needs', () => {
+    expect(matchManagedAgents(agents, 'sw').map((agent) => agent.agentId)).toEqual(['a-2']);
+  });
+});
+
+describe('matchDirectChats', () => {
+  const agent = {
+    id: 'a1',
+    name: 'smiley',
+    displayName: 'Smiley',
+    iconUrl: null,
+    provider: null,
+    alias: null,
+    ownerName: null,
+    ownedByViewer: true,
+  };
+  const chat = (roomId: string, extra: Partial<ChatSummary> = {}): ChatSummary => ({
+    roomId,
+    name: 'Release notes',
+    channelType: 'direct',
+    bridgeType: null,
+    channelName: null,
+    agents: [agent],
+    canManage: true,
+    ownsAgent: true,
+    memberUserIds: [],
+    memberCount: 1,
+    unreadCount: 0,
+    lastMessage: null,
+    ...extra,
+  });
+
+  it('finds 1:1 chats by their name or their agent’s, and no groups or bridged rooms', () => {
+    const chats = [
+      chat('d1'),
+      chat('g1', { channelType: 'channel_private' }),
+      chat('b1', { bridgeType: 'slack' }),
+    ];
+    expect(matchDirectChats(chats, 'release').map((each) => each.id)).toEqual(['d1']);
+    expect(matchDirectChats(chats, 'smil').map((each) => each.id)).toEqual(['d1']);
+    expect(matchDirectChats(chats, '')).toEqual([]);
+  });
+});
+
+describe('withoutLegacy', () => {
+  const of = (kind: SearchItem['kind']) =>
+    ({
+      kind,
+      id: kind,
+      locationId: null,
+      sessionId: null,
+      title: kind,
+      subtitle: '',
+      score: 0,
+    }) as SearchItem;
+
+  it('drops legacy agents and sessions when they are left out, and keeps them otherwise', () => {
+    const items = [of('session'), of('agent'), of('command')];
+    expect(withoutLegacy(items, false).map((each) => each.kind)).toEqual(['command']);
+    expect(withoutLegacy(items, true)).toEqual(items);
   });
 });

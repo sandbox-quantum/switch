@@ -293,7 +293,7 @@ class BearerAuthMiddleware:
             ):
                 await _controller_refusal(
                     MANAGED_BY_CONTROLLER,
-                    f"Agent {agent.id} is run by an agents controller, which acts "
+                    f"Agent {agent.id} is run by an agent controller, which acts "
                     "for it; its own credential is not accepted while it is.",
                     409,
                 )(scope, receive, send)
@@ -438,18 +438,9 @@ class BearerAuthMiddleware:
             )(scope, receive, send)
             return
 
-        auth_cache = controller_auth.auth_cache
-        agent = auth_cache.agent(principal.tenant_id, agent_id)
+        agent = controller_auth.auth_cache.agent(principal.tenant_id, agent_id)
         if agent is None:
-            generation = auth_cache.generation
-            async with tenant_session(
-                self._session_factory, principal.tenant_id
-            ) as session:
-                agent = await self._agent_store.get(session, agent_id)
-                if agent is not None:
-                    session.expunge(agent)
-            if agent is not None:
-                auth_cache.put_agent(principal.tenant_id, agent, generation)
+            agent = await self._read_agents_of(controller_auth, principal, agent_id)
         if agent is None:
             await _controller_refusal(
                 NOT_ASSIGNED, f"Agent {agent_id} does not exist.", 403
@@ -464,6 +455,30 @@ class BearerAuthMiddleware:
             log_context(agent_id=agent.id, tenant_id=principal.tenant_id),
         ):
             await self.app(scope, receive, send)
+
+    async def _read_agents_of(
+        self,
+        controller_auth: ControllerAuthenticator,
+        principal: ControllerPrincipal,
+        agent_id: str,
+    ) -> Agent | None:
+        """The row of the agent a controller acts as, read together with the
+        rows of every other agent bound to the controller, which the cache
+        keeps. A controller relays all of its agents' requests, and they are
+        spread over every process, so one read per agent would miss on most
+        of them."""
+        auth_cache = controller_auth.auth_cache
+        wanted = controller_auth.presence.agents_of(principal.controller_id)
+        wanted.add(agent_id)
+        ticket = auth_cache.ticket()
+        async with tenant_session(
+            self._session_factory, principal.tenant_id
+        ) as session:
+            agents = await self._agent_store.get_many(session, wanted)
+            for found in agents:
+                session.expunge(found)
+        auth_cache.put_agents(principal.tenant_id, agents, ticket)
+        return next((found for found in agents if found.id == agent_id), None)
 
     async def _resolve_api_key(self, token: str) -> tuple[ApiKey | None, Agent | None]:
         """Look up the token in api_keys once; return (api_key_row, agent_or_None).

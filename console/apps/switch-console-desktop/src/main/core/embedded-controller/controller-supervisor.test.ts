@@ -125,7 +125,7 @@ describe('ControllerSupervisor', () => {
     expect(phases.at(-1)).toEqual({
       kind: 'error',
       message:
-        'The agents controller cannot run as it is set up: /data already belongs to controller c1 on https://switch.example.com, not c2.',
+        'The agent controller cannot run as it is set up: /data already belongs to controller c1 on https://switch.example.com, not c2.',
     });
     expect(finals).toEqual([]);
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -148,7 +148,7 @@ describe('ControllerSupervisor', () => {
     expect(phases.at(-1)).toEqual({
       kind: 'error',
       message:
-        'The agents controller cannot run as it is set up: --controller-id and --server adopt an identity together; pass both.',
+        'The agent controller cannot run as it is set up: --controller-id and --server adopt an identity together; pass both.',
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(calls).toHaveLength(1);
@@ -250,7 +250,7 @@ describe('ControllerSupervisor', () => {
     calls[0]!.child.emit('error', new Error('spawn ENOENT'));
     expect(phases.at(-1)).toEqual({
       kind: 'error',
-      message: 'The agents controller could not be started: spawn ENOENT',
+      message: 'The agent controller could not be started: spawn ENOENT',
     });
   });
 });

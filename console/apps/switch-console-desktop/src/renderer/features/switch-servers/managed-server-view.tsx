@@ -20,6 +20,7 @@ import {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { explainStartFailure } from '@shared/core/managed-switch-server/start-failure';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { DOCKER_RECHECK_MS, recheckDocker } from './docker-recheck';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
 import {
@@ -74,6 +75,7 @@ const LOCAL_WHAT: Record<LocalActivityEntry['action'], (detail: string | null) =
   started: () => 'Started',
   stopped: () => 'Stopped',
   'start-failed': () => 'Start failed',
+  crashed: () => 'Stopped unexpectedly',
   updated: (detail) => (detail ? `Updated to ${detail}` : 'Updated'),
   reset: () => 'Reset',
 };
@@ -158,6 +160,14 @@ const ManagedServerPage = observer(function ManagedServerPage({
       void localServerStore.checkDocker();
     }
   }, [sshHost]);
+
+  // The Mattermost switch waits on Docker, which people often start only after
+  // opening this page to find the switch greyed out.
+  const localDockerDown = sshHost === null && localServerStore.docker?.available === false;
+  useEffect(() => {
+    if (!localDockerDown) return;
+    return recheckDocker(() => localServerStore.checkDocker(), window, DOCKER_RECHECK_MS);
+  }, [localDockerDown]);
 
   const state = managedServerState(server) ?? null;
   const status = sshHost ? remoteServerStore.statusFor(sshHost) : localServerStore.status;
@@ -495,6 +505,16 @@ const Actions = observer(function Actions({
     case 'downgrade':
       // Nothing safe to press: its database has already moved past this app.
       return logButton ? <div className="flex flex-wrap gap-2">{logButton}</div> : null;
+    case 'stopped-unexpectedly':
+      return (
+        <div className="flex flex-wrap gap-2">
+          <PrimaryButton onClick={() => startManagedServer(server)}>
+            <Power />
+            Restart
+          </PrimaryButton>
+          {logButton}
+        </div>
+      );
     case 'stop-failed':
       return (
         <div className="flex flex-wrap gap-2">
@@ -670,6 +690,13 @@ const Messages = observer(function Messages({
             local={sshHost === null}
             now={now}
           />
+        );
+      case 'stopped-unexpectedly':
+        return (
+          <MessageBox tone="failed" title="The server stopped unexpectedly">
+            {managedServerError(server) && <Mono>{managedServerError(server)}</Mono>}
+            <p>Restart it to bring agents and rooms back. The server's data is kept.</p>
+          </MessageBox>
         );
       case 'stop-failed':
         return (

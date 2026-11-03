@@ -8,9 +8,15 @@ request it must refuse, and reads which refusal it chose.
   slug; a code exchange with a made-up code then tells a wrong client secret
   (`incorrect_client_credentials`) from a right one (`bad_verification_code`).
 - **OAuth client**: a code exchange at the token endpoint with a made-up
-  code, sent to Switch's own redirect URI. `invalid_grant` means the client
-  id and secret are right; `invalid_client` that they are not; and
-  `redirect_uri_mismatch` that the redirect URI is not registered.
+  code and PKCE verifier, the secret sent as a sign-in sends it, to a
+  redirect URI the client registers: Core's own callback, or Switch
+  Console's first loopback one for a client that has no other. `invalid_grant` means the client id and
+  secret are right; `invalid_client` that they are not; and
+  `redirect_uri_mismatch`, from a vendor that compares it first, that the
+  redirect URI is not registered. What the vendor does not show this way
+  (Google and Airtable compare the redirect URI only with a real code, and
+  Airtable says nothing of whether the integration is published) is the
+  entry's `unchecked`, said with the result.
 
 What a check cannot prove (an App's permissions, a Google app's user type,
 which APIs are switched on) is left to the vendor's own pages.
@@ -28,6 +34,7 @@ from switch_core.connections.adapters.oauth import (
     OAuthAdapter,
     OAuthClientCredentials,
     StaticClient,
+    client_fields,
 )
 from switch_core.connections.app_credentials import AppSpec, AppValues
 from switch_core.connections.loader import ConnectionDefinition
@@ -37,6 +44,8 @@ GITHUB_APP_URL = "https://api.github.com/app"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 # Never a real code: the vendor is asked to refuse it.
 PLACEHOLDER_CODE = "switch-connector-app-check"
+# Airtable asks for a verifier before it looks at the client.
+PLACEHOLDER_VERIFIER = "switch-connector-app-check-" + "0" * 32
 
 Field = Literal["client_id", "client_secret", "private_key"]
 
@@ -52,6 +61,8 @@ class Check:
     message: str
     # The value the operator should look at again when the check fails.
     field: Field | None
+    # What the check could not see, for the operator to confirm themselves.
+    note: str | None
 
 
 @dataclass(frozen=True)
@@ -97,7 +108,8 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
         )
     except ValueError as unusable:
         return CheckResult(
-            [Check("private_key", False, str(unusable), "private_key")], settings={}
+            [Check("private_key", False, str(unusable), "private_key", None)],
+            settings={},
         )
     assertion = signer.assertion()
     app = await _send(
@@ -125,6 +137,7 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
                     "Copy the Client ID again, or generate a private key in the "
                     "App's settings.",
                     "private_key",
+                    None,
                 )
             ],
             settings={},
@@ -138,6 +151,7 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
                     "This private key belongs to a GitHub App with another client "
                     "ID. Copy the Client ID from that App's settings.",
                     "client_id",
+                    None,
                 )
             ],
             settings={},
@@ -147,6 +161,7 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
             "private_key",
             True,
             f"GitHub accepts this private key for the App {slug}.",
+            None,
             None,
         )
     ]
@@ -167,7 +182,9 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
     error = _body(exchanged).get("error")
     if error == "bad_verification_code":
         checks.append(
-            Check("client_secret", True, "GitHub accepts this client secret.", None)
+            Check(
+                "client_secret", True, "GitHub accepts this client secret.", None, None
+            )
         )
     elif error == "incorrect_client_credentials":
         checks.append(
@@ -177,6 +194,7 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
                 "GitHub doesn't accept this client secret for this client ID. "
                 "Generate a new one in the App's settings.",
                 "client_secret",
+                None,
             )
         )
     else:
@@ -187,6 +205,7 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
                 "GitHub gave an answer Switch doesn't recognise when checking the "
                 f"client secret ({error or f'HTTP {exchanged.status_code}'}).",
                 "client_secret",
+                None,
             )
         )
     return CheckResult(checks, settings={"slug": slug})
@@ -199,13 +218,16 @@ async def check_oauth_client(
     redirect_uri: str,
 ) -> CheckResult:
     name = definition.name
-    client = OAuthClientCredentials(values.client_id, values.secrets["client_secret"])
+    client = OAuthClientCredentials(
+        values.client_id, values.secrets["client_secret"], authentication=None
+    )
     try:
         endpoints = await OAuthAdapter(
             definition, StaticClient(client), http
         ).endpoints()
     except ServiceAdapterError as refused:
         raise VendorUnreachableError(str(refused)) from None
+    identifying, headers = client_fields(endpoints, client)
     response = await _send(
         http,
         name,
@@ -215,15 +237,17 @@ async def check_oauth_client(
             data={
                 "grant_type": "authorization_code",
                 "code": PLACEHOLDER_CODE,
+                "code_verifier": PLACEHOLDER_VERIFIER,
                 "redirect_uri": redirect_uri,
-                "client_id": client.client_id,
-                "client_secret": values.secrets["client_secret"],
+                **identifying,
             },
-            headers={"Accept": "application/json"},
+            headers={"Accept": "application/json", **headers},
         ),
     )
     error = _body(response).get("error")
     if error == "invalid_grant":
+        oauth = definition.auth.oauth
+        assert oauth is not None
         return CheckResult(
             [
                 Check(
@@ -231,6 +255,7 @@ async def check_oauth_client(
                     True,
                     f"{name} accepts this client ID and secret.",
                     None,
+                    oauth.unchecked,
                 )
             ],
             settings={},
@@ -243,6 +268,7 @@ async def check_oauth_client(
                     False,
                     f"{name} doesn't have Switch's redirect URI for this client. "
                     f"Add {redirect_uri} to its authorized redirect URIs.",
+                    None,
                     None,
                 )
             ],
@@ -257,6 +283,7 @@ async def check_oauth_client(
                     f"{name} doesn't recognise this client ID and secret together. "
                     "Copy both again from where you created the client.",
                     "client_secret",
+                    None,
                 )
             ],
             settings={},
@@ -268,6 +295,7 @@ async def check_oauth_client(
                 False,
                 f"{name} gave an answer Switch doesn't recognise "
                 f"({error or f'HTTP {response.status_code}'}).",
+                None,
                 None,
             )
         ],

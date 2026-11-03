@@ -27,7 +27,7 @@ function nodeFloor(pkg: string): [number, number] {
 }
 
 describe('the Node a remote host needs', () => {
-  it('is at least what the agent runtime and the agents controller run on', () => {
+  it('is at least what the agent runtime and the agent controller run on', () => {
     const [major, minor] = (descriptor('node').minVersion ?? '').split('.').map(Number);
     for (const pkg of ['switch-agent-runtime', 'agent-controller']) {
       const [needMajor, needMinor] = nodeFloor(pkg);

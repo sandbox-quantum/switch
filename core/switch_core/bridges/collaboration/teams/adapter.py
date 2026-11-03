@@ -2978,6 +2978,17 @@ class TeamsAdapter(PlatformAdapter):
             "`/invite-agent @agent-name` — the same thing, if you prefer the slash form"
         )
 
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Teams hands the bot a channel message only when it is mentioned, and
+        # a bare command name counts once it is.
+        return (
+            "From that account, @mention the Switch app in a channel or chat it "
+            f"is in and add `link-account {code}`."
+        )
+
     def is_placeholder_username(self, username: str) -> bool:
         # Every id Teams hands out for a person is one of two shapes: a
         # channel-account id, prefixed with digits and a colon (`29:1AbC…`,
@@ -4226,7 +4237,8 @@ class TeamsAdapter(PlatformAdapter):
         the distributed app the deployment's route has already checked Graph's
         validation tokens and routed the item by the organisation they vouch
         for; what is checked here holds either way — the organisation's own
-        `clientState`, and that the subscription is one this bridge made.
+        `clientState`, and that the subscription is one this bridge made (on
+        a quiet copy, a removal is left for the holder to check).
         """
         # Authenticate origin BEFORE acting on anything — data notifications and
         # lifecycle events alike. clientState is the bring-your-own bridge's only
@@ -4243,7 +4255,20 @@ class TeamsAdapter(PlatformAdapter):
             logger.warning("Rejected Graph notification: clientState mismatch")
             return
         subscription_id = str(item.get("subscriptionId", ""))
-        if identity.shared and not await self._knows_subscription(subscription_id):
+        # A quiet copy relays a removal to the holder without first knowing
+        # the subscription. It adopts none at start, and Graph no longer lists
+        # one it has removed, so reading them again cannot find it either: the
+        # check would refuse every removal that reached this process, and the
+        # holder would leave capture off until its repair loop noticed. The
+        # holder recreates only a subscription it holds, so it decides.
+        relays_removal = (
+            not self._listening and item.get("lifecycleEvent") == "subscriptionRemoved"
+        )
+        if (
+            identity.shared
+            and not relays_removal
+            and not await self._knows_subscription(subscription_id)
+        ):
             logger.warning(
                 "Rejected a Graph notification for subscription %s, which the "
                 "bridge for organisation %s did not make%s",

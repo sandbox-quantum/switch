@@ -92,9 +92,9 @@ export const GHCR_REGISTRY = 'ghcr.io';
 export const LOCAL_SERVER_ADMIN_EMAIL = 'admin@switch.local';
 
 /** Host interface the managed stack's published ports bind to, fed to the
- * compose `${SWITCH_BIND_ADDR}` interpolation. Loopback so the single-user local
- * stack is never exposed to the LAN (the standalone compose defaults to all
- * interfaces for repo users who may want remote access). */
+ * compose `${SWITCH_BIND_ADDR}` interpolation. Loopback, like the standalone
+ * compose's own default, so the single-user local stack is never exposed to the
+ * LAN. */
 export const LOCAL_SERVER_BIND_ADDR = '127.0.0.1';
 
 /** Mattermost team the stack's seeder creates (MATTERMOST_TEAM_NAME). Named

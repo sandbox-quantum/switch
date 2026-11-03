@@ -6,7 +6,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: false,
-        deployed: { known: true, enabled: true },
+        deployed: { known: true, enabled: true, endpointCurrent: true },
         consent: false,
         sharedWithOthers: false,
       })
@@ -31,7 +31,7 @@ describe('managedTelemetryNotice', () => {
       expect(
         managedTelemetryNotice({
           running: true,
-          deployed: { known: true, enabled: consent },
+          deployed: { known: true, enabled: consent, endpointCurrent: true },
           consent,
           sharedWithOthers: false,
         })
@@ -43,7 +43,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: false },
+        deployed: { known: true, enabled: false, endpointCurrent: true },
         consent: true,
         sharedWithOthers: false,
       })
@@ -56,7 +56,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: true },
+        deployed: { known: true, enabled: true, endpointCurrent: true },
         consent: false,
         sharedWithOthers: false,
       })
@@ -78,7 +78,7 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: false },
+        deployed: { known: true, enabled: false, endpointCurrent: true },
         consent: true,
         sharedWithOthers: true,
       })
@@ -89,9 +89,53 @@ describe('managedTelemetryNotice', () => {
     expect(
       managedTelemetryNotice({
         running: true,
-        deployed: { known: true, enabled: true },
+        deployed: { known: true, enabled: true, endpointCurrent: true },
         consent: false,
         sharedWithOthers: true,
+      })
+    ).toEqual({ kind: 'stale', consent: false });
+  });
+
+  it('reports a server sharing to an address this build no longer names', () => {
+    expect(
+      managedTelemetryNotice({
+        running: true,
+        deployed: { known: true, enabled: true, endpointCurrent: false },
+        consent: true,
+        sharedWithOthers: false,
+      })
+    ).toEqual({ kind: 'stale-endpoint' });
+  });
+
+  it('applies the relay on a shared server too, since a restart keeps a sharing server sharing', () => {
+    expect(
+      managedTelemetryNotice({
+        running: true,
+        deployed: { known: true, enabled: true, endpointCurrent: false },
+        consent: true,
+        sharedWithOthers: true,
+      })
+    ).toEqual({ kind: 'stale-endpoint' });
+  });
+
+  it('does not chase the address of a server that is not sharing', () => {
+    expect(
+      managedTelemetryNotice({
+        running: true,
+        deployed: { known: true, enabled: false, endpointCurrent: false },
+        consent: false,
+        sharedWithOthers: false,
+      })
+    ).toEqual({ kind: 'in-step' });
+  });
+
+  it('puts an opt-out first when a server is still sharing to an old address', () => {
+    expect(
+      managedTelemetryNotice({
+        running: true,
+        deployed: { known: true, enabled: true, endpointCurrent: false },
+        consent: false,
+        sharedWithOthers: false,
       })
     ).toEqual({ kind: 'stale', consent: false });
   });

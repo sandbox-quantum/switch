@@ -17,9 +17,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
+    BUDDY_SLACK_HANDOFF,
     FOLLOW_THE_CONVERSATION,
+    GROUP_CHATS,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
+    ORGANIZATION_CONNECTOR_APPS,
     SERVICE_CONNECTIONS,
 )
 from switch_core.keys import Keyring
@@ -94,7 +97,7 @@ _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 @dataclass(frozen=True)
 class ControllerRelease:
-    """The agents controller package every controller is told to run."""
+    """The agent controller package every controller is told to run."""
 
     version: str
     url: str
@@ -219,7 +222,7 @@ class SwitchConfig(BaseSettings):
     jwt_secret_key: str | None = None
 
     # Private hosts Switch may reach at a URL a tenant or agent supplied (a
-    # Mattermost server, an OpenCode server, an agent icon): comma-separated
+    # Mattermost server, an agent icon): comma-separated
     # hostnames and CIDRs. Anything else that is not a public address is
     # refused. Link-local and metadata addresses are refused even when listed.
     # See `outbound.py`.
@@ -311,7 +314,7 @@ class SwitchConfig(BaseSettings):
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
-    # Cloud machines run the agents controller, so above 0 this needs the
+    # Cloud machines run the agent controller, so above 0 this needs the
     # `agent_management` flag.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
@@ -365,14 +368,14 @@ class SwitchConfig(BaseSettings):
         "default_tenant"
     )
 
-    # How many workspaces one person may own here. 0 turns `POST /tenants` into
-    # a 403 outright, so this single value is both the cap and the gate.
+    # How many workspaces one person may create here. 0 turns creating one
+    # into a 403 outright, so this single value is both the cap and the gate.
     #
     # It exists because workspace creation is an amplification vector rather
     # than just a row: `all_tenant_ids()` drives a fan-out per tenant at boot
-    # and a sweep every few seconds, across clients, collaboration bridges,
-    # server connectors and rooms. Unbounded self-service creation therefore
-    # buys steady-state work in the deployment, not storage.
+    # and a sweep every few seconds, across clients, collaboration bridges and
+    # rooms. Unbounded self-service creation therefore buys steady-state work
+    # in the deployment, not storage.
     #
     # Counts `owner` memberships only, so being invited into someone else's
     # workspace never spends an allowance the invitee cannot get back. Deployment
@@ -524,13 +527,16 @@ class SwitchConfig(BaseSettings):
     # Whether agents and people may be drawn by outside avatar services. An
     # agent with no icon of its own wears a face from api.dicebear.com seeded
     # with its name, and a person relayed from another platform a lettered
-    # badge from ui-avatars.com with their name in the URL. Slack, Discord and
-    # Teams clients load those URLs, so the services see the name and each
-    # reader's address; the Mattermost adapter loads them from this server.
+    # badge from ui-avatars.com with their name in the URL, so the services
+    # see the name. Slack and Discord fetch the image on their own servers and
+    # serve their copy, Teams draws it inside each card (some Teams clients may
+    # load it from the service directly), the Mattermost adapter fetches it
+    # from this server, and Switch Console loads it on each user's machine.
     # False sends no such URL anywhere, stored ones included: each platform
-    # shows its own default icon, new agents get no generated icon, setting an
-    # icon on one of those services is refused, and Switch Console stops
-    # drawing them for this server's agents.
+    # shows its own default icon (a Mattermost bot keeps the image it already
+    # has), new agents get no generated icon, setting an icon on one of those
+    # services is refused, and Switch Console stops drawing them for this
+    # server's agents.
     third_party_avatars_enabled: bool = True
 
     server_host: str = "0.0.0.0"
@@ -558,7 +564,7 @@ class SwitchConfig(BaseSettings):
     # agent-bridge app) so the "Open in Switch Console" link is clickable on platforms
     # that only linkify http(s) (Discord, and any future http-only bridge). When
     # unset, the raw `switchdash://` deeplink is posted as-is. Also the
-    # `--server` an agents controller enrolls against, which the gateway's Add
+    # `--server` an agent controller enrolls against, which the gateway's Add
     # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
 
@@ -722,18 +728,42 @@ class SwitchConfig(BaseSettings):
     template_max_bytes: int = 1024 * 1024
 
     # Every authenticated agent request resolves its bearer token against the
-    # database before the handler runs, and each live agent connection beats
-    # every 2s, so the pool is sized against connection count rather than
-    # human traffic: a fleet of N connections costs roughly N/2 checkouts per
-    # second. Exceeding the pool does not shed load, it queues, and a queued
-    # heartbeat that misses HEARTBEAT_TTL_SECONDS costs the connection.
+    # database before the handler runs, so the pool is sized against connection
+    # count rather than human traffic. Agent and controller heartbeats ride
+    # their sockets, authenticated once, but an old event-stream client still
+    # beats over HTTP, and every tool call an agent makes is a request. Exceeding
+    # the pool does not shed load, it queues, and a queued request that the
+    # connection's liveness depends on can still cost it the connection.
     db_pool_size: int = 30
     db_max_overflow: int = 10
     db_pool_recycle: int = 1800
-    db_pool_pre_ping: bool = True
+    # Off by default. On, every checkout first pings its connection, and
+    # SQLAlchemy's asyncpg ping is a BEGIN, an empty statement and a ROLLBACK:
+    # three round trips and a transaction before any work, which under agent
+    # load was over a third of all the transactions core ran. What it catches
+    # is a connection that died while it sat in the pool, as every pooled
+    # connection does when the database restarts or fails over. A restart
+    # closes the socket, which asyncpg notices, and the engine's checkout check
+    # already replaces a closed connection without a round trip
+    # (`test_pool_pre_ping.py`); a query running when the database went fails
+    # with the ping or without it. How soon a connection left
+    # open by a failover is known to be dead is up to `db_tcp_keepalive_*` and
+    # `db_tcp_user_timeout` below, with the ping or without it.
+    db_pool_pre_ping: bool = False
     # SQLAlchemy's default is 30s, long enough that pool starvation surfaces as
     # unexplained latency rather than an error. Fail fast and loudly instead.
     db_pool_timeout: float = 5.0
+    # How many agent and controller connections this process opens at once
+    # (`open_gate.py`). Opening one takes dozens of transactions from the same
+    # pool the process's requests and its lease renewal use, and when a pod
+    # goes away every agent it held opens on the pods left within seconds.
+    # Past this many, an open waits briefly for a slot and is then told when to
+    # come back, in the order it arrived, at the pace opens are taking here,
+    # instead of queueing on the pool. 8 is what the pod-kill tests ran with:
+    # with 300 agents on two pods and 30 + 10 pools, no pool timeouts and no
+    # agent lost, against 161 pool timeouts and 56 agents lost without the
+    # gate (dev-abel, 28 Oct 2026). 0 turns it off.
+    agent_open_limit: int = Field(default=8, ge=0)
 
     # Resolving a bearer token to its agent is the highest-frequency query in
     # the system — it runs before every authenticated request, and a fleet of
@@ -747,6 +777,9 @@ class SwitchConfig(BaseSettings):
     # management on, the same TTL and bound apply to the separate cache of a
     # controller access token's reads (its controller row, and the agent row
     # it acts as), which a revocation or binding change also drops at once.
+    # That cache keeps an entry past the TTL while the signal connection it
+    # was read under still listens, since every change to those rows is then
+    # signalled to every process; 0 disables it too.
     agent_auth_cache_ttl_seconds: float = 5.0
     # How long a row in `agent_events` (one of an agent's own events) is kept
     # before the retention loop deletes it. An agent that reconnects within
@@ -756,6 +789,15 @@ class SwitchConfig(BaseSettings):
     # Bound on the memo. One entry per distinct live token; the oldest is
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
+    # Bound on the agent rows the controller-token cache keeps, the oldest
+    # evicted past it. Every process sees requests for every controller's
+    # agents, so it needs room for all the agents controllers run.
+    controller_auth_cache_max_agents: int = Field(default=20_000, ge=1)
+    # Bound on what each process keeps of the checks a post makes first (an
+    # agent's membership of a room, and that no budget covers it), the oldest
+    # evicted past it. Kept as the controller-token cache keeps its rows, for
+    # `AGENT_AUTH_CACHE_TTL_SECONDS` or while the signal connection listens.
+    room_access_cache_max_entries: int = Field(default=20_000, ge=1)
 
     # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
     # Read only to refuse a deployment that still turns it on, which would
@@ -771,7 +813,7 @@ class SwitchConfig(BaseSettings):
     # `report_within_s`; a controller that has not reported for three of these
     # is shown as unknown and refused new placements.
     controller_status_interval_seconds: int = 60
-    # The agents controller release every controller is told to run, in
+    # The agent controller release every controller is told to run, in
     # answer to its status report. Set all three or none: with none, no
     # controller is told anything and each keeps the version it has. A
     # controller downloads the package from the URL, refuses it unless its
@@ -852,10 +894,25 @@ class SwitchConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_agent_auth_cache(self) -> "SwitchConfig":
+        # Imported here so loading config does not pull in the database models.
+        from switch_core.bridges.agent.api_key_cache import EXPIRY_JITTER
+        from switch_core.bridges.agent.protocol.agent_connections import (
+            HEARTBEAT_TTL_SECONDS,
+        )
+
         if self.agent_auth_cache_ttl_seconds < 0:
             raise ValueError(
                 "AGENT_AUTH_CACHE_TTL_SECONDS must not be negative (0 disables "
                 f"the cache), got {self.agent_auth_cache_ttl_seconds!r}."
+            )
+        if (
+            self.agent_auth_cache_ttl_seconds * (1 + EXPIRY_JITTER)
+            >= HEARTBEAT_TTL_SECONDS
+        ):
+            raise ValueError(
+                f"AGENT_AUTH_CACHE_TTL_SECONDS, with its {EXPIRY_JITTER:.0%} "
+                "jitter, must stay below the agent heartbeat TTL of "
+                f"{HEARTBEAT_TTL_SECONDS}s, got {self.agent_auth_cache_ttl_seconds!r}."
             )
         if self.agent_auth_cache_max_entries < 1:
             raise ValueError(
@@ -881,7 +938,7 @@ class SwitchConfig(BaseSettings):
                 raise ValueError(
                     "HOSTED_LAUNCH_CAPACITY needs the "
                     f"{AGENT_MANAGEMENT!r} feature flag: cloud machines run the "
-                    "agents controller."
+                    "agent controller."
                 )
             return self
         if not self.controller_token_secret:
@@ -1270,12 +1327,24 @@ class SwitchConfig(BaseSettings):
         return self.feature_flags[SERVICE_CONNECTIONS]
 
     @property
+    def organization_connector_apps_enabled(self) -> bool:
+        return self.feature_flags[ORGANIZATION_CONNECTOR_APPS]
+
+    @property
     def follow_the_conversation_enabled(self) -> bool:
         return self.feature_flags[FOLLOW_THE_CONVERSATION]
 
     @property
     def agent_chats_enabled(self) -> bool:
         return self.feature_flags[AGENT_CHATS]
+
+    @property
+    def group_chats_enabled(self) -> bool:
+        return self.feature_flags[GROUP_CHATS]
+
+    @property
+    def buddy_slack_handoff_enabled(self) -> bool:
+        return self.feature_flags[BUDDY_SLACK_HANDOFF]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

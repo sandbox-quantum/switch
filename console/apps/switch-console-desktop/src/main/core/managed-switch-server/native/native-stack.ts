@@ -16,11 +16,16 @@ import {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
-import { currentTelemetryEnv } from '../../telemetry/config';
+import {
+  currentTelemetryEnv,
+  resolveTelemetryConfig,
+  sameMachineServerTelemetryEndpointFor,
+  TELEMETRY_RELAY_ORIGIN,
+} from '../../telemetry/config';
 import { currentInternalFlag } from '../../telemetry/internal-account';
 import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
 import { detectDocker } from '../docker';
-import { envFlag, readEnvValue, TELEMETRY_ENABLED_KEY } from '../env-file';
+import { readEnvValue } from '../env-file';
 import { errorText } from '../error-text';
 import type { LocalServerPorts } from '../free-port';
 import type { ServerHost } from '../host/types';
@@ -34,7 +39,7 @@ import { registerManagedServer } from '../pipeline';
 import { clearPorts, resolvePorts } from '../ports';
 import { clearSecrets, loadOrCreateSecrets } from '../secrets';
 import { managedSwitchVersion } from '../server-version';
-import { telemetryConsent } from '../telemetry-consent';
+import { deployedTelemetryOf, telemetryConsent } from '../telemetry-consent';
 import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from './bundle';
 import {
   CORE_ENV_FILE,
@@ -412,6 +417,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       telemetryEnabled,
       telemetryEnvironment: currentTelemetryEnv(),
       telemetryInternal: (await currentInternalFlag()) === 'true',
+      telemetryEndpoint: nativeServerTelemetryEndpoint(),
     });
     await writeDeployedVersion(layout, install.version);
     onMessage('Starting switch-core…');
@@ -571,16 +577,35 @@ export async function nativeStackRunning(layout: NativeLayout): Promise<boolean>
   return (await runningCore(layout)) !== null;
 }
 
+/** The line of switch-core's log that says why it stopped, or null. For a
+ * server that stopped on its own, after it had started. */
+export function nativeCoreFailureLine(layout: NativeLayout): Promise<string | null> {
+  return coreFailureLine(layout);
+}
+
 export async function nativeStartedAt(layout: NativeLayout): Promise<string | null> {
   return (await runningCore(layout))?.startedAt ?? null;
 }
 
 /** What the running switch-core does about usage data, read from the
  * environment it was started with — which is what it read at boot. */
+/** The relay, or a dev run's local listener unless no server could post to it. */
+export function nativeServerTelemetryEndpoint(): string {
+  const endpoint = sameMachineServerTelemetryEndpointFor(resolveTelemetryConfig());
+  if (endpoint !== null) return endpoint;
+  log.warn(
+    'SWITCHDASH_TELEMETRY_ENDPOINT is not an http(s) URL; the local server reports to the relay',
+    {
+      event: 'telemetry_endpoint_override_ignored',
+    }
+  );
+  return TELEMETRY_RELAY_ORIGIN;
+}
+
 export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {
   try {
     const env = await readFile(path.join(layout.run, CORE_ENV_FILE), 'utf8');
-    return { known: true, enabled: envFlag(readEnvValue(env, TELEMETRY_ENABLED_KEY)) };
+    return deployedTelemetryOf((key) => readEnvValue(env, key), nativeServerTelemetryEndpoint());
   } catch (error) {
     return { known: false, reason: `${CORE_ENV_FILE}: ${errorText(error)}` };
   }

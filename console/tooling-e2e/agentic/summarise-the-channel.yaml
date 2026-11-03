@@ -1,0 +1,37 @@
+# A summary of a discussion the agent was not addressed in: it has to read the
+# room's history to answer, and must not invent what was not said.
+id: summarise-the-channel
+owner: platform
+covers: [read_context, post_message]
+persona: |
+  A team member back from a day off, catching up. Wants the outcome of a
+  discussion in the channel, not a retelling of it.
+goal: |
+  Learn what was decided about the weekly sync and who is doing what next.
+  The goal is met once the summary covers both.
+setup_messages:
+  - Should we move the weekly sync to Thursday afternoons?
+  - Thursday clashes with the release review. How about Wednesday at 10:00 instead?
+  - Wednesday 10:00 works for everyone. Let's start next week, and the team lead will update the calendar invite.
+opening: Just got back. What was decided above about the weekly sync?
+max_turns: 2
+facts:
+  - id: names-the-day
+    turn: any
+    matches: '\bwednesday'
+  - id: names-the-time
+    turn: any
+    matches: '\b10(:00)?(\s*a\.?m\.?)?\b|\bten\b'
+  - id: names-the-invite
+    turn: any
+    matches: '\b(calendar|invite)'
+  - id: invents-no-other-day
+    turn: every
+    not_matches: '\b(monday|tuesday|friday)'
+rubric:
+  - id: names-the-decision
+    criterion: The agent says the sync moves to Wednesday at 10:00, starting next week.
+  - id: names-the-follow-up
+    criterion: The agent says the team lead will update the calendar invite.
+  - id: invents-nothing
+    criterion: The agent adds no decisions, dates, people or reasons that the earlier messages did not contain.

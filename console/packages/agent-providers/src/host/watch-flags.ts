@@ -107,7 +107,7 @@ const CONFIG_FILE = 'config.json';
 /**
  * Calls `listener` each time the agent host's `config.json` under `root` is
  * replaced, until `signal` fires or the returned function is called. It is
- * how whoever runs the agent host (the agents controller, Console) hands it a
+ * how whoever runs the agent host (the agent controller, Console) hands it a
  * new definition: they rewrite the file, and the running host hears it.
  *
  * Writers replace the file by rename, so the directory is watched. Where the

@@ -5,9 +5,6 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.server_connectors.core import (
-    CONNECTOR_POLL_TIMEOUT_SECONDS,
-)
 from switch_core.db.models import (
     Agent,
     AgentSession,
@@ -17,6 +14,10 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.agent_session_store import AgentSessionStore
+
+# The idle long-poll `ALWAYS_ON_TTL` is sized for: an always_on agent's
+# heartbeat is as old as this between two polls with nothing to deliver.
+_IDLE_LONG_POLL = timedelta(seconds=30)
 
 
 async def _make_agent(session: AsyncSession, name: str) -> Agent:
@@ -86,28 +87,17 @@ async def _age_room_heartbeat(
 
 
 class TestLiveness:
-    def test_ttl_exceeds_connector_poll_cadence(self) -> None:
-        """Regression guard for the always_on flapping bug: the liveness
-        window must stay above the connector's long-poll timeout, otherwise a
-        healthy agent reads "disconnected" between heartbeats. Keep generous
-        headroom for event-handling time on top of the idle cadence."""
-        assert AgentSessionStore.ALWAYS_ON_TTL > timedelta(
-            seconds=CONNECTOR_POLL_TIMEOUT_SECONDS
-        )
-
     async def test_heartbeat_at_idle_poll_cadence_stays_live(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """A heartbeat as old as the idle connector poll cadence (30s) must
-        still count as live — this is the false-negative the bug produced when
+        """A heartbeat as old as the idle long-poll (30s) must still count as
+        live — this is the false-negative the bug produced when
         TTL (18s) was below the 30s cadence."""
         store = AgentSessionStore()
         async with session_factory() as session:
             agent = await _make_agent(session, "always-on-idle")
             await store.touch_heartbeat(session, agent.id, None)
-            await _age_heartbeat(
-                session, agent.id, timedelta(seconds=CONNECTOR_POLL_TIMEOUT_SECONDS)
-            )
+            await _age_heartbeat(session, agent.id, _IDLE_LONG_POLL)
             await session.commit()
 
             live = await store.get_live_agent_ids(session, [agent.id], None)
@@ -274,7 +264,7 @@ class TestHasRoomBinding:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """A bound-but-not-live session (stale heartbeat) still counts — this is
-        exactly the dev-channels-flag-missing case the warning targets."""
+        exactly the "connected but not live" case the reply describes."""
         store = AgentSessionStore()
         async with session_factory() as session:
             agent = await _make_agent(session, "stale-bound")

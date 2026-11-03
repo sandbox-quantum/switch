@@ -615,6 +615,64 @@ describe('HostDependencyManager uninstall', () => {
         }),
       },
     },
+    {
+      id: 'opencode-pm-prefix',
+      name: 'OpenCode (npm with prefix, migration)',
+      category: 'agent',
+      commands: ['opencode'],
+      versionArgs: ['--version'],
+      installCommands: {
+        linux: [
+          {
+            method: 'npm',
+            command: 'npm install -g --prefix "$HOME/.local" @opencode/cli',
+            uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" @opencode/cli opencode-ai',
+            recommended: true,
+          },
+        ],
+      },
+      updates: { kind: 'none' },
+      uninstall: { kind: 'package-manager' },
+    },
+    {
+      id: 'codex-pm-migration',
+      name: 'Codex (dual-package uninstall)',
+      category: 'agent',
+      commands: ['codex'],
+      versionArgs: ['--version'],
+      installCommands: {
+        macos: [
+          {
+            method: 'npm',
+            command: 'npm install -g @openai/codex',
+            recommended: true,
+            uninstallCommand: 'npm uninstall -g @openai/codex old-codex-name',
+          },
+        ],
+        linux: [
+          {
+            method: 'npm',
+            command: 'npm install -g @openai/codex',
+            recommended: true,
+            uninstallCommand: 'npm uninstall -g @openai/codex old-codex-name',
+          },
+        ],
+        windows: [
+          {
+            method: 'npm',
+            command: 'npm install -g @openai/codex',
+            recommended: true,
+            uninstallCommand: 'npm uninstall -g @openai/codex old-codex-name',
+          },
+        ],
+      },
+      updates: {
+        kind: 'supported',
+        releaseSource: { kind: 'npm', package: '@openai/codex' },
+        update: { kind: 'package-manager' },
+      },
+      uninstall: { kind: 'package-manager' },
+    },
   ];
 
   it('returns unknown-dependency error for an unrecognised id', async () => {
@@ -653,7 +711,19 @@ describe('HostDependencyManager uninstall', () => {
 
   it('runs the uninstallCommand for package-manager strategy and re-probes', async () => {
     const runInstallCommand = vi.fn(async () => ok<void>());
-    const manager = new HostDependencyManager(missingCtx, {
+    // Verification passes: npm list confirms the package is installed
+    const verifiedCtx = makeCtx(async (command, args = []) => {
+      if (
+        command === 'npm' &&
+        args[0] === 'list' &&
+        args[1] === '-g' &&
+        args[2] === '@openai/codex'
+      ) {
+        return { stdout: '/usr/lib\n└── @openai/codex@1.2.3\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(verifiedCtx, {
       dependencies: UNINSTALL_DEPENDENCIES,
       runInstallCommand,
       installMethodDetector: npmDetector,
@@ -676,7 +746,14 @@ describe('HostDependencyManager uninstall', () => {
         exitCode: 243,
       })
     );
-    const manager = new HostDependencyManager(missingCtx, {
+    // Verification passes so we reach the runner
+    const verifiedCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        return { stdout: '/usr/lib\n└── @openai/codex@1.2.3\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(verifiedCtx, {
       dependencies: UNINSTALL_DEPENDENCIES,
       runInstallCommand,
     });
@@ -741,6 +818,146 @@ describe('HostDependencyManager uninstall', () => {
       command: '/usr/local/bin/claude',
       args: ['custom-remove', '--force'],
     });
+  });
+
+  it('returns uninstall-target-not-found when npm package is not installed globally', async () => {
+    const runInstallCommand = vi.fn(async () => ok<void>());
+    // npm list exits non-zero when the package isn't installed
+    const notInstalledCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        throw new Error('npm ERR! code ELSPROBLEMS');
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(notInstalledCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+    });
+
+    const result = await manager.uninstall('codex-pm');
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        type: 'uninstall-target-not-found',
+        id: 'codex-pm',
+        package: '@openai/codex',
+        method: 'npm',
+      },
+    });
+    // Must not attempt the uninstall command
+    expect(runInstallCommand).not.toHaveBeenCalled();
+  });
+
+  it('verifies npm package before running uninstall command', async () => {
+    const callOrder: string[] = [];
+    const verifyAndUninstallCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        callOrder.push('npm-list');
+        return { stdout: '/usr/lib\n└── @openai/codex@1.2.3\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const runInstallCommand = vi.fn(async () => {
+      callOrder.push('uninstall');
+      return ok<void>();
+    });
+    const manager = new HostDependencyManager(verifyAndUninstallCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+    });
+
+    await manager.uninstall('codex-pm');
+
+    // Verification must run before the uninstall command
+    expect(callOrder).toEqual(['npm-list', 'uninstall']);
+  });
+
+  it('forwards --prefix to npm list when the uninstall command uses a custom prefix', async () => {
+    const runInstallCommand = vi.fn(async () => ok<void>());
+    let listArgs: string[] = [];
+    const prefixCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        listArgs = [...args];
+        return { stdout: '/home/user/.local/lib\n└── @opencode/cli@2.0.0\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(prefixCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+      platform: 'linux',
+    });
+
+    await manager.uninstall('opencode-pm-prefix');
+
+    // npm list must include --prefix matching the uninstall command
+    expect(listArgs).toEqual([
+      'list',
+      '-g',
+      '@opencode/cli',
+      '--depth=0',
+      '--prefix',
+      '$HOME/.local',
+    ]);
+    expect(runInstallCommand).toHaveBeenCalled();
+  });
+
+  it('passes pre-flight when any of multiple uninstall targets is installed (migration)', async () => {
+    const runInstallCommand = vi.fn(async () => ok<void>());
+    // Only the legacy name is installed — the new name is not
+    const migrationCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list' && args[2] === '@openai/codex') {
+        throw new Error('npm ERR! code ELSPROBLEMS');
+      }
+      if (command === 'npm' && args[0] === 'list' && args[2] === 'old-codex-name') {
+        return { stdout: '/usr/lib\n└── old-codex-name@1.0.0\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(migrationCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+    });
+
+    const result = await manager.uninstall('codex-pm-migration');
+
+    // Pre-flight passes because the second target is found
+    expect(runInstallCommand).toHaveBeenCalled();
+    expect(result.success).toBe(true);
+  });
+
+  it('skips pre-flight verification for cli uninstall strategy', async () => {
+    const runInstallCommand = vi.fn(async () => ok<void>());
+    const claudeCtx = makeCtx(async (command, args = []) => {
+      if (command === 'npm' && args[0] === 'list') {
+        throw new Error('npm list should not be called for cli uninstall');
+      }
+      if (command === 'which' && args[0] === 'claude') {
+        return { stdout: '/usr/local/bin/claude\n', stderr: '' };
+      }
+      if (command === 'which' && args[0] === '-a' && args[1] === 'claude') {
+        return { stdout: '/usr/local/bin/claude\n', stderr: '' };
+      }
+      if (command === 'realpath') {
+        return { stdout: `${args[0]}\n`, stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(claudeCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: unknownDetector,
+    });
+
+    await manager.uninstall('claude-cli-uninstall');
+
+    // cli strategy should not trigger npm list verification
+    expect(runInstallCommand).toHaveBeenCalled();
   });
 });
 

@@ -40,15 +40,22 @@ class TelemetryService {
     name: K,
     properties: TelemetryEventMap[K]
   ): Promise<void> {
+    // Before the gate, which reads the database: the event happened now, not
+    // whenever the reads that describe it finish.
+    return this.trackAt(name, properties, Date.now());
+  }
+
+  /** {@link track}, for something that happened at `timeMs`. */
+  async trackAt<K extends TelemetryEventName>(
+    name: K,
+    properties: TelemetryEventMap[K],
+    timeMs: number
+  ): Promise<void> {
     const resolution = resolveTelemetryConfig();
     if (!resolution.enabled) {
       this.reportDisabled(resolution.reason);
       return;
     }
-
-    // Before the gate, which reads the database: the event happened now, not
-    // whenever the reads that describe it finish.
-    const timeMs = Date.now();
 
     if (!(await isTelemetryAllowed())) return;
 
@@ -72,9 +79,11 @@ class TelemetryService {
    * The same two refusals `track` applies, asked in advance. Only the
    * once-per-install events need this: they spend a record that is never given
    * back, so spending it on a send that consent then discards would retire the
-   * event for the life of the install. Nothing else should call it — everywhere
-   * else, asking first and sending second is two reads of a gate that can change
-   * in between, and `track` already reads it at the only moment that matters.
+   * event for the life of the install. A report that must ask a server for what
+   * it describes uses it too, to skip asking when nothing could be sent. Nothing
+   * else should call it — everywhere else, asking first and sending second is
+   * two reads of a gate that can change in between, and `track` already reads
+   * it at the only moment that matters.
    */
   async canSend(): Promise<boolean> {
     return resolveTelemetryConfig().enabled && (await isTelemetryAllowed());
@@ -122,7 +131,16 @@ export function trackEvent<K extends TelemetryEventName>(
   name: K,
   properties: TelemetryEventMap[K]
 ): void {
-  void telemetryService.track(name, properties).catch((error: unknown) => {
+  trackEventAt(name, properties, Date.now());
+}
+
+/** {@link trackEvent} for something that happened at `timeMs`, reported later. */
+export function trackEventAt<K extends TelemetryEventName>(
+  name: K,
+  properties: TelemetryEventMap[K],
+  timeMs: number
+): void {
+  void telemetryService.trackAt(name, properties, timeMs).catch((error: unknown) => {
     log.warn('telemetry: event not sent', {
       event: 'telemetry_send_failed',
       telemetryEvent: name,

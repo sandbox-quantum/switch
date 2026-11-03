@@ -1,0 +1,36 @@
+[
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "_thinking..._",
+      "thread_ts": "1700000000.000100",
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "ts": "1800000000.000001"
+    },
+    "method": "chat.delete"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "_thinking..._",
+      "thread_ts": "1700000000.000100",
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "ts": "1800000000.000002"
+    },
+    "method": "chat.delete"
+  }
+]

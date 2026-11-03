@@ -13,10 +13,9 @@ within `LEASE_TTL` and not stopped. One write per process per renewal, however
 many connections it holds.
 
 The work that must run once (a client's consumer, a bridge's platform
-connection, a server-side connector) is owned through `ownership.py`, whose
-leases are valid only while their holder's process lease is held, and which
-stops its work when this process can no longer be sure its own is
-(`surely_held`).
+connection) is owned through `ownership.py`, whose leases are valid only while
+their holder's process lease is held, and which stops its work when this
+process can no longer be sure its own is (`surely_held`).
 
 The lease also records the ids of the keys the process can read, which a
 process starting with a new front key checks (`db/key_rotation.py`).
