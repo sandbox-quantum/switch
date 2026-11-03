@@ -190,7 +190,7 @@ export default function ServiceAccessSection({
                 variant="outlined"
                 label={grant.access === "write" ? "Read and write" : "Read"}
               />
-              {grant.service === "github" && (
+              {grant.service === "github" && githubBlocked === null && (
                 <Button size="small" disabled={busy} onClick={() => setEditing(true)}>
                   Change
                 </Button>
