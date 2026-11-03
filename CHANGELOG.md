@@ -559,7 +559,10 @@ version of their own to them without also giving them a release of their own.
   refusing the app, read as the person cancelling. The sign-in now fails with
   the vendor's own description ("Atlassian refused the sign-in: …"), with any
   markup taken out and long text cut short, and the browser's page says the
-  same. A bare `access_denied` still reads as cancelled. Switch Console hands
+  same. A bare `access_denied` still reads as cancelled, and an
+  `access_denied` with a description reads as cancelled or refused, in the
+  vendor's words ("GitHub sign-in was cancelled or refused: …"), because
+  vendors send it for both. Switch Console hands
   on a refusal that reached its own listener through the new
   `POST /gateway/service-connections/{service}/flows/{id}/fail`, so that
   sign-in fails at once too.

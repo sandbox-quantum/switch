@@ -87,15 +87,20 @@ def _vendor_text(text: str, limit: int) -> str:
 def vendor_refusal(name: str, error: str, description: str | None) -> str:
     """What a flow records when the vendor sends the browser back with an
     OAuth `error` rather than a code. A bare `access_denied` is the person
-    declining at the vendor; anything else is the vendor refusing, in its own
-    words where it gave any. Switch Console words the same refusal the same
-    way (`sign-in-listener.ts`)."""
+    declining at the vendor. Vendors also send `access_denied` with a
+    description, both for a person declining (GitHub) and for a policy
+    refusing, so that reads as either, in the vendor's words. Anything else is
+    the vendor refusing, in its own words where it gave any. Switch Console
+    words the same refusal the same way (`sign-in-listener.ts`)."""
     said = _vendor_text(description or "", MAX_VENDOR_DESCRIPTION)
-    if said:
-        return f"{name} refused the sign-in: {said}" + (
-            "" if said.endswith((".", "!", "?", "…")) else "."
-        )
     code = _vendor_text(error, MAX_VENDOR_ERROR)
+    if said:
+        lead = (
+            f"{name} sign-in was cancelled or refused"
+            if code == "access_denied"
+            else f"{name} refused the sign-in"
+        )
+        return f"{lead}: {said}" + ("" if said.endswith((".", "!", "?", "…")) else ".")
     if code in ("", "access_denied"):
         return f"{name} sign-in was cancelled."
     return f"{name} refused the sign-in ({code})."
