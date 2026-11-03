@@ -214,6 +214,25 @@ it('does not show Core’s refusal in the browser, and sends the person to Conso
   expect(text).toContain('Switch Console says what happened');
 });
 
+it.each([
+  [
+    new Error('Could not reach https://switch.example.test: fetch failed'),
+    'Could not reach https://switch.example.test: fetch failed',
+  ],
+  ['no message', 'Switch could not finish signing in to Example.'],
+])('fails the sign-in at once when handing the code to the server fails', async (cause, said) => {
+  const pending = { status: 'pending' as const, account: null, error: null, warning: null };
+  const { id, url } = await start();
+  vi.mocked(completeServiceConnection).mockRejectedValue(cause);
+  expect((await fetch(url + `?state=${id}&code=SYNTHETIC`)).status).toBe(400);
+  vi.mocked(getServiceFlow).mockResolvedValue(pending);
+  expect(await getServiceBrowserFlow(server, 'example', id)).toEqual({
+    ...pending,
+    status: 'failed',
+    error: said,
+  });
+});
+
 it('ends the sign-in at once when the vendor refuses it, and says why in the browser', async () => {
   const { id, input, url } = await start();
   vi.mocked(failServiceConnection).mockResolvedValue(undefined);

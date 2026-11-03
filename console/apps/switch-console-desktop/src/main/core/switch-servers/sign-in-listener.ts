@@ -167,6 +167,13 @@ export function vendorRefusal(
   return { error: code, description: said || null, message };
 }
 
+/** Why a code could not be handed to Core, as the person reads it. */
+export function failedCompletion(name: string, error: unknown): string {
+  return error instanceof Error && error.message
+    ? error.message
+    : `Switch could not finish signing in to ${name}.`;
+}
+
 /**
  * What a vendor wrote, fit to show a person: without markup or control
  * characters, on one line, and at most `limit` characters long.

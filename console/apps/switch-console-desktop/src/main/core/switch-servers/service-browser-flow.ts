@@ -14,7 +14,7 @@ import {
   getServiceFlow,
   startServiceConnection,
 } from './gateway-client';
-import { listenForSignIn } from './sign-in-listener';
+import { failedCompletion, listenForSignIn } from './sign-in-listener';
 
 /**
  * Signing in to a service through Switch's generic OAuth flow, from this
@@ -46,14 +46,23 @@ export async function startServiceBrowserFlow(
   const catalogEntry = (await getConnectionCatalog(server)).find(
     (candidate) => candidate.slug === service
   );
+  const name = catalogEntry?.name ?? service;
   const listener = await listenForSignIn({
-    name: catalogEntry?.name ?? service,
+    name,
     path: SERVICE_CALLBACK_PATH,
     state,
     maxCodeLength: MAX_CODE_LENGTH,
     ports: catalogEntry?.loopback_ports ?? null,
+    // A code Core never received leaves its flow pending, so the failure here
+    // is the outcome. A flow Core did finish still reads connected.
     complete: async (code) => {
-      await completeServiceConnection(server, service, state, code, secret);
+      try {
+        await completeServiceConnection(server, service, state, code, secret);
+      } catch (error) {
+        const entry = active.get(key(server, service, state));
+        if (entry) entry.refused = failedCompletion(name, error);
+        throw error;
+      }
     },
     refuse: async ({ error, description, message }) => {
       const entry = active.get(key(server, service, state));
