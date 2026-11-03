@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from starlette.requests import Request
-
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
@@ -26,9 +24,12 @@ def https_or_loopback(url: str) -> bool:
     return urlsplit(url).scheme == "https" or http_on_loopback(url)
 
 
-def secure_cookie(request: Request) -> bool:
-    """Whether a cookie set in answer to `request` is marked Secure: always,
-    except over plain http to this computer's own address, such as a server
-    Switch Console runs. Some browsers drop a Secure cookie set over http even
-    there, and on the loopback address nothing in between could read it."""
-    return not http_on_loopback(str(request.url))
+def secure_cookie(url: str) -> bool:
+    """Whether a cookie the browser brings to `url`, the server's configured
+    address, is marked Secure: always, except over plain http to this
+    computer's own address, such as a server Switch Console runs. Some
+    browsers drop a Secure cookie set over http even there, and on the
+    loopback address nothing in between could read it. The URL a request
+    reached the server at does not decide: behind a proxy that ends TLS, it
+    is plain http."""
+    return not http_on_loopback(url)

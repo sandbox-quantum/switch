@@ -292,17 +292,20 @@ async def test_a_connection_through_a_replaced_app_tells_its_owner_to_reconnect(
 
 
 @pytest.mark.parametrize(
-    ("base_url", "secure"),
+    ("origin", "secure"),
     [("https://switch.example.com", True), ("http://127.0.0.1:8000", False)],
 )
-async def test_the_cookie_is_secure_except_over_http_on_this_computer(
-    github_app, base_url, secure
+async def test_the_cookie_is_secure_except_for_an_origin_over_http_on_this_computer(
+    github_app, origin, secure
 ):
     """A server Switch Console runs is reached over plain http on loopback,
-    where a browser drops a Secure cookie and nothing in between reads it."""
-    client, _, _, _ = github_app
+    where a browser drops a Secure cookie and nothing in between reads it.
+    The App's origin decides, not the URL a proxy reached the server at."""
+    client, github, _, _ = github_app
+    github.origin = origin
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=client._transport.app), base_url=base_url
+        transport=httpx.ASGITransport(app=client._transport.app),
+        base_url="http://127.0.0.1:8000",
     ) as local:
         started = await local.post(
             BASE + "/flows",
