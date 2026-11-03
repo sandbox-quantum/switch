@@ -82,7 +82,7 @@ const AdminPanel = observer(function AdminPanel() {
               description={
                 section === 'messaging-apps'
                   ? `The apps people in ${workspace.name} reach their agents from. Everyone links their own account in Settings.`
-                  : `The guardrails every message on ${serverName} is checked against before it goes out.`
+                  : `Guardrails that check what is sent on ${serverName} before it goes out, once they are set up.`
               }
             />
             {section === 'messaging-apps' ? (
