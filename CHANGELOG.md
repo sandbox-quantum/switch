@@ -204,6 +204,16 @@ version of their own to them without also giving them a release of their own.
   of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
+- **Subagents show as subagents on the activity card.** A tool call that
+  starts a subagent carries the agent it runs (`subagent: {agent}` on the
+  `tool-activity` row, stored in `session_activity_items.subagent`), so the
+  card titles it "Explore: count files" on Slack, Mattermost and Discord, and
+  Switch Console's activity view reads it as an agent step. A turn that ends
+  while a background subagent is still working says "1 subagent still
+  running." instead of "1 step left unfinished", and the subagent stays in
+  progress until its task ends. A host that predates the field sends rows
+  without it, and one that sends it to an older server has the row resent
+  without it.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
