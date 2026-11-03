@@ -47,7 +47,7 @@ import {
   noAgentsText,
   offersAddAgent,
 } from '@renderer/features/connectors/grant-agents';
-import { adminNavTarget, workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
+import { workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
 import {
   FLAGS_NOT_READ_YET,
   allFeatureFlagsOff,
@@ -773,41 +773,36 @@ describe('with the service_connections flag off', () => {
 
   it('leaves Connectors and Admin out of the nav', () => {
     const shown = workspaceNavViews({
-      managed: false,
       serviceConnections: false,
       administers: true,
+      operatesGatewaylessServer: true,
     });
-    expect(shown).not.toContain('connectors');
-    expect(shown).not.toContain('admin');
+    expect(shown).toEqual(['server', 'serverAgents', 'serverRooms', 'templates']);
     expect(
-      workspaceNavViews({ managed: true, serviceConnections: true, administers: true })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates', 'admin']);
+      workspaceNavViews({
+        serviceConnections: true,
+        administers: true,
+        operatesGatewaylessServer: false,
+      })
+    ).toEqual(['server', 'serverAgents', 'serverRooms', 'templates', 'connectors', 'admin']);
   });
 
-  it('shows Admin only to whoever administers the workspace or runs its server', () => {
+  it('shows Admin only for what has no other home: workspace connector switches, or connector apps on a Switch with no gateway', () => {
     expect(
-      workspaceNavViews({ managed: false, serviceConnections: true, administers: false })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates']);
-    // The server's status lives under Admin, for whoever runs it, flag or role aside.
+      workspaceNavViews({
+        serviceConnections: true,
+        administers: false,
+        operatesGatewaylessServer: false,
+      })
+    ).toEqual(['server', 'serverAgents', 'serverRooms', 'templates', 'connectors']);
+    // The operator of a Switch this Console runs without Docker keeps connector apps here.
     expect(
-      workspaceNavViews({ managed: true, serviceConnections: false, administers: false })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'templates', 'admin']);
-  });
-
-  it('opens Admin on its sections, or on the server’s status where there are none to use', () => {
-    expect(adminNavTarget({ serviceConnections: true, administers: true, frozen: false })).toBe(
-      'admin'
-    );
-    expect(adminNavTarget({ serviceConnections: false, administers: true, frozen: false })).toBe(
-      'managedServer'
-    );
-    expect(adminNavTarget({ serviceConnections: true, administers: false, frozen: false })).toBe(
-      'managedServer'
-    );
-    // While the server can't answer, its status is the only entry that works.
-    expect(adminNavTarget({ serviceConnections: true, administers: true, frozen: true })).toBe(
-      'managedServer'
-    );
+      workspaceNavViews({
+        serviceConnections: true,
+        administers: false,
+        operatesGatewaylessServer: true,
+      })
+    ).toContain('admin');
   });
 
   it('has no page to show, rather than an empty one', () => {
