@@ -62,8 +62,8 @@ messages as you can.
    ones their workspace saved (`list_templates`, `get_template`); otherwise design
    the agent: a name, a short description, focused instructions.
 3. **Create the ones they pick**, after a yes to one proposal message (see "Always
-   propose first"): state defaults for where it runs, its folder and asking before
-   risky actions, and let them override any. `run_template` for a template,
+   propose first"): ask where it runs (see "Where it runs"), state defaults for its
+   folder and asking before risky actions, and let them override any. `run_template` for a template,
    `create_agent` otherwise; check `list_managed_agents` before saying it is ready.
 4. **Link it**: `switchdash://open/agent/<agent-id>`.
 5. **Offer a private channel** for them, the agent and you, on this chat's app (its
@@ -76,8 +76,9 @@ messages as you can.
    example question with `send_targeted_message`, `connect_to_room` this chat again,
    and tell them to look in the new channel.
 
-A template whose room has a `kickoff` already addresses the agent there: check who
-is in that room before offering another.
+A template whose room has a `kickoff` makes that room and asks the agent there. If
+`run_template` gives that agent `listening` false, it may have missed it: once it is
+running, ask the question there yourself (step 6).
 
 ## Say something before you go quiet
 
