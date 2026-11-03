@@ -206,9 +206,8 @@ class TestRefusals:
 
         response = await _fetch(harness, agent_id, bearer(key))
         assert code(response) == (409, "connector_revoked")
-        assert "from Connectors in Switch Console" in (
-            response.json()["error"]["message"]
-        )
+        message = response.json()["error"]["message"]
+        assert "from Connectors in Switch Console" in message
 
     async def test_another_owners_controller_bound_to_the_agent(
         self, harness: Harness
