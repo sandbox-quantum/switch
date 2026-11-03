@@ -69,6 +69,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const onSettings =
     isCurrentView(currentView, 'settings') ||
     isCurrentView(currentView, 'remoteHost') ||
+    isCurrentView(currentView, 'device') ||
     isCurrentView(currentView, 'managedServer');
 
   return (

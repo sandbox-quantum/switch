@@ -140,7 +140,7 @@ class TestOwnerIsolation:
             return found
 
         routes = [r for r in gateway_router.routes if hasattr(r, "dependant")]
-        assert len(routes) == 16
+        assert len(routes) == 17
         for route in routes:
             assert get_current_user in calls(route.dependant), route.path  # type: ignore[attr-defined]
 
@@ -1059,6 +1059,34 @@ class TestMachineNameAndDescription:
         binding = harness.protocol.connections.controllers.binding(agent_id)
         assert binding is not None
         assert binding.controller_name == "build-box"
+
+    async def test_the_owner_reads_one_machine(self, harness: Harness) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada, name="laptop")
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            path = f"/gateway/management/controllers/{controller.controller_id}"
+            mine = await client.get(path, cookies=cookies_for(ada))
+            listed = await client.get(
+                "/gateway/management/controllers", cookies=cookies_for(ada)
+            )
+            theirs = await client.get(path, cookies=cookies_for(bob))
+            missing = await client.get(
+                "/gateway/management/controllers/no-such-controller",
+                cookies=cookies_for(ada),
+            )
+            await client.delete(path, cookies=cookies_for(ada))
+            revoked = await client.get(path, cookies=cookies_for(ada))
+
+        assert mine.status_code == 200, mine.text
+        assert mine.json() == listed.json()[0]
+        assert mine.json()["state"] == "online"
+        assert mine.json()["status"]["providers"][0]["provider"] == "claude"
+        assert theirs.status_code == 404
+        assert theirs.json() == missing.json()
+        assert revoked.status_code == 200
+        assert revoked.json()["state"] == "revoked"
 
     async def test_another_users_machine_is_not_found(self, harness: Harness) -> None:
         ada = await add_member(harness.session_factory, "ada")

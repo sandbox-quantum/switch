@@ -20,6 +20,15 @@ function controller(patch: Partial<ManagementController> & { id: string }): Mana
     workspacesDir: null,
     os: null,
     sealingKey: null,
+    report: {
+      createdAt: null,
+      version: null,
+      release: null,
+      platform: null,
+      machine: null,
+      observedAt: null,
+      agents: [],
+    },
     ...patch,
   };
 }

@@ -13,10 +13,12 @@ import {
 } from '@main/core/switch-servers/controller-provider-report';
 import { rememberBridgePlatforms } from '@main/core/telemetry/bridge-platform';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
+import { log } from '@main/lib/logger';
 import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
 import type {
   AdvancedConfigField,
+  DeviceReport,
   ManagedAgentTemplate,
   ManagedMachine,
 } from '@shared/core/managed-agents/managed-agents';
@@ -4070,6 +4072,8 @@ export type ManagementController = {
    * its controller has none (it keeps no key, or predates sealed logins).
    */
   sealingKey: { key: string; keyId: string } | null;
+  /** What its device page shows beyond the list; a null field is one the server or the controller has not said. */
+  report: DeviceReport;
 };
 
 /** A managed agent as the owner's list shows it. */
@@ -4128,8 +4132,11 @@ type ManagementControllerJson = {
   revoked_at: string | null;
   status?: unknown;
   workspaces_dir?: string | null;
-  platform?: { os: string } | null;
+  platform?: { os: string; arch?: string; os_version?: string } | null;
   public_key?: { alg: string; key: string; key_id: string } | null;
+  version?: string | null;
+  release?: { wanted: string; running: string | null; current: boolean } | null;
+  created_at?: string;
 };
 
 type ManagedAgentJson = {
@@ -4190,11 +4197,27 @@ export async function enrollConsoleController(
  * minutes. A secret until it is spent.
  */
 export async function issueEnrollmentCode(server: SwitchServer): Promise<string> {
+  return (await issueEnrollment(server)).code;
+}
+
+/**
+ * A one-time enrollment code with when it expires and the address a
+ * controller enrolls against: null when the server has no public address set,
+ * so no command can be given that would reach it.
+ */
+export async function issueEnrollment(
+  server: SwitchServer
+): Promise<{ code: string; expiresAt: string; serverUrl: string | null }> {
   const res = await managementFetch(server, '/enrollment-codes', {
     authenticated: true,
     method: 'POST',
   });
-  return ((await res.json()) as { code: string }).code;
+  const json = (await res.json()) as {
+    code: string;
+    expires_at: string;
+    server_url: string | null;
+  };
+  return { code: json.code, expiresAt: json.expires_at, serverUrl: json.server_url };
 }
 
 /** The signed-in user's controllers (`GET /gateway/management/controllers`). */
@@ -4202,7 +4225,27 @@ export async function fetchManagementControllers(
   server: SwitchServer
 ): Promise<ManagementController[]> {
   const res = await managementFetch(server, '/controllers', { authenticated: true });
-  return ((await res.json()) as ManagementControllerJson[]).map((json) => ({
+  return ((await res.json()) as ManagementControllerJson[]).map(controllerOf);
+}
+
+/**
+ * One of the signed-in user's controllers, revoked ones included
+ * (`GET /gateway/management/controllers/{id}`). A server older than this route
+ * answers 404 without the management envelope, which reads as no agent
+ * management at all, so the list is asked instead.
+ */
+export async function fetchManagementController(
+  server: SwitchServer,
+  controllerId: string
+): Promise<ManagementController> {
+  const res = await managementFetch(server, `/controllers/${encodeURIComponent(controllerId)}`, {
+    authenticated: true,
+  });
+  return controllerOf((await res.json()) as ManagementControllerJson);
+}
+
+function controllerOf(json: ManagementControllerJson): ManagementController {
+  return {
     id: json.id,
     name: json.name,
     description: json.description ?? null,
@@ -4217,7 +4260,91 @@ export async function fetchManagementControllers(
       json.public_key?.alg === 'X25519'
         ? { key: json.public_key.key, keyId: json.public_key.key_id }
         : null,
-  }));
+    report: {
+      createdAt: json.created_at ?? null,
+      version: json.version ?? null,
+      release: json.release ?? null,
+      platform: json.platform
+        ? {
+            os: json.platform.os,
+            arch: json.platform.arch ?? null,
+            osVersion: json.platform.os_version ?? null,
+          }
+        : null,
+      ...statusDetails(json.status),
+    },
+  };
+}
+
+const machineStatusSchema = z.object({
+  sessions_running: z.number(),
+  sessions_max: z.number(),
+  disk_free_bytes: z.number(),
+  disk_total_bytes: z.number(),
+  mem_free_bytes: z.number(),
+  mem_total_bytes: z.number(),
+});
+
+const agentStatusSchema = z.object({
+  agent_id: z.string(),
+  process: z.string(),
+  attached: z.boolean(),
+  sessions: z.object({ active: z.number() }),
+  restarts_10m: z.number(),
+  since: z.string().nullish(),
+  reason: z.string().nullish(),
+  detail: z.string().nullish(),
+});
+
+/**
+ * The machine and agents in a controller's last status report. The server
+ * keeps the report as the controller sent it, so a part this build cannot
+ * read is left out (and logged) rather than shown as something it is not.
+ */
+function statusDetails(status: unknown): Pick<DeviceReport, 'machine' | 'observedAt' | 'agents'> {
+  if (!status || typeof status !== 'object') return { machine: null, observedAt: null, agents: [] };
+  const report = status as { machine?: unknown; agents?: unknown; observed_at?: unknown };
+  const machine = machineStatusSchema.safeParse(report.machine);
+  if (report.machine !== undefined && !machine.success)
+    log.warn('A controller status report has a machine entry Console cannot read', {
+      error: machine.error.message,
+    });
+  const agents = (Array.isArray(report.agents) ? report.agents : []).flatMap((entry: unknown) => {
+    const parsed = agentStatusSchema.safeParse(entry);
+    if (!parsed.success) {
+      log.warn('A controller status report has an agent entry Console cannot read', {
+        error: parsed.error.message,
+      });
+      return [];
+    }
+    const agent = parsed.data;
+    return [
+      {
+        agentId: agent.agent_id,
+        process: agent.process,
+        attached: agent.attached,
+        activeSessions: agent.sessions.active,
+        restarts10m: agent.restarts_10m,
+        since: agent.since ?? null,
+        reason: agent.reason ?? null,
+        detail: agent.detail ?? null,
+      },
+    ];
+  });
+  return {
+    machine: machine.success
+      ? {
+          sessionsRunning: machine.data.sessions_running,
+          sessionsMax: machine.data.sessions_max,
+          diskFreeBytes: machine.data.disk_free_bytes,
+          diskTotalBytes: machine.data.disk_total_bytes,
+          memFreeBytes: machine.data.mem_free_bytes,
+          memTotalBytes: machine.data.mem_total_bytes,
+        }
+      : null,
+    observedAt: typeof report.observed_at === 'string' ? report.observed_at : null,
+    agents,
+  };
 }
 
 /**

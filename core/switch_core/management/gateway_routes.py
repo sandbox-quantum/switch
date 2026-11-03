@@ -103,6 +103,15 @@ async def list_controllers(
     return await management.list_controllers(session, require_tenant_id(), user.id)
 
 
+@router.get("/controllers/{controller_id}")
+async def get_controller(
+    controller_id: str, session: Session, user: CurrentUser, management: Management
+) -> dict[str, Any]:
+    return await management.get_controller(
+        session, require_tenant_id(), user.id, controller_id
+    )
+
+
 @router.patch("/controllers/{controller_id}")
 async def update_controller(
     controller_id: str,

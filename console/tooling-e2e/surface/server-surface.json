@@ -591,6 +591,13 @@
       ]
     },
     {
+      "route": "GET /gateway/management/controllers/{controller_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
       "route": "GET /gateway/management/controllers/{controller_id}/provider-logins",
       "auth": "session",
       "flags": [

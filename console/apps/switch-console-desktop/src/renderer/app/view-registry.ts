@@ -4,6 +4,7 @@ import { adminView } from '@renderer/features/admin/admin-view';
 import { chatView } from '@renderer/features/chats/chat-view';
 import { connectorsView } from '@renderer/features/connectors/connectors-view';
 import { locationView } from '@renderer/features/locations/view';
+import { deviceView } from '@renderer/features/devices/device-view';
 import { managedAgentView } from '@renderer/features/managed-agents/managed-agent-view';
 import { remoteHostView } from '@renderer/features/remote-hosts/views/remote-host-view';
 import { remoteHostsView } from '@renderer/features/remote-hosts/views/remote-hosts-view';
@@ -42,6 +43,7 @@ export const views = {
   serverRooms: serverRoomsView,
   remoteHosts: remoteHostsView,
   remoteHost: remoteHostView,
+  device: deviceView,
   templateImport: templateImportView,
   templates: templatesView,
   templateDetail: templateDetailView,

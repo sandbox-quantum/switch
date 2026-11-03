@@ -1,5 +1,8 @@
 import { ChevronDown, CircleAlert, Cloud, Laptop, Server } from 'lucide-react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { Button } from '@renderer/lib/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { cn } from '@renderer/utils/utils';
 import {
@@ -85,6 +88,8 @@ function MachineCard({
         ? `SSH host · ${machine.local.sshHost}`
         : (agent.machine?.kind ?? null);
   const readyProviders = machine?.providers.filter((entry) => entry.ready).length ?? 0;
+  const showMove = useShowModal('moveManagedAgentModal');
+  const { navigate } = useNavigate();
   return (
     <>
       <div className="flex items-start gap-3">
@@ -124,6 +129,22 @@ function MachineCard({
                   : `${readyProviders} of ${machine.providers.length} providers ready`}
         </dd>
       </dl>
+      <div className="flex gap-2">
+        <Button size="sm" variant="outline" onClick={() => showMove({ agent })}>
+          Move to another device…
+        </Button>
+        {agent.machine && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              navigate('device', { serverId: agent.serverId, machineId: agent.machine!.id })
+            }
+          >
+            Open device
+          </Button>
+        )}
+      </div>
     </>
   );
 }

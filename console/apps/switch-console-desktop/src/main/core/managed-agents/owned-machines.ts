@@ -1,6 +1,7 @@
 import type { ControllerProviderReport } from '@main/core/switch-servers/controller-provider-report';
 import type { ManagementController } from '@main/core/switch-servers/gateway-client';
 import {
+  type DeviceDetail,
   isCloudMachine,
   type MachineProvider,
   type OwnedMachine,
@@ -42,26 +43,46 @@ export function ownedMachines(
 ): OwnedMachine[] {
   return controllers
     .filter((controller) => controller.state !== 'revoked')
-    .map((controller): OwnedMachine => {
-      const sshHost = local.sshHosts.find((host) => host.controllerId === controller.id)?.sshHost;
-      return {
-        id: controller.id,
-        name: controller.name,
-        kind: controller.kind,
-        state: controller.state,
-        providers: controller.providers.map(machineProvider),
-        acceptsLogins: controller.sealingKey !== null,
-        cloud: isCloudMachine(controller),
-        workspacesDir: controller.workspacesDir,
-        os: controller.os,
-        local:
-          controller.id === local.thisComputer
-            ? { kind: 'this-computer' }
-            : sshHost
-              ? { kind: 'ssh-host', sshHost }
-              : null,
-      };
-    });
+    .map((controller) => ownedMachine(controller, local));
+}
+
+/** One of the owner's controllers as a machine, told apart as this computer or one of its SSH hosts. */
+export function ownedMachine(
+  controller: ManagementController,
+  local: LocalControllers
+): OwnedMachine {
+  const sshHost = local.sshHosts.find((host) => host.controllerId === controller.id)?.sshHost;
+  return {
+    id: controller.id,
+    name: controller.name,
+    kind: controller.kind,
+    state: controller.state,
+    providers: controller.providers.map(machineProvider),
+    acceptsLogins: controller.sealingKey !== null,
+    cloud: isCloudMachine(controller),
+    workspacesDir: controller.workspacesDir,
+    os: controller.os,
+    local:
+      controller.id === local.thisComputer
+        ? { kind: 'this-computer' }
+        : sshHost
+          ? { kind: 'ssh-host', sshHost }
+          : null,
+  };
+}
+
+/** One of the owner's controllers as its device page shows it. */
+export function deviceDetail(
+  controller: ManagementController,
+  local: LocalControllers
+): DeviceDetail {
+  return {
+    ...ownedMachine(controller, local),
+    description: controller.description,
+    lastSeenAt: controller.lastSeenAt,
+    revokedAt: controller.revokedAt,
+    report: controller.report,
+  };
 }
 
 /**

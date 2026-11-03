@@ -9,9 +9,12 @@ import { RenameChatModal } from '@renderer/features/chats/components/chat-modals
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
 import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
+import { AddDeviceDialog } from '@renderer/features/devices/add-device-dialog';
+import { EditDeviceDialog, RemoveDeviceDialog } from '@renderer/features/devices/device-dialogs';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
+import { MoveAgentDialog } from '@renderer/features/managed-agents/move-agent-dialog';
 import { AddHostModal } from '@renderer/features/remote-hosts/add-host-modal';
 import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-agent-config-modal';
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
@@ -109,6 +112,10 @@ export const modalRegistry = {
   connectChatModal: createModal(ConnectChatModal, { size: 'md' }),
   connectServiceModal: createModal(ConnectServiceModal, { size: 'md' }),
   disconnectServiceModal: createModal(DisconnectServiceDialog, { size: 'sm' }),
+  moveManagedAgentModal: createModal(MoveAgentDialog, { size: 'sm' }),
+  addDeviceModal: createModal(AddDeviceDialog, { size: 'md', dismissOnOutsideClick: false }),
+  editDeviceModal: createModal(EditDeviceDialog, { size: 'sm' }),
+  removeDeviceModal: createModal(RemoveDeviceDialog, { size: 'sm' }),
   connectorAppSetupModal: createModal(ConnectorAppSetupDialog, {
     size: 'md',
     dismissOnOutsideClick: false,

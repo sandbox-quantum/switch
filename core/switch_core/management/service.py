@@ -803,6 +803,22 @@ class ManagementService:
             for controller in controllers
         ]
 
+    async def get_controller(
+        self, session: AsyncSession, tenant_id: str, owner_id: str, controller_id: str
+    ) -> dict[str, Any]:
+        """One of the caller's controllers, as the list shows it. A revoked one
+        is still served: its agents stay shown against it until they are moved."""
+        controller = await self.owned_controller(
+            session, tenant_id, owner_id, controller_id
+        )
+        leases = await self.leases(session)
+        return controller_view(
+            controller,
+            self.state_of(controller, leases),
+            leases,
+            self.settings.controller_release,
+        )
+
     async def update_controller(
         self,
         session: AsyncSession,

@@ -134,6 +134,53 @@ export type OwnedMachine = ManagedMachine & {
   local: MachineLocal;
 };
 
+/** A controller's own report about itself and its agents, as its device page shows it. */
+export type DeviceReport = {
+  createdAt: string | null;
+  /** The controller release it last reported running. */
+  version: string | null;
+  /** The release Switch tells it to run, and whether it runs it; null when it is told none. */
+  release: { wanted: string; running: string | null; current: boolean } | null;
+  platform: { os: string; arch: string | null; osVersion: string | null } | null;
+  /** The machine's resources and sessions as it last reported them; null before it has. */
+  machine: {
+    sessionsRunning: number;
+    sessionsMax: number;
+    diskFreeBytes: number;
+    diskTotalBytes: number;
+    memFreeBytes: number;
+    memTotalBytes: number;
+  } | null;
+  /** When it last reported; null before it has. */
+  observedAt: string | null;
+  /** Each agent it last reported on. */
+  agents: DeviceAgentReport[];
+};
+
+/** One agent in a controller's last status report. */
+export type DeviceAgentReport = {
+  agentId: string;
+  process: string;
+  attached: boolean;
+  activeSessions: number;
+  restarts10m: number;
+  since: string | null;
+  reason: string | null;
+  detail: string | null;
+};
+
+/**
+ * One of the owner's devices as its page shows it: what the list says, plus
+ * its description, when it was last heard from, and its last report. Unlike
+ * the list, a revoked device is shown, since agents can still be placed on it.
+ */
+export type DeviceDetail = OwnedMachine & {
+  description: string | null;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+  report: DeviceReport;
+};
+
 /** The settings a managed agent's page changes; a field left out stays as the server holds it. */
 export type ManagedAgentChanges = {
   definition: Partial<ManagedAgentView['definition']>;

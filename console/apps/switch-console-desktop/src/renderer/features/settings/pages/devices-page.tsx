@@ -1,12 +1,16 @@
-import { Cloud, Laptop, Server } from 'lucide-react';
+import { ChevronRight, Cloud, Laptop, Plus, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import {
   useManagedAgents,
   useOwnedMachines,
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { RemoteHostsSettingsPage } from '@renderer/features/remote-hosts/views/remote-hosts-view';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { type DeviceRow, type DeviceType, deviceRows } from './devices';
@@ -34,13 +38,25 @@ const STATE_TONE: Record<DeviceRow['state'], StatusTone> = {
 export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
   const { server, user } = settingsServer();
   const agentManagement = useFeatureFlags(server?.id ?? null).agent_management;
+  const showAddDevice = useShowModal('addDeviceModal');
+  const workspaceId = server ? workspacesStore.idOnServerInScope(server.id) : null;
   return (
     <div className="space-y-8 pb-10">
       <PageHeader
         sticky
         title="Your devices"
         description="The devices you own and the agents that can run on them."
-      />
+      >
+        {server && user && agentManagement && workspaceId && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => showAddDevice({ serverId: server.id, workspaceId })}
+          >
+            <Plus className="size-4" /> Add device
+          </Button>
+        )}
+      </PageHeader>
       {server && user && agentManagement && <MachinesTable serverId={server.id} />}
       <RemoteHostsSettingsPage embedded />
     </div>
@@ -50,6 +66,7 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
 const MachinesTable = observer(function MachinesTable({ serverId }: { serverId: string }) {
   const machines = useOwnedMachines(serverId);
   const agents = useManagedAgents(serverId);
+  const { navigate } = useNavigate();
   if (machines.isLoading) {
     return (
       <div className="flex items-center gap-2 text-sm text-foreground-muted">
@@ -78,13 +95,18 @@ const MachinesTable = observer(function MachinesTable({ serverId }: { serverId: 
             <th className="px-3 py-2 font-normal">Type</th>
             <th className="px-3 py-2 font-normal">Agents</th>
             <th className="px-3 py-2 font-normal">Platform</th>
+            <th className="w-8" />
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => {
             const type = TYPE[row.type];
             return (
-              <tr key={row.id} className="border-b border-border last:border-b-0">
+              <tr
+                key={row.id}
+                className="cursor-pointer border-b border-border last:border-b-0 hover:bg-background-1"
+                onClick={() => navigate('device', { serverId, machineId: row.id })}
+              >
                 <td className="px-3 py-2">
                   <div className="text-foreground">{row.name}</div>
                   {row.detail && <div className="text-xs text-foreground-muted">{row.detail}</div>}
@@ -100,6 +122,9 @@ const MachinesTable = observer(function MachinesTable({ serverId }: { serverId: 
                 </td>
                 <td className="px-3 py-2 text-foreground tabular-nums">{row.agents}</td>
                 <td className="px-3 py-2 text-foreground-muted">{row.platform ?? '—'}</td>
+                <td className="px-2 py-2 text-foreground-muted">
+                  <ChevronRight className="size-4" aria-label={`Open ${row.name}`} />
+                </td>
               </tr>
             );
           })}

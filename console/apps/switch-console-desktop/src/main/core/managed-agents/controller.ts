@@ -14,12 +14,16 @@ import {
   fetchAdvancedConfigSchema,
   fetchManagedAgents,
   fetchMachineOperation,
+  fetchManagementController,
   fetchManagementControllers,
   GatewayError,
   giveMachineLogin,
+  issueEnrollment,
   managementErrorMessage,
+  revokeManagementController,
   setManagedAgentDesiredState,
   updateManagedAgent,
+  updateManagementController,
 } from '@main/core/switch-servers/gateway-client';
 import {
   localGoogleCredentialsPath,
@@ -34,6 +38,7 @@ import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-stor
 import { log } from '@main/lib/logger';
 import type {
   AdvancedConfigField,
+  DeviceDetail,
   ManagedAgentChanges,
   ManagedAgentView,
   MachineLoginInput,
@@ -44,13 +49,27 @@ import type {
 } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { ownedMachines, preferredFirst, thisComputerReport } from './owned-machines';
+import {
+  deviceDetail,
+  type LocalControllers,
+  ownedMachines,
+  preferredFirst,
+  thisComputerReport,
+} from './owned-machines';
 
-async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
+async function localControllersOn(serverId: string): Promise<LocalControllers> {
   const [thisComputer, hosts] = await Promise.all([
     embeddedControllerService.enrolledControllerId(serverId),
     hostControllerService.recordsOn(serverId),
   ]);
+  return {
+    thisComputer,
+    sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
+  };
+}
+
+async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
+  const local = await localControllersOn(serverId);
   return withReachableServerWorkspaceSession(serverId, async (server) => {
     let controllers;
     try {
@@ -59,11 +78,15 @@ async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
       if (error instanceof AgentManagementUnavailableError) return null;
       throw error;
     }
-    return ownedMachines(controllers, {
-      thisComputer,
-      sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
-    });
+    return ownedMachines(controllers, local);
   });
+}
+
+/** A refusal Switch explains (a 4xx) in its own words; anything else as it came. */
+function inSwitchsWords(error: unknown): unknown {
+  return error instanceof GatewayError && error.status !== undefined && error.status < 500
+    ? new Error(managementErrorMessage(error))
+    : error;
 }
 
 /**
@@ -133,6 +156,64 @@ export const managedAgentsController = createRPCController({
    * last reported. Null when the server does not run agent management.
    */
   machines: (serverId: string): Promise<OwnedMachine[] | null> => machinesOn(serverId),
+
+  /** One of the owner's devices, revoked ones included, with its last report. */
+  device: async (params: { serverId: string; machineId: string }): Promise<DeviceDetail> => {
+    const local = await localControllersOn(params.serverId);
+    return withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      try {
+        return deviceDetail(await fetchManagementController(server, params.machineId), local);
+      } catch (error) {
+        throw inSwitchsWords(error);
+      }
+    });
+  },
+
+  /**
+   * A one-time code to enroll another computer with from its command line,
+   * with when it expires and the address to enroll against (null when the
+   * server has none set).
+   */
+  enrollmentCode: (
+    serverId: string
+  ): Promise<{ code: string; expiresAt: string; serverUrl: string | null }> =>
+    withReachableServerWorkspaceSession(serverId, (server) => issueEnrollment(server)),
+
+  /** Renames a device or changes its description; `description: null` clears it. */
+  updateDevice: (params: {
+    serverId: string;
+    machineId: string;
+    changes: { name?: string; description?: string | null };
+  }): Promise<void> =>
+    withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      try {
+        await updateManagementController(server, params.machineId, params.changes);
+      } catch (error) {
+        throw inSwitchsWords(error);
+      }
+    }),
+
+  /**
+   * Removes a device from the owner's devices: Switch revokes its controller,
+   * which then stops. Agents placed on it stay placed there until moved. This
+   * computer and this Console's SSH hosts are turned off the way their own
+   * screens do it, so Console stops running their controllers too, and
+   * refuses while they run agents this Console moved there.
+   */
+  removeDevice: async (params: { serverId: string; machineId: string }): Promise<void> => {
+    const local = await localControllersOn(params.serverId);
+    if (local.thisComputer === params.machineId)
+      return embeddedControllerService.disable(params.serverId);
+    const host = local.sshHosts.find((entry) => entry.controllerId === params.machineId);
+    if (host) return hostControllerService.disable(host.sshHost, params.serverId, { force: false });
+    await withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      try {
+        await revokeManagementController(server, params.machineId);
+      } catch (error) {
+        throw inSwitchsWords(error);
+      }
+    });
+  },
 
   /**
    * This computer's providers as its controller last reported them to a
@@ -229,9 +310,7 @@ export const managedAgentsController = createRPCController({
             : {}),
         });
       } catch (error) {
-        if (error instanceof GatewayError && error.status !== undefined && error.status < 500)
-          throw new Error(managementErrorMessage(error));
-        throw error;
+        throw inSwitchsWords(error);
       }
     }),
 

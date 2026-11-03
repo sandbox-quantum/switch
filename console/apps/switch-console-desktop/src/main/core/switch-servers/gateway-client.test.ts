@@ -120,7 +120,9 @@ const {
   managementErrorMessage,
   revokeManagementController,
   updateManagementController,
+  fetchManagementController,
   fetchManagementControllers,
+  issueEnrollment,
   giveMachineLogin,
   fetchMachineOperation,
   fetchAgentManagementAccess,
@@ -3306,6 +3308,119 @@ describe('agent management calls', () => {
     expect(url).toBe('https://switch.example.com/gateway/management/controllers/controller-1');
     expect(init.method).toBe('PATCH');
     expect(JSON.parse(String(init.body))).toEqual({ name: 'laptop', description: null });
+  });
+
+  it('reads one machine with its last report, leaving out what it cannot read', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, {
+        id: 'controller-1',
+        name: 'box',
+        description: null,
+        kind: 'daemon',
+        state: 'revoked',
+        last_seen_at: '2026-11-01T10:00:00Z',
+        revoked_at: '2026-11-02T10:00:00Z',
+        created_at: '2026-10-01T10:00:00Z',
+        version: '1.4.0',
+        release: { wanted: '1.5.0', running: '1.4.0', current: false },
+        platform: { os: 'linux', arch: 'x64', os_version: '6.8' },
+        status: {
+          observed_at: '2026-11-01T09:59:00Z',
+          machine: {
+            platform: { os: 'linux', arch: 'x64', os_version: '6.8' },
+            disk_free_bytes: 10,
+            disk_total_bytes: 100,
+            mem_free_bytes: 20,
+            mem_total_bytes: 200,
+            sessions_running: 2,
+            sessions_max: 8,
+          },
+          providers: [],
+          agents: [
+            {
+              agent_id: 'agent-1',
+              process: 'running',
+              attached: true,
+              sessions: { active: 2, ids: ['a', 'b'] },
+              restarts_10m: 1,
+              oom_kills: 0,
+              since: '2026-11-01T09:00:00Z',
+            },
+            { agent_id: 'agent-2', process: 'running' },
+          ],
+        },
+      })
+    );
+    const machine = await fetchManagementController(SERVER, 'controller-1');
+    const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/management/controllers/controller-1');
+    expect(machine.state).toBe('revoked');
+    expect(machine.report).toEqual({
+      createdAt: '2026-10-01T10:00:00Z',
+      version: '1.4.0',
+      release: { wanted: '1.5.0', running: '1.4.0', current: false },
+      platform: { os: 'linux', arch: 'x64', osVersion: '6.8' },
+      machine: {
+        sessionsRunning: 2,
+        sessionsMax: 8,
+        diskFreeBytes: 10,
+        diskTotalBytes: 100,
+        memFreeBytes: 20,
+        memTotalBytes: 200,
+      },
+      observedAt: '2026-11-01T09:59:00Z',
+      agents: [
+        {
+          agentId: 'agent-1',
+          process: 'running',
+          attached: true,
+          activeSessions: 2,
+          restarts10m: 1,
+          since: '2026-11-01T09:00:00Z',
+          reason: null,
+          detail: null,
+        },
+      ],
+    });
+  });
+
+  it('reads a machine that has not reported as having no report', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, {
+        id: 'controller-1',
+        name: 'box',
+        description: null,
+        kind: 'console',
+        state: 'unknown',
+        last_seen_at: null,
+        revoked_at: null,
+        status: null,
+      })
+    );
+    const machine = await fetchManagementController(SERVER, 'controller-1');
+    expect(machine.report).toEqual({
+      createdAt: null,
+      version: null,
+      release: null,
+      platform: null,
+      machine: null,
+      observedAt: null,
+      agents: [],
+    });
+  });
+
+  it('issues an enrollment code with its expiry and the address to enroll against', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(201, { code: 'swe_abc', expires_at: '2026-11-03T10:10:00Z', server_url: null })
+    );
+    expect(await issueEnrollment(SERVER)).toEqual({
+      code: 'swe_abc',
+      expiresAt: '2026-11-03T10:10:00Z',
+      serverUrl: null,
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/enrollment-codes');
+    expect(init.method).toBe('POST');
   });
 
   it('reads the key a machine takes logins sealed to, and gives it one', async () => {

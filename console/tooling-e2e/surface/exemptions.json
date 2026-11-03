@@ -14,6 +14,7 @@
     "GET /gateway/docs": "FastAPI's generated API documentation; no behaviour of Switch's own to cover.",
     "GET /gateway/docs/oauth2-redirect": "FastAPI's generated API documentation; no behaviour of Switch's own to cover.",
     "GET /gateway/hosted-controller/machines": "Needs a hosted controller configured (HOSTED_CONTROLLER_CONFIG_PATH), which no stack the harness builds has.",
+    "GET /gateway/management/controllers/{controller_id}": "One of your own devices, as Switch Console's device page reads it. Covered by core's test_gateway_routes.py against real Postgres; no scenario opens a device page yet.",
     "GET /gateway/openapi.json": "FastAPI's generated API documentation; no behaviour of Switch's own to cover.",
     "GET /gateway/organizations/current/connector-apps": "An organization's own connector apps, behind the organization_connector_apps flag (off by default), which no stack the harness builds turns on; saving or checking one also needs a real vendor app. Covered by core's test_organization_connector_apps.py against real Postgres.",
     "GET /gateway/organizations/current/connector-apps/{service}/impact": "An organization's own connector apps, behind the organization_connector_apps flag (off by default), which no stack the harness builds turns on; saving or checking one also needs a real vendor app. Covered by core's test_organization_connector_apps.py against real Postgres.",
