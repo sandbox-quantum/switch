@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ExternalLink, FileText, Loader2, Lock, RefreshCw } from 'lucide-react';
+import { Archive, FileText, Loader2, Lock, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { confirmLeaveChat } from '@renderer/features/chats/components/chat-actions';
@@ -22,7 +22,6 @@ import { type ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { roomTitle } from './room-labels';
-import { openRoomChannel } from './room-links';
 import { roomDetailKey } from './room-participants';
 import {
   AccessAndGroupFields,
@@ -168,8 +167,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
   const permissions = switchRoomsStore.roomPermissions(workspaceId, room);
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-[1080px] gap-10 px-10 py-8">
-        <SettingsIndex />
+      <div className="mx-auto flex w-full max-w-[880px] gap-10 px-10 py-8">
         <div className="flex min-w-0 flex-1 flex-col gap-8">
           <RoomHeading serverId={switchRoomsStore.roomServerId(roomId)} room={room} />
           {room.archived && (
@@ -207,36 +205,6 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
     </div>
   );
 });
-
-const SETTINGS_SECTIONS = [
-  ['room-settings-general', 'General'],
-  ['room-settings-roles', 'Roles'],
-  ['room-settings-info', 'Room info'],
-  ['room-settings-archive', 'Archive & delete'],
-] as const;
-
-/** The page's sections, to jump between; it stays put while the page scrolls. */
-function SettingsIndex() {
-  return (
-    <nav
-      aria-label="Room settings sections"
-      className="sticky top-0 hidden w-[150px] shrink-0 self-start pt-1 lg:block"
-    >
-      {SETTINGS_SECTIONS.map(([id, label]) => (
-        <button
-          key={id}
-          type="button"
-          className="block w-full cursor-pointer rounded-md px-2.5 py-1.5 text-left text-sm text-foreground-muted hover:bg-background-1 hover:text-foreground"
-          onClick={() =>
-            document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-          }
-        >
-          {label}
-        </button>
-      ))}
-    </nav>
-  );
-}
 
 function Notice({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
   return (
@@ -300,44 +268,23 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
   );
 });
 
+/**
+ * What the settings page itself offers about the room. Its name, where it
+ * lives and the way to its channel are in the title bar above.
+ */
 function RoomHeading({ serverId, room }: { serverId: string | null; room: RemoteRoomDetail }) {
-  const platform = bridgePlatformLabel(room.bridgeType);
   const { navigate } = useNavigate();
+  if (serverId === null) return null;
   return (
-    <div className="flex items-start justify-between gap-4">
-      <div className="flex min-w-0 flex-col gap-1">
-        <h1 className="truncate text-2xl font-semibold text-foreground">{roomTitle(room)}</h1>
-        <p className="text-sm text-foreground-muted">
-          {room.bridgeDisplayName
-            ? `Room bridged to ${room.bridgeDisplayName}`
-            : 'Room with no messaging app'}
-        </p>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        {serverId !== null && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => navigate('templateCapture', { serverId, roomId: room.id })}
-          >
-            <FileText className="size-3.5" />
-            Capture as template
-          </Button>
-        )}
-        {room.externalChannelUrl && (
-          <>
-            {room.bridgeDisplayName && (
-              <span className="rounded-md bg-[var(--fill)] px-2.5 py-1.5 text-xs text-foreground-muted">
-                {room.bridgeDisplayName}
-              </span>
-            )}
-            <Button variant="outline" size="sm" onClick={() => openRoomChannel(room.id)}>
-              <ExternalLink className="size-3.5" />
-              Open in {platform}
-            </Button>
-          </>
-        )}
-      </div>
+    <div className="flex justify-end">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => navigate('templateCapture', { serverId, roomId: room.id })}
+      >
+        <FileText className="size-3.5" />
+        Capture as template
+      </Button>
     </div>
   );
 }
