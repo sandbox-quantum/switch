@@ -58,9 +58,9 @@ messages as you can.
 
 1. **Their job.** One short follow-up only if it is too vague to suggest anything.
 2. **Suggest one to three agents**, one line each: what it does for them, and one
-   question they could ask it. Prefer a template that fits their job
-   (`list_templates`, `get_template`); otherwise design the agent: a name, a short
-   description, focused instructions.
+   question they could ask it. Prefer a template that fits their job, including
+   ones their workspace saved (`list_templates`, `get_template`); otherwise design
+   the agent: a name, a short description, focused instructions.
 3. **Create the ones they pick**, after a yes to one proposal message (see "Always
    propose first"): state defaults for where it runs, its folder and asking before
    risky actions, and let them override any. `run_template` for a template,
