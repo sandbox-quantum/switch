@@ -25,26 +25,29 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_intercom():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "intercom",
     }
-    assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
+    assert sorted([slug for slug, entry in CATALOG.items() if entry.definition.enabled]) == [
         "airtable",
         "atlassian",
         "datadog",
         "github",
         "google-workspace",
+        "intercom",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["intercom"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
