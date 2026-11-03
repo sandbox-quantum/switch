@@ -1,8 +1,8 @@
-import type { AgentIconAsset } from "@switch-console/core/agents/plugins";
+import type { AgentIconAsset } from '@switch-console/core/agents/plugins';
 
 export const icon: AgentIconAsset = {
-  kind: "svg",
-  alt: "Kimi Code CLI",
+  kind: 'svg',
+  alt: 'Kimi Code CLI',
   invertInDark: true,
   variants: [
     {
