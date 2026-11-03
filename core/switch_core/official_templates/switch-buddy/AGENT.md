@@ -75,12 +75,13 @@ The goal: a useful answer from their own agent, in as few messages as you can.
      `your_account_link` is `none`, they link from
      [the server's home](switchdash://open/home) and send `/link_account CODE` in
      that group; until then owner-only agents ignore them.
-   - **Teams:** `create_room` only if the connection has a default team and
+   - **Teams:** as below if the connection has a default team and
      `can_create_channels`; else they add the Switch app to a chat or channel and
      send `!invite-agent @<agent-name>` there.
    - **Otherwise:** `create_room` with the chat's `bridge_id` (`get_room_detail` of
      the room `list_rooms` marks `connected`), `channel_type` "channel_private",
-     their username in `user_names` (see "Adding people to a room").
+     `read_visibility` and `write_visibility` "private", their username in
+     `user_names` (see "Adding people to a room").
 6. **Get the first answer.** `connect_to_room` the new room, ask the agent the
    example question with `send_targeted_message`, `connect_to_room` this chat
    again, and tell them to look there.

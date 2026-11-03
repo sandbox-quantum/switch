@@ -3,6 +3,7 @@ package, the document chosen by the agent_management flag, never changed."""
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -259,3 +260,16 @@ def test_switch_buddy_s_icon_is_in_the_repository_where_its_link_points():
         f"{path.relative_to(_REPO)} is gone, and every switch-buddy's icon links "
         "to it there. Put it back: older releases go on creating buddies with this link."
     )
+
+
+def test_switch_buddy_makes_every_private_room_private_in_switch():
+    """create_room defaults read and write visibility to public whatever the
+    channel type, so a private onboarding room must name both as private or
+    workspace nonmembers can find it and change its instructions."""
+    text = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
+    items = re.split(r"\n\s*(?:- |\d+\. )", text)
+    private_rooms = [i for i in items if "channel_private" in i or "include_owner" in i]
+    assert len(private_rooms) >= 2
+    for item in private_rooms:
+        item = " ".join(item.split())
+        assert '`read_visibility` and `write_visibility` "private"' in item, item
