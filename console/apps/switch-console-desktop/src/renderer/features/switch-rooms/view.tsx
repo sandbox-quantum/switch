@@ -16,6 +16,7 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { cn } from '@renderer/utils/utils';
 import { RoomConfigurationPanel } from './room-configuration-panel';
 import { roomEmbedSlotStore } from './room-embed-slot';
 import { openRoomChannel } from './room-links';
@@ -114,7 +115,9 @@ const RoomTitlebar = observer(function RoomTitlebar() {
     <Titlebar
       // The same frame as a room opened on an agent's page: inset from the
       // edge, a rule under it, the tabs at the right so they stay put.
-      className="border-b border-border pr-[7px] pl-4"
+      // A description is a second line, so the bar grows to keep the same
+      // space above and below as a one-line bar has.
+      className={cn('border-b border-border pr-[7px] pl-4', description && 'h-[60px]')}
       leftClassName="min-w-0 flex-1"
       leftSlot={
         // The description goes under the name, never beside it, so however
