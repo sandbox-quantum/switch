@@ -10,8 +10,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import nightly  # noqa: E402
 from nightly import (  # noqa: E402
     Config,
+    Night,
     build_of,
     combine,
     compare,
@@ -118,7 +120,8 @@ def test_workers_add_up_by_position_and_the_first_broken_step_is_named():
     # one step later: rows stop where the earliest worker stopped.
     rows = combine(cfg, [_worker(cfg, broke_at=7), _worker(cfg, broke_at=6)])
     assert [r["label"] for r in rows][:2] == ["idle", "every 30 min"]
-    assert rows[-1]["label"] == "300 msg/s" and rows[-1]["broken"] == "p99 25.0 s"
+    assert rows[-1]["label"] == "300 msg/s"
+    assert rows[-1]["broken"] == "p99 25.0 s (worker 2)"
     assert rows[1]["sent_per_s"] == pytest.approx(2 * cfg.worker_rates()[0], abs=0.01)
     assert rows[1]["pod_cpu_avg_pct"] == 45.0 and rows[1]["pod_cpu_busiest_pct"] == 50.0
     v = verdict(rows, cfg, [])
@@ -236,3 +239,34 @@ def test_a_file_bucket_keeps_a_rehearsals_records_in_a_directory(tmp_path):
 def test_no_node_group_prefix_sizes_nothing():
     # No AWS call: boto3 is not even installed where the tests run.
     size_nodegroup(_cfg(CORE_NODEGROUP=""), "", 4)
+
+
+def test_one_worker_over_the_harness_error_limit_breaks_the_step():
+    # One worker past run.broken's 20 errors stops stepping; the combined row
+    # must say so, or the night reads as unfinished (the review's case).
+    cfg = _cfg(WORKERS="2", AGENTS="2000", CONTROLLERS="100")
+    a, b = _worker(cfg), _worker(cfg)[:7]
+    b[-1]["errors"] = 25
+    rows = combine(cfg, [a, b])
+    assert (
+        rows[-1]["label"] == "250 msg/s"
+        and rows[-1]["broken"] == "25 errors (worker 2)"
+    )
+    v = verdict(rows, cfg, [])
+    assert v["complete"] and v["held_per_s"] == 150 and v["broke_at_per_s"] == 250
+
+
+def test_a_night_that_could_not_read_the_cluster_still_reports(monkeypatch, tmp_path):
+    def unreachable(cfg):
+        raise RuntimeError("kubectl get deployment: the server is unreachable")
+
+    monkeypatch.setattr(nightly, "core_state", unreachable)
+    cfg = _cfg()
+    night = Night(cfg, datetime(2026, 11, 4, 2, 0, tzinfo=UTC), "n1", tmp_path)
+    night.failures.append("the run failed: RuntimeError: unreachable")
+    result = night.result()
+    assert result["build"] == "unknown" and result["rows"] == []
+    assert not result["verdict"]["ok"]
+    assert any("could not read switch-core" in n for n in result["notes"])
+    text = report_text(result, cfg, [])
+    assert text.startswith("❌") and "no numbers tonight" in text

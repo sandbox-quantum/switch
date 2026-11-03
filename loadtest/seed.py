@@ -59,6 +59,10 @@ class SeededAgent:
     key: str  # the agent's own API key; memory only
 
 
+class NoWorkspace(RuntimeError):
+    """The workspace a run was told to use is not there, and it may not make it."""
+
+
 class Admin:
     """The gateway, signed in as the environment's admin."""
 
@@ -87,10 +91,10 @@ class Admin:
         if not self._cookie:
             raise RuntimeError("admin sign-in returned no switch_auth cookie")
 
-    async def use_workspace(self, name: str) -> dict:
+    async def use_workspace(self, name: str, create: bool = True) -> dict:
         """Bind this session to the admin's workspace called `name`, made as
-        an organization of its own when there is none, then put the admin's
-        own selection back.
+        an organization of its own when there is none (unless `create` is
+        false: then NoWorkspace), then put the admin's own selection back.
 
         Signing in selects the workspace the admin last switched to, so
         without that, whoever signs in as the admin while a run is going, a
@@ -110,6 +114,8 @@ class Admin:
             r = await self.call("POST", f"/tenants/{workspace['id']}/switch")
             if r.status_code != 200:
                 raise _fail(f"switching to the workspace {name}", r)
+        elif not create:
+            raise NoWorkspace(f"the admin has no workspace named {name}")
         else:
             r = await self.call("POST", "/organizations", json={"name": name})
             if r.status_code != 201:

@@ -46,9 +46,17 @@ import httpx
 
 HERE = Path(__file__).parent
 RUNS = HERE / "runs"
+sys.path.insert(0, str(HERE))
+
+from run import broken as window_broken  # noqa: E402
+
 # A worker's log lines that say where it is.
 WAITING = "waiting for"
 FAILED = ("run failed", "Traceback", "refused:")
+BROKE = " broke ("
+# Seconds between starting one worker and the next, so their sign-ins and
+# workspace switches do not overlap, nor their agents' first connects.
+STAGGER = 3.0
 CONNECTED = re.compile(r"step \d+: (\d+)/(\d+) agents connected")
 # Below this share of its agents connected, a worker's kept batch is taken as
 # gone (deleted, or the database replaced), and the night makes them again.
@@ -221,6 +229,7 @@ def _median(xs: list[float]) -> float | None:
 def combine(cfg: Config, worker_summaries: list[list[dict]]) -> list[dict]:
     """One row per measured window, adding the workers up by position: each
     worker names its windows by its own share of the rate, in the same order.
+    A row is broken when any worker's window is.
 
     Rates, deliveries, errors and missing deliveries are summed. Delivery p99
     is the worst worker's, an upper bound on the true combined p99, and p50
@@ -247,13 +256,16 @@ def combine(cfg: Config, worker_summaries: list[list[dict]]) -> list[dict]:
         p99 = max((p["delivery_ms_p99"] or 0) for p in ph)
         errors = sum(p["errors"] for p in ph)
         missing = sum(p["deliveries_missing"] for p in ph)
-        why = None
-        if missing:
-            why = f"{missing} deliveries lost"
-        elif p99 > 20000:
-            why = f"p99 {p99 / 1000:.1f} s"
-        elif errors > 20 * len(ph):
-            why = f"{errors} errors"
+        # Broken when any worker's window broke by the harness's own rule
+        # (run.broken), which is also what stops that worker stepping.
+        why = next(
+            (
+                f"{w} (worker {i + 1})"
+                for i, p in enumerate(ph)
+                if (w := window_broken(p))
+            ),
+            None,
+        )
         rows.append(
             {
                 "label": labels[k] if k < len(labels) else first["phase"],
@@ -793,51 +805,78 @@ def finish(workers: list[Worker], grace: float = 240) -> None:
 
 def seed_population(cfg: Config, base: str, out: Path) -> dict:
     """Make and keep one batch of agents per worker, one batch at a time, so
-    making them never overlaps itself; returns the population record."""
-    kept = {}
-    for i in range(1, cfg.workers + 1):
-        rid = f"{base}s{i}"
-        t = time.monotonic()
-        w = start(cfg, rid, i, ["--seed-only", "--concurrency", "8"], out)
-        w.proc.wait()
-        keep = RUNS / rid / "keep.json"
-        if w.proc.returncode != 0 or not keep.exists():
-            raise RuntimeError(
-                f"batch {i} was not kept: {w.text().strip().splitlines()[-1:]}"
-            )
-        kept[i] = json.loads(keep.read_text())
-        print(
-            f"batch {i}: {cfg.per_agents} agents made and kept in {time.monotonic() - t:.0f}s",
-            flush=True,
-        )
-    for i, record in kept.items():
-        s3_put(cfg, f"population/w{i}.json", record)
+    making them never overlaps itself; returns the population record.
+
+    Each batch's ids go to S3 as soon as it is kept, under a population record
+    marked incomplete until the last one is, so a night that fails half way
+    leaves a record the next night removes rather than agents nobody knows of."""
     pop = {
         "base": base,
         "shape": cfg.population_shape(),
+        "batches": 0,
+        "complete": False,
         "made": datetime.now(UTC).isoformat(timespec="seconds"),
     }
+    s3_put(cfg, "population.json", pop)
+    try:
+        for i in range(1, cfg.workers + 1):
+            rid = f"{base}s{i}"
+            t = time.monotonic()
+            w = start(cfg, rid, i, ["--seed-only", "--concurrency", "8"], out)
+            w.proc.wait()
+            keep = RUNS / rid / "keep.json"
+            if w.proc.returncode != 0 or not keep.exists():
+                last = (w.text().strip().splitlines() or [""])[-1]
+                # A batch that failed half way is not kept, but may have made
+                # agents: count it, so its removal is tried too.
+                pop["batches"] = i
+                raise RuntimeError(f"batch {i} was not kept: {last[:200]}")
+            s3_put(cfg, f"population/w{i}.json", json.loads(keep.read_text()))
+            pop["batches"] = i
+            s3_put(cfg, "population.json", pop)
+            print(
+                f"batch {i}: {cfg.per_agents} agents made and kept in {time.monotonic() - t:.0f}s",
+                flush=True,
+            )
+    except BaseException:
+        s3_put(cfg, "population.json", pop)
+        try:
+            remove_population(cfg, pop, out)
+        except Exception as exc:  # noqa: BLE001 - the first error is the one to report
+            print(f"removing the half-made batches failed too: {exc}", flush=True)
+        raise
+    pop["complete"] = True
     s3_put(cfg, "population.json", pop)
     return pop
 
 
 def remove_population(cfg: Config, pop: dict, out: Path) -> None:
-    """Delete a population's agents and rooms, one batch at a time."""
-    for i in range(1, pop["shape"]["workers"] + 1):
+    """Delete a population's agents and rooms, one batch at a time, in the
+    workspace it was made in. Its record goes only once every batch is gone,
+    so a removal that fails is tried again the next night."""
+    batches = pop.get("batches", pop["shape"]["workers"])
+    workspace = pop["shape"].get("workspace", cfg.workspace)
+    failed = []
+    for i in range(1, batches + 1):
         rid = f"{pop['base']}s{i}"
         cmd = [
             sys.executable, str(HERE / "run.py"),
             "--namespace", cfg.namespace, "--kube-context", cfg.kube_context,
-            "--workspace", cfg.workspace,
+            "--workspace", workspace,
             "--api-url", cfg.api_url, "--gateway-url", cfg.api_url,
             "--cleanup", rid,
         ]  # fmt: skip
         with (out / f"cleanup-{rid}.log").open("w") as log:
-            subprocess.run(
+            r = subprocess.run(
                 cmd, stdout=log, stderr=subprocess.STDOUT, cwd=HERE.parent,
                 timeout=1800, check=False,
             )  # fmt: skip
+        if r.returncode != 0:
+            failed.append(rid)
+    if failed:
+        raise RuntimeError(f"could not remove the kept batches {', '.join(failed)}")
     s3_delete(cfg, "population.json")
+    print(f"removed population {pop['base']} ({batches} batches)", flush=True)
 
 
 def restore_population(cfg: Config, pop: dict) -> None:
@@ -854,37 +893,41 @@ def restore_population(cfg: Config, pop: dict) -> None:
 def run_workers(
     cfg: Config, pop: dict, base: str, out: Path, until: datetime
 ) -> tuple[list[Worker], str | None, bool]:
-    """Start every worker on its kept batch, wait until all are connected and
-    idle, then let them step their rates together. Returns the workers, why
-    the night stopped early if it did, and whether the rates had started."""
+    """Start every worker on its kept batch, a few seconds apart, wait until
+    all are connected and idle, then let them step their rates together; once
+    a worker breaks a step, stop them all. Returns the workers, why the night
+    stopped early if it did, and whether the rates had started."""
     go = out / "rates.go"
     rates = ",".join(f"{r:g}" for r in cfg.worker_rates())
     durations = ",".join(f"{d:g}" for d in cfg.durations())
-    workers = [
-        start(
-            cfg,
-            f"{base}w{i}",
-            i,
-            [
-                "--reuse",
-                f"{pop['base']}s{i}",
-                "--scenarios",
-                "idle",
-                "--duration",
-                f"{cfg.idle_seconds:g}",
-                "--rates",
-                rates,
-                "--rate-duration",
-                durations,
-                "--drain",
-                f"{cfg.drain_seconds:g}",
-                "--rates-after",
-                str(go),
-            ],
-            out,
-        )  # fmt: skip
-        for i in range(1, cfg.workers + 1)
-    ]
+    workers: list[Worker] = []
+    for i in range(1, cfg.workers + 1):
+        workers.append(
+            start(
+                cfg,
+                f"{base}w{i}",
+                i,
+                [
+                    "--reuse",
+                    f"{pop['base']}s{i}",
+                    "--scenarios",
+                    "idle",
+                    "--duration",
+                    f"{cfg.idle_seconds:g}",
+                    "--rates",
+                    rates,
+                    "--rate-duration",
+                    durations,
+                    "--drain",
+                    f"{cfg.drain_seconds:g}",
+                    "--drain-full",
+                    "--rates-after",
+                    str(go),
+                ],
+                out,
+            )  # fmt: skip
+        )
+        time.sleep(STAGGER)
     t = time.monotonic()
     while True:
         bad = [f"worker {w.index}: {why}" for w in workers if (why := w.failed())]
@@ -915,6 +958,12 @@ def run_workers(
     )
     go.touch()
     while any(w.proc.poll() is None for w in workers):
+        if any(BROKE in w.text() for w in workers):
+            # The step that broke is the night's answer; the other workers
+            # would only go on stepping with part of the load.
+            print("a worker broke a step; stopping the others", flush=True)
+            finish(workers)
+            break
         if datetime.now(UTC) >= until:
             finish(workers)
             return workers, f"stopped at the deadline, {until:%H:%M} UTC", True
@@ -957,51 +1006,92 @@ def day_sizes(cfg: Config) -> None:
             print(f"day sizes: {exc}", flush=True)
 
 
-def cmd_run(cfg: Config) -> int:
-    started = datetime.now(UTC)
-    night = night_of(started)
-    base = "n" + started.strftime("%Y%m%dt%H%M")
-    out = Path(os.environ.get("LOADTEST_OUT", "/tmp/loadtest")) / base
-    out.mkdir(parents=True, exist_ok=True)
-    until = deadline_after(started, cfg.deadline, timedelta(hours=3))
-    # What the report says beside the numbers. Failures make the night a ❌;
-    # warnings (a pod restarting at the step that broke, say) are shown only.
-    failures: list[str] = []
-    notes: list[str] = []
-    seeded = False
+class Interrupted(Exception):
+    """The pod was told to stop (SIGTERM): the night still reports."""
 
-    if core_state(cfg)["replicas"] != cfg.night_pods:
-        # Started by hand without `up` first (this pod's own node is up, or it
-        # would not be running): size staging for the night here.
-        print("switch-core is not at its night size; scaling it up", flush=True)
-        size_nodegroup(cfg, cfg.core_nodegroup, cfg.night_nodes)
-        scale_core(cfg, cfg.night_pods)
-    s = wait_core(cfg, cfg.night_pods, 1500)
-    if s["ready"] != cfg.night_pods:
-        failures.append(
-            f"{s['ready']} of {cfg.night_pods} switch-core pods ready: not comparable with other nights"
+
+class _Tee:
+    """Everything printed goes to the pod's log and to a file stored with
+    the night's records, so the run's own account outlives its pod."""
+
+    def __init__(self, stream, path: Path) -> None:
+        self.stream = stream
+        self.file = path.open("a")
+
+    def write(self, data: str) -> int:
+        self.stream.write(data)
+        self.file.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self.stream.flush()
+        self.file.flush()
+
+
+@dataclass
+class Night:
+    """One night's run and what it found. `run` may stop anywhere; `result`
+    makes a report of whatever got done."""
+
+    cfg: Config
+    started: datetime
+    base: str
+    out: Path
+    # Failures make the night a ❌; notes (a pod restarting at the step that
+    # broke, say) are shown only.
+    failures: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    workers: list[Worker] = field(default_factory=list)
+    pop: dict | None = None
+    seeded: bool = False
+    before: dict | None = None
+
+    def run(self) -> None:
+        cfg = self.cfg
+        if core_state(cfg)["replicas"] != cfg.night_pods:
+            # Started by hand without `up` first (this pod's own node is up,
+            # or it would not be running): size staging for the night here.
+            print("switch-core is not at its night size; scaling it up", flush=True)
+            size_nodegroup(cfg, cfg.core_nodegroup, cfg.night_nodes)
+            scale_core(cfg, cfg.night_pods)
+        s = self.before = wait_core(cfg, cfg.night_pods, 1500)
+        print(
+            f"staging runs {s['build']} on {s['ready']} pods, "
+            f"{sorted(s['by_node'].values())} per node",
+            flush=True,
         )
-    template, restarts0 = s["pod_template_hash"], s["restarts"]
-    print(
-        f"staging runs {s['build']} on {s['ready']} pods, {sorted(s['by_node'].values())} per node",
-        flush=True,
-    )
+        if s["ready"] != cfg.night_pods:
+            self.failures.append(
+                f"{s['ready']} of {cfg.night_pods} switch-core pods ready: "
+                "not comparable with other nights"
+            )
+        most = -(-cfg.night_pods // max(1, cfg.night_nodes))
+        if max(s["by_node"].values(), default=0) > most:
+            self.failures.append(
+                f"switch-core's pods sit {sorted(s['by_node'].values())} per node, "
+                f"more than {most} on one: not comparable with other nights"
+            )
+        until = deadline_after(self.started, cfg.deadline, timedelta(hours=3))
 
-    workers: list[Worker] = []
-    stopped = None
-    pop = None
-    try:
-        pop = s3_get(cfg, "population.json")
-        if pop and pop.get("shape") != cfg.population_shape():
-            print("the kept agents are of another shape; removing them", flush=True)
-            remove_population(cfg, pop, out)
-            pop = None
-        if pop is None:
-            pop = seed_population(cfg, base, out)
-            seeded = True
-        restore_population(cfg, pop)
-        workers, stopped, rates_started = run_workers(cfg, pop, base, out, until)
-        if stopped and not rates_started and not seeded:
+        self.pop = s3_get(cfg, "population.json")
+        if self.pop and (
+            self.pop.get("shape") != cfg.population_shape()
+            or not self.pop.get("complete", True)
+        ):
+            print(
+                "the kept agents are half made or of another shape; removing them",
+                flush=True,
+            )
+            remove_population(cfg, self.pop, self.out)
+            self.pop = None
+        if self.pop is None:
+            self.pop = seed_population(cfg, self.base, self.out)
+            self.seeded = True
+        restore_population(cfg, self.pop)
+        self.workers, stopped, rates_started = run_workers(
+            cfg, self.pop, self.base, self.out, until
+        )
+        if stopped and not rates_started and not self.seeded:
             # Stopped before measuring anything: most likely the kept agents
             # are gone (removed, or the database replaced). Make them again
             # and try once more; a server that is down fails this one too.
@@ -1009,49 +1099,92 @@ def cmd_run(cfg: Config) -> int:
                 f"stopped before the rates ({stopped}); making the agents again",
                 flush=True,
             )
-            notes.append(f"the kept agents could not be used ({stopped}); made again")
-            remove_population(cfg, pop, out)
-            base += "b"
-            pop = seed_population(cfg, base, out)
-            seeded = True
-            restore_population(cfg, pop)
-            workers, stopped, rates_started = run_workers(cfg, pop, base, out, until)
-    except Exception as exc:  # noqa: BLE001 - reported below
-        stopped = f"{type(exc).__name__}: {exc}"[:400]
-        finish(workers)
-    if stopped:
-        failures.append(f"stopped early: {stopped}")
+            self.notes.append(
+                f"the kept agents could not be used ({stopped}); made again"
+            )
+            remove_population(cfg, self.pop, self.out)
+            self.base += "b"
+            self.pop = seed_population(cfg, self.base, self.out)
+            self.seeded = True
+            restore_population(cfg, self.pop)
+            self.workers, stopped, rates_started = run_workers(
+                cfg, self.pop, self.base, self.out, until
+            )
+        if stopped:
+            self.failures.append(f"stopped early: {stopped}")
 
-    after = core_state(cfg)
-    restarts = after["restarts"] - restarts0
-    if restarts:
-        notes.append(f"⚠️ switch-core restarted {restarts} time(s) during the run")
-    if after["pod_template_hash"] != template:
-        failures.append("switch-core's pods were replaced during the run (a deploy?)")
+    def result(self) -> dict:
+        cfg = self.cfg
+        before = self.before or {}
+        after = None
+        try:
+            after = core_state(cfg)
+        except Exception as exc:  # noqa: BLE001 - the night still reports
+            self.notes.append(
+                f"⚠️ could not read switch-core after the run: {exc}"[:200]
+            )
+        restarts = None
+        if after and before:
+            restarts = after["restarts"] - before["restarts"]
+            if restarts:
+                self.notes.append(
+                    f"⚠️ switch-core restarted {restarts} time(s) during the run"
+                )
+            if after["pod_template_hash"] != before["pod_template_hash"]:
+                self.failures.append(
+                    "switch-core's pods were replaced during the run (a deploy?)"
+                )
+        rows = combine(cfg, [p for w in self.workers if (p := _phases(w))])
+        ended = datetime.now(UTC)
+        result = {
+            "night": night_of(self.started),
+            "base": self.base,
+            "build": before.get("build", "unknown"),
+            "image": before.get("image"),
+            "pods": before.get("ready", 0),
+            "nodes": len(before.get("by_node") or {}),
+            "seeded": self.seeded,
+            "population": self.pop["base"] if self.pop else None,
+            "started": self.started.isoformat(timespec="seconds"),
+            "ended": ended.isoformat(timespec="seconds"),
+            "duration_s": round((ended - self.started).total_seconds()),
+            "restarts": restarts,
+            "rows": rows,
+            "failures": self.failures,
+            "notes": self.notes,
+        }
+        result["verdict"] = verdict(rows, cfg, self.failures)
+        return result
 
-    summaries = [p for w in workers if (p := _phases(w))]
-    rows = combine(cfg, summaries)
-    result = {
-        "night": night,
-        "base": base,
-        "build": s["build"],
-        "image": s["image"],
-        "pods": s["ready"],
-        "nodes": len(s["by_node"]),
-        "seeded": seeded,
-        "population": pop["base"] if pop else None,
-        "started": started.isoformat(timespec="seconds"),
-        "ended": datetime.now(UTC).isoformat(timespec="seconds"),
-        "duration_s": round((datetime.now(UTC) - started).total_seconds()),
-        "restarts": restarts,
-        "rows": rows,
-        "failures": failures,
-        "notes": notes,
-    }
-    result["verdict"] = verdict(rows, cfg, failures)
 
+def cmd_run(cfg: Config) -> int:
+    started = datetime.now(UTC)
+    base = "n" + started.strftime("%Y%m%dt%H%M")
+    out = Path(os.environ.get("LOADTEST_OUT", "/tmp/loadtest")) / base
+    out.mkdir(parents=True, exist_ok=True)
+    sys.stdout = _Tee(sys.stdout, out / "nightly.log")  # type: ignore[assignment]
+
+    def on_term(signum, frame) -> None:
+        raise Interrupted("the pod was stopped (SIGTERM)")
+
+    signal.signal(signal.SIGTERM, on_term)
+    night = Night(cfg, started, base, out)
     try:
-        comparison = compare(result, history(cfg, before=night))
+        night.run()
+    except Exception as exc:  # noqa: BLE001 - whatever stopped it, report the night
+        night.failures.append(f"the run failed: {type(exc).__name__}: {exc}"[:400])
+        finish(night.workers)
+    result = night.result()
+    report(cfg, result, night.workers, out)
+    day_sizes(cfg)
+    return 0 if result["verdict"]["ok"] else 1
+
+
+def report(cfg: Config, result: dict, workers: list[Worker], out: Path) -> None:
+    """The night to S3, Datadog and the webhook; each is tried whatever the
+    others do."""
+    try:
+        comparison = compare(result, history(cfg, before=result["night"]))
     except Exception as exc:  # noqa: BLE001
         comparison = [f"no comparison: {exc}"[:200]]
     text = report_text(result, cfg, comparison)
@@ -1065,8 +1198,6 @@ def cmd_run(cfg: Config) -> int:
             action()
         except Exception as exc:  # noqa: BLE001 - the others still go
             print(f"{name}: {type(exc).__name__}: {exc}"[:300], flush=True)
-    day_sizes(cfg)
-    return 0 if result["verdict"]["ok"] else 1
 
 
 def _phases(w: Worker) -> list[dict] | None:
@@ -1078,8 +1209,8 @@ def _phases(w: Worker) -> list[dict] | None:
 
 
 def _store(cfg: Config, result: dict, workers: list[Worker], out: Path) -> None:
-    """The night's result, and each worker's own records, in S3. Not the
-    per-message file: it is large and the summaries hold what it says."""
+    """The night's result, each worker's own records and the logs, in S3.
+    Not the per-message file: it is large and the summaries hold what it says."""
     s3_put(cfg, f"history/{result['night']}.json", result)
     run = f"runs/{result['night']}/{result['base']}/"
     s3_put(cfg, run + "result.json", result)
@@ -1094,37 +1225,60 @@ def _store(cfg: Config, result: dict, workers: list[Worker], out: Path) -> None:
             f = RUNS / w.run_id / name
             if f.exists():
                 s3_put(cfg, f"{run}{w.run_id}/{name}", f.read_bytes())
+    sys.stdout.flush()
     for f in out.glob("*.log"):
         s3_put(cfg, run + "logs/" + f.name, f.read_bytes())
     print(f"stored in s3://{cfg.bucket}/{cfg.prefix}{run}", flush=True)
 
 
+def _keep_run_log(cfg: Config, night: str) -> str | None:
+    """The run pod's log, to S3: it lives on the harness's node, which the day
+    sizes remove. Where it went, or None when there was none to keep."""
+    try:
+        text = kubectl(
+            cfg, "logs", "-l", "app.kubernetes.io/component=loadtest-run",
+            "--tail=-1", "--prefix", "--max-log-requests=5", timeout=120,
+        )  # fmt: skip
+    except Exception as exc:  # noqa: BLE001
+        print(f"no run pod log to keep: {exc}"[:300], flush=True)
+        return None
+    if not text.strip():
+        return None
+    key = f"runs/{night}/run-pod.log"
+    s3_put(cfg, key, text.encode())
+    return f"s3://{cfg.bucket}/{cfg.prefix}{key}"
+
+
 def cmd_down(cfg: Config) -> int:
-    day_sizes(cfg)
     night = night_of(datetime.now(UTC))
     try:
         found = s3_get(cfg, f"history/{night}.json")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - reported as a missing night
         print(f"could not read tonight's result: {exc}", flush=True)
-        return 1
-    if found is None:
-        text = (
-            f"❌ Switch nightly load test on {cfg.environment}: no result for {night}. "
-            f"The run's pod never reported; its logs: kubectl -n {cfg.namespace} logs "
-            "-l app.kubernetes.io/component=loadtest-run --tail=200"
+        found = None
+    kept = _keep_run_log(cfg, night) if found is None else None
+    day_sizes(cfg)
+    if found is not None:
+        return 0
+    text = (
+        f"❌ Switch nightly load test on {cfg.environment}: no result for {night}; "
+        + (
+            f"the run pod's log is in {kept}"
+            if kept
+            else "the run pod left no log (it may never have started: is the harness's node up?)"
         )
-        print(text, flush=True)
-        result = {"build": "unknown", "pods": 0, "rows": [], "verdict": {"ok": False}}
-        for action in (
-            lambda: post_webhook(cfg.webhook_url, text),
-            lambda: send_datadog(result, cfg, text),
-        ):
-            try:
-                action()
-            except Exception as exc:  # noqa: BLE001
-                print(f"{type(exc).__name__}: {exc}"[:300], flush=True)
-        return 1
-    return 0
+    )
+    print(text, flush=True)
+    result = {"build": "unknown", "pods": 0, "rows": [], "verdict": {"ok": False}}
+    for action in (
+        lambda: post_webhook(cfg.webhook_url, text),
+        lambda: send_datadog(result, cfg, text),
+    ):
+        try:
+            action()
+        except Exception as exc:  # noqa: BLE001
+            print(f"{type(exc).__name__}: {exc}"[:300], flush=True)
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:

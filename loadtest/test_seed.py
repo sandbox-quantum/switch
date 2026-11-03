@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from seed import Admin, RequestIds  # noqa: E402
+from seed import Admin, NoWorkspace, RequestIds  # noqa: E402
 
 HOME = {"id": "home", "slug": "home", "name": "Main"}
 LOAD = {"id": "load", "slug": "load-tests", "name": "load-tests"}
@@ -88,6 +88,16 @@ def test_makes_the_workspace_when_the_admin_has_none_of_that_name() -> None:
     assert ("POST", "/organizations", "cookie-home") in gateway.seen
     assert gateway.seen[-1] == ("POST", "/tenants/home/switch", "cookie-load")
     assert admin._cookie == "cookie-load"
+
+
+def test_a_run_reusing_kept_agents_never_makes_the_workspace() -> None:
+    # Ten reusing workers started together would each make one otherwise.
+    gateway = Gateway([HOME])
+    admin = _admin(gateway)
+
+    with pytest.raises(NoWorkspace, match="no workspace named load-tests"):
+        asyncio.run(admin.use_workspace("load-tests", create=False))
+    assert ("POST", "/organizations", "cookie-home") not in gateway.seen
 
 
 def test_refuses_a_name_two_workspaces_share() -> None:

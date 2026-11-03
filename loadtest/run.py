@@ -44,6 +44,7 @@ from kube import Kube, PortForward, Refused, Sampler, guard_target  # noqa: E402
 from report import phase_summary, render  # noqa: E402
 from seed import (  # noqa: E402
     Admin,
+    NoWorkspace,
     RequestIds,
     SeededAgent,
     create_controllers,
@@ -153,6 +154,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=60.0,
         help="most seconds to wait after each rate for its deliveries to arrive",
+    )
+    w.add_argument(
+        "--drain-full",
+        action="store_true",
+        help="always wait the whole --drain after each rate, so workers that "
+        "started their rates together start every rate together",
     )
     w.add_argument("--burst-every", type=float, default=30.0)
     w.add_argument("--burst-size", type=int, default=100, help="messages per spike")
@@ -455,7 +462,11 @@ async def cleanup(a: argparse.Namespace, kube: Kube) -> int:
     try:
         await admin.login(*admin_login(kube))
         if a.workspace:
-            await admin.use_workspace(a.workspace)
+            try:
+                await admin.use_workspace(a.workspace, create=False)
+            except NoWorkspace as exc:
+                print(f"{exc}: nothing to clean", flush=True)
+                return 0
         done = await teardown(admin, a.cleanup, concurrency=a.concurrency)
     finally:
         await admin.close()
@@ -584,6 +595,8 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 f"  {name}: deliveries {'drained' if done else 'still owed'} after {time.monotonic() - t1:.0f}s",
                 flush=True,
             )
+            if a.drain_full:
+                await wait(stop, a.drain - (time.monotonic() - t1))
         stats.phase = sampler.phase = "settle"
         await wait(stop, a.settle)
         phases.append(
@@ -610,7 +623,11 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     try:
         await admin.login(*admin_login(kube))
         if a.workspace:
-            meta["workspace"] = await admin.use_workspace(a.workspace)
+            # Kept agents live in a workspace that exists: a reusing run never
+            # makes one, so several started at once cannot make one each.
+            meta["workspace"] = await admin.use_workspace(
+                a.workspace, create=not a.reuse
+            )
             print(f"workspace: {json.dumps(meta['workspace'])}", flush=True)
         await admin.refuse_bridges()
         t = time.monotonic()
