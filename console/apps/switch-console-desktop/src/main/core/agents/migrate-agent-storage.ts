@@ -22,10 +22,11 @@ import { writeNeutralAgentSettingsFs } from './write-switch-settings';
 /**
  * Migrate existing Switch Console-managed agents to the current storage layout
  * (CHOO-1440): every agent has a per-agent credentials file at
- * `.switch/agents/<name>.json` and a config file at `.switch/config/<name>.json`,
- * both keyed by the agent's single `name`. Pre-CHOO-1440 installs kept
- * credentials in the legacy `.claude/switch-subagents/<name>.settings.json` (or
- * the shared `.claude/settings.local.json`).
+ * `.switch/agents/<name>.json`, readable by its owner alone, and a config file
+ * at `.switch/config/<name>.json`, both keyed by the agent's single `name`.
+ * Pre-CHOO-1440 installs kept credentials in the legacy
+ * `.claude/switch-subagents/<name>.settings.json` (or the shared
+ * `.claude/settings.local.json`).
  *
  * Runs once at boot, best-effort: each agent is migrated in isolation so one bad
  * directory or unreachable host never aborts the rest, and every step is
@@ -83,6 +84,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
   // Generation 2 only broadened step 1 to providers WITHOUT a behavior; for one
   // that has it, step 1 is what generation 1 already ran.
   const credentialsDone = completedGeneration >= 2 || (completedGeneration >= 1 && !!behavior);
+  const credentialsPrivate = completedGeneration >= 4;
 
   const location = await getLocationById(agent.locationId);
   if (!location) return false;
@@ -109,6 +111,11 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
         providerConfig: agent.providerConfig,
       })
     ) {
+      changed = true;
+    }
+
+    // 3. Credentials readable by their owner alone.
+    if (!credentialsPrivate && (await protectCredentials(workdir.fs, name))) {
       changed = true;
     }
 
@@ -181,6 +188,21 @@ async function migrateCredentials(
   }
 
   return changed;
+}
+
+/**
+ * Rewrite the agent's credentials file as a secret one: `0600`, in a `0700`
+ * `.switch/agents/`. Earlier versions wrote it with the process umask, which on
+ * most machines let every local account read the token. The rewrite renames
+ * identical content into place, so a session reading the file meanwhile still
+ * sees it whole.
+ */
+async function protectCredentials(fs: PluginFs, name: string): Promise<boolean> {
+  const relPath = agentSettingsRelativePath(name);
+  const raw = await fs.read(relPath);
+  if (raw === null) return false;
+  await fs.write(relPath, raw, { secret: true });
+  return true;
 }
 
 /**

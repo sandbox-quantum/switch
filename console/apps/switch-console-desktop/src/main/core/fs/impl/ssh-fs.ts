@@ -3,6 +3,7 @@
  * Uses SFTP over SSH for remote filesystem operations
  */
 
+import { randomUUID } from 'node:crypto';
 import { posix as pathPosix } from 'node:path';
 import type { SFTPWrapper } from 'ssh2';
 import { buildRemoteShellCommand } from '@main/core/ssh/lifecycle/remote-shell-profile';
@@ -353,6 +354,52 @@ export class SshFileSystem implements FileSystemProvider {
         });
       });
     });
+  }
+
+  /**
+   * Write a file readable by its owner alone (`0600`) inside a directory only
+   * its owner can enter (`0700`): the `secret` write of `PluginFs`, for a file
+   * holding a credential. The content goes into a temporary file created
+   * `0600` and is renamed over the target with OpenSSH's POSIX rename, so it
+   * never sits in a file anyone else can read, and an existing file left wider
+   * by an earlier version is replaced rather than kept. A server without that
+   * rename fails the write rather than falling back to one that could expose
+   * the credential.
+   */
+  async writeSecret(path: string, content: string): Promise<void> {
+    const fullPath = this.resolveRemotePath(path);
+    const sftp = await this.getSftp();
+    const done = (target: string, run: (callback: (err?: Error | null) => void) => void) =>
+      new Promise<void>((resolve, reject) =>
+        run((err) => (err ? reject(this.mapSftpError(err, target)) : resolve()))
+      );
+
+    const dir = pathPosix.dirname(fullPath);
+    await this.ensureRemoteDir(sftp, dir);
+    // A directory that already existed keeps its mode until it is changed here.
+    await done(dir, (cb) => sftp.chmod(dir, 0o700, cb));
+
+    const temporary = `${fullPath}.${randomUUID()}`;
+    const handle = await new Promise<Buffer>((resolve, reject) =>
+      sftp.open(temporary, 'wx', { mode: 0o600 }, (err, opened) =>
+        err ? reject(this.mapSftpError(err, temporary)) : resolve(opened)
+      )
+    );
+    try {
+      try {
+        // Not every server applies the mode it is given at open.
+        await done(temporary, (cb) => sftp.fchmod(handle, 0o600, cb));
+        const buffer = Buffer.from(content, 'utf-8');
+        if (buffer.length > 0)
+          await done(temporary, (cb) => sftp.write(handle, buffer, 0, buffer.length, 0, cb));
+      } finally {
+        await done(temporary, (cb) => sftp.close(handle, cb));
+      }
+      await done(fullPath, (cb) => sftp.ext_openssh_rename(temporary, fullPath, cb));
+    } catch (error) {
+      await done(temporary, (cb) => sftp.unlink(temporary, cb)).catch(() => {});
+      throw error;
+    }
   }
 
   /**

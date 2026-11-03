@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
+import { writeSecretFile } from '@main/core/providers/plugin-fs';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { db } from '@main/db/client';
 import { agents, workspaces } from '@main/db/schema';
@@ -50,7 +51,11 @@ async function propagateLocal(
       throw new Error('The agent credentials file is invalid; its endpoint was not changed.');
     return false;
   }
-  await nodeFs.writeFile(settingsPath, merged, 'utf8');
+  if (relativePath === SWITCH_SETTINGS_RELATIVE_PATH) {
+    await nodeFs.writeFile(settingsPath, merged, 'utf8');
+  } else {
+    await writeSecretFile(settingsPath, merged);
+  }
   return true;
 }
 
@@ -89,6 +94,10 @@ async function propagateRemote(
       if (existingRaw !== null && relativePath !== SWITCH_SETTINGS_RELATIVE_PATH)
         throw new Error('The agent credentials file is invalid; its endpoint was not changed.');
       return false;
+    }
+    if (relativePath !== SWITCH_SETTINGS_RELATIVE_PATH) {
+      await fs.writeSecret(relativePath, merged);
+      return true;
     }
     const result = await fs.write(relativePath, merged);
     if (!result.success) {

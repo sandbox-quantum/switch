@@ -525,6 +525,12 @@ pnpm run lint
   Code's own file, read by every session in the directory, which does not need
   the credential. Do not add a token back to it: two copies is how one goes stale
   and authenticates as the wrong agent.
+  - **It is readable by its owner alone:** `0600` in a `0700` `.switch/agents/`,
+    with an owner-only ACL on Windows. Every write of it goes through
+    `PluginFs.write` with `{ secret: true }` — `writeSecretFile` in
+    `src/main/core/providers/plugin-fs.ts` locally, `SshFileSystem.writeSecret`
+    over SFTP. A plain write takes the umask, typically leaving the token
+    readable by every account on the machine.
   - **Where Switch Console writes the settings file, Claude Code makes it live.**
     Its `env` block becomes real process environment for everything a session
     spawns, so keep the agent id in it in step with `.switch/agents/`; changing

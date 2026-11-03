@@ -106,7 +106,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: v
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./agent-storage-migration-marker', () => ({
-  AGENT_STORAGE_MIGRATION_GENERATION: 3,
+  AGENT_STORAGE_MIGRATION_GENERATION: 4,
   completedAgentStorageMigrationGeneration: h.completedGeneration,
   markAgentStorageMigrationComplete: h.markComplete,
 }));
@@ -291,7 +291,7 @@ describe('migrateAgentStorage', () => {
   });
 
   it('skips the whole pass (no workdir opened) once the current generation is latched', async () => {
-    h.completedGeneration.mockResolvedValueOnce(3);
+    h.completedGeneration.mockResolvedValueOnce(4);
     const resolveWorkdirFsFor = (await import('./agent-workdir-fs')).resolveWorkdirFsFor;
 
     await migrateAgentStorage();
@@ -357,6 +357,33 @@ describe('migrateAgentStorage', () => {
     await migrateAgentStorage();
 
     expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(true);
+  });
+
+  it('re-running after generation 3 rewrites existing credentials as a secret file, unchanged', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+    const write = vi.spyOn(ws, 'write');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(write.mock.calls).toEqual([
+      ['.switch/agents/cc-hoot-main.json', credsJson('sw-1'), { secret: true }],
+    ]);
+    expect(h.readLaunchEnv).not.toHaveBeenCalled();
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes no credentials for generation 4 when the agent has none', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({});
+    const write = vi.spyOn(ws, 'write');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(write).not.toHaveBeenCalled();
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
   });
 
   it('latches the marker after a clean pass', async () => {

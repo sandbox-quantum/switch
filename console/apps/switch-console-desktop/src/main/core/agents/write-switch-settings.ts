@@ -519,5 +519,5 @@ export async function writeNeutralAgentSettingsFs(
   if (!(await workdirFs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
     await workdirFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
   }
-  await workdirFs.write(relPath, mergeAgentCredentials(existingRaw, params));
+  await workdirFs.write(relPath, mergeAgentCredentials(existingRaw, params), { secret: true });
 }

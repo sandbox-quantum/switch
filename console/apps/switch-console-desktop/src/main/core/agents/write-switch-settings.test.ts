@@ -119,6 +119,48 @@ describe('writeNeutralAgentSettingsFs', () => {
     expect(ignore).toBe('*\n');
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'leaves the token readable by its owner alone, whatever the umask',
+    async () => {
+      const previous = process.umask(0o022);
+      try {
+        await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+          slug: 'agent-abc',
+          apiEndpoint: 'https://switch.example.com',
+          apiToken: 'secret-token',
+          agentId: 'switch-agent-1',
+        });
+      } finally {
+        process.umask(previous);
+      }
+
+      const file = path.join(dir, agentSettingsRelativePath('agent-abc'));
+      expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(path.dirname(file))).mode & 0o777).toBe(0o700);
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'tightens a credentials file and directory an earlier version left open',
+    async () => {
+      const file = path.join(dir, agentSettingsRelativePath('agent-abc'));
+      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o755 });
+      await fs.writeFile(file, JSON.stringify({ env: { SWITCH_API_TOKEN: 'old' } }), {
+        mode: 0o644,
+      });
+
+      await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+        slug: 'agent-abc',
+        apiEndpoint: 'https://switch.example.com',
+        apiToken: 'new-token',
+        agentId: 'switch-agent-1',
+      });
+
+      expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(path.dirname(file))).mode & 0o777).toBe(0o700);
+    }
+  );
+
   it('merges into an existing per-agent file, preserving unrelated env keys and allow rules', async () => {
     const relPath = agentSettingsRelativePath('agent-abc');
     await fs.mkdir(path.dirname(path.join(dir, relPath)), { recursive: true });

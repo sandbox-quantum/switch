@@ -57,6 +57,29 @@ describe('createRemotePluginFs', () => {
     await expect(fs.write('a', 'b')).rejects.toThrow(/disk full/);
   });
 
+  it('a secret write goes through writeSecret, never the ordinary write', async () => {
+    const write = vi.fn(async () => ({ success: true, bytesWritten: 5 }));
+    const writeSecret = vi.fn(async () => {});
+    const fs = adapter({ write, writeSecret });
+    await fs.write('.switch/agents/a.json', 'token', { secret: true });
+    expect(writeSecret).toHaveBeenCalledWith('.switch/agents/a.json', 'token');
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('a secret write that fails propagates rather than falling back to an ordinary one', async () => {
+    const write = vi.fn(async () => ({ success: true, bytesWritten: 5 }));
+    const fs = adapter({
+      write,
+      writeSecret: vi.fn(async () => {
+        throw new Error('Server does not support this extended request');
+      }),
+    });
+    await expect(fs.write('.switch/agents/a.json', 'token', { secret: true })).rejects.toThrow(
+      /does not support/
+    );
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it('delete removes the path and ignores a missing file', async () => {
     // The literal SshFileSystem.remove produces when its stat finds nothing.
     const remove = vi.fn(async () => ({ success: false, error: 'File not found: gone' }));

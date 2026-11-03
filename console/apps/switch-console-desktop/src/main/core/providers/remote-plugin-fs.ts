@@ -1,5 +1,5 @@
 import { posix as pathPosix } from 'node:path';
-import type { PluginFs } from '@switch-console/core/agents/plugins';
+import type { PluginFs, PluginFsWriteOptions } from '@switch-console/core/agents/plugins';
 import { assertRemoved } from '@main/core/fs/assert-removed';
 import type { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
@@ -37,7 +37,8 @@ export function createRemotePluginFs(fs: SshFileSystem): PluginFs {
       }
     },
 
-    async write(path: string, content: string): Promise<void> {
+    async write(path: string, content: string, options?: PluginFsWriteOptions): Promise<void> {
+      if (options?.secret) return fs.writeSecret(path, content);
       const result = await fs.write(path, content);
       if (!result.success) {
         throw new Error(

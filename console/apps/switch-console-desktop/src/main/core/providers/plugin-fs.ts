@@ -1,6 +1,38 @@
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
-import type { PluginFs } from '@switch-console/core/agents/plugins';
+import { replaceFile } from '@switch-console/agent-providers';
+import type { PluginFs, PluginFsWriteOptions } from '@switch-console/core/agents/plugins';
+import { restrictWindowsFileToOwner } from '@main/core/fs/restrict-windows-file-to-owner';
+
+/**
+ * Write `content` to `abs` readable by its owner alone, in a directory only its
+ * owner can enter: the `secret` write of {@link PluginFs}, for a file holding a
+ * credential. The content goes into a temporary file created `0600` and is
+ * renamed over `abs`, so it never sits in a file anyone else can read, and an
+ * existing file left wider by an earlier version is replaced rather than kept.
+ */
+export async function writeSecretFile(abs: string, content: string): Promise<void> {
+  const dir = dirname(abs);
+  await fs.mkdir(dir, { recursive: true });
+  // mkdir's mode reaches only a directory it creates, not one that was already there.
+  await fs.chmod(dir, 0o700);
+  const temporary = `${abs}.${randomUUID()}`;
+  const file = await fs.open(temporary, 'wx', 0o600);
+  try {
+    try {
+      if (process.platform === 'win32') await restrictWindowsFileToOwner(temporary);
+      await file.writeFile(content, 'utf-8');
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await replaceFile(temporary, abs);
+  } catch (error) {
+    await fs.rm(temporary, { force: true });
+    throw error;
+  }
+}
 
 /**
  * Create a CLIAgentPluginFs scoped to a given root directory.
@@ -37,8 +69,9 @@ export function createPluginFs(root: string): PluginFs {
       }
     },
 
-    async write(path: string, content: string): Promise<void> {
+    async write(path: string, content: string, options?: PluginFsWriteOptions): Promise<void> {
       const abs = resolveSafe(path);
+      if (options?.secret) return writeSecretFile(abs, content);
       await fs.mkdir(dirname(abs), { recursive: true });
       await fs.writeFile(abs, content, 'utf-8');
     },

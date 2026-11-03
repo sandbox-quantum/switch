@@ -169,6 +169,10 @@ describe('propagateServerApiUrl', () => {
         ...env,
         SWITCH_API_ENDPOINT: 'https://new-api.example.com',
       });
+      // Seeded with the default umask; the rewrite leaves it the owner's alone.
+      if (process.platform !== 'win32') {
+        expect((await nodeFs.stat(file)).mode & 0o777).toBe(0o600);
+      }
       expect((await readEnv(dir)).SWITCH_API_ENDPOINT).toBe('https://other-api.example.com');
     }
   );

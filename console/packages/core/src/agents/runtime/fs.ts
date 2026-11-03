@@ -1,3 +1,14 @@
+export interface PluginFsWriteOptions {
+  /**
+   * The file holds a credential: it is readable by its owner alone (`0600`,
+   * an owner-only ACL on Windows) inside a directory only its owner can enter
+   * (`0700`), including when either already existed with wider permissions.
+   * The content is written to a private temporary file and renamed into place,
+   * so it is never readable by anyone else, even briefly.
+   */
+  secret?: boolean;
+}
+
 export interface PluginFs {
   /**
    * Returns the file's content, or `null` only when the file does not exist.
@@ -6,7 +17,11 @@ export interface PluginFs {
    * makes them rewrite the file from scratch, discarding its real content.
    */
   read(path: string): Promise<string | null>;
-  write(path: string, content: string): Promise<void>;
+  /**
+   * An implementation that cannot honour `secret` must throw rather than
+   * write the file with ordinary permissions.
+   */
+  write(path: string, content: string, options?: PluginFsWriteOptions): Promise<void>;
   delete(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   list(path: string): Promise<string[]>;

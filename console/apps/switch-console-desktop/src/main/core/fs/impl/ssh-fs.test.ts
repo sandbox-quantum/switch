@@ -135,6 +135,100 @@ describe('SshFileSystem.remove', () => {
   });
 });
 
+function makeSecretWriteFs(failures: { renameThrows?: Error } = {}) {
+  const calls: unknown[][] = [];
+  const handle = Buffer.from('handle');
+  const step = (name: string) =>
+    vi.fn((...args: unknown[]) => {
+      const callback = args.pop() as (error?: Error) => void;
+      calls.push([name, ...args]);
+      callback();
+    });
+  const sftp = {
+    on: vi.fn(),
+    mkdir: vi.fn((dirPath: string, callback: (error?: Error) => void) => {
+      calls.push(['mkdir', dirPath]);
+      callback(new Error('File exists'));
+    }),
+    chmod: step('chmod'),
+    open: vi.fn(
+      (
+        path: string,
+        flags: string,
+        attrs: unknown,
+        callback: (error: Error | undefined, handle: Buffer) => void
+      ) => {
+        calls.push(['open', path, flags, attrs]);
+        callback(undefined, handle);
+      }
+    ),
+    fchmod: step('fchmod'),
+    write: step('write'),
+    close: step('close'),
+    // ssh2 throws, rather than calling back, when the server lacks posix-rename.
+    ext_openssh_rename: failures.renameThrows
+      ? vi.fn((from: string, to: string) => {
+          calls.push(['rename', from, to]);
+          throw failures.renameThrows;
+        })
+      : step('rename'),
+    unlink: step('unlink'),
+  };
+  const proxy = {
+    sftp: vi.fn((callback: (error: Error | undefined, sftp: unknown) => void) => {
+      callback(undefined, sftp);
+    }),
+  };
+  return { fs: new SshFileSystem(proxy as never, '/repo'), calls, handle };
+}
+
+describe('SshFileSystem.writeSecret', () => {
+  it('writes a 0600 temporary file and renames it over the target, in a 0700 directory', async () => {
+    const { fs, calls, handle } = makeSecretWriteFs();
+
+    await fs.writeSecret('.switch/agents/a.json', 'token');
+
+    const temporary = calls.find((call) => call[0] === 'open')?.[1] as string;
+    expect(temporary).toMatch(/^\/repo\/\.switch\/agents\/a\.json\.[0-9a-f-]{36}$/);
+    expect(calls.map((call) => call[0])).toEqual([
+      'mkdir',
+      'chmod',
+      'open',
+      'fchmod',
+      'write',
+      'close',
+      'rename',
+    ]);
+    expect(calls).toContainEqual(['chmod', '/repo/.switch/agents', 0o700]);
+    expect(calls).toContainEqual(['open', temporary, 'wx', { mode: 0o600 }]);
+    expect(calls).toContainEqual(['fchmod', handle, 0o600]);
+    expect(String(calls.find((call) => call[0] === 'write')?.[2])).toBe('token');
+    expect(calls).toContainEqual(['rename', temporary, '/repo/.switch/agents/a.json']);
+  });
+
+  it('removes the temporary file and fails when the server cannot rename over the target', async () => {
+    const { fs, calls } = makeSecretWriteFs({
+      renameThrows: new Error('Server does not support this extended request'),
+    });
+
+    await expect(fs.writeSecret('.switch/agents/a.json', 'token')).rejects.toThrow(
+      /does not support/
+    );
+
+    const temporary = calls.find((call) => call[0] === 'open')?.[1];
+    expect(calls.at(-1)).toEqual(['unlink', temporary]);
+  });
+
+  it('rejects a path escape before reaching SFTP', async () => {
+    const { fs, calls } = makeSecretWriteFs();
+
+    await expect(fs.writeSecret('../outside.json', 'token')).rejects.toMatchObject({
+      code: FileSystemErrorCodes.PATH_ESCAPE,
+    });
+    expect(calls).toEqual([]);
+  });
+});
+
 describe('SshFileSystem.watch', () => {
   afterEach(() => {
     vi.useRealTimers();

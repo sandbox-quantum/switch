@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -59,5 +59,64 @@ describe('createPluginFs delete', () => {
   it('throws on a path escape instead of silently doing nothing', async () => {
     const fs = createPluginFs(root);
     await expect(fs.delete('../outside.json')).rejects.toThrow(/path escape/);
+  });
+});
+
+const modeOf = async (p: string) => (await stat(p)).mode & 0o777;
+
+describe.skipIf(process.platform === 'win32')('createPluginFs secret write', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'plugin-fs-secret-'));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('creates the file 0600 in a 0700 directory whatever the umask, leaving nothing else', async () => {
+    const previous = process.umask(0o022);
+    try {
+      await createPluginFs(root).write('.switch/agents/a.json', 'token', { secret: true });
+    } finally {
+      process.umask(previous);
+    }
+
+    const dir = path.join(root, '.switch', 'agents');
+    expect(await readFile(path.join(dir, 'a.json'), 'utf8')).toBe('token');
+    expect(await modeOf(path.join(dir, 'a.json'))).toBe(0o600);
+    expect(await modeOf(dir)).toBe(0o700);
+    expect(await readdir(dir)).toEqual(['a.json']);
+  });
+
+  it('replaces a file and tightens a directory an earlier version left open', async () => {
+    const dir = path.join(root, '.switch', 'agents');
+    await mkdir(dir, { recursive: true, mode: 0o755 });
+    await chmod(dir, 0o755);
+    await writeFile(path.join(dir, 'a.json'), 'old', { mode: 0o644 });
+
+    await createPluginFs(root).write('.switch/agents/a.json', 'new', { secret: true });
+
+    expect(await readFile(path.join(dir, 'a.json'), 'utf8')).toBe('new');
+    expect(await modeOf(path.join(dir, 'a.json'))).toBe(0o600);
+    expect(await modeOf(dir)).toBe(0o700);
+  });
+
+  it('removes its temporary file and throws when the target cannot be replaced', async () => {
+    // A directory where the file should be: the rename over it fails.
+    await mkdir(path.join(root, 'secrets', 'a.json'), { recursive: true });
+
+    await expect(
+      createPluginFs(root).write('secrets/a.json', 'token', { secret: true })
+    ).rejects.toThrow();
+
+    expect(await readdir(path.join(root, 'secrets'))).toEqual(['a.json']);
+  });
+
+  it('refuses a path escape', async () => {
+    await expect(
+      createPluginFs(root).write('../outside.json', 'token', { secret: true })
+    ).rejects.toThrow(/path escape/);
   });
 });
