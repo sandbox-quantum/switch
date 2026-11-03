@@ -1,7 +1,40 @@
 slug: microsoft-365
 name: Microsoft 365
 category: Productivity
-description: Work with OneDrive, Outlook, Word and Excel.
+description: Work with Outlook, OneDrive, SharePoint and Teams through Work IQ, as you.
+# Investigation: docs/design/microsoft-365-connector-investigation.md.
+# Identity, tenant binding, accepted scopes and token lifetime need verification.
 enabled: false
+adapter: oauth
 auth:
   type: oauth
+  # Entra replaces refresh tokens without invalidating their predecessors.
+  # This proposed policy still needs an authenticated Work IQ renewal check.
+  refresh: reusable
+  oauth:
+    registration: static
+    client_settings: MICROSOFT_365
+    # Requires an HTTPS GATEWAY_PUBLIC_URL and an exact registered Web callback.
+    redirect: [core]
+    # Public discovery values, not a tenant-selection contract. Entra documents
+    # S256 but omits its discovery field; explicit endpoints retain Switch's PKCE.
+    authorization_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize
+    token_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/token
+    unchecked: >-
+      Tenant enablement, administrator consent, billing and the registered
+      redirect require verification in the intended tenant.
+    remove_access: >-
+      Switch stops using this sign-in but cannot revoke it at Microsoft. Ask
+      your tenant administrator to remove this app's consent in Microsoft Entra.
+      Already issued access tokens may remain valid until they expire.
+# No compatible Work IQ identity GET is documented. Graph UserInfo requires a
+# Graph token. auth.identity, access and token stay unset pending investigation;
+# changing enabled alone must not turn this draft into a working connector.
+# Scope: WorkIQ.Read is documented in the October 30 permissions revision
+# fbf2ee6ec7c627a13833c67e3aa4ef088e7e5b0e; acceptance is untested. Live MCP
+# metadata advertises only WorkIQAgent.Ask. Entra v2 requires offline_access
+# to issue the refresh token needed for renewal.
+mcp:
+  servers:
+    - { name: microsoft-365, url: "https://workiq.svc.cloud.microsoft/mcp" }
+tools: { mode: pass_through }
