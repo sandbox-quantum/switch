@@ -486,6 +486,18 @@ it('goes back to the sign-in from the paste step, with the site still picked', a
   expect(button(/^connect datadog/i, dialog())!.disabled).toBe(false);
 });
 
+it('forgets a typed token once the person goes back from the paste step', async () => {
+  await render(connectStep(() => {}, PASTABLE));
+  await vi.waitFor(() => expect(link('Use a token instead')).toBeDefined());
+  await act(async () => link('Use a token instead')!.click());
+  await type(input('Personal access token'), TOKEN);
+
+  await act(async () => button(/^back$/i, dialog())!.click());
+  await act(async () => link('Use a token instead')!.click());
+
+  expect(input('Personal access token').value).toBe('');
+});
+
 it('shows Switch’s refusal of what was pasted, on the paste step, with it cleared', async () => {
   switchServers.connectServiceWithPaste.mockRejectedValue(
     refusal(422, 'Datadog refused the pasted token, which may be wrong, revoked or expired.')
