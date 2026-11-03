@@ -321,6 +321,9 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "account_created": {"method": one_of("signup", "oidc", "admin")},
     "signup_refused": {"reason": one_of("disabled", "rate_limited", "email_taken")},
     "workspace_created": {"new_organization": BOOLEAN},
+    # One per claim that changed something, naming the first of these that
+    # applies: a retained machine joined from another workspace is
+    # `joined_workspace`, though the claim runs it again as well.
     "cloud_machine_requested": {
         "change": one_of("new", "joined_workspace", "unretained", "restarted"),
     },

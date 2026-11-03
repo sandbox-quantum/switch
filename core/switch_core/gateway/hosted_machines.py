@@ -193,7 +193,8 @@ def _claim_change(
     existing: CloudMachine | None, workspace: MachineWorkspace | None
 ) -> str | None:
     """What claiming the owner's machine will change, as `claim` decides it,
-    or None when it only marks a running machine active."""
+    or None when it only marks a running machine active. The first that
+    applies, when a claim does two of these at once."""
     if existing is None:
         return "new"
     if workspace is None:

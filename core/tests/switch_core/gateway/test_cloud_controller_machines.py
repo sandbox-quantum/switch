@@ -648,6 +648,37 @@ class TestControllerMachines:
             {"trigger": "message", "stopped_by": "idle"}
         ]
 
+    async def test_placing_an_agent_on_a_sleeping_machine_wakes_it(
+        self, harness: Harness, reported: RecordingSink
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        machine = await _claim(harness.session_factory, owner)
+        async with _hosted_app(harness.session_factory, owner) as hosted:
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
+            async with harness.client() as client:
+                enrolled = await _enroll(client, code)
+                await _connected(client, harness, owner, enrolled)
+                await _update(
+                    harness.session_factory,
+                    machine.id,
+                    desired_state="stopped",
+                    stop_reason="idle",
+                )
+                created = await create_managed_agent(
+                    client,
+                    owner,
+                    name="reviewer",
+                    controller_id=enrolled["controller_id"],
+                )
+        assert created.status_code == 201, created.text
+        after = await _machine(harness.session_factory, machine.id)
+        assert (after.desired_state, after.stop_reason) == ("running", None)
+        assert reported.events("cloud_machine_woken") == [
+            {"trigger": "agent_placed", "stopped_by": "idle"}
+        ]
+
 
 async def test_a_controller_machine_needs_agent_management(
     session_factory: async_sessionmaker[AsyncSession],
