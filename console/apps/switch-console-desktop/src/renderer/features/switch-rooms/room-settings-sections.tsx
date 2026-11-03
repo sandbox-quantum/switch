@@ -40,8 +40,8 @@ function detailKey(workspaceId: string, roomId: string) {
  */
 export const ACCESS_LABELS: Record<RoomAccess, string> = {
   public: 'Everyone in the workspace can see and change it',
-  read_only: 'Everyone can see it; only the owner and admins can change it',
-  private: 'Only those taking part and admins can see it; only the owner and admins can change it',
+  read_only: 'Everyone can see it; owner and admins change it',
+  private: 'Only those taking part and admins see it; owner and admins change it',
 };
 
 const ACCESS_ORDER: RoomAccess[] = ['public', 'read_only', 'private'];
