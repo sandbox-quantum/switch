@@ -179,11 +179,19 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Read account identity from an authenticated GET, an MCP tool result,
-    or the vendor's RFC 7662 introspection answer for the token."""
+    """Read account identity from an authenticated call to `url`, an MCP
+    tool result, or the vendor's RFC 7662 introspection answer for the token.
+
+    A `url` call names its `method`, GET or POST, and the dotted paths in its
+    JSON answer lead to the id and to a label people recognise (an email, a
+    login). A POST sends `body` as JSON where one is given, and nothing where
+    none is (Dropbox's account call takes no body); a GET never sends one.
+    An MCP tool or introspection identity names neither."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"] | None = None
     url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    body: dict[str, object] | None = None
     mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
     introspection: bool = False
     account_id: (
@@ -202,6 +210,10 @@ class ConnectionIdentity(BaseModel):
             raise ValueError(
                 "identity needs exactly one of url, mcp_tool or introspection"
             )
+        if (self.method is not None) != (self.url is not None):
+            raise ValueError("an identity call to a url names its method, GET or POST")
+        if self.body is not None and self.method != "POST":
+            raise ValueError("only a POST identity call sends a body")
         if isinstance(self.account_id, list) and len(set(self.account_id)) != len(
             self.account_id
         ):

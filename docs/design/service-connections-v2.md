@@ -42,7 +42,8 @@ auth:
     #   include_granted_scopes)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
-  identity:                   # GET with the token; dotted paths in its JSON
+  identity:                   # the call with the token; dotted paths in its JSON
+    method: GET               # or POST, with an optional JSON body
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
@@ -457,8 +458,9 @@ Then:
 
 `auth.identity.mcp_tool` names an MCP tool that identifies the account. An
 entry names exactly one of `url`, `mcp_tool` or `introspection: true`. A
-`url` is for an authenticated JSON GET. Entries with a `url` keep their REST
-identity.
+`url` is for an authenticated JSON call, a `method: GET` or a `method: POST`
+(with an optional static JSON `body`; a GET sends none). Entries with a `url`
+keep their REST identity. `mcp_tool` and `introspection` name no method.
 
 Before Core calls the tool, it checks these things:
 

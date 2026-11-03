@@ -630,6 +630,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -703,6 +704,23 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
 
 
 @pytest.mark.parametrize(
+    ("body", "expected"),
+    [("", None), ("    body: { include: all }\n", {"include": "all"})],
+    ids=["no-body", "json-body"],
+)
+def test_loads_a_post_identity_call_with_or_without_a_body(
+    catalog_copy, body, expected
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("    method: GET\n", f"    method: POST\n{body}"),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == ("POST", expected)
+
+
+@pytest.mark.parametrize(
     ("old", "new", "message"),
     [
         (
@@ -712,7 +730,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -829,6 +847,13 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n    unchecked: Publish it.\n",
             "unchecked is for a static client",
         ),
+        ("    method: GET\n", "", "method"),
+        ("    method: GET\n", "    method: PUT\n", "method"),
+        (
+            "    method: GET\n",
+            "    method: GET\n    body: { include: all }\n",
+            "only a POST identity call sends a body",
+        ),
     ],
 )
 def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
@@ -842,6 +867,7 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
 
 GET_IDENTITY = (
     "  identity:\n"
+    "    method: GET\n"
     "    url: https://api.example.test/me\n"
     "    account_id: account.id\n"
     "    label: account.email\n"
@@ -915,6 +941,19 @@ def test_a_get_identity_stays_as_it_was(catalog_copy):
         (
             INTROSPECTION_IDENTITY.replace("[workspace_id, user_id]", "[]"),
             "account_id",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace(
+                "  identity:\n", "  identity:\n    method: POST\n"
+            ),
+            "an identity call to a url names its method",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace(
+                "    introspection: true\n",
+                "    mcp_tool: whoami\n    method: GET\n",
+            ),
+            "an identity call to a url names its method",
         ),
         (
             INTROSPECTION_IDENTITY.replace(

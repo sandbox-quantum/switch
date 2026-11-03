@@ -381,6 +381,9 @@ class FakeOAuthServer:
         self.introspect_without_active = False
         # Fields every token response carries beside the tokens.
         self.token_extras: dict[str, Any] = {}
+        # The one method the account call answers, and what each call sent.
+        self.identity_method = "GET"
+        self.identity_requests: list[httpx.Request] = []
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -457,7 +460,10 @@ class FakeOAuthServer:
             return httpx.Response(200)
         if where == f"{ISSUER}/introspect" and request.method == "POST":
             return self._introspect(request)
-        if where == IDENTITY_URL and request.method == "GET":
+        if where == IDENTITY_URL:
+            self.identity_requests.append(request)
+            if request.method != self.identity_method:
+                return _json(405, {"error": "method_not_allowed"})
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
             return _json(200, {"account": self.account})
