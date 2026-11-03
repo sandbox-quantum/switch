@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PASTE_METHODS, type PasteMethodName } from './connection-catalog';
 
 /**
  * Where Switch Console's listener takes a service sign-in's code back, as Core
@@ -47,3 +48,25 @@ export const serviceKeyConnectedSchema = z.object({
   external_identity: z.string(),
 });
 export type ServiceKeyConnected = z.infer<typeof serviceKeyConnectedSchema>;
+
+/**
+ * What a paste sends: how the credential is pasted, its fields, and what was
+ * picked for the sign-in's choices (a site); `{}` for a service that asks none.
+ */
+export type ServicePaste = {
+  method: PasteMethodName;
+  fields: Record<string, string>;
+  choices: Record<string, string>;
+};
+
+/**
+ * `PUT /service-connections/{service}/paste`: whose the credential Switch
+ * checked and kept is, how it was pasted, and the choices it was pasted for.
+ */
+export const servicePasteConnectedSchema = z.object({
+  warning: z.string().nullable(),
+  external_identity: z.string(),
+  method: z.enum(PASTE_METHODS),
+  choices: z.record(z.string(), z.string()),
+});
+export type ServicePasteConnected = z.infer<typeof servicePasteConnectedSchema>;

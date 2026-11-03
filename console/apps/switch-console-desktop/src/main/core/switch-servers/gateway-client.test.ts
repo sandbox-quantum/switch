@@ -67,6 +67,7 @@ const {
   completeServiceConnection,
   failServiceConnection,
   connectServiceWithKey,
+  connectServiceWithPaste,
   disconnectService,
   acceptInvitation,
   acceptPendingInvitation,
@@ -1334,7 +1335,12 @@ describe('GitHub connection transport', () => {
         loopback_ports: null,
         key: null,
         sign_in_choices: null,
+        paste: [],
         external_identity: 'ada-gh',
+        method: null,
+        access_note: null,
+        reconnect_code: null,
+        reconnect_reason: null,
         choices: null,
         consent: 'write',
         // A server without the workspace switch: no workspace layer.
@@ -1418,6 +1424,55 @@ describe('GitHub connection transport', () => {
       }),
     ]);
   });
+  it('reads what a service takes pasted, and how and why a connection was made', async () => {
+    const token = {
+      method: 'token',
+      label: 'Personal access token',
+      fields: [
+        { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
+      ],
+      help_url: 'https://docs.example.test/tokens',
+      expires: 'vendor',
+      access_note: 'Reaches what your token allows.',
+    };
+    const keys = {
+      ...token,
+      method: 'keys',
+      label: 'API and application keys',
+      expires: 'never',
+      access_note: 'Reaches what your keys allow.',
+    };
+    const entry = {
+      slug: 'datadog',
+      name: 'Datadog',
+      category: 'Observability',
+      description: 'Metrics.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      unavailable_reason: null,
+      status: 'needs_reauthorization',
+      // A newer server's method, and one that ends some other way, are left out.
+      paste: [token, keys, { ...token, method: 'certificate' }, { ...token, expires: 'yearly' }],
+      method: 'token',
+      choices: { site: 'datadoghq.eu' },
+      access_note: 'Reaches what your token allows.',
+      reconnect_code: 'token_refused',
+      reconnect_reason: 'Datadog refused the pasted token. Paste a new one.',
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ connections: [entry] })));
+    expect(await getConnectionCatalog(SERVER)).toEqual([
+      expect.objectContaining({
+        slug: 'datadog',
+        status: 'needs_reauthorization',
+        paste: [token, keys],
+        method: 'token',
+        access_note: 'Reaches what your token allows.',
+        reconnect_code: 'token_refused',
+        reconnect_reason: 'Datadog refused the pasted token. Paste a new one.',
+      }),
+    ]);
+  });
   it('reads why a service can be granted for reading only', async () => {
     const reason =
       "This server's GitHub App lets agents read only, so GitHub can't be granted for writing.";
@@ -1472,7 +1527,12 @@ describe('GitHub connection transport', () => {
         loopback_ports: null,
         key: null,
         sign_in_choices: null,
+        paste: [],
         external_identity: null,
+        method: null,
+        access_note: null,
+        reconnect_code: null,
+        reconnect_reason: null,
         choices: null,
         consent: null,
         workspace_enabled: null,
@@ -2018,6 +2078,55 @@ describe('a service sign-in', () => {
       status: 422,
       detail: 'Example refused the key (HTTP 403).',
       code: 'validation_error',
+    });
+  });
+
+  it('connects with a pasted credential on the service’s paste route', async () => {
+    answer({
+      warning: null,
+      external_identity: 'ada@example.test',
+      method: 'token',
+      choices: { site: 'datadoghq.eu' },
+    });
+    const paste = {
+      method: 'token' as const,
+      fields: { pat: 'synthetic-example-token' },
+      choices: { site: 'datadoghq.eu' },
+    };
+    expect(await connectServiceWithPaste(SERVER, 'datadog', paste)).toEqual({
+      warning: null,
+      external_identity: 'ada@example.test',
+      method: 'token',
+      choices: { site: 'datadoghq.eu' },
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/service-connections/datadog/paste');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body as string)).toEqual(paste);
+  });
+
+  it('throws the refusal of a pasted credential with Switch’s detail', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: 'Example keys do not expire and only Example can revoke them.',
+          code: 'forbidden',
+          retryable: false,
+        }),
+        { status: 403 }
+      )
+    );
+    await expect(
+      connectServiceWithPaste(SERVER, 'example', {
+        method: 'keys',
+        fields: { api_key: 'synthetic-key', application_key: 'synthetic-app-key' },
+        choices: {},
+      })
+    ).rejects.toMatchObject({
+      status: 403,
+      detail: 'Example keys do not expire and only Example can revoke them.',
+      code: 'forbidden',
+      retryable: false,
     });
   });
 
