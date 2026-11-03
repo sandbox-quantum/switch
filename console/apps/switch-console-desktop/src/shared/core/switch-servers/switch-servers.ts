@@ -1338,3 +1338,35 @@ export type MessagingAppInstall = {
   /** Null while the install is still active. */
   endedAt: string | null;
 };
+
+/** The kinds of library item a room can have attached. */
+export type RoomResourceKind = 'references' | 'documents' | 'packages';
+
+/** A library item as a room lists it, or as the library offers it for attaching. */
+export type RoomResource = {
+  id: string;
+  kind: RoomResourceKind;
+  name: string;
+  description: string;
+  /** A reference's type as people read it ("GitHub"); null for anything else. */
+  typeLabel: string | null;
+  /** A reference's links; empty for anything else. */
+  urls: string[];
+  /** A document written in the room by one of its agents, rather than one from the library. */
+  roomScoped: boolean;
+  /** The agent that wrote a room-scoped document, when the server says. */
+  createdByAgentName: string | null;
+  /** The packages this came in with, by id: attached through them rather than on its own. */
+  packageIds: string[];
+};
+
+/** A document read in full, through the room it is attached to. */
+export type RoomDocumentContent = {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+};
+
+/** Another room this room points at, and why. */
+export type LinkedRoom = { roomId: string; name: string; description: string; label: string };

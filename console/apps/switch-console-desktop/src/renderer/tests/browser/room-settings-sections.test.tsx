@@ -55,7 +55,13 @@ vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
   refreshSidebarRoomStateAfterOnboarding: vi.fn(),
 }));
 
+vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useFeatureFlags: () => ({}) }));
+vi.mock('@renderer/features/managed-agents/use-managed-agents', () => ({
+  useManagedAgents: () => ({ data: [] }),
+}));
+
 import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
+import { RoomSidePanel } from '@renderer/features/switch-rooms/room-side-panel';
 
 const ROOM = {
   id: 'room-1',
@@ -122,7 +128,9 @@ afterEach(async () => {
   root = null;
 });
 
-async function renderPanel(): Promise<HTMLDivElement> {
+async function renderPanel(
+  panel: 'configuration' | 'side' = 'configuration'
+): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -130,7 +138,11 @@ async function renderPanel(): Promise<HTMLDivElement> {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
-        <RoomConfigurationPanel roomId="room-1" />
+        {panel === 'side' ? (
+          <RoomSidePanel roomId="room-1" />
+        ) : (
+          <RoomConfigurationPanel roomId="room-1" />
+        )}
       </QueryClientProvider>
     )
   );
@@ -161,20 +173,28 @@ async function type(field: HTMLInputElement | HTMLTextAreaElement, value: string
 }
 
 describe('room settings for someone who may write to the room', () => {
-  it('shows each agent’s presence, and access as a control for its manager', async () => {
+  it('shows access as a control for its manager, and leaves who is in the room to the side', async () => {
     const el = await renderPanel();
-    expect(el.textContent).toContain('reviewer-bot');
-    expect(el.textContent).toContain('Here now');
     expect(el.querySelector('[aria-label="Who can see and post"]')).not.toBeNull();
     expect(el.textContent).toContain('C123');
+    expect(el.textContent).not.toContain('Notify on join');
   });
 
-  it('turns an agent’s join notification on', async () => {
-    const el = await renderPanel();
-    const toggle = el.querySelector<HTMLElement>(
-      '[aria-label="Tell reviewer-bot when someone joins"]'
+  it('lists each agent with its presence in the side column, and adds from there', async () => {
+    const el = await renderPanel('side');
+    expect(el.textContent).toContain('reviewer-bot');
+    expect(el.textContent).toContain('Here now');
+    expect(el.querySelector('[aria-label="Add agents"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Add people"]')).not.toBeNull();
+  });
+
+  it('turns an agent’s join notification on from its menu in the side column', async () => {
+    const el = await renderPanel('side');
+    await click(el.querySelector<HTMLElement>('[aria-label="reviewer-bot in this room"]')!);
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find(
+      (each) => /when someone joins/.test(each.textContent ?? '')
     )!;
-    await click(toggle);
+    await click(item);
     expect(setRoomAgentJoinEvents).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
       roomId: 'room-1',
@@ -226,5 +246,13 @@ describe('room settings for someone who may only read the room', () => {
     expect(button(el, /^Add agent$/)).toBeUndefined();
     expect(button(el, /^Archive$/)).toBeUndefined();
     expect(el.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.disabled).toBe(true);
+  });
+
+  it('lists who is in the room without adding or menus', async () => {
+    permissions.value = { canWrite: false, canManage: false };
+    const el = await renderPanel('side');
+    expect(el.textContent).toContain('reviewer-bot');
+    expect(el.querySelector('[aria-label="Add agents"]')).toBeNull();
+    expect(el.querySelector('[aria-label="reviewer-bot in this room"]')).toBeNull();
   });
 });

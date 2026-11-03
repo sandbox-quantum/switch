@@ -89,6 +89,13 @@ import {
   syncRoomName,
   updateRoom,
   updateTemplate,
+  addLinkedRoom,
+  fetchLibrary,
+  fetchLinkedRooms,
+  fetchRoomDocument,
+  fetchRoomResources,
+  removeLinkedRoom,
+  setRoomResourceAttached,
 } from '@main/core/switch-servers/gateway-client';
 import {
   cancelLinkRequestOnServer,
@@ -173,6 +180,10 @@ import type {
   UpdateBridgeResult,
   SyncRoomNameParams,
   UpdateRoomParams,
+  LinkedRoom,
+  RoomDocumentContent,
+  RoomResource,
+  RoomResourceKind,
 } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
@@ -1012,6 +1023,73 @@ export const workspacesController = createRPCController({
     withWorkspaceSession(params.workspaceId, (server) => fetchArchivedRooms(server)),
 
   /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
+  /** What is attached to a room, of one kind. */
+  listRoomResources: (params: {
+    workspaceId: string;
+    roomId: string;
+    kind: RoomResourceKind;
+  }): Promise<RoomResource[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomResources(server, params.roomId, params.kind)
+    ),
+
+  /** The library items of one kind the signed-in person may attach. */
+  listLibrary: (params: { workspaceId: string; kind: RoomResourceKind }): Promise<RoomResource[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchLibrary(server, params.kind)),
+
+  /** Attach a library item to a room or detach it. Refusals propagate in the gateway's words. */
+  setRoomResourceAttached: (params: {
+    workspaceId: string;
+    roomId: string;
+    kind: RoomResourceKind;
+    resourceId: string;
+    attached: boolean;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomResourceAttached(
+        server,
+        params.roomId,
+        params.kind,
+        params.resourceId,
+        params.attached
+      )
+    ),
+
+  /** A document attached to a room, read in full. */
+  getRoomDocument: (params: {
+    workspaceId: string;
+    roomId: string;
+    documentId: string;
+  }): Promise<RoomDocumentContent> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomDocument(server, params.roomId, params.documentId)
+    ),
+
+  /** The rooms a room points at. */
+  listLinkedRooms: (params: { workspaceId: string; roomId: string }): Promise<LinkedRoom[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchLinkedRooms(server, params.roomId)),
+
+  /** Point a room at another. */
+  addLinkedRoom: (params: {
+    workspaceId: string;
+    roomId: string;
+    targetRoomId: string;
+    label: string;
+  }): Promise<LinkedRoom> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addLinkedRoom(server, params.roomId, params.targetRoomId, params.label)
+    ),
+
+  /** Stop a room pointing at another. */
+  removeLinkedRoom: (params: {
+    workspaceId: string;
+    roomId: string;
+    targetRoomId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      removeLinkedRoom(server, params.roomId, params.targetRoomId)
+    ),
+
   listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchBridgeUserNames(server, params.bridgeId)

@@ -16,7 +16,14 @@ vi.mock('./auth', () => ({
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
 
 const {
+  addLinkedRoom,
   addRoomUsers,
+  fetchLibrary,
+  fetchLinkedRooms,
+  fetchRoomDocument,
+  fetchRoomResources,
+  removeLinkedRoom,
+  setRoomResourceAttached,
   createRoomRole,
   deleteRoomRole,
   fetchArchivedRooms,
@@ -256,5 +263,109 @@ describe('room lists', () => {
     );
     await expect(fetchBridgeUserNames(SERVER, 'bridge-1')).resolves.toEqual(['ada', 'carol']);
     expect(lastCall().url).toMatch(/\/collaborations\/bridge-1\/users$/);
+  });
+});
+
+describe('room resources', () => {
+  it('lists a room’s references with their type, links and the packages that brought them', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([
+        {
+          id: 'ref-1',
+          name: 'Repo',
+          description: 'The code',
+          type: 'github',
+          type_display_name: 'GitHub',
+          value: { urls: ['https://github.com/acme/repo', 7] },
+          packages: ['pkg-1'],
+        },
+      ])
+    );
+    const [ref] = await fetchRoomResources(SERVER, 'room-1', 'references');
+    expect(lastCall().url).toMatch(/\/gateway\/rooms\/room-1\/references$/);
+    expect(ref).toEqual({
+      id: 'ref-1',
+      kind: 'references',
+      name: 'Repo',
+      description: 'The code',
+      typeLabel: 'GitHub',
+      urls: ['https://github.com/acme/repo'],
+      roomScoped: false,
+      createdByAgentName: null,
+      packageIds: ['pkg-1'],
+    });
+  });
+
+  it('tells a document an agent wrote in the room from one in the library', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([
+        { id: 'd-1', name: 'Notes', description: '', scope: 'room', created_by_agent_name: 'bot' },
+        { id: 'd-2', name: 'Guide', description: '', scope: 'global' },
+      ])
+    );
+    const docs = await fetchRoomResources(SERVER, 'room-1', 'documents');
+    expect(docs.map((d) => [d.id, d.roomScoped, d.createdByAgentName])).toEqual([
+      ['d-1', true, 'bot'],
+      ['d-2', false, null],
+    ]);
+  });
+
+  it('offers only the library’s own documents for attaching', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([
+        { id: 'd-1', name: 'Notes', description: '', scope: 'room' },
+        { id: 'd-2', name: 'Guide', description: '', scope: 'global' },
+      ])
+    );
+    const library = await fetchLibrary(SERVER, 'documents');
+    expect(lastCall().url).toMatch(/\/gateway\/documents$/);
+    expect(library.map((d) => d.id)).toEqual(['d-2']);
+  });
+
+  it('attaches with a POST and detaches with a DELETE on the item’s room path', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({}));
+    await setRoomResourceAttached(SERVER, 'room-1', 'packages', 'pkg-1', true);
+    expect(lastCall()).toMatchObject({ method: 'POST' });
+    expect(lastCall().url).toMatch(/\/rooms\/room-1\/packages\/pkg-1$/);
+    await setRoomResourceAttached(SERVER, 'room-1', 'packages', 'pkg-1', false);
+    expect(lastCall()).toMatchObject({ method: 'DELETE' });
+  });
+
+  it('reads a document in full through the room', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ id: 'd-1', name: 'Notes', description: 'Ours', content: '# Hi' })
+    );
+    expect(await fetchRoomDocument(SERVER, 'room-1', 'd-1')).toEqual({
+      id: 'd-1',
+      name: 'Notes',
+      description: 'Ours',
+      content: '# Hi',
+    });
+    expect(lastCall().url).toMatch(/\/rooms\/room-1\/documents\/d-1$/);
+  });
+});
+
+describe('linked rooms', () => {
+  const LINK = {
+    target_room_id: 'room-2',
+    target_room_name: 'support',
+    target_room_description: 'Help desk',
+    label: 'escalate to',
+  };
+
+  it('lists, adds and removes the rooms a room points at', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse([LINK]));
+    expect(await fetchLinkedRooms(SERVER, 'room-1')).toEqual([
+      { roomId: 'room-2', name: 'support', description: 'Help desk', label: 'escalate to' },
+    ]);
+    fetchMock.mockImplementation(async () => jsonResponse(LINK));
+    await addLinkedRoom(SERVER, 'room-1', 'room-2', 'escalate to');
+    expect(lastCall()).toMatchObject({
+      method: 'POST',
+      body: { target_room_id: 'room-2', label: 'escalate to' },
+    });
+    await removeLinkedRoom(SERVER, 'room-1', 'room-2');
+    expect(lastCall()).toMatchObject({ method: 'DELETE' });
+    expect(lastCall().url).toMatch(/\/rooms\/room-1\/linked-rooms\/room-2$/);
   });
 });

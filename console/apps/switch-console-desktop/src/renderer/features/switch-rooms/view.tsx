@@ -1,4 +1,4 @@
-import { ArrowLeft, DoorOpen, ExternalLink } from 'lucide-react';
+import { DoorOpen, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useLayoutEffect, useRef } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -20,6 +20,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import { RoomConfigurationPanel } from './room-configuration-panel';
 import { roomEmbedSlotStore } from './room-embed-slot';
 import { openRoomChannel } from './room-links';
+import { RoomResourcesPanel } from './room-resources-panel';
 import { RoomSidePanel } from './room-side-panel';
 import { embeddedRoomTab, type RoomTab, roomTabStore } from './room-tab-store';
 
@@ -67,12 +68,14 @@ export const OpenInMessagingApp = observer(function OpenInMessagingApp({
 
 const TABS = [
   { value: 'chat', label: 'Chat' },
+  { value: 'resources', label: 'Resources' },
   { value: 'configuration', label: 'Configuration' },
 ] as const satisfies readonly { value: RoomTab; label: string }[];
 
 /**
- * The two sides of a room — its conversation and its settings — to pick
- * between; `fallback` is the side showing until one is picked.
+ * A room's tabs — its conversation, what its agents are given, and its
+ * settings — to pick between; `fallback` is the tab showing until one is
+ * picked.
  */
 export const RoomTabs = observer(function RoomTabs({
   roomId,
@@ -97,8 +100,7 @@ export const RoomTabs = observer(function RoomTabs({
  * claim about how you got here rather than about where you are.
  *
  * Beside the name: where the room lives (its messaging app, or a group chat
- * here) and what it is for. Its settings are a page of their own, reached from
- * the room's side panel, and the title bar says when that page is showing.
+ * here) and what it is for; on the right, its tabs.
  */
 const RoomTitlebar = observer(function RoomTitlebar() {
   const { params } = useParams('room');
@@ -106,7 +108,6 @@ const RoomTitlebar = observer(function RoomTitlebar() {
   const summary = switchRoomsStore.roomSummaryById(roomId);
   const name = switchRoomsStore.roomNameById(roomId) ?? chatsStore.chat(roomId)?.name ?? null;
   const bridgeType = switchRoomsStore.roomBridgeTypeById(roomId);
-  const settings = roomTabStore.tabFor(roomId, 'chat') === 'configuration';
   const where = summary?.bridgeDisplayName ?? (opensAsConsoleChat(roomId) ? 'Group chat' : null);
   const description = summary?.description.trim() || null;
 
@@ -124,17 +125,15 @@ const RoomTitlebar = observer(function RoomTitlebar() {
                   <DoorOpen className="size-3.5 shrink-0" />
                 ),
                 label: name ?? 'Room',
-                onClick: settings ? () => roomTabStore.setTab(roomId, 'chat') : undefined,
               },
-              ...(settings ? [{ key: 'settings', label: 'Room settings' }] : []),
             ]}
           />
-          {!settings && where && (
+          {where && (
             <span className="shrink-0 rounded-full bg-background-tertiary px-2 py-0.5 text-[11px] text-foreground-muted">
               {where}
             </span>
           )}
-          {!settings && description && (
+          {description && (
             <span className="min-w-0 truncate text-sm text-foreground-muted" title={description}>
               {description}
             </span>
@@ -142,7 +141,8 @@ const RoomTitlebar = observer(function RoomTitlebar() {
         </div>
       }
       rightSlot={
-        <div className="mr-2 flex items-center gap-1">
+        <div className="mr-2 flex items-center gap-2">
+          <RoomTabs roomId={roomId} fallback="chat" />
           <OpenInMessagingApp roomId={roomId} />
         </div>
       }
@@ -158,35 +158,31 @@ const ConsoleChat = observer(function ConsoleChat({ roomId }: { roomId: string }
 });
 
 /**
- * The room's page: its side panel and its conversation, or — once Room
- * settings is picked — its settings across the whole page, with a way back.
- * Settings replace the page rather than sit beside the panel, so there is only
- * ever one column of the room's own beside the app's sidebar.
+ * The room's page: who is in it down the side, the same on every platform,
+ * and beside that the tab picked in the title bar — its conversation, its
+ * resources or its settings.
  */
 const RoomMainPanel = observer(function RoomMainPanel(): React.JSX.Element {
   const { params } = useParams('room');
   const roomId = params.roomId;
+  const tab = roomTabStore.tabFor(roomId, 'chat');
   return (
     <>
       <ConsoleChatRedirect roomId={roomId} />
-      {roomTabStore.tabFor(roomId, 'chat') === 'configuration' ? (
-        <div className="flex h-full min-h-0 flex-col">
-          <div className="px-6 pt-3">
-            <Button variant="outline" size="sm" onClick={() => roomTabStore.setTab(roomId, 'chat')}>
-              <ArrowLeft className="size-3.5" />
-              Back to room
-            </Button>
-          </div>
-          <div className="min-h-0 flex-1">
-            <RoomConfigurationPanel roomId={roomId} />
-          </div>
-        </div>
-      ) : (
-        <div className="flex h-full min-h-0">
-          <RoomSidePanel roomId={roomId} />
+      <div className="flex h-full min-h-0">
+        <RoomSidePanel roomId={roomId} />
+        {tab === 'chat' ? (
           <RoomConversation roomId={roomId} />
-        </div>
-      )}
+        ) : (
+          <div className="min-w-0 flex-1">
+            {tab === 'resources' ? (
+              <RoomResourcesPanel roomId={roomId} />
+            ) : (
+              <RoomConfigurationPanel roomId={roomId} />
+            )}
+          </div>
+        )}
+      </div>
     </>
   );
 });
@@ -235,14 +231,16 @@ export const EmbeddedRoom = observer(function EmbeddedRoom({ roomId }: { roomId:
   }, [roomId]);
   return (
     <div ref={ref} data-testid="embedded-room" className="min-h-0 flex-1">
-      {roomTabStore.tabFor(roomId, embeddedRoomFallbackTab(roomId)) === 'configuration' ? (
-        <RoomConfigurationPanel roomId={roomId} />
-      ) : (
-        <ConsoleChat roomId={roomId} />
-      )}
+      {embeddedTabContent(roomId, roomTabStore.tabFor(roomId, embeddedRoomFallbackTab(roomId)))}
     </div>
   );
 });
+
+function embeddedTabContent(roomId: string, tab: RoomTab): React.ReactNode {
+  if (tab === 'resources') return <RoomResourcesPanel roomId={roomId} />;
+  if (tab === 'configuration') return <RoomConfigurationPanel roomId={roomId} />;
+  return <ConsoleChat roomId={roomId} />;
+}
 
 export const roomView = {
   WrapView: ({ children }: { children: React.ReactNode; roomId: string }) => <>{children}</>,

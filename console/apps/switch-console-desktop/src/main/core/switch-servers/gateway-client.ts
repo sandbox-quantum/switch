@@ -110,6 +110,10 @@ import {
   type TrustSettings,
   type UnconfirmedLink,
   type UpdateTrustSettingsParams,
+  type LinkedRoom,
+  type RoomDocumentContent,
+  type RoomResource,
+  type RoomResourceKind,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -5084,4 +5088,148 @@ export async function revokeManagementController(
     authenticated: true,
     method: 'DELETE',
   });
+}
+
+// ── Room resources ──────────────────────────────────────────────────────────
+
+type ResourceJson = {
+  id: string;
+  name: string;
+  description: string;
+  type?: string;
+  type_display_name?: string | null;
+  value?: { urls?: unknown };
+  packages?: string[];
+  scope?: 'global' | 'room';
+  created_by_agent_name?: string | null;
+};
+
+function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
+  const urls = Array.isArray(r.value?.urls)
+    ? r.value.urls.filter((url): url is string => typeof url === 'string')
+    : [];
+  return {
+    id: r.id,
+    kind,
+    name: r.name,
+    description: r.description,
+    typeLabel: kind === 'references' ? (r.type_display_name ?? r.type ?? null) : null,
+    urls,
+    roomScoped: r.scope === 'room',
+    createdByAgentName: r.created_by_agent_name ?? null,
+    packageIds: r.packages ?? [],
+  };
+}
+
+/** What is attached to a room, of one kind (`GET /rooms/{id}/{kind}`). */
+export async function fetchRoomResources(
+  server: SwitchServer,
+  roomId: string,
+  kind: RoomResourceKind
+): Promise<RoomResource[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/${kind}`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as ResourceJson[]).map((r) => mapResource(kind, r));
+}
+
+/** The library items of one kind the signed-in person may read, for attaching (`GET /{kind}`). */
+export async function fetchLibrary(
+  server: SwitchServer,
+  kind: RoomResourceKind
+): Promise<RoomResource[]> {
+  const res = await gatewayFetch(server, `/${kind}`, { authenticated: true });
+  return ((await res.json()) as ResourceJson[])
+    .map((r) => mapResource(kind, r))
+    .filter((r) => !r.roomScoped);
+}
+
+/** Attach a library item to a room, or detach it; detaching a room-scoped document deletes it. */
+export async function setRoomResourceAttached(
+  server: SwitchServer,
+  roomId: string,
+  kind: RoomResourceKind,
+  resourceId: string,
+  attached: boolean
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/${kind}/${encodeURIComponent(resourceId)}`,
+    { authenticated: true, method: attached ? 'POST' : 'DELETE' }
+  );
+}
+
+/** A document read in full through the room it is attached to. */
+export async function fetchRoomDocument(
+  server: SwitchServer,
+  roomId: string,
+  documentId: string
+): Promise<RoomDocumentContent> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/documents/${encodeURIComponent(documentId)}`,
+    { authenticated: true }
+  );
+  const json = (await res.json()) as {
+    id: string;
+    name: string;
+    description: string;
+    content: string;
+  };
+  return { id: json.id, name: json.name, description: json.description, content: json.content };
+}
+
+type LinkedRoomJson = {
+  target_room_id: string;
+  target_room_name: string;
+  target_room_description: string;
+  label: string;
+};
+
+function mapLinkedRoom(r: LinkedRoomJson): LinkedRoom {
+  return {
+    roomId: r.target_room_id,
+    name: r.target_room_name,
+    description: r.target_room_description,
+    label: r.label,
+  };
+}
+
+/** The rooms this room points at (`GET /rooms/{id}/linked-rooms`). */
+export async function fetchLinkedRooms(
+  server: SwitchServer,
+  roomId: string
+): Promise<LinkedRoom[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/linked-rooms`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as LinkedRoomJson[]).map(mapLinkedRoom);
+}
+
+/** Point this room at another, saying why. */
+export async function addLinkedRoom(
+  server: SwitchServer,
+  roomId: string,
+  targetRoomId: string,
+  label: string
+): Promise<LinkedRoom> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/linked-rooms`, {
+    authenticated: true,
+    method: 'POST',
+    body: { target_room_id: targetRoomId, label },
+  });
+  return mapLinkedRoom((await res.json()) as LinkedRoomJson);
+}
+
+/** Stop this room pointing at another. */
+export async function removeLinkedRoom(
+  server: SwitchServer,
+  roomId: string,
+  targetRoomId: string
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/linked-rooms/${encodeURIComponent(targetRoomId)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
 }
