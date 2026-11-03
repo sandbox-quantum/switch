@@ -172,6 +172,31 @@ def test_refuses_a_paste_method_that_does_not_fit(catalog_copy, old, new, messag
         load_catalog(catalog_copy)
 
 
+@pytest.mark.parametrize(
+    ("token", "message"),
+    [
+        (
+            "token: { kind: minted, max_lifetime: 3600 }",
+            "the oauth adapter passes the owner's token through",
+        ),
+        (
+            "token: { kind: pass_through, max_lifetime: null }",
+            "an OAuth access token expires: name its max_lifetime",
+        ),
+    ],
+)
+def test_refuses_a_paste_method_no_agent_could_be_handed(catalog_copy, token, message):
+    """Issuing hands out a pasted credential only as the owner's own token,
+    for an hour at a time, so an entry that could not is refused at load."""
+    old = "token: { kind: pass_through, max_lifetime: 3600 }"
+    assert old in PASTE_ENTRY
+    _write_example(catalog_copy, PASTE_ENTRY.replace(old, token, 1))
+    with pytest.raises(
+        CatalogError, match=f"(?s)example is invalid.*{re.escape(message)}"
+    ):
+        load_catalog(catalog_copy)
+
+
 def test_only_an_oauth_entry_takes_a_pasted_credential(catalog_copy):
     _write_example(
         catalog_copy,
