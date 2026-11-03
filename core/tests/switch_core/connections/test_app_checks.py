@@ -39,6 +39,21 @@ class TestOAuthClient:
             (400, "unauthorized_client", False, "doesn't recognise", "client_secret"),
             (400, "redirect_uri_mismatch", False, REDIRECT, None),
             (400, "something_new", False, "something_new", None),
+            (
+                400,
+                "invalid_grant: code is not valid",
+                True,
+                "accepts this client ID and secret",
+                None,
+            ),
+            (
+                400,
+                "invalid_client: Invalid client_id or client_secret",
+                False,
+                "doesn't recognise",
+                "client_secret",
+            ),
+            (400, "something_new: with a reason", False, "something_new: with", None),
         ],
     )
     async def test_reads_googles_refusal(
