@@ -79,7 +79,7 @@ def test_fills_every_placeholder_in_the_provisioners_shape(tmp_path: Path) -> No
     names = sorted(p.name for p in out.iterdir())
     assert names == sorted(
         [p.name for p in (HOSTED / "k8s").glob("*.yaml")]
-        + ["priorityclass-switch-box.yaml", "egress-proxy-networkpolicy.yaml"]
+        + ["70-priorityclass-switch-box.yaml", "71-egress-proxy-networkpolicy.yaml"]
     )
     for path in out.iterdir():
         assert not re.search(r"__[A-Z0-9_]+__", path.read_text()), path.name
@@ -121,6 +121,9 @@ def test_no_earlier_images_leaves_an_empty_allowed_list(tmp_path: Path) -> None:
         (("--previous-box-image", BOX), {}, "must all differ"),
         ((), {"server_ip": "server.internal"}, "IPv4 address"),
         ((), {"agents_subnet": "10.1.32.1/20"}, "IPv4 network"),
+        ((), {"agents_subnet": "0.0.0.0/0"}, "private range"),
+        ((), {"agents_subnet": "8.8.8.0/24"}, "private range"),
+        ((), {"agents_subnet": "10.0.0.0/8"}, "no wider than /16"),
         ((), {"ca": "not a certificate\n"}, "PEM certificate"),
         (("--zone", "eu west"), {}, "look like a zone"),
         (("--api-server-ip", "10.1.2.10"), {}, "exactly twice"),
@@ -174,3 +177,11 @@ def test_fills_zones_in_the_test_clusters_own_region(tmp_path: Path) -> None:
     policies = (tmp_path / "out" / "30-admission-policies.yaml").read_text()
     assert "matches('^(eu-west-3a|eu-west-3b)$')" in policies
     assert "eu-west-3[abc]" not in policies
+
+
+def test_takes_one_agents_subnet_per_zone(tmp_path: Path) -> None:
+    """A node group across zones has a subnet in each; squid must accept them all."""
+    result = _run(tmp_path, "--agents-subnet", "10.1.64.0/20")
+    assert result.returncode == 0, result.stderr
+    squid = (tmp_path / "out" / "50-egress-proxy.yaml").read_text()
+    assert "acl agents src 10.1.32.0/20 10.1.64.0/20" in squid

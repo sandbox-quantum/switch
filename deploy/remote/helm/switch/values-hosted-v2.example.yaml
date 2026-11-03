@@ -5,8 +5,9 @@
 #
 # Every name below is an example: use the deployment's own Secret names. The
 # Secrets are made by someone with access to the namespace this release runs
-# in; nothing here holds a secret value. To go back to v1, set
-# hostedBoxProvisioning to false (or leave this file out) and roll out.
+# in; nothing here holds a secret value. To go back to v1, drain every box to
+# 0 first, then set hostedBoxProvisioning to false (or leave this file out) and
+# roll out.
 switchCore:
   # The v1/v2 switch (HOSTED_BOX_PROVISIONING). Only true turns v2 on.
   hostedBoxProvisioning: true

@@ -3,7 +3,7 @@
 
     ./fill-placeholders.py --out <new folder> \\
         --server-ip <ip> --api-server-ip <ip> --api-server-ip <ip> \\
-        --agents-subnet <cidr> --zone <zone> [--zone <zone> ...] \\
+        --agents-subnet <cidr> [--agents-subnet <cidr> ...] --zone <zone> [--zone <zone> ...] \\
         --box-image <repo@sha256:...> [--previous-box-image <repo@sha256:...> ...] \\
         --controller-image <repo@sha256:...> --pause-image <repo@sha256:...> \\
         --kubernetes-service-ip <ip> --ca-cert <file.pem>
@@ -17,7 +17,8 @@ the run refuses, writing nothing, if any value is malformed or any `__PLACEHOLDE
 What each value is (see `k8s/README.md`):
   --server-ip           the Switch server's private address that boxes reach over HTTPS
   --api-server-ip       the cluster API server's private endpoint addresses, exactly two
-  --agents-subnet       the gVisor (agents) node subnet, the only source squid accepts
+  --agents-subnet       the gVisor (agents) node subnets, one per zone: the only sources squid accepts. Each
+                        must be a private range no wider than /16
   --zone                the zones boxes may run in, one or more
   --box-image           the box image to make new boxes from, by digest
   --previous-box-image  older box images still allowed while boxes move, oldest first, up to two (admission
@@ -43,9 +44,17 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SOURCES = sorted((HERE / "k8s").glob("*.yaml")) + [
-    HERE / "box" / "priorityclass-switch-box.yaml",
-    HERE / "egress" / "egress-proxy-networkpolicy.yaml",
+# (name in the filled folder, source). The two extra files are numbered after k8s/'s, so
+# `kubectl apply -f <folder>/` applies everything in order.
+SOURCES = [(p.name, p) for p in sorted((HERE / "k8s").glob("*.yaml"))] + [
+    (
+        "70-priorityclass-switch-box.yaml",
+        HERE / "box" / "priorityclass-switch-box.yaml",
+    ),
+    (
+        "71-egress-proxy-networkpolicy.yaml",
+        HERE / "egress" / "egress-proxy-networkpolicy.yaml",
+    ),
 ]
 PLACEHOLDER = re.compile(r"__[A-Z0-9_]+__")
 IMAGE = re.compile(r"^[a-z0-9][a-z0-9._\-/:]*@sha256:[0-9a-f]{64}$")
@@ -96,12 +105,21 @@ def checked(args: argparse.Namespace) -> dict[str, object]:
         raise Refused(
             "give --api-server-ip exactly twice: the API server's two private endpoint addresses"
         )
-    try:
-        subnet = str(ipaddress.IPv4Network(args.agents_subnet, strict=True))
-    except ValueError as exc:
-        raise Refused(
-            f"--agents-subnet {args.agents_subnet!r} isn't an IPv4 network (e.g. 10.0.32.0/20)"
-        ) from exc
+    subnets = []
+    for given in dict.fromkeys(args.agents_subnet):
+        try:
+            network = ipaddress.IPv4Network(given, strict=True)
+        except ValueError as exc:
+            raise Refused(
+                f"--agents-subnet {given!r} isn't an IPv4 network (e.g. 10.0.32.0/20)"
+            ) from exc
+        # These become squid's `acl agents src`, who may use the egress proxy.
+        if not network.is_private or network.prefixlen < 16:
+            raise Refused(
+                f"--agents-subnet {given!r} must be a private range no wider than /16: "
+                "it decides who may use the egress proxy"
+            )
+        subnets.append(str(network))
     zones = list(dict.fromkeys(args.zone))
     for zone in zones:
         if not ZONE.fullmatch(zone):
@@ -127,7 +145,7 @@ def checked(args: argparse.Namespace) -> dict[str, object]:
     return {
         "server_ip": _ip(args.server_ip, "--server-ip"),
         "api": [_ip(a, "--api-server-ip") for a in args.api_server_ip],
-        "subnet": subnet,
+        "subnet": " ".join(subnets),
         "zones": zones,
         "box": box,
         "previous": previous,
@@ -206,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True)
     parser.add_argument("--server-ip", required=True)
     parser.add_argument("--api-server-ip", action="append", default=[], required=True)
-    parser.add_argument("--agents-subnet", required=True)
+    parser.add_argument("--agents-subnet", action="append", default=[], required=True)
     parser.add_argument("--zone", action="append", default=[], required=True)
     parser.add_argument("--box-image", required=True)
     parser.add_argument("--previous-box-image", action="append", default=[])
@@ -225,8 +243,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         values = checked(args)
         filled = {
-            src.name: fill(src.name, src.read_text(encoding="utf-8"), values)
-            for src in SOURCES
+            name: fill(src.name, src.read_text(encoding="utf-8"), values)
+            for name, src in SOURCES
         }
     except (Refused, OSError) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
@@ -240,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in filled:
         print(out / name)
     print(
-        f"filled {len(filled)} files; apply them in name order, then the two extra files (see DEPLOY.md)"
+        f"filled {len(filled)} files; apply them in name order, e.g. kubectl apply -f {out}/ (see DEPLOY.md)"
     )
     return 0
 

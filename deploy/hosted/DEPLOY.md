@@ -6,14 +6,15 @@ What each part is and does is in `README.md` and `k8s/README.md`; the Helm value
 
 ## What has to come back from the platform team first
 
-These can't be done from the repo. Each later step names the one it waits on.
+These can't be done from the repo. Each later step names the one it waits on. **Secrets, tokens and the filled
+cluster files never go in git or in chat.**
 
 1. **The gVisor node group**, labelled `switch.dev/pool=agents`, with the `runsc` containerd runtime registered,
    IMDSv2 required with a hop limit of 1. (`runsc-tuned` and the `gvisor-tuned` RuntimeClass are optional; nothing
    uses them.)
 2. **The zones** boxes may run in.
 3. **Addresses:** the Switch server's private address that boxes reach over HTTPS, the cluster API server's two
-   private endpoint addresses, and the agents node subnet.
+   private endpoint addresses, and the agents node subnets (one per zone).
 4. **The CA certificate** that signs the server's certificate (its public CA, if it's publicly trusted). Boxes
    always verify it.
 5. **A container registry** the box nodes pull from, with push access for whoever builds the images.
@@ -48,7 +49,7 @@ the same architecture as the gVisor nodes. Note the pause image's digest from th
 ```sh
 deploy/hosted/fill-placeholders.py --out <new folder> \
   --server-ip <ip> --api-server-ip <ip> --api-server-ip <ip> \
-  --agents-subnet <cidr> --zone <zone> [--zone <zone> ...] \
+  --agents-subnet <cidr> [--agents-subnet <cidr> ...] --zone <zone> [--zone <zone> ...] \
   --box-image <repo@sha256:...> \
   --controller-image <repo@sha256:...> --pause-image <repo@sha256:...> \
   --kubernetes-service-ip <ip> --ca-cert <file.pem>
@@ -63,8 +64,8 @@ cluster's `kubernetes` Service address in the NetworkPolicies. Later image updat
 
 ### 3. Apply them (platform, cluster-admin)
 
-Apply the filled files in name order (`10-` to `60-`), then `priorityclass-switch-box.yaml` and
-`egress-proxy-networkpolicy.yaml`. The admission policies and NetworkPolicies are the safety rules: apply them
+Apply the filled folder in name order: `kubectl apply -f <folder>/` does that (`10-` to `71-`; the box
+PriorityClass and squid's NetworkPolicy are numbered `70-` and `71-`). The admission policies and NetworkPolicies are the safety rules: apply them
 unchanged. A security reviewer goes through the filled folder before it's applied.
 
 ### 4. Deploy the Switch server with the switch off
