@@ -106,9 +106,11 @@ class GitHubConnections:
         self.slug = slug
         self.origin = origin.rstrip("/")
         url = urlsplit(self.origin)
+        # Only the scheme, host and port: an origin can carry a password.
+        shown = f"{url.scheme}://{url.netloc.rpartition('@')[2]}"
         if not https_or_loopback(self.origin):
             raise ValueError(
-                f"The GitHub App's origin {self.origin!r} is neither https nor "
+                f"The GitHub App's origin {shown!r} is neither https nor "
                 "loopback http (localhost, 127.0.0.1 or ::1): GitHub sends people "
                 "back to Switch only there."
             )
@@ -121,9 +123,9 @@ class GitHubConnections:
             or url.fragment
         ):
             raise ValueError(
-                f"The GitHub App's origin {self.origin!r} is not a bare origin: "
+                f"The GitHub App's origin at {shown!r} is not a bare origin: "
                 "a scheme and host, and a port if it needs one, with nothing "
-                "after."
+                "before the host or after."
             )
         if not re.fullmatch(r"[a-z0-9-]+", self.slug):
             raise ValueError(
