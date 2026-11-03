@@ -160,6 +160,11 @@ export function tokenLifetimeLabel(entry: ConnectionCatalogEntry): string {
   if (entry.auth_type === 'api_key') return "The key itself, which doesn't expire";
   const seconds = entry.token_lifetime;
   if (seconds === null) return 'Not stated';
+  return lifetimeText(seconds);
+}
+
+/** A lifetime in seconds as people say it: in minutes, hours or days. */
+export function lifetimeText(seconds: number): string {
   if (seconds < 3600) return plural(Math.round(seconds / 60), 'minute');
   if (seconds < 86_400) return plural(Math.round(seconds / 3600), 'hour');
   return plural(Math.round(seconds / 86_400), 'day');

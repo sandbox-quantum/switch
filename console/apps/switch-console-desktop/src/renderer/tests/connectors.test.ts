@@ -6,6 +6,10 @@ import {
   connectFlowReducer,
   initialConnectFlow,
   initialSignInChoices,
+  pasteAgainMethod,
+  pasteLinks,
+  pasteReady,
+  safetyLine,
   signInChoicesReady,
 } from '@renderer/features/connectors/connect-flow';
 import {
@@ -57,7 +61,10 @@ import {
   allFeatureFlagsOff,
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type {
+  ConnectionCatalogEntry,
+  ServicePasteMethod,
+} from '@shared/core/switch-servers/connection-catalog';
 import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
 function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatalogEntry {
@@ -688,7 +695,7 @@ function refusal(status: number, retryable?: boolean): RpcError {
 
 describe('the sign-in flow', () => {
   const waiting: ConnectFlowState = {
-    ...initialConnectFlow(false),
+    ...initialConnectFlow({ connected: false, pasting: null }),
     flowId: 'flow-1',
     flow: { status: 'pending', account: null, error: null, warning: null },
   };
@@ -696,9 +703,13 @@ describe('the sign-in flow', () => {
     events.reduce(connectFlowReducer, state);
 
   it('cannot be closed while waiting for the browser, or mid-call', () => {
-    expect(canCloseConnectFlow(initialConnectFlow(false))).toBe(true);
+    expect(canCloseConnectFlow(initialConnectFlow({ connected: false, pasting: null }))).toBe(true);
     expect(canCloseConnectFlow(waiting)).toBe(false);
-    expect(canCloseConnectFlow(run(initialConnectFlow(false), { type: 'act' }))).toBe(false);
+    expect(
+      canCloseConnectFlow(
+        run(initialConnectFlow({ connected: false, pasting: null }), { type: 'act' })
+      )
+    ).toBe(false);
   });
 
   it('counts a cancel answered 410 as cancelled, not as an error', () => {
@@ -731,7 +742,7 @@ describe('the sign-in flow', () => {
     const callback =
       'https://switch.example.test/gateway/service-connections/example/flows/callback';
     const started = run(
-      initialConnectFlow(false),
+      initialConnectFlow({ connected: false, pasting: null }),
       { type: 'act' },
       { type: 'started', flowId: 'flow-1', callbackUrl: callback }
     );
@@ -761,7 +772,7 @@ describe('the sign-in flow', () => {
     expect(
       allowListHint(run(started, { type: 'connected', warning: null }), 'Atlassian')
     ).toBeNull();
-    const loopback = run(initialConnectFlow(false), {
+    const loopback = run(initialConnectFlow({ connected: false, pasting: null }), {
       type: 'started',
       flowId: 'flow-1',
       callbackUrl: null,
@@ -780,6 +791,111 @@ describe('the sign-in flow', () => {
       warning: 'Access stays a while.',
     });
     expect(canCloseConnectFlow(after)).toBe(true);
+  });
+});
+
+describe('the paste step', () => {
+  const token: ServicePasteMethod = {
+    method: 'token',
+    label: 'Personal access token',
+    fields: [
+      { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
+    ],
+    help_url: null,
+    expires: 'vendor',
+    access_note: 'Reaches what your token allows.',
+  };
+  const keys: ServicePasteMethod = {
+    method: 'keys',
+    label: 'API and application keys',
+    fields: [
+      { name: 'api_key', label: 'API key', secret: true, help: null, choices: null },
+      {
+        name: 'application_key',
+        label: 'Application key',
+        secret: true,
+        help: null,
+        choices: null,
+      },
+    ],
+    help_url: null,
+    expires: 'never',
+    access_note: 'Reaches what your keys allow.',
+  };
+  const run = (state: ConnectFlowState, ...events: Parameters<typeof connectFlowReducer>[1][]) =>
+    events.reduce(connectFlowReducer, state);
+  const signIn = initialConnectFlow({ connected: false, pasting: null });
+
+  it('opens in place of the sign-in, and goes back to it, each time with no stale reason', () => {
+    const pasting = run(signIn, { type: 'paste', method: 'token' });
+    expect(pasting.pasting).toBe('token');
+    const refused = run(pasting, { type: 'act' }, { type: 'failed', error: 'Refused.' });
+    expect(refused).toMatchObject({ pasting: 'token', busy: false, error: 'Refused.' });
+    expect(canCloseConnectFlow(refused)).toBe(true);
+    expect(run(refused, { type: 'paste', method: null })).toMatchObject({
+      pasting: null,
+      error: null,
+    });
+  });
+
+  it('can be where the dialog opens, to paste a new credential', () => {
+    expect(initialConnectFlow({ connected: false, pasting: 'keys' }).pasting).toBe('keys');
+  });
+
+  it('is done once the server keeps what was pasted', () => {
+    const after = run(
+      signIn,
+      { type: 'paste', method: 'keys' },
+      { type: 'act' },
+      { type: 'connected', warning: 'Some access may remain.' }
+    );
+    expect(after).toMatchObject({
+      connected: true,
+      pasting: null,
+      busy: false,
+      warning: 'Some access may remain.',
+    });
+  });
+
+  it('is offered under the sign-in for each way the server lists', () => {
+    expect(pasteLinks([token, keys])).toEqual([
+      { method: 'token', text: 'Use a token instead' },
+      { method: 'keys', text: 'Use API keys instead' },
+    ]);
+    expect(pasteLinks([token])).toEqual([{ method: 'token', text: 'Use a token instead' }]);
+    expect(pasteLinks([])).toEqual([]);
+  });
+
+  it('says in one line how long what Switch keeps lasts, each way', () => {
+    const datadog = entry({ name: 'Datadog', token_lifetime: 3600 });
+    expect(safetyLine(datadog, 'sign_in')).toBe('Expires: 1 hour, refreshed by Switch');
+    expect(safetyLine(datadog, token)).toBe('Expires: on the date you set in Datadog');
+    expect(safetyLine(datadog, keys)).toBe('Never expires; only Datadog can revoke it');
+    expect(safetyLine(entry({ token_lifetime: null }), 'sign_in')).toBeNull();
+  });
+
+  it('sends every field, trimmed, with the site, and nothing before both are there', () => {
+    const site = { site: 'datadoghq.eu' };
+    expect(pasteReady(keys, { api_key: ' a ', application_key: 'b' }, site)).toEqual({
+      method: 'keys',
+      fields: { api_key: 'a', application_key: 'b' },
+      choices: site,
+    });
+    expect(pasteReady(keys, { api_key: 'a', application_key: '  ' }, site)).toBeNull();
+    expect(pasteReady(token, { pat: 'a' }, null)).toBeNull();
+    expect(pasteReady(token, { pat: 'a', other: 'b' }, {})).toEqual({
+      method: 'token',
+      fields: { pat: 'a' },
+      choices: {},
+    });
+  });
+
+  it('opens on the way a refused credential was pasted, where the server still offers it', () => {
+    const refused = { reconnect_code: 'token_refused', method: 'token', paste: [token, keys] };
+    expect(pasteAgainMethod(refused)).toBe('token');
+    expect(pasteAgainMethod({ ...refused, method: 'keys', paste: [token] })).toBeNull();
+    expect(pasteAgainMethod({ ...refused, reconnect_code: 'choices_missing' })).toBeNull();
+    expect(pasteAgainMethod({ ...refused, reconnect_code: null })).toBeNull();
   });
 });
 
