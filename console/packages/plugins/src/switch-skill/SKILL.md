@@ -529,12 +529,12 @@ carrying a display name addresses no one.
   so read it before offering: the chat is made on the platform, the Switch app
   added to it, and the room adopted from that.
 - **`create_room`** — provision a room. Required: `name`, `description`,
-  `agent_names`. Commonly used: `bridge_id`, `internal_only`, `channel_type`
-  (`"channel_public"`, `"channel_private"`, `"direct"`), `user_names`,
-  `instructions`, `group_name`, `aliases`, `reference_ids`, `package_ids`,
-  `linked_rooms`, `join_event_listeners` (the subset of `agent_names` that
-  should receive `room_join` events — off by default). You are not a member
-  unless your own name is in `agent_names`. Returns
+  `agent_names`. Commonly used: `bridge_id`, `internal_only`, `include_owner`,
+  `channel_type` (`"channel_public"`, `"channel_private"`, `"direct"`),
+  `user_names`, `instructions`, `group_name`, `aliases`, `reference_ids`,
+  `package_ids`, `linked_rooms`, `join_event_listeners` (the subset of
+  `agent_names` that should receive `room_join` events — off by default). You
+  are not a member unless your own name is in `agent_names`. Returns
   `{id, name, transport_room_id, caller_is_member, failed_attachments}`.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
@@ -633,6 +633,10 @@ know the deployment's topology.
 To create a room with **no** external channel, pass `internal_only=True`. Do
 that only when the user has explicitly said so — e.g. "just a scratch room for
 agents to coordinate."
+
+Add `include_owner=True` (internal-only, not `direct`) to put your owner in the
+room too; it appears in their Switch Console chats as a group chat, where they
+@-mention an agent to reach it.
 
 **Do not guess a `bridge_id`.** When the user asks you to create a room:
 
