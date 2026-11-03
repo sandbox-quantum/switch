@@ -72,7 +72,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help="e.g. switch-staging; never switch (pilot) or prod",
     )
-    t.add_argument("--kube-context", default="switch-eu")
+    t.add_argument(
+        "--kube-context",
+        default="switch-eu",
+        help="'' from a pod inside the cluster: kubectl then uses the pod's "
+        "service account",
+    )
     t.add_argument(
         "--api-url", help="agent API URL; default: the release's GATEWAY_PUBLIC_URL"
     )
@@ -132,7 +137,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "stopping after the first rate that breaks",
     )
     w.add_argument(
-        "--rate-duration", type=float, default=90.0, help="seconds measured per rate"
+        "--rate-duration",
+        default="90",
+        help="seconds measured per rate: one number for every rate, or one per "
+        "rate in --rates, e.g. 600,600,60",
     )
     w.add_argument(
         "--rates-after",
@@ -198,7 +206,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="RDS instance to read CPU from in CloudWatch, e.g. switch-staging",
     )
     o.add_argument(
-        "--aws-profile", default=os.environ.get("AWS_PROFILE", "qsg-nonprod-write")
+        "--aws-profile",
+        default=os.environ.get("AWS_PROFILE", "qsg-nonprod-write"),
+        help="'' to use the credentials already in the environment, such as a "
+        "pod's service account role",
     )
     o.add_argument("--aws-region", default="eu-west-3")
     o.add_argument(
@@ -243,6 +254,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     a.rates = [float(x) for x in a.rates.split(",")] if a.rates else []
     if a.rates != sorted(a.rates) or any(r <= 0 for r in a.rates):
         ap.error("--rates must be increasing and above 0")
+    durations = [float(x) for x in str(a.rate_duration).split(",")]
+    if len(durations) == 1:
+        durations *= max(1, len(a.rates))
+    if len(durations) != max(1, len(a.rates)) or any(d <= 0 for d in durations):
+        ap.error("--rate-duration takes one number, or one per rate in --rates")
+    a.rate_durations = durations
     if a.steps != sorted(a.steps) or min(a.steps) < 2:
         ap.error("--steps must be increasing and at least 2")
     a.rooms = a.rooms or max(1, max(a.steps) // 2)
@@ -314,12 +331,12 @@ def plan(a: argparse.Namespace) -> tuple[list[list[int]], dict[str, list]]:
                 payload_min=a.payload_min,
                 payload_max=a.payload_max,
             )
-        for r in a.rates:
+        for r, rate_duration in zip(a.rates, a.rate_durations, strict=False):
             schedules[rate_phase(r, step)] = build_schedule(
                 seed=a.seed,
                 scenario="steady",
                 step=step,
-                duration=a.rate_duration,
+                duration=rate_duration,
                 rooms=membership,
                 active=step,
                 rate=r,
@@ -362,7 +379,8 @@ def admin_login(kube: Kube) -> tuple[str, str]:
 def resolve_urls(a: argparse.Namespace, kube: Kube) -> None:
     """Default the URLs to the release's own, and refuse URLs that belong to
     another environment: the pods sampled must be the pods loaded. A URL on
-    one of the namespace's own Ingresses (its tailnet one, say) is its too."""
+    one of the namespace's own Ingresses (its tailnet one, say) or Services
+    (from inside the cluster) is its too."""
     gw, api = kube.public_urls()
     hosts: set[str] | None = None
     for flag, given, deployed in (
@@ -372,11 +390,12 @@ def resolve_urls(a: argparse.Namespace, kube: Kube) -> None:
         if not given or not deployed or given.rstrip("/") == deployed.rstrip("/"):
             continue
         if hosts is None:
-            hosts = kube.ingress_hosts()
+            hosts = kube.ingress_hosts() | kube.service_hosts()
         if urlparse(given).hostname not in hosts:
             raise Refused(
                 f"{flag} {given} is neither this namespace's ({deployed}) nor on "
-                "one of its Ingresses; refusing to load one env and sample another"
+                "one of its Ingresses or Services; refusing to load one env and "
+                "sample another"
             )
     a.gateway_url = (a.gateway_url or gw or "").rstrip("/")
     a.api_url = (a.api_url or api or "").rstrip("/")
@@ -400,6 +419,9 @@ def rds_cpu(a: argparse.Namespace, start: float, end: float) -> dict | None:
     resolution, so short windows read coarsely; data lands a minute or two late)."""
     if not a.rds_instance:
         return None
+    env = dict(os.environ)
+    if a.aws_profile:
+        env["AWS_PROFILE"] = a.aws_profile
     out: dict = {}
     for metric, key in (("CPUUtilization", "cpu"), ("DatabaseConnections", "conns")):
         r = subprocess.run(
@@ -412,8 +434,7 @@ def rds_cpu(a: argparse.Namespace, start: float, end: float) -> dict | None:
                 "--period", "60", "--statistics", "Average", "Maximum",
                 "--region", a.aws_region, "--output", "json",
             ],
-            capture_output=True, text=True, timeout=60,
-            env={**os.environ, "AWS_PROFILE": a.aws_profile},
+            capture_output=True, text=True, timeout=60, env=env,
         )  # fmt: skip
         if r.returncode != 0:
             out["error"] = r.stderr.strip()[:200]
@@ -748,11 +769,11 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                         break
                 now = datetime.now(UTC).isoformat(timespec="seconds")
                 print(f"  rates start {now}", flush=True)
-            for r in a.rates:
+            for r, rate_duration in zip(a.rates, a.rate_durations, strict=False):
                 if stop.is_set():
                     break
                 name = rate_phase(r, step)
-                await measure(name, "steady", step, a.rate_duration, drain=True)
+                await measure(name, "steady", step, rate_duration, drain=True)
                 phases[-1]["rate"] = r
                 why = broken(
                     phase_summary(

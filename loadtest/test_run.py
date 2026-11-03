@@ -48,6 +48,20 @@ def test_without_rates_the_plan_is_unchanged():
     assert list(schedules) == ["idle@300", "steady@300"]
 
 
+def test_each_rate_may_have_a_window_of_its_own_length():
+    a = _args(
+        "--scenarios", "idle", "--rates", "1,2,30", "--rate-duration", "600,600,60"
+    )
+    _, schedules = plan(a)
+    # Poisson arrivals: about rate x duration messages in each window.
+    for r, secs in ((1, 600), (2, 600), (30, 60)):
+        sent = len(schedules[rate_phase(r, 300)])
+        assert 0.8 * r * secs < sent < 1.2 * r * secs
+    assert _args("--rates", "1,2", "--rate-duration", "45").rate_durations == [45, 45]
+    with pytest.raises(SystemExit):
+        _args("--rates", "1,2,3", "--rate-duration", "600,60")
+
+
 def test_rates_must_go_up():
     with pytest.raises(SystemExit):
         _args("--rates", "20,10")
@@ -171,6 +185,9 @@ class _Release:
     def ingress_hosts(self) -> set[str]:
         return {"dev-gateway.tail.ts.net", "dev-api.tail.ts.net"}
 
+    def service_hosts(self) -> set[str]:
+        return {"switch-dev-switch-core.switch-dev.svc"}
+
 
 def test_urls_default_to_the_release_and_may_be_its_ingresses() -> None:
     a = parse_args(["--namespace", "switch-dev"])
@@ -190,6 +207,15 @@ def test_urls_default_to_the_release_and_may_be_its_ingresses() -> None:
     resolve_urls(a, _Release())  # type: ignore[arg-type]
     assert a.gateway_url == "https://dev-gateway.tail.ts.net"
     assert a.api_url == "https://dev-api.tail.ts.net"
+
+
+def test_from_inside_the_cluster_the_urls_may_be_its_services() -> None:
+    url = "http://switch-dev-switch-core.switch-dev.svc:8000"
+    a = parse_args(
+        ["--namespace", "switch-dev", "--api-url", url, "--gateway-url", url]
+    )
+    resolve_urls(a, _Release())  # type: ignore[arg-type]
+    assert (a.gateway_url, a.api_url) == (url, url)
 
 
 def test_urls_of_another_environment_are_refused() -> None:

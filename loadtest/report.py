@@ -125,7 +125,8 @@ def render(meta: dict, phases: list[dict], teardown: dict | None) -> str:
     lines = [
         f"# Load run {meta['run_id']}",
         "",
-        f"- Target: namespace `{meta['namespace']}` (context `{meta['kube_context']}`), "
+        f"- Target: namespace `{meta['namespace']}` "
+        f"(context `{meta['kube_context'] or 'in-cluster'}`), "
         f"API {meta['api_url']}, via {meta['via']}",
         f"- switch-core pods seen: {', '.join(meta['pods']) or 'none'}",
         f"- Seed {meta['seed']}, membership {meta['membership_fingerprint']}, "

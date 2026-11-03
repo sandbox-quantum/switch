@@ -1,10 +1,13 @@
 """Everything the harness asks of Kubernetes, all of it read-only.
 
 `kubectl get` to find the switch-core pods, the Secret holding the admin
-login and the hostnames of the namespace's Ingresses, `kubectl exec` to run the sampler inside the pods, and, only with
-`--via port-forward`, `kubectl port-forward` to reach the pods without the
-tailnet. Nothing here creates, changes, scales or restarts a Kubernetes
-object.
+login and the hostnames of the namespace's Ingresses and Services, `kubectl
+exec` to run the sampler inside the pods, and, only with `--via
+port-forward`, `kubectl port-forward` to reach the pods without the tailnet.
+Nothing here creates, changes, scales or restarts a Kubernetes object.
+
+With no context, kubectl uses the service account of the pod it runs in, for
+a run from inside the cluster.
 """
 
 from __future__ import annotations
@@ -43,8 +46,12 @@ def guard_target(namespace: str, *urls: str) -> None:
         if not url:
             continue
         host = (urlparse(url).hostname or "").lower()
-        if host.split(".")[0] in PILOT_HOST_LABELS:
+        labels = host.split(".")
+        if labels[0] in PILOT_HOST_LABELS:
             raise Refused(f"refusing {url}: that is the pilot's hostname")
+        # <service>.<namespace>[.svc...] inside the cluster.
+        if len(labels) > 1 and labels[1] == PILOT_NAMESPACE:
+            raise Refused(f"refusing {url}: that is a Service of the pilot")
         if "prod" in host:
             raise Refused(f"refusing {url}: looks like prod")
 
@@ -53,7 +60,8 @@ class Kube:
     def __init__(self, context: str, namespace: str) -> None:
         self.context = context
         self.namespace = namespace
-        self.base = ["kubectl", "--context", context, "-n", namespace]
+        context_args = ["--context", context] if context else []
+        self.base = ["kubectl", *context_args, "-n", namespace]
 
     def get_json(self, *args: str) -> dict:
         out = subprocess.run(
@@ -145,6 +153,17 @@ class Kube:
             or []
             if lb.get("hostname")
         }
+
+    def service_hosts(self) -> set[str]:
+        """The names this namespace's Services answer on inside the cluster,
+        short and qualified, for a run from a pod there."""
+        hosts: set[str] = set()
+        for s in self.get_json("services")["items"]:
+            name = s["metadata"]["name"]
+            ns = self.namespace
+            hosts |= {name, f"{name}.{ns}", f"{name}.{ns}.svc"}
+            hosts.add(f"{name}.{ns}.svc.cluster.local")
+        return hosts
 
 
 @dataclass
