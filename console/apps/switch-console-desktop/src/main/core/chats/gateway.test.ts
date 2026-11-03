@@ -150,6 +150,50 @@ describe('createChat', () => {
     });
   });
 
+  it('sends resumeOnly only when true', async () => {
+    const server = { id: 'server-1' } as SwitchServer;
+    for (const resumeOnly of [true, false]) {
+      vi.mocked(gatewayFetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({ chat: row('room-new', 'direct') }), { status: 200 })
+      );
+      await createChat(server, {
+        agentIds: ['agent-1'],
+        name: null,
+        requestId: 'req-1',
+        greeting: null,
+        resumeOnly,
+      });
+    }
+    expect(
+      vi
+        .mocked(gatewayFetch)
+        .mock.calls.slice(-2)
+        .map(([, , options]) => options?.body)
+    ).toEqual([
+      { requestId: 'req-1', agentId: 'agent-1', resumeOnly: true },
+      { requestId: 'req-1', agentId: 'agent-1' },
+    ]);
+  });
+
+  it('sends bridgeId only when one is given', async () => {
+    const server = { id: 'server-1' } as SwitchServer;
+    vi.mocked(gatewayFetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ chat: row('room-new', 'direct') }), { status: 200 })
+    );
+    await createChat(server, {
+      agentIds: ['agent-1'],
+      name: null,
+      requestId: 'req-1',
+      greeting: 'Hi',
+      bridgeId: 'bridge-1',
+    });
+    expect(gatewayFetch).toHaveBeenCalledWith(server, '/chats', {
+      authenticated: true,
+      method: 'POST',
+      body: { requestId: 'req-1', agentId: 'agent-1', greeting: 'Hi', bridgeId: 'bridge-1' },
+    });
+  });
+
   it('asks for a group of one agent when kind is group', async () => {
     const server = { id: 'server-1' } as SwitchServer;
     vi.mocked(gatewayFetch).mockResolvedValueOnce(

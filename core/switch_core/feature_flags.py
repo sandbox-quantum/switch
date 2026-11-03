@@ -80,6 +80,14 @@ GROUP_CHATS = "group_chats"
 # doesn't offer one. Awake time is still counted and shown either way.
 HOSTED_AWAKE_BUDGETS = "hosted_awake_budgets"
 
+# switch-buddy's chat on a bridge: Console offers to move the buddy's welcome
+# to a private channel with the person on their team's chat app (a chat
+# created with `bridgeId`, resumed with `resumeOnly`). Like group chats, turn
+# it on only after every switch-core process runs a release that has it: an
+# upgraded process refuses those requests while it is off, but an older one
+# ignores the fields and makes an internal chat instead.
+BUDDY_SLACK_HANDOFF = "buddy_slack_handoff"
+
 # Connector apps per organization: a workspace signs in to GitHub and the
 # static OAuth services through the app its organization registered, where
 # it registered one, and through the server's otherwise
@@ -100,6 +108,7 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         SWITCH_BUDDY,
         GROUP_CHATS,
         HOSTED_AWAKE_BUDGETS,
+        BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
     }
 )
