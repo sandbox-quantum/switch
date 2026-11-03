@@ -283,9 +283,9 @@ def combine(cfg: Config, worker_summaries: list[list[dict]]) -> list[dict]:
     return rows
 
 
-def verdict(rows: list[dict], cfg: Config, notes: list[str]) -> dict:
+def verdict(rows: list[dict], cfg: Config, failures: list[str]) -> dict:
     """What the night says: whether realistic load ran clean, and the highest
-    ramp step every worker held."""
+    ramp step every worker held. Any of `failures` fails the night."""
     realistic = [r for r in rows if r["kind"] == "realistic"]
     ramp = [r for r in rows if r["kind"] == "ramp"]
     realistic_ok = len(realistic) == len(cfg.realistic_minutes) and all(
@@ -301,7 +301,7 @@ def verdict(rows: list[dict], cfg: Config, notes: list[str]) -> dict:
         broke is not None or len(ramp) == len(cfg.ramp)
     )
     return {
-        "ok": realistic_ok and complete and not notes,
+        "ok": realistic_ok and complete and not failures,
         "realistic_ok": realistic_ok,
         "complete": complete,
         "held_per_s": held[-1]["target_per_s"] if held else None,
@@ -373,11 +373,13 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
         )
         head = f"✅ Switch nightly load test on {cfg.environment}: {held}{broke}"
     else:
-        why = (
-            "realistic load did not run clean"
-            if not v["realistic_ok"]
-            else "the run did not finish"
-        )
+        failures = result.get("failures") or []
+        if failures:
+            why = failures[0]
+        elif not v["realistic_ok"]:
+            why = "realistic load did not run clean"
+        else:
+            why = "the run did not finish"
         head = f"❌ Switch nightly load test on {cfg.environment}: {why}"
     lines = [
         head,
@@ -385,6 +387,7 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
         f"{cfg.agents:,} agents behind {cfg.controllers} controllers"
         + (" · agents made tonight" if result.get("seeded") else ""),
     ]
+    lines += [f"❌ {f}" for f in (result.get("failures") or [])[1:]]
     lines += result.get("notes", [])
     if result["rows"]:
         table = [
@@ -931,6 +934,9 @@ def cmd_run(cfg: Config) -> int:
     out = Path(os.environ.get("LOADTEST_OUT", "/tmp/loadtest")) / base
     out.mkdir(parents=True, exist_ok=True)
     until = deadline_after(started, cfg.deadline, timedelta(hours=3))
+    # What the report says beside the numbers. Failures make the night a ❌;
+    # warnings (a pod restarting at the step that broke, say) are shown only.
+    failures: list[str] = []
     notes: list[str] = []
     seeded = False
 
@@ -942,8 +948,8 @@ def cmd_run(cfg: Config) -> int:
         scale_core(cfg, cfg.night_pods)
     s = wait_core(cfg, cfg.night_pods, 1500)
     if s["ready"] != cfg.night_pods:
-        notes.append(
-            f"⚠️ {s['ready']} of {cfg.night_pods} switch-core pods ready: not comparable with other nights"
+        failures.append(
+            f"{s['ready']} of {cfg.night_pods} switch-core pods ready: not comparable with other nights"
         )
     template, restarts0 = s["pod_template_hash"], s["restarts"]
     print(
@@ -953,6 +959,7 @@ def cmd_run(cfg: Config) -> int:
 
     workers: list[Worker] = []
     stopped = None
+    pop = None
     try:
         pop = s3_get(cfg, "population.json")
         if pop and pop.get("shape") != cfg.population_shape():
@@ -983,14 +990,14 @@ def cmd_run(cfg: Config) -> int:
         stopped = f"{type(exc).__name__}: {exc}"[:400]
         finish(workers)
     if stopped:
-        notes.append(f"stopped early: {stopped}")
+        failures.append(f"stopped early: {stopped}")
 
     after = core_state(cfg)
     restarts = after["restarts"] - restarts0
     if restarts:
         notes.append(f"⚠️ switch-core restarted {restarts} time(s) during the run")
     if after["pod_template_hash"] != template:
-        notes.append("⚠️ switch-core's pods were replaced during the run (a deploy?)")
+        failures.append("switch-core's pods were replaced during the run (a deploy?)")
 
     summaries = [p for w in workers if (p := _phases(w))]
     rows = combine(cfg, summaries)
@@ -1008,11 +1015,10 @@ def cmd_run(cfg: Config) -> int:
         "duration_s": round((datetime.now(UTC) - started).total_seconds()),
         "restarts": restarts,
         "rows": rows,
+        "failures": failures,
         "notes": notes,
     }
-    result["verdict"] = verdict(
-        rows, cfg, [n for n in notes if n.startswith(("⚠️", "stopped"))]
-    )
+    result["verdict"] = verdict(rows, cfg, failures)
 
     try:
         comparison = compare(result, history(cfg, before=night))

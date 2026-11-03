@@ -133,6 +133,9 @@ def test_a_night_that_stopped_early_is_not_complete():
     rows = combine(cfg, [_worker(cfg)[:3]])
     v = verdict(rows, cfg, ["stopped early: deadline"])
     assert not v["ok"] and not v["complete"]
+    result = {"build": "b", "pods": 12, "nodes": 4, "rows": rows, "verdict": v}
+    result["failures"] = ["stopped early: deadline"]
+    assert "staging: stopped early: deadline" in report_text(result, cfg, [])
 
 
 def test_the_report_fits_discord_and_has_no_em_dash():
