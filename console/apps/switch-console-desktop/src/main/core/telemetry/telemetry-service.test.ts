@@ -310,13 +310,13 @@ describe('the payload', () => {
     });
 
     expect(Object.keys(sentResource()).sort()).toEqual([
-      'switch_trust.client_id',
-      'switch_trust.env',
-      'switch_trust.internal',
       'os.type',
       'os.version',
       'service.name',
       'service.version',
+      'switch_trust.client_id',
+      'switch_trust.env',
+      'switch_trust.internal',
     ]);
     expect(Object.keys(sentAttributes()).sort()).toEqual([
       'agent_type',
