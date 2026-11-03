@@ -2367,6 +2367,7 @@ class ServiceBroker:
 
     async def check_paste(
         self,
+        session: AsyncSession,
         service: str,
         method: PasteMethodName,
         fields: dict[str, str],
@@ -2379,6 +2380,8 @@ class ServiceBroker:
 
         Named by the entry's identity call where that answers with the
         credential, and otherwise by the credential itself (`identify_pasted`).
+        `session` is bound to the workspace; it is committed before the vendor
+        is called.
         """
         entry = self._entry(service)
         definition = entry.definition
@@ -2395,20 +2398,19 @@ class ServiceBroker:
         refusal = self._method_refusal(definition, method)
         if refusal is not None:
             raise ServiceError(403, FORBIDDEN, refusal, retryable=False)
-        # Nothing it connects could be handed out where the service can't be.
-        adapter = self._adapters.get(service)
+        # Nothing it connects could be handed out where the service can't be,
+        # and the adapter that would hand it out checks it.
+        choice = await self._choose(session, service)
+        await session.commit()
+        adapter = choice.adapter
         oauth = definition.auth.oauth
-        unavailable = self.server_availability(service)
         if (
-            unavailable is not None
+            self._unavailable(service, choice) is not None
             or not isinstance(adapter, OAuthAdapter)
             or oauth is None
         ):
             raise ServiceError(
-                503,
-                INTERNAL,
-                unavailable or "Not available on this server.",
-                retryable=False,
+                503, INTERNAL, self._reason(service, choice), retryable=False
             )
         try:
             picked = oauth.checked_choices(choices)

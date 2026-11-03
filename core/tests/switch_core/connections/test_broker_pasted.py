@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.connections.adapters import ConnectionSecret
+from switch_core.connections.adapters import ConnectionSecret, ServiceAdapter
 from switch_core.connections.adapters.oauth import (
     OAuthAdapter,
     OAuthClientCredentials,
@@ -33,6 +33,7 @@ from switch_core.connections.broker import (
     ServiceError,
 )
 from switch_core.connections.loader import CATALOG_ROOT, load_catalog
+from switch_core.connections.organization_apps import OrganizationApp
 from switch_core.db.models import Agent, ServiceConnection, User
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
@@ -123,15 +124,35 @@ def _pasting(
     return Pasting(broker, sites, catalog, root)
 
 
+class _OneOrganizationApp:
+    """Every workspace's organization saved one app for `example`."""
+
+    def __init__(self, adapter: ServiceAdapter) -> None:
+        self.app = OrganizationApp(
+            organization_id="org-1",
+            adapter=adapter,
+            github_app=None,
+            problem=None,
+            changed_at=datetime.now(UTC),
+        )
+
+    async def for_workspace(
+        self, session: AsyncSession, tenant_id: str, service: str
+    ) -> OrganizationApp:
+        return self.app
+
+
 async def _check(
     p: Pasting, method: str, fields: dict[str, str], site: str = SITE
 ) -> CheckedKey:
-    return await p.broker.check_paste(
-        "example",
-        method,  # type: ignore[arg-type]
-        fields,
-        {"site": site},
-    )
+    async with p.broker._session_factory() as session:
+        return await p.broker.check_paste(
+            session,
+            "example",
+            method,  # type: ignore[arg-type]
+            fields,
+            {"site": site},
+        )
 
 
 async def _connected(
@@ -259,6 +280,22 @@ class TestCheck:
             "Example refused the pasted token, which may be wrong, revoked or expired."
         )
 
+    async def test_a_paste_is_checked_against_the_organizations_app(
+        self, session_factory, tmp_path
+    ) -> None:
+        """Where the workspace goes through its organization's app, the
+        server's own need not be set up: that app is the one that hands the
+        paste out."""
+        p = _pasting(session_factory, tmp_path / "c")
+        p.vendor.pasted_tokens[TOKEN] = True
+        p.broker._organization_apps = _OneOrganizationApp(  # type: ignore[assignment]
+            p.broker._adapters.pop("example")
+        )
+
+        checked = await _check(p, "token", {"pat": TOKEN})
+
+        assert checked.account_id == "acct-eu"
+
     async def test_a_vendor_that_cannot_be_reached_can_be_tried_again(
         self, session_factory, tmp_path
     ) -> None:
@@ -287,7 +324,8 @@ class TestCheck:
         p.vendor.pasted_tokens[TOKEN] = True
 
         with pytest.raises(ServiceError) as caught:
-            await p.broker.check_paste("example", "token", fields, choices)
+            async with session_factory() as session:
+                await p.broker.check_paste(session, "example", "token", fields, choices)
 
         assert caught.value.status_code == 422
         assert message in caught.value.message
