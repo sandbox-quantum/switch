@@ -2,7 +2,8 @@
 room's own documents.
 
 - A resource's rooms, and its attached-rooms count, take in only rooms the
-  caller may read. A tenant admin sees every one.
+  caller may read. So do a room's links and the room graph. A tenant admin
+  sees every one.
 - Unlinking a reference, document or package from a room is for those taking
   part in the room and tenant admins. Write access is not enough: on a
   publicly writable room it is everyone's.
@@ -44,6 +45,16 @@ from switch_core.gateway.documents import (
     list_rooms_for_document,
 )
 from switch_core.gateway.packages import detach_package_from_room
+from switch_core.gateway.references import (
+    detach_reference_from_room,
+    list_references,
+    list_rooms_for_reference,
+)
+from switch_core.gateway.room_links import (
+    get_room_link_graph,
+    list_inbound_linked_rooms,
+    list_linked_rooms,
+)
 from switch_core.gateway.rooms import list_rooms
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
@@ -345,3 +356,92 @@ async def test_those_taking_part_in_a_private_room_read_its_resources(
         with pytest.raises(HTTPException) as refused:
             await listed(world.hidden, world.member)
         assert refused.value.status_code == 403
+
+
+async def test_a_reference_follows_the_same_rules(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _svc(session_factory)
+    async with session_factory() as session:
+        world = await _world(session)
+        ref = await svc.create_reference(
+            session,
+            owner_id=world.owner.id,
+            is_admin=False,
+            read_visibility="public",
+            write_visibility="private",
+            type="github",
+            name="repo",
+            description="",
+            instructions="",
+            value={"urls": ["https://github.com/example/repo"]},
+        )
+        for room in (world.public, world.theirs, world.hidden):
+            await svc.attach_reference_to_room(
+                session, room.id, ref.id, user_id=world.owner.id
+            )
+        await session.commit()
+
+        rooms = await list_rooms_for_reference(
+            ref.id, session, svc, _ROOM_STORE, world.member, False
+        )
+        assert {r.room_name: r.can_unlink for r in rooms} == {
+            "public": False,
+            "theirs": True,
+        }
+        listed = await list_references(session, svc, _USER_STORE, world.member, False)
+        assert next(r.attached_rooms_count for r in listed if r.id == ref.id) == 2
+
+        with pytest.raises(HTTPException) as refused:
+            await detach_reference_from_room(
+                world.public.id, ref.id, session, svc, _ROOM_STORE, world.member, False
+            )
+        assert refused.value.status_code == 403
+        await detach_reference_from_room(
+            world.theirs.id, ref.id, session, svc, _ROOM_STORE, world.member, False
+        )
+
+
+async def test_links_and_the_room_graph_name_only_rooms_the_viewer_may_read(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _svc(session_factory)
+    async with session_factory() as session:
+        world = await _world(session)
+        for source, target in (
+            (world.public, world.hidden),
+            (world.hidden, world.public),
+        ):
+            await svc.attach_linked_room(
+                session, source_room_id=source.id, target_room_id=target.id, label="see"
+            )
+        await svc.attach_linked_room(
+            session,
+            source_room_id=world.public.id,
+            target_room_id=world.theirs.id,
+            label="see",
+        )
+        await session.commit()
+
+        outbound = await list_linked_rooms(
+            world.public.id, session, svc, _ROOM_STORE, world.member, False
+        )
+        assert [link.target_room_name for link in outbound] == ["theirs"]
+        inbound = await list_inbound_linked_rooms(
+            world.public.id, session, svc, _ROOM_STORE, world.member, False
+        )
+        assert inbound == []
+
+        graph = await get_room_link_graph(session, svc, world.member, False)
+        assert {room.name for room in graph.rooms} == {"public", "theirs"}
+        assert [(link.source_room_id, link.target_room_id) for link in graph.links] == [
+            (world.public.id, world.theirs.id)
+        ]
+
+        admin_graph = await get_room_link_graph(session, svc, world.stranger, True)
+        assert {room.name for room in admin_graph.rooms} == {
+            "public",
+            "theirs",
+            "hidden",
+        }
+        assert len(admin_graph.links) == 3

@@ -45,12 +45,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Security
-- **A resource's rooms no longer name private rooms its viewer cannot
-  open.** A reference, document or package's "Attached to" list, and its
-  attached-rooms count, took in every room it was attached to, so anyone who
-  could see a public reference could read the names of private rooms it was
-  in. Both now take in only rooms the viewer may read. Workspace admins still
-  see every room.
+- **Private rooms are no longer named to people who cannot open them.** The
+  room graph gave everyone in a workspace the name and description of every
+  room in it. A room's linked rooms named private rooms it links to, or that
+  link to it. A reference, document or package's "Attached to" list, and its
+  attached-rooms count, took in every room it was attached to. Each now takes
+  in only rooms the viewer may read. Workspace admins still see every room.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when
@@ -216,9 +216,8 @@ version of their own to them without also giving them a release of their own.
   dashboard shows it as an "Unlink" button rather than a bin, since nothing
   is deleted. Attaching still takes write access.
 - **A room's own documents are deleted by their creator, the room's owner or
-  an admin.** Anyone who could write to the room could delete them. Others
-  who may write to it can still change them. A document an agent made counts
-  as made by the agent's owner.
+  an admin.** Anyone who could write to the room could delete them. A
+  document an agent made counts as made by the agent's owner.
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and
   downgrade the database before rolling back.** Every existing workspace gets
   an organization of its own, and its owners become the organization's admins.
@@ -484,7 +483,9 @@ version of their own to them without also giving them a release of their own.
   users, attaching and detaching its resources, linking it to other rooms and
   deleting its room documents. A document, reference or package's page
   offered attaching it to, and detaching it from, rooms the viewer could not
-  change. Each of these was refused when tried. Access is now read-only for
+  change. The rooms list offered archiving, and the groups page filing,
+  rooms the viewer could not change; a bulk archive skipped those without
+  saying so. Each of these was refused when tried. Access is now read-only for
   everyone but the room's owner and admins, and its description says so.
   Everything else is offered only to those who may write to the room, and
   only rooms they may write to are offered for attaching. A reader still sees

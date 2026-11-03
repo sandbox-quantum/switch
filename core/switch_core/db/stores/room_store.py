@@ -935,8 +935,9 @@ def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
 def involves(user_id: str) -> ColumnElement[bool]:
     """True for a `Room` row the user takes part in: they own it, their Switch
     Console member client or a platform account they have claimed is in it,
-    or an agent they own is. For reading and listing only; it grants no
-    write or configuration access."""
+    or an agent they own is. It grants reading and listing, and unlinking
+    resources (`authz.can_unlink_from_room`); no write or configuration
+    access."""
     return or_(
         Room.owner_id == user_id,
         exists().where(

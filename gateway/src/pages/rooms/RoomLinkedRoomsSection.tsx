@@ -184,7 +184,7 @@ function AddLinkedRoomDialog({
   };
 
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
+    <Dialog open onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>Add linked room</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>

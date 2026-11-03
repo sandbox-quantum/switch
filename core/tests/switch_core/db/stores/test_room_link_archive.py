@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy import true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Room
@@ -29,7 +30,7 @@ class TestLinkedRoomArchivedFiltering:
             await rooms.set_archived(session, archived.id, True)
             await session.commit()
 
-            result = await links.list_outbound(session, source.id)
+            result = await links.list_outbound(session, source.id, visible=true())
             assert {rid for rid, _name, _desc, _label in result} == {active.id}
 
     async def test_list_inbound_excludes_archived_sources(
@@ -46,5 +47,5 @@ class TestLinkedRoomArchivedFiltering:
             await rooms.set_archived(session, archived.id, True)
             await session.commit()
 
-            result = await links.list_inbound(session, target.id)
+            result = await links.list_inbound(session, target.id, visible=true())
             assert {rid for rid, _name, _desc, _label in result} == {active.id}

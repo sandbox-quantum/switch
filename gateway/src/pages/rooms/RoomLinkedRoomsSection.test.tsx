@@ -1,4 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { RoomSummary } from "../../data/api";
+import * as api from "../../data/api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as hooks from "../../data/hooks";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
@@ -11,6 +13,11 @@ vi.mock("../../data/hooks", () => ({
   useLinkedRooms: vi.fn(),
   useRooms: vi.fn(),
 }));
+
+vi.mock("../../data/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../data/api")>();
+  return { ...actual, attachLinkedRoom: vi.fn() };
+});
 
 describe("RoomLinkedRoomsSection", () => {
   beforeEach(() => {
@@ -50,6 +57,25 @@ describe("RoomLinkedRoomsSection", () => {
 
     await screen.findByRole("dialog");
     expect(hooks.useRooms).toHaveBeenCalled();
+  });
+
+  it("stays open while a link is being saved, so a failure is not lost", async () => {
+    vi.mocked(hooks.useRooms).mockReturnValue({
+      data: [{ id: "r3", name: "retro", description: "" } as RoomSummary],
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    vi.mocked(api.attachLinkedRoom).mockReturnValue(new Promise(() => {}));
+    render(<RoomLinkedRoomsSection roomId="r1" canWrite />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add linked room" }));
+    fireEvent.click(await screen.findByText("retro"));
+    fireEvent.change(screen.getByLabelText("Label"), { target: { value: "follows" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+    screen.getByRole("dialog");
   });
 
   it("lists the links, with nothing to change, to a reader", () => {

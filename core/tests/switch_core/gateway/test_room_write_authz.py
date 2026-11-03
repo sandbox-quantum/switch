@@ -251,7 +251,12 @@ class TestCreateLinkedRoomWriteAuthz:
                 )
 
             assert exc.value.status_code == 403
-            assert await svc.list_linked_rooms_for_room(session, source.id) == []
+            assert (
+                await svc.list_linked_rooms_for_room(
+                    session, source.id, reader_id=None, reader_is_admin=True
+                )
+                == []
+            )
 
     async def test_owner_can_link(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -274,7 +279,9 @@ class TestCreateLinkedRoomWriteAuthz:
             )
 
             assert detail.target_room_id == target.id
-            links = await svc.list_linked_rooms_for_room(session, source.id)
+            links = await svc.list_linked_rooms_for_room(
+                session, source.id, reader_id=None, reader_is_admin=True
+            )
             assert [link["target_room_id"] for link in links] == [target.id]
 
 
@@ -304,7 +311,9 @@ class TestDeleteLinkedRoomWriteAuthz:
                 )
 
             assert exc.value.status_code == 403
-            links = await svc.list_linked_rooms_for_room(session, source.id)
+            links = await svc.list_linked_rooms_for_room(
+                session, source.id, reader_id=None, reader_is_admin=True
+            )
             assert [link["target_room_id"] for link in links] == [target.id]
 
     async def test_owner_can_delete_link(
@@ -330,4 +339,9 @@ class TestDeleteLinkedRoomWriteAuthz:
             )
 
             assert resp.status_code == 204
-            assert await svc.list_linked_rooms_for_room(session, source.id) == []
+            assert (
+                await svc.list_linked_rooms_for_room(
+                    session, source.id, reader_id=None, reader_is_admin=True
+                )
+                == []
+            )

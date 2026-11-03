@@ -449,18 +449,16 @@ async def list_rooms_for_reference(
         session, reference_id, reader_id=user.id, reader_is_admin=is_admin
     )
     taking_part = await room_store.involved_room_ids(
-        session, user.id, [room.id for room in rooms]
+        session, user.id, [rid for rid, _ in rooms]
     )
     principal = Principal(user.id, is_admin)
     return [
         ResourceRoom(
-            room_id=room.id,
-            room_name=room.name,
-            can_unlink=can_unlink_from_room(
-                principal, takes_part=room.id in taking_part
-            ),
+            room_id=rid,
+            room_name=name,
+            can_unlink=can_unlink_from_room(principal, takes_part=rid in taking_part),
         )
-        for room in rooms
+        for rid, name in rooms
     ]
 
 

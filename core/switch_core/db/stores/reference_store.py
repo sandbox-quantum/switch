@@ -219,12 +219,12 @@ class ReferenceStore:
         *,
         reader_id: str | None,
         reader_is_admin: bool,
-    ) -> list[Room]:
+    ) -> list[tuple[str, str]]:
         """The rooms it is attached to, of those the reader may read."""
         result = await session.execute(
-            select(Room)
+            select(Room.id, Room.name)
             .join(room_references, Room.id == room_references.c.room_id)
             .where(room_references.c.reference_id == reference_id)
             .where(readable_by(reader_id, is_admin=reader_is_admin))
         )
-        return list(result.scalars().all())
+        return [(rid, name) for rid, name in result.all()]

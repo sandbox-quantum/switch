@@ -16,10 +16,10 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
+    ensure_may_unlink,
     get_current_user,
     get_tenant_is_admin,
     require_room_access,
-    require_room_unlink,
     takes_part_in_room,
 )
 from switch_core.gateway.dependencies import (
@@ -356,18 +356,16 @@ async def list_rooms_for_document(
         session, document_id, reader_id=user.id, reader_is_admin=is_admin
     )
     taking_part = await room_store.involved_room_ids(
-        session, user.id, [room.id for room in rooms]
+        session, user.id, [rid for rid, _ in rooms]
     )
     principal = Principal(user.id, is_admin)
     return [
         ResourceRoom(
-            room_id=room.id,
-            room_name=room.name,
-            can_unlink=can_unlink_from_room(
-                principal, takes_part=room.id in taking_part
-            ),
+            room_id=rid,
+            room_name=name,
+            can_unlink=can_unlink_from_room(principal, takes_part=rid in taking_part),
         )
-        for room in rooms
+        for rid, name in rooms
     ]
 
 
@@ -385,7 +383,7 @@ async def list_room_documents(
     room = await require_room_access(
         session, room_store, room_id, user, "read", is_admin
     )
-    takes_part = await takes_part_in_room(session, room_store, room, user)
+    takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
     principal = Principal(user.id, is_admin)
     docs = await resource_service.list_room_documents(session, room_id)
     summaries = await _enrich_summaries(
@@ -456,14 +454,13 @@ async def detach_document_from_room(
     room = await require_room_access(
         session, room_store, room_id, user, "read", is_admin
     )
+    principal = Principal(user.id, is_admin)
     doc = await resource_service.get_room_scoped_document_or_none(
         session, room_id, document_id
     )
     if doc is not None:
         if not can_delete_room_document(
-            Principal(user.id, is_admin),
-            room_owner_id=room.owner_id,
-            document_owner_id=doc.owner_id,
+            principal, room_owner_id=room.owner_id, document_owner_id=doc.owner_id
         ):
             raise HTTPException(
                 status_code=403,
@@ -473,7 +470,7 @@ async def detach_document_from_room(
             session, room_id=room_id, document_id=document_id
         )
     else:
-        await require_room_unlink(session, room_store, room_id, user, is_admin)
+        await ensure_may_unlink(session, room_store, room, principal)
         await resource_service.detach_document_from_room(session, room_id, document_id)
     await session.commit()
 
@@ -506,7 +503,7 @@ async def get_room_document(
     detail = await _enrich_detail(
         session, doc, resource_service, user_store, agent_store, principal
     )
-    takes_part = await takes_part_in_room(session, room_store, room, user)
+    takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
     return RoomDocumentDetail(
         **detail.model_dump(),
         can_remove=_can_remove(principal, room, doc, takes_part=takes_part),

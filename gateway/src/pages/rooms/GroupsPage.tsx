@@ -318,11 +318,12 @@ function MembershipPanel({
     [rooms, selectedId, isStandalone],
   );
 
-  // Rooms eligible to add: everything not already directly in this group.
+  // Rooms eligible to add: those the viewer may change (filing a room takes
+  // write access to it) that are not already directly in this group.
   const addableOptions = useMemo<PickerOption[]>(
     () =>
       rooms
-        .filter((r) => r.group_id !== selectedId)
+        .filter((r) => r.can_write && r.group_id !== selectedId)
         .map((r) => ({
           id: r.id,
           primary: r.name,
@@ -423,7 +424,7 @@ function MembershipPanel({
               <Typography variant="body2" sx={{ flexGrow: 1 }} noWrap>
                 {room.name}
               </Typography>
-              {!isStandalone && (
+              {!isStandalone && room.can_write && (
                 <IconButton
                   size="small"
                   onClick={() => handleRemove(room.id)}

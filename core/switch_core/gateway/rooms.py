@@ -15,7 +15,6 @@ from switch_core.authz import (
     Principal,
     can,
     can_unlink_from_room,
-    require,
 )
 from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -34,7 +33,12 @@ from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
-from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.auth import (
+    authorize_room,
+    get_current_user,
+    get_tenant_is_admin,
+    takes_part_in_room,
+)
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_bridge_store,
@@ -98,31 +102,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _require_room(
-    session: AsyncSession,
-    room_store: RoomStore,
-    room_id: str,
-    principal: Principal,
-    action: Action,
-) -> Room:
-    """Load a room (404 if missing) and authorize `action` for `principal`,
-    raising HTTP 403 if denied."""
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    try:
-        require(principal, action, room)
-    except PermissionError as e:
-        # Whoever takes part in a room may read it, as its listing shows them.
-        if (
-            action != "read"
-            or principal.id is None
-            or not await room_store.involved_room_ids(session, principal.id, [room.id])
-        ):
-            raise HTTPException(status_code=403, detail=str(e)) from e
-    return room
-
-
 async def _require_room_released(
     session: AsyncSession,
     room_store: RoomStore,
@@ -130,7 +109,7 @@ async def _require_room_released(
     principal: Principal,
     action: Action,
 ) -> Room:
-    """`_require_room`, then end the read's transaction.
+    """`authorize_room`, then end the read's transaction.
 
     For a route that goes on to call `RoomService` or `RoomYamlService`, which
     open sessions of their own and may call Matrix or a messaging platform.
@@ -139,7 +118,7 @@ async def _require_room_released(
     request that is waiting for one more. The room stays readable after the
     commit (`expire_on_commit=False`).
     """
-    room = await _require_room(session, room_store, room_id, principal, action)
+    room = await authorize_room(session, room_store, room_id, principal, action)
     await session.commit()
     return room
 
@@ -217,9 +196,7 @@ async def _build_room_detail(
 
     roles = await _list_room_role_details(session, room.id, protocol)
     join_event_listeners = await room_store.get_join_event_listeners(session, room.id)
-    takes_part = principal.id is not None and bool(
-        await room_store.involved_room_ids(session, principal.id, [room.id])
-    )
+    takes_part = await takes_part_in_room(session, room_store, room.id, principal.id)
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
     external_channel_url = await _external_channel_url(room)
@@ -915,7 +892,7 @@ async def get_room(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    room = await _require_room(session, room_store, room_id, principal, "read")
+    room = await authorize_room(session, room_store, room_id, principal, "read")
     return await _build_room_detail(
         session,
         room,
@@ -994,7 +971,7 @@ async def list_room_roles(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
     principal = Principal(user.id, is_admin)
-    await _require_room(session, room_store, room_id, principal, "read")
+    await authorize_room(session, room_store, room_id, principal, "read")
     return await _list_room_role_details(session, room_id, protocol)
 
 
@@ -1009,7 +986,7 @@ async def create_room_role(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
     principal = Principal(user.id, is_admin)
-    await _require_room(session, room_store, room_id, principal, "write")
+    await authorize_room(session, room_store, room_id, principal, "write")
     try:
         await protocol.room_role_store.define_role(
             session, room_id, req.name, req.instructions, req.exclusive
@@ -1039,7 +1016,7 @@ async def patch_room_role(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
     principal = Principal(user.id, is_admin)
-    await _require_room(session, room_store, room_id, principal, "write")
+    await authorize_room(session, room_store, room_id, principal, "write")
     try:
         await protocol.room_role_store.edit_role(
             session, room_id, name, req.instructions, req.exclusive
@@ -1061,7 +1038,7 @@ async def delete_room_role(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
     principal = Principal(user.id, is_admin)
-    await _require_room(session, room_store, room_id, principal, "write")
+    await authorize_room(session, room_store, room_id, principal, "write")
     try:
         await protocol.room_role_store.delete_role(session, room_id, name)
         emit_safely(current_telemetry(), "room_role_deleted", {})
@@ -1085,7 +1062,7 @@ async def put_room_group(
 ) -> RoomDetail:
     """Assign the room to a group, or make it standalone (`group_id=null`)."""
     principal = Principal(user.id, is_admin)
-    await _require_room(session, room_store, room_id, principal, "write")
+    await authorize_room(session, room_store, room_id, principal, "write")
     try:
         await room_store.set_group(session, room_id, req.group_id)
     except ValueError as e:
@@ -1367,7 +1344,7 @@ async def sync_room_name(
     bridge names its own rooms, so it follows the channel's renames from now
     on. The room's owner or an admin only."""
     principal = Principal(user.id, is_admin)
-    room = await _require_room(session, room_store, room_id, principal, "delete")
+    room = await authorize_room(session, room_store, room_id, principal, "delete")
     channel_name = (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY)
     bridge = await bridge_store.get(session, room.bridge_id) if room.bridge_id else None
     if not room.external_channel_id or bridge is None or not channel_name:

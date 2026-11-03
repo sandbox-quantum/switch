@@ -32,9 +32,12 @@ router = APIRouter()
 async def get_room_link_graph(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomGraphResponse:
-    payload = await resource_service.get_room_link_graph(session)
+    payload = await resource_service.get_room_link_graph(
+        session, reader_id=user.id, reader_is_admin=is_admin
+    )
     return RoomGraphResponse(**payload)
 
 
@@ -48,7 +51,9 @@ async def list_linked_rooms(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[LinkedRoomDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
-    rows = await resource_service.list_linked_rooms_for_room(session, room_id)
+    rows = await resource_service.list_linked_rooms_for_room(
+        session, room_id, reader_id=user.id, reader_is_admin=is_admin
+    )
     return [LinkedRoomDetail(**row) for row in rows]
 
 
@@ -62,7 +67,9 @@ async def list_inbound_linked_rooms(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[InboundLinkedRoomDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
-    rows = await resource_service.list_inbound_linked_rooms(session, room_id)
+    rows = await resource_service.list_inbound_linked_rooms(
+        session, room_id, reader_id=user.id, reader_is_admin=is_admin
+    )
     return [InboundLinkedRoomDetail(**row) for row in rows]
 
 
