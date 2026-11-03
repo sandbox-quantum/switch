@@ -3409,6 +3409,36 @@ describe('agent management calls', () => {
     });
   });
 
+  it('asks the list for one machine on a server older than the single-machine route', async () => {
+    const listed = {
+      id: 'controller-1',
+      name: 'box',
+      description: null,
+      kind: 'daemon',
+      state: 'online',
+      last_seen_at: null,
+      revoked_at: null,
+    };
+    const notFound = async () => respond(404, { detail: 'Not Found' });
+    const list = async () => respond(200, [listed]);
+    fetchMock
+      .mockImplementationOnce(notFound)
+      .mockImplementationOnce(list)
+      .mockImplementationOnce(notFound)
+      .mockImplementationOnce(list);
+    expect((await fetchManagementController(SERVER, 'controller-1')).name).toBe('box');
+    await expect(fetchManagementController(SERVER, 'controller-2')).rejects.toThrow(
+      'That device is not one of yours on this server.'
+    );
+  });
+
+  it('says a server running no agent management does not, for one machine too', async () => {
+    fetchMock.mockImplementation(async () => respond(404, { detail: 'Not Found' }));
+    await expect(fetchManagementController(SERVER, 'controller-1')).rejects.toBeInstanceOf(
+      AgentManagementUnavailableError
+    );
+  });
+
   it('issues an enrollment code with its expiry and the address to enroll against', async () => {
     fetchMock.mockImplementation(async () =>
       respond(201, { code: 'swe_abc', expires_at: '2026-11-03T10:10:00Z', server_url: null })

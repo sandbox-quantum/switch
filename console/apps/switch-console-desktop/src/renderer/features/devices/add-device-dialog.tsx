@@ -1,12 +1,13 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Laptop, Server, Terminal } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { CopyButton } from '@renderer/features/admin/copy-button';
 import {
   MANAGED_AGENTS_KEY,
   useOwnedMachines,
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { REMOTE_HOSTS_QUERY_KEY } from '@renderer/features/remote-hosts/views/remote-hosts-view';
+import { invalidateHostProviderReadiness } from '@renderer/lib/components/provider-connection-status';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
@@ -46,9 +47,10 @@ export function AddDeviceDialog({
   const machines = useOwnedMachines(serverId);
   const thisComputerAdded =
     machines.data?.some((machine) => machine.local?.kind === 'this-computer') ?? false;
-  const [choice, setChoice] = useState<Choice>(
-    thisComputerAdded ? 'command-line' : 'this-computer'
-  );
+  const [picked, setPicked] = useState<Choice | null>(null);
+  // Until the person picks, the dialog opens where it can do something: the
+  // machines may still be loading when it first renders.
+  const choice: Choice = picked ?? (thisComputerAdded ? 'command-line' : 'this-computer');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sshHost, setSshHost] = useState<string | null>(null);
@@ -69,9 +71,13 @@ export function AddDeviceDialog({
     setBusy(true);
     setError(null);
     try {
-      if (choice === 'ssh-host' && sshHost)
+      if (choice === 'ssh-host' && sshHost) {
         await rpc.hostControllers.enable({ sshHost, serverId, workspaceId });
-      else await rpc.embeddedController.enable({ serverId, workspaceId });
+        // Making it a device puts Switch's shared host there, which is what
+        // checks a provider's sign-in on it.
+        void invalidateHostProviderReadiness(queryClient, sshHost);
+        void queryClient.invalidateQueries({ queryKey: REMOTE_HOSTS_QUERY_KEY });
+      } else await rpc.embeddedController.enable({ serverId, workspaceId });
       await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY] });
       onSuccess(undefined);
     } catch (cause) {
@@ -98,7 +104,7 @@ export function AddDeviceDialog({
           ariaLabel="Which device"
           value={choice}
           onChange={(value) => {
-            setChoice(value);
+            setPicked(value);
             setError(null);
           }}
           options={[
@@ -190,14 +196,30 @@ export function AddDeviceDialog({
 function CommandLineEnrollment({ serverId }: { serverId: string }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const enrollment = useQuery({
-    queryKey: [MANAGED_AGENTS_KEY, serverId, 'enrollment-code'],
-    queryFn: () => rpc.managedAgents.enrollmentCode(serverId),
-    staleTime: Infinity,
-    gcTime: 0,
-    retry: false,
+  // A mutation, not a query: each code is a new live credential on the server,
+  // so it is issued once when this opens and again only on "New code", never
+  // by a cache refresh while the person is copying the commands.
+  const { mutate: issueCode, ...enrollment } = useMutation({
+    mutationFn: () => rpc.managedAgents.enrollmentCode(serverId),
   });
-  if (enrollment.isPending)
+  const issued = useRef(false);
+  useEffect(() => {
+    if (issued.current) return;
+    issued.current = true;
+    issueCode();
+  }, [issueCode]);
+  const expiresAt = enrollment.data?.expiresAt;
+  // Nothing else re-renders the dialog when the code runs out.
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!expiresAt) return;
+    const timer = setTimeout(
+      rerender,
+      Math.max(0, new Date(expiresAt).getTime() - Date.now()) + 500
+    );
+    return () => clearTimeout(timer);
+  }, [expiresAt]);
+  if (enrollment.isIdle || enrollment.isPending)
     return (
       <p className="flex items-center gap-2 text-sm">
         <Spinner /> Getting a one-time code…
@@ -209,8 +231,9 @@ function CommandLineEnrollment({ serverId }: { serverId: string }) {
         {failureText(enrollment.error, 'Could not get a code to enroll a computer with.')}
       </p>
     );
-  const { code, expiresAt, serverUrl } = enrollment.data;
-  const expired = new Date(expiresAt).getTime() <= Date.now();
+  const { code, serverUrl } = enrollment.data;
+  const validUntil = new Date(enrollment.data.expiresAt);
+  const expired = validUntil.getTime() <= Date.now();
   return (
     <div className="space-y-3 text-sm">
       <p className="text-foreground-muted">
@@ -248,9 +271,11 @@ function CommandLineEnrollment({ serverId }: { serverId: string }) {
       <div className="flex items-center gap-2 text-xs text-foreground-muted">
         <span>
           One-time code <span className="font-mono text-foreground">{code}</span>
-          {expired ? ' has expired.' : `, valid until ${new Date(expiresAt).toLocaleTimeString()}.`}
+          {expired
+            ? ' has expired: get a new one before running the commands.'
+            : `, valid until ${validUntil.toLocaleTimeString()}.`}
         </span>
-        <Button size="sm" variant="ghost" onClick={() => void enrollment.refetch()}>
+        <Button size="sm" variant="ghost" onClick={() => issueCode()}>
           New code
         </Button>
       </div>

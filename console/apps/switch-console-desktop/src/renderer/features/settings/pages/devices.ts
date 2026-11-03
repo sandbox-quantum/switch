@@ -1,3 +1,4 @@
+import { osName } from '@renderer/features/devices/device-model';
 import { type OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 
 export type DeviceType = 'computer' | 'cloud' | 'ssh';
@@ -11,12 +12,6 @@ export type DeviceRow = {
   type: DeviceType;
   agents: number;
   platform: string | null;
-};
-
-const PLATFORM_NAMES: Record<string, string> = {
-  macos: 'macOS',
-  linux: 'Linux',
-  windows: 'Windows',
 };
 
 /**
@@ -48,7 +43,7 @@ export function deviceRows(
         state: machine.state,
         type: machine.cloud ? 'cloud' : local?.kind === 'ssh-host' ? 'ssh' : 'computer',
         agents: counts.get(machine.id) ?? 0,
-        platform: machine.os ? (PLATFORM_NAMES[machine.os] ?? machine.os) : null,
+        platform: machine.os ? osName(machine.os) : null,
       };
     })
     .sort((a, b) => {

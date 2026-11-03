@@ -33,10 +33,15 @@ const PLATFORM_NAMES: Record<string, string> = {
   win32: 'Windows',
 };
 
+/** An operating system as a device reports it (`macos`, `darwin`, `linux`, …), in words. */
+export function osName(os: string): string {
+  return PLATFORM_NAMES[os] ?? os;
+}
+
 /** A device's platform in words, e.g. "macOS 15.1 (arm64)"; null when it has not said. */
 export function platformLabel(platform: DeviceDetail['report']['platform']): string | null {
   if (!platform) return null;
-  const os = PLATFORM_NAMES[platform.os] ?? platform.os;
+  const os = osName(platform.os);
   const version = platform.osVersion ? ` ${platform.osVersion}` : '';
   const arch = platform.arch ? ` (${platform.arch})` : '';
   return `${os}${version}${arch}`;

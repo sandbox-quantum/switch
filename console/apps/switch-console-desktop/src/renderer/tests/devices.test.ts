@@ -3,6 +3,7 @@ import {
   deviceAgents,
   enrollCommands,
   formatBytes,
+  osName,
   platformLabel,
   shellQuote,
 } from '@renderer/features/devices/device-model';
@@ -179,6 +180,12 @@ describe('device facts', () => {
     );
     expect(platformLabel({ os: 'freebsd', arch: null, osVersion: null })).toBe('freebsd');
     expect(platformLabel(null)).toBeNull();
+    expect([osName('darwin'), osName('macos'), osName('win32'), osName('plan9')]).toEqual([
+      'macOS',
+      'macOS',
+      'Windows',
+      'plan9',
+    ]);
   });
 
   it('formats byte counts in binary units', () => {

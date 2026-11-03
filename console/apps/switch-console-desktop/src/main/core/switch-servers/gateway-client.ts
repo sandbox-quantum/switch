@@ -4232,16 +4232,26 @@ export async function fetchManagementControllers(
  * One of the signed-in user's controllers, revoked ones included
  * (`GET /gateway/management/controllers/{id}`). A server older than this route
  * answers 404 without the management envelope, which reads as no agent
- * management at all, so the list is asked instead.
+ * management at all, so the list is asked instead; a server that really runs
+ * none says so there too.
  */
 export async function fetchManagementController(
   server: SwitchServer,
   controllerId: string
 ): Promise<ManagementController> {
-  const res = await managementFetch(server, `/controllers/${encodeURIComponent(controllerId)}`, {
-    authenticated: true,
-  });
-  return controllerOf((await res.json()) as ManagementControllerJson);
+  try {
+    const res = await managementFetch(server, `/controllers/${encodeURIComponent(controllerId)}`, {
+      authenticated: true,
+    });
+    return controllerOf((await res.json()) as ManagementControllerJson);
+  } catch (error) {
+    if (!(error instanceof AgentManagementUnavailableError)) throw error;
+  }
+  const listed = (await fetchManagementControllers(server)).find(
+    (controller) => controller.id === controllerId
+  );
+  if (!listed) throw new Error('That device is not one of yours on this server.');
+  return listed;
 }
 
 function controllerOf(json: ManagementControllerJson): ManagementController {

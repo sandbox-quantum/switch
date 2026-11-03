@@ -158,11 +158,15 @@ const DeviceMainPanel = observer(function DeviceMainPanel() {
             <Button
               size="sm"
               variant="outline"
+              // Until the agents are read, the dialog could not name those left stranded.
+              disabled={agents.isPending}
               onClick={() =>
                 showRemove({
                   serverId: params.serverId,
                   device: detail,
-                  agentNames: rows.map((row) => row.agent.displayName || row.agent.name),
+                  agentNames: agents.isError
+                    ? null
+                    : rows.map((row) => row.agent.displayName || row.agent.name),
                 })
               }
             >

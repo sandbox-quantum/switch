@@ -96,7 +96,9 @@ export function EditDeviceDialog({
 /**
  * Removing a device: Switch revokes its controller, which stops. Its agents
  * stay placed on it, and so run nowhere, until they are moved; the dialog
- * names them first.
+ * names them first, or says it could not list them. On this computer or one
+ * of this Console's SSH hosts Console also stops the controller itself, and
+ * the dialog says what that deletes and what stays.
  */
 export function RemoveDeviceDialog({
   serverId,
@@ -106,8 +108,9 @@ export function RemoveDeviceDialog({
   onClose,
 }: {
   serverId: string;
-  device: Pick<DeviceDetail, 'id' | 'name'>;
-  agentNames: string[];
+  device: Pick<DeviceDetail, 'id' | 'name' | 'local'>;
+  /** Null when the agents could not be listed. */
+  agentNames: string[] | null;
 } & BaseModalProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -138,11 +141,28 @@ export function RemoveDeviceDialog({
           Switch revokes its agent controller, which stops running agents. To use it again, add it
           as a new device.
         </p>
-        {agentNames.length > 0 && (
+        {device.local?.kind === 'ssh-host' && (
           <p>
-            {agentNames.join(', ')} {agentNames.length === 1 ? 'is' : 'are'} placed on it and will
-            run nowhere until moved to another device.
+            Console also stops the controller on {device.local.sshHost} and deletes its sign-in, its
+            agents&apos; Switch credentials and the provider logins given to it there. The
+            agents&apos; working directories stay.
           </p>
+        )}
+        {device.local?.kind === 'this-computer' && (
+          <p>Console stops running its controller on this computer.</p>
+        )}
+        {agentNames === null ? (
+          <p role="alert" className="text-destructive">
+            Your agents could not be listed, so this cannot say which run on it. Any placed on it
+            will run nowhere until moved to another device.
+          </p>
+        ) : (
+          agentNames.length > 0 && (
+            <p>
+              {agentNames.join(', ')} {agentNames.length === 1 ? 'is' : 'are'} placed on it and will
+              run nowhere until moved to another device.
+            </p>
+          )
         )}
         {error && (
           <p role="alert" className="text-destructive">

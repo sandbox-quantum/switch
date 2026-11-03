@@ -43,7 +43,7 @@ export function MoveAgentDialog({
   useCloseGuard(busy);
   const targets = machines.data ? moveTargets(agent, machines.data) : [];
   const chosen = targets.find((entry) => entry.machineId === target) ?? null;
-  const name = agent.displayName ?? agent.name;
+  const name = agent.displayName || agent.name;
 
   const move = async () => {
     if (!chosen) return;
