@@ -461,6 +461,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -478,12 +479,13 @@ tools: { mode: pass_through }
 def _write_example(root, text: str = OAUTH_ENTRY) -> None:
     directory = root / "example"
     directory.mkdir(exist_ok=True)
-    (directory / "connection.yaml").write_text(text)
+    (directory / "connection.yaml").write_text(text, newline="\n")
     skill = directory / "skill"
     skill.mkdir(exist_ok=True)
     (skill / "SKILL.md").write_text(
         "---\nname: example\ndescription: Work with Example items.\n---\n\n"
-        "Use the tools.\n"
+        "Use the tools.\n",
+        newline="\n",
     )
 
 
@@ -495,6 +497,8 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
     assert definition.auth.identity is not None
+    assert definition.auth.identity.method == "GET"
+    assert definition.auth.identity.body is None
     assert definition.auth.identity.account_id == "account.id"
     assert definition.token is not None
     assert definition.token.kind == "pass_through"
@@ -543,7 +547,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -655,6 +659,21 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n    unchecked: Publish it.\n",
             "unchecked is for a static client",
         ),
+        (
+            "    method: GET\n",
+            "",
+            "method",
+        ),
+        (
+            "    method: GET\n",
+            "    method: PUT\n",
+            "method",
+        ),
+        (
+            "    method: GET\n",
+            '    method: GET\n    body: { query: "viewer" }\n',
+            "a GET identity call sends no body",
+        ),
     ],
 )
 def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
@@ -664,6 +683,32 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
     _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
     with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
         load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    ("identity_replacement", "expected_body"),
+    [
+        (
+            '    method: POST\n    body: { query: "query { viewer { id } }" }\n',
+            {"query": "query { viewer { id } }"},
+        ),
+        (
+            "    method: POST\n",
+            None,
+        ),
+    ],
+)
+def test_loads_an_oauth_entry_with_post_identity(
+    catalog_copy, identity_replacement, expected_body
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("    method: GET\n", identity_replacement),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert identity.method == "POST"
+    assert identity.body == expected_body
 
 
 def test_placeholders_keep_their_short_form():

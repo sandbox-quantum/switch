@@ -227,6 +227,57 @@ class TestSignIn:
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
 
+    async def test_reads_the_account_with_a_post_and_static_json_body(
+        self, vendor
+    ) -> None:
+        query = "query { viewer { id email name } }"
+        post_entry = STATIC.replace(
+            "  identity:\n"
+            "    method: GET\n"
+            f"    url: {IDENTITY_URL}\n"
+            "    account_id: account.id\n"
+            "    label: account.email\n",
+            "  identity:\n"
+            "    method: POST\n"
+            f"    url: {IDENTITY_URL}\n"
+            f'    body: {{ query: "{query}" }}\n'
+            "    account_id: data.viewer.id\n"
+            "    label: data.viewer.email\n",
+        )
+        vendor.identity_response = {
+            "data": {
+                "viewer": {
+                    "id": "usr_linear_1",
+                    "email": "ada@example.test",
+                    "name": "Ada Lovelace",
+                }
+            }
+        }
+        adapter, _ = _adapter(vendor, post_entry)
+        secret = await _sign_in(adapter, vendor)
+        token = secret.access_token or ""
+        identity = await adapter.identify(token)
+        assert (identity.account_id, identity.label) == (
+            "usr_linear_1",
+            "ada@example.test",
+        )
+        [request] = vendor.identity_requests
+        assert request.method == "POST"
+        assert request.headers["authorization"] == f"Bearer {token}"
+        assert json.loads(request.content) == {"query": query}
+        assert token.encode() not in request.content
+
+    async def test_reads_the_account_with_a_bodyless_post(self, vendor) -> None:
+        post_without_body = STATIC.replace("    method: GET\n", "    method: POST\n")
+        adapter, _ = _adapter(vendor, post_without_body)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        [request] = vendor.identity_requests
+        assert request.method == "POST"
+        assert request.content == b""
+        assert "content-type" not in request.headers
+
 
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:
