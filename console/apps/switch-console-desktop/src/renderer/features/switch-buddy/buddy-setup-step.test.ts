@@ -114,13 +114,20 @@ describe('buddySetupStep', () => {
     ).toEqual({ kind: 'guide', bridge: teams });
   });
 
-  it('guides Telegram once connected: with no directory nobody can link before writing there', () => {
+  it('guides Telegram only once linked, since the buddy ignores anyone it cannot recognise', () => {
     const telegramBase = { ...base, platform: 'telegram' as const };
     expect(buddySetupStep(telegramBase)).toEqual({ kind: 'connect', platform: 'telegram' });
     expect(buddySetupStep({ ...telegramBase, bridges: [telegram] })).toEqual({
-      kind: 'guide',
+      kind: 'link',
       bridge: telegram,
     });
+    expect(
+      buddySetupStep({
+        ...telegramBase,
+        bridges: [telegram],
+        identities: [{ bridgeId: 'b-4' } as LinkedIdentity],
+      })
+    ).toEqual({ kind: 'guide', bridge: telegram });
   });
 });
 

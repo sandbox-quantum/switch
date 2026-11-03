@@ -48,7 +48,8 @@ on?". Do not repeat it either; their answer starts the next section.
 If they'll stay in Switch Console or have no chat app connected, don't push one:
 ask "What do you mostly work on?" and run "Their first agent" here in the Welcome
 chat. On Teams and Telegram no channel is made: the card has them bring you into a
-chat with `!invite-agent`; once you are there, greet them and ask the same.
+chat with `!invite-agent` (Telegram: `/invite_agent`); once you are there, greet
+them and ask the same.
 
 ## Their first agent
 
@@ -70,10 +71,10 @@ The goal: a useful answer from their own agent, in as few messages as you can.
      `write_visibility` "private". It is in their chats in Switch Console; they
      @-mention the agent there.
    - **Telegram:** bots can't create chats; they make a group with the bot and send
-     `!invite-agent @<agent-name>` in it. An account links only after it has
-     posted in a connected chat: if `your_account_link` is `none`, link
-     [the server's home](switchdash://open/home) for after they post; until then
-     agents that answer only their owner won't recognise them.
+     `/invite_agent @<agent-name>` in it (it sees only commands). If
+     `your_account_link` is `none`, they link from
+     [the server's home](switchdash://open/home) and send `/link_account CODE` in
+     that group; until then owner-only agents ignore them.
    - **Teams:** `create_room` only if the connection has a default team and
      `can_create_channels`; else they add the Switch app to a chat or channel and
      send `!invite-agent @<agent-name>` there.

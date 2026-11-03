@@ -3,7 +3,6 @@ import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
-import { offerAccountLinkAfterConnect } from '@renderer/features/switch-servers/offer-account-link';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { BridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -79,6 +78,7 @@ const Cards = observer(function Cards({
 }) {
   const queryClient = useQueryClient();
   const showConnect = useShowModal('connectMessagingAppModal');
+  const showClaimIdentity = useShowModal('claimIdentityModal');
   const [picked, setPicked] = useState<BuddyPlatform | null>(null);
   const [reopened, setReopened] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -266,19 +266,24 @@ const Cards = observer(function Cards({
           <PlatformCard
             platform={step.bridge.type}
             title={`Link your ${label} account`}
-            description={`So I recognise you in ${step.bridge.displayName}.`}
+            description={
+              // The bot can find only people who have written where it can hear them, and
+              // privacy mode lets it hear only slash commands.
+              step.bridge.type === 'telegram'
+                ? `I answer only accounts I recognise. Make a Telegram group with just you and the ${step.bridge.displayName} bot, and send this in it. Then link your account here: Switch shows a code to send in that group, and once it’s in, I’ll answer you there.`
+                : `So I recognise you in ${step.bridge.displayName}.`
+            }
             footer={
-              <Button
-                onClick={() =>
-                  offerAccountLinkAfterConnect(workspaceId, {
-                    bridgeId: step.bridge.id,
-                    displayName: step.bridge.displayName,
-                    directorySearchSupported: step.bridge.directorySearchSupported,
-                  })
-                }
-              >
-                Link account
-              </Button>
+              <div className="flex flex-wrap items-center gap-3">
+                {step.bridge.type === 'telegram' && (
+                  <InviteCommand platform="telegram" agentName={agentName} />
+                )}
+                <Button
+                  onClick={() => showClaimIdentity({ workspaceId, bridgeId: step.bridge.id })}
+                >
+                  Link account
+                </Button>
+              </div>
             }
           />
         </>
@@ -333,14 +338,10 @@ const Cards = observer(function Cards({
             title={`Continue in ${label}`}
             description={
               step.bridge.type === 'telegram'
-                ? `Make a Telegram group with just you and the ${step.bridge.displayName} bot. Then send this in the group, and I’ll answer there:`
+                ? `In a Telegram group with you and the ${step.bridge.displayName} bot, send this if you haven’t yet, and I’ll answer there:`
                 : 'Add the Switch app to a Teams chat or channel. Then send this there, and I’ll answer:'
             }
-            footer={
-              <code className="rounded bg-background px-2 py-1 font-mono text-sm select-all">
-                !invite-agent @{agentName}
-              </code>
-            }
+            footer={<InviteCommand platform={step.bridge.type} agentName={agentName} />}
           />
         </>
       )}
@@ -401,6 +402,15 @@ function TileText({ name, subtitle }: { name: string; subtitle: string }) {
       <div className="font-semibold">{name}</div>
       <div className="text-sm text-foreground-muted">{subtitle}</div>
     </div>
+  );
+}
+
+/** Telegram's bot sees only slash commands in a group where it is not an admin. */
+function InviteCommand({ platform, agentName }: { platform: string; agentName: string }) {
+  return (
+    <code className="rounded bg-background px-2 py-1 font-mono text-sm select-all">
+      {platform === 'telegram' ? '/invite_agent' : '!invite-agent'} @{agentName}
+    </code>
   );
 }
 

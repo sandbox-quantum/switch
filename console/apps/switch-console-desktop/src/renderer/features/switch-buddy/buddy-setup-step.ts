@@ -58,9 +58,9 @@ export function buddyPlatform(
  * `resumes` is by bridge id, a bridge missing still being resumed.
  *
  * Only Slack gets a channel made for them: elsewhere, once linked, they are
- * told how to bring the buddy into a chat themselves. A platform with no
- * directory cannot link anyone before they have written in a connected chat,
- * so it goes straight to that guidance.
+ * told how to bring the buddy into a chat themselves. Every platform waits for
+ * the link, since the buddy answers only its owner; on one with no directory
+ * the link card says how to be seen there first.
  */
 export function buddySetupStep({
   platform,
@@ -86,8 +86,7 @@ export function buddySetupStep({
       (bridge) =>
         bridge.type === platform &&
         bridge.status === 'active' &&
-        (!bridge.directorySearchSupported ||
-          identities.some((identity) => identity.bridgeId === bridge.id))
+        identities.some((identity) => identity.bridgeId === bridge.id)
     );
     return ready ? { kind: 'guide', bridge: ready } : { kind: 'link', bridge: first };
   }
