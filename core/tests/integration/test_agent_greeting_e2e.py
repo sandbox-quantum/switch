@@ -14,8 +14,8 @@ import asyncio
 import pytest
 
 from switch_core.db.models import Agent, CollaborationBridge, Message, Room
-from switch_core.room_service import RoomCreateConfig
 from switch_core.invite_policy import Inviter
+from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness, SessionEnv
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]

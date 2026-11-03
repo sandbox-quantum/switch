@@ -174,7 +174,7 @@ def refusal_message(refused: list[Agent], inviter: Inviter) -> str:
         f"You can't invite {names}: {'its' if one else 'their'} owner limits "
         f"who can talk to {them}, and only those people can bring {them} into "
         f"a room. Ask the owner to invite {them}, or to allow you in "
-        f"{'its' if one else 'their'} \"who can talk to this agent\" setting."
+        f'{"its" if one else "their"} "who can talk to this agent" setting.'
     )
     unclaimed = inviter.kind == "user" and not inviter.user_ids
     if unclaimed and any(

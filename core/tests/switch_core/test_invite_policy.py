@@ -75,7 +75,10 @@ class TestMayInvite:
             agent, Inviter.agent("owners-agent", OWNER), room_id="r", group_id=None
         )
         assert not may_invite(
-            agent, Inviter.agent("strangers-agent", STRANGER), room_id="r", group_id=None
+            agent,
+            Inviter.agent("strangers-agent", STRANGER),
+            room_id="r",
+            group_id=None,
         )
 
     def test_a_chat_sender_is_judged_by_who_claimed_their_account(self) -> None:
@@ -105,7 +108,9 @@ class TestMayInvite:
         )
         agent = _agent(policy)
         friend = SenderPrincipal("user", "ext-friend", [STRANGER], None)
-        assert may_invite(agent, Inviter.from_sender(friend), room_id="r", group_id=None)
+        assert may_invite(
+            agent, Inviter.from_sender(friend), room_id="r", group_id=None
+        )
 
     def test_room_scoped_rules_follow_the_room_invited_into(self) -> None:
         policy = AddressingPolicy(
