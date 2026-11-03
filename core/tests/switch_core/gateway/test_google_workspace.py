@@ -106,6 +106,7 @@ def _world(
         keyring=TEST_KEYRING,
         catalog=CATALOG,
         adapters=adapters,
+        organization_apps=None,
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),

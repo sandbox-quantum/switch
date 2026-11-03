@@ -93,4 +93,14 @@ describe('deriveManagedState', () => {
       'reset-failed'
     );
   });
+
+  it('says a running server that stopped on its own stopped unexpectedly, and freezes it', () => {
+    expect(deriveManagedState({ ...base, phase: 'error', failedTo: 'run' })).toEqual({
+      tone: 'failed',
+      reason: 'stopped-unexpectedly',
+      label: 'Stopped unexpectedly',
+      answering: false,
+      known: true,
+    });
+  });
 });

@@ -39,8 +39,17 @@ const h = vi.hoisted(() => {
     discardControllerState: vi.fn(async () => {}),
     deleteRow: vi.fn(async () => {}),
     stopRemoteWatcher: vi.fn(async () => {}),
+    deleteLocationIfUnused: vi.fn(async () => {}),
+    releaseHostIfUnused: vi.fn(async () => {}),
   };
 });
+
+vi.mock('@main/core/locations/store', () => ({
+  deleteLocationIfUnused: h.deleteLocationIfUnused,
+}));
+vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
+  releaseHostIfUnused: h.releaseHostIfUnused,
+}));
 
 // Console runs every agent here; none was moved to a managed machine.
 vi.mock('@main/core/agent-migration/managed-agents-store', () => ({
@@ -59,7 +68,7 @@ vi.mock('./agent-workdir-fs', () => ({
   resolveWorkdirFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
 }));
 vi.mock('./agent-location', () => ({
-  getAgentLocation: vi.fn(async () => ({ sshHost: h.state.sshHost, dir: '/repo' })),
+  getAgentLocation: vi.fn(async () => ({ id: 'loc', sshHost: h.state.sshHost, dir: '/repo' })),
 }));
 vi.mock('./getAgentById', () => ({ getAgentById: vi.fn(async () => h.state.agent) }));
 vi.mock('./remove-switch-settings', () => ({
@@ -84,15 +93,17 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   GatewayError: class GatewayError extends Error {
     constructor(
       readonly kind: string,
-      message: string
+      message: string,
+      readonly status?: number
     ) {
       super(message);
     }
   },
 }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({
-  withWorkspaceSession: (_workspaceId: string, fn: (server: { id: string }) => unknown) =>
-    fn({ id: 'srv-1' }),
+  withWorkspaceSession: vi.fn((_workspaceId: string, fn: (server: { id: string }) => unknown) =>
+    fn({ id: 'srv-1' })
+  ),
 }));
 vi.mock('@main/core/view-state/view-state-service', () => ({
   viewStateService: { del: vi.fn(async () => {}) },
@@ -119,8 +130,10 @@ const { getAgentLocation } = await import('./agent-location');
 const { stopRemoteWatcher } = await import('./remote-watcher');
 const { autoSessionWatcher } = await import('@main/core/switch-rooms/auto-session-watcher');
 const { stopSharedAgentSessions } = await import('./stop-shared-agent-sessions');
-const { deleteAgent: gatewayDeleteAgent } =
+const { deleteAgent: gatewayDeleteAgent, GatewayError } =
   await import('@main/core/switch-servers/gateway-client');
+const { forgetManagedAgent } = await import('@main/core/agent-migration/managed-agents-store');
+const { withWorkspaceSession } = await import('@main/core/workspaces/workspace-session');
 
 const CREDS = JSON.stringify({
   env: { SWITCH_API_ENDPOINT: 'https://s', SWITCH_API_TOKEN: 'tok-123', SWITCH_AGENT_ID: 'sw-1' },
@@ -133,6 +146,37 @@ describe('deleteAgent', () => {
     h.state.agent = { id: 'agent-1', name: 'cc-hoot', providerId: 'claude', locationId: 'loc' };
     h.state.sessionRows = [];
     h.state.sshHost = null;
+  });
+
+  it('releases the location and its host once the agent row is gone', async () => {
+    h.state.sshHost = 'example-host';
+    h.deleteRow.mockImplementationOnce(async () => {
+      expect(h.deleteLocationIfUnused).not.toHaveBeenCalled();
+    });
+
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+      trigger: 'user',
+    });
+
+    expect(h.deleteLocationIfUnused).toHaveBeenCalledWith('loc');
+    expect(h.releaseHostIfUnused).toHaveBeenCalledWith('example-host');
+  });
+
+  it('does not report the delete as failed when releasing the location fails', async () => {
+    h.deleteLocationIfUnused.mockRejectedValueOnce(new Error('db busy'));
+
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+      trigger: 'user',
+    });
+
+    expect(h.trackEvent).toHaveBeenCalledWith(
+      'agent_removed',
+      expect.objectContaining({ outcome: 'success' })
+    );
   });
 
   it('removes the per-agent credentials for a provider with no repo-agent definitions', async () => {
@@ -477,6 +521,73 @@ describe('deleteAgent', () => {
         'agent_removed',
         expect.objectContaining({ failure_reason: 'not_linked_to_switch' })
       );
+    });
+  });
+  describe('deleting in Switch', () => {
+    // An early agent: linked to Switch, its credentials still in the legacy
+    // `.claude/switch-subagents/` file.
+    const legacyAgent = {
+      id: 'agent-1',
+      name: 'cc-hoot',
+      providerId: 'claude',
+      locationId: 'loc',
+      workspaceId: 'ws-1',
+      switchAgentId: 'sw-1',
+    };
+    const full = { deleteInSwitch: true, removeProvisionedFiles: true, trigger: 'user' } as const;
+
+    beforeEach(() => {
+      h.state.agent = legacyAgent;
+      h.state.fs = fakeFs({ '.claude/switch-subagents/cc-hoot.settings.json': CREDS });
+      h.state.repoAgents = {
+        removeLocal: async (fs: PluginFs, name: string) =>
+          fs.delete(`.claude/switch-subagents/${name}.settings.json`),
+      };
+    });
+
+    it('removes a legacy agent for good: its row, managed record and credentials', async () => {
+      vi.mocked(gatewayDeleteAgent).mockResolvedValue(undefined);
+      await deleteAgent('agent-1', full);
+
+      expect(gatewayDeleteAgent).toHaveBeenCalledWith({ id: 'srv-1' }, 'sw-1');
+      expect(h.deleteRow).toHaveBeenCalledTimes(1);
+      expect(forgetManagedAgent).toHaveBeenCalledWith('agent-1');
+      expect(await h.state.fs.exists('.claude/switch-subagents/cc-hoot.settings.json')).toBe(false);
+    });
+
+    it('still removes the agent here when its Switch identity is already gone', async () => {
+      vi.mocked(gatewayDeleteAgent).mockRejectedValue(
+        new GatewayError('http', '404 Not Found', 404)
+      );
+      await deleteAgent('agent-1', full);
+
+      expect(h.deleteRow).toHaveBeenCalledTimes(1);
+      expect(await h.state.fs.exists('.claude/switch-subagents/cc-hoot.settings.json')).toBe(false);
+    });
+
+    it('does not take a 404 from reaching the workspace for the agent being gone', async () => {
+      vi.mocked(withWorkspaceSession).mockRejectedValueOnce(
+        new GatewayError('http', '404 Not Found', 404)
+      );
+      await expect(deleteAgent('agent-1', full)).rejects.toThrow('404');
+
+      expect(gatewayDeleteAgent).not.toHaveBeenCalled();
+      expect(autoSessionWatcher.stopForAgent).not.toHaveBeenCalled();
+      expect(h.deleteRow).not.toHaveBeenCalled();
+      expect(await h.state.fs.exists('.claude/switch-subagents/cc-hoot.settings.json')).toBe(true);
+    });
+
+    it('surfaces any other refusal and leaves the agent, and its controller, untouched', async () => {
+      vi.mocked(gatewayDeleteAgent).mockRejectedValue(
+        new GatewayError('http', '500 Internal Server Error', 500)
+      );
+      await expect(deleteAgent('agent-1', full)).rejects.toThrow('500');
+
+      expect(autoSessionWatcher.stopForAgent).not.toHaveBeenCalled();
+      expect(stopSharedAgentSessions).not.toHaveBeenCalled();
+      expect(h.discardControllerState).not.toHaveBeenCalled();
+      expect(h.deleteRow).not.toHaveBeenCalled();
+      expect(await h.state.fs.exists('.claude/switch-subagents/cc-hoot.settings.json')).toBe(true);
     });
   });
 });

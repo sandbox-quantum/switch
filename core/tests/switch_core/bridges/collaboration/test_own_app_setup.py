@@ -37,7 +37,9 @@ class TestSlackManifest:
         assert manifest["oauth_config"]["scopes"]["bot"] == list(BOT_SCOPES)
         assert manifest["settings"]["socket_mode_enabled"] is True
         assert {c["command"] for c in manifest["features"]["slash_commands"]} == {
-            f"/{command.name}" for command in COMMANDS if command.description.strip()
+            f"/{command.name}"
+            for command in COMMANDS
+            if command.description.strip() and not command.hidden
         }
 
     def test_every_registered_command_does_something(self) -> None:

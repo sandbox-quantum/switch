@@ -1,11 +1,40 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import ColumnElement, cast, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.types import Text
 
-from switch_core.db.models import Agent, AgentDefinition
+from switch_core.db.fingerprint import Fingerprint, row_hash
+from switch_core.db.models import Agent, AgentController, AgentDefinition
+
+
+@dataclass(frozen=True)
+class Placement:
+    """A definition placed on a controller, with what a binding needs of the
+    controller: its name, and whether it is revoked. `controller_name` is None
+    when the controller's row is gone."""
+
+    agent_id: str
+    controller_id: str
+    desired_state: str
+    controller_name: str | None
+    controller_revoked_at: datetime | None
+
+
+def _placement_hash() -> ColumnElement[int]:
+    """What a binding is made of (`management/bindings.py`), so a fingerprint
+    of it changes exactly when some binding would."""
+    return row_hash(
+        AgentDefinition.agent_id,
+        func.coalesce(AgentDefinition.controller_id, ""),
+        AgentDefinition.desired_state,
+        func.coalesce(AgentController.name, ""),
+        cast(AgentController.revoked_at.is_not(None), Text),
+    )
 
 
 class DefinitionChanged(Exception):
@@ -101,6 +130,54 @@ class AgentDefinitionStore:
         )
         return list(result.scalars().all())
 
+    async def placements(
+        self, session: AsyncSession, tenant_id: str
+    ) -> tuple[list[Placement], Fingerprint]:
+        """Every definition placed on a controller, with its controller's name
+        and revocation, and the fingerprint of them, in one statement: the
+        columns a binding is made of and nothing else, so neither a
+        definition's document nor a controller's status is read."""
+        result = await session.execute(
+            select(
+                AgentDefinition.agent_id,
+                AgentDefinition.controller_id,
+                AgentDefinition.desired_state,
+                AgentController.name,
+                AgentController.revoked_at,
+                func.count().over(),
+                func.sum(_placement_hash()).over(),
+            )
+            .outerjoin(AgentController, _placed_on())
+            .where(*_placed_in(tenant_id))
+        )
+        rows = result.all()
+        if not rows:
+            return [], (0, 0)
+        placements = [
+            Placement(
+                agent_id=agent_id,
+                controller_id=controller_id,
+                desired_state=desired_state,
+                controller_name=name,
+                controller_revoked_at=revoked_at,
+            )
+            for agent_id, controller_id, desired_state, name, revoked_at, _, _ in rows
+        ]
+        return placements, (int(rows[0][5]), int(rows[0][6]))
+
+    async def placements_fingerprint(
+        self, session: AsyncSession, tenant_id: str
+    ) -> Fingerprint:
+        """The fingerprint `placements` returns, without the rows."""
+        result = await session.execute(
+            select(func.count(), func.coalesce(func.sum(_placement_hash()), 0))
+            .select_from(AgentDefinition)
+            .outerjoin(AgentController, _placed_on())
+            .where(*_placed_in(tenant_id))
+        )
+        count, total = result.one()
+        return int(count), int(total)
+
     async def update(
         self,
         session: AsyncSession,
@@ -154,3 +231,16 @@ class AgentDefinitionStore:
             )
             .execution_options(synchronize_session=False)
         )
+
+
+def _placed_on() -> ColumnElement[bool]:
+    return (AgentController.tenant_id == AgentDefinition.tenant_id) & (
+        AgentController.id == AgentDefinition.controller_id
+    )
+
+
+def _placed_in(tenant_id: str) -> tuple[ColumnElement[bool], ...]:
+    return (
+        AgentDefinition.tenant_id == tenant_id,
+        AgentDefinition.controller_id.is_not(None),
+    )

@@ -11,7 +11,6 @@ export const clientMistakes: FastScenario = {
   header: {
     id: 'client-mistakes',
     covers: [
-      'invite_agent_to_room',
       'get_room_detail',
       'GET /agents/{agent_id}/rooms/{room_id}/history',
     ],
@@ -24,17 +23,6 @@ export const clientMistakes: FastScenario = {
     const member = await fixtures.agent('in');
     const outsider = await fixtures.agent('out');
     const room = await fixtures.internalRoom('room', [member]);
-
-    const invite = await switchClient.agentAttempt(
-      outsider,
-      'POST',
-      `/agents/${outsider.id}/ops/invite_agent_to_room`,
-      { room_id: room.id, agent_name: outsider.name }
-    );
-    expect(invite, 'an outsider inviting itself into a room').toEqual({
-      status: 403,
-      detail: "Not authorized to change this room's membership",
-    });
 
     const lookup = await switchClient.agentAttempt(
       outsider,

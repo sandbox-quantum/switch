@@ -19,6 +19,9 @@ class SwitchEvent(BaseModel):
 
 # ── Command ───────────────────────────────────────────────────────────────────
 
+# The `messages` row type a command is written as.
+COMMAND_EVENT_TYPE = "com.switch.command"
+
 
 class CommandEvent(SwitchEvent):
     command: str

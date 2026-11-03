@@ -7,6 +7,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
+from sqlalchemy import select
+
 from switch_core.agent_display_name import (
     agent_label,
     agent_label_with_identifier,
@@ -17,7 +19,6 @@ from switch_core.aliases import (
     check_alias_collisions,
     validate_alias_format,
 )
-from switch_core.authz import Principal, require_manage
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
@@ -31,11 +32,26 @@ from switch_core.bridges.agent.protocol.types import (
 from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import CollaborationBridge, Room, User, require_tenant_id
+from switch_core.db.models import (
+    Agent,
+    CollaborationBridge,
+    ExternalUser,
+    Message,
+    Room,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
+from switch_core.db.stores.external_user_store import CodeNotAccepted, NoSuchLink
+from switch_core.db.stores.session_activity_store import (
+    RETRYABLE_TURN_STATUSES,
+    AgentSessionActivityStore,
+)
+from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
+from switch_core.platform_access import administers_on_record
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -43,7 +59,6 @@ if TYPE_CHECKING:
 
     from switch_core.clients.command_consumer import CommandConsumer
     from switch_core.clients.room_meta import RoomMeta
-    from switch_core.db.models import Agent
     from switch_core.delivery.recipient import AgentRecipient
 
 logger = logging.getLogger(__name__)
@@ -259,6 +274,12 @@ _CONTROL_BODIES: dict[str, dict[str, str]] = {
 }
 
 
+def retry_target(args: str) -> str | None:
+    """The message a `!retry @agent <message id>` names: the token after the target."""
+    tokens = args.split()
+    return tokens[1] if len(tokens) > 1 and tokens[0].startswith("@") else None
+
+
 def room_control_frame(
     *,
     agent_id: str,
@@ -270,15 +291,25 @@ def room_control_frame(
     thread_id: str | None,
     surface: str,
     requester_name: str,
+    target_message_id: str | None,
 ) -> dict[str, object]:
     """The `session_command` frame a room control is relayed as.
 
     Beside the contract command it names who asked, as the room knows them,
     so the session can answer that person once the control has applied.
     `session_id` is None for a controller-backed agent, whose controller
-    picks the session from the room.
+    picks the session from the room. `target_message_id` is the message a
+    `retry` runs again, and None for every other control.
     """
-    body = _CONTROL_BODIES.get(action)
+    if action == "retry":
+        if target_message_id is None:
+            raise ValueError("a retry names the message to run again")
+        body: dict[str, str] | None = {
+            "type": "message.retry",
+            "messageId": target_message_id,
+        }
+    else:
+        body = _CONTROL_BODIES.get(action)
     if body is None:
         raise ValueError(f"{action} is not a room control")
     frame = _control_frame(
@@ -437,6 +468,73 @@ class ControlDecision:
     answer: Callable[[], Awaitable[None]] | None
 
 
+async def _retry_refusal(
+    client: AgentRecipient,
+    room_id: str,
+    event: CommandEvent,
+    agent: Agent,
+    message_id: str,
+) -> str | None:
+    """Why a typed `!retry` may not run, or None: the rules Switch Console's
+    Retry is held to (`ChatService._require_retryable`), whichever way the
+    command arrives. The message must be in this room, sent by whoever asks
+    or asked by someone who manages the room, and the agent's turn for it
+    must have ended in an error or been interrupted."""
+    async with client.session_factory() as session:
+        message = (
+            await session.execute(
+                select(Message).where(
+                    Message.room_id == room_id, Message.transport_event_id == message_id
+                )
+            )
+        ).scalar_one_or_none()
+        if message is None:
+            return "Could not retry: that message is not in this room."
+        if message.sender_id != event.user_id and not await _manages_room(
+            client, session, room_id, event.user_id
+        ):
+            return (
+                "Could not retry: only whoever sent that message, or someone who "
+                "manages the room, can retry it."
+            )
+        turn = await AgentSessionActivityStore().turn_for_message(
+            session, agent.id, room_id, message_id
+        )
+    if turn is None or turn.status not in RETRYABLE_TURN_STATUSES:
+        return (
+            f"Could not retry: {agent.name} has no failed or interrupted turn for "
+            "that message."
+        )
+    return None
+
+
+async def _manages_room(
+    client: AgentRecipient, session: AsyncSession, room_id: str, sender: str
+) -> bool:
+    """Whether the Switch user behind `sender` owns the room or administers
+    the tenant."""
+    principal = await client._addressing.resolve_sender(session, sender)
+    if principal is None or principal.kind != "user":
+        return False
+    room = await session.get(Room, room_id)
+    users = UserStore()
+    for user_id in principal.user_ids:
+        if room is not None and room.owner_id == user_id:
+            return True
+        user = await session.get(User, user_id)
+        if user is not None and await administers_on_record(
+            session,
+            client.session_factory,
+            users,
+            user,
+            target_type="room",
+            target_id=room_id,
+            details={"event": "chat_command", "command": "retry"},
+        ):
+            return True
+    return False
+
+
 async def _decide_control_command(
     client: AgentRecipient,
     room: RoomRef,
@@ -480,6 +578,15 @@ async def _decide_control_command(
             return say(
                 f"Could not send {command}: the room command has no stable message ID."
             )
+        target = retry_target(event.args) if command == "retry" else None
+        if command == "retry":
+            if target is None:
+                return say(
+                    "Could not retry: the command names no message to run again."
+                )
+            refusal = await _retry_refusal(client, meta.room_id, event, agent, target)
+            if refusal is not None:
+                return say(refusal)
         frame = room_control_frame(
             agent_id=agent.id,
             session_id=placed,
@@ -490,6 +597,7 @@ async def _decide_control_command(
             thread_id=event.thread_id,
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
+            target_message_id=target,
         )
 
         async def relay() -> None:
@@ -634,6 +742,31 @@ _INTERRUPT = ControlTexts(
         "Switch Console, so my operator needs to interrupt it manually."
     ),
 )
+
+
+_RETRY = ControlTexts(
+    ack="Trying that message again.",
+    unsupported="I can't try a message again — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to try again."
+    ),
+    no_session=(
+        "I can't try a message again from here — my session wasn't started "
+        "from Switch Console."
+    ),
+)
+
+
+async def _cmd_retry(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    await _dispatch_control_command(client, room, event, "retry", _RETRY)
+
+
+async def _decide_retry(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "retry", _RETRY)
 
 
 async def _cmd_reset(
@@ -1201,7 +1334,15 @@ async def _may_remove_agent(
     if principal.kind == "user":
         for user_id in principal.user_ids:
             user = await session.get(User, user_id)
-            if user is not None and await host._user_store.administers(session, user):
+            if user is not None and await administers_on_record(
+                session,
+                host.session_factory,
+                host._user_store,
+                user,
+                target_type="agent",
+                target_id=target.id,
+                details={"event": "chat_command", "command": "remove_agent"},
+            ):
                 return True
         return False
     if principal.kind == "agent":
@@ -1239,6 +1380,21 @@ class _Authority:
     refusal: str | None
 
 
+async def _sender_account(
+    host: CommandConsumer, session: AsyncSession, event: CommandEvent
+) -> ExternalUser | None:
+    """The chat account that sent this command, or None when it came from none.
+
+    A message written in Console, or by the platform on someone's behalf, is
+    no chat account's, so it proves nothing about one: only the platform
+    saying who posted a message does.
+    """
+    client = await host.client_store.get_by_transport_user_id(session, event.user_id)
+    if client is None:
+        return None
+    return await host._external_user_store.get_by_client_id(session, client.id)
+
+
 async def _manage_authority(
     host: CommandConsumer, session: AsyncSession, event: CommandEvent, agent: Agent
 ) -> _Authority:
@@ -1250,12 +1406,7 @@ async def _manage_authority(
     account nobody has linked cannot be told apart from anyone else, so it is
     refused with what to do about it.
     """
-    client = await host.client_store.get_by_transport_user_id(session, event.user_id)
-    external = (
-        await host._external_user_store.get_by_client_id(session, client.id)
-        if client is not None
-        else None
-    )
+    external = await _sender_account(host, session, event)
     if external is None:
         return _Authority(
             None,
@@ -1267,23 +1418,213 @@ async def _manage_authority(
             None,
             "This chat account isn't linked to a Switch user, so I can't tell "
             "whether you own this agent. Link it to your Switch user in Switch "
-            "Console (Messaging apps), then try again.",
+            "Console (Messaging apps) and confirm it with the code shown there, "
+            "then try again.",
         )
     for user_id in claimants:
         user = await host._user_store.get(session, user_id)
         if user is None:
             continue
-        try:
-            require_manage(
-                Principal(user.id, await host._user_store.administers(session, user)),
-                agent.owner_id,
-            )
+        if user.id == agent.owner_id or await administers_on_record(
+            session,
+            host.session_factory,
+            host._user_store,
+            user,
+            target_type="agent",
+            target_id=agent.id,
+            details={"event": "chat_command", "command": "manage_agent"},
+        ):
             return _Authority(user.id, None)
-        except PermissionError:
-            continue
     return _Authority(
         None, "Only the agent's owner or a workspace admin can rename or delete it."
     )
+
+
+async def _cmd_link_account(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    """Confirm a link to a Switch user with the code Console showed (CHOO-3881).
+
+    Only the Switch user was shown the code, and the platform says which
+    account posted it, so a match proves one person holds both. A code posted
+    from any other account matches nothing, which is why posting it in a busy
+    channel gives nothing away.
+    """
+    host = cast("CommandConsumer", client)
+    code = (event.args or "").strip()
+    if not code:
+        await _reply(
+            host,
+            room,
+            event,
+            "Usage: `!link-account CODE`, with the code Switch Console showed "
+            "you when you linked this account.",
+        )
+        return
+
+    # Replies wait until the session has closed: a rejected code may have
+    # locked the request it was checked against, and nobody should wait on
+    # that while a reply is written.
+    refusal: str | None = None
+    async with host.session_factory() as session:
+        account = await _sender_account(host, session, event)
+        if account is None:
+            refusal = (
+                "⚠️ Only a chat account can confirm a link to itself, by posting "
+                "the code from that account."
+            )
+        else:
+            try:
+                request = await host._external_user_store.redeem_link_code(
+                    session, account, code, host._user_store
+                )
+            except CodeNotAccepted:
+                refusal = (
+                    "⚠️ That code doesn't match a link waiting for this account, "
+                    "or it has expired. Get a new code in Switch Console, and post "
+                    "it from the account you're linking."
+                )
+            else:
+                user_id = request.user_id
+                linked = await host._user_store.get(session, user_id)
+                bridge = await session.get(CollaborationBridge, account.bridge_id)
+                # Both are held by foreign keys from the rows just written.
+                if linked is None or bridge is None:
+                    raise RuntimeError(
+                        f"Confirmed a link for user {user_id} on bridge "
+                        f"{account.bridge_id}, but could not read either back"
+                    )
+                name, platform = linked.name, bridge.display_name
+                username = account.external_username
+                await record_audit_event(
+                    session,
+                    tenant_id=account.tenant_id,
+                    actor_user_id=user_id,
+                    action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
+                    target_type="external_user",
+                    target_id=account.id,
+                    details={
+                        "bridge_id": account.bridge_id,
+                        "user_id": user_id,
+                        "by": "code",
+                    },
+                )
+                await session.commit()
+    if refusal is not None:
+        await _reply(host, room, event, refusal)
+        return
+
+    # Names the Switch user, so whoever posted it sees who the account is now
+    # recognised as, and how to take that back if it is not them. "The way you
+    # ran this" because platforms differ in how a command reaches Switch: typed
+    # with `!`, as a slash command, or with the app mentioned.
+    await _reply(
+        host,
+        room,
+        event,
+        f"✅ Linked this {platform} account ({username}) to Switch user "
+        f"**{name}**. If that isn't you, run `unlink-account {name}` the way "
+        "you ran this command.",
+    )
+
+
+async def _cmd_unlink_account(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    """Show which Switch users this chat account is linked to, or remove one.
+
+    The account's own say over its links, for someone who has no Switch login
+    to fix one with: a link confirmed by mistake, or one made before links
+    needed confirming. It only ever touches the account that sent it.
+    """
+    host = cast("CommandConsumer", client)
+    wanted = _strip_quotes((event.args or "").strip())
+    async with host.session_factory() as session:
+        reply = await _unlink_account(host, session, event, wanted)
+    # After the session has closed, so no lock is held while the reply is
+    # written.
+    await _reply(host, room, event, reply)
+
+
+async def _unlink_account(
+    host: CommandConsumer, session: AsyncSession, event: CommandEvent, wanted: str
+) -> str:
+    """`!unlink-account`'s work, returning what to reply."""
+    account = await _sender_account(host, session, event)
+    if account is None:
+        return "⚠️ Only a chat account can unlink itself, from that account."
+    claims = (await host._external_user_store.claims_for(session, [account.id])).get(
+        account.id, []
+    )
+    users = {
+        user.id: user
+        for user in await host._user_store.get_many(
+            session, [c.user_id for c in claims]
+        )
+    }
+    linked = sorted(
+        (
+            (users[c.user_id].name, users[c.user_id].email, c)
+            for c in claims
+            if c.user_id in users
+        ),
+        key=lambda entry: entry[0].casefold(),
+    )
+    listing = "\n".join(
+        f"- **{name}**"
+        + (
+            ""
+            if claim.verified_at is not None
+            else " (made before links needed confirming)"
+        )
+        for name, _email, claim in linked
+    )
+
+    if not wanted:
+        if not linked:
+            return "This account isn't linked to any Switch user."
+        return (
+            f"This account is linked to:\n{listing}\n\nRun "
+            "`!unlink-account NAME` to remove one."
+        )
+
+    needle = wanted.casefold()
+    matches = [
+        claim
+        for name, email, claim in linked
+        if needle in (name.casefold(), email.casefold())
+    ]
+    if not matches:
+        return f"⚠️ This account isn't linked to a Switch user called **{wanted}**." + (
+            f" It is linked to:\n{listing}" if linked else ""
+        )
+    if len(matches) > 1:
+        return (
+            f"⚠️ More than one Switch user linked to this account goes by "
+            f"**{wanted}**. Run `!unlink-account` with their email instead."
+        )
+    user_id = matches[0].user_id
+    name = users[user_id].name
+    try:
+        await host._external_user_store.release(session, account, user_id)
+    except NoSuchLink:
+        # Unlinked some other way while this ran: the outcome asked for.
+        return f"This account is no longer linked to Switch user **{name}**."
+    await record_audit_event(
+        session,
+        tenant_id=account.tenant_id,
+        actor_user_id=None,
+        action=AuditAction.BRIDGE_IDENTITY_RELEASED,
+        target_type="external_user",
+        target_id=account.id,
+        details={
+            "bridge_id": account.bridge_id,
+            "user_id": user_id,
+            "by": "chat_account",
+        },
+    )
+    await session.commit()
+    return f"Unlinked this account from Switch user **{name}**."
 
 
 async def _cmd_rename_agent(
@@ -1882,6 +2223,19 @@ COMMANDS: list[Command] = [
         admin_check=_check_control_target,
     ),
     Command(
+        "retry",
+        "Run again the turn a message started, which ended without an answer. "
+        "Sent by Switch Console's Retry: `!retry @agent-name <message id>`.",
+        _cmd_retry,
+        decide=_decide_retry,
+        args_spec=(
+            CommandArg("target", "Agent name, alias, or role to retry", required=True),
+            CommandArg("message", "The id of the message to run again", required=True),
+        ),
+        addressed=_addressed_by_required_first_mention,
+        hidden=True,
+    ),
+    Command(
         "interrupt-all-agents",
         "Interrupt EVERY agent's current turn in this room. "
         "Usage: `!interrupt-all-agents`.",
@@ -1990,6 +2344,38 @@ COMMANDS: list[Command] = [
         _cmd_remove_agent,
         args_spec=(
             CommandArg("agent", "The agent to remove from this room", required=True),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "link-account",
+        "Confirm a link between this chat account and your Switch user, with "
+        "the code Switch Console showed you. Usage: `!link-account CODE`.",
+        _cmd_link_account,
+        args_spec=(
+            # Free text so a bridge passes it through as typed: a declared
+            # name-style argument comes back with an `@` in front.
+            CommandArg(
+                "code",
+                "The code Switch Console showed you",
+                required=True,
+                free_text=True,
+            ),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "unlink-account",
+        "Show which Switch users this chat account is linked to, or remove "
+        "one. Usage: `!unlink-account`, or `!unlink-account NAME`.",
+        _cmd_unlink_account,
+        args_spec=(
+            CommandArg(
+                "user",
+                "The Switch user to unlink (leave empty to list them)",
+                required=False,
+                free_text=True,
+            ),
         ),
         admin_owned=True,
     ),
