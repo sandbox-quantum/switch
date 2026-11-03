@@ -484,10 +484,35 @@ class TestDisconnect:
             ),
         )
         secret = await _sign_in(adapter, vendor)
-        await adapter.revoke_connection(secret, "oauth")
+        assert await adapter.revoke_connection(secret, "oauth") is True
         [revoked] = vendor.revoked
         assert revoked["token"] == secret.values["refresh_token"]
         assert revoked["token_type_hint"] == "refresh_token"
+
+    async def test_says_it_ended_nothing_where_the_vendor_knew_no_such_token(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                f"    client_settings: EXAMPLE\n    revocation_url: {ISSUER}/revoke\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        vendor.fail[f"{ISSUER}/revoke"] = (400, {"error": "invalid_token"})
+        assert await adapter.revoke_connection(secret, "oauth") is False
+
+    async def test_says_it_ended_nothing_where_there_was_no_token(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                f"    client_settings: EXAMPLE\n    revocation_url: {ISSUER}/revoke\n",
+            ),
+        )
+        assert await adapter.revoke_connection(ConnectionSecret({}), "oauth") is False
+        assert not any(path == f"{ISSUER}/revoke" for path in vendor.paths)
 
     async def test_says_it_cannot_revoke_where_the_vendor_offers_no_revocation(
         self, vendor

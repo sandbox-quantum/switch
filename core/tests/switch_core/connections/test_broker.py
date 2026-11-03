@@ -1455,6 +1455,38 @@ class TestPassThrough:
         assert len(pt.vendor.connections_revoked) == 1
         assert warning is None
 
+    async def test_a_disconnect_whose_revocation_ended_nothing_says_until_when(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        """A vendor that knew no such sign-in ended no token issued on it."""
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=REVOKES_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+
+        async def ends_nothing(secret: ConnectionSecret, method: str) -> bool:
+            return False
+
+        monkeypatch.setattr(pt.vendor, "revoke_connection", ends_nothing)
+        async with session_factory() as session:
+            warning = await pt.broker.disconnect(session, pt.world.owner.id, "example")
+        assert warning is not None and warning.startswith("Example access already")
+
+    async def test_a_reconnect_whose_revocation_ended_nothing_says_until_when(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=REVOKES_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+
+        async def ends_nothing(secret: ConnectionSecret, method: str) -> bool:
+            return False
+
+        monkeypatch.setattr(pt.vendor, "revoke_connection", ends_nothing)
+        warning = await _reconnect(pt, session_factory, account_id="acct-2")
+        assert warning is not None and warning.startswith("Example access already")
+
     async def test_a_disconnect_whose_revocation_leaves_its_tokens_says_until_when(
         self, session_factory, tmp_path
     ) -> None:

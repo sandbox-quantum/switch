@@ -2353,7 +2353,9 @@ class ServiceBroker:
                     session, service, replaced.oauth_client_id, replaced.choices
                 )
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
-                    await adapter.revoke_connection(replaced.secret, replaced.method)
+                    revoked = await adapter.revoke_connection(
+                        replaced.secret, replaced.method
+                    )
             except ConnectionNotRevocable as error:
                 warnings.append(str(error))
             except Exception as error:
@@ -2367,7 +2369,7 @@ class ServiceBroker:
                     f"{name} settings."
                 )
             else:
-                if _revocation_ends_tokens(entry):
+                if revoked and _revocation_ends_tokens(entry):
                     ended.add(service)
         withdrawn = await self._revoke_withdrawn(session, issued_on_it, ended=ended)
         if withdrawn is not None:
@@ -2706,7 +2708,9 @@ class ServiceBroker:
                 continue
             try:
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
-                    await adapter.revoke_connection(signed_in.secret, signed_in.method)
+                    revoked = await adapter.revoke_connection(
+                        signed_in.secret, signed_in.method
+                    )
             except ConnectionNotRevocable as error:
                 warnings.append(str(error))
             except Exception as error:
@@ -2720,7 +2724,7 @@ class ServiceBroker:
                     f"{name} settings."
                 )
             else:
-                if entry is not None and _revocation_ends_tokens(entry):
+                if revoked and entry is not None and _revocation_ends_tokens(entry):
                     ended.add(service)
         if removed:
             withdrawn = await self._revoke_withdrawn(

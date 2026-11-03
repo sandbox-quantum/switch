@@ -798,7 +798,7 @@ class OAuthAdapter:
             f"A {self._name} token is the owner's own and cannot be revoked alone."
         )
 
-    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> None:
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> bool:
         if method != "oauth":
             words, pronoun = credential_words(method)
             raise ConnectionNotRevocable(
@@ -831,7 +831,7 @@ class OAuthAdapter:
             else (secret.access_token, "access_token")
         )
         if token is None:
-            return
+            return False
         client = await self._client.credentials(endpoints, choice_key(choices))
         identifying, headers = client_fields(endpoints, client)
         response = await self._send(
@@ -843,11 +843,12 @@ class OAuthAdapter:
             )
         )
         # RFC 7009: a token the server no longer knows is answered 200, but
-        # some answer invalid_token; either way it is gone.
+        # some answer invalid_token. Either way it is gone, but only a 200 may
+        # have ended tokens still in use.
         if response.status_code == 200:
-            return
+            return True
         if response.status_code == 400 and "invalid_token" in response.text:
-            return
+            return False
         raise ServiceAdapterError(
             f"{self._name} refused to revoke the sign-in (HTTP {response.status_code})."
         )
