@@ -33,10 +33,12 @@ import {
 
 interface Props {
   roomId: string;
+  // Attaching takes write access to the room; unlinking takes part in it.
   canWrite: boolean;
+  canUnlink: boolean;
 }
 
-export default function RoomResourcesSection({ roomId, canWrite }: Props) {
+export default function RoomResourcesSection({ roomId, canWrite, canUnlink }: Props) {
   const { data: roomPackages, refetch: refetchPackages } = useRoomPackages(roomId);
   const attachedPackageIds = useMemo(
     () => new Set((roomPackages ?? []).map((p) => p.id)),
@@ -56,6 +58,7 @@ export default function RoomResourcesSection({ roomId, canWrite }: Props) {
       <RoomReferences
         roomId={roomId}
         canWrite={canWrite}
+        canUnlink={canUnlink}
         attachedPackageIds={attachedPackageIds}
         packageDescriptions={packageDescriptions}
       />
@@ -68,6 +71,7 @@ export default function RoomResourcesSection({ roomId, canWrite }: Props) {
       <RoomPackages
         roomId={roomId}
         canWrite={canWrite}
+        canUnlink={canUnlink}
         packages={roomPackages ?? []}
         refetch={refetchPackages}
       />
@@ -108,11 +112,13 @@ function PackageChips({
 function RoomReferences({
   roomId,
   canWrite,
+  canUnlink,
   attachedPackageIds,
   packageDescriptions,
 }: {
   roomId: string;
   canWrite: boolean;
+  canUnlink: boolean;
   attachedPackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
@@ -197,15 +203,15 @@ function RoomReferences({
                 attachedPackageIds={attachedPackageIds}
                 packageDescriptions={packageDescriptions}
               />
-              {canWrite && (
-                <IconButton
+              {canUnlink && (
+                <Button
                   size="small"
                   onClick={() => handleDetach(ref.id)}
                   disabled={busy}
-                  aria-label={`Detach ${ref.name || ref.description}`}
+                  aria-label={`Unlink ${ref.name || ref.description}`}
                 >
-                  <DeleteOutline fontSize="small" />
-                </IconButton>
+                  Unlink
+                </Button>
               )}
             </Stack>
           ))}
@@ -318,15 +324,15 @@ function RoomDocuments({
                     attachedPackageIds={attachedPackageIds}
                     packageDescriptions={packageDescriptions}
                   />
-                  {canWrite && (
-                    <IconButton
+                  {doc.can_remove && (
+                    <Button
                       size="small"
                       onClick={() => handleDetach(doc.id)}
                       disabled={busy}
-                      aria-label={`Detach ${doc.name || doc.description}`}
+                      aria-label={`Unlink ${doc.name || doc.description}`}
                     >
-                      <DeleteOutline fontSize="small" />
-                    </IconButton>
+                      Unlink
+                    </Button>
                   )}
                 </Stack>
               ))}
@@ -368,7 +374,7 @@ function RoomDocuments({
                       variant="outlined"
                     />
                   )}
-                  {canWrite && (
+                  {doc.can_remove && (
                     <IconButton
                       size="small"
                       onClick={(e) => {
@@ -408,11 +414,13 @@ function RoomDocuments({
 function RoomPackages({
   roomId,
   canWrite,
+  canUnlink,
   packages,
   refetch,
 }: {
   roomId: string;
   canWrite: boolean;
+  canUnlink: boolean;
   packages: Array<{ id: string; name: string; description: string }>;
   refetch: () => void;
 }) {
@@ -479,18 +487,18 @@ function RoomPackages({
               <Typography variant="body2" sx={{ flexGrow: 1 }}>
                 {p.name || p.description}
               </Typography>
-              {canWrite && (
-                <IconButton
+              {canUnlink && (
+                <Button
                   size="small"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleDetach(p.id);
                   }}
                   disabled={busy}
-                  aria-label={`Detach ${p.name || p.description}`}
+                  aria-label={`Unlink ${p.name || p.description}`}
                 >
-                  <DeleteOutline fontSize="small" />
-                </IconButton>
+                  Unlink
+                </Button>
               )}
             </Stack>
           ))}

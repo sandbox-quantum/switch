@@ -133,7 +133,11 @@ export default function RoomDetailPage() {
         <Divider />
         <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
-        <RoomResourcesSection roomId={room.id} canWrite={canWrite} />
+        <RoomResourcesSection
+          roomId={room.id}
+          canWrite={canWrite}
+          canUnlink={room.can_unlink}
+        />
         <Divider />
         <RoomLinkedRoomsSection roomId={room.id} canWrite={canWrite} />
         <Divider />

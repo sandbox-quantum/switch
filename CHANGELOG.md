@@ -45,6 +45,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Security
+- **A resource's rooms no longer name private rooms its viewer cannot
+  open.** A reference, document or package's "Attached to" list, and its
+  attached-rooms count, took in every room it was attached to, so anyone who
+  could see a public reference could read the names of private rooms it was
+  in. Both now take in only rooms the viewer may read. Workspace admins still
+  see every room.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when
@@ -86,11 +92,12 @@ version of their own to them without also giving them a release of their own.
 
 #### Added
 - **The gateway says what the caller may change in a room.** Rooms, in the
-  list (`GET /rooms`) and in a room's detail, carry `can_write` and
-  `can_manage`. Each room a reference, document or package is attached to
-  carries `can_write`, and a document fetched through a room carries
-  `can_remove`. All are decided by the same rules the routes enforce, so a
-  client offers a change only where the server would allow it.
+  list (`GET /rooms`) and in a room's detail, carry `can_write`,
+  `can_manage` and `can_unlink`. Each room a reference, document or package
+  is attached to carries `can_unlink`, and a room's documents, listed or
+  fetched one at a time, carry `can_remove`. All are decided by the same
+  rules the routes enforce, so a client offers a change only where the
+  server would allow it.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -176,6 +183,17 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Unlinking a resource from a room is for those taking part in it.** It
+  took write access to the room, which on a publicly writable room, the
+  default, is everyone's. It is now for the room's owner, people in it (in
+  Switch Console or through a claimed platform account), owners of agents in
+  it, and workspace admins, whether or not they may write to it. The
+  dashboard shows it as an "Unlink" button rather than a bin, since nothing
+  is deleted. Attaching still takes write access.
+- **A room's own documents are deleted by their creator, the room's owner or
+  an admin.** Anyone who could write to the room could delete them. Others
+  who may write to it can still change them. A document an agent made counts
+  as made by the agent's owner.
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and
   downgrade the database before rolling back.** Every existing workspace gets
   an organization of its own, and its owners become the organization's admins.
@@ -447,6 +465,9 @@ version of their own to them without also giving them a release of their own.
   only rooms they may write to are offered for attaching. A reader still sees
   each agent's "Notify on join" setting, but cannot change it. A publicly
   writable room's other settings stay editable by everyone, as before.
+- **Those taking part in a private room can read its resources.** The room
+  itself could be read by its participants, but its references, documents,
+  packages and linked rooms were refused to anyone but its owner and admins.
 - **Deleting a room document from the room page asks first.** It cannot be
   undone, and its own page already asked.
 - **A client in more than 32,767 rooms starts reading them.** The reads a

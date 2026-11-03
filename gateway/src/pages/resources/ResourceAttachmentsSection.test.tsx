@@ -23,8 +23,8 @@ describe("ResourceAttachmentsSection", () => {
   beforeEach(() => {
     vi.mocked(hooks.useDocumentRooms).mockReturnValue(
       returns([
-        { room_id: "r1", room_name: "planning", can_write: true },
-        { room_id: "r2", room_name: "leadership", can_write: false },
+        { room_id: "r1", room_name: "planning", can_unlink: true },
+        { room_id: "r2", room_name: "leadership", can_unlink: false },
       ]),
     );
     vi.mocked(hooks.useReferenceRooms).mockReturnValue(returns(null));
@@ -44,12 +44,12 @@ describe("ResourceAttachmentsSection", () => {
     vi.clearAllMocks();
   });
 
-  it("offers detaching only from rooms the viewer may write to", () => {
+  it("offers unlinking only from rooms the viewer takes part in", () => {
     render(<ResourceAttachmentsSection kind="document" resourceId="d1" />);
 
     screen.getByText("leadership");
-    screen.getByRole("button", { name: "Detach from planning" });
-    expect(screen.queryByRole("button", { name: "Detach from leadership" })).toBeNull();
+    screen.getByRole("button", { name: "Unlink from planning" });
+    expect(screen.queryByRole("button", { name: "Unlink from leadership" })).toBeNull();
   });
 
   it("offers attaching only to rooms the viewer may write to, loading them on open", async () => {

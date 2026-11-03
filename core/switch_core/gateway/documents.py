@@ -5,9 +5,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal, can
+from switch_core.authz import (
+    Principal,
+    can_delete_room_document,
+    can_unlink_from_room,
+)
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.db.models import Document, User
+from switch_core.db.models import Document, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
@@ -15,6 +19,8 @@ from switch_core.gateway.auth import (
     get_current_user,
     get_tenant_is_admin,
     require_room_access,
+    require_room_unlink,
+    takes_part_in_room,
 )
 from switch_core.gateway.dependencies import (
     get_agent_store,
@@ -31,6 +37,7 @@ from switch_core.gateway.schemas import (
     DocumentUpdateRequest,
     ResourceRoom,
     RoomDocumentDetail,
+    RoomDocumentSummary,
 )
 
 router = APIRouter()
@@ -91,17 +98,33 @@ def _to_summary(
     )
 
 
+def _can_remove(
+    principal: Principal, room: Room, doc: Document, *, takes_part: bool
+) -> bool:
+    """Whether `principal` may remove `doc` from `room`: delete it if it is
+    room-scoped, unlink it if it is attached."""
+    if doc.room_id is not None:
+        return can_delete_room_document(
+            principal, room_owner_id=room.owner_id, document_owner_id=doc.owner_id
+        )
+    return can_unlink_from_room(principal, takes_part=takes_part)
+
+
 async def _enrich_summaries(
     session: AsyncSession,
     docs: list[Document],
     resource_service: ResourceService,
     user_store: UserStore,
     agent_store: AgentStore,
+    reader: Principal,
 ) -> list[DocumentSummary]:
     if not docs:
         return []
     counts = await resource_service.get_document_attached_counts(
-        session, [d.id for d in docs]
+        session,
+        [d.id for d in docs],
+        reader_id=reader.id,
+        reader_is_admin=reader.is_admin,
     )
     pkg_map = await resource_service.get_packages_for_documents(
         session, [d.id for d in docs]
@@ -140,8 +163,11 @@ async def _enrich_detail(
     resource_service: ResourceService,
     user_store: UserStore,
     agent_store: AgentStore,
+    reader: Principal,
 ) -> DocumentDetail:
-    counts = await resource_service.get_document_attached_counts(session, [doc.id])
+    counts = await resource_service.get_document_attached_counts(
+        session, [doc.id], reader_id=reader.id, reader_is_admin=reader.is_admin
+    )
     pkg_map = await resource_service.get_packages_for_documents(session, [doc.id])
     owner = await user_store.get(session, doc.owner_id) if doc.owner_id else None
     agent = (
@@ -165,10 +191,16 @@ async def list_documents(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[DocumentSummary]:
     docs = await resource_service.list_documents_for_user(session, user.id)
     return await _enrich_summaries(
-        session, docs, resource_service, user_store, agent_store
+        session,
+        docs,
+        resource_service,
+        user_store,
+        agent_store,
+        Principal(user.id, is_admin),
     )
 
 
@@ -180,6 +212,7 @@ async def create_document(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
     try:
         doc = await resource_service.create_document(
@@ -195,7 +228,14 @@ async def create_document(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
-    return await _enrich_detail(session, doc, resource_service, user_store, agent_store)
+    return await _enrich_detail(
+        session,
+        doc,
+        resource_service,
+        user_store,
+        agent_store,
+        Principal(user.id, is_admin),
+    )
 
 
 @router.get("/documents/{document_id}")
@@ -216,7 +256,14 @@ async def get_document(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
-    return await _enrich_detail(session, doc, resource_service, user_store, agent_store)
+    return await _enrich_detail(
+        session,
+        doc,
+        resource_service,
+        user_store,
+        agent_store,
+        Principal(user.id, is_admin),
+    )
 
 
 @router.patch("/documents/{document_id}")
@@ -248,7 +295,14 @@ async def patch_document(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     await session.commit()
-    return await _enrich_detail(session, doc, resource_service, user_store, agent_store)
+    return await _enrich_detail(
+        session,
+        doc,
+        resource_service,
+        user_store,
+        agent_store,
+        Principal(user.id, is_admin),
+    )
 
 
 @router.delete("/documents/{document_id}")
@@ -286,6 +340,7 @@ async def list_rooms_for_document(
     document_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
@@ -297,13 +352,20 @@ async def list_rooms_for_document(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
-    rooms = await resource_service.list_rooms_for_document(session, document_id)
+    rooms = await resource_service.list_rooms_for_document(
+        session, document_id, reader_id=user.id, reader_is_admin=is_admin
+    )
+    taking_part = await room_store.involved_room_ids(
+        session, user.id, [room.id for room in rooms]
+    )
     principal = Principal(user.id, is_admin)
     return [
         ResourceRoom(
             room_id=room.id,
             room_name=room.name,
-            can_write=can(principal, "write", room),
+            can_unlink=can_unlink_from_room(
+                principal, takes_part=room.id in taking_part
+            ),
         )
         for room in rooms
     ]
@@ -319,12 +381,23 @@ async def list_room_documents(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> list[DocumentSummary]:
-    await require_room_access(session, room_store, room_id, user, "read", is_admin)
-    docs = await resource_service.list_room_documents(session, room_id)
-    return await _enrich_summaries(
-        session, docs, resource_service, user_store, agent_store
+) -> list[RoomDocumentSummary]:
+    room = await require_room_access(
+        session, room_store, room_id, user, "read", is_admin
     )
+    takes_part = await takes_part_in_room(session, room_store, room, user)
+    principal = Principal(user.id, is_admin)
+    docs = await resource_service.list_room_documents(session, room_id)
+    summaries = await _enrich_summaries(
+        session, docs, resource_service, user_store, agent_store, principal
+    )
+    return [
+        RoomDocumentSummary(
+            **summary.model_dump(),
+            can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
+        )
+        for summary, doc in zip(summaries, docs, strict=True)
+    ]
 
 
 @router.post("/rooms/{room_id}/documents/{document_id}", status_code=201)
@@ -356,7 +429,14 @@ async def attach_document_to_room(
     doc = await resource_service.get_document_for_user(
         session, document_id, user.id, is_admin=is_admin
     )
-    return await _enrich_detail(session, doc, resource_service, user_store, agent_store)
+    return await _enrich_detail(
+        session,
+        doc,
+        resource_service,
+        user_store,
+        agent_store,
+        Principal(user.id, is_admin),
+    )
 
 
 @router.delete("/rooms/{room_id}/documents/{document_id}", status_code=204)
@@ -369,17 +449,31 @@ async def detach_document_from_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
-    """For globally-owned docs: detach from the room. For room-scoped docs:
-    hard-delete them entirely (since they live only in this room)."""
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    """For globally-owned docs: unlink from the room, which those taking part
+    in it and admins may do. For room-scoped docs: hard-delete them entirely
+    (since they live only in this room), which their creator, the room's owner
+    and admins may do."""
+    room = await require_room_access(
+        session, room_store, room_id, user, "read", is_admin
+    )
     doc = await resource_service.get_room_scoped_document_or_none(
         session, room_id, document_id
     )
     if doc is not None:
+        if not can_delete_room_document(
+            Principal(user.id, is_admin),
+            room_owner_id=room.owner_id,
+            document_owner_id=doc.owner_id,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the document's creator, the room's owner and admins can delete it",
+            )
         await resource_service.delete_room_document_by_user(
             session, room_id=room_id, document_id=document_id
         )
     else:
+        await require_room_unlink(session, room_store, room_id, user, is_admin)
         await resource_service.detach_document_from_room(session, room_id, document_id)
     await session.commit()
 
@@ -408,10 +502,12 @@ async def get_room_document(
         raise HTTPException(
             status_code=404, detail=f"Document {document_id} not in room {room_id}"
         )
+    principal = Principal(user.id, is_admin)
     detail = await _enrich_detail(
-        session, doc, resource_service, user_store, agent_store
+        session, doc, resource_service, user_store, agent_store, principal
     )
+    takes_part = await takes_part_in_room(session, room_store, room, user)
     return RoomDocumentDetail(
         **detail.model_dump(),
-        can_remove=can(Principal(user.id, is_admin), "write", room),
+        can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
     )

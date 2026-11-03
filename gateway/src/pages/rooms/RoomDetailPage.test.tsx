@@ -31,8 +31,12 @@ vi.mock("./RoomLinkedRoomsSection", () => ({
   ),
 }));
 vi.mock("./RoomResourcesSection", () => ({
-  default: ({ canWrite }: { canWrite: boolean }) => (
-    <div data-testid="resources" data-can-write={String(canWrite)} />
+  default: ({ canWrite, canUnlink }: { canWrite: boolean; canUnlink: boolean }) => (
+    <div
+      data-testid="resources"
+      data-can-write={String(canWrite)}
+      data-can-unlink={String(canUnlink)}
+    />
   ),
 }));
 
@@ -70,11 +74,12 @@ const room = {
   archived_at: null,
   can_write: true,
   can_manage: false,
+  can_unlink: false,
 } as RoomDetail;
 
 const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;
 
-function viewAs(can: { can_write: boolean; can_manage: boolean }) {
+function viewAs(can: { can_write: boolean; can_manage: boolean; can_unlink: boolean }) {
   vi.mocked(hooks.useRoom).mockReturnValue({
     data: { ...room, ...can },
     loading: false,
@@ -127,7 +132,7 @@ describe("RoomDetailPage permissions", () => {
   });
 
   it("lets someone who may write but not manage edit everything but access", async () => {
-    viewAs({ can_write: true, can_manage: false });
+    viewAs({ can_write: true, can_manage: false, can_unlink: false });
 
     expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
     const describedBy = accessSelect().getAttribute("aria-describedby");
@@ -153,7 +158,7 @@ describe("RoomDetailPage permissions", () => {
   });
 
   it("lets someone who may manage the room change its access and delete it", async () => {
-    viewAs({ can_write: true, can_manage: true });
+    viewAs({ can_write: true, can_manage: true, can_unlink: false });
 
     expect(accessSelect().getAttribute("aria-disabled")).toBeNull();
     screen.getByRole("button", { name: "Delete room" });
@@ -170,7 +175,7 @@ describe("RoomDetailPage permissions", () => {
   });
 
   it("loads the platform's users only when someone adds one", async () => {
-    viewAs({ can_write: true, can_manage: false });
+    viewAs({ can_write: true, can_manage: false, can_unlink: false });
     expect(hooks.useBridgeUsers).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Add user" }));
@@ -180,7 +185,7 @@ describe("RoomDetailPage permissions", () => {
   });
 
   it("offers a reader nothing to change", () => {
-    viewAs({ can_write: false, can_manage: false });
+    viewAs({ can_write: false, can_manage: false, can_unlink: false });
 
     screen.getByText(/You don't have write access to this room/);
     expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
@@ -193,5 +198,12 @@ describe("RoomDetailPage permissions", () => {
     expect(joinEventsSwitch().disabled).toBe(true);
     expect(screen.getByTestId("resources").dataset.canWrite).toBe("false");
     expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("false");
+  });
+
+  it("lets someone taking part in a room they cannot edit unlink its resources", () => {
+    viewAs({ can_write: false, can_manage: false, can_unlink: true });
+
+    expect(screen.getByTestId("resources").dataset.canWrite).toBe("false");
+    expect(screen.getByTestId("resources").dataset.canUnlink).toBe("true");
   });
 });

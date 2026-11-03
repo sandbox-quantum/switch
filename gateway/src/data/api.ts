@@ -36,10 +36,13 @@ export interface RoomSummary {
   created_at: string;
   archived: boolean;
   // What the viewer may do, as the server decides it. `can_write` covers the
-  // room's settings, roles, participants, resources and links; `can_manage`
-  // (owner or workspace admin) covers its access and deleting it.
+  // room's settings, roles, participants, links and attaching resources;
+  // `can_manage` (owner or workspace admin) covers its access and deleting it;
+  // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
+  // reference, document or package from it.
   can_write: boolean;
   can_manage: boolean;
+  can_unlink: boolean;
 }
 
 export interface AgentSummary {
@@ -1535,10 +1538,17 @@ export interface DocumentDetail extends DocumentSummary {
   content: string;
 }
 
+// Whether the viewer may remove a document from a room it is in: delete it if
+// it is room-scoped (its creator, the room's owner, a workspace admin), unlink
+// it if it is attached (those taking part in the room, a workspace admin).
+
+/** A document as listed in a room it is in. */
+export interface RoomDocumentSummary extends DocumentSummary {
+  can_remove: boolean;
+}
+
 /** A document as seen from a room it is in. */
 export interface RoomDocumentDetail extends DocumentDetail {
-  // Whether the viewer may remove it from the room (delete it if room-scoped,
-  // detach it otherwise): both take write access to the room.
   can_remove: boolean;
 }
 
@@ -1563,8 +1573,9 @@ export interface DocumentUpdateInput {
 export interface ResourceRoom {
   room_id: string;
   room_name: string;
-  // Whether the viewer may attach to or detach from this room.
-  can_write: boolean;
+  // Whether the viewer may unlink the resource from this room: they take part
+  // in it, or are a workspace admin.
+  can_unlink: boolean;
 }
 
 export interface ResourceDeleteResult {
@@ -1819,8 +1830,8 @@ export async function fetchDocumentRooms(id: string): Promise<ResourceRoom[] | n
 
 export async function fetchRoomDocuments(
   roomId: string,
-): Promise<DocumentSummary[] | null> {
-  return fetchJson<DocumentSummary[]>(`/rooms/${roomId}/documents`);
+): Promise<RoomDocumentSummary[] | null> {
+  return fetchJson<RoomDocumentSummary[]>(`/rooms/${roomId}/documents`);
 }
 
 export async function fetchRoomDocument(

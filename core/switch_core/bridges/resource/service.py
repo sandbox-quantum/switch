@@ -703,14 +703,28 @@ class ResourceService:
         return await self._references.list_ids_for_room(session, room_id)
 
     async def get_reference_attached_counts(
-        self, session: AsyncSession, reference_ids: list[str]
+        self,
+        session: AsyncSession,
+        reference_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> dict[str, int]:
-        return await self._references.get_attached_counts(session, reference_ids)
+        return await self._references.get_attached_counts(
+            session, reference_ids, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     async def list_rooms_for_reference(
-        self, session: AsyncSession, reference_id: str
+        self,
+        session: AsyncSession,
+        reference_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[Room]:
-        return await self._references.list_rooms_for_reference(session, reference_id)
+        return await self._references.list_rooms_for_reference(
+            session, reference_id, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     # ── Room links (gateway) ──────────────────────────────────────────────
 
@@ -966,14 +980,28 @@ class ResourceService:
         return await self._documents.list_for_room(session, room_id)
 
     async def get_document_attached_counts(
-        self, session: AsyncSession, document_ids: list[str]
+        self,
+        session: AsyncSession,
+        document_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> dict[str, int]:
-        return await self._documents.get_attached_counts(session, document_ids)
+        return await self._documents.get_attached_counts(
+            session, document_ids, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     async def list_rooms_for_document(
-        self, session: AsyncSession, document_id: str
+        self,
+        session: AsyncSession,
+        document_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[Room]:
-        return await self._documents.list_rooms_for_document(session, document_id)
+        return await self._documents.list_rooms_for_document(
+            session, document_id, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     # ── Room-scoped documents (agent-created via MCP) ─────────────────────
 
@@ -1147,8 +1175,8 @@ class ResourceService:
         room_id: str,
         document_id: str,
     ) -> None:
-        """Gateway escape hatch: a user with access to the room can delete a
-        room-scoped document regardless of which agent created it."""
+        """Delete a room-scoped document for a person, whichever agent made
+        it. The gateway decides who may (`authz.can_delete_room_document`)."""
         doc = await self._documents.get_room_scoped(session, room_id, document_id)
         if doc is None:
             raise ValueError(
@@ -1333,9 +1361,16 @@ class ResourceService:
         return await self._packages.list_for_room(session, room_id)
 
     async def get_package_attached_counts(
-        self, session: AsyncSession, package_ids: list[str]
+        self,
+        session: AsyncSession,
+        package_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> dict[str, int]:
-        return await self._packages.get_attached_counts(session, package_ids)
+        return await self._packages.get_attached_counts(
+            session, package_ids, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     async def get_package_reference_counts(
         self, session: AsyncSession, package_ids: list[str]
@@ -1348,9 +1383,16 @@ class ResourceService:
         return await self._packages.get_document_counts(session, package_ids)
 
     async def list_rooms_for_package(
-        self, session: AsyncSession, package_id: str
+        self,
+        session: AsyncSession,
+        package_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[Room]:
-        return await self._packages.list_rooms_for_package(session, package_id)
+        return await self._packages.list_rooms_for_package(
+            session, package_id, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     # ── Package membership ────────────────────────────────────────────────
 

@@ -26,15 +26,24 @@ function returns<T>(data: T) {
   return { data, loading: false, error: null, refetch: vi.fn() };
 }
 
-const CONTROLS = [
-  "Attach reference",
-  "Detach Runbook",
-  "Attach document",
-  "Detach Spec",
-  "Delete Notes",
-  "Attach package",
-  "Detach Starter kit",
-];
+// The server says, per document, whether the viewer may remove it: unlink it
+// if attached, delete it if room-scoped.
+function roomDocuments({ canRemove }: { canRemove: boolean }) {
+  vi.mocked(hooks.useRoomDocuments).mockReturnValue(
+    returns([
+      { id: "d1", name: "Spec", description: "", scope: "global", packages: [], can_remove: canRemove },
+      { id: "d2", name: "Notes", description: "", scope: "room", created_by_agent_name: "planner", can_remove: canRemove },
+    ]) as never,
+  );
+}
+
+const ATTACH = ["Attach reference", "Attach document", "Attach package"];
+const UNLINK = ["Unlink Runbook", "Unlink Starter kit"];
+const REMOVE = ["Unlink Spec", "Delete Notes"];
+
+function button(name: string) {
+  return screen.queryByRole("button", { name });
+}
 
 describe("RoomResourcesSection", () => {
   beforeEach(() => {
@@ -43,12 +52,7 @@ describe("RoomResourcesSection", () => {
         { id: "ref1", name: "Runbook", description: "", type: "confluence", type_display_name: "Confluence", packages: [] },
       ]) as never,
     );
-    vi.mocked(hooks.useRoomDocuments).mockReturnValue(
-      returns([
-        { id: "d1", name: "Spec", description: "", scope: "global", packages: [] },
-        { id: "d2", name: "Notes", description: "", scope: "room", created_by_agent_name: "planner" },
-      ]) as never,
-    );
+    roomDocuments({ canRemove: true });
     vi.mocked(hooks.useRoomPackages).mockReturnValue(
       returns([{ id: "p1", name: "Starter kit", description: "" }]) as never,
     );
@@ -68,21 +72,37 @@ describe("RoomResourcesSection", () => {
     vi.restoreAllMocks();
   });
 
-  it("offers attaching and detaching to someone who may write to the room", () => {
-    render(<RoomResourcesSection roomId="r1" canWrite />);
+  it("offers attaching to writers and unlinking to those taking part", () => {
+    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
 
-    for (const name of CONTROLS) screen.getByRole("button", { name });
+    for (const name of [...ATTACH, ...UNLINK, ...REMOVE]) screen.getByRole("button", { name });
+  });
+
+  it("lets someone taking part unlink without write access, but not attach", () => {
+    render(<RoomResourcesSection roomId="r1" canWrite={false} canUnlink />);
+
+    for (const name of [...UNLINK, ...REMOVE]) screen.getByRole("button", { name });
+    for (const name of ATTACH) expect(button(name)).toBeNull();
+  });
+
+  it("follows the server on which documents the viewer may remove", () => {
+    roomDocuments({ canRemove: false });
+    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
+
+    for (const name of REMOVE) expect(button(name)).toBeNull();
+    for (const name of UNLINK) screen.getByRole("button", { name });
   });
 
   it("lists what is attached, with nothing to change, to a reader", () => {
-    render(<RoomResourcesSection roomId="r1" canWrite={false} />);
+    roomDocuments({ canRemove: false });
+    render(<RoomResourcesSection roomId="r1" canWrite={false} canUnlink={false} />);
 
     for (const item of ["Runbook", "Spec", "Notes", "Starter kit"]) screen.getByText(item);
-    for (const name of CONTROLS) expect(screen.queryByRole("button", { name })).toBeNull();
+    for (const name of [...ATTACH, ...UNLINK, ...REMOVE]) expect(button(name)).toBeNull();
   });
 
   it("loads what can be attached only when a picker opens", async () => {
-    render(<RoomResourcesSection roomId="r1" canWrite />);
+    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
 
     expect(hooks.useReferences).not.toHaveBeenCalled();
     expect(hooks.useDocuments).not.toHaveBeenCalled();
@@ -97,7 +117,7 @@ describe("RoomResourcesSection", () => {
 
   it("asks before deleting a room document, which cannot be undone", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    render(<RoomResourcesSection roomId="r1" canWrite />);
+    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Notes" }));
     expect(confirm).toHaveBeenCalledWith(

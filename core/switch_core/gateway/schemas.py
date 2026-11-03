@@ -92,11 +92,13 @@ class RoomSummary(BaseModel):
     is_console_chat: bool = False
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. `can_write` covers its settings, roles,
-    # participants, attached resources and links; `can_manage` (owner or
+    # participants, links and attaching resources; `can_manage` (owner or
     # tenant admin) covers its access, deleting it and taking the platform
-    # channel's name.
+    # channel's name; `can_unlink` (taking part in it, or tenant admin) covers
+    # unlinking a reference, document or package from it.
     can_write: bool
     can_manage: bool
+    can_unlink: bool
 
 
 class RoomDetail(RoomSummary):
@@ -1401,8 +1403,9 @@ class ReferenceTypeDeleteResponse(BaseModel):
 class ResourceRoom(BaseModel):
     room_id: str
     room_name: str
-    # Whether the caller may attach to or detach from this room.
-    can_write: bool
+    # Whether the caller may unlink the resource from this room: they take
+    # part in it, or are a tenant admin.
+    can_unlink: bool
 
 
 # ── Linked rooms ───────────────────────────────────────────────────────────
@@ -1509,12 +1512,14 @@ class DocumentDetail(BaseModel):
     created_at: str
 
 
+# Whether the caller may remove a document from a room it is in: delete it if
+# it is room-scoped (its creator, the room's owner, a tenant admin), unlink it
+# if it is attached (those taking part in the room, a tenant admin).
+
+
 class RoomDocumentDetail(DocumentDetail):
     """A document as seen from a room it is in."""
 
-    # Whether the caller may remove it from the room: delete it if it is
-    # room-scoped, detach it if it is attached. Both take write access to the
-    # room.
     can_remove: bool
 
 
@@ -1534,6 +1539,12 @@ class DocumentSummary(BaseModel):
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+
+
+class RoomDocumentSummary(DocumentSummary):
+    """A document as listed in a room it is in."""
+
+    can_remove: bool
 
 
 class DocumentCreateRequest(BaseModel):

@@ -9,6 +9,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    true,
     update,
 )
 from sqlalchemy import func as sa_func
@@ -293,9 +294,7 @@ class RoomStore:
         """Return rooms the user may read: publicly readable, ones they take
         part in (`involves`), or all if admin. Archived rooms are excluded
         unless `include_archived`."""
-        stmt = select(Room)
-        if not is_admin:
-            stmt = stmt.where(or_(Room.read_visibility == "public", involves(user_id)))
+        stmt = select(Room).where(readable_by(user_id, is_admin=is_admin))
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         result = await session.execute(stmt)
@@ -920,6 +919,17 @@ class RoomStore:
         )
         await session.flush()
         return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
+    """True for a `Room` row the user may read: publicly readable, or one they
+    take part in (`involves`). Every room, for a tenant admin; only public ones
+    for a reader with no user (an agent nobody owns), who takes part in none."""
+    if is_admin:
+        return true()
+    if user_id is None:
+        return Room.read_visibility == "public"
+    return or_(Room.read_visibility == "public", involves(user_id))
 
 
 def involves(user_id: str) -> ColumnElement[bool]:

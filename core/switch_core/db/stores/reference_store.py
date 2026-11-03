@@ -3,6 +3,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Reference, Room, User, room_references
+from switch_core.db.stores.room_store import readable_by
 
 _LIKE_ESCAPE = "\\"
 
@@ -188,8 +189,14 @@ class ReferenceStore:
         return result.scalar_one_or_none() is not None
 
     async def get_attached_counts(
-        self, session: AsyncSession, reference_ids: list[str]
+        self,
+        session: AsyncSession,
+        reference_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> dict[str, int]:
+        """How many rooms each is attached to, of those the reader may read."""
         if not reference_ids:
             return {}
         result = await session.execute(
@@ -197,18 +204,27 @@ class ReferenceStore:
                 room_references.c.reference_id,
                 func.count(room_references.c.room_id),
             )
+            .join(Room, Room.id == room_references.c.room_id)
             .where(room_references.c.reference_id.in_(reference_ids))
+            .where(readable_by(reader_id, is_admin=reader_is_admin))
             .group_by(room_references.c.reference_id)
         )
         counts = {rid: int(c) for rid, c in result.all()}
         return {rid: counts.get(rid, 0) for rid in reference_ids}
 
     async def list_rooms_for_reference(
-        self, session: AsyncSession, reference_id: str
+        self,
+        session: AsyncSession,
+        reference_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[Room]:
+        """The rooms it is attached to, of those the reader may read."""
         result = await session.execute(
             select(Room)
             .join(room_references, Room.id == room_references.c.room_id)
             .where(room_references.c.reference_id == reference_id)
+            .where(readable_by(reader_id, is_admin=reader_is_admin))
         )
         return list(result.scalars().all())

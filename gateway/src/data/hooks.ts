@@ -28,6 +28,7 @@ import {
   type ResourceRoom,
   type RoomDetail,
   type RoomDocumentDetail,
+  type RoomDocumentSummary,
   type RoomGroupDetail,
   type RoomSummary,
   type TemplateSummary,
@@ -285,7 +286,7 @@ export function useRoomReferences(
 
 export function useRoomDocuments(
   roomId: string | undefined,
-): UseQueryResult<DocumentSummary[]> {
+): UseQueryResult<RoomDocumentSummary[]> {
   const fetcher = useCallback(
     () => (roomId ? fetchRoomDocuments(roomId) : Promise.resolve(null)),
     [roomId],

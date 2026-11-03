@@ -19,6 +19,7 @@ from switch_core.authz import (
     ORGANIZATION_ADMIN_TENANT_ROLE,
     Action,
     Principal,
+    can_unlink_from_room,
     require,
 )
 from switch_core.config import SwitchConfig
@@ -1160,5 +1161,39 @@ async def require_room_access(
     try:
         require(Principal(user.id, is_admin), action, room)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
+        # Whoever takes part in a room may read it, as the room routes allow.
+        if action != "read" or not await takes_part_in_room(
+            session, room_store, room, user
+        ):
+            raise HTTPException(status_code=403, detail=str(e)) from e
     return room
+
+
+async def require_room_unlink(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room_id: str,
+    user: User,
+    is_admin: bool,
+) -> Room:
+    """Load a room and authorize unlinking a reference, document or package
+    from it (`authz.can_unlink_from_room`): raise HTTP 403 unless `user`
+    takes part in it or is a tenant admin."""
+    room = await require_room_access(
+        session, room_store, room_id, user, "read", is_admin
+    )
+    takes_part = await takes_part_in_room(session, room_store, room, user)
+    if not can_unlink_from_room(Principal(user.id, is_admin), takes_part=takes_part):
+        raise HTTPException(
+            status_code=403,
+            detail="Only those taking part in the room and admins can unlink from it",
+        )
+    return room
+
+
+async def takes_part_in_room(
+    session: AsyncSession, room_store: RoomStore, room: Room, user: User
+) -> bool:
+    """Whether `user` owns `room`, is in it (in Switch Console or through a
+    platform account they claimed), or owns an agent in it."""
+    return bool(await room_store.involved_room_ids(session, user.id, [room.id]))

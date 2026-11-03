@@ -1,15 +1,30 @@
-"""Where the dashboard lists rooms or a room's documents, it is told what the
-caller may change, by the same rule the attach and detach routes enforce
-(write access to the room), so it offers only what the server would allow.
+"""Who sees which rooms a resource is in, and who may unlink it or delete a
+room's own documents.
+
+- A resource's rooms, and its attached-rooms count, take in only rooms the
+  caller may read. A tenant admin sees every one.
+- Unlinking a reference, document or package from a room is for those taking
+  part in the room and tenant admins. Write access is not enough: on a
+  publicly writable room it is everyone's.
+- A room-scoped document is deleted by its creator (an agent's document is
+  recorded under the agent's owner), the room's owner, or a tenant admin.
+- Whoever takes part in a private room may read its resources.
+
+Each flag the dashboard reads says the same as the route that enforces it.
 The route coroutines are called directly against real Postgres, as in
-`test_room_resource_read_authz`."""
+`test_room_resource_read_authz`.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import pytest
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.db.models import Room, User
+from switch_core.db.models import Document, Room, User, room_agents
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
@@ -21,8 +36,16 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.documents import get_room_document, list_rooms_for_document
+from switch_core.gateway.documents import (
+    detach_document_from_room,
+    get_room_document,
+    list_documents,
+    list_room_documents,
+    list_rooms_for_document,
+)
+from switch_core.gateway.packages import detach_package_from_room
 from switch_core.gateway.rooms import list_rooms
+from tests.switch_core.gateway.agent_route_harness import add_agent
 
 _ROOM_STORE = RoomStore()
 _USER_STORE = UserStore()
@@ -48,44 +71,151 @@ async def _user(session: AsyncSession, name: str) -> User:
 
 
 async def _room(
-    session: AsyncSession, name: str, owner: User, write_visibility: str
+    session: AsyncSession, name: str, owner: User, *, read: str, write: str
 ) -> Room:
     room = Room(
         transport_room_id=f"!{name}:test",
         name=name,
         description="",
         owner_id=owner.id,
-        read_visibility="public",
-        write_visibility=write_visibility,
+        read_visibility=read,
+        write_visibility=write,
     )
     session.add(room)
     await session.flush()
     return room
 
 
-async def test_rooms_and_room_documents_say_what_the_caller_may_change(
+@dataclass
+class _World:
+    """`owner` owns every room. `member` takes part in `theirs` through an
+    agent they own, and in nothing else; `stranger` takes part in nothing.
+
+    - `public`: publicly writable, so `member` and `stranger` may write to it.
+    - `theirs`: private, but `member` takes part in it, so may read it.
+    - `hidden`: private, and only `owner` takes part in it.
+    """
+
+    owner: User
+    member: User
+    stranger: User
+    public: Room
+    theirs: Room
+    hidden: Room
+    member_agent_id: str
+
+
+async def _world(session: AsyncSession) -> _World:
+    owner = await _user(session, "owner")
+    member = await _user(session, "member")
+    stranger = await _user(session, "stranger")
+    public = await _room(session, "public", owner, read="public", write="public")
+    theirs = await _room(session, "theirs", owner, read="private", write="private")
+    hidden = await _room(session, "hidden", owner, read="private", write="private")
+    agent = await add_agent(session, name="member-agent", owner_id=member.id)
+    await session.execute(
+        room_agents.insert().values(room_id=theirs.id, agent_id=agent.id)
+    )
+    return _World(owner, member, stranger, public, theirs, hidden, agent.id)
+
+
+async def _shared_document(
+    session: AsyncSession, svc: ResourceService, world: _World
+) -> Document:
+    """A public document `owner` attached to all three rooms."""
+    doc = await svc.create_document(
+        session,
+        owner_id=world.owner.id,
+        read_visibility="public",
+        write_visibility="private",
+        name="spec",
+        description="",
+        instructions="",
+        content="",
+    )
+    for room in (world.public, world.theirs, world.hidden):
+        await svc.attach_document_to_room(
+            session, room.id, doc.id, user_id=world.owner.id
+        )
+    return doc
+
+
+async def _rooms_of(
+    session: AsyncSession, svc: ResourceService, doc: Document, user: User, admin: bool
+) -> dict[str, bool]:
+    rooms = await list_rooms_for_document(
+        doc.id, session, svc, _ROOM_STORE, user, admin
+    )
+    return {r.room_name: r.can_unlink for r in rooms}
+
+
+async def _count_of(
+    session: AsyncSession, svc: ResourceService, doc: Document, user: User, admin: bool
+) -> int:
+    docs = await list_documents(session, svc, _USER_STORE, _AGENT_STORE, user, admin)
+    return next(d.attached_rooms_count for d in docs if d.id == doc.id)
+
+
+async def _detach(
+    session: AsyncSession,
+    svc: ResourceService,
+    room: Room,
+    doc_id: str,
+    user: User,
+    admin: bool,
+) -> None:
+    await detach_document_from_room(
+        room.id, doc_id, session, svc, _ROOM_STORE, user, admin
+    )
+
+
+async def test_a_resource_lists_only_the_rooms_its_viewer_may_read(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     svc = _svc(session_factory)
     async with session_factory() as session:
-        owner = await _user(session, "owner")
-        member = await _user(session, "member")
-        public = await _room(session, "public", owner, write_visibility="public")
-        read_only = await _room(session, "read-only", owner, write_visibility="private")
-        doc = await svc.create_document(
+        world = await _world(session)
+        doc = await _shared_document(session, svc, world)
+        await session.commit()
+
+        # `member` reads `public` and `theirs`; `hidden` is left out, count too.
+        assert await _rooms_of(session, svc, doc, world.member, False) == {
+            "public": False,
+            "theirs": True,
+        }
+        assert await _count_of(session, svc, doc, world.member, False) == 2
+        assert await _rooms_of(session, svc, doc, world.stranger, False) == {
+            "public": False
+        }
+        assert await _count_of(session, svc, doc, world.stranger, False) == 1
+        # A tenant admin sees, and may unlink from, every room.
+        assert await _rooms_of(session, svc, doc, world.stranger, True) == {
+            "public": True,
+            "theirs": True,
+            "hidden": True,
+        }
+        assert await _count_of(session, svc, doc, world.stranger, True) == 3
+
+
+async def test_unlinking_is_for_those_taking_part_in_the_room_and_admins(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _svc(session_factory)
+    async with session_factory() as session:
+        world = await _world(session)
+        doc = await _shared_document(session, svc, world)
+        pkg = await svc.create_package(
             session,
-            owner_id=owner.id,
+            owner_id=world.owner.id,
             read_visibility="public",
             write_visibility="private",
-            name="spec",
+            name="kit",
             description="",
             instructions="",
-            content="",
         )
-        for room in (public, read_only):
-            await svc.attach_document_to_room(
-                session, room.id, doc.id, user_id=owner.id
-            )
+        await svc.attach_package_to_room(
+            session, world.public.id, pkg.id, user_id=world.owner.id
+        )
         await session.commit()
 
         summaries = await list_rooms(
@@ -95,24 +225,112 @@ async def test_rooms_and_room_documents_say_what_the_caller_may_change(
             CollaborationBridgeStore(),
             ExternalUserStore(),
             _USER_STORE,
-            member,
+            world.member,
             False,
         )
-        assert {r.id: (r.can_write, r.can_manage) for r in summaries} == {
-            public.id: (True, False),
-            read_only.id: (False, False),
+        assert {r.name: (r.can_write, r.can_unlink) for r in summaries} == {
+            "public": (True, False),
+            "theirs": (False, True),
         }
 
-        attached = await list_rooms_for_document(doc.id, session, svc, member, False)
-        assert {r.room_id: r.can_write for r in attached} == {
-            public.id: True,
-            read_only.id: False,
+        # May write to `public`, but takes part in it no more than anyone does.
+        with pytest.raises(HTTPException) as refused:
+            await _detach(session, svc, world.public, doc.id, world.member, False)
+        assert refused.value.status_code == 403
+        with pytest.raises(HTTPException) as refused:
+            await detach_package_from_room(
+                world.public.id, pkg.id, session, svc, _ROOM_STORE, world.member, False
+            )
+        assert refused.value.status_code == 403
+
+        # Takes part in `theirs` without write access to it, and may unlink.
+        await _detach(session, svc, world.theirs, doc.id, world.member, False)
+        # So may an admin, from a room they are not in.
+        await _detach(session, svc, world.hidden, doc.id, world.stranger, True)
+
+        assert await _rooms_of(session, svc, doc, world.owner, False) == {
+            "public": True
         }
 
-        async def can_remove(room: Room, user: User) -> bool:
+
+async def test_a_room_document_is_deleted_by_its_creator_the_room_owner_or_an_admin(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _svc(session_factory)
+    async with session_factory() as session:
+        world = await _world(session)
+        notes = []
+        for name in ("by-creator", "by-owner", "by-admin"):
+            # Made by `member`'s agent, so recorded under `member`.
+            doc = await svc.create_room_document(
+                session,
+                room_id=world.public.id,
+                agent_id=world.member_agent_id,
+                owner_id=world.member.id,
+                name=name,
+                description="",
+                instructions="",
+                content="",
+            )
+            notes.append(doc)
+        await session.commit()
+        by_creator, by_owner, by_admin = notes
+
+        async def can_remove(doc: Document, user: User, admin: bool) -> bool:
+            listed = await list_room_documents(
+                world.public.id,
+                session,
+                svc,
+                _USER_STORE,
+                _AGENT_STORE,
+                _ROOM_STORE,
+                user,
+                admin,
+            )
             detail = await get_room_document(
-                room.id,
+                world.public.id,
                 doc.id,
+                session,
+                svc,
+                _USER_STORE,
+                _AGENT_STORE,
+                _ROOM_STORE,
+                user,
+                admin,
+            )
+            from_list = next(d.can_remove for d in listed if d.id == doc.id)
+            assert from_list == detail.can_remove
+            return detail.can_remove
+
+        # `stranger` may write to the room, and so change the document, but
+        # did not make it and does not own the room.
+        assert await can_remove(by_creator, world.stranger, False) is False
+        with pytest.raises(HTTPException) as refused:
+            await _detach(
+                session, svc, world.public, by_creator.id, world.stranger, False
+            )
+        assert refused.value.status_code == 403
+
+        assert await can_remove(by_creator, world.member, False) is True
+        await _detach(session, svc, world.public, by_creator.id, world.member, False)
+        assert await can_remove(by_owner, world.owner, False) is True
+        await _detach(session, svc, world.public, by_owner.id, world.owner, False)
+        assert await can_remove(by_admin, world.stranger, True) is True
+        await _detach(session, svc, world.public, by_admin.id, world.stranger, True)
+
+
+async def test_those_taking_part_in_a_private_room_read_its_resources(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _svc(session_factory)
+    async with session_factory() as session:
+        world = await _world(session)
+        doc = await _shared_document(session, svc, world)
+        await session.commit()
+
+        async def listed(room: Room, user: User) -> list[str]:
+            docs = await list_room_documents(
+                room.id,
                 session,
                 svc,
                 _USER_STORE,
@@ -121,8 +339,9 @@ async def test_rooms_and_room_documents_say_what_the_caller_may_change(
                 user,
                 False,
             )
-            return detail.can_remove
+            return [d.id for d in docs]
 
-        assert await can_remove(public, member) is True
-        assert await can_remove(read_only, member) is False
-        assert await can_remove(read_only, owner) is True
+        assert await listed(world.theirs, world.member) == [doc.id]
+        with pytest.raises(HTTPException) as refused:
+            await listed(world.hidden, world.member)
+        assert refused.value.status_code == 403

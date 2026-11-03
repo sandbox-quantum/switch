@@ -1,10 +1,8 @@
 import AddIcon from "@mui/icons-material/Add";
-import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
   Button,
   CircularProgress,
-  IconButton,
   Stack,
   Typography,
 } from "@mui/material";
@@ -117,15 +115,15 @@ export default function ResourceAttachmentsSection({ kind, resourceId }: Props) 
               <Typography variant="body2" sx={{ flexGrow: 1 }}>
                 {r.room_name}
               </Typography>
-              {r.can_write && (
-                <IconButton
+              {r.can_unlink && (
+                <Button
                   size="small"
                   onClick={() => handleDetach(r.room_id)}
                   disabled={busy}
-                  aria-label={`Detach from ${r.room_name}`}
+                  aria-label={`Unlink from ${r.room_name}`}
                 >
-                  <DeleteOutline fontSize="small" />
-                </IconButton>
+                  Unlink
+                </Button>
               )}
             </Stack>
           ))}

@@ -10,7 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_templates import plan_template
-from switch_core.authz import Action, Principal, can, require
+from switch_core.authz import (
+    Action,
+    Principal,
+    can,
+    can_unlink_from_room,
+    require,
+)
 from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import (
@@ -211,6 +217,9 @@ async def _build_room_detail(
 
     roles = await _list_room_role_details(session, room.id, protocol)
     join_event_listeners = await room_store.get_join_event_listeners(session, room.id)
+    takes_part = principal.id is not None and bool(
+        await room_store.involved_room_ids(session, principal.id, [room.id])
+    )
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
     external_channel_url = await _external_channel_url(room)
@@ -255,6 +264,7 @@ async def _build_room_detail(
         ),
         can_write=can(principal, "write", room),
         can_manage=can(principal, "delete", room),
+        can_unlink=can_unlink_from_room(principal, takes_part=takes_part),
     )
 
 
@@ -399,6 +409,9 @@ async def list_rooms(
                 is_console_chat="chat_operation_id" in (room.metadata_ or {}),
                 can_write=can(principal, "write", room),
                 can_manage=can(principal, "delete", room),
+                can_unlink=can_unlink_from_room(
+                    principal, takes_part=room.id in involved
+                ),
             )
         )
 
