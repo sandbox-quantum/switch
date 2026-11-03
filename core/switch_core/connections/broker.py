@@ -916,16 +916,14 @@ class ServiceBroker:
                 retryable=False,
             )
         if connection.status != "active":
+            if connection.error_code != TOKEN_REFUSED:
+                raise _reconnect(name, _lapsed(name, connection), "agent")
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
                 f"{_pasted_refused(name, connection.method)} The agent's owner "
                 f"must paste {_paste_again(connection.method)} in Switch Console, "
-                "under Connectors."
-                if connection.error_code == TOKEN_REFUSED
-                else f"The agent's owner must reconnect {name}: its sign-in was "
-                "revoked or has lapsed. Reconnect it in Switch Console, under "
-                "Connectors.",
+                "under Connectors.",
                 retryable=False,
             )
         if _scopes_changed(connection, entry):
