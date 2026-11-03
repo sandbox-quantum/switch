@@ -391,7 +391,15 @@ describe.skipIf(process.platform === 'win32')('planServiceReleases', () => {
 });
 
 describe('command output', () => {
+  const wasTTY = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+  afterEach(() => {
+    if (wasTTY) Object.defineProperty(process.stdout, 'isTTY', wasTTY);
+    else delete (process.stdout as { isTTY?: boolean }).isTTY;
+  });
+
+  /** Stdout as a pipe sees it, whatever runs the tests. */
   function captureStdout(): string[] {
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
     const out: string[] = [];
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
       out.push(String(chunk));
