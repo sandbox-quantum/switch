@@ -29,6 +29,7 @@ import {
   type WorkspaceServiceChange,
   connectionAgentsSchema,
   connectionCatalogSchema,
+  knownPasteMethods,
   knownUnavailableCode,
   serviceConnectionsSchema,
   workspaceServiceChangeSchema,
@@ -62,9 +63,12 @@ import {
   SERVICE_CALLBACK_PATH,
   type ServiceFlowStart,
   type ServiceKeyConnected,
+  type ServicePaste,
+  type ServicePasteConnected,
   serviceFlowSchema,
   serviceFlowStartSchema,
   serviceKeyConnectedSchema,
+  servicePasteConnectedSchema,
 } from '@shared/core/switch-servers/service-connection';
 import {
   type ServiceGrants,
@@ -3795,7 +3799,12 @@ export async function getConnectionCatalog(
     loopback_ports: entry.loopback_ports,
     key: entry.key,
     sign_in_choices: entry.sign_in_choices,
+    paste: knownPasteMethods(entry.paste),
     external_identity: entry.external_identity,
+    method: entry.method,
+    access_note: entry.access_note,
+    reconnect_code: entry.reconnect_code,
+    reconnect_reason: entry.reconnect_reason,
     choices: entry.choices,
     consent: entry.consent,
     workspace_enabled: entry.workspace_enabled,
@@ -3821,7 +3830,12 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         loopback_ports: null,
         key: null,
         sign_in_choices: null,
+        paste: [],
         external_identity: null,
+        method: null,
+        access_note: null,
+        reconnect_code: null,
+        reconnect_reason: null,
         choices: null,
         consent: null,
         workspace_enabled: null,
@@ -4280,6 +4294,25 @@ export async function connectServiceWithKey(
     { authenticated: true, method: 'PUT', body: { fields } }
   );
   return serviceKeyConnectedSchema.parse(await response.json());
+}
+/**
+ * Connect `service`, which people sign in to, with a credential pasted in
+ * place of the sign-in (a token, or keys, as its `paste` offers) at what was
+ * picked for its choices (a site): Switch checks it at the service before
+ * keeping it, and never sends it back. A refusal is thrown as a key's is, its
+ * `detail` written for the person.
+ */
+export async function connectServiceWithPaste(
+  server: SwitchServer,
+  service: string,
+  paste: ServicePaste
+): Promise<ServicePasteConnected> {
+  const response = await gatewayFetch(
+    server,
+    `/service-connections/${encodeURIComponent(service)}/paste`,
+    { authenticated: true, method: 'PUT', body: paste }
+  );
+  return servicePasteConnectedSchema.parse(await response.json());
 }
 /** Disconnect `service`: its grants go with it, and what was issued is revoked. */
 export async function disconnectService(server: SwitchServer, service: string) {
