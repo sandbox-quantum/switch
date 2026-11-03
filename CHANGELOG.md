@@ -303,6 +303,15 @@ version of their own to them without also giving them a release of their own.
   of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
+- **Any chat app can be connected through a webhook.** A new messaging
+  platform, Custom app (webhook), is for a chat Switch has no adapter for. The
+  app posts JSON events to the connection's own address with a bearer token,
+  and Switch posts room messages, edits, deletes, typing and files to the
+  app's URL, signed with the connection's secret. Connecting sends the app a
+  signed ping, so a rejected signature or an unreachable URL is reported
+  straight away. The payloads are versioned and published in
+  `docs/messaging-platforms/webhook.schema.json`, and
+  `examples/webhook-chat` is a one-file app that shows the round trip.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
