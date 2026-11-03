@@ -100,7 +100,7 @@ class ManagementAuthenticator:
         """The token's signature and expiry check out, with no database read
         (a locked-out address is served only for such a token)."""
         try:
-            tokens.verify_access_token(token, secret=self._token_secret)
+            self._verified.verify(token)
         except (tokens.AccessTokenExpired, tokens.AccessTokenInvalid):
             return False
         return True

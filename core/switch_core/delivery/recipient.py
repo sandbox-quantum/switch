@@ -882,15 +882,16 @@ class AgentRecipient:
                     unavailable = await self._reply_when_unavailable_here(
                         session, agent, meta, self._sender_handle(event)
                     )
-                elif process_hosted_v2() and self._connections.controllers.is_bound(
-                    self.agent.id
-                ):
-                    # Connected is not the same as able to answer: the
-                    # controller may have given up on this agent's host.
+            elif process_hosted_v2() and self._connections.controllers.is_bound(
+                self.agent.id
+            ):
+                # Connected is not the same as able to answer: the
+                # controller may have given up on this agent's host.
+                async with self.session_factory() as session:
                     unavailable = await self._controller_host_failed_reply(
                         session, agent, meta
                     )
-                    agent_live = unavailable is None
+                agent_live = unavailable is None
 
         if addressed:
             self._report_addressed(
