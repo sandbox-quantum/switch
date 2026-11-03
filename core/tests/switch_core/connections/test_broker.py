@@ -1485,6 +1485,60 @@ class TestPassThrough:
         assert "Example could not revoke the sign-in." in warning
         assert "Example access already given to agents cannot be taken back" in warning
 
+    async def test_a_reconnect_revoked_where_that_ends_its_tokens_names_none(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=REVOKES_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        warning = await _reconnect(pt, session_factory, account_id="acct-2")
+        assert len(pt.vendor.connections_revoked) == 1
+        assert warning is None
+
+    async def test_a_reconnect_whose_revocation_failed_says_until_when(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=REVOKES_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+
+        async def refuses(secret: ConnectionSecret, method: str) -> None:
+            raise ServiceAdapterError("Example refused to revoke the sign-in.")
+
+        monkeypatch.setattr(pt.vendor, "revoke_connection", refuses)
+        warning = await _reconnect(pt, session_factory, account_id="acct-2")
+        assert warning is not None
+        assert "Example could not revoke the old sign-in." in warning
+        assert "Example access already given to agents cannot be taken back" in warning
+
+
+async def _reconnect(
+    pt: PassThrough, session_factory, *, account_id: str
+) -> str | None:
+    """Connect `example` again for Ada, with a new sign-in to `account_id`."""
+    async with session_factory() as session:
+        return await pt.broker.connect(
+            session,
+            user_id=pt.world.owner.id,
+            service="example",
+            consent="write",
+            granted_scopes=["read:items", "write:items"],
+            account_id=account_id,
+            external_identity="ada@example.test",
+            secret=ConnectionSecret(
+                {
+                    "access_token": "owner_access_new",
+                    "expires_at": time.time() + 50 * 60,
+                    "refresh_token": "owner_refresh_new",
+                }
+            ),
+            oauth_client_id=None,
+            method="oauth",
+            choices={},
+        )
+
 
 def _workspace_refusal(name: str) -> str:
     return (
