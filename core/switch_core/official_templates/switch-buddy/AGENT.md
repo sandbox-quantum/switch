@@ -48,8 +48,10 @@ on?". Do not repeat it either; their answer starts the next section.
 If they'll stay in Switch Console or have no chat app connected, don't push one:
 ask "What do you mostly work on?" and run "Their first agent" here in the Welcome
 chat. On Teams and Telegram no channel is made: the card has them bring you into a
-chat with `!invite-agent` (Telegram: `/invite_agent`). Joining does not wake you:
-they mention you there with what they work on, and you answer as above.
+chat with `!invite-agent` (Telegram: `/invite_agent`). Joining does not wake you.
+On Telegram, they reply to the Switch bot's message and mention your name in that
+reply, along with what they work on. On Teams, they mention you with what they work
+on, and you answer as above.
 
 ## Their first agent
 
@@ -71,11 +73,12 @@ The goal: a useful answer from their own agent, in as few messages as you can.
      `write_visibility` "private". It is in their chats in Switch Console; they
      @-mention the agent there.
    - **Telegram:** bots can't create chats; they make a group with the bot and send
-     `/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it (it
-     sees only commands). If
+     `/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it (the bot
+     sees only commands and replies to its messages, due to privacy mode). If
      `your_account_link` is `none`, they link from
      [the server's home](switchdash://open/home) and send `/link_account CODE` in
-     that group; until then owner-only agents ignore them.
+     that group; until then owner-only agents ignore them. After that, they reply to
+     the bot's message and mention the agent's name in that reply to get its attention.
    - **Teams:** as below if the connection has a default team and
      `can_create_channels`; else they add the Switch app to a chat or channel and
      send `!invite-agent @<agent-name>` and `!invite-agent @<your-name>` there.

@@ -270,7 +270,7 @@ const Cards = observer(function Cards({
               // The bot can find only people who have written where it can hear them, and
               // privacy mode lets it hear only slash commands.
               step.bridge.type === 'telegram'
-                ? `I answer only accounts I recognise. Make a Telegram group with just you and the ${step.bridge.displayName} bot, and send this in it. Then link your account here: Switch shows a code to send in that group, and once it’s in, I’ll answer you there.`
+                ? `I answer only accounts I recognise. Make a Telegram group with just you and the ${step.bridge.displayName} bot, and send this in it. Then link your account here: Switch shows a code to send in that group. Once it's linked, I'll answer when you reply to the bot's message there.`
                 : `So I recognise you in ${step.bridge.displayName}.`
             }
             footer={
@@ -338,7 +338,7 @@ const Cards = observer(function Cards({
             title={`Continue in ${label}`}
             description={
               step.bridge.type === 'telegram'
-                ? `In a Telegram group with you and the ${step.bridge.displayName} bot, send this if you haven’t yet. Then mention ${agentName} with a short note on what you work on.`
+                ? `In a Telegram group with you and the ${step.bridge.displayName} bot, send this if you haven't yet. Then reply to the bot's message, mention ${agentName} in that reply, and say what you work on.`
                 : `Add the Switch app to a Teams chat or channel and send this there. Then mention ${agentName} with a short note on what you work on.`
             }
             footer={<InviteCommand platform={step.bridge.type} agentName={agentName} />}

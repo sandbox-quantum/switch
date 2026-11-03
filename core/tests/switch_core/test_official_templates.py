@@ -281,3 +281,13 @@ def test_switch_buddy_has_itself_invited_to_a_chat_the_person_makes():
     text = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
     assert "`/invite_agent @<your-name>`" in text
     assert "`!invite-agent @<your-name>`" in text
+
+
+def test_switch_buddy_tells_telegram_users_to_reply_to_the_bot():
+    """Telegram privacy mode means the bot sees only commands and replies to
+    its messages, so buddy must tell people to reply when mentioning agents."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert (
+        "reply to the bot's message" in text
+        or "reply to the Switch bot's message" in text
+    )

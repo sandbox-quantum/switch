@@ -129,12 +129,21 @@ describe('the buddy setup cards', () => {
     expect(el.textContent).not.toContain('Couldn’t check');
   });
 
-  it('asks them to mention buddy after inviting it, since joining does not wake it', async () => {
+  it('asks them to mention buddy after inviting it on Teams', async () => {
     listBridges.mockResolvedValue([{ ...slack, type: 'teams' }]);
     const el = await render();
 
     expect(el.textContent).toContain('!invite-agent @buddy');
     expect(el.textContent).toContain('Then mention buddy with a short note on what you work on.');
-    expect(el.textContent).not.toContain('I’ll answer');
+    expect(el.textContent).not.toContain("I'll answer");
+  });
+
+  it('asks them to reply to the bot on Telegram', async () => {
+    listBridges.mockResolvedValue([{ ...slack, type: 'telegram' }]);
+    const el = await render();
+
+    expect(el.textContent).toContain('/invite_agent @buddy');
+    expect(el.textContent).toContain("reply to the bot's message");
+    expect(el.textContent).toContain('mention buddy in that reply');
   });
 });
