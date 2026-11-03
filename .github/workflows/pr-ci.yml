@@ -349,8 +349,13 @@ jobs:
 
       - name: Real initdb, spawned as Console spawns it
         if: ${{ !cancelled() }}
-        shell: pwsh
-        run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/managed-switch-server/native/postgres-cluster.windows
+        working-directory: console/apps/switch-console-desktop
+        # A desktop session names the search path `Path`; the runner names it `PATH`.
+        run: >-
+          node -e "const {spawnSync}=require('node:child_process');
+          const e={...process.env}; const v=e.PATH; delete e.PATH; e.Path=v;
+          const r=spawnSync('pnpm exec vitest run --project node src/main/core/managed-switch-server/native/postgres-cluster.windows',
+          {env:e, stdio:'inherit', shell:true}); process.exit(r.status ?? 1)"
 
   artifacts:
     name: Artifact registry
