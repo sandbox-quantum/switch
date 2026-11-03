@@ -1,5 +1,5 @@
 {
- "source": "upstream 473c2e64b: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
+ "source": "upstream main 0f7f96732: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
  "gateway": [
   [
    "DELETE",
@@ -36,6 +36,10 @@
   [
    "DELETE",
    "/collaborations/{bridge_id}/identities/{external_user_row_id}"
+  ],
+  [
+   "DELETE",
+   "/collaborations/{bridge_id}/identities/{external_user_row_id}/request"
   ],
   [
    "DELETE",
@@ -195,6 +199,10 @@
   ],
   [
    "GET",
+   "/auth/me/identities/pending"
+  ],
+  [
+   "GET",
    "/auth/oidc/callback"
   ],
   [
@@ -264,6 +272,10 @@
   [
    "GET",
    "/collaborations/{bridge_id}/directory"
+  ],
+  [
+   "GET",
+   "/collaborations/{bridge_id}/identities/unconfirmed"
   ],
   [
    "GET",
@@ -716,6 +728,18 @@
   [
    "POST",
    "/collaborations/{bridge_id}/identities"
+  ],
+  [
+   "POST",
+   "/collaborations/{bridge_id}/identities/require-confirmation"
+  ],
+  [
+   "POST",
+   "/collaborations/{bridge_id}/identities/{external_user_row_id}/code"
+  ],
+  [
+   "POST",
+   "/collaborations/{bridge_id}/identities/{external_user_row_id}/verify-session"
   ],
   [
    "POST",
