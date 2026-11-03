@@ -1,0 +1,55 @@
+slug: supabase
+name: Supabase
+category: Database
+description: Inspect Supabase projects, database schema and logs, as you. Read-only by default.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Supabase's OAuth metadata offers only confidential clients
+    # (token_endpoint_auth_methods has no "none"), so Switch cannot use a
+    # public dynamically registered client here: each server's operator
+    # registers a Supabase OAuth app and saves it under Connectors in the
+    # dashboard, or names its settings in SUPABASE_CLIENT_CONFIG_PATH.
+    registration: static
+    client_settings: SUPABASE
+    redirect: [core]
+    # Supabase cannot confirm the redirect URI before the first sign-in.
+    unchecked: >-
+      Switch can't check the redirect URI against Supabase. Connect once to
+      confirm it is set on your Supabase OAuth app.
+    # Supabase's OAuth metadata names no revocation endpoint, so people remove
+    # the authorized app in Supabase themselves.
+    revocation_discovered: false
+    remove_access: >-
+      To cut an agent's access, remove the authorized OAuth app under your
+      Supabase account's Apps/Integrations settings; a token already handed out
+      stays valid until it expires.
+  # Supabase's management API names the connected account.
+  identity:
+    url: https://api.supabase.com/v1/profile
+    account_id: id
+    label: primary_email
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # Supabase's hosted MCP server, pinned to read-only. Some tools can change
+    # databases, so this entry keeps the connection read-only; scope it to one
+    # project by connecting with ?project_ref=<ref> on the Supabase side.
+    - name: supabase
+      url: "https://mcp.supabase.com/mcp?read_only=true"
+access:
+  # Supabase exposes read and write scopes. This entry stays read-only, so it
+  # asks only for the read scopes; database writes are deliberately not
+  # requested.
+  read:
+    scopes:
+      - organizations:read
+      - projects:read
+      - database:read
+      - analytics:read
+      - storage:read
+      - edge_functions:read
+tools: { mode: pass_through }
