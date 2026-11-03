@@ -69,6 +69,7 @@ def test_loads_the_ways_to_paste_beside_the_sign_in(catalog_copy):
     }
     assert definition.auth.paste_method("keys") == keys
     assert definition.auth.paste_method("oauth") is None
+    assert definition.methods() == ["oauth", "token", "keys"]
     # The cap on the sign-in's token stands beside them.
     assert definition.token is not None and definition.token.max_lifetime == 3600
 

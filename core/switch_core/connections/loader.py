@@ -980,9 +980,12 @@ class ConnectionDefinition(BaseModel):
 
     def methods(self) -> list[ConnectionMethod]:
         """The ways a person connects the service: pasted keys for an api_key
-        entry, a sign-in for any other. A connection made another way, which
-        the entry offered once, must be made again."""
-        return ["keys"] if self.adapter == "api_key" else ["oauth"]
+        entry; a sign-in, and each credential the entry takes pasted in its
+        place (`auth.paste`), for any other. A connection made another way,
+        which the entry offered once, must be made again."""
+        if self.adapter == "api_key":
+            return ["keys"]
+        return ["oauth", *(method.name for method in self.auth.paste)]
 
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while
