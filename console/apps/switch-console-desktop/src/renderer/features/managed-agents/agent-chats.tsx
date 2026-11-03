@@ -339,6 +339,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
                     serverId={serverId}
                     workspaceId={workspaceId}
                     agentId={agentId}
+                    agentName={agent.name}
                     roomId={roomId}
                   />
                 ) : null
