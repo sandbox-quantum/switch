@@ -57,10 +57,14 @@ describe('rows and table', () => {
 
   it('pads every column but the last', () => {
     expect(
-      table(PLAIN, ['NAME', 'STATE'], [
-        ['alice', 'running'],
-        ['bob-the-builder', 'failed: a long detail that is not padded'],
-      ])
+      table(
+        PLAIN,
+        ['NAME', 'STATE'],
+        [
+          ['alice', 'running'],
+          ['bob-the-builder', 'failed: a long detail that is not padded'],
+        ]
+      )
     ).toEqual([
       '  NAME             STATE',
       '  alice            running',

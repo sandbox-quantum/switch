@@ -110,12 +110,7 @@ import {
   ProviderStatuses,
   toolStatuses,
 } from './status';
-import {
-  type AgentStatusView,
-  formatStatus,
-  type StatusView,
-  statusJson,
-} from './status-output';
+import { type AgentStatusView, formatStatus, type StatusView, statusJson } from './status-output';
 import { ControllerStore } from './store';
 import { SystemdRuntime, systemctl } from './systemd-runtime';
 import { installPrefix, isNewer, latestRelease, releasesRepository } from './update';

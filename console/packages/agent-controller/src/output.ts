@@ -66,18 +66,15 @@ export function rows(entries: [string, string][], indent = '  '): string[] {
  * A table with a header row. Every column but the last is padded to its widest
  * cell, so a long last column (a detail) does not push the others around.
  */
-export function table(
-  style: Style,
-  headers: string[],
-  body: string[][],
-  indent = '  '
-): string[] {
+export function table(style: Style, headers: string[], body: string[][], indent = '  '): string[] {
   const widths = headers.map((header, column) =>
     Math.max(header.length, ...body.map((cells) => (cells[column] ?? '').length))
   );
   const line = (cells: string[]) =>
     `${indent}${cells
-      .map((cell, column) => (column === cells.length - 1 ? cell : cell.padEnd(widths[column] ?? 0)))
+      .map((cell, column) =>
+        column === cells.length - 1 ? cell : cell.padEnd(widths[column] ?? 0)
+      )
       .join('  ')}`.trimEnd();
   return [heading(style, line(headers)), ...body.map(line)];
 }

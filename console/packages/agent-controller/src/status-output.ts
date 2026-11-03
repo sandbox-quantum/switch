@@ -107,7 +107,10 @@ export function formatStatus(view: StatusView, style: Style = PLAIN): string {
   const count = assignment.agents.length;
   out.push(
     '',
-    heading(style, `Agents (revision ${assignment.revision}, ${count} agent${count === 1 ? '' : 's'})`)
+    heading(
+      style,
+      `Agents (revision ${assignment.revision}, ${count} agent${count === 1 ? '' : 's'})`
+    )
   );
   if (!count) {
     out.push('  None assigned to this machine.');

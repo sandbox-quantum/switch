@@ -113,7 +113,11 @@ describe('formatStatus', () => {
         assignment: {
           state: 'pulled',
           revision: 1,
-          agents: [agent({ unreadable: 'switch-agent@1.service is active; the rest needs the agents group' })],
+          agents: [
+            agent({
+              unreadable: 'switch-agent@1.service is active; the rest needs the agents group',
+            }),
+          ],
         },
       })
     );
