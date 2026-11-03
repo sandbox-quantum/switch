@@ -373,6 +373,11 @@ the agent the other wrote. A changed display name reaches the running agent's
 checks at once (`update_bridge_identities` refreshes its actor), as a rename
 already did. Names go out as UTF-8 header bytes, without control characters.
 
+**Known limitation: renames.** Switch Trust keeps the name an agent was
+first listed with, so a later display-name change does not show there
+yet. Switch sends the new name in every snapshot and check; it is
+Switch Trust's storage that does not overwrite an agent's name.
+
 **Instructions.** `trust_settings.share_agent_instructions`, off by default,
 set through `PUT /trust-settings` and the Console's Switch Trust settings. A
 deployment that configured Switch Trust for message checks did not agree to
