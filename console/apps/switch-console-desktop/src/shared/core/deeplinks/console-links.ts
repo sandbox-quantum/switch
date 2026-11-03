@@ -59,7 +59,7 @@ export const CONSOLE_PAGES = {
   invite: { description: 'Invite people to the workspace.' },
   admin: {
     description:
-      "Admin, for the workspace's admins: which connectors the workspace offers, and the apps they sign in through.",
+      "Admin, for the workspace's admins: which connectors the workspace offers, and, on a Switch with no web gateway, the apps they sign in through.",
     tabs: ['connectors', 'apps'],
   },
   settings: {

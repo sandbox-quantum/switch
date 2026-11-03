@@ -217,7 +217,7 @@ per place, at the moment it is needed; not a list of every page.
 | Connect a messaging app | `switchdash://open/messaging-apps/connect` |
 | Connectors: services such as GitHub | `switchdash://open/connections` |
 | Invite people to the workspace | `switchdash://open/invite` |
-| Admin, for workspace admins and whoever runs the server: which connectors the workspace offers (`tab=connectors`), the apps they sign in through (`tab=apps`, for whoever runs the server), and the server's own Status page | `switchdash://open/admin` |
+| Admin, for workspace admins: which connectors the workspace offers (`tab=connectors`), and the apps they sign in through (`tab=apps`, only for whoever runs a Switch on their own computer without Docker; elsewhere they are in the web gateway). A server's status is in settings (`tab=status`) | `switchdash://open/admin` |
 | Switch Console's settings (`tab=preferences`, `messaging-apps` to link their own accounts, `clis-models` for agent providers, `api-keys`, `devices` for their machines and SSH hosts, `managed-agents`, `status` or `account`) | `switchdash://open/settings` |
 
 - Ids come from your tools: an agent's id from `list_managed_agents` or
@@ -354,8 +354,9 @@ Be clear about what that means:
 
 **Connectors on a server Switch Console runs** — the server's address is plain
 `http://127.0.0.1`. Atlassian and Google sign-ins work there with an up-to-date
-Switch Console, once the server's admin has set up the vendor app ("Set up" on
-its card in [Connector apps](switchdash://open/admin?tab=apps)). GitHub does not: GitHub Apps require an https address. For GitHub,
+Switch Console, once the server's admin has set up the vendor app: on the web
+gateway's Connectors page, or, for a Switch running without Docker, "Set up" on
+its card in [Connector apps](switchdash://open/admin?tab=apps). GitHub does not: GitHub Apps require an https address. For GitHub,
 the computer's own access above is the way.
 
 **Which server they're on** changes the advice:
