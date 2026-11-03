@@ -57,6 +57,18 @@ Every request the harness makes carries `X-Request-Id: load-<run_id>-<n>`, so a 
 
 RDS numbers come from CloudWatch at one-minute resolution and need `AWS_PROFILE` (default `qsg-nonprod-write`) with an SSO session. CloudWatch lands its data a minute or two late, so the last minute of a run can read low.
 
+## Every night on staging
+
+`nightly.py` runs the harness from pods inside the cluster, as three CronJobs of napoleon's `switch-loadtest` chart (napoleon's `deploy/gitops/nonprod/staging/README.md` has the schedule and sizes):
+
+- `up` (01:45 UTC) takes staging's node group to its night size, starts the harness's node and scales switch-core to 12 pods.
+- `run` (02:00) starts ten workers of 1,000 agents each behind 50 controllers, all on the controller socket. Each worker reuses the batch of agents and rooms kept from earlier nights (`--keep`/`--reuse`, ids in S3), and the run makes them again when they are missing. The workers step their rates together: four realistic steps, one message per agent every 30, 10, 5 and 3 minutes for 10 minutes each, then a ramp from 150 messages a second, a minute a step, until a step breaks. It adds the workers up by window (`combine`), stores the night in S3, sends the numbers to Datadog (`switch.loadtest.*`) and posts the report to a webhook, then puts staging back to its day size.
+- `down` (05:00) puts the day sizes back whatever happened, and reports a night that left no result.
+
+Inside the cluster the harness runs with `--kube-context ''` (kubectl uses the pod's service account) and reaches switch-core through its Service, which `--api-url` accepts as the namespace's own.
+
+Everything `nightly.py` needs comes from `LOADTEST_*` variables, which the chart sets; `Config.from_env` lists them. It is the only part of the harness that changes anything: switch-core's replica count and two node groups' sizes, all named in that configuration.
+
 ## Cleaning up
 
 Teardown runs at the end of every run, and also after Ctrl-C or a failure: agents deleted, their API keys deleted, rooms archived, and the run's registration key deleted. A second Ctrl-C abandons the teardown. If that happens, or the process is killed, remove what is left by name:
