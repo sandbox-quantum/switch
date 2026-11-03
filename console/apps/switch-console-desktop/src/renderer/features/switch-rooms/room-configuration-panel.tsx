@@ -63,10 +63,6 @@ const ChatConfiguration = observer(function ChatConfiguration({
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex w-full max-w-[880px] flex-col gap-8 px-10 py-8">
-        <div className="flex min-w-0 flex-col gap-1">
-          <h1 className="truncate text-2xl font-semibold text-foreground">{chat.name}</h1>
-          <p className="text-sm text-foreground-muted">Group chat in Switch Console</p>
-        </div>
         {workspaceId !== null && detail.data && (
           <GeneralSection key={chat.roomId} workspaceId={workspaceId} room={detail.data} />
         )}

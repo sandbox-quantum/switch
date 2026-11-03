@@ -126,7 +126,7 @@ describe('adding to a group chat', () => {
 describe('a group chat’s configuration', () => {
   it('leaves who is in the chat to the participant column, and keeps Leave room', () => {
     const html = render(false, 'configuration');
-    expect(html).toContain('Planning');
+    expect(html).not.toContain('Group chat in Switch Console');
     expect(html).not.toContain('id="chat-add-participant"');
     // Leaving needs no manager rights.
     expect(html).toContain('Leave room…');
