@@ -100,7 +100,7 @@ class UsageCounts:
     # wire: without it, a partial pass is every count dropping at once with
     # nothing to attribute it to.
     tenant_failed_count: int = 0
-    # Wall time to collect the whole pass. Roughly fifteen queries per tenant
+    # Wall time to collect the whole pass. Roughly twenty queries per tenant
     # against the database that is also serving rooms, so what it costs at
     # scale is a real question — and a background task is invisible to the
     # HTTP request histogram that times everything else.

@@ -356,7 +356,7 @@ never invisible.
 |---|---|---|
 | `tenant_count` | number | tenants this pass actually counted — see `tenant_failed_count` |
 | `tenant_failed_count` | number | tenants whose queries raised and were stepped over. One tenant's failure no longer takes the whole pass down, so the pair is what makes a partial pass self-describing: without it, every count dropping at once is indistinguishable from a deployment losing its users |
-| `duration_ms` | number | wall time to collect the pass, on a monotonic clock. Roughly fifteen queries per tenant against the database that is also serving rooms, and a background task is invisible to `switch.http.request.duration` — so this is the only place "what does the snapshot cost at scale" can be answered from |
+| `duration_ms` | number | wall time to collect the pass, on a monotonic clock. Roughly twenty queries per tenant against the database that is also serving rooms, and a background task is invisible to `switch.http.request.duration` — so this is the only place "what does the snapshot cost at scale" can be answered from |
 | `user_count` | number | user accounts that exist |
 | `user_internal_count` | number | of those, accounts on the company's own email domains — see "Internal usage" |
 | `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account. Superseded by `account_active_1d`, the same figure; sent for one more stable release |
@@ -561,9 +561,9 @@ deployments installed after this ships — see
 | `first_agent_session` | a host reports the first coding-agent session (`session_started`): an agent doing work | `known_agent_type`, `start_source` |
 
 `first_agent_connected` and `first_agent_session` were added after deployments
-were already running. One that had already passed them claims them at boot
-without reporting, so it is never reported as doing for the first time what it
-did long ago: `first_agent_connected` once `first_session_started` was claimed,
+were already running. One that had already passed them claims them without
+reporting, once, at the first boot of a version that has them, so it is never
+reported as doing for the first time what it did long ago: `first_agent_connected` once `first_session_started` was claimed,
 and `first_agent_session` once `first_room_active` was claimed or a session was
 reported in the last 7 days. A deployment whose only sessions were started
 from Switch Console, more than a week before upgrading, with no person ever
@@ -1210,7 +1210,7 @@ one event watched arriving downstream, which no local check can substitute for.
 
 ## Open questions
 
-- **Query cost at scale.** The snapshot is roughly fifteen queries per tenant,
+- **Query cost at scale.** The snapshot is roughly twenty queries per tenant,
   including two seven-day `DISTINCT` scans over `messages` and a window function
   over the message table. Nobody has run it against a production-sized dataset.
   That is the open question most worth answering before this is switched on for

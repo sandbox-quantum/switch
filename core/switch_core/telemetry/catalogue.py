@@ -295,7 +295,7 @@ _SINCE_INSTALL: Mapping[str, PropertyType] = {"seconds_since_install": NUMBER}
 CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # ── The daily snapshot ───────────────────────────────────────────────────
     # Counted locally, where the ids are known; only totals are reported.
-    # `duration_ms` is how long the pass took to collect. It is roughly fifteen
+    # `duration_ms` is how long the pass took to collect. It is roughly twenty
     # queries per tenant, on a schedule, against the same database serving
     # rooms — "what does this cost at scale" is an open question in
     # `docs/old/telemetry-events.md`, and this is the only place it can be

@@ -663,7 +663,14 @@ async function runCommand(args: string[]): Promise<number> {
         sessionStarted: (started) => {
           if (!process.send || !process.connected) return;
           const notice: SessionStartedNotice = { kind: SESSION_STARTED_KIND, ...started };
-          process.send(notice);
+          // With a callback, a channel that closed meanwhile is reported here
+          // rather than as an `error` event on the process, which nothing handles.
+          process.send(notice, undefined, undefined, (error) => {
+            if (error)
+              log.warn('Could not tell Switch Console a session started', {
+                error: errorMessage(error),
+              });
+          });
         },
         tools: () => toolStatuses(process.env.PATH, process.platform, cliToolsBase()),
         fetch,

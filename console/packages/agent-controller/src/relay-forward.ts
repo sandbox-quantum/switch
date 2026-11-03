@@ -197,7 +197,15 @@ export class UpstreamForwarder implements Forwarder {
       return;
     }
     if (startSource === null) return;
-    this.deps.sessionStarted({ agentId: target.agentId, sessionId, startSource });
+    try {
+      this.deps.sessionStarted({ agentId: target.agentId, sessionId, startSource });
+    } catch (error) {
+      // Passing the start on is a courtesy to whoever runs this controller;
+      // the report itself reached Switch, and its answer still goes back.
+      this.deps.log.warn('Could not pass on a session start', {
+        error: errorMessage(error),
+      });
+    }
   }
 
   /**

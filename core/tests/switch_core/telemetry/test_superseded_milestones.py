@@ -131,6 +131,22 @@ class TestSettling:
         ]
         assert await settle_superseded_milestones(session_factory) == []
 
+    async def test_evidence_written_after_the_first_settling_is_not_history(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A process booting while another takes the deployment's first
+        session must not read that session's claim as history and claim the
+        milestone before its report does."""
+        assert await settle_superseded_milestones(session_factory) == []
+        await claim_milestone(
+            session_factory, f"{SESSION_START_CLAIM_PREFIX}agent-1:session-1"
+        )
+
+        assert await settle_superseded_milestones(session_factory) == []
+        assert await milestone_claimed(session_factory, "first_agent_session") == (
+            "false"
+        )
+
     async def test_a_settled_milestone_is_never_reported(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

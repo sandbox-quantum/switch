@@ -33,6 +33,10 @@ SESSION_START_CLAIM_PREFIX = "session_started:"
 # names, or a prefix ending in `*`. `settle_superseded_milestones` claims them
 # without reporting, so a deployment that did this long ago is never reported
 # as doing it for the first time now.
+# Claimed beside each superseded milestone once it has been settled, so it is
+# settled only once (`settle_superseded_milestones`).
+SETTLED_PREFIX = "settled:"
+
 SUPERSEDED_MILESTONES: dict[str, tuple[str, ...]] = {
     # The same moment as `first_session_started`, under the name that says it
     # is a connection.
@@ -173,17 +177,34 @@ async def settle_superseded_milestones(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> list[str]:
     """Claim, without reporting, each `SUPERSEDED_MILESTONES` entry this
-    deployment has already passed. Returns the names it claimed.
+    deployment had already passed when they were added. Returns the names it
+    claimed.
 
-    Run once at boot, before anything can report one of them: on a new
-    deployment there is no evidence yet, so each is reported normally the first
-    time it happens. A failure claims nothing and is logged, leaving the
-    milestone to be reported when it next happens — late rather than lost.
+    Once per deployment, at the first boot that has them, before anything can
+    report one: on a new deployment there is no evidence yet, so each is
+    reported normally the first time it happens. Only once, because evidence
+    written later is the milestone happening, not history: with several
+    processes, one booting while another takes the deployment's first session
+    would otherwise read that session's claim as history and claim the
+    milestone out from under its report. A failure claims nothing and is
+    logged, leaving the milestone to be reported when it next happens — late
+    rather than lost.
     """
     settled: list[str] = []
     try:
         async with session_factory() as session:
             for milestone, evidence in SUPERSEDED_MILESTONES.items():
+                marker = f"{SETTLED_PREFIX}{milestone}"
+                if (
+                    await session.scalar(
+                        pg_insert(TelemetryMilestone)
+                        .values(name=marker)
+                        .on_conflict_do_nothing(index_elements=["name"])
+                        .returning(TelemetryMilestone.name)
+                    )
+                    is None
+                ):
+                    continue
                 exact = [name for name in evidence if not name.endswith("*")]
                 prefixes = [name[:-1] for name in evidence if name.endswith("*")]
                 found = await session.scalar(
