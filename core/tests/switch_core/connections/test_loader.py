@@ -32,6 +32,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "stripe",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "stripe",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["stripe"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -173,6 +176,28 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_stripe_entry_offers_one_coarse_read_level():
+    definition = CATALOG["stripe"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.revocation_discovered) == (
+        "oauth",
+        "dynamic",
+        True,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("stripe", "https://mcp.stripe.com")
+    ]
+    assert definition.access is not None
+    # One coarse scope, offered at read level: payments are sensitive, so no
+    # write level is implied by the catalog.
+    assert definition.access.read.scopes == ["mcp"]
+    assert definition.access.write is None
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.stripe.com/v1/account"
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
