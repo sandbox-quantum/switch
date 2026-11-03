@@ -1,7 +1,7 @@
 # Providers
 
-The supported provider IDs are `claude`, `codex`, `opencode`, `antigravity`, and
-`cursor`. Every session runs through its adapter in `packages/agent-providers`.
+The supported provider IDs are `claude`, `codex`, `opencode`, `antigravity`,
+`cursor` and `pi`. Every session runs through its adapter in `packages/agent-providers`.
 Local and SSH locations use the same persistent SDK host.
 
 ## Source of truth

@@ -1,5 +1,3 @@
-import { PROVIDER_RUNTIMES } from '../providers/registry';
-
 export const AGENT_ENV_VARS = [
   'ALL_PROXY',
   'ANTHROPIC_API_KEY',
@@ -95,13 +93,14 @@ const WINDOWS_ENV = [
 
 /**
  * What a session host's `execution.inheritEnv` names: the provider variables
- * above, those each registered provider's runtime asks for, and the basics a
- * CLI needs to find itself, its home and its terminal. Matched without regard
- * to case on Windows, where `Path` and `PATH` are one variable.
- * Console and the headless agent controller both launch hosts with it.
+ * above and the basics a CLI needs to find itself, its home and its terminal.
+ * Matched without regard to case on Windows, where `Path` and `PATH` are one
+ * variable. Console and the headless agent controller both launch hosts with
+ * it. A provider runtime's own `inheritEnv` is not here: the session host adds
+ * it for that provider's sessions only (`prepareSharedConfig`).
  */
 export const EXECUTION_INHERIT_ENV: readonly string[] = [
-  ...new Set([...AGENT_ENV_VARS, ...PROVIDER_RUNTIMES.flatMap((runtime) => runtime.inheritEnv)]),
+  ...AGENT_ENV_VARS,
   'PATH',
   'HOME',
   'USER',

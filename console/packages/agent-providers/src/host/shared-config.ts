@@ -7,6 +7,7 @@ import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { CodexKeyringLogin, HttpMcpServerSpec, ProviderSessionStartInput } from '../adapter';
 import { codexSourceHome, prepareCodexSessionHome } from '../codex/home';
+import { providerRuntime } from '../providers/registry';
 import { codexKeyringReaderEnvironment } from './agent-env';
 import { agentHasOwnUser } from './host-permissions';
 import { type HostedCredential, hostedCredentialSchema } from './provider-login';
@@ -152,12 +153,12 @@ export async function prepareSharedConfig(
     const credentials = await readSharedCredentials(config);
     agentApiUrl = credentials.SWITCH_API_ENDPOINT;
     token = credentials.SWITCH_API_TOKEN;
-    const inherited = await executionEnvironment(
-      input.cwd,
-      input.env,
-      execution.shellSetup,
-      execution.inheritEnv
-    );
+    const inherited = await executionEnvironment(input.cwd, input.env, execution.shellSetup, [
+      ...execution.inheritEnv,
+      // The variables only this session's provider reads (its runtime's
+      // `inheritEnv`), which no other provider's session is given.
+      ...providerRuntime(config.start.provider).inheritEnv,
+    ]);
     input.env = { ...inherited, ...input.env };
     if (config.start.provider === 'codex') {
       const sourceHome = codexSourceHome(input.env);

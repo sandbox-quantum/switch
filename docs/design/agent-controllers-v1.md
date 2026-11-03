@@ -166,7 +166,7 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 - `POST   /gateway/management/agents` creates and places a new agent.
   - Body: `{name, description, display_name?, controller_id, desired_state, definition}`.
   - It registers the agent through `AgentCore.register_agent`, using the known-agent spec for the provider
-    (`claude→claude-code`, `codex`, `opencode`, `antigravity`, `cursor`), with `owner_only=True`. A managed agent always starts a session when addressed; there is no setting for it.
+    (`claude→claude-code`, `codex`, `opencode`, `antigravity`, `cursor`, `pi`), with `owner_only=True`. A managed agent always starts a session when addressed; there is no setting for it.
 - `PUT    /gateway/management/agents/{agent_id}`
   - Adopts an agent the user already owns, or replaces its definition and placement.
 - `PATCH  /gateway/management/agents/{agent_id}`
@@ -177,7 +177,7 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
 - `POST   /gateway/management/operations` and `GET /gateway/management/operations?controller_id=`.
 - `GET    /gateway/management/advanced-config` returns each provider's advanced-configuration
   schema, `{"providers": {"claude": {"fields": [...]}, "codex": ..., "opencode": ...,
-  "cursor": {"fields": []}, "antigravity": {"fields": []}}}` (see Advanced configuration below),
+  "cursor": {"fields": []}, "antigravity": {"fields": []}, "pi": {"fields": []}}}` (see Advanced configuration below),
   and `GET /gateway/management/providers` the providers in order, each with its label and the
   same fields. These two are served whether or not agent management is on: Switch Console
   builds the advanced-configuration form of the agents it runs itself from them too.
@@ -204,7 +204,7 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
 
 ### Definition (v1)
 ```json
-{"provider": "claude|codex|opencode|antigravity|cursor",
+{"provider": "claude|codex|opencode|antigravity|cursor|pi",
  "model": null, "advanced_config": {}, "instructions": "", "auto_mode": true,
  "auto_approve": false, "directory": null, "isolation": "shared"}
 ```

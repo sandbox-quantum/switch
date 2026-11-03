@@ -1571,6 +1571,31 @@ it('gives a session the credentials and binary of whoever runs its watcher now',
   });
 });
 
+it('gives a session the machine variables whoever runs its watcher passes now, no more and no fewer', () => {
+  const root = '/state';
+  const controller = watchable(root);
+  controller.execution!.inheritEnv = ['PATH', 'ANTHROPIC_API_KEY'];
+  const saved = watchable(root);
+  saved.session = {
+    ...saved.session,
+    agentId: controller.session.agentId,
+    sessionId: 'room-session',
+  };
+  saved.execution!.inheritEnv = ['PATH', 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY'];
+
+  const refreshed = withDefinitionOf(saved, controller);
+
+  expect(definitionChanged(saved, controller)).toBe(true);
+  expect(refreshed.execution!.inheritEnv).toEqual(['PATH', 'ANTHROPIC_API_KEY']);
+  expect(definitionChanged(refreshed, controller)).toBe(false);
+  // A session saved with the list it would be given now is not restarted for it.
+  saved.execution!.inheritEnv = ['PATH', 'ANTHROPIC_API_KEY'];
+  expect(definitionChanged(saved, controller)).toBe(false);
+  // Its own copy: a later change to the template is not one to it.
+  controller.execution!.inheritEnv.push('OPENAI_API_KEY');
+  expect(refreshed.execution!.inheritEnv).toEqual(['PATH', 'ANTHROPIC_API_KEY']);
+});
+
 it('leaves a session that runs as a definition file on disk as the agent it runs as', () => {
   const root = '/state';
   const edited = watchable(root);
@@ -1650,6 +1675,10 @@ it('restarts a room’s session under its agent’s edited definition, resuming 
   // Only the session saved under the earlier definition was stopped.
   expect(stoppedRoots).toEqual([stale.sessionRoot]);
   expect(warn.mock.calls.map(String).join('\n')).toContain('earlier definition');
+  // Naming every part of a definition, the machine variables it is given among them.
+  expect(warn.mock.calls.map(String).join('\n')).toContain(
+    "approval mode or the machine's environment variables it is given); stopping it"
+  );
   // Started again as the same session, under the current definition.
   expect(launched).toEqual([
     {
@@ -1672,7 +1701,7 @@ it('brings live sessions in step with a rewritten definition, each once its turn
   const idle = await existing(root, config);
   await assignTo(root, config, 1, 'room', working.sessionId);
   await assignTo(root, config, 2, 'elsewhere', idle.sessionId);
-  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const hosts = sessionHosts();
   await hosts.start(working.sessionRoot);
   await hosts.start(idle.sessionRoot);
@@ -1730,6 +1759,10 @@ it('brings live sessions in step with a rewritten definition, each once its turn
     await run;
   }
   expect(restarted).toHaveLength(2);
+  // Naming every part of a definition, the machine variables it is given among them.
+  expect(warn.mock.calls.map(String).join('\n')).toContain(
+    "approval mode or the machine's environment variables it is given) or its granted services; restarting it"
+  );
 });
 
 it('reports which of its sessions are mid-turn, as their hosts start, go busy, go idle and exit', async () => {

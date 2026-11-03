@@ -3,6 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { codexHomeNotAbsolute } from '../codex/home';
+import { PI_SDK_ENV } from '../pi/sdk-env';
+import { providerRuntime, providerRuntimeIds } from '../providers/registry';
+import { AGENT_ENV_VARS, EXECUTION_INHERIT_ENV } from './agent-env';
+import { withDefinitionOf } from './agent-host';
 import {
   executionEnvironment,
   prepareSharedConfig,
@@ -670,5 +674,267 @@ describe('the skills of the agent’s service grants', () => {
       warn.mockRestore();
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('a provider runtime’s own variables', () => {
+  /**
+   * The environment a session of `provider` starts with, launched with
+   * `EXECUTION_INHERIT_ENV` as Console and the controller launch one. Given
+   * `saved`, the session is one saved with that list instead and started
+   * again under such a launch's template (`withDefinitionOf`), as a resumed,
+   * retried or restarted session is.
+   */
+  async function sessionEnv(
+    provider: string,
+    saved?: readonly string[]
+  ): Promise<Record<string, string>> {
+    const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+    try {
+      const credentialsPath = join(root, 'credentials.json');
+      await writeFile(
+        credentialsPath,
+        JSON.stringify({
+          env: {
+            SWITCH_API_ENDPOINT: 'https://switch.test',
+            SWITCH_API_TOKEN: 'agent-token',
+            SWITCH_AGENT_ID: 'agent',
+          },
+        })
+      );
+      const configWith = (inheritEnv: readonly string[]) =>
+        sharedConfigSchema.parse({
+          session: {
+            sessionId: 'session',
+            agentId: 'agent',
+            hostId: 'host',
+            epoch: 'epoch',
+            provider,
+            status: 'starting',
+            connectivity: 'online',
+            pendingRequestIds: [],
+            capabilities: {
+              input: 'queue',
+              approvals: true,
+              questions: true,
+              interrupt: true,
+              reset: false,
+              compact: false,
+              modelChange: false,
+              attachmentMimeTypes: [],
+            },
+          },
+          start: {
+            provider,
+            input: {
+              sessionId: 'session',
+              cwd: root,
+              runtimeMode: 'approval-required',
+              env: provider === 'codex' ? { CODEX_HOME: join(root, 'codex-source') } : {},
+              mcpServers: {},
+            },
+          },
+          roomConnection: { connectionId: 'controller' },
+          execution: {
+            credentialsPath,
+            inheritEnv: [...inheritEnv],
+            codexConfig: '',
+            skill: '',
+            context: '',
+          },
+        });
+      const template = configWith(EXECUTION_INHERIT_ENV);
+      const config = saved ? withDefinitionOf(configWith(saved), template) : template;
+      const prepared = await prepareSharedConfig(
+        root,
+        config,
+        CODEX_RUNTIME,
+        NO_SERVICES,
+        null,
+        {},
+        NO_REDACTIONS
+      );
+      return prepared.input.env;
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Read only by Pi: a key, Azure's endpoint, what AWS's role, container and
+   * file credentials need beside their own variable, the operator's shutting
+   * of the instance metadata service to AWS's SDK, and its endpoint. And every
+   * other variable of credentials, an endpoint or a region that the SDKs Pi
+   * uses read (`PI_SDK_ENV`), none of them shared before.
+   */
+  const PI_ONLY: Record<string, string> = {
+    ...Object.fromEntries(
+      Object.entries(PI_SDK_ENV)
+        .filter(
+          ([name, { decision }]) => decision === 'pi' && !EXECUTION_INHERIT_ENV.includes(name)
+        )
+        .map(([name]) => [name, `fake-${name.toLowerCase()}`])
+    ),
+    AWS_EC2_METADATA_SERVICE_ENDPOINT: 'http://[fd00:ec2::254]',
+    AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE: 'IPv6',
+    DEEPSEEK_API_KEY: 'fake-deepseek',
+    AZURE_OPENAI_RESOURCE_NAME: 'fake-resource',
+    AZURE_OPENAI_BASE_URL: 'https://fake.example',
+    AWS_ROLE_ARN: 'arn:aws:iam::000000000000:role/fake',
+    AWS_ROLE_SESSION_NAME: 'fake-session',
+    AWS_CONTAINER_AUTHORIZATION_TOKEN: 'fake-container-token',
+    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: '/fake/container-token',
+    AWS_CONFIG_FILE: '/fake/aws-config',
+    AWS_SHARED_CREDENTIALS_FILE: '/fake/aws-credentials',
+    AWS_EC2_METADATA_DISABLED: 'true',
+    AWS_EC2_METADATA_V1_DISABLED: 'true',
+  };
+  /** Given to every provider's sessions before Pi. */
+  const SHARED = { OPENROUTER_API_KEY: 'fake-openrouter', OPENAI_API_KEY: 'fake-openai' };
+
+  function stubAll(): void {
+    for (const [name, value] of Object.entries({ ...PI_ONLY, ...SHARED })) vi.stubEnv(name, value);
+  }
+
+  const others = () => providerRuntimeIds().filter((id) => id !== 'pi');
+
+  it('reach that provider’s sessions only, and every variable shared before still reaches all', async () => {
+    stubAll();
+    expect(others()).toEqual(['claude', 'codex', 'opencode', 'antigravity', 'cursor']);
+    for (const provider of others()) {
+      const env = await sessionEnv(provider);
+      for (const name of Object.keys(PI_ONLY))
+        expect(env[name], `${provider}: ${name}`).toBeUndefined();
+      expect(env, provider).toMatchObject(SHARED);
+    }
+    expect(await sessionEnv('pi')).toMatchObject({ ...PI_ONLY, ...SHARED });
+  });
+
+  it('reach that provider’s sessions only when a session saved with a wider list is started again', async () => {
+    stubAll();
+    // What every session was saved with while the list every session is
+    // launched with also held each provider's own variables.
+    const wider = [
+      ...EXECUTION_INHERIT_ENV,
+      ...providerRuntimeIds().flatMap((id) => providerRuntime(id).inheritEnv),
+    ];
+    for (const name of Object.keys(PI_ONLY)) expect(wider).toContain(name);
+    for (const provider of others()) {
+      const env = await sessionEnv(provider, wider);
+      for (const name of Object.keys(PI_ONLY))
+        expect(env[name], `${provider}: ${name}`).toBeUndefined();
+      expect(env, provider).toMatchObject(SHARED);
+    }
+    expect(await sessionEnv('pi', wider)).toMatchObject({ ...PI_ONLY, ...SHARED });
+  });
+
+  it('leave a session saved with the list every session is launched with as it was', async () => {
+    stubAll();
+    for (const provider of providerRuntimeIds())
+      expect(
+        Object.keys(await sessionEnv(provider, EXECUTION_INHERIT_ENV)).sort(),
+        provider
+      ).toEqual(Object.keys(await sessionEnv(provider)).sort());
+  });
+
+  it('are not in the list every session is launched with, which holds what it held before', () => {
+    const shared = new Set<string>(AGENT_ENV_VARS);
+    for (const id of providerRuntimeIds())
+      for (const name of providerRuntime(id).inheritEnv)
+        if (!shared.has(name)) expect(EXECUTION_INHERIT_ENV, `${id}: ${name}`).not.toContain(name);
+    for (const name of AGENT_ENV_VARS) expect(EXECUTION_INHERIT_ENV).toContain(name);
+    // As it was before Pi (`f4e039948`), in its order.
+    expect(EXECUTION_INHERIT_ENV).toEqual([
+      'ALL_PROXY',
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN',
+      'ANTHROPIC_BASE_URL',
+      'ANTHROPIC_BEDROCK_BASE_URL',
+      'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+      'ANTHROPIC_DEFAULT_OPUS_MODEL',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL',
+      'ANTHROPIC_MODEL',
+      'ANTHROPIC_SMALL_FAST_MODEL',
+      'ANTHROPIC_VERTEX_BASE_URL',
+      'ANTHROPIC_VERTEX_PROJECT_ID',
+      'AWS_ACCESS_KEY_ID',
+      'AWS_BEARER_TOKEN_BEDROCK',
+      'AWS_DEFAULT_REGION',
+      'AWS_PROFILE',
+      'AWS_REGION',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AZURE_OPENAI_API_ENDPOINT',
+      'AZURE_OPENAI_API_KEY',
+      'AZURE_OPENAI_KEY',
+      'BAILIAN_CODING_PLAN_API_KEY',
+      'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS',
+      'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+      'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+      'CLAUDE_CODE_SUBAGENT_MODEL',
+      'CLAUDE_CODE_USE_BEDROCK',
+      'CLAUDE_CODE_USE_VERTEX',
+      'CLAUDE_CONFIG_DIR',
+      'CLOUDSDK_CONFIG',
+      'CLOUD_ML_REGION',
+      'CODEX_HOME',
+      'CURSOR_API_KEY',
+      'DASHSCOPE_API_KEY',
+      'GEMINI_API_KEY',
+      'GEMINI_MODEL',
+      'GOOGLE_API_KEY',
+      'GOOGLE_APPLICATION_CREDENTIALS',
+      'GOOGLE_CLOUD_LOCATION',
+      'GOOGLE_CLOUD_PROJECT',
+      'GOOGLE_GEMINI_BASE_URL',
+      'GOOGLE_GENAI_API_VERSION',
+      'GOOGLE_VERTEX_BASE_URL',
+      'HTTPS_PROXY',
+      'HTTP_PROXY',
+      'KIMI_API_KEY',
+      'MISTRAL_API_KEY',
+      'MOONSHOT_API_KEY',
+      'NO_PROXY',
+      'OPENAI_API_KEY',
+      'OPENAI_BASE_URL',
+      'OPENAI_MODEL',
+      'OPENAI_ORGANIZATION',
+      'OPENAI_PROJECT',
+      'OPENCODE_MODEL',
+      'OPENROUTER_API_KEY',
+      'OPENROUTER_BASE_URL',
+      'XAI_API_KEY',
+      'PATH',
+      'HOME',
+      'USER',
+      'SHELL',
+      'TMPDIR',
+      'LANG',
+      'TERM',
+      'SSH_AUTH_SOCK',
+      'APPDATA',
+      'COMSPEC',
+      'COMMONPROGRAMFILES',
+      'HOMEDRIVE',
+      'HOMEPATH',
+      'LOCALAPPDATA',
+      'NUMBER_OF_PROCESSORS',
+      'OS',
+      'PATHEXT',
+      'PROCESSOR_ARCHITECTURE',
+      'PROGRAMDATA',
+      'PROGRAMFILES',
+      'PROGRAMFILES(X86)',
+      'SYSTEMDRIVE',
+      'SYSTEMROOT',
+      'TEMP',
+      'TMP',
+      'USERDOMAIN',
+      'USERNAME',
+      'USERPROFILE',
+      'WINDIR',
+    ]);
   });
 });

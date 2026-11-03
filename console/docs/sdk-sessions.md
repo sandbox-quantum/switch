@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity ACP and Cursor. Local sessions and sessions reached through SSH run
+Antigravity ACP, Cursor and Pi. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
