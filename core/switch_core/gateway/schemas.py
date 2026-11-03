@@ -963,6 +963,16 @@ class ChangePasswordRequest(BaseModel):
     new_password: Password
 
 
+class UpdateMeRequest(BaseModel):
+    """The signed-in person's own profile fields. Only the name, for now: the
+    email is the sign-in identity and changes through the account's provider."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+    ]
+
+
 class DeleteAccountRequest(BaseModel):
     """The account's own email, typed by the person as their confirmation:
     an SSO account has no password to ask for."""
