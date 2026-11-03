@@ -102,7 +102,7 @@ class FakeVendor:
     async def revoke_issued(self, token: str) -> None:
         self.revoked.append(token)
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None:
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> None:
         self.connections_revoked.append(secret)
 
     async def resolve_repositories(

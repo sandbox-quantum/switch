@@ -108,7 +108,25 @@ async def test_a_pasted_credential_is_neither_refreshed_nor_revoked() -> None:
     with pytest.raises(ServiceAdapterError, match="not refreshed"):
         await adapter.refresh(secret)
     with pytest.raises(ConnectionNotRevocable, match="cannot revoke them"):
-        await adapter.revoke_connection(secret)
+        await adapter.revoke_connection(secret, "keys")
+    assert vendor.requests == []
+
+
+async def test_what_a_disconnect_says_follows_how_the_connection_was_made() -> None:
+    """A connection made with keys before its secret recorded how says it is
+    keys Switch has forgotten, not a sign-in, and nothing is called."""
+    vendor = Vendor(200, 200)
+    adapter = _adapter(vendor)
+    made_before = ConnectionSecret({"access_token": '{"public":{},"secret":{}}'})
+
+    with pytest.raises(ConnectionNotRevocable) as keys:
+        await adapter.revoke_connection(made_before, "keys")
+    assert str(keys.value) == (
+        "Switch has forgotten the pasted Example keys but cannot revoke them. "
+        "Revoke them in Example to stop them working."
+    )
+    with pytest.raises(ConnectionNotRevocable, match="cannot revoke it. Revoke it"):
+        await adapter.revoke_connection(made_before, "token")
     assert vendor.requests == []
 
 

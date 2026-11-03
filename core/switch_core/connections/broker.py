@@ -164,6 +164,9 @@ METHOD_NOT_OFFERED = "method_not_offered"
 # Why a connection needs reconnecting: this server now asks for other scopes
 # than it was granted (`SERVICE_ACCESS_PROFILES`).
 SCOPES_CHANGED = "scopes_changed"
+# Why a connection needs reconnecting: it was made before its service asked
+# for a choice it now needs (a site), so nothing says where to use it.
+CHOICES_MISSING = "choices_missing"
 
 
 # Why a service can't be used on this server, for a client to act on; the
@@ -288,6 +291,9 @@ class SignIn:
     secret: ConnectionSecret = field(repr=False)
     oauth_client_id: str | None
     choices: dict[str, str]
+    # How it was made (`oauth`, `token` or `keys`), which decides what the
+    # revocation says where the vendor offers none.
+    method: str
 
 
 @dataclass(frozen=True)
@@ -352,6 +358,11 @@ def _through_replaced_client(name: str) -> str:
 
 def _through_withdrawn_method(name: str) -> str:
     return f"{name} was connected in a way this server no longer offers."
+
+
+def _connected_before_choices(name: str, missing: list[str]) -> str:
+    asked = " and ".join(f"a {choice.replace('_', ' ')}" for choice in missing)
+    return f"{name} was connected before it asked for {asked}."
 
 
 @dataclass(frozen=True)
@@ -926,6 +937,9 @@ class ServiceBroker:
                 "under Connectors.",
                 retryable=False,
             )
+        missing = self._choices_refusal(connection)
+        if missing is not None:
+            raise _reconnect(name, missing, "agent")
         refusal = self._method_refusal(entry.definition, connection.method)
         if refusal is not None:
             raise ServiceError(403, FORBIDDEN, refusal, retryable=False)
@@ -1354,6 +1368,9 @@ class ServiceBroker:
                 raise await self._replaced_client(session, owner_id, service)
             if self.method_withdrawn(connection):
                 raise _MustReconnect(_through_withdrawn_method(name))
+            missing = self._choices_refusal(connection)
+            if missing is not None:
+                raise _MustReconnect(missing)
             secret = self._secret(connection)
             if definition.adapter == "oauth" and connection.method != "oauth":
                 return await self._checked_pasted(
@@ -1499,6 +1516,7 @@ class ServiceBroker:
             self._secret(connection),
             connection.oauth_client_id,
             dict(connection.choices),
+            connection.method,
         )
 
     def _shares_grant(
@@ -1653,8 +1671,10 @@ class ServiceBroker:
         credential pasted in place of the sign-in, None for a sign-in.
         None leaves the grant out: its connection is gone, as the grant is
         about to be, was made for a choice this server no longer offers,
-        whose sign-in is refused at its next refresh, or with a credential
-        this server no longer takes, which every token request refuses."""
+        whose sign-in is refused at its next refresh, before the entry asked
+        for a choice it now needs, or with a credential this server no
+        longer takes; every token request refuses the last two, and the
+        connection's status says why."""
         definition = self._catalog[grant.service].definition
         oauth = definition.auth.oauth
         if oauth is None or not (oauth.choices or definition.auth.paste):
@@ -1666,6 +1686,7 @@ class ServiceBroker:
             return None
         if (
             self.method_withdrawn(connection)
+            or self._choices_refusal(connection) is not None
             or self._method_refusal(definition, connection.method) is not None
         ):
             return None
@@ -1717,15 +1738,17 @@ class ServiceBroker:
         service stands as `standing`: "not_connected", "active",
         "needs_reauthorization" or "error". One made through a client its
         service no longer uses, in a way its service no longer offers, granted
-        other scopes than this server now asks for, or with a pasted credential
-        this server no longer takes, needs reconnecting
-        before anyone uses it and finds out, though its row stays active."""
+        other scopes than this server now asks for, before its service asked
+        for a choice it now needs, or with a pasted credential this server no
+        longer takes, needs reconnecting before anyone uses it and finds out,
+        though its row stays active."""
         if connection is None:
             return "not_connected"
         if connection.status == "active" and (
             standing.client_replaced(connection)
             or self.method_withdrawn(connection)
             or self.scopes_changed(connection)
+            or self._choices_refusal(connection) is not None
             or self._connection_refusal(connection) is not None
         ):
             return "needs_reauthorization"
@@ -1743,6 +1766,25 @@ class ServiceBroker:
             return None
         return self._method_refusal(entry.definition, connection.method)
 
+    def _choices_refusal(self, connection: ServiceConnection) -> str | None:
+        """Why `connection` must be made again because it was made before
+        its OAuth entry asked for a choice it now needs (Datadog keys pasted
+        before Datadog asked for a site, which only their secret names), or
+        None where it has every choice. Nothing it holds says where to use
+        it, and its secret is not read to guess."""
+        entry = self._catalog.get(connection.service)
+        if entry is None or entry.definition.adapter != "oauth":
+            return None
+        oauth = entry.definition.auth.oauth
+        missing = [
+            field.name
+            for field in ([] if oauth is None else oauth.choices)
+            if field.name not in connection.choices
+        ]
+        if not missing:
+            return None
+        return _connected_before_choices(entry.definition.name, missing)
+
     def reconnect_reason(
         self, standing: ServiceStanding, connection: ServiceConnection
     ) -> tuple[str, str] | None:
@@ -1753,7 +1795,9 @@ class ServiceBroker:
         Codes: `token_refused` (the vendor refused the pasted credential: a
         new one is needed), `method_not_offered` (pasted with a credential
         this server no longer takes), `scopes_changed` (this server now asks
-        for other access than the sign-in granted), `client_replaced`,
+        for other access than the sign-in granted), `choices_missing` (made
+        before the service asked for a choice it now needs: a site),
+        `client_replaced`,
         `refresh_refused` and `sign_in_refused`."""
         if self.connection_status(standing, connection) != "needs_reauthorization":
             return None
@@ -1762,6 +1806,9 @@ class ServiceBroker:
         if connection.status == "active":
             if self.method_withdrawn(connection):
                 return METHOD_NOT_OFFERED, _through_withdrawn_method(name)
+            missing = self._choices_refusal(connection)
+            if missing is not None:
+                return CHOICES_MISSING, f"{missing} Connect it again."
             refusal = self._connection_refusal(connection)
             if refusal is not None:
                 return METHOD_NOT_OFFERED, refusal
@@ -1932,6 +1979,14 @@ class ServiceBroker:
                 409,
                 CONNECTOR_REVOKED,
                 f"Reconnect {name} under Connectors first.",
+                retryable=False,
+            )
+        missing = self._choices_refusal(connection)
+        if missing is not None:
+            raise ServiceError(
+                409,
+                CONNECTOR_REVOKED,
+                f"{missing} Reconnect {name} under Connectors first.",
                 retryable=False,
             )
         refusal = self._method_refusal(entry.definition, connection.method)
@@ -2303,7 +2358,7 @@ class ServiceBroker:
                     session, service, replaced.oauth_client_id, replaced.choices
                 )
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
-                    await adapter.revoke_connection(replaced.secret)
+                    await adapter.revoke_connection(replaced.secret, replaced.method)
             except ConnectionNotRevocable as error:
                 warnings.append(str(error))
             except Exception as error:
@@ -2345,7 +2400,7 @@ class ServiceBroker:
         try:
             adapter = await self._revoker(session, service, oauth_client_id, choices)
             async with asyncio.timeout(VENDOR_CALL_SECONDS):
-                await adapter.revoke_connection(secret)
+                await adapter.revoke_connection(secret, "oauth")
         except ConnectionNotRevocable as error:
             # The vendor offers no revocation: nothing failed, but the
             # sign-in lives on until the person removes it there.
@@ -2637,7 +2692,8 @@ class ServiceBroker:
         removed: list[tuple[str, SignIn]],
     ) -> str | None:
         """After the removal has committed: revoke each sign-in at its vendor,
-        and the tokens issued on it. A warning names what could not be."""
+        and the tokens issued on it. A warning names what could not be, in
+        words that follow how each connection was made."""
         warnings = []
         ended: set[str] = set()
         for service, signed_in in removed:
@@ -2653,7 +2709,7 @@ class ServiceBroker:
                 continue
             try:
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
-                    await adapter.revoke_connection(signed_in.secret)
+                    await adapter.revoke_connection(signed_in.secret, signed_in.method)
             except ConnectionNotRevocable as error:
                 warnings.append(str(error))
             except Exception as error:

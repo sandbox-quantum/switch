@@ -249,7 +249,7 @@ class ApiKeyAdapter:
             f"A {self._name} key is the owner's own and cannot be revoked alone."
         )
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None:
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> None:
         raise ConnectionNotRevocable(
             f"Switch has forgotten the {self._name} key but cannot revoke it. "
             f"Revoke it in {self._name} if it should stop working."

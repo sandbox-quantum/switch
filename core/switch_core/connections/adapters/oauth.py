@@ -798,10 +798,9 @@ class OAuthAdapter:
             f"A {self._name} token is the owner's own and cannot be revoked alone."
         )
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None:
-        method = secret.values.get("method")
-        if method is not None:
-            words, pronoun = credential_words(str(method))
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> None:
+        if method != "oauth":
+            words, pronoun = credential_words(method)
             raise ConnectionNotRevocable(
                 f"Switch has forgotten the pasted {self._name} {words} but cannot "
                 f"revoke {pronoun}. Revoke {pronoun} in {self._name} to stop "
