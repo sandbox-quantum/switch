@@ -391,6 +391,16 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/auth/workos/callback",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/workos/organization",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/chats",
       "auth": "session",
       "flags": []
@@ -659,6 +669,11 @@
         "organization_connector_apps",
         "service_connections"
       ]
+    },
+    {
+      "route": "GET /gateway/organizations/current/issues",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "GET /gateway/organizations/current/members",
