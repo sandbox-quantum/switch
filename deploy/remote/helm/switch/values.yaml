@@ -253,7 +253,9 @@ switchCore:
   visibilityOperatorsSecret: ""
   # Extra environment variables for the switch-core container, rendered after
   # the chart's own: a list of {name, value} or {name, valueFrom}, as in a pod
-  # spec. For a setting this chart has no value for.
+  # spec. For a setting this chart has no value for. Never put a secret in
+  # `value`: it lands in the pod spec, readable by anyone who can read the
+  # Deployment. Use `valueFrom.secretKeyRef` instead.
   extraEnv: []
   image: switch-core:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published

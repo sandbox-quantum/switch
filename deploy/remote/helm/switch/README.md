@@ -331,7 +331,9 @@ switchCore:
   Leave it off until every box runs the split layout.
 - **`switchCore.extraEnv`** adds environment variables to switch-core for a
   setting this chart has no value for (a list of `{name, value}` or
-  `{name, valueFrom}`).
+  `{name, valueFrom}`). Never put a secret in `value`: it lands in the pod
+  spec, readable by anyone who can read the Deployment. Use
+  `valueFrom.secretKeyRef` instead.
 
 **Rolling back** to a release from before hosted agents v2: an older
 switch-core won't start on the upgraded database, so restore the database
