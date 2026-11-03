@@ -59,6 +59,25 @@ def test_an_origin_with_more_than_scheme_and_host_is_refused(origin: str) -> Non
         _connections(origin=origin)
 
 
+@pytest.mark.parametrize(
+    ("origin", "shown"),
+    [
+        ("https://user:secret@switch.example.com", "'https://switch.example.com'"),
+        (
+            "http://user:secret@switch.example.com:8080",
+            "'http://switch.example.com:8080'",
+        ),
+    ],
+)
+def test_a_refused_origin_is_named_without_its_credentials(
+    origin: str, shown: str
+) -> None:
+    with pytest.raises(ValueError) as refused:
+        _connections(origin=origin)
+    assert shown in str(refused.value)
+    assert "secret" not in str(refused.value)
+
+
 def test_a_slug_github_would_not_have_is_refused() -> None:
     with pytest.raises(ValueError, match="slug 'Example App'"):
         _connections(slug="Example App")
