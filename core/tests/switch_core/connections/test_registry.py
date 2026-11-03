@@ -293,6 +293,21 @@ def test_a_static_oauth_client_without_settings_is_not_set_up(
     assert "example" not in adapters
 
 
+def test_microsoft_365_draft_stays_inactive_even_with_a_configured_client() -> None:
+    adapters = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={
+            "microsoft-365": OAuthClientCredentials(
+                "c", "SYNTHETIC", authentication=None
+            )
+        },
+        http=HTTP,
+        registration=REG,
+    )
+    assert "microsoft-365" not in adapters
+
+
 def test_a_dynamic_client_is_registered_by_core(tmp_path: Path) -> None:
     adapters = build_adapters(
         _catalog(tmp_path),
