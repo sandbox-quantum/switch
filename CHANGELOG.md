@@ -553,13 +553,31 @@ version of their own to them without also giving them a release of their own.
   use for an hour at a time. The services list says what each service takes
   pasted (`paste`), what a pasted connection reaches (`access_note`), and why
   a connection must be reconnected (`reconnect_code`, `reconnect_reason`).
-  No shipped connector takes one yet.
 - **`ALLOW_NON_EXPIRING_KEYS`** (off by default) lets a connector offer a
   pasted credential that never expires, such as API and application keys,
   and hand it to agents. Such a key can only be revoked at the vendor. Off,
   it is not offered, and a connection made with one while the setting was on
   must be reconnected another way. Connectors that connect with a key alone
   stay refused either way.
+- **Datadog takes a pasted personal access token, or API and application
+  keys, in place of its sign-in.** Either is pasted at the site picked for
+  the sign-in and checked at Datadog's MCP server there. A token goes to it
+  as a bearer and ends on the date set when it was made; give it `mcp_read`,
+  `mcp_write` for writes, and `user_access_read` to have the connection
+  named by its Datadog user rather than by the token's public part
+  (`ddpat_…`). Keys go in `DD_API_KEY` and `DD_APPLICATION_KEY`, never
+  expire, and are offered only with `ALLOW_NON_EXPIRING_KEYS` on. An agent
+  granted Datadog on such a connection reaches what the token or keys
+  allow, and the Datadog skill says so.
+- **A Datadog connection made with keys before Datadog asked for a site is
+  connected again, not filled in.** Its site sits only inside the keys
+  Switch keeps, so nothing reads it from there: the connection reads
+  `needs_reauthorization` with the `reconnect_code` `choices_missing` and
+  says "Datadog was connected before it asked for a site. Connect it again.",
+  whether or not the server allows keys that never expire. Its grants are
+  kept and left out of sessions, and a token request or a new grant is
+  refused with the same sentence. The same holds for any connection made
+  before its service asked for a choice it now needs.
 
 #### Changed
 - **The dashboard, and what Switch tells people, use Switch's own words.** A
@@ -1030,6 +1048,14 @@ version of their own to them without also giving them a release of their own.
   account still revokes it, and so does a disconnect. A sign-in that Switch
   does not keep, because the workspace switched Google Workspace off during
   it, no longer ends the existing connection either.
+- **Disconnecting Datadog keys no longer says Switch cannot revoke a
+  sign-in.** What a disconnect, or a connect that replaces a connection,
+  says Switch could not revoke now follows how the connection was made, as
+  Switch recorded it, not what the credential it kept happens to hold. A
+  Datadog connection made with keys before Datadog asked for a site said
+  Switch could not revoke the Datadog sign-in and to remove it under
+  Authorized Apps; it now says Switch has forgotten the pasted Datadog keys
+  but cannot revoke them, and to revoke them in Datadog.
 - **A sign-in the vendor refuses fails with the vendor's reason.** When a
   vendor sent the browser back with an error instead of a code, every one was
   recorded as "sign-in was cancelled" and what the vendor said was dropped, so
@@ -3083,6 +3109,21 @@ version of their own to them without also giving them a release of their own.
   knows; the session host refused that answer. It now holds the credential
   until Switch says to ask again, within the hour, and drops it as before
   once its grant changes.
+- **Connect Datadog with a pasted token or keys in place of signing in.**
+  Under the sign-in, the Connect dialog offers "Use a token instead" and,
+  where the server allows keys that never expire, "Use API keys instead".
+  Either opens a paste step with the same site picker, the fields to paste,
+  a link to Datadog's help on making them, and Back to the sign-in; nothing
+  is sent until each field is filled and the site picked, and what was
+  typed is cleared once it is sent. Each way says in one line how long what
+  Switch keeps lasts: an hour, refreshed by Switch, for the sign-in; the
+  date you set in Datadog for a token; never, until Datadog revokes them,
+  for keys. A connector's page says what a pasted connection reaches in
+  place of its access level, and how long it lasts. Where Datadog refused a
+  pasted token, the page says so and offers "Paste a new one", which opens
+  the paste step at the same site. A connection to reconnect says why in
+  the server's words, where it gives them. A server that does not send
+  `paste` is read as one that takes nothing pasted.
 - **Codex sessions can use an API key kept in the OS keyring.** With
   `cli_auth_credentials_store = "keyring"` or `"auto"`, the execution machine's
   Codex keeps its login in the keyring, where a session's own Codex home cannot
