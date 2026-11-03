@@ -27,7 +27,11 @@ import {
   type SharedHostConfig,
 } from '@switch-console/agent-providers';
 import { sessionLaunchFrom } from '@switch-console/plugins/agents';
-import { commandStatusSchema, type Snapshot } from '@switch-console/shared/session-v1';
+import {
+  commandStatusSchema,
+  hasOwnActivity,
+  type Snapshot,
+} from '@switch-console/shared/session-v1';
 import {
   AgentManagedByControllerError,
   managedRecordFor,
@@ -199,7 +203,16 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       // the session over IPC, and Console reaches it through the sidecar.
       await withSidecar(session.agentId, (client) =>
         client.ensure({ config, resuming: isResuming, restart, startSource })
-      );
+      ).catch((error: unknown) => {
+        // A sidecar older than this Console reads the configuration strictly
+        // and refuses the key, and could not import the history anyway.
+        if (config.importHistory && String(error).includes('importHistory'))
+          throw new Error(
+            `The Room watcher on ${this.transport.kind === 'ssh' ? this.transport.host : 'this machine'} runs an older version of Switch Console's host, which cannot continue a CLI conversation. Press Update on its Room watcher, then start this session again.`,
+            { cause: error }
+          );
+        throw error;
+      });
     } else {
       // A local session is supervised by Console, so it ends when Console does.
       root = sharedSessionRoot(session.id);
@@ -298,7 +311,9 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
       epoch,
       record: saved?.initialPromptDelivery,
       legacyCommandId: `initial-${session.id}`,
-      hasPriorActivity: snapshot.turns.length > 0 || snapshot.items.length > 0,
+      // History copied in from a CLI conversation is not this session having
+      // run: its first prompt is still owed.
+      hasPriorActivity: hasOwnActivity(snapshot),
       lookup: async (commandId) => {
         try {
           const status = await sessionCommandStatus(session.agentId, session.id, commandId);
@@ -396,10 +411,19 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
 }
 
 export async function buildSharedHostConfig(
-  session: Pick<Session, 'id' | 'agentId' | 'providerId' | 'agentName' | 'providerSessionId'>,
+  session: Pick<
+    Session,
+    'id' | 'agentId' | 'providerId' | 'agentName' | 'providerSessionId' | 'cliConversation'
+  >,
   params: { sessionPath: string; sessionEnvVars: Record<string, string>; shellSetup?: string },
   transport: LocationTransport
 ): Promise<SharedHostConfig> {
+  // Console stopped between saving the session and copying the conversation:
+  // started now, it would open a new conversation in place of that one.
+  if (session.cliConversation && !session.providerSessionId)
+    throw new Error(
+      `This session was to continue the Claude Code conversation “${session.cliConversation.title}”, but its copy was never made. Delete it and start a new session from that conversation.`
+    );
   const agent = await getAgentById(session.agentId);
   if (!agent?.switchAgentId) throw new Error('Link the agent to Switch before launching its host.');
   const launch = await agentLaunchConfig(session.agentId);
@@ -479,6 +503,7 @@ export async function buildSharedHostConfig(
         ...(sessionLaunch.model ? { model: sessionLaunch.model } : {}),
       },
     },
+    ...(session.cliConversation ? { importHistory: true } : {}),
     // Every session of an agent is reached over that agent's one connection,
     // held by its controller, so the identity is derived rather than minted:
     // a session that restarts binds to the same one it did before.

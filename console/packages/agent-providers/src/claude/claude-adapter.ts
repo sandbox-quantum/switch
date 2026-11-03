@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, existsSync } from 'node:fs';
 import { access, readdir, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+import { getSessionMessages, query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type {
   CanUseTool,
   EffortLevel,
@@ -24,6 +23,7 @@ import {
   resolveWindowsCommandPath,
 } from '@switch-console/shared/windows-spawn';
 import type {
+  ConversationHistoryTurn,
   ModelSelection,
   ProviderAdapter,
   ProviderCapabilities,
@@ -50,6 +50,7 @@ import type {
 } from '../events';
 import { spawnProvider, stopProvider } from '../provider-process';
 import { CumulativeUsage, mergeUsage } from '../usage';
+import { historyFromClaudeMessages } from './claude-history';
 import {
   approvalContent,
   isRecord,
@@ -65,6 +66,7 @@ import {
   toolTitle,
   truncate,
 } from './claude-mapping';
+import { claudeConfigDir, configDirSessionStore } from './cli-conversations';
 
 const PROVIDER = 'claude';
 const ASK_USER_QUESTION = 'AskUserQuestion';
@@ -141,6 +143,8 @@ export interface ClaudeAdapterOptions {
     nativeSessionId: string,
     env: Record<string, string>
   ) => Promise<boolean>;
+  /** Test seam: the SDK's reader of a saved conversation. */
+  sessionMessages?: typeof getSessionMessages;
 }
 
 /**
@@ -153,7 +157,7 @@ async function claudeConversationSaved(
   nativeSessionId: string,
   env: Record<string, string>
 ): Promise<boolean> {
-  const configDir = env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), '.claude');
+  const configDir = claudeConfigDir(env);
   let projects: string[];
   try {
     projects = await readdir(join(configDir, 'projects'));
@@ -428,12 +432,14 @@ export class ClaudeAdapter implements ProviderAdapter {
   private readonly savedConversationExists: NonNullable<
     ClaudeAdapterOptions['savedConversationExists']
   >;
+  private readonly sessionMessages: typeof getSessionMessages;
 
   constructor(options: ClaudeAdapterOptions = {}) {
     this.executablePath = options.claudeExecutablePath;
     this.logger = options.logger;
     this.queryFn = options.query ?? sdkQuery;
     this.savedConversationExists = options.savedConversationExists ?? claudeConversationSaved;
+    this.sessionMessages = options.sessionMessages ?? getSessionMessages;
   }
 
   subscribe(listener: (event: ProviderRuntimeEvent) => void): () => void {
@@ -610,6 +616,28 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     session.input.push(message);
     return { turnId: input.turnId, ...(steeredInto ? { steeredInto } : {}) };
+  }
+
+  /**
+   * Read from Claude Code's saved transcript, the way its own `/resume` reads
+   * it, in the config directory `env` gives Claude Code: through a store over
+   * that directory, so this process's own environment, which the host's other
+   * work shares, is left alone. A conversation with nothing in it is an error
+   * rather than an empty history: it is either not there or not one a person
+   * had.
+   */
+  async conversationHistory(
+    nativeSessionId: string,
+    cwd: string,
+    env: Record<string, string>
+  ): Promise<ConversationHistoryTurn[]> {
+    const messages = await this.sessionMessages(nativeSessionId, {
+      dir: cwd,
+      sessionStore: configDirSessionStore(claudeConfigDir(env)),
+    });
+    if (messages.length === 0)
+      throw new Error(`Claude Code has no saved conversation ${nativeSessionId} to show.`);
+    return historyFromClaudeMessages(messages);
   }
 
   async interruptTurn(sessionId: string): Promise<void> {
