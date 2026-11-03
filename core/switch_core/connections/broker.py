@@ -788,18 +788,18 @@ class ServiceBroker:
     ) -> str | None:
         """Why a connection made with `method` cannot be used on this server,
         or None where it can: a credential pasted in place of an OAuth
-        sign-in that the entry no longer lists, or that never expires where
-        the server does not allow such keys. An `api_key` entry's keys are
-        held to its own rule (`key_never_expires`)."""
+        sign-in that never expires, where the server does not allow such
+        keys. One pasted a way the entry no longer lists is `method_withdrawn`
+        instead, and an `api_key` entry's keys are held to its own rule
+        (`key_never_expires`)."""
         if method == "oauth" or definition.adapter != "oauth":
             return None
         paste = definition.auth.paste_method(method)
-        if paste is None:
-            words, _ = credential_words(method)
-            return (
-                f"This server no longer connects {definition.name} with pasted {words}."
-            )
-        if paste.expires == "never" and not self._allow_non_expiring_keys:
+        if (
+            paste is not None
+            and paste.expires == "never"
+            and not self._allow_non_expiring_keys
+        ):
             return _pasted_never_expires(definition.name, paste.name)
         return None
 
@@ -1665,7 +1665,10 @@ class ServiceBroker:
         )
         if connection is None:
             return None
-        if self._method_refusal(definition, connection.method) is not None:
+        if (
+            self.method_withdrawn(connection)
+            or self._method_refusal(definition, connection.method) is not None
+        ):
             return None
         try:
             return (
@@ -1758,6 +1761,8 @@ class ServiceBroker:
         entry = self._catalog.get(connection.service)
         name = connection.service if entry is None else entry.definition.name
         if connection.status == "active":
+            if self.method_withdrawn(connection):
+                return METHOD_NOT_OFFERED, _through_withdrawn_method(name)
             refusal = self._connection_refusal(connection)
             if refusal is not None:
                 return METHOD_NOT_OFFERED, refusal
