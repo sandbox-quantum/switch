@@ -8,7 +8,7 @@ import {
   getGitHubFlow,
   startGitHubConnection,
 } from './gateway-client';
-import { listenForSignIn } from './sign-in-listener';
+import { failedCompletion, listenForSignIn } from './sign-in-listener';
 
 const active = new Map<string, { secret: string; close: () => void; refused: string | null }>();
 const key = (server: SwitchServer, id: string) => JSON.stringify([server.id, id]);
@@ -25,8 +25,16 @@ export async function startGitHubBrowserFlow(
     state,
     maxCodeLength: 512,
     ports: null,
+    // A code Core never received leaves its flow pending, so the failure here
+    // is the outcome. A flow Core did finish still reads connected.
     complete: async (code) => {
-      await completeGitHubConnection(server, state, code, secret);
+      try {
+        await completeGitHubConnection(server, state, code, secret);
+      } catch (error) {
+        const entry = active.get(key(server, state));
+        if (entry) entry.refused = failedCompletion('GitHub', error);
+        throw error;
+      }
     },
     // Core's callback takes GitHub's refusals itself and fails the flow with
     // them, so one reaching the listener has no server step left to tell.
