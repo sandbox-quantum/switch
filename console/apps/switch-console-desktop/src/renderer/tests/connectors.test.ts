@@ -6,9 +6,11 @@ import {
   connectFlowReducer,
   initialConnectFlow,
   initialSignInChoices,
+  lifetimeText,
   pasteAgainMethod,
   pasteLinks,
   pasteReady,
+  pastedConnection,
   safetyLine,
   signInChoicesReady,
 } from '@renderer/features/connectors/connect-flow';
@@ -122,6 +124,22 @@ describe('the state a connector card shows', () => {
     });
     expect(connectorCardState(entry({ status: 'connected' }), MEMBER).kind).toBe('connected');
     expect(connectorCardState(entry(), MEMBER).kind).toBe('connect');
+  });
+
+  it("says why a connection must be reconnected in the server's words, where it gives them", () => {
+    expect(
+      connectorCardState(
+        entry({
+          status: 'needs_reauthorization',
+          reconnect_code: 'choices_missing',
+          reconnect_reason: 'Example was connected before it asked for a site. Connect it again.',
+        }),
+        MEMBER
+      )
+    ).toMatchObject({
+      kind: 'reconnect',
+      detail: 'Example was connected before it asked for a site. Connect it again.',
+    });
   });
 
   it('reads a server without the workspace switch as on', () => {
@@ -505,6 +523,85 @@ describe('the profile', () => {
     expect(
       profileConnectAction(entry({ workspace_enabled: false, status: 'needs_reauthorization' }))
     ).toBeNull();
+  });
+
+  it('says what a pasted connection reaches and how long it lasts, in place of a level', () => {
+    const token: ServicePasteMethod = {
+      method: 'token',
+      label: 'Personal access token',
+      fields: [
+        { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
+      ],
+      help_url: null,
+      expires: 'vendor',
+      access_note: 'Reaches what your token allows.',
+    };
+    const pasted = entry({
+      name: 'Datadog',
+      status: 'connected',
+      paste: [token],
+      method: 'token',
+      access_note: 'Reaches what your token allows.',
+      external_identity: 'ada@example.test',
+      choices: { site: 'datadoghq.eu' },
+      consent: 'write',
+    });
+    expect(connectedAsLine(pasted)).toBe('Connected with ada@example.test · datadoghq.eu');
+    expect(pastedConnection(pasted)).toEqual({
+      reach: 'Reaches what your token allows.',
+      way: 'Personal access token',
+      lasts: 'Expires: on the date you set in Datadog',
+    });
+    expect(signInLabel(pasted)).toBe('Personal access token');
+    // Keys the server no longer offers here are still named, and the site
+    // their name already says is not said twice.
+    const keys = {
+      ...pasted,
+      method: 'keys',
+      access_note: 'Reaches what your keys allow.',
+      external_identity: 'Datadog keys · datadoghq.eu',
+    };
+    expect(connectedAsLine(keys)).toBe('Connected with Datadog keys · datadoghq.eu');
+    expect(pastedConnection(keys)).toEqual({
+      reach: 'Reaches what your keys allow.',
+      way: 'Pasted keys',
+      lasts: 'Never expires; only Datadog can revoke it',
+    });
+    // A sign-in says its level, as before.
+    const signedIn = { ...pasted, method: 'oauth', access_note: null };
+    expect(pastedConnection(signedIn)).toBeNull();
+    expect(connectedAsLine(signedIn)).toBe(
+      'Connected as ada@example.test · datadoghq.eu · Read and write'
+    );
+    expect(signInLabel(signedIn)).toBe('Sign in at Datadog');
+    // A service connected with a key form says so, as before.
+    const keyed = { ...keys, auth_type: 'api_key' as const, paste: [] };
+    expect(pastedConnection(keyed)).toBeNull();
+    expect(signInLabel(keyed)).toBe('Key');
+    expect(lifetimeText(3600)).toBe('1 hour');
+  });
+
+  it('offers to paste a new token where the vendor refused the one pasted', () => {
+    const refused = entry({
+      status: 'needs_reauthorization',
+      method: 'token',
+      reconnect_code: 'token_refused',
+      paste: [
+        {
+          method: 'token',
+          label: 'Personal access token',
+          fields: [{ name: 'pat', label: 'Token', secret: true, help: null, choices: null }],
+          help_url: null,
+          expires: 'vendor',
+          access_note: 'Reaches what your token allows.',
+        },
+      ],
+    });
+    expect(profileConnectAction(refused)).toBe('paste_again');
+    expect(profileConnectAction({ ...refused, paste: [] })).toBe('reconnect');
+    expect(profileConnectAction({ ...refused, reconnect_code: 'choices_missing' })).toBe(
+      'reconnect'
+    );
   });
 
   it('tells a member who can switch it on, and offers an admin the switch', () => {
