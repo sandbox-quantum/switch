@@ -23,6 +23,9 @@ const config: Configuration = {
     desktopName: `${APP_NAME_LOWER}.desktop`,
   },
   artifactName: `${ARTIFACT_PREFIX}-\${arch}.\${ext}`,
+  // No switchdash:// claim: links from Slack and Mattermost keep opening the
+  // everyday Console (src/main/app/deeplinks.ts skips the run-time claim too).
+  protocols: [],
   directories: { output: 'release/test' },
   publish: null,
   mac: {
