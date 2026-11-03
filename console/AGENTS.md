@@ -507,6 +507,10 @@ pnpm run lint
   from there. What a session host does tell is the Switch server it already works for:
   that a new session started and how (`host/session-start.ts`), as ordinary traffic to
   that server. Whether that leaves the server as telemetry is the server's own setting.
+  The agent controller this app runs on its own computer still reports nothing itself:
+  once Switch has taken a session's start it tells its parent over the IPC channel
+  (`host/session-started.ts`), and this app reports `managed_session_started` under its
+  own gate. A controller on any other machine has no parent listening; keep it that way.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.

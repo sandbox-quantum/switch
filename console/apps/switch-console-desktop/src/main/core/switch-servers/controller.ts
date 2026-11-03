@@ -6,7 +6,11 @@ import { resetChatStream } from '@main/core/chats/chat-streams';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { featureFlagsService } from '@main/core/feature-flags/feature-flags';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
-import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
+import type {
+  TelemetryAuthMethod,
+  TelemetryServerAddFailure,
+  TelemetrySignInFailure,
+} from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import {
@@ -100,9 +104,14 @@ import {
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
-import { assertServerAddress, assertServesDashboard } from './server-address';
+import {
+  assertServerAddress,
+  assertServesDashboard,
+  NotTheServerAddressError,
+} from './server-address';
 import {
   addServer,
+  DuplicateServerUrlError,
   deleteSessionCookie,
   findServerByUrl,
   findServerByWebAddress,
@@ -215,6 +224,13 @@ function reportSignIn(
   });
 }
 
+/** Why registering an address failed, as a reportable code. */
+function serverAddFailureOf(error: unknown): TelemetryServerAddFailure {
+  if (error instanceof DuplicateServerUrlError) return 'already_added';
+  if (error instanceof NotTheServerAddressError) return 'not_the_server_address';
+  return 'error';
+}
+
 /**
  * Register Switch Cloud as a server, or hand back the one already registered.
  *
@@ -230,10 +246,14 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
   try {
     server = await addServer({ name: SWITCH_CLOUD_NAME, url });
   } catch (error) {
-    trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
+    trackEvent('server_added', {
+      server_kind: 'cloud',
+      outcome: 'failure',
+      failure_reason: serverAddFailureOf(error),
+    });
     throw error;
   }
-  trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
+  trackEvent('server_added', { server_kind: 'cloud', outcome: 'success', failure_reason: 'none' });
   return server;
 }
 
@@ -305,10 +325,18 @@ export const switchServersController = createRPCController({
       await assertServerAddress(params.url);
       server = await addServer(params);
     } catch (error) {
-      trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
+      trackEvent('server_added', {
+        server_kind: 'external',
+        outcome: 'failure',
+        failure_reason: serverAddFailureOf(error),
+      });
       throw error;
     }
-    trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
+    trackEvent('server_added', {
+      server_kind: 'external',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
     return server;
   },
 

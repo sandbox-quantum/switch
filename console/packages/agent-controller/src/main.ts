@@ -10,6 +10,8 @@ import {
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
+  SESSION_STARTED_KIND,
+  type SessionStartedNotice,
 } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import {
@@ -657,6 +659,12 @@ async function runCommand(args: string[]): Promise<number> {
         rechecks,
         refreshPath,
         providerSeed,
+        // Only Switch Console's own controller has a parent listening on IPC.
+        sessionStarted: (started) => {
+          if (!process.send || !process.connected) return;
+          const notice: SessionStartedNotice = { kind: SESSION_STARTED_KIND, ...started };
+          process.send(notice);
+        },
         tools: () => toolStatuses(process.env.PATH, process.platform, cliToolsBase()),
         fetch,
         openWebSocket: nodeWebSocket,
