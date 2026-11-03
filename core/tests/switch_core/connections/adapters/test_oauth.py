@@ -384,7 +384,7 @@ class TestCommandLineTool:
         [authorization] = vendor.authorizations
         assert "resource" not in authorization
         assert "resource" not in vendor.token_requests[0]
-        await adapter.revoke_connection(secret)
+        await adapter.revoke_connection(secret, "oauth")
         assert [r["token"] for r in vendor.revoked] == [secret.values["refresh_token"]]
         assert not any("mcp.example.test" in path for path in vendor.paths)
 
@@ -484,7 +484,7 @@ class TestDisconnect:
             ),
         )
         secret = await _sign_in(adapter, vendor)
-        await adapter.revoke_connection(secret)
+        await adapter.revoke_connection(secret, "oauth")
         [revoked] = vendor.revoked
         assert revoked["token"] == secret.values["refresh_token"]
         assert revoked["token_type_hint"] == "refresh_token"
@@ -498,7 +498,7 @@ class TestDisconnect:
             ConnectionNotRevocable,
             match="so it still works. Remove Switch under Connected apps in Example.",
         ):
-            await adapter.revoke_connection(secret)
+            await adapter.revoke_connection(secret, "oauth")
         assert vendor.revoked == []
 
     async def test_revokes_at_the_advertised_endpoint_where_the_catalog_says_to(
@@ -513,7 +513,7 @@ class TestDisconnect:
             ),
         )
         secret = await _sign_in(adapter, vendor)
-        await adapter.revoke_connection(secret)
+        await adapter.revoke_connection(secret, "oauth")
         [revoked] = vendor.revoked
         assert revoked["token"] == secret.values["refresh_token"]
         assert secret.values["refresh_token"] not in vendor.live_refresh
@@ -531,7 +531,7 @@ class TestDisconnect:
         )
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="no way to revoke") as raised:
-            await adapter.revoke_connection(secret)
+            await adapter.revoke_connection(secret, "oauth")
         assert not isinstance(raised.value, ConnectionNotRevocable)
 
 

@@ -128,7 +128,12 @@ class ServiceAdapter(Protocol):
 
     async def revoke_issued(self, token: str) -> None: ...
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None: ...
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> None:
+        """Revoke the connection's credential at the vendor, where it can be.
+        `method` is how the connection was made (`oauth`, `token` or `keys`),
+        as its row says: what the secret holds follows from it.
+        `ConnectionNotRevocable` says what the person must do instead."""
+        ...
 
     def summary(
         self, agent_name: str, access: AccessLevel, resources: dict[str, Any]

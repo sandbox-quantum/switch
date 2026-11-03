@@ -129,7 +129,7 @@ def test_the_connection_keeps_the_fields_picked_from_a_list_as_its_choices() -> 
 async def test_disconnecting_says_only_the_vendor_can_revoke_a_key() -> None:
     adapter = _adapter(lambda request: httpx.Response(200))
     with pytest.raises(ConnectionNotRevocable, match="Revoke it in Example"):
-        await adapter.revoke_connection(adapter.secret(FIELDS))
+        await adapter.revoke_connection(adapter.secret(FIELDS), "keys")
 
 
 async def test_a_key_is_never_issued_to_an_agent() -> None:
