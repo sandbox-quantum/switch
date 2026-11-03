@@ -18,6 +18,10 @@ Your owner granted this agent their Datadog connection. Its tools are on the
   On a read connection the write tools may still be listed, but Datadog
   refuses them: tell the user you can only read, rather than looking for
   another way.
+- **Your owner may have pasted a credential instead of signing in:** a
+  personal token, or a pair of keys, made in Datadog. Then you reach what that
+  token or those keys allow, not what a consent page offers. A refused write
+  means the credential does not allow it.
 - **A refused write means the connection does not allow it.** That is the
   scope, not a fault. Do not retry it, and do not try another tool to make the
   same change. Tell the user what you could not do.

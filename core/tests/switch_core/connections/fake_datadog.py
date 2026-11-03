@@ -20,6 +20,12 @@ authorization server, and none knows another's clients or tokens:
 - The browser comes back with `site`, `domain`, `dd_oid` and `dd_org_name`
   beside the code and state.
 - `/api/v2/current_user` on `api.<site>` names the user signed in.
+- A person may make a personal access token (`pats`) or an API key and an
+  application key (`keys`) at a site instead. The MCP server takes a token
+  as a bearer, and keys in `DD_API_KEY` and `DD_APPLICATION_KEY`; it answers
+  `initialize` 200 for any it knows and 401 for any other. `current_user`
+  names the user for a token with `user_access_read`, and answers 403 for
+  one without, and for keys in those headers.
 """
 
 from __future__ import annotations
@@ -90,6 +96,10 @@ class FakeDatadogSite:
         self.token_requests: list[dict[str, str]] = []
         self.codes: dict[str, _Code] = {}
         self.live_access: dict[str, list[str]] = {}
+        # Personal access tokens made here, with their scopes.
+        self.pats: dict[str, list[str]] = {}
+        # API and application keys made here, as pairs.
+        self.keys: set[tuple[str, str]] = set()
         self.live_refresh: dict[str, tuple[str, list[str]]] = {}
         self.paths: list[str] = []
 
@@ -165,7 +175,7 @@ class FakeDatadogSite:
         ):
             return _json(200, self.metadata)
         if where == self.mcp_url and request.method == "POST":
-            if self._bearer(request) is None:
+            if self._bearer(request) is None and not self._keyed(request):
                 return _json(
                     401,
                     {"errors": ["Unauthorized"]},
@@ -183,8 +193,13 @@ class FakeDatadogSite:
                 {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             )
         if where == self.identity_url and request.method == "GET":
-            if self._bearer(request) is None:
+            if self._keyed(request):
+                return _json(403, {"errors": ["Forbidden"]})
+            scopes = self._bearer(request)
+            if scopes is None:
                 return _json(401, {"errors": ["Unauthorized"]})
+            if self._pat(request) is not None and "user_access_read" not in scopes:
+                return _json(403, {"errors": ["Forbidden"]})
             return _json(
                 200,
                 {
@@ -204,10 +219,23 @@ class FakeDatadogSite:
         return _json(404, {"errors": ["Not found"]})
 
     def _bearer(self, request: httpx.Request) -> list[str] | None:
+        """The scopes of the sign-in's access token, or the personal access
+        token, the request carries; None for neither."""
         header = request.headers.get("authorization", "")
         if not header.startswith("Bearer "):
             return None
-        return self.live_access.get(header.removeprefix("Bearer "))
+        token = header.removeprefix("Bearer ")
+        return self.live_access.get(token, self.pats.get(token))
+
+    def _pat(self, request: httpx.Request) -> str | None:
+        token = request.headers.get("authorization", "").removeprefix("Bearer ")
+        return token if token in self.pats else None
+
+    def _keyed(self, request: httpx.Request) -> bool:
+        return (
+            request.headers.get("DD_API_KEY", ""),
+            request.headers.get("DD_APPLICATION_KEY", ""),
+        ) in self.keys
 
     def _register(self, body: dict[str, Any]) -> httpx.Response:
         self.registrations.append(body)
