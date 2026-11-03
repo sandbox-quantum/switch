@@ -1186,6 +1186,7 @@ def render_activity_plan(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    agent_name: str | None,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
 
@@ -1228,7 +1229,7 @@ def render_activity_plan(
             ],
         }
     ]
-    _offer_withdrawal(blocks[-1], turn)
+    _offer_withdrawal(blocks[-1], turn, agent_name=agent_name)
     _fit_details(blocks, _MAX_POST_BYTES)
     # After the fit, and never part of it: the control is a fixed few hundred
     # bytes that must survive whatever trimming the steps need, and a message
@@ -1271,6 +1272,7 @@ def render_activity_stream(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    agent_name: str | None,
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
@@ -1299,7 +1301,7 @@ def render_activity_stream(
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
         turn.status not in TURN_ENDED,
     )
-    _offer_withdrawal(blocks[-1], turn)
+    _offer_withdrawal(blocks[-1], turn, agent_name=agent_name)
     _fit_details(blocks, _MAX_STREAM_BYTES)
     # Read off the last section before the control is appended: the title is the
     # heading of the newest plan block, and the control has no title at all.
@@ -1355,15 +1357,19 @@ def _session_card(*, live: bool) -> dict[str, Any]:
     }
 
 
-def _offer_withdrawal(section: dict[str, Any], turn: TurnUpsert) -> None:
+def _offer_withdrawal(
+    section: dict[str, Any], turn: TurnUpsert, *, agent_name: str | None
+) -> None:
     """Say on a queued turn's session card how its sender can withdraw it.
 
     On the card, because a plan's title is plain text and cannot mark the
     literals. In place on the newest section rather than as a block of its
     own: a stream cannot take a block back, and the hint has to go once the
-    turn starts, which the next redraw does by not drawing it.
+    turn starts, which the next redraw does by not drawing it. A rich text
+    element is shown as written, so the `@` in the command reaches the reader
+    as plain text Slack resolves to nobody.
     """
-    pieces = withdraw_hint(turn)
+    pieces = withdraw_hint(turn, agent_name=agent_name)
     if pieces is None:
         return
     section["tasks"][0]["details"] = {

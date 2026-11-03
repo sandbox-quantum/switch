@@ -991,7 +991,7 @@ class SlackAdapter(PlatformAdapter):
             )
             if ref is not None:
                 return ref
-        message = self._render_rich(content)
+        message = self._render_rich(content, agent_name=agent_name)
         ref = await self.post_blocks(
             channel_id,
             agent_name,
@@ -1020,8 +1020,9 @@ class SlackAdapter(PlatformAdapter):
     ) -> None:
         """Redraw what `post_rich` posted, in place.
 
-        `agent_name` is not read: a Slack message carries its sender's name
-        and face, so the name is never part of what was drawn.
+        `agent_name` is not the sender: a Slack message carries its sender's
+        name and face. It is read for the command a queued turn's card offers,
+        which names the agent the way `!cancel` does.
 
         Chains `SlackApiError` as `RichContentFailed` rather than letting it
         through raw, so a caller that no longer imports this module still
@@ -1035,7 +1036,7 @@ class SlackAdapter(PlatformAdapter):
         stream = self._streams.get(message_ref)
         if stream is not None and isinstance(content, TurnActivity):
             try:
-                await self._extend_stream(stream, message_ref, content)
+                await self._extend_stream(stream, message_ref, content, agent_name)
             except _StreamClosed:
                 # Slack closes every stream ten minutes after it opens, however
                 # recently it was appended to, and marks the steps still
@@ -1062,7 +1063,9 @@ class SlackAdapter(PlatformAdapter):
             responder_name = user.display_name
         # Mention only on first publication, never on redraw or settlement.
         message = self._render_rich(
-            replace(content, notify_external_id=None), responder_name=responder_name
+            replace(content, notify_external_id=None),
+            agent_name=agent_name,
+            responder_name=responder_name,
         )
         try:
             await self.update_blocks(
@@ -1074,7 +1077,7 @@ class SlackAdapter(PlatformAdapter):
                 raise throttled from error
             if error.response.get("error") == _STREAMING_CONFLICT:
                 await self._recover_stranded_stream(
-                    channel_id, message_ref, content, message
+                    channel_id, message_ref, content, message, agent_name
                 )
                 return
             raise RichContentFailed(
@@ -1088,6 +1091,7 @@ class SlackAdapter(PlatformAdapter):
         message_ref: str,
         content: RichContent,
         message: SlackMessage,
+        agent_name: str,
     ) -> None:
         """Take back a stream this process forgot, or close it if it will not come.
 
@@ -1135,7 +1139,7 @@ class SlackAdapter(PlatformAdapter):
         )
         self._register_stream(message_ref, stream)
         try:
-            await self._extend_stream(stream, message_ref, content)
+            await self._extend_stream(stream, message_ref, content, agent_name)
         except (RichContentThrottled, _StreamNotClosed):
             raise
         except RichContentFailed as refused:
@@ -1461,7 +1465,7 @@ class SlackAdapter(PlatformAdapter):
         # The message exists now. Reported as not posted, the turn would be
         # posted again on the retry, leaving this one empty above it.
         try:
-            await self._extend_stream(stream, ref, content)
+            await self._extend_stream(stream, ref, content, agent_name)
         except RichContentThrottled as throttled:
             raise RichContentThrottledAfterPost(
                 ref=ref, retry_after=throttled.retry_after, text=throttled.text
@@ -1531,7 +1535,11 @@ class SlackAdapter(PlatformAdapter):
             self._unredrawable.popitem(last=False)
 
     async def _extend_stream(
-        self, stream: _ActivityStream, message_ref: str, content: TurnActivity
+        self,
+        stream: _ActivityStream,
+        message_ref: str,
+        content: TurnActivity,
+        agent_name: str,
     ) -> None:
         """Send the sections that moved, and close a finished turn.
 
@@ -1559,6 +1567,7 @@ class SlackAdapter(PlatformAdapter):
             content.turn,
             elapsed_seconds=content.elapsed_seconds,
             interrupt_turn_id=content.interrupt_turn_id,
+            agent_name=agent_name,
         )
         blocks = drawn.blocks
         spent = drawn.spent_control
@@ -1676,7 +1685,11 @@ class SlackAdapter(PlatformAdapter):
         ) from error
 
     def _render_rich(
-        self, content: RichContent, *, responder_name: str | None = None
+        self,
+        content: RichContent,
+        *,
+        agent_name: str,
+        responder_name: str | None = None,
     ) -> SlackMessage:
         if isinstance(content, TurnActivity):
             message = (
@@ -1687,6 +1700,7 @@ class SlackAdapter(PlatformAdapter):
                     content.turn,
                     elapsed_seconds=content.elapsed_seconds,
                     interrupt_turn_id=content.interrupt_turn_id,
+                    agent_name=agent_name,
                 )
                 if not content.status_only
                 else render_activity(

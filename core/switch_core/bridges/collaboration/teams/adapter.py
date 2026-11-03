@@ -2000,6 +2000,7 @@ class TeamsAdapter(PlatformAdapter):
         """
         return self._draw(
             content,
+            agent_name=None,
             mention=None,
             responder=None,
             notice=self.unnotified_notice() if content.notify_unreachable else None,
@@ -2010,6 +2011,7 @@ class TeamsAdapter(PlatformAdapter):
         self,
         content: RichContent,
         *,
+        agent_name: str | None,
         mention: str | None,
         responder: str | None,
         notice: str | None,
@@ -2054,6 +2056,7 @@ class TeamsAdapter(PlatformAdapter):
                     mention=mention,
                     error_summary=content.error_summary,
                     tool_detail=True,
+                    agent_name=agent_name,
                 )
                 + tail
             )
@@ -2226,7 +2229,9 @@ class TeamsAdapter(PlatformAdapter):
             return []
         return answer_actions(content.reference.token, controls)
 
-    def _render_rich(self, content: RichContent) -> tuple[Drawn, str | None]:
+    def _render_rich(
+        self, content: RichContent, agent_name: str
+    ) -> tuple[Drawn, str | None]:
         """Draw a publication, saying so when the mention could not be made.
 
         Two different failures reach the same reader. The publisher sets
@@ -2251,6 +2256,9 @@ class TeamsAdapter(PlatformAdapter):
         stopping = self._interrupt_turn(content)
         drawn = self._draw(
             content,
+            # A TextBlock reads `_` as emphasis, so a name with one in it could
+            # reach the reader without it. That name gets the pieces instead.
+            agent_name=None if "_" in agent_name else agent_name,
             mention=mention,
             responder=self._mention(content.responder_external_id)
             if isinstance(content, RequestCard)
@@ -2404,7 +2412,7 @@ class TeamsAdapter(PlatformAdapter):
         that makes a redraw after a restart address the conversation the post
         actually went to.
         """
-        drawn, stopping = self._render_rich(content)
+        drawn, stopping = self._render_rich(content, agent_name)
         text = drawn.text
         if self._connector is None:
             raise RichContentFailed(
@@ -2482,7 +2490,9 @@ class TeamsAdapter(PlatformAdapter):
         posts for every agent here, so the name is part of what was drawn, and
         an edit that did not know it would republish the turn as somebody else.
         """
-        drawn, stopping = self._render_rich(replace(content, notify_external_id=None))
+        drawn, stopping = self._render_rich(
+            replace(content, notify_external_id=None), agent_name
+        )
         text = drawn.text
         connector = self._connector
         if connector is None:

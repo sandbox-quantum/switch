@@ -432,6 +432,7 @@ def test_an_interrupt_names_the_current_turn() -> None:
         surface="slack",
         requester_name="louisa",
         target_message_id=None,
+        turn_id=None,
     )
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
 
@@ -451,6 +452,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
         surface="switch-web",
         requester_name="louisa",
         target_message_id="$m1",
+        turn_id=None,
     )
     assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
     with pytest.raises(ValueError):
@@ -465,6 +467,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
             surface="switch-web",
             requester_name="louisa",
             target_message_id=None,
+            turn_id=None,
         )
 
 
@@ -528,6 +531,7 @@ def test_other_controls_keep_their_command_ids() -> None:
             surface="slack",
             requester_name="louisa",
             target_message_id=None,
+            turn_id=None,
         )
         assert frame["commandId"] == str(
             uuid.uuid5(uuid.NAMESPACE_URL, f"sdk-control:a:r:m:{action}")
@@ -589,6 +593,7 @@ def test_a_cancel_without_a_turn_is_not_a_frame() -> None:
             surface="slack",
             requester_name="louisa",
             target_message_id=None,
+            turn_id=None,
         )
 
 

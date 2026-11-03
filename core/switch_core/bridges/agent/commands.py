@@ -425,7 +425,7 @@ def room_control_frame(
     surface: str,
     requester_name: str,
     target_message_id: str | None,
-    turn_id: str | None = None,
+    turn_id: str | None,
 ) -> dict[str, object]:
     """The `session_command` frame a room control is relayed as.
 
@@ -434,7 +434,7 @@ def room_control_frame(
     `session_id` is None for a controller-backed agent, whose controller
     picks the session from the room. `target_message_id` is the message a
     `retry` runs again, and None for every other control. `turn_id` is the
-    queued turn a `cancel` withdraws.
+    queued turn a `cancel` withdraws, and None for every other control.
     """
     if action == "retry":
         if target_message_id is None:

@@ -1286,6 +1286,7 @@ class DiscordAdapter(PlatformAdapter):
         """
         return self._draw(
             content,
+            agent_name=None,
             mention=None,
             responder=None,
             prefix="",
@@ -1297,6 +1298,7 @@ class DiscordAdapter(PlatformAdapter):
         self,
         content: RichContent,
         *,
+        agent_name: str | None,
         mention: str | None,
         responder: str | None,
         prefix: str,
@@ -1328,6 +1330,7 @@ class DiscordAdapter(PlatformAdapter):
                     mention=mention,
                     error_summary=content.error_summary,
                     tool_detail=True,
+                    agent_name=agent_name,
                 )
                 + tail
             )
@@ -1350,7 +1353,7 @@ class DiscordAdapter(PlatformAdapter):
         return replace(drawn, text=f"{prefix}{lead}{drawn.text}{tail}")
 
     def _render_rich(
-        self, content: RichContent, *, prefix: str, controls: bool
+        self, content: RichContent, *, agent_name: str, prefix: str, controls: bool
     ) -> tuple[str, discord.ui.View | None]:
         """Draw `content` for one place on Discord, with the buttons it earns.
 
@@ -1374,6 +1377,7 @@ class DiscordAdapter(PlatformAdapter):
         stopping = self._interrupt_turn(content) if controls else None
         drawn = self._draw(
             content,
+            agent_name=agent_name,
             mention=self._mention(content.notify_external_id),
             responder=responder,
             prefix=prefix,
@@ -1623,7 +1627,9 @@ class DiscordAdapter(PlatformAdapter):
         if lobby:
             # A DM card is the bot's own message, and a bot may always put
             # components on one — there is no webhook here to own or not own.
-            text, view = self._render_rich(content, prefix=prefix, controls=True)
+            text, view = self._render_rich(
+                content, agent_name=agent_name, prefix=prefix, controls=True
+            )
             kwargs: dict[str, Any] = {} if view is None else {"view": view}
             try:
                 sent = await target.send(
@@ -1648,7 +1654,10 @@ class DiscordAdapter(PlatformAdapter):
                 fallback,
             ) from error
         text, view = self._render_rich(
-            content, prefix=prefix, controls=self._offers_buttons(int(channel_id))
+            content,
+            agent_name=agent_name,
+            prefix=prefix,
+            controls=self._offers_buttons(int(channel_id)),
         )
 
         thread: Any = None
@@ -1814,7 +1823,10 @@ class DiscordAdapter(PlatformAdapter):
         # redraw would be a handle in the channel that never reaches anybody
         # it has not already reached.
         text, view = self._render_rich(
-            replace(content, notify_external_id=None), prefix=prefix, controls=controls
+            replace(content, notify_external_id=None),
+            agent_name=agent_name,
+            prefix=prefix,
+            controls=controls,
         )
         await self._edit_rich(
             channel_id,

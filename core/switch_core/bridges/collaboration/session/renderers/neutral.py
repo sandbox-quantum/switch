@@ -243,7 +243,9 @@ def turn_summary(
     # How to withdraw a queued turn rides with the state, ahead of what was
     # said, because it is the one thing on the message a reader can act on.
     # Bare: a platform reaching this has no mark for a literal to put on it.
-    hint = _withdraw_line(turn, code=escape)
+    # Nor an agent name: the fallback is drawn from the content alone, so the
+    # card names the pieces of the command rather than the command.
+    hint = _withdraw_line(turn, agent_name=None, code=lambda text: text)
     if hint is not None and len(state) + 1 + len(hint) <= limit:
         state = f"{state}\n{hint}"
     said = [item for item in items if item.kind == "assistant-message"]
@@ -274,6 +276,7 @@ def turn_status(
     mention: str | None = None,
     error_summary: str | None = None,
     tool_detail: bool,
+    agent_name: str | None,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
 
@@ -291,8 +294,11 @@ def turn_status(
     - how the tool calls went, once there is more than one outcome to report.
 
     A queued turn the sender can still withdraw has one more, under the state:
-    its id and the command that takes it (`withdraw_hint`). A queued turn has
-    done nothing yet, so in practice it stands where the other two would.
+    the command that takes it, with the agent's name and the turn's id in it
+    (`withdraw_hint`). A queued turn has done nothing yet, so in practice it
+    stands where the other two would. `agent_name` is the agent the turn is
+    queued with, as `!cancel` names it, or None where the drawing has no agent
+    to name.
 
     `tool_detail` says whether this platform reports tool activity at all, and
     a platform can decline it. Where the status shares the conversation with
@@ -322,8 +328,7 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
-    literal = markup.literal(escape)
-    hint = _withdraw_line(turn, code=lambda text: markup.code(literal(text)))
+    hint = _withdraw_line(turn, agent_name=agent_name, code=markup.code)
     if hint is not None and spent + len(hint) + 1 <= budget:
         lines.append(hint)
         spent += len(hint) + 1
@@ -338,13 +343,16 @@ def turn_status(
     return _mentioned(mention, "\n".join(lines))
 
 
-def _withdraw_line(turn: TurnUpsert, *, code: Callable[[str], str]) -> str | None:
+def _withdraw_line(
+    turn: TurnUpsert, *, agent_name: str | None, code: Callable[[str], str]
+) -> str | None:
     """The line under a queued turn's state saying how to withdraw it, or None.
 
-    `code` is how this platform marks a literal, escape included: the turn id
-    is host text, and both it and the command are what a reader copies.
+    `code` is how this platform marks a literal. It does not escape: what
+    `withdraw_hint` marks literal holds no markup, and the `@` in it has to
+    reach the reader as an `@` for the copied command to name the agent.
     """
-    pieces = withdraw_hint(turn)
+    pieces = withdraw_hint(turn, agent_name=agent_name)
     if pieces is None:
         return None
     return "".join(code(text) if literal else text for text, literal in pieces)

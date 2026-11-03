@@ -301,11 +301,11 @@ version of their own to them without also giving them a release of their own.
   message still waiting for it. Only the message's sender can, and the
   message stays in the room's history. Switch relays it as `turn.cancel`, a
   new command in the session contract, and the session tells the room how it
-  went. A queued turn's activity card shows the first 8 characters of its
-  turn ID, which `!cancel` takes as well as the full ID, looking them up
-  among that agent's queued turns in the room and refusing a start that
-  matches none or several. The card also says how to cancel it, and
-  a cancelled turn's card reads "Cancelled before the agent started.", and
+  went. A queued turn's activity card shows the command its sender can copy:
+  `!cancel`, the agent's mention and the first 8 characters of the turn ID,
+  which `!cancel` takes as well as the full ID, looking them up among that
+  agent's queued turns in the room and refusing a start that matches none or
+  several. A cancelled turn's card reads "Cancelled before the agent started.", and
   `POST /agent-sessions/{session_id}/activity` takes `cancelled` as a turn
   status. A session host without `turn.cancel` does not read the command, so
   the room gets Switch's acknowledgement and nothing more (#800).
@@ -2613,7 +2613,8 @@ version of their own to them without also giving them a release of their own.
   `cancelled` and tells the room how the cancel went. Only the message's
   sender can cancel it, from the room it was sent in; a turn that has started
   or ended is refused, and the room is told why. The chat shows a cancelled
-  turn as "Cancelled" under its message, with no cancel control of its own.
+  turn as "Cancelled" under its message, with no cancel control of its own,
+  and the session transcript ends it with "Turn cancelled.".
   A Switch server from before this change does not know `cancelled`, so the
   host reports such a turn to it as interrupted (#800).
 

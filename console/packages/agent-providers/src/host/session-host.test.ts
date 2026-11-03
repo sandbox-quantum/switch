@@ -2393,6 +2393,59 @@ it('says a message is already cancelled to a second cancel sent while the first 
   expect(cancelledEvents(host)).toHaveLength(1);
 });
 
+/** A retry of the room message `messageId`, asked for by `actorId`. */
+function retryOf(commandId: string, messageId: string, actorId: string): Command {
+  return {
+    ...message(commandId),
+    origin: { actorId, surface: 'switch-web', roomId: 'room', threadId: null, messageId: null },
+    body: { type: 'message.retry', messageId },
+  };
+}
+
+it('leaves a retried message to its sender to cancel, not to whoever retried it', async () => {
+  const { host, adapter, emit } = await start('codex');
+  await host.command(roomMessage('first', null));
+  await until(() => expect(statusOf(host, 'first')).toBe('running'));
+  emit({
+    type: 'turn.completed',
+    turnId: 'first',
+    outcome: 'error',
+    message: 'model',
+    usage: [],
+  });
+  await until(() => expect(statusOf(host, 'first')).toBe('error'));
+  await host.command(roomMessage('busy', null));
+  await until(() => expect(statusOf(host, 'busy')).toBe('running'));
+  const retried = await host.command(retryOf('again', 'message-first', '@clicker:test'));
+  expect(retried.status).toBe('applied');
+  await until(() => expect(statusOf(host, 'again')).toBe('queued'));
+
+  const byClicker = cancel('by-clicker', 'again', { actorId: '@clicker:test' });
+  expect(await host.command(byClicker)).toMatchObject({
+    status: 'rejected',
+    code: 'NOT_YOUR_MESSAGE',
+  });
+  expect(statusOf(host, 'again')).toBe('queued');
+  expect((await host.command(cancel('by-sender', 'again'))).status).toBe('applied');
+  expect(statusOf(host, 'again')).toBe('cancelled');
+
+  await finishTurns(adapter, emit, 2, 2);
+  await host.command(roomMessage('last', null));
+  await until(() => expect(sent(adapter).at(-1)).toBe('last'));
+  expect(sent(adapter)).toEqual(['first', 'busy', 'last']);
+});
+
+it('refuses to run again a message cancelled from the queue', async () => {
+  const { host, adapter } = await queuedBehind('codex', 'b');
+  expect((await host.command(cancel('cancel-b', 'b'))).status).toBe('applied');
+
+  const retry = retryOf('again', 'message-b', '@person:test');
+  await expect(host.command(retry)).rejects.toThrow('SESSION_BUSY');
+  expect(host.snapshot().turns.map((turn) => turn.turnId)).toEqual(['a', 'b']);
+  expect(statusOf(host, 'b')).toBe('cancelled');
+  expect(sent(adapter)).toEqual(['a']);
+});
+
 it.each([
   ['someone else', 'b', { actorId: '@other:test' }, 'NOT_YOUR_MESSAGE'],
   ['another room', 'b', { roomId: 'other-room' }, 'TURN_NOT_FOUND'],

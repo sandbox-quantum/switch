@@ -411,8 +411,13 @@ map. No Node/npx and no credentials in the CLI's environment.
   notice; question cards; answered-card removal; the unconfirmed-card search
   or notice; and the "host offline" card state. A 5-second tick redraws
   running turns where the platform redraws for the clock, and anything whose
-  agent went offline or came back. The card of a `queued` turn shows the first
-  8 characters of its turn ID, and `!cancel` takes that start or the full ID.
+  agent went offline or came back. The card of a `queued` turn shows one
+  command to copy: `!cancel`, the agent's mention (the name `post_rich` was
+  given) and the first 8 characters of the turn ID, marked as one literal and
+  not escaped, so the `@` survives (`renderers.withdraw_hint`). `!cancel`
+  takes that start or the full ID. Where there is no agent to name (the text
+  of a failed publication) or the name would not read back as one mention,
+  and on Teams for a name with `_` in it, the card names the pieces instead.
 - Stop: a press (`INTERRUPT_ACTION`) resolves its turn from
   `turn_status_posts`, is refused if that turn is no longer running, is
   judged by the agent's addressing policy in the room (as `!interrupt` is),

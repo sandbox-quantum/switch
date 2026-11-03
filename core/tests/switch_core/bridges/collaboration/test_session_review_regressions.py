@@ -34,7 +34,9 @@ def test_a_plan_header_always_discloses_the_steps_it_left_out(status):
     """A list cut to what Slack takes says so, whatever the turn is doing."""
     items = [_item(itemId=f"step-{i}", title=f"Step {i}") for i in range(60)]
 
-    plan = render_activity_plan(items, _turn(status), elapsed_seconds=90).blocks[0]
+    plan = render_activity_plan(
+        items, _turn(status), elapsed_seconds=90, agent_name="cc"
+    ).blocks[0]
 
     assert len(plan["tasks"]) == 50
     assert "11 earlier lines not shown" in plan["title"]
@@ -45,7 +47,9 @@ def test_a_plan_header_always_discloses_the_steps_it_left_out(status):
 def test_a_finished_plan_counts_the_steps_it_ran_not_the_ones_it_shows():
     items = [_item(itemId=f"step-{i}", title=f"Step {i}") for i in range(60)]
 
-    plan = render_activity_plan(items, _turn("completed"), elapsed_seconds=90).blocks[0]
+    plan = render_activity_plan(
+        items, _turn("completed"), elapsed_seconds=90, agent_name="cc"
+    ).blocks[0]
 
     assert "60 tool calls" in plan["title"]
 

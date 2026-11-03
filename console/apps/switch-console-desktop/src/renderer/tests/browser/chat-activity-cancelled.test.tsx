@@ -1,12 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import '@renderer/index.css';
-import type { TurnActivity } from '@renderer/features/chats/activity-join';
 import { ChatActivityBlock } from '@renderer/features/chats/components/chat-activity-block';
-import type { AgentActivity } from '@renderer/features/chats/stores/chat-activity-store';
+import {
+  type ActivityApi,
+  AgentActivities,
+} from '@renderer/features/chats/stores/chat-activity-store';
 import { avatarSettingsQueryKey } from '@renderer/lib/stores/use-avatar-settings';
+import type { ChatActivityItem } from '@shared/core/chats/activity';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -18,7 +21,56 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(node: React.ReactNode): Promise<HTMLElement> {
+function turnItem(status: ChatActivityItem['status']): ChatActivityItem {
+  return {
+    agentId: 'agent-a',
+    sessionId: 's1',
+    turnId: 't1',
+    itemId: 'turn',
+    kind: 'turn',
+    revision: 1,
+    status,
+    title: '',
+    text: '',
+    commandId: null,
+    roomId: 'room-1',
+    threadId: null,
+    messageId: 'm1',
+    occurredAt: '2026-01-01T00:00:00Z',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+  };
+}
+
+/**
+ * The block as a room draws it: a real activity over an API whose session says
+ * it can retry, so a turn that may be run again is offered Retry and one that
+ * may not is drawn without it for that reason alone.
+ */
+async function render(status: ChatActivityItem['status']): Promise<HTMLDivElement> {
+  const api: ActivityApi = {
+    resolve: async () => ({
+      kind: 'session',
+      target: { kind: 'local' } as never,
+      hostAgentKey: 'agent-local',
+      sessionId: 's1',
+    }),
+    reasoning: async () => null,
+    watchPlacements: () => () => {},
+    roomActivity: async () => ({ items: [turnItem(status)], approvals: [] }),
+    roomMessages: () => [],
+    control: vi.fn(),
+    retrySupport: async () => 'yes',
+    answerApproval: async () => {
+      throw new Error('unused');
+    },
+  };
+  const activities = new AgentActivities(api, { getItem: () => null, setItem: () => {} });
+  const activity = activities.acquire('server-1', 'tenant', 'room-1', 'agent-a');
+  await vi.waitFor(() => expect(activity.turns().size).toBe(1));
+  await vi.waitFor(() => expect(activity.target).not.toBeNull());
+  const turn = activity.turns().get('m1')!;
+  expect(turn.status).toBe(status);
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -29,52 +81,49 @@ async function render(node: React.ReactNode): Promise<HTMLElement> {
   });
   client.setQueryData(avatarSettingsQueryKey('server-1'), { thirdPartyAvatarsEnabled: false });
   await act(async () =>
-    root!.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>)
+    root!.render(
+      <QueryClientProvider client={client}>
+        <ChatActivityBlock
+          activity={activity}
+          turn={turn}
+          agent={{ name: 'Helper', iconUrl: null }}
+          head
+          endReason={null}
+          serverId="server-1"
+        />
+      </QueryClientProvider>
+    )
   );
+  for (let i = 0; i < 5; i++) await act(async () => await Promise.resolve());
   return container;
 }
 
-const activity = { reasoning: new Map(), toolDetails: new Map() } as unknown as AgentActivity;
+const retryButton = (el: HTMLElement) =>
+  [...el.querySelectorAll('button')].find((b) => /^Retr/.test(b.textContent ?? ''));
 
-function turn(status: TurnActivity['status']): TurnActivity {
-  return {
-    sessionId: 's1',
-    turnId: 't1',
-    status,
-    roomId: 'room-1',
-    messageId: 'm1',
-    items: [],
-    requests: [],
-  };
-}
-
-function block(status: TurnActivity['status']) {
-  return (
-    <ChatActivityBlock
-      activity={activity}
-      turn={turn(status)}
-      agent={{ name: 'Helper', iconUrl: null }}
-      head
-      endReason={null}
-      serverId="server-1"
-    />
-  );
+function statusOf(el: HTMLElement): HTMLElement {
+  const status = el.querySelector<HTMLElement>('[role="status"]');
+  expect(status).not.toBeNull();
+  return status!;
 }
 
 describe('ChatActivityBlock', () => {
-  it('shows a cancelled turn as cancelled, without the failure mark', async () => {
-    const el = await render(block('cancelled'));
+  it('shows a cancelled turn as cancelled, without the failure mark or Retry', async () => {
+    const el = await render('cancelled');
 
-    const status = el.querySelector<HTMLElement>('[role="status"]');
-    expect(status?.textContent).toBe('Cancelled');
-    expect(status?.querySelector('.text-foreground-destructive')).toBeNull();
+    const status = statusOf(el);
+    expect(status.textContent).toBe('Cancelled');
+    expect(status.querySelector('.text-foreground-destructive')).toBeNull();
     expect(el.textContent).not.toContain('t1');
+    // Withdrawn by its sender: there is nothing to run again.
+    expect(retryButton(el)).toBeUndefined();
   });
 
-  it('keeps the failure mark for a turn that ended with an error', async () => {
-    const el = await render(block('error'));
+  it('keeps the failure mark, and Retry, for a turn that ended with an error', async () => {
+    const el = await render('error');
 
-    const status = el.querySelector<HTMLElement>('[role="status"]');
-    expect(status?.querySelector('.text-foreground-destructive')).not.toBeNull();
+    const status = statusOf(el);
+    expect(status.querySelector('.text-foreground-destructive')).not.toBeNull();
+    expect(retryButton(el)).toBeDefined();
   });
 });

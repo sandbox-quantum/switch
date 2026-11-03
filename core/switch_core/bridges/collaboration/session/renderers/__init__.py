@@ -16,6 +16,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from switch_core import messaging_platforms
+from switch_core.clients.mentions import NAME_CHAR
+from switch_core.room_wide_mention import is_reserved_mention_name
 from switch_core.sessions.contract import (
     TURN_ENDED,
     TURN_ID_PATTERN,
@@ -130,8 +132,13 @@ def _format_duration(elapsed_seconds: float) -> str:
 # sender", because everyone in the room reads it and only they can withdraw it.
 CANCEL_COMMAND = "!cancel"
 
+# An agent name `!cancel` reads back as one whole mention.
+_MENTIONABLE = re.compile(rf"{NAME_CHAR}+")
 
-def withdraw_hint(turn: TurnUpsert) -> list[tuple[str, bool]] | None:
+
+def withdraw_hint(
+    turn: TurnUpsert, *, agent_name: str | None
+) -> list[tuple[str, bool]] | None:
     """How to withdraw a queued turn, as (text, is_literal) pieces, or None.
 
     None for a turn the host queued for itself (the `<commandId>:followup`
@@ -142,12 +149,31 @@ def withdraw_hint(turn: TurnUpsert) -> list[tuple[str, bool]] | None:
     The card shows the id's first eight characters, the shortest start
     `!cancel` takes (`SHORT_TURN_ID_LENGTH` in its parser): core looks them up
     among the agent's queued turns in the room. The full id works too.
+
+    With the agent's name, the command is one literal to copy and send as it
+    is: `!cancel @<agent> <id>`. Without it (a drawing nobody named an agent
+    for, or a name `!cancel` would not read back as one mention) the card
+    names the pieces instead. A literal here is the fixed command, an id the
+    parser's pattern accepted and a name made of mention characters, so it
+    holds nothing a platform reads as markup. That is why renderers mark it
+    without escaping it: the escape puts a zero-width space after every `@`,
+    and the parser does not find a mention broken that way.
     """
     if turn.status != "queued" or not TURN_ID_PATTERN.fullmatch(turn.turn_id):
         return None
+    short = turn.turn_id[:8]
+    if (
+        agent_name is not None
+        and _MENTIONABLE.fullmatch(agent_name)
+        and not is_reserved_mention_name(agent_name)
+    ):
+        return [
+            (f"{CANCEL_COMMAND} @{agent_name} {short}", True),
+            (" — the sender can send this to withdraw it.", False),
+        ]
     return [
         ("Turn ID: ", False),
-        (turn.turn_id[:8], True),
+        (short, True),
         (" — the sender can withdraw it with ", False),
         (CANCEL_COMMAND, True),
         (", the agent's mention and this ID.", False),

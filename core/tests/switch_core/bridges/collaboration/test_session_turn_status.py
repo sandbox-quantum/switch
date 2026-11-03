@@ -9,6 +9,8 @@ not report tool activity it must not report it here by the side door.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from switch_core.bridges.agent.commands import TurnIdPrefix, parse_cancel_args
@@ -16,6 +18,7 @@ from switch_core.bridges.collaboration.session.renderers import MARKDOWN, Markup
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_status
 from switch_core.bridges.collaboration.teams.adapter import _TEAMS_MARKUP
 from switch_core.bridges.collaboration.telegram.adapter import TELEGRAM_HTML
+from switch_core.clients.mentions import mention_tokens
 from switch_core.sessions.contract import Item, TurnUpsert
 
 from .session_fixtures import _item, _turn
@@ -37,6 +40,7 @@ def _status(items: list[Item], turn_state: str, *, tool_detail: bool) -> list[st
         limit=10_000,
         markup=MARKDOWN,
         tool_detail=tool_detail,
+        agent_name="cc",
     ).splitlines()
 
 
@@ -108,6 +112,7 @@ def _attention(summary: str, *, limit: int) -> list[str]:
         markup=MARKDOWN,
         error_summary=summary,
         tool_detail=True,
+        agent_name="cc",
     ).splitlines()
 
 
@@ -148,16 +153,24 @@ def _drawn(
     items: list[Item] | None = None,
     elapsed_seconds: float | None = None,
     limit: int = 10_000,
+    agent_name: str | None = "cc",
+    escape: Callable[[str], str] = _identity,
 ) -> list[str]:
     return turn_status(
         items or [],
         turn,
-        escape=_identity,
+        escape=escape,
         limit=limit,
         markup=markup,
         elapsed_seconds=elapsed_seconds,
         tool_detail=True,
+        agent_name=agent_name,
     ).splitlines()
+
+
+def _defuse_at(text: str) -> str:
+    """What every adapter's escape does to an `@`: a zero-width space after it."""
+    return text.replace("@", "@​")
 
 
 @pytest.mark.parametrize(
@@ -187,6 +200,69 @@ def test_a_cancelled_turn_says_so_and_nothing_about_time(
     assert lines == [head]
 
 
+# The card as each platform marks a literal, and how a reader's copy of that
+# literal comes out: the marks are not copied, the text between them is.
+_COMMAND_CARDS = [
+    (
+        MARKDOWN,
+        "`!cancel @cc 3f2b8c1e` — the sender can send this to withdraw it.",
+        "`",
+    ),
+    (
+        TELEGRAM_HTML,
+        "<code>!cancel @cc 3f2b8c1e</code> — the sender can send this to withdraw it.",
+        "<code>",
+    ),
+    (
+        _TEAMS_MARKUP,
+        "**!cancel @cc 3f2b8c1e** — the sender can send this to withdraw it.",
+        "**",
+    ),
+]
+
+
+def _copied(line: str, mark: str) -> str:
+    """The literal a reader copies off the line: what the first mark opens."""
+    close = mark.replace("<", "</")
+    start = line.index(mark) + len(mark)
+    return line[start : line.index(close, start)]
+
+
+@pytest.mark.parametrize(
+    ("markup", "hint", "mark"), _COMMAND_CARDS, ids=["markdown", "telegram", "teams"]
+)
+def test_a_queued_turn_offers_one_command_to_copy(
+    markup: Markup, hint: str, mark: str
+) -> None:
+    """The command is one literal, the agent's mention and the id's first eight
+    characters in it, marked the way the platform marks code. The escape every
+    adapter applies is passed here and does not reach the literal: it would put
+    a zero-width space after the `@`, and the parser finds no mention in that."""
+    lines = _drawn(_turn_with_id("queued", QUEUED_ID), markup, escape=_defuse_at)
+
+    assert lines == [markup.bold("Queued. Waiting for the agent to start…"), hint]
+    assert "​" not in hint
+
+
+@pytest.mark.parametrize(
+    ("markup", "hint", "mark"), _COMMAND_CARDS, ids=["markdown", "telegram", "teams"]
+)
+def test_the_copied_command_names_the_turn_and_the_agent(
+    markup: Markup, hint: str, mark: str
+) -> None:
+    """Sent as it was copied, the literal is split the way every platform splits
+    a `!` command, and what `!cancel` reads from its args is the turn's start
+    and, as its first mention, the agent the card was drawn for."""
+    lines = _drawn(_turn_with_id("queued", QUEUED_ID), markup, escape=_defuse_at)
+
+    sent = _copied(lines[1], mark)
+    command, args = sent.split(None, 1)
+
+    assert command == "!cancel"
+    assert parse_cancel_args(args) == TurnIdPrefix("3f2b8c1e")
+    assert mention_tokens(args)[0] == "cc"
+
+
 @pytest.mark.parametrize(
     ("markup", "hint"),
     [
@@ -208,14 +284,19 @@ def test_a_cancelled_turn_says_so_and_nothing_about_time(
     ],
     ids=["markdown", "telegram", "teams"],
 )
-def test_a_queued_turn_names_its_id_marked_the_way_the_platform_marks_code(
-    markup: Markup, hint: str
+@pytest.mark.parametrize(
+    "agent_name",
+    [None, "all", "two words"],
+    ids=["no-agent", "reserved-name", "not-one-mention"],
+)
+def test_without_a_name_to_mention_the_card_names_the_pieces(
+    markup: Markup, hint: str, agent_name: str | None
 ) -> None:
-    """The id and the command are literals to copy, so each platform marks them
-    its own way — a backtick written into the wording would reach Telegram and
-    Teams as a backtick. The id is its first eight characters, which `!cancel`
-    takes as they are."""
-    lines = _drawn(_turn_with_id("queued", QUEUED_ID), markup)
+    """No agent to name, or a name `!cancel` would not read back as the agent's
+    one mention: the card does not offer a command that names nobody. The id
+    and the command are still literals to copy, each marked its own way, and
+    the id is its first eight characters, which `!cancel` takes as they are."""
+    lines = _drawn(_turn_with_id("queued", QUEUED_ID), markup, agent_name=agent_name)
 
     assert lines == [markup.bold("Queued. Waiting for the agent to start…"), hint]
     assert hint == _HINT.format(
