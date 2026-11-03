@@ -44,7 +44,44 @@ auth:
     url: "https://api.{site}/api/v2/current_user"
     account_id: data.id
     label: data.attributes.email
-# Datadog's access tokens live 3,599 seconds.
+  # In place of signing in, a person may paste a personal access token, which
+  # Datadog ends on the date set when it was made, or an API key and an
+  # application key, which never expire: a server offers those only where it
+  # allows such keys (ALLOW_NON_EXPIRING_KEYS). Either reaches what it was
+  # made to at the site picked, and is checked at the MCP server there.
+  paste:
+    - name: token
+      label: Personal access token
+      fields:
+        - name: pat
+          label: Personal access token
+          secret: true
+          help: "Personal Settings, Access Tokens. Scopes: mcp_read, mcp_write for writes; user_access_read lets Switch name the account."
+      headers: { Authorization: "Bearer {pat}" }
+      expires: vendor
+      # The part of a token before its secret, which Datadog shows people.
+      alias: "^(ddpat_[A-Za-z0-9]+)_"
+      help_url: https://docs.datadoghq.com/account_management/personal-access-tokens/
+    - name: keys
+      label: API and application keys
+      fields:
+        - name: api_key
+          label: API key
+          secret: true
+          help: Organization Settings, API Keys.
+        - name: application_key
+          label: Application key
+          secret: true
+          help: Personal Settings, Application Keys, with mcp_read and, for writes, mcp_write.
+      # Datadog's MCP server takes the keys in headers named with
+      # underscores, unlike its REST API.
+      headers:
+        DD_API_KEY: "{api_key}"
+        DD_APPLICATION_KEY: "{application_key}"
+      expires: never
+      help_url: https://docs.datadoghq.com/account_management/api-app-keys/
+# Datadog's access tokens live 3,599 seconds. A pasted credential is bound by
+# its own expiry, not this.
 token: { kind: pass_through, max_lifetime: 3600 }
 mcp:
   servers:
