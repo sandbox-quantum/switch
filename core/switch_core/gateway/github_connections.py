@@ -253,7 +253,7 @@ async def authorize(
         "switch_github_" + state,
         nonce,
         max_age=600,
-        secure=secure_cookie(request),
+        secure=secure_cookie(github.origin),
         httponly=True,
         samesite="lax",
         path="/gateway/provider-connections/github/callback",
@@ -309,7 +309,7 @@ async def callback(
         response.delete_cookie(
             "switch_github_" + state,
             path="/gateway/provider-connections/github/callback",
-            secure=secure_cookie(request),
+            secure=secure_cookie(flow.redirect_uri),
             httponly=True,
             samesite="lax",
         )
