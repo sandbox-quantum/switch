@@ -314,8 +314,8 @@ Refusals on the grant API:
 - **An agent with no Console agent type:** `422`, saying that nothing would
   start its tools. The type is `metadata.known_agent_type`, read by
   `known_agent_for` in `gateway/known_agents.py` (`claude-code`, `codex`,
-  `opencode`, `antigravity`, `cursor`); the `agent_type` column does not hold
-  it. This is how agents with their own runtime are refused.
+  `opencode`, `antigravity`, `cursor`, `pi`); the `agent_type` column does not
+  hold it. This is how agents with their own runtime are refused.
 - A service with no registered adapter: `422`, naming why ("not available on
   this server yet", or "the GitHub App is not configured").
 - Tools outside the catalog's lists for the level, or resources the adapter

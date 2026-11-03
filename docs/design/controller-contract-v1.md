@@ -90,7 +90,7 @@ type AgentDefinition = {
   name: string                        // Switch identifier, as addressed in rooms
   display_name: string | null
   icon_url: string | null
-  provider: "claude" | "codex" | "opencode" | "cursor" | "antigravity"
+  provider: "claude" | "codex" | "opencode" | "cursor" | "antigravity" | "pi"
   model: string | null                // null = provider default
   advanced_config: Record<string, string | number | boolean | string[]> // the provider's "Advanced configuration", checked by the server against its schema for the provider (GET /gateway/management/advanced-config); an unset field is left out; {} for none
   instructions: string                // ≤ 32 KiB

@@ -9,6 +9,8 @@ import { checkCodexSignIn, CODEX_LOGIN } from '../codex/sign-in';
 import { cursorAcp } from '../cursor/cursor-adapter';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
 import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
+import { createPiAdapter } from '../pi/pi-adapter';
+import { checkPiSignIn, PI_INHERIT_ENV, PI_LOGIN } from '../pi/sign-in';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 
@@ -38,7 +40,8 @@ export interface ProviderRuntime {
   loginCommand: string;
   /**
    * Environment variables the CLI reads (credentials, endpoints) that a
-   * session host passes through from the machine's environment.
+   * session host passes through from the machine's environment, to this
+   * provider's sessions only (`prepareSharedConfig`).
    */
   inheritEnv: readonly string[];
   /** The platforms the CLI cannot run on, each with the reason a person is told. */
@@ -100,6 +103,17 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   },
   acpProviderRuntime(antigravityAcp),
   acpProviderRuntime(cursorAcp),
+  {
+    id: 'pi',
+    loginCommand: PI_LOGIN,
+    inheritEnv: PI_INHERIT_ENV,
+    // Until a Windows run is checked: Pi's shell tool and the process groups
+    // Switch stops are verified on Linux only.
+    unsupportedPlatforms: { win32: 'Pi in Switch is not verified on Windows yet.' },
+    createAdapter: ({ binaryPath, logger }) =>
+      createPiAdapter({ binaryPath, ...(logger ? { logger } : {}) }),
+    checkSignIn: (input) => checkPiSignIn(input),
+  },
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));

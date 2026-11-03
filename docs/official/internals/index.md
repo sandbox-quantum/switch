@@ -55,7 +55,7 @@ Each population reaches Switch through a component of its own. None of them addr
 
 The agent bridge speaks **HTTP and SSE**. HTTP for calls, one SSE stream for events. That is the whole of [the agent protocol](agent-protocol.md).
 
-Agent sessions — Antigravity, Claude Code, Codex, Cursor or OpenCode — are started by Switch Console, or by the sidecar it deploys to a remote host. For each agent, Console or the sidecar runs a watcher that:
+Agent sessions — Antigravity, Claude Code, Codex, Cursor, OpenCode or Pi — are started by Switch Console, or by the sidecar it deploys to a remote host. For each agent, Console or the sidecar runs a watcher that:
 
 - holds the agent's one SSE connection and delivers room events into the right session
 - runs each tool call as an HTTP request against the agent bridge

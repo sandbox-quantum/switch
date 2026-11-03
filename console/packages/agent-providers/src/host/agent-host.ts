@@ -310,8 +310,9 @@ export async function stopSupersededSessions(
  * `config` with what its agent's definition decides — the model, the approval
  * mode, the instructions and skill the provider is given, and what the
  * agent's advanced configuration becomes: the agent definition Claude Code
- * runs as and the Codex profile — and the credentials, provider binary and
- * environment (where a provider login given since lives) of whoever runs the
+ * runs as and the Codex profile — and the credentials, provider binary,
+ * environment (where a provider login given since lives) and the names of the
+ * machine's variables it is given (`execution.inheritEnv`) of whoever runs the
  * watcher, taken from the watcher's `template` as it stands now. Everything else stays the session's own: its identity,
  * directory and native conversation, so a session started after its agent was
  * edited resumes its conversation under the edit instead of under what the
@@ -356,6 +357,9 @@ export function withDefinitionOf(
     else next.execution.instructions = template.execution.instructions;
     next.execution.skill = template.execution.skill;
     next.execution.codexConfig = template.execution.codexConfig;
+    // Which of the machine's variables it is given is decided now too: a list
+    // saved by an earlier build passes neither more nor less than this one.
+    next.execution.inheritEnv = [...template.execution.inheritEnv];
   }
   return next;
 }
@@ -401,6 +405,13 @@ export async function redefinedSessions(
 }
 
 /**
+ * What a definition is, as `withDefinitionOf` takes it from the template:
+ * said whenever a session is stopped or restarted for an earlier one.
+ */
+export const DEFINITION_PARTS =
+  "model, instructions, advanced configuration, approval mode or the machine's environment variables it is given";
+
+/**
  * Stops each session running under an earlier definition. Like a superseded
  * build, it is started again when it is next needed, and then resumes its
  * conversation under the current definition (`withDefinitionOf`). A turn it
@@ -412,7 +423,7 @@ export async function stopRedefinedSessions(
 ): Promise<void> {
   for (const { root, config } of redefined) {
     console.warn(
-      `Session ${config.session.sessionId} runs under an earlier definition of its agent (model, instructions, advanced configuration or approval mode); stopping it so it resumes under the current one when it is next needed.`
+      `Session ${config.session.sessionId} runs under an earlier definition of its agent (${DEFINITION_PARTS}); stopping it so it resumes under the current one when it is next needed.`
     );
     await supervision.stop(root);
   }
@@ -1589,7 +1600,7 @@ export async function runAgentHost(
       );
       for (const { root: sessionRoot, saved } of idle) {
         console.warn(
-          `Session ${saved.session.sessionId} runs under an earlier definition of its agent (model, instructions, advanced configuration or approval mode) or its granted services; restarting it on the same conversation under the current ones.`
+          `Session ${saved.session.sessionId} runs under an earlier definition of its agent (${DEFINITION_PARTS}) or its granted services; restarting it on the same conversation under the current ones.`
         );
         if (servicesNow !== null) restartedFor.set(sessionRoot, servicesNow);
         try {

@@ -42,10 +42,12 @@ describe('reportBuddyMessage', () => {
 describe('reportBuddyStep', () => {
   it('reports a known provider as itself and anything else as none', () => {
     reportBuddyStep('start', 'codex');
+    reportBuddyStep('install', 'pi');
     reportBuddyStep('skip', null);
     reportBuddyStep('start', 'unheard-of');
     expect(report.mock.calls).toEqual([
       ['buddy_step', { action: 'start', provider: 'codex' }],
+      ['buddy_step', { action: 'install', provider: 'pi' }],
       ['buddy_step', { action: 'skip', provider: 'none' }],
       ['buddy_step', { action: 'start', provider: 'none' }],
     ]);

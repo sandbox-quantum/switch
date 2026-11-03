@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
 import { type DoctorInputs, formatChecks, runDoctor } from './doctor';
+import { PROVIDERS } from './schemas';
 import { MemorySecretStore } from './secrets';
 
 function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {
@@ -72,6 +73,13 @@ describe('doctor', () => {
     expect(status(checks, 'Node')).toBe('fail');
     expect(status(checks, 'claude')).toBe('warn');
     expect(status(checks, 'Providers')).toBe('fail');
+  });
+
+  it('names every provider it checks when none is ready', async () => {
+    const checks = await runDoctor(inputs({ locate: async () => null }));
+    const detail = checks.find((check) => check.name === 'Providers')?.detail ?? '';
+    const named = /Install one \(([^)]+)\)/.exec(detail)?.[1].split(/, | or /) ?? [];
+    expect([...named].sort()).toEqual([...PROVIDERS].sort());
   });
 
   it('points at the proxy when the server answers, but not as the Switch API', async () => {

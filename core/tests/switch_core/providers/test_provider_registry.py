@@ -6,12 +6,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
 
+from switch_core.chats.views import _provider
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.known_agents import (
     ClaudeCodeKnownAgent,
@@ -36,6 +38,7 @@ from switch_core.providers.registry import (
     provider_ids,
 )
 from switch_core.providers.schema import advanced_config_schema
+from switch_core.template_guide import TEMPLATE_GUIDE
 
 
 def test_ids_known_agent_types_and_connector_types_are_unique() -> None:
@@ -71,6 +74,7 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "opencode": ("opencode", "OpenCode CLI"),
         "antigravity": ("antigravity", "Antigravity CLI"),
         "cursor": ("cursor", "Cursor CLI"),
+        "pi": ("pi", "Pi CLI"),
     }
 
 
@@ -85,6 +89,7 @@ _CONSOLE_SIGN_IN = {
     "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
     "antigravity": ("antigravity/antigravity-adapter.ts", r"loginCommand: '([^']+)'"),
     "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
+    "pi": ("pi/sign-in.ts", r"PI_LOGIN = '([^']+)'"),
 }
 
 
@@ -103,7 +108,7 @@ def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
     with pytest.raises(UnknownProvider) as raised:
         agent_provider("gemini")
     assert str(raised.value) == (
-        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
+        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, pi"
     )
 
 
@@ -116,6 +121,43 @@ def test_only_claude_has_a_known_agent_of_its_own() -> None:
         for key, spec in specs.items()
         if key != "claude-code"
     )
+
+
+def test_the_template_guide_offers_every_provider() -> None:
+    # The guide is written out by hand, so it is held to the table here.
+    line = next(
+        line
+        for line in TEMPLATE_GUIDE.splitlines()
+        if line.strip().startswith("provider:")
+    )
+    offered = line.split("#", 1)[0].split(":", 1)[1].split("|")
+    assert [value.strip() for value in offered] == [*provider_ids(), '"{param}"']
+
+
+def _registered(metadata: object) -> Any:
+    return SimpleNamespace(metadata_=metadata)
+
+
+def test_a_registered_agent_is_shown_with_its_provider() -> None:
+    shown = {
+        provider.known_agent_type: _provider(
+            _registered({"known_agent_type": provider.known_agent_type}), None
+        )
+        for provider in agent_providers()
+    }
+    assert shown == {
+        "claude-code": "claude",
+        "codex": "codex",
+        "opencode": "opencode",
+        "antigravity": "antigravity",
+        "cursor": "cursor",
+        "pi": "pi",
+    }
+    assert _provider(_registered({"known_agent_type": "gemini"}), None) is None
+    assert _provider(_registered({"known_agent_type": None}), None) is None
+    assert _provider(_registered(None), None) is None
+    # A managed definition's provider wins over the registration's.
+    assert _provider(_registered({"known_agent_type": "pi"}), "codex") == "codex"
 
 
 NEW = AgentProvider(id="newcli", label="New CLI", sign_in_command="newcli login")
@@ -186,6 +228,10 @@ class TestANewProvider:
         resolved = known_agent_for(agent)  # type: ignore[arg-type]
         assert resolved is not None
         assert resolved[0].provider is new_provider
+
+    def test_its_agents_are_shown_with_it(self, new_provider: AgentProvider) -> None:
+        agent = _registered({"known_agent_type": "newcli"})
+        assert _provider(agent, None) == "newcli"
 
     def test_a_managed_agent_registers_through_it(
         self, new_provider: AgentProvider

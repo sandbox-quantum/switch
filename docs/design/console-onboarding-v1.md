@@ -157,8 +157,9 @@ and the "Start with…" buttons appear when the report arrives.
 
 ### 7. Pick and prepare a provider
 
-Five cards: Claude Code, Codex, OpenCode, Cursor, Antigravity, tagged from
-the controller's report:
+One card per provider in the provider catalogue (every registered provider
+plugin, in registration order: Codex, Claude Code, Antigravity, Cursor,
+OpenCode, Pi at the time of writing), tagged from the controller's report:
 
 | Report | Tag | Action |
 | --- | --- | --- |
