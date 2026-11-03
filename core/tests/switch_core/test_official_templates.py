@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 
+from switch_core.management.schemas import MAX_INSTRUCTIONS_BYTES
 from switch_core.official_templates import (
     _SHIPPED,
     current_revision,
@@ -96,6 +97,23 @@ def test_the_instructions_are_written_in_and_the_documents_are_clean():
             assert len(agent["instructions"]) > 1000
             result = lint_template(template.content)
             assert result.errors == [] and result.warnings == [], template.id
+
+
+def test_every_official_template_s_instructions_fit_the_server_limit():
+    """The server refuses longer agent instructions, so an AGENT.md past it
+    is a template nobody can create."""
+    for agent_management in (True, False):
+        for switch_buddy in (True, False):
+            for template in official_templates(agent_management, switch_buddy):
+                data = yaml.safe_load(template.content)
+                agents = (
+                    [r for r in data["resources"].values() if r["type"] == "agent"]
+                    if "resources" in data
+                    else [data["agent"]]
+                )
+                for agent in agents:
+                    size = len(agent["instructions"].encode())
+                    assert size <= MAX_INSTRUCTIONS_BYTES, (template.id, size)
 
 
 def test_switch_buddy_is_served_only_with_its_flag_and_agent_management():
