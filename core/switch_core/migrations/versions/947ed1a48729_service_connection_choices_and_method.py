@@ -16,8 +16,11 @@ several sites registers a client at each. Every row so far is a service's
 one client, under the empty choice.
 
 Expand only: a release from before this revision never reads the new
-columns, and inserts a connection or a registered client without them,
-which the defaults fill as it means them. It reads and writes registered
+columns, and inserts a connection or a registered client without them, so
+the defaults fill them. A Datadog key connection that an older replica
+writes during the rollout therefore reads `oauth`. It must still be made
+again, because it names no site, so only the disconnect warning reads it
+as a sign-in. An older release reads and writes registered
 clients by service alone, for entries that offer no choice, whose one row
 each stays under the empty choice. Downgrading drops what was kept for
 any other choice; the server registers again on the next connect.

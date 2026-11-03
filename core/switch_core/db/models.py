@@ -4405,7 +4405,9 @@ class ServiceConnection(TenantScoped, Base):
     oauth_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # What the person picked from the catalog entry's fixed lists to connect
     # (a vendor's site), by name: every URL called for the connection is the
-    # one for its choices. Empty for an entry that offers none.
+    # one for its choices. Empty for an entry that offers none. The secret
+    # holds a copy for `refresh` and `revoke_connection`; the two must not
+    # differ.
     choices: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
