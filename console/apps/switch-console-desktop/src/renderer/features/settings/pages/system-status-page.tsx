@@ -47,7 +47,7 @@ const ServiceStatus = observer(function ServiceStatus({ server }: { server: Swit
   const state = unreachable
     ? { tone: 'bg-red-500', label: 'Cannot reach the server' }
     : status?.connected
-      ? { tone: 'bg-green-500', label: 'Operational' }
+      ? { tone: 'bg-green-500', label: 'Connected' }
       : { tone: 'bg-[var(--fg-passive)]', label: 'Not signed in' };
   return (
     <section className="space-y-3">

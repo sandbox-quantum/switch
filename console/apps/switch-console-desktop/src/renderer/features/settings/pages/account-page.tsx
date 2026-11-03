@@ -76,7 +76,8 @@ const Account = observer(function Account({
         <div className="space-y-0.5">
           <p className="text-sm text-destructive">Delete account</p>
           <p className="text-sm text-foreground-muted">
-            Permanent: your agents stop and leave every room, and your devices are unregistered.
+            Permanent: your agents, your devices and everything else you own are deleted. Rooms you
+            created stay, for the workspace’s admins to manage.
           </p>
         </div>
         <Button

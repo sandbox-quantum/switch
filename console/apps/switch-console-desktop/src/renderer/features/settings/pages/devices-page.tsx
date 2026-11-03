@@ -63,7 +63,9 @@ const MachinesTable = observer(function MachinesTable({ serverId }: { serverId: 
   const rows = deviceRows(machines.data ?? [], agents.data ?? []);
   if (rows.length === 0) {
     return (
-      <p className="text-sm text-foreground-muted">No device is running agents for you yet.</p>
+      <p className="text-sm text-foreground-muted">
+        None of your devices is set up to run agents yet.
+      </p>
     );
   }
   return (

@@ -154,8 +154,8 @@ function CreatedKey({
   return (
     <div className="space-y-2 rounded-lg border border-border bg-background-1 p-3">
       <p className="text-sm text-foreground">
-        <span className="font-medium">{created.label}</span> is ready. Copy it now: this is the only
-        time it is shown in full.
+        <span className="font-medium">{created.label}</span> is ready. Copy it here, or later from
+        the list below.
       </p>
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 truncate rounded bg-background-2 px-2 py-1 font-mono text-xs">
