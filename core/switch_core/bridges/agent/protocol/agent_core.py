@@ -366,6 +366,9 @@ class AgentCore:
     # Told (tenant_id, agent_id) after an agent's icon or display name changes,
     # so whatever shows them can refresh.
     _agent_profile_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # Puts a person in a room as a Console member: (tenant_id, actor, room_id,
+    # target_user_id). Set by the process wiring to the chats service's.
+    _member_adder: Callable[[str, User, str, str], Awaitable[Room]] | None = None
 
     def __init__(
         self,
@@ -811,6 +814,11 @@ class AgentCore:
         self, listener: Callable[[str, str], Awaitable[None]]
     ) -> None:
         self._room_agents_listener = listener
+
+    def set_member_adder(
+        self, adder: Callable[[str, User, str, str], Awaitable[Room]]
+    ) -> None:
+        self._member_adder = adder
 
     def set_agent_profile_listener(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -2912,9 +2920,15 @@ class AgentCore:
         join_event_listeners: list[str] | None = None,
         aliases: dict[str, str] | None = None,
         from_room_id: str | None = None,
+        *,
+        include_owner: bool,
     ) -> RoomCreateResult:
         """Create a room. The caller agent's owner_id is used as the acting
         user for attachment authorization and as the new room's owner.
+
+        `include_owner` also puts that owner in the room as a member, so it
+        is one of their Switch Console chats. Only for an internal-only room
+        that is not direct: a bridged room's people are its platform's.
 
         `from_room_id` is the room the agent is working in: the new room goes
         into that room's run (see `agent_runs`), and is refused if the run is
@@ -2935,6 +2949,24 @@ class AgentCore:
             )
             group_id = await self._resolve_group_name(session, group_name)
             owner = await session.get(User, agent.owner_id) if agent.owner_id else None
+        if include_owner:
+            if not internal_only or bridge_id is not None:
+                raise ValueError(
+                    "include_owner needs internal_only=True and no bridge_id: "
+                    "a room on a messaging app takes its people from there "
+                    "(user_names)"
+                )
+            if channel_type == "direct":
+                raise ValueError(
+                    "include_owner makes a group room with your owner; it "
+                    "cannot be channel_type='direct'"
+                )
+            if owner is None:
+                raise ValueError(
+                    f"Agent {agent_id} has no owner, so there is no one to include"
+                )
+            if self._member_adder is None:
+                raise RuntimeError("Adding people to rooms is not wired on this server")
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
                 f"Agent {agent_id} has no owner_id and cannot attach references "
@@ -2988,6 +3020,11 @@ class AgentCore:
                 raise PermissionError(str(e)) from e
             except RuntimeError as e:
                 raise RuntimeError(f"Room service error: {str(e)}") from e
+        if include_owner:
+            assert owner is not None and self._member_adder is not None
+            await self._member_adder(
+                result.room.tenant_id, owner, result.room.id, owner.id
+            )
         return result
 
     async def _resolve_group_name(

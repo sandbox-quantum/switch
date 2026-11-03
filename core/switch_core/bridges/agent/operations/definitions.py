@@ -904,6 +904,7 @@ async def create_room(
     include_subagents_for: list[str] | None = None,
     join_event_listeners: list[str] | None = None,
     aliases: dict[str, str] | None = None,
+    include_owner: bool = False,
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
@@ -929,7 +930,8 @@ async def create_room(
             their account there (not on Discord, which never shares e-mail
             addresses); their Switch name does not resolve. Your
             owner's usernames are in `get_my_context` (`messaging_apps`,
-            `your_usernames`). Only meaningful for bridged rooms.
+            `your_usernames`). Only meaningful for bridged rooms; to put your
+            owner in an internal-only room, use `include_owner`.
         channel_type: One of "channel_public", "channel_private", or "direct".
             Required when `bridge_id` is set; ignored for internal-only rooms.
             Use "direct" to open a 1:1 DM room — exactly one entry in
@@ -980,6 +982,12 @@ async def create_room(
             real name. Each agent must be in `agent_names`; an alias may
             contain only letters, digits, '.', '-', '_' and must not clash
             with an agent's real name, a room role, or another alias.
+        include_owner: Also add your owner (the person who owns you) to the
+            room, so it shows in their Switch Console chat list as a group
+            chat with its agents, where they read and post. Requires
+            `internal_only=True`, no `bridge_id`, and a channel_type other
+            than "direct". As in any group chat, their messages reach an
+            agent they @-mention (or a follow-up to one).
 
     Returns:
         `{"id", "name", "matrix_room_id", "caller_is_member",
@@ -1015,6 +1023,7 @@ async def create_room(
             roles=roles,
             aliases=aliases,
             from_room_id=await connected_room(),
+            include_owner=include_owner,
         )
     async with protocol.session_factory() as session:
         caller_is_member = agent_id in await protocol.room_store.get_agent_ids(
