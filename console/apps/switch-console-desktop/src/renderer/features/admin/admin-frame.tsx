@@ -28,6 +28,7 @@ export function adminGroupsInScope(serverId: string, serviceConnections: boolean
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   return adminGroups({
     administers: administersWorkspaceInScope(serverId),
+    operator: operatesServer(serverId),
     operatesGatewaylessServer:
       operatesServer(serverId) && server !== undefined && !servesWebGateway(server),
     serviceConnections,

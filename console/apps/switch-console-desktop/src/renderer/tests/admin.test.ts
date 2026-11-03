@@ -44,40 +44,55 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
 describe('the Admin page’s sections', () => {
   const person = {
     administers: false,
+    operator: false,
     operatesGatewaylessServer: false,
     serviceConnections: true,
   };
 
-  it('shows the workspace switches to its admins', () => {
+  it('gives workspace admins its messaging apps and connector switches', () => {
     expect(adminGroups({ ...person, administers: true })).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
+      { scope: 'workspace', items: ['messaging-apps', 'connectors'] },
     ]);
     expect(adminGroups(person)).toEqual([]);
   });
 
-  it('keeps the connector apps only for whoever runs a Switch with no gateway to set them in', () => {
-    expect(adminGroups({ ...person, administers: true, operatesGatewaylessServer: true })).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
-      { scope: 'server', items: ['apps'] },
+  it('gives the server’s operator Switch Trust, and connector apps only on a Switch with no gateway', () => {
+    const operator = { ...person, administers: true, operator: true };
+    expect(adminGroups(operator)).toEqual([
+      { scope: 'workspace', items: ['messaging-apps', 'connectors'] },
+      { scope: 'server', items: ['switch-trust'] },
     ]);
+    expect(adminGroups({ ...operator, operatesGatewaylessServer: true })[1]).toEqual({
+      scope: 'server',
+      items: ['switch-trust', 'apps'],
+    });
   });
 
-  it('keeps every section behind service connections', () => {
+  it('keeps only the connector sections behind service connections', () => {
     expect(
       adminGroups({
         administers: true,
+        operator: true,
         operatesGatewaylessServer: true,
         serviceConnections: false,
       })
-    ).toEqual([]);
+    ).toEqual([
+      { scope: 'workspace', items: ['messaging-apps'] },
+      { scope: 'server', items: ['switch-trust'] },
+    ]);
   });
 
   it('opens the section asked for when the person may use it, otherwise the first', () => {
-    const operator = adminGroups({ ...person, administers: true, operatesGatewaylessServer: true });
+    const operator = adminGroups({
+      ...person,
+      administers: true,
+      operator: true,
+      operatesGatewaylessServer: true,
+    });
     const admin = adminGroups({ ...person, administers: true });
     expect(shownAdminSection(operator, 'apps')).toBe('apps');
-    expect(shownAdminSection(admin, 'apps')).toBe('connectors');
-    expect(shownAdminSection(admin, undefined)).toBe('connectors');
+    expect(shownAdminSection(admin, 'apps')).toBe('messaging-apps');
+    expect(shownAdminSection(admin, 'connectors')).toBe('connectors');
     expect(shownAdminSection([], 'connectors')).toBeNull();
   });
 });

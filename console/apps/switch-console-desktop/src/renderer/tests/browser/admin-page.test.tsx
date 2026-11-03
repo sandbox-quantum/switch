@@ -81,7 +81,8 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
 
 /** Stands in for the app's navigation: a tile opens its profile by navigating. */
 const navigation = vi.hoisted(() => {
-  let params: Record<string, string | undefined> = { serverId: 'server' };
+  // Opened on the connector switches, which these tests are about.
+  let params: Record<string, string | undefined> = { serverId: 'server', section: 'connectors' };
   const listeners = new Set<() => void>();
   return {
     params: () => params,
@@ -96,7 +97,7 @@ const navigation = vi.hoisted(() => {
       };
     },
     reset: () => {
-      params = { serverId: 'server' };
+      params = { serverId: 'server', section: 'connectors' };
     },
   };
 });
@@ -193,7 +194,7 @@ it('lists its sections under what they reach, and each service as a tile with wh
   expect(workspaces.getWorkspaceServices).toHaveBeenCalledWith('workspace');
   expect(page.textContent).toContain('Choose which services people in Acme can connect');
   const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
-  expect(workspace.textContent).toBe('Workspace · AcmeConnectors');
+  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsConnectors');
   expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Connectors');
   expect(page.querySelector('nav [role="group"][aria-label="Server"]')).toBeNull();
   expect(tiles(page)!.textContent).toContain('3 members connected · 2 agents use it');
@@ -350,7 +351,7 @@ it("gives the server's operator Connector apps under Server, the app needing set
   await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
 
   const server = page.querySelector('nav [role="group"][aria-label="Server"]')!;
-  expect(server.textContent).toBe('Server · Dev ServerConnector apps');
+  expect(server.textContent).toBe('Server · Dev ServerSwitch TrustConnector apps');
   await act(async () => button(/^Connector apps$/, server)!.click());
   expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps' });
   await vi.waitFor(() => expect(appTiles(page)).not.toBeNull());
@@ -382,7 +383,8 @@ it('leaves the apps to the web gateway where the server serves one', async () =>
   const page = await render();
   await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
 
-  expect(page.querySelector('nav [role="group"][aria-label="Server"]')).toBeNull();
+  const server = page.querySelector('nav [role="group"][aria-label="Server"]')!;
+  expect(server.textContent).toBe('Server · Dev ServerSwitch Trust');
   expect(switchServers.getConnectorApps).not.toHaveBeenCalled();
 });
 
