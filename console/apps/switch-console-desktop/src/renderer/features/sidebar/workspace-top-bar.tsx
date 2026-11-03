@@ -1,5 +1,5 @@
 import { detectPlatform } from '@tanstack/react-hotkeys';
-import { BookOpen, PanelLeft, Search } from 'lucide-react';
+import { BookOpen, ExternalLink, PanelLeft, Search } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { NavButtons } from '@renderer/lib/components/nav-buttons';
 import { useWorkspaceLayoutContext } from '@renderer/lib/layout/layout-provider';
@@ -11,7 +11,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
-import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
+import { SWITCH_CONSOLE_DOCS_URL, SWITCH_TRUST_URL } from '@shared/urls';
 
 const isMac = detectPlatform() === 'mac';
 
@@ -103,6 +103,15 @@ export const WorkspaceTopBar = observer(function WorkspaceTopBar() {
           />
           <TooltipContent>Docs</TooltipContent>
         </Tooltip>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1.5 px-2 text-xs [-webkit-app-region:no-drag]"
+          onClick={() => openExternalUrl(SWITCH_TRUST_URL, 'Could not open Switch Trust')}
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          Switch Trust
+        </Button>
       </div>
     </div>
   );
