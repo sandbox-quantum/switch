@@ -1419,7 +1419,7 @@ class AgentRecipient:
                 tenant_session(self.session_factory, self.tenant_id) as session,
             ):
                 machine = await wake_controller_machine(
-                    session, controller_id, datetime.now(UTC)
+                    session, controller_id, datetime.now(UTC), "message"
                 )
                 state = None if machine is None else CloudMachineState.of(machine)
                 await session.commit()

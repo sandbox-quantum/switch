@@ -17,9 +17,17 @@ import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import event as sa_event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import Session, SessionTransaction
 
-from switch_core.telemetry.catalogue import PropertyValue, validate, wire_name
+from switch_core.config import DeploymentKind
+from switch_core.telemetry.catalogue import (
+    DEPLOYMENT_KIND_PROPERTY,
+    PropertyValue,
+    validate,
+    wire_name,
+)
 from switch_core.telemetry.deployment import (
     claim_milestone,
     seconds_since_install,
@@ -49,11 +57,13 @@ class TelemetryService:
         version: str | None,
         telemetry_environment: str,
         telemetry_internal: bool,
+        deployment_kind: DeploymentKind,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         installed_at: datetime | None = None,
     ) -> None:
         self._sink = sink
         self._enabled = enabled
+        self._deployment_kind = deployment_kind
         # Only the milestone path needs these. Optional so the ordinary
         # `emit` is usable from a test that has no database at all.
         self._session_factory = session_factory
@@ -104,7 +114,10 @@ class TelemetryService:
         self._dispatch(
             TelemetryRecord(
                 name=wire_name(event),
-                properties=dict(properties),
+                properties={
+                    **properties,
+                    DEPLOYMENT_KIND_PROPERTY: self._deployment_kind,
+                },
                 resource=dict(self._resource),
                 timestamp_ns=timestamp_ns,
             )
@@ -199,3 +212,41 @@ def emit_safely(
             "bug in the event, not a relay problem.",
             event,
         )
+
+
+def emit_after_commit(
+    session: AsyncSession,
+    telemetry: TelemetryService | None,
+    event: str,
+    properties: Mapping[str, PropertyValue],
+) -> None:
+    """`emit_safely` once `session` commits, and never if it rolls back.
+
+    For a state change made where the transaction is committed by a caller
+    further up, or not at all when a later step refuses: reporting it at the
+    point it is decided would count a change that never happened.
+    """
+    if telemetry is None:
+        return
+    sync = session.sync_session
+    committed = False
+    decided = False
+
+    def on_commit(_session: Session) -> None:
+        nonlocal committed
+        committed = True
+
+    def on_end(_session: Session, transaction: SessionTransaction) -> None:
+        nonlocal decided
+        # A savepoint ending, committed or rolled back, decides nothing: only
+        # the outermost transaction does. The listeners stay registered, inert
+        # once decided: removing one while the session dispatches its events
+        # is refused, and they go with the session.
+        if decided or transaction.parent is not None:
+            return
+        decided = True
+        if committed:
+            emit_safely(telemetry, event, properties)
+
+    sa_event.listen(sync, "after_commit", on_commit)
+    sa_event.listen(sync, "after_transaction_end", on_end)

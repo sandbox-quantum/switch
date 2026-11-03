@@ -142,6 +142,7 @@ class TestASessionIsTheAgentNotTheConnection:
             version="1.0.0",
             telemetry_environment="prod",
             telemetry_internal=False,
+            deployment_kind="self_hosted",
         )
         reporter = SessionReporter(service, registry)
         registry.set_close_listener(reporter.on_close)

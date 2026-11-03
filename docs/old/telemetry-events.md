@@ -222,6 +222,17 @@ On every event:
 | `flint_env` | `prod` \| `staging` \| `dev` \| `local`, from `TELEMETRY_ENVIRONMENT` |
 | `flint_internal` | `true` \| `false`, from `TELEMETRY_INTERNAL` |
 
+And one event property on every event, added by the service rather than
+declared by any event (no event may declare it):
+
+| Property | Value |
+|---|---|
+| `deployment_kind` | `switch_cloud` when the `switch_cloud` feature flag is on; else `managed_by_console` when Switch Console runs the server (`MANAGED_BY_CONSOLE`); else `self_hosted`. The same answer `get_my_context` gives an agent |
+
+A property rather than a resource attribute because the relay passes event
+properties to Amplitude and promotes only a fixed few resource attributes, so
+this is what lets a chart take Switch Cloud's traffic out, or look at it alone.
+
 The rule against free text holds here too. `service.name` is a constant rather
 than the `SERVICE_NAME` setting, and the `ENVIRONMENT` setting is not sent as
 `deployment.environment`: both are free text an operator sets for their own log
@@ -511,6 +522,25 @@ only the periods that ended in the last 35 days, which still covers the month
 before for a laptop that was off for most of the month after. Like
 `room_became_active`, a server whose telemetry was switched off and on again
 sends the periods that ended in between, within those 35 days.
+
+### Accounts, workspaces and cloud machines
+
+Switch Cloud's funnel: someone signs up, makes a workspace, and gets a cloud
+machine for their agents. Any server that does these sends the events, so read
+them with `deployment_kind` (on every event) to look at Cloud alone. Each is
+sent once the change is committed: a machine change made in a transaction that
+then rolls back is never reported.
+
+| Event | Properties | Sent when |
+|---|---|---|
+| `account_created` | `method`: `signup` (the sign-up page) / `oidc` (a first single sign-on sign-in) / `admin` (an admin created it) | a new account exists. A single sign-on sign-in that links an existing account is not one |
+| `signup_refused` | `reason`: `disabled` / `rate_limited` (the hourly cap) / `email_taken` | the sign-up page was refused |
+| `workspace_created` | `new_organization` (boolean): an organization was created with it | a workspace and its owner's membership exist |
+| `cloud_machine_requested` | `change`: `new` / `joined_workspace` (the owner's machine now serves another workspace) / `unretained` (a machine kept after its agents left, running again) / `restarted` (a stopped machine started by a claim) | a claim changed something; a claim on a machine already running is not reported |
+| `cloud_machine_ready` | `new_machine` (boolean) · `provisioning_seconds`: from the claim to the first controller report for a new machine, `-1` for a later start | the machine's controller reported at its current revision |
+| `cloud_machine_failed` | `reason`: `not_scheduled` / `never_started` / `never_connected` (each after 10 minutes) / `owner_left` (its owner is in none of its workspaces) / `needs_attention` / `reported` (any other error the machine reported) | the machine went into error; not again while it stays there |
+| `cloud_machine_woken` | `trigger`: `message` (its agent was addressed) / `agent_placed` / `owner` · `stopped_by`: `idle` / `owner` / `unknown` | a stopped machine was started again |
+| `cloud_machine_stopped` | `reason`: `idle` / `owner` | a running machine was told to stop |
 
 ### Milestone events — at most once per deployment
 

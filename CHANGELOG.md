@@ -204,6 +204,14 @@ version of their own to them without also giving them a release of their own.
   agent message events report such posts as `sender_kind = bot`. An app's post
   on Discord or Mattermost also no longer answers a request card or wakes an
   agent following the conversation, as already on Slack.
+- **Usage telemetry follows Switch Cloud.** Every event now carries
+  `deployment_kind` (`switch_cloud`, `managed_by_console` or `self_hosted`),
+  so Cloud can be charted on its own or left out. New events cover its funnel:
+  `account_created` (sign-up, a first single sign-on sign-in, or an admin),
+  `signup_refused` with the reason, `workspace_created`, and a cloud machine
+  being requested, becoming ready (with how long a new one took), failing
+  (with the reason), being woken, and being stopped. Machine events are sent
+  only once their change is committed.
 - **Usage telemetry counts each finished day, week and month.** The daily
   snapshot's `*_7d` counts are a trailing week, so a chart adding them up
   over a week counted a room once for every day it was active. A new

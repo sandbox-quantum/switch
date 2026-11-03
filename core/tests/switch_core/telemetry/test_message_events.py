@@ -33,6 +33,7 @@ from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 from switch_core.transport.observer import ParticipantMessage
 from tests.session_counting import CountingSessionFactory
+from tests.telemetry_records import declared
 
 TENANT_ZERO = "00000000-0000-0000-0000-000000000000"
 
@@ -56,6 +57,7 @@ def _service(sink: _RecordingSink, *, enabled: bool = True) -> TelemetryService:
         version="1.0.0",
         telemetry_environment="prod",
         telemetry_internal=False,
+        deployment_kind="self_hosted",
     )
 
 
@@ -225,7 +227,7 @@ async def _reported(
         await messages._queue.join()
     await messages.aclose()
     await service.aclose()
-    return [(record.name, record.properties) for record in sink.sent]
+    return [(record.name, declared(record)) for record in sink.sent]
 
 
 class TestRoomMessageSent:

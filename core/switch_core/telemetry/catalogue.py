@@ -22,6 +22,12 @@ from switch_core import messaging_platforms
 # against the same relay.
 EVENT_NAME_PREFIX = "switch_core"
 
+# Added to every event by the service, not declared by any: who runs the
+# deployment (`SwitchConfig.deployment_kind`), so Switch Cloud's traffic can be
+# told from the servers people run themselves on any chart. Reserved, so no
+# event can declare a property of its own under the name.
+DEPLOYMENT_KIND_PROPERTY = "deployment_kind"
+
 
 class PropertyType:
     """Base for the three kinds of value a property may take."""
@@ -309,6 +315,33 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "account_active": NUMBER,
         "tenant_failed_count": NUMBER,
     },
+    # ── Accounts, workspaces and cloud machines ─────────────────────────────
+    # Switch Cloud's funnel, though any server that has them sends them:
+    # `deployment_kind`, on every event, says which kind of server it was.
+    "account_created": {"method": one_of("signup", "oidc", "admin")},
+    "signup_refused": {"reason": one_of("disabled", "rate_limited", "email_taken")},
+    "workspace_created": {"new_organization": BOOLEAN},
+    "cloud_machine_requested": {
+        "change": one_of("new", "joined_workspace", "unretained", "restarted"),
+    },
+    # `provisioning_seconds` is from the claim to the first controller report,
+    # for a new machine; -1 for a later start, which nothing times.
+    "cloud_machine_ready": {"new_machine": BOOLEAN, "provisioning_seconds": NUMBER},
+    "cloud_machine_failed": {
+        "reason": one_of(
+            "not_scheduled",
+            "never_started",
+            "never_connected",
+            "owner_left",
+            "needs_attention",
+            "reported",
+        ),
+    },
+    "cloud_machine_woken": {
+        "trigger": one_of("message", "agent_placed", "owner"),
+        "stopped_by": one_of("idle", "owner", "unknown"),
+    },
+    "cloud_machine_stopped": {"reason": one_of("idle", "owner")},
     # ── Milestones ───────────────────────────────────────────────────────────
     # At most once per deployment, and only for one installed after this
     # shipped. Together they are the activation funnel.
