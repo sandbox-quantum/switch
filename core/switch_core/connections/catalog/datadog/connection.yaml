@@ -56,8 +56,10 @@ auth:
         - name: pat
           label: Personal access token
           secret: true
-          help: "Personal Settings, Access Tokens. Scopes: mcp_read, mcp_write for writes; user_access_read lets Switch name the account."
+          help: "Personal Settings, Access Tokens. Scopes: mcp_read, mcp_write for writes; user_access_read lets Switch name the account, and keeps agents' grants when you paste a new token."
       headers: { Authorization: "Bearer {pat}" }
+      # Datadog requires every personal access token to expire, from 24 hours
+      # to one year after it is made, so no token is one that never expires.
       expires: vendor
       # The part of a token before its secret, which Datadog shows people.
       alias: "^(ddpat_[A-Za-z0-9]+)_"
