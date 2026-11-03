@@ -5,7 +5,7 @@ upstream's `agent-controller`, `agent-providers` and `switch-agent-runtime`. Onl
 They are private workspace packages: nothing outside the three depends on them, and the public registry is never
 asked for them.
 
-Upstream's packages beside them stay byte for byte as upstream `473c2e64b`, so the desktop app and v1 cloud
+Upstream's packages beside them stay byte for byte as upstream main `0f7f96732`, so the desktop app and v1 cloud
 machines run upstream's code whatever the hosted switch says. `switch-agent-runtime-box/src/upstream-packages.test.ts`
 fails on any change to those four packages (`agent-controller`, `agent-providers`, `switch-agent-runtime`,
 `shared`), and on any package outside the box ones depending on a box package.
