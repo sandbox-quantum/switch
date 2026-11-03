@@ -223,17 +223,17 @@ const Cards = observer(function Cards({
         <ArrowRight />
       </Button>
 
-      {picked && step.kind === 'loading' && (
+      {platform && step.kind === 'loading' && (
         <StatusRow>
           <Spinner size="sm" />
           Checking {label}…
         </StatusRow>
       )}
 
-      {picked && step.kind === 'unknown' && (
+      {step.kind === 'unknown' && (
         <StatusRow className="border-border-destructive text-foreground-destructive">
           <div className="min-w-0 flex-1">
-            <div className="font-semibold">Couldn’t check {label}</div>
+            <div className="font-semibold">Couldn’t check {label || 'your chat apps'}</div>
             <div>Switch did not answer.</div>
           </div>
           <Button size="sm" variant="outline" onClick={retry}>
@@ -338,8 +338,8 @@ const Cards = observer(function Cards({
             title={`Continue in ${label}`}
             description={
               step.bridge.type === 'telegram'
-                ? `In a Telegram group with you and the ${step.bridge.displayName} bot, send this if you haven’t yet, and I’ll answer there:`
-                : 'Add the Switch app to a Teams chat or channel. Then send this there, and I’ll answer:'
+                ? `In a Telegram group with you and the ${step.bridge.displayName} bot, send this if you haven’t yet. Then mention ${agentName} with a short note on what you work on.`
+                : `Add the Switch app to a Teams chat or channel and send this there. Then mention ${agentName} with a short note on what you work on.`
             }
             footer={<InviteCommand platform={step.bridge.type} agentName={agentName} />}
           />
