@@ -723,28 +723,32 @@ class TestCoreCallback:
         ]
         assert exchange["redirect_uri"] == f"{PUBLIC}{FLOWS}/callback"
 
+    @pytest.mark.parametrize(
+        ("public_url", "secure"),
+        [(PUBLIC, True), ("http://127.0.0.1:51001", False)],
+    )
     async def test_the_cookie_is_secure_except_on_this_computer(
-        self, session_factory, tmp_path
+        self, session_factory, tmp_path, public_url, secure
     ) -> None:
         # A server Switch Console runs is reached over plain http on the
         # loopback address, where a Secure cookie may be dropped by the browser.
+        # The callback Switch registered decides, not the URL a proxy reached
+        # the server at.
         world = _world(
-            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[core]",
+            public_url=public_url,
         )
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
-            remote = Console(client, ada)
-            started = await remote.start()
-            authorize = started.json()["url"].removeprefix(PUBLIC)
-            left = await client.get(f"https://switch.example.test{authorize}")
-            assert "secure" in left.headers["set-cookie"].lower()
-
-            local = Console(client, ada)
-            started = await local.start()
-            authorize = started.json()["url"].removeprefix(PUBLIC)
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            authorize = started.json()["url"].removeprefix(public_url)
             left = await client.get(f"http://127.0.0.1:51001{authorize}")
             assert left.status_code == 307
-            assert "secure" not in left.headers["set-cookie"].lower()
+            assert ("secure" in left.headers["set-cookie"].lower()) is secure
 
     async def test_a_refusal_at_the_vendor_fails_the_flow_with_what_it_said(
         self, session_factory, tmp_path

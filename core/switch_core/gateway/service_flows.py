@@ -183,7 +183,6 @@ async def start(
 async def authorize(
     service: str,
     state: str,
-    request: Request,
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     flows: Annotated[ServiceFlows, Depends(get_service_flows)],
     session_factory: Annotated[
@@ -226,7 +225,7 @@ async def authorize(
         _cookie(state),
         nonce,
         max_age=600,
-        secure=secure_cookie(request),
+        secure=secure_cookie(flow.stored.redirect_uri),
         httponly=True,
         samesite="lax",
         path=_cookie_path(service),
@@ -269,7 +268,7 @@ async def callback(
     response.delete_cookie(
         _cookie(state),
         path=_cookie_path(service),
-        secure=secure_cookie(request),
+        secure=secure_cookie(flow.stored.redirect_uri),
         httponly=True,
         samesite="lax",
     )

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from starlette.requests import Request
 
 from switch_core.loopback import http_on_loopback, https_or_loopback, secure_cookie
 
@@ -44,30 +43,17 @@ def test_only_plain_http_counts_as_http_on_loopback() -> None:
     assert not http_on_loopback("http://switch.example.com")
 
 
-def _request(scheme: str, host: str) -> Request:
-    return Request(
-        {
-            "type": "http",
-            "scheme": scheme,
-            "server": (host, 8000),
-            "path": "/",
-            "query_string": b"",
-            "headers": [(b"host", f"{host}:8000".encode())],
-        }
-    )
-
-
 @pytest.mark.parametrize(
-    ("scheme", "host", "secure"),
+    ("url", "secure"),
     [
-        ("https", "switch.example.com", True),
-        ("http", "switch.example.com", True),
-        ("https", "127.0.0.1", True),
-        ("http", "127.0.0.1", False),
-        ("http", "localhost", False),
+        ("https://switch.example.com", True),
+        ("http://switch.example.com", True),
+        ("https://127.0.0.1:8000", True),
+        ("http://127.0.0.1:8000", False),
+        ("http://localhost:8000", False),
     ],
 )
 def test_a_cookie_is_secure_except_over_http_on_loopback(
-    scheme: str, host: str, secure: bool
+    url: str, secure: bool
 ) -> None:
-    assert secure_cookie(_request(scheme, host)) is secure
+    assert secure_cookie(url) is secure
