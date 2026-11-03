@@ -122,7 +122,7 @@ export function ConnectorProfile({
             </div>
             <p className="text-sm text-foreground-muted">{connection.description}</p>
             {connectedAs && <p className="text-sm">{connectedAs}</p>}
-            {connectedAs && pasted && (
+            {connectedAs && pasted && connection.status === 'connected' && (
               <p className="text-sm text-foreground-muted">
                 {pasted.reach} {pasted.lasts}.
               </p>

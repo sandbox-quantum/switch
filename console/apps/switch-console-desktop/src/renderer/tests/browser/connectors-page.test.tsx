@@ -774,3 +774,18 @@ it('asks for a connection made before Datadog asked for a site to be made again'
   expect(button(/^Reconnect$/, page)).toBeDefined();
   expect(button(/^Paste a new one$/, page)).toBeUndefined();
 });
+
+it('says what a pasted token reaches only while it works', async () => {
+  const page = await openDatadog([
+    {
+      ...PASTED,
+      status: 'needs_reauthorization',
+      reconnect_code: 'token_refused',
+      reconnect_reason: 'Datadog refused the pasted token. Paste a new one.',
+    },
+  ]);
+
+  expect(page.querySelector('header')!.textContent).not.toContain(
+    'Reaches what your token allows.'
+  );
+});
