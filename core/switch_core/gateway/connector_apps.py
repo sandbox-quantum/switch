@@ -819,8 +819,8 @@ async def check_connector_app(
     admin: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
     """Ask the vendor about the app in use. What it says of a saved app that
-    Switch keeps is stored again where it changed, and in use at once;
-    nothing else is stored, and nothing of an app from configuration."""
+    passes the check is stored again where it changed, and in use at once.
+    Nothing of an app from configuration is stored."""
     spec = app_spec(apps, service)
     effective = apps.effective(service)
     # A configured GitHub App is called back at its own origin, not this URL.
@@ -836,6 +836,7 @@ async def check_connector_app(
     result = await check_values(apps, spec, values, _redirects(apps, spec, effective))
     if (
         effective.source == "saved"
+        and result.ok
         and result.settings
         and result.settings != values.settings
     ):
