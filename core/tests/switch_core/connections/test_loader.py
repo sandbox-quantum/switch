@@ -32,6 +32,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "grafana",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,6 +40,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "grafana",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
@@ -1053,3 +1055,23 @@ def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
     raw = path.read_bytes().replace(b"\r\n", b"\n")
     path.write_bytes(raw.replace(b"\n", b"\r\n"))
     assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()
+
+
+def test_grafana_scopes_and_stack_identity():
+    definition = CATALOG["grafana"].definition
+    assert definition.access.read.scopes == ["grafana:read"]
+    assert set(definition.access.write.scopes) == {
+        "grafana:read",
+        "grafana:query",
+        "grafana:write",
+    }
+    assert not definition.access.unscoped
+    assert definition.auth.identity.mcp_tool == "user_info"
+    assert definition.auth.identity.account_id == ["connection.stack", "login"]
+    assert definition.auth.oauth.registration == "dynamic"
+    assert definition.auth.oauth.client_settings is None
+    assert definition.auth.oauth.remove_access
+    assert definition.auth.oauth.revocation_url is None
+    assert definition.mcp.servers[0].url == "https://mcp.grafana.com/mcp/{stack}"
+    assert definition.mcp.servers[0].headers is None
+    assert "Assistant user" in definition.description
