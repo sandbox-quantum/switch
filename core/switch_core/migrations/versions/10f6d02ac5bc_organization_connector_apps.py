@@ -24,7 +24,7 @@ when this migration was written, copied rather than imported for the reason
 Expand only: a process from before this revision never reads the tables.
 
 Revision ID: 10f6d02ac5bc
-Revises: 9d41b7e2c6a3
+Revises: 22e1d92cfd4c
 Create Date: 2026-10-30 00:00:00.000000
 
 """
@@ -36,7 +36,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "10f6d02ac5bc"
-down_revision: str | Sequence[str] | None = "9d41b7e2c6a3"
+down_revision: str | Sequence[str] | None = "22e1d92cfd4c"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
