@@ -132,6 +132,31 @@ version of their own to them without also giving them a release of their own.
   switch-core pods as written, so they can run on a node group of their own,
   such as one kept for load tests. Both are empty by default, which places the
   pods as before.
+- **Organizations set up their own connector apps and switch services for
+  their workspaces, behind `organization_connector_apps`, off by default.**
+  With the flag on (and `service_connections`), the dashboard's Organization
+  page gains two sections for organization admins:
+  - **Connectors.** An organization saves its own GitHub App, Google client
+    or Airtable integration, checked with the vendor as the operator's are.
+    Every workspace in the organization then signs in, is issued and is
+    refreshed through it rather than the server's. An organization's app
+    that stops working makes the service unavailable in its workspaces,
+    with the reason, and never falls back to the server's. A workspace's
+    service listing says whose app it goes through (`app_source`).
+  - **Services.** An organization switches each service on or off for its
+    workspaces. Unlocked, its setting applies where a workspace admin hasn't
+    set the service themselves; locked, it applies everywhere and workspace
+    admins can't change it. Wherever a change leaves a service off, the
+    tokens issued for it there are revoked; any a change could not reach,
+    the periodic token upkeep revokes within five minutes. A workspace admin can drop their
+    own switch (`DELETE /gateway/workspace/services/{service}`) to take the
+    organization's setting.
+
+  Every change is recorded in the organization's audit log. The platform
+  operator has no say in an organization's apps or services unless they are
+  one of its admins. With the flag off, nothing changes: the routes aren't
+  mounted and no workspace consults its organization. The migration adds
+  two empty tables either way.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with

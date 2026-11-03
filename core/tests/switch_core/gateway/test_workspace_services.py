@@ -251,7 +251,9 @@ class TestResults:
             "slug": "datadog",
             "name": "Datadog",
             "enabled": on_by_default,
+            "organization_locked": False,
             "updated_by_name": None,
+            "workspace_set": False,
             "updated_at": None,
             "connected_members": 0,
             "granted_agents": 0,
@@ -342,6 +344,10 @@ class TestSwitchingOff:
                 _issuance(None, ada.id, "github", "ghs_elsewhere", tenant_id=TENANT_A)
             )
             await session.commit()
+        # On here, so its token is live: switching GitHub off must leave it.
+        assert (
+            await _put(harness, admin, "atlassian", {"enabled": True})
+        ).status_code == 200
 
         response = await _put(harness, admin, "github", {"enabled": False})
 
