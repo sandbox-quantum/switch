@@ -9,15 +9,11 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { adminGroupsInScope } from '@renderer/features/admin/admin-frame';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
 import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
 import { FROZEN, isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
-import { servesWebGateway } from '@renderer/features/switch-servers/server-gateway';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import {
-  administersWorkspaceInScope,
-  operatesServer,
-} from '@renderer/features/switch-servers/workspace-admin';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { isCurrentView, useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
@@ -67,8 +63,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const shown = active
     ? workspaceNavViews({
         serviceConnections,
-        administers: administersWorkspaceInScope(active.id),
-        operatesGatewaylessServer: operatesServer(active.id) && !servesWebGateway(active),
+        admin: adminGroupsInScope(active.id, serviceConnections).length > 0,
       })
     : [];
   const onSettings =

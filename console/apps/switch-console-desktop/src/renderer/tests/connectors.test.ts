@@ -771,38 +771,29 @@ describe('with the service_connections flag off', () => {
     error: null,
   });
 
-  it('leaves Connectors and Admin out of the nav', () => {
-    const shown = workspaceNavViews({
-      serviceConnections: false,
-      administers: true,
-      operatesGatewaylessServer: true,
-    });
-    expect(shown).toEqual(['server', 'serverAgents', 'serverRooms', 'templates']);
-    expect(
-      workspaceNavViews({
-        serviceConnections: true,
-        administers: true,
-        operatesGatewaylessServer: false,
-      })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'templates', 'connectors', 'admin']);
-  });
-
-  it('shows Admin only for what has no other home: workspace connector switches, or connector apps on a Switch with no gateway', () => {
-    expect(
-      workspaceNavViews({
-        serviceConnections: true,
-        administers: false,
-        operatesGatewaylessServer: false,
-      })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'templates', 'connectors']);
-    // The operator of a Switch this Console runs without Docker keeps connector apps here.
-    expect(
-      workspaceNavViews({
-        serviceConnections: true,
-        administers: false,
-        operatesGatewaylessServer: true,
-      })
-    ).toContain('admin');
+  it('leaves Connectors out of the nav, and shows Admin when it has something for you', () => {
+    expect(workspaceNavViews({ serviceConnections: false, admin: false })).toEqual([
+      'server',
+      'serverAgents',
+      'serverRooms',
+      'templates',
+    ]);
+    // Admin's messaging apps and Switch Trust do not need service connections.
+    expect(workspaceNavViews({ serviceConnections: false, admin: true })).toEqual([
+      'server',
+      'serverAgents',
+      'serverRooms',
+      'templates',
+      'admin',
+    ]);
+    expect(workspaceNavViews({ serviceConnections: true, admin: true })).toEqual([
+      'server',
+      'serverAgents',
+      'serverRooms',
+      'templates',
+      'connectors',
+      'admin',
+    ]);
   });
 
   it('has no page to show, rather than an empty one', () => {

@@ -112,7 +112,13 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       navigation.navigate('templateDetail', { serverId, templateId: link.id! });
       return;
     case 'messaging-apps/connect':
-      navigation.navigate('server', { serverId });
+      // Connecting an app is the workspace admins'; anyone else can only link
+      // their own account, which Settings does.
+      if (!administersWorkspaceInScope(serverId)) {
+        navigation.navigate('settings', { tab: 'messaging-apps' });
+        return;
+      }
+      navigation.navigate('admin', { serverId, section: 'messaging-apps' });
       showModal('connectMessagingAppModal', { serverId, onClosed: () => {} });
       return;
     case 'connections':

@@ -118,7 +118,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   /**
    * Only your own accounts in each app, for Settings: linking and unlinking
    * them. The workspace's side — connecting an app, its token, its defaults —
-   * is for its admins, on Home and in the workspace settings.
+   * is for its admins, in Admin and the workspace settings.
    */
   personal?: boolean;
 }) {
@@ -378,11 +378,11 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">
           {chatsWithoutApp
-            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : administers ? 'Connect one from Home to also reach your agents from Slack, Discord and others.' : 'An owner or admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
+            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : administers ? 'Connect one from Admin to also reach your agents from Slack, Discord and others.' : 'An owner or admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
             : isAdmin
               ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
               : administers
-                ? 'No messaging app is connected. Connect one from Home.'
+                ? 'No messaging app is connected. Connect one from Admin.'
                 : 'No messaging app is connected. An owner or admin of this workspace can connect one.'}
         </p>
       ) : (

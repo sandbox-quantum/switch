@@ -33,9 +33,7 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { type SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { GuardrailsSection } from './GuardrailsSection';
 import { localServerStore } from './local-server-store';
-import { MessagingAppsCard } from './MessagingAppsCard';
 import { remoteServerStore } from './remote-server-store';
 import { serverIcon } from './server-icon';
 import { serverPlacementLabel } from './server-presentation';
@@ -52,7 +50,6 @@ import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { myIdentitiesQueryKey } from './use-my-identities';
-import { administersWorkspaceInScope } from './workspace-admin';
 
 /** Whether a managed server's stack is currently running (via the store that
  * owns its lifecycle). Non-managed servers are always "reachable". */
@@ -304,12 +301,6 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             )}
 
             {connected && <ServerStatTiles serverId={serverId} />}
-            {/* Your own accounts in each app are linked in Settings; what is
-                left here is the workspace's side, for its admins. */}
-            {connected && administersWorkspaceInScope(serverId) && (
-              <MessagingAppsCard serverId={serverId} />
-            )}
-            {connected && <GuardrailsSection serverId={serverId} />}
           </>
         )}
       </div>
