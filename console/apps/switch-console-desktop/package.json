@@ -38,6 +38,7 @@
     "package": "pnpm run build && electron-builder --config electron-builder.config.ts",
     "package:mac": "pnpm run build && electron-builder --mac --arm64 --publish never --config electron-builder.config.ts",
     "package:mac:x64": "pnpm run build && electron-builder --mac --x64 --publish never --config electron-builder.config.ts",
+    "package:mac:test": "VITE_BUILD=test pnpm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --publish never --config electron-builder.test.config.ts",
     "package:linux": "pnpm run build && electron-builder --linux --x64 --publish never --config electron-builder.config.ts",
     "package:linux:arm64": "pnpm run build && electron-builder --linux --arm64 --publish never --config electron-builder.config.ts",
     "package:win": "pnpm run build && electron-builder --win --publish never --config electron-builder.config.ts",

@@ -5,6 +5,11 @@ type ImportMetaWithEnv = ImportMeta & {
 const env = (import.meta as ImportMetaWithEnv).env;
 const isDev = env?.DEV === true;
 const isCanary = env?.VITE_BUILD === 'canary';
+// A tester's build (`VITE_BUILD=test`, packaged with electron-builder.test.config.ts):
+// its own install, name, data folder and keychain name, and no updates, so it can
+// sit beside stable or canary without touching either. Every value below is the
+// stable or canary one unless this is set.
+const isTest = env?.VITE_BUILD === 'test';
 // Stamped by the release workflow on a tagged build, and only there: a
 // workflow_dispatch test build, or one packaged on a laptop, is not a release
 // however it is otherwise configured.
@@ -36,17 +41,40 @@ const isRelease = env?.VITE_RELEASE === '1';
 // managed local server. That is why OS_APP_NAME and USER_DATA_DIR_NAME do not
 // branch on the channel — giving canary its own would start it empty and leave
 // it unable to decrypt the sign-ins stable saved.
-export const APP_ID = isCanary ? 'com.switchdash.canary' : 'com.switchdash.stable';
-export const PRODUCT_NAME = isCanary ? 'Switch Console Canary' : 'Switch Console';
-export const OS_APP_NAME = 'Switchdash';
-export const APP_NAME_LOWER = isCanary ? 'switch-console-canary' : 'switch-console';
+export const APP_ID = isTest
+  ? 'com.switchdash.test'
+  : isCanary
+    ? 'com.switchdash.canary'
+    : 'com.switchdash.stable';
+export const PRODUCT_NAME = isTest
+  ? 'Switch Console Test'
+  : isCanary
+    ? 'Switch Console Canary'
+    : 'Switch Console';
+// The test build's own name, so its keychain key is its own too.
+export const OS_APP_NAME = isTest ? 'Switchdash Test' : 'Switchdash';
+export const APP_NAME_LOWER = isTest
+  ? 'switch-console-test'
+  : isCanary
+    ? 'switch-console-canary'
+    : 'switch-console';
 // Named on its own for code outside the Vite build (drizzle-kit), where isDev is
 // always false and USER_DATA_DIR_NAME is `switchdash`, the installed app's.
 export const DEV_USER_DATA_DIR_NAME = 'switchdash-dev';
-export const USER_DATA_DIR_NAME = isDev ? DEV_USER_DATA_DIR_NAME : 'switchdash';
-export const UPDATE_CHANNEL = isCanary ? 'v1-canary' : 'v1-stable';
-export const ARTIFACT_PREFIX = isCanary ? 'switch-console-canary' : 'switch-console';
+export const USER_DATA_DIR_NAME = isDev
+  ? DEV_USER_DATA_DIR_NAME
+  : isTest
+    ? 'switchdash-test'
+    : 'switchdash';
+// The test build never checks for updates (IS_TEST_BUILD); the name is only ever logged.
+export const UPDATE_CHANNEL = isTest ? 'none' : isCanary ? 'v1-canary' : 'v1-stable';
+export const ARTIFACT_PREFIX = isTest
+  ? 'switch-console-test'
+  : isCanary
+    ? 'switch-console-canary'
+    : 'switch-console';
 export const IS_CANARY = isCanary;
+export const IS_TEST_BUILD = isTest;
 export const IS_DEV = isDev;
 export const IS_RELEASE_BUILD = isRelease;
 
