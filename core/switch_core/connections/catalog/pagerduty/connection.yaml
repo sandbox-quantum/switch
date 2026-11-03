@@ -1,0 +1,43 @@
+slug: pagerduty
+name: PagerDuty
+category: Observability
+description: Query and manage PagerDuty incidents, on-call shifts, escalation policies and services.
+enabled: true
+publisher: PagerDuty
+links:
+  documentation: https://support.pagerduty.com/main/docs/api-access-keys
+  support: https://support.pagerduty.com
+  privacy: https://www.pagerduty.com/privacy-policy/
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: API key
+        secret: true
+        help: Integrations, API Access Keys. Create a General Access REST API Key.
+      - name: region
+        label: Region
+        secret: false
+        help: The service region for your PagerDuty account.
+        choices:
+          - pagerduty.com
+          - eu.pagerduty.com
+    identity:
+      method: GET
+      url: "https://api.{region}/users/me"
+      headers:
+        Authorization: "Token token={api_key}"
+      account_id: user.id
+      label: user.email
+    help_url: https://support.pagerduty.com/main/docs/api-access-keys
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: pagerduty
+      url: "https://mcp.{region}/mcp"
+      headers:
+        Authorization: "Token token={api_key}"
+tools: { mode: pass_through }
