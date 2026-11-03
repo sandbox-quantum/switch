@@ -838,7 +838,6 @@ class ServiceBroker:
         to_record: bool,
     ) -> GrantDecision:
         entry = self._entry(service)
-        self._require_switched_on(service)
         await self.require_workspace_enabled(session, service)
         name = entry.definition.name
         if not _issued_to_agents(entry):
@@ -1864,12 +1863,7 @@ class ServiceBroker:
     def server_serves(self, service: str) -> bool:
         """Whether a workspace that goes through the server's app for
         `service` can be granted it: switched on, set up, and able to issue."""
-        return (
-            self._unavailable(
-                service, _Choice(self._adapters.get(service), None, "server")
-            )
-            is None
-        )
+        return self.server_availability(service) is None
 
     def _unavailable(self, service: str, choice: _Choice) -> Unavailable | None:
         """Why `service` cannot be granted through `choice`, as a code and
