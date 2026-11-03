@@ -1,7 +1,34 @@
 slug: notion
 name: Notion
 category: Knowledge base
-description: Read and write Notion pages and databases.
-enabled: false
+description: Search, read and edit Notion content as you. This connection permits writes; Notion does not offer a read-only OAuth scope.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    revocation_discovered: true
+  # MCP-issued credentials do not work with the Notion REST API. RFC 7662
+  # identifies the workspace and person together, without calling agent tools.
+  identity:
+    method: introspection
+    url: https://mcp.notion.com/introspect
+    account_id: [workspace_id, user_id]
+    label: workspace_id
+# Documented, not measured here: access lasts about eight hours. The broker
+# uses the response's actual expiry and refuses issuance beyond this ceiling.
+# https://developers.notion.com/guides/mcp/build-mcp-client
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: notion, url: "https://mcp.notion.com/mcp" }
+access:
+  # Notion exposes one content scope, default. Connecting always requests the
+  # write level; identical scope sets do not represent a read-only sign-in.
+  # Do not request the unrelated administrative ema_issuer:manage scope.
+  read: { scopes: [default] }
+  write: { scopes: [default] }
+tools: { mode: pass_through }

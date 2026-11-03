@@ -162,15 +162,30 @@ class OAuthClient(BaseModel):
         return self
 
 
+IdentityPath = Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+
+
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Read identity through a bearer-authenticated GET, or RFC 7662
+    introspection using the OAuth client's authentication. Composite ids are
+    JSON tuples of the named fields, so different workspaces remain distinct.
+    `label` names a display field, falling back to the id when absent."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "introspection"] = "GET"
     url: str = Field(pattern=HTTPS_URL_PATTERN)
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    account_id: (
+        IdentityPath | Annotated[list[IdentityPath], Field(min_length=2, max_length=4)]
+    )
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _distinct_identity_paths(self) -> "ConnectionIdentity":
+        if isinstance(self.account_id, list) and len(set(self.account_id)) != len(
+            self.account_id
+        ):
+            raise ValueError("composite identity paths must be distinct")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -488,8 +489,20 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
-        response = await self._send(
-            self._http.build_request(
+        client_id = None
+        if self._identity.method == "introspection":
+            endpoints = await self.endpoints()
+            client = await self._client.credentials(endpoints)
+            client_id = client.client_id
+            identifying, headers = client_fields(endpoints, client)
+            request = self._http.build_request(
+                "POST",
+                self._identity.url,
+                data={"token": access_token, **identifying},
+                headers={"Accept": "application/json", **headers},
+            )
+        else:
+            request = self._http.build_request(
                 "GET",
                 self._identity.url,
                 headers={
@@ -497,7 +510,7 @@ class OAuthAdapter:
                     "Accept": "application/json",
                 },
             )
-        )
+        response = await self._send(request)
         if response.status_code == 401:
             raise ReauthorizationRequiredError(
                 f"{self._name} refused the new sign-in when asked whose it is."
@@ -508,7 +521,32 @@ class OAuthAdapter:
                 f"(HTTP {response.status_code})."
             )
         body = self._json(response, "account")
-        account_id = _path_value(body, self._identity.account_id)
+        if self._identity.method == "introspection":
+            if body.get("active") is False:
+                raise ReauthorizationRequiredError(
+                    f"{self._name} says the sign-in is inactive. Connect again."
+                )
+            if body.get("active") is not True:
+                raise ServiceAdapterError(
+                    f"{self._name} did not confirm an active sign-in."
+                )
+            if "client_id" in body and body["client_id"] != client_id:
+                raise ReauthorizationRequiredError(
+                    f"{self._name} returned a sign-in for another OAuth client."
+                )
+        paths = self._identity.account_id
+        values = [
+            _path_value(body, path)
+            for path in (paths if isinstance(paths, list) else [paths])
+        ]
+        values = [str(value) if type(value) is int else value for value in values]
+        if any(not isinstance(value, str) or not value for value in values):
+            raise ServiceAdapterError(f"{self._name} did not name the account's id.")
+        account_id = (
+            json.dumps(values, separators=(",", ":"), ensure_ascii=False)
+            if isinstance(paths, list)
+            else values[0]
+        )
         label = _path_value(body, self._identity.label)
         if type(account_id) is int:
             account_id = str(account_id)

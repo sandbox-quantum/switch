@@ -16,7 +16,6 @@ PLACEHOLDERS = {
     "bitbucket",
     "microsoft-365",
     "new-relic",
-    "notion",
     "linear",
     "salesforce",
     "box",
@@ -25,13 +24,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_notion():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "notion",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +39,35 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "notion",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["notion"].skill_files
+
+
+def test_the_notion_entry_uses_mcp_identity_and_does_not_claim_read_only():
+    definition = CATALOG["notion"].definition
+    assert definition.enabled and definition.adapter == "oauth"
+    assert definition.auth.refresh == "rotating"
+    assert definition.auth.oauth.registration == "dynamic"
+    assert definition.auth.oauth.redirect == ["loopback"]
+    assert definition.auth.oauth.revocation_discovered
+    assert definition.auth.identity.method == "introspection"
+    assert definition.auth.identity.url == "https://mcp.notion.com/introspect"
+    assert definition.auth.identity.account_id == ["workspace_id", "user_id"]
+    assert definition.mcp.servers[0].url == "https://mcp.notion.com/mcp"
+    assert definition.mcp.servers[0].name == "notion"
+    assert (
+        definition.access.read.scopes == definition.access.write.scopes == ["default"]
+    )
+    assert definition.tools.mode == "pass_through"
+    assert definition.token.kind == "pass_through"
+    assert definition.token.max_lifetime == 28800
+    assert "read-only OAuth scope" in definition.description
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
