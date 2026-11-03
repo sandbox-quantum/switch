@@ -346,6 +346,8 @@ is a warning at startup: the service signs in through loopback where its entry
 lists loopback; otherwise it cannot be connected until `GATEWAY_PUBLIC_URL` is
 set. Every replica needs the same value, because they share one registered
 client per service and choice, and replicas that differ keep replacing it.
+To change the value, restart every replica together (scale down, then up),
+not as a rolling update; otherwise people may have to reconnect more than once.
 Some vendors take Core's callback,
 `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`,
 only once their admin has allow-listed it (for Atlassian, an admin of each
