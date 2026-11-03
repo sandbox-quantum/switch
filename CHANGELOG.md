@@ -350,6 +350,11 @@ version of their own to them without also giving them a release of their own.
   admins still see every room. Whoever may manage a resource is still told
   how many rooms they cannot open it is in, without their names, and deleting
   it warns about those rooms too.
+- **A quoted secret is redacted, not just a bare one.** `KEY="value"`,
+  `KEY='value'` and `'password': 'x'` passed through the secret redaction
+  untouched: the rule for a bare value stops at a quote, and the JSON rule
+  needs double-quoted keys. Switch Console's log and the tool detail a room
+  can now show both go through it.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when
@@ -542,6 +547,17 @@ version of their own to them without also giving them a release of their own.
   owner to run `kiro-cli login`. A chat now names the provider of any agent
   registered through a provider's known-agent spec, read from the provider
   table rather than a list of its own.
+- **A room can show what its agents' tools were given and gave back.** The
+  room's owner or a workspace admin switches it on (`!tool-detail on` in the
+  room, the switch on the dashboard's room page, or `PATCH
+  /gateway/rooms/{id}` with `show_tool_detail`); every room starts with it
+  off. While it is on, Slack's collapsed card and the Mattermost / Discord
+  activity view show each call's input and output, redacted (credential
+  shapes, the session's own secrets, the secrets the host passes the agent and
+  its MCP servers, and `scheme://user:password@`), with at most 500
+  characters of input and 2,000 in all, and a note at each cut. Detail is
+  stored only while the switch is on and left out of every read once it is
+  off. Teams and Telegram show none.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
