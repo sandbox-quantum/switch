@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import secrets
 from typing import Annotated, cast
@@ -18,6 +19,7 @@ from switch_core.connections.broker import (
     ServiceError,
     get_service_broker,
 )
+from switch_core.connections.organization_apps import OrganizationApp
 from switch_core.connections.sign_in_flows import (
     FlowGoneError,
     FlowsBusyError,
@@ -50,13 +52,38 @@ STORE = ServiceConnectionStore()
 
 KIND = "github"
 INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
+APP_CHANGED = "The GitHub App changed during your sign-in. Start it again."
 
 
 def service(request: Request) -> GitHubConnections:
+    """The server's own GitHub App."""
     value = request.app.state.github_connections
     if value is None:
         raise HTTPException(503, "GitHub connections are not enabled on this server.")
     return cast(GitHubConnections, value)
+
+
+def app_for_workspace(
+    request: Request, app: OrganizationApp | None
+) -> GitHubConnections:
+    """The GitHub App a workspace signs in through: its organization's App
+    `app`, where it saved one, else the server's. An organization's App that
+    cannot be used is refused with the reason, never swapped for the
+    server's."""
+    if app is None:
+        return service(request)
+    if app.github_app is None:
+        raise HTTPException(503, app.problem or "GitHub is not available here.")
+    return app.github_app.connections
+
+
+async def workspace_app(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> GitHubConnections:
+    """The signed-in person's workspace's GitHub App (`app_for_workspace`)."""
+    return app_for_workspace(request, await broker.organization_app(session, "github"))
 
 
 def get_sign_in_flows(request: Request) -> SignInFlows:
@@ -91,7 +118,7 @@ def page(message: str, status: int) -> HTMLResponse:
     return HTMLResponse(
         "<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width'>"
         "<title>Switch · GitHub</title><body><main><h1>Switch · GitHub</h1><p>"
-        + message
+        + html.escape(message)
         + "</p></main></body></html>",
         status_code=status,
         headers={
@@ -124,7 +151,7 @@ async def start(
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    github: Annotated[GitHubConnections, Depends(service)],
+    github: Annotated[GitHubConnections, Depends(workspace_app)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> dict | JSONResponse:
     try:
@@ -164,15 +191,41 @@ async def start(
     }
 
 
+async def _failed_before_leaving(
+    flows: SignInFlows, flow: StoredFlow, message: str, status: int
+) -> HTMLResponse:
+    """The browser cannot leave for GitHub: the flow fails with `message`,
+    for Console's poll to read, and the browser is told the same."""
+    await flows.advance(
+        flow, expect=("pending",), to="failed", changes={"error": message}
+    )
+    return page(message, status)
+
+
 @router.get("/authorize")
 async def authorize(
     state: str,
-    github: Annotated[GitHubConnections, Depends(service)],
+    request: Request,
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
+    """The browser leaves for GitHub through Core. Nobody is signed in here,
+    so the App is the flow's workspace's."""
     nonce = secrets.token_urlsafe(32)
     try:
         flow = await browser_flow(flows, state)
+    except GitHubError:
+        return page(INTERRUPTED, 400)
+    try:
+        github = app_for_workspace(
+            request, await broker.organization_app_of(flow.tenant_id, "github")
+        )
+    except HTTPException as refusal:
+        return await _failed_before_leaving(flows, flow, str(refusal.detail), 503)
+    # Started under another App: the code GitHub issued would be refused.
+    if flow.details.get("client_id") not in (None, github.client_id):
+        return await _failed_before_leaving(flows, flow, APP_CHANGED, 400)
+    try:
         taken = await flows.advance(
             flow,
             expect=("pending",),
@@ -202,7 +255,6 @@ async def authorize(
 @router.get("/callback")
 async def callback(
     request: Request,
-    github: Annotated[GitHubConnections, Depends(service)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
     """Back from GitHub: the browser takes the code on to Switch Console, on
@@ -264,7 +316,7 @@ async def complete(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    github: Annotated[GitHubConnections, Depends(service)],
+    github: Annotated[GitHubConnections, Depends(workspace_app)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
     """Console hands back the code its listener received, with its secret:
@@ -277,13 +329,10 @@ async def complete(
     if recorded is not None and recorded != github.client_id:
         # The code was issued to the App the flow started with: with another
         # in its place, GitHub would refuse it, and less clearly.
-        changed = (
-            "This server's GitHub App changed during your sign-in. Start it again."
-        )
         await flows.advance(
-            flow, expect=("delivered",), to="failed", changes={"error": changed}
+            flow, expect=("delivered",), to="failed", changes={"error": APP_CHANGED}
         )
-        raise HTTPException(400, changed)
+        raise HTTPException(400, APP_CHANGED)
     checking = await flows.advance(
         flow, expect=("delivered",), to="checking", changes={}
     )
@@ -358,7 +407,6 @@ async def complete(
 async def flow_status(
     flow_id: str,
     user: Annotated[User, Depends(get_current_user)],
-    github: Annotated[GitHubConnections, Depends(service)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> dict:
     flow = await owned_flow(flows, flow_id, user.id)
@@ -376,7 +424,6 @@ async def flow_status(
 async def drop(
     flow_id: str,
     user: Annotated[User, Depends(get_current_user)],
-    github: Annotated[GitHubConnections, Depends(service)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
     """Console is done with the flow: cancelled, or its outcome read."""
@@ -389,7 +436,7 @@ async def connection(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    github: Annotated[GitHubConnections, Depends(service)],
+    github: Annotated[GitHubConnections, Depends(workspace_app)],
 ) -> dict:
     return await connection_status(user.id, session, broker, github)
 

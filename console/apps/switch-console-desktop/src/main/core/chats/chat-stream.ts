@@ -90,7 +90,8 @@ export class ChatStream {
   private stopped = false;
   private running = false;
   private abort: AbortController | null = null;
-  private cancelTimer: (() => void) | null = null;
+  /** Ends the backoff wait early; set only while the loop is waiting to retry. */
+  private wake: (() => void) | null = null;
   private attempt = 0;
   private current: { state: ChatStreamState; detail: string | null } = {
     state: 'connecting',
@@ -111,24 +112,22 @@ export class ChatStream {
   /** Start, or reconnect now if the feed is waiting to retry or gave up. */
   start(): void {
     this.stopped = false;
-    if (this.running) return;
-    this.cancelTimer?.();
-    this.cancelTimer = null;
+    if (this.running && !this.wake) return;
     this.attempt = 0;
-    void this.loop();
+    if (this.wake) this.wake();
+    else void this.loop();
   }
 
   /** Drop the connection and reconnect from the cursors reached. */
   resync(): void {
     if (this.stopped) return;
     this.abort?.abort();
-    if (!this.running) this.start();
+    this.start();
   }
 
   stop(): void {
     this.stopped = true;
-    this.cancelTimer?.();
-    this.cancelTimer = null;
+    this.wake?.();
     this.abort?.abort();
     this.abort = null;
   }
@@ -156,10 +155,13 @@ export class ChatStream {
           this.setState('offline', detail);
           const wait = this.deps.backoffMs(this.attempt++);
           await new Promise<void>((resolve) => {
-            this.cancelTimer = this.deps.setTimer(() => {
-              this.cancelTimer = null;
+            let cancel = (): void => {};
+            this.wake = () => {
+              this.wake = null;
+              cancel();
               resolve();
-            }, wait);
+            };
+            cancel = this.deps.setTimer(() => this.wake?.(), wait);
           });
         }
       }

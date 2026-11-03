@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -10,6 +11,7 @@ import switch_core.bridges.agent.commands as commands
 from switch_core.bridges.agent.commands import (
     _check_control_target,
     _cmd_reset,
+    _cmd_retry,
 )
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.controller_presence import Binding
@@ -47,6 +49,66 @@ async def test_cancel_relays_the_exact_turn_and_verified_sender(
     assert frame["origin"]["actorId"] == event.user_id
     assert frame["origin"]["roomId"] == "room-1"
     assert reply.bodies == ["Requesting cancellation of the queued message…"]
+
+
+@pytest.mark.parametrize(
+    ("matches", "expected"),
+    [
+        (["abcdef12-complete-turn"], None),
+        ([], "No queued message matches"),
+        (["abcdef12-first", "abcdef12-second"], "More than one queued message matches"),
+    ],
+)
+async def test_cancel_resolves_a_short_id_only_in_the_target_agents_room(
+    monkeypatch, matches, expected
+):
+    reply = _Reply()
+    relayed = []
+    lookup = AsyncMock(return_value=matches)
+    monkeypatch.setattr(commands, "_reply", reply)
+    monkeypatch.setattr(commands.AgentSessionActivityStore, "queued_turn_ids", lookup)
+    monkeypatch.setattr(commands, "_room_surface", AsyncMock(return_value="mattermost"))
+    await commands._cmd_cancel(
+        _client(
+            reply,
+            command_level="unsupported",
+            enqueue=[],
+            placed="session-1",
+            relayed=relayed,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event("cancel").model_copy(update={"args": "@cc abcdef12"}),
+        False,
+    )
+    assert lookup.await_args.args[1:] == ("agent-1", "room-1", "abcdef12")
+    if expected:
+        assert not relayed
+        assert expected in reply.bodies[0]
+    else:
+        assert relayed[0]["body"] == {"type": "turn.cancel", "turnId": matches[0]}
+
+
+async def test_cancel_full_id_does_not_require_a_still_queued_activity_row(monkeypatch):
+    reply = _Reply()
+    relayed = []
+    lookup = AsyncMock(side_effect=AssertionError("Full IDs go to the host"))
+    monkeypatch.setattr(commands, "_reply", reply)
+    monkeypatch.setattr(commands.AgentSessionActivityStore, "queued_turn_ids", lookup)
+    monkeypatch.setattr(commands, "_room_surface", AsyncMock(return_value="mattermost"))
+    await commands._cmd_cancel(
+        _client(
+            reply,
+            command_level="unsupported",
+            enqueue=[],
+            placed="session-1",
+            relayed=relayed,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event("cancel").model_copy(update={"args": "@cc abcdef12-complete-turn"}),
+        False,
+    )
+    lookup.assert_not_awaited()
+    assert relayed[0]["body"]["turnId"] == "abcdef12-complete-turn"
 
 
 @pytest.mark.parametrize(
@@ -490,5 +552,80 @@ def test_an_interrupt_names_the_current_turn() -> None:
         thread_id=None,
         surface="slack",
         requester_name="louisa",
+        target_message_id=None,
     )
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
+
+
+def test_a_retry_runs_again_the_message_it_names() -> None:
+    assert commands.retry_target("@helper $m1") == "$m1"
+    assert commands.retry_target("@helper") is None
+    assert commands.retry_target("$m1") is None
+    frame = commands.room_control_frame(
+        agent_id="a",
+        session_id=None,
+        room_id="r",
+        action="retry",
+        actor_id="@u:s",
+        message_id="$retry-command",
+        thread_id=None,
+        surface="switch-web",
+        requester_name="louisa",
+        target_message_id="$m1",
+    )
+    assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
+    with pytest.raises(ValueError):
+        commands.room_control_frame(
+            agent_id="a",
+            session_id=None,
+            room_id="r",
+            action="retry",
+            actor_id="@u:s",
+            message_id="$retry-command",
+            thread_id=None,
+            surface="switch-web",
+            requester_name="louisa",
+            target_message_id=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_controller_backed_agent_is_relayed_a_retry_of_the_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def _surface(*_a: Any) -> str:
+        return "switch-web"
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+    registry = AgentConnectionRegistry()
+    registry.controllers.bind(
+        Binding(
+            agent_id="agent-1",
+            controller_id="controller-1",
+            tenant_id="tenant",
+            controller_name="machine",
+            running=True,
+        )
+    )
+    conn = registry.controllers.open(
+        controller_id="controller-1", tenant_id="tenant", resume_cursors={}
+    )
+    registry.controllers.attach_stream(conn)
+    client = _client(reply, command_level="unsupported", enqueue=[])
+    client._connections = registry
+
+    async def _retryable(*_a: Any) -> None:
+        return None
+
+    monkeypatch.setattr(commands, "_retry_refusal", _retryable)
+    event = _event("retry")
+    event.args = "@agent $m1"
+    await _cmd_retry(client, SimpleNamespace(room_id="!m:server"), event, False)
+
+    [(agent_id, frame)] = conn.session_commands
+    assert agent_id == "agent-1"
+    assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
+    assert reply.bodies[-1] == "Trying that message again."

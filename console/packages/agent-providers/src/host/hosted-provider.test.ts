@@ -91,12 +91,13 @@ it('keeps the prepared Codex home and refreshes its auth before provider startup
   const original = credential('{"fixture":"original"}');
   await materializeHostedProvider(root, env, original, 'fixture-cli');
   const sourceHome = env.CODEX_HOME!;
-  const home = await prepareCodexSessionHome({
+  const { home, keyringLogin } = await prepareCodexSessionHome({
     root: sourceHome,
     sessionId: 'session',
     sourceHome,
     config: 'model = "fixture-model"',
   });
+  expect(keyringLogin).toBe(false);
   env.CODEX_HOME = home;
   await writeFile(join(home, 'auth.json'), '{"fixture":"native-refresh"}');
   await materializeHostedProvider(root, env, original, 'fixture-cli');
@@ -128,7 +129,7 @@ it('writes a Vertex AI login’s Google credential under the root, and signs Cla
   const path = join(root, 'provider-home', 'google-credentials.json');
   expect(env).toEqual({
     CLAUDE_CODE_USE_VERTEX: '1',
-    ANTHROPIC_VERTEX_PROJECT_ID: 'cg-vertexai',
+    ANTHROPIC_VERTEX_PROJECT_ID: 'acme-ai',
     CLOUD_ML_REGION: 'global',
     GOOGLE_APPLICATION_CREDENTIALS: path,
   });

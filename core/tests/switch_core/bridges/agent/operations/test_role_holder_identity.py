@@ -86,7 +86,11 @@ async def test_a_session_takes_the_seat_in_its_own_name(holders) -> None:
         agent_id=AGENT,
         session_key=CONNECTION,
         session=CallerSession(
-            id="session-a", host_id="host-1", epoch="epoch-1", room_id=ROOM
+            id="session-a",
+            host_id="host-1",
+            epoch="epoch-1",
+            room_id=ROOM,
+            placed_by_controller=False,
         ),
     )
     with call_context(context):

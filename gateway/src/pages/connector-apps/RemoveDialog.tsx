@@ -11,6 +11,7 @@ import {
 import { useState } from "react";
 import { type ConnectorApp, removeConnectorApp } from "../../data/api";
 import { removeWarning } from "./connectorApps";
+import { useConnectorAppScope } from "./scope";
 
 export default function RemoveDialog({
   app,
@@ -23,6 +24,7 @@ export default function RemoveDialog({
   onClose: () => void;
   onRemoved: () => void;
 }) {
+  const scope = useConnectorAppScope();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -30,7 +32,7 @@ export default function RemoveDialog({
     setBusy(true);
     setError(null);
     try {
-      await removeConnectorApp(app.slug);
+      await removeConnectorApp(scope, app.slug);
       onRemoved();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

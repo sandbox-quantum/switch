@@ -85,6 +85,11 @@ class RoomSummary(BaseModel):
     created_at: str
     # True when the room is archived (hidden from the default active list).
     archived: bool = False
+    # The caller owns the room, is in it (in Switch Console or through a
+    # platform account they claimed), or owns an agent in it.
+    viewer_is_member: bool = False
+    # A Switch Console chat (made through the chats API): only its members can open it.
+    is_console_chat: bool = False
 
 
 class RoomDetail(RoomSummary):
@@ -108,6 +113,10 @@ class RoomDetail(RoomSummary):
     # What deleting the room will do to its platform channel ("archived",
     # "deleted", "left", "kept"), or null when the room has no channel.
     channel_on_delete: ChannelRetirement | None = None
+    # The linked platform channel's name as the bridge last saw it, or null
+    # when it has not seen one. A room not named after its channel can take
+    # it with `POST /rooms/{id}/sync-name`.
+    linked_channel_name: str | None = None
 
 
 class RoomCreateRequest(BaseModel):
@@ -726,6 +735,32 @@ class IdentityClaimant(BaseModel):
 
     user_id: str
     user_name: str
+    # False for a claim made before accounts had to confirm their links
+    # (CHOO-3881). It still counts, and its owner is asked to confirm it.
+    verified: bool
+
+
+class LinkCode(BaseModel):
+    """A one-time code that confirms a link when posted from the account."""
+
+    code: str
+    expires_at: datetime
+    # Its lifetime when issued, so a client can count down on its own clock
+    # rather than compare `expires_at` with a clock that may be wrong.
+    expires_in_seconds: int
+    # How to post it on this platform, in Markdown. The platforms differ in
+    # which messages reach Switch at all, so this is the bridge's to say.
+    instructions: str
+
+
+class LinkRequestSummary(BaseModel):
+    """A link waiting for the platform account to confirm it."""
+
+    user_id: str
+    # Only for the Switch user being linked, and only on the response that
+    # issued it: the code is not stored, so a lost one is replaced, not shown
+    # again. An admin linking someone else never gets one.
+    code: LinkCode | None
 
 
 class ExternalUserSummary(BaseModel):
@@ -737,6 +772,9 @@ class ExternalUserSummary(BaseModel):
     # claiming is not exclusive, so an account shared by several Switch users
     # satisfies an owner rule for any of them.
     claimed_by: list[IdentityClaimant] = []
+    # Set on the response to a claim that is waiting for the account to
+    # confirm it, which counts for nothing until it does.
+    link_request: LinkRequestSummary | None = None
 
 
 class DirectoryUserSummary(BaseModel):
@@ -784,6 +822,11 @@ class ClaimIdentityRequest(BaseModel):
     # Omitted means "claim it for me"; only an admin may claim on behalf of
     # someone else.
     user_id: str | None = None
+    # That the caller knows the link will wait for the account to confirm it
+    # (CHOO-3881). A Console from before then leaves it out and would report
+    # a link that does not count as made, so the claim is refused with a
+    # reason it shows instead.
+    expects_confirmation: bool = False
 
 
 class LinkedIdentity(BaseModel):
@@ -795,6 +838,65 @@ class LinkedIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # False for a link made before accounts had to confirm them: it works,
+    # and Console asks its owner to confirm it.
+    verified: bool
+
+
+class PendingIdentity(BaseModel):
+    """A platform account waiting to confirm a link to the signed-in user.
+
+    It counts for nothing yet. No code is listed, because none is stored:
+    asking for one issues a fresh one.
+    """
+
+    id: str
+    bridge_id: str
+    bridge_display_name: str
+    bridge_type: str
+    external_user_id: str
+    external_username: str
+    # Who started it, when that was someone else (an admin); null when it was
+    # the user themselves or the admin has since been deleted.
+    requested_by_name: str | None
+    # When the last code issued stops working; null when none has been issued,
+    # as for a link an admin started.
+    code_expires_at: datetime | None
+
+
+class UnconfirmedLink(BaseModel):
+    """A link made before links needed confirming. It counts until its owner
+    confirms it, or an admin requires them to."""
+
+    id: str
+    external_user_id: str
+    external_username: str
+    user_id: str
+    user_name: str
+
+
+class UnconfirmedLinkRef(BaseModel):
+    # The `ExternalUser` row id and the Switch user, as `UnconfirmedLink` names
+    # them.
+    id: str
+    user_id: str
+
+
+class RequireConfirmationRequest(BaseModel):
+    """The older links an admin was shown and agrees to stop trusting."""
+
+    links: list[UnconfirmedLinkRef]
+
+
+class RequireConfirmationResult(BaseModel):
+    # How many links stopped counting and now wait for their owners' codes.
+    moved: int
+
+
+class VerifyIdentitySessionRequest(BaseModel):
+    """Confirm a link with the platform account's own session token."""
+
+    token: str
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
@@ -851,7 +953,9 @@ class CreateUserRequest(BaseModel):
     name: str
     email: Email
     password: Password
-    role: str = "user"
+    # Only the exact string "admin" grants operator rights (`require_admin`),
+    # so anything else would create an account claiming a role it lacks.
+    role: Literal["user", "admin"] = "user"
 
 
 class ChangePasswordRequest(BaseModel):
@@ -895,7 +999,24 @@ class TenantMembershipResponse(BaseModel):
     id: str
     slug: str
     name: str
+    # The role the caller acts with here: an organization's `org_admin` is
+    # reported as at least `admin` of each of its workspaces, membership row
+    # or not.
     role: str
+    organization_role: str | None
+    # None only for a workspace from before organizations that no migration
+    # has given one yet.
+    organization_id: str | None
+
+
+class OperatorWorkspaceResponse(BaseModel):
+    """One workspace on the server, as the platform operator's list shows it."""
+
+    id: str
+    slug: str
+    name: str
+    organization_id: str | None
+    organization_name: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):
@@ -907,6 +1028,59 @@ class CurrentTenantResponse(TenantMembershipResponse):
 
 
 class TenantCreateRequest(BaseModel):
+    name: str
+
+
+class OrganizationCreateRequest(BaseModel):
+    name: str
+    # The first workspace's name; the organization's when left out.
+    workspace_name: str | None = None
+
+
+class OrganizationSummary(BaseModel):
+    """One organization the caller belongs to, and their role in it."""
+
+    id: str
+    slug: str
+    name: str
+    role: str
+
+
+class CurrentOrganizationResponse(BaseModel):
+    """The bound workspace's organization, and the caller's role in it: None
+    for the platform operator there on the operator flag alone."""
+
+    id: str
+    slug: str
+    name: str
+    role: str | None
+
+
+class OrganizationAuditEventDetail(BaseModel):
+    """An organization audit event, with the people it names resolved to
+    names: an actor or a target removed since, or never a member (the platform
+    operator), is not on the organization's member list to look up."""
+
+    id: str
+    occurred_at: str
+    actor_user_id: str | None
+    actor_name: str | None
+    action: str
+    target_type: str
+    target_id: str | None
+    target_name: str | None
+    details: dict[str, Any] | None
+
+
+class OrganizationCreateResponse(BaseModel):
+    """A new organization and its first workspace, which the session is now
+    bound to."""
+
+    organization: OrganizationSummary
+    workspace: TenantMembershipResponse
+
+
+class WorkspaceCreateRequest(BaseModel):
     name: str
 
 
@@ -939,7 +1113,13 @@ class SessionStateResponse(BaseModel):
     tenant: TenantMembershipResponse | None
     tenants: list[TenantMembershipResponse]
     state: Literal["ready", "needs_selection", "needs_workspace"]
+    # Whether the caller may create a new organization with its first
+    # workspace (`POST /organizations`, and `POST /tenants` before it).
     can_create_workspace: bool
+    # Whether the caller may add a workspace to the bound workspace's
+    # organization (`POST /organizations/current/workspaces`): its
+    # `org_admin`, within their allowance. False with no workspace bound.
+    can_add_workspace: bool
     # Whether an invitation addressed to an e-mail is sent there, or only
     # minted for the admin to share.
     invite_email_enabled: bool
@@ -1079,11 +1259,23 @@ class InvitationCreateResponse(InvitationDetail):
 
 
 class MemberDetail(BaseModel):
+    """One person in a workspace's roster.
+
+    `via_organization` marks an organization's `org_admin` who holds no
+    membership row here: listed as `admin`, because that is what they act
+    as, and changed or removed only through the organization's members.
+    """
+
     user_id: str
     name: str
     email: str
     role: str
     created_at: str
+    # The agent-registration bootstrap owner: kept in the roster, never a
+    # person to add to a chat.
+    service_account: bool
+    organization_role: str | None
+    via_organization: bool
 
 
 class UsageTotalResponse(BaseModel):
@@ -1103,6 +1295,21 @@ class UsageTotalResponse(BaseModel):
 
 class MemberUpdateRequest(BaseModel):
     role: str
+
+
+class OrganizationMemberDetail(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    role: str
+    created_at: str
+    # What could not be revoked at a vendor when a demotion took away what
+    # they held in workspaces they were in only as `org_admin`.
+    warning: str | None
+
+
+class OrganizationMemberUpdateRequest(BaseModel):
+    role: Literal["org_admin", "member"]
 
 
 class OidcLoginOptionView(BaseModel):

@@ -111,6 +111,7 @@ export const managedAgentsController = createRPCController({
             : null,
           desiredState: agent.desiredState,
           revision: agent.revision,
+          ...(agent.template !== undefined ? { template: agent.template } : {}),
           definition: {
             provider: agent.provider,
             model: agent.model,

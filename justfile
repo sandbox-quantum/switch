@@ -130,6 +130,13 @@ artifacts:
 artifacts-check:
     uv run --project core python scripts/gen_artifacts.py --check
 
+# ── Record the official templates' revisions, at release time ─────────────────
+# Adds a revision to revisions.json for each official template (switch-buddy,
+# the Switch expert) whose files changed since its last one; commit it with the
+# version bump. The release workflow refuses a release tag while any changed.
+record-template-revisions:
+    uv run --project core python -m switch_core.official_templates.revisions record-all
+
 # ── Build the Teams app package an operator uploads ───────────────────────────
 # Every route into a tenant wants a .zip — Developer Portal Import app, Upload a
 # custom app, the admin centre — and none takes a bare manifest.json. Pass the

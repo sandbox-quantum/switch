@@ -1,7 +1,7 @@
 """Telling a signed-in user that something of theirs changed, so their Console
 reads it again instead of polling for it.
 
-A change names a kind and an id (`managed_agent`, `machine`) and carries
+A change names a kind and an id (`managed_agent`, `machine`, `room`) and carries
 nothing else: the client already knows how to read the current state, and a
 notice that is only "read again" cannot leak what the reader would not be
 allowed to read. That also makes a lost notice cheap. A client reads
@@ -46,7 +46,9 @@ logger = logging.getLogger(__name__)
 
 MANAGED_AGENT = "managed_agent"
 MACHINE = "machine"
-KINDS = (MANAGED_AGENT, MACHINE)
+# A room the user takes part in (`switch_core.room_changes`).
+ROOM = "room"
+KINDS = (MANAGED_AGENT, MACHINE, ROOM)
 
 USER_CHANGED_SIGNAL = "user.changed"
 
