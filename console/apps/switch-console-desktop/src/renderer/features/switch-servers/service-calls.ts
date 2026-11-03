@@ -2,6 +2,8 @@ import { rpc } from '@renderer/lib/ipc';
 import type {
   ServiceFlow,
   ServiceKeyConnected,
+  ServicePaste,
+  ServicePasteConnected,
   ServiceSignInStarted,
 } from '@shared/core/switch-servers/service-connection';
 
@@ -16,6 +18,8 @@ export type ServiceCalls = {
   getSignIn: (service: string, flowId: string) => Promise<ServiceFlow>;
   cancelSignIn: (service: string, flowId: string) => Promise<void>;
   connectWithKey: (service: string, fields: Record<string, string>) => Promise<ServiceKeyConnected>;
+  /** Connect a service people sign in to with a token or keys pasted in place of the sign-in. */
+  connectWithPaste: (service: string, paste: ServicePaste) => Promise<ServicePasteConnected>;
   disconnect: (service: string) => Promise<{ warning: string | null }>;
 };
 
@@ -28,6 +32,8 @@ export function serverServiceCalls(serverId: string): ServiceCalls {
       rpc.switchServers.cancelServiceConnection(serverId, service, flowId),
     connectWithKey: (service, fields) =>
       rpc.switchServers.connectServiceWithKey(serverId, service, fields),
+    connectWithPaste: (service, paste) =>
+      rpc.switchServers.connectServiceWithPaste(serverId, service, paste),
     disconnect: (service) => rpc.switchServers.disconnectService(serverId, service),
   };
 }
@@ -41,6 +47,8 @@ export function workspaceServiceCalls(workspaceId: string): ServiceCalls {
       rpc.workspaces.cancelServiceConnection({ workspaceId, service, flowId }),
     connectWithKey: (service, fields) =>
       rpc.workspaces.connectServiceWithKey({ workspaceId, service, fields }),
+    connectWithPaste: (service, paste) =>
+      rpc.workspaces.connectServiceWithPaste({ workspaceId, service, ...paste }),
     disconnect: (service) => rpc.workspaces.disconnectService({ workspaceId, service }),
   };
 }

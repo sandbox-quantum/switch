@@ -76,6 +76,7 @@ import {
   getConnectionCatalog,
   getGitHubConnection,
   connectServiceWithKey,
+  connectServiceWithPaste,
   disconnectGitHub,
   disconnectService,
   setRoomAutoRoute,
@@ -168,6 +169,7 @@ import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
+import type { ServicePaste } from '@shared/core/switch-servers/service-connection';
 import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
@@ -1560,6 +1562,19 @@ export const workspacesController = createRPCController({
   }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
       connectServiceWithKey(server, params.service, params.fields)
+    ),
+
+  /**
+   * Connect `service` with a token or keys pasted in place of its sign-in, at
+   * what was picked for its choices (a site); Switch checks them at the service.
+   */
+  connectServiceWithPaste: (params: { workspaceId: string; service: string } & ServicePaste) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      connectServiceWithPaste(server, params.service, {
+        method: params.method,
+        fields: params.fields,
+        choices: params.choices,
+      })
     ),
 
   /** Disconnect `service` in this workspace: its grants go with it. */

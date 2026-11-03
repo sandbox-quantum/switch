@@ -29,6 +29,7 @@ import type {
   SaveConnectorAppInput,
   SaveConnectorAppResult,
 } from '@shared/core/switch-servers/connector-apps';
+import type { ServicePaste } from '@shared/core/switch-servers/service-connection';
 import {
   type InviteServer,
   SWITCH_CLOUD_NAME,
@@ -90,6 +91,7 @@ import {
   listCloudMachines,
   disconnectGitHub,
   connectServiceWithKey,
+  connectServiceWithPaste,
   disconnectService,
   acceptInvitation,
   acceptPendingInvitation,
@@ -445,6 +447,10 @@ export const switchServersController = createRPCController({
   connectServiceWithKey: (serverId: string, service: string, fields: Record<string, string>) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
       connectServiceWithKey(server, service, fields)
+    ),
+  connectServiceWithPaste: (serverId: string, service: string, paste: ServicePaste) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      connectServiceWithPaste(server, service, paste)
     ),
   disconnectService: (serverId: string, service: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectService(server, service)),
