@@ -184,6 +184,15 @@ and asking for its token is refused before anything it holds is used; its
 row is left as it is, so an entry that offers that way again takes the
 connection back.
 
+A connection made before its OAuth entry asked for a choice it now needs
+(Datadog's keys, pasted before Datadog asked for a site, which sits only
+inside what they hold) is treated the same way, with `reconnect_code`
+`choices_missing` and "Datadog was connected before it asked for a site.
+Connect it again.": nothing it holds is read to fill the choice in. What a
+disconnect, or a connect that replaces a connection, says Switch could not
+revoke follows the row's `method`, which the broker hands the adapter beside
+the secret, so such keys say they are pasted keys rather than a sign-in.
+
 ### Pasted credentials beside a sign-in
 
 A vendor whose people can also make a credential of their own (a personal
@@ -266,6 +275,14 @@ only the sign-in's own token.
   stays refused either way (`key_never_expires`).
 - **Disconnecting** forgets the credential and says that only the vendor
   can revoke it.
+- **Switch Console** offers each method under the sign-in ("Use a token
+  instead", "Use API keys instead"), on a paste step with the sign-in's own
+  pickers above the method's fields, and one line on how long each way
+  lasts: the sign-in's token's lifetime, "refreshed by Switch"; "on the date
+  you set in <Service>" for `expires: vendor`; "Never expires; only
+  <Service> can revoke it" for `expires: never`. A connector's page shows
+  `access_note` in place of the level, and for `token_refused` offers "Paste
+  a new one", which opens the paste step on the connection's method.
 
 ## Tokens
 
@@ -723,8 +740,19 @@ sign-in runs against a trial organization at one:
   added it to the MCP OAuth redirect URLs in Organization Settings; then the
   server may name `core` for datadog in `SERVICE_SIGN_IN_REDIRECT` (see
   [Connecting](#connecting)).
-- A connection made with keys, when Datadog was connected with keys, reads as
-  needing reconnecting and is never used.
+- In place of the sign-in, a person may paste a personal access token
+  (field `pat`, sent as a bearer, `expires: vendor`) or an API key and an
+  application key (in `DD_API_KEY` and `DD_APPLICATION_KEY`, as Datadog's
+  MCP server reads them, `expires: never`, so offered only with
+  `ALLOW_NON_EXPIRING_KEYS`). A token with `user_access_read` is named by its
+  Datadog user; one without, by its public part (`ddpat_…`), and keys by
+  "Datadog keys · <site>" where the identity call does not answer with
+  them. The token's scopes are `mcp_read`, and `mcp_write` for writes.
+- A connection made with keys, when Datadog was connected with keys, has no
+  site but inside the keys it holds. It reads as needing reconnecting
+  (`choices_missing`) and is never used, whether or not the server allows
+  keys that never expire; it is not filled in. Disconnecting or replacing it
+  says Switch has forgotten the pasted keys but cannot revoke them.
 
 To connect: Connectors in Switch Console, then Datadog. Nothing needs
 configuring on the server. To roll back, add `datadog` to
