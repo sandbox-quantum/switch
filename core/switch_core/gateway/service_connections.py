@@ -199,11 +199,14 @@ async def list_service_connections(
                 # when not connected.
                 "method": None if connection is None else connection.method,
                 "choices": None if connection is None else dict(connection.choices),
-                # What a connection made with a pasted credential reaches,
-                # said in place of its level; null for any other.
+                # What a connection made with a credential pasted in place of
+                # a sign-in reaches, said in place of its level; null for any
+                # other, a key connection included.
                 "access_note": (
                     None
-                    if connection is None or connection.method == "oauth"
+                    if connection is None
+                    or connection.method == "oauth"
+                    or definition.adapter != "oauth"
                     else _pasted_reach(connection.method)
                 ),
             }
