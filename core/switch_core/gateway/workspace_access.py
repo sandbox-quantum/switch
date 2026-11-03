@@ -16,8 +16,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.connections.adapters import ConnectionSecret
-from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.broker import ServiceBroker, SignIn
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.stores.api_key_store import ApiKeyStore
 
@@ -25,7 +24,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 @dataclass(frozen=True)
 class RevokedAccess:
     key_hashes: list[str]
-    removed_services: list[tuple[str, ConnectionSecret]] = field(repr=False)
+    removed_services: list[tuple[str, SignIn]] = field(repr=False)
 
 
 async def revoke_workspace_access(

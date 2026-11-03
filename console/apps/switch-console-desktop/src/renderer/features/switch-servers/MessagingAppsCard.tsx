@@ -1,6 +1,7 @@
 import { useQueries, useQueryClient, useQuery } from '@tanstack/react-query';
 import {
   CircleAlert,
+  Clock,
   Copy,
   ExternalLink,
   Info,
@@ -11,10 +12,13 @@ import {
   MoreVertical,
   Plus,
   PlusCircle,
+  ShieldAlert,
+  ShieldCheck,
   Trash2,
   TriangleAlert,
   Unlink,
   Users,
+  X,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, useEffect, useMemo, useState } from 'react';
@@ -41,21 +45,28 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
-import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
+import type {
+  LinkedIdentity,
+  PendingIdentity,
+  RemoteBridge,
+} from '@shared/core/switch-servers/switch-servers';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectedChatsList } from './ConnectedChatsList';
 import { LinkAccountPrompts } from './link-account-prompts';
+import { accountHandle, linkRequestFailureText } from './link-accounts-prose';
 import { orderBridges } from './messaging-apps-order';
 import {
   hasUnlinkedMessagingApp,
   identityLinkOrderingNote,
+  linkedIdentityOn,
   unrecognisedMessagingApps,
   unrecognisedMessagingAppsMessage,
 } from './messaging-apps-warning';
 import { mayReplaceToken, offersTokenReplacement, tokenFields } from './replace-token';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
-import { useMyIdentities } from './use-my-identities';
+import { unconfirmedLinksQuery } from './unconfirmed-links';
+import { useMyIdentities, useMyPendingIdentities } from './use-my-identities';
 import { administersWorkspaceInScope } from './workspace-admin';
 
 /**
@@ -89,6 +100,14 @@ const MESSAGING_APPS_PURPOSE =
 const NO_ACCOUNT_EXPLANATION =
   'Switch cannot tell which account in this app is you. Agents set to answer only their owner will not recognise you here, and messages from you read as if from a stranger.';
 
+/** Beside a link made before links had to be confirmed. */
+const NOT_CONFIRMED_EXPLANATION =
+  'This link was made before Switch asked accounts to confirm them. It still works. Confirm it by posting a one-time code from the account.';
+
+/** Beside a link waiting for its code, which is not a link yet. */
+const WAITING_EXPLANATION =
+  'This account is not linked until a one-time code is posted from it. Until then your agents do not recognise you here.';
+
 export const MessagingAppsCard = observer(function MessagingAppsCard({
   serverId,
   className,
@@ -101,6 +120,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showDisconnectMessagingApp = useShowModal('disconnectMessagingAppModal');
   const showReplaceToken = useShowModal('replaceTokenModal');
   const showConnectChat = useShowModal('connectChatModal');
+  const showRequireLinkConfirmation = useShowModal('requireLinkConfirmationModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const isAdmin = administersWorkspaceInScope(serverId);
   const flags = useFeatureFlags(serverId);
@@ -136,6 +156,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
     error: identitiesError,
     refresh: refreshIdentities,
   } = useMyIdentities(workspaceId);
+  const { pending, error: pendingError } = useMyPendingIdentities(workspaceId);
   // Whose claim to drop when unlinking. Every account here is one the signed-in
   // user claimed, and other people may hold the same one — so name the user
   // rather than let the server infer it. Null until the session is read back,
@@ -192,6 +213,28 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   });
   const installStateOf = (bridge: RemoteBridge) =>
     installStates[tokenCandidates.findIndex((b) => b.id === bridge.id)]?.data;
+
+  // Links made before links had to be confirmed, per app, which an admin can
+  // stop trusting. Never asked for anyone else: the route is admin-only.
+  const olderLinkQueries = useQueries({
+    queries: bridges.map((bridge) => ({
+      ...unconfirmedLinksQuery(workspaceId, bridge.id),
+      enabled: isAdmin && workspaceId !== null,
+    })),
+  });
+  const olderLinkCountOf = (bridge: RemoteBridge): number =>
+    isAdmin ? (olderLinkQueries[bridges.indexOf(bridge)]?.data?.length ?? 0) : 0;
+  // Like the probe above, a failure here costs only a menu item, so it is
+  // logged rather than shown.
+  const olderLinksError = olderLinkQueries.find((q) => q.error !== null)?.error ?? null;
+  useEffect(() => {
+    if (olderLinksError) {
+      log.warn('Could not read the older links on a messaging app', {
+        workspaceId,
+        error: olderLinksError,
+      });
+    }
+  }, [olderLinksError, workspaceId]);
 
   const unrecognisedIn = unrecognisedMessagingApps({
     bridges,
@@ -279,7 +322,12 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
         )}
       </div>
 
-      <LinkAccountPrompts workspaceId={workspaceId} bridges={bridges} identities={identities} />
+      <LinkAccountPrompts
+        workspaceId={workspaceId}
+        bridges={bridges}
+        identities={identities}
+        pending={pending}
+      />
 
       {/* Same shape as the addressing editor's owner warning, so the two
         readings of one problem look like one problem.
@@ -299,6 +347,15 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
           {failureText(
             identitiesError,
             'Could not load which messaging accounts are linked to you, so this list may be incomplete.'
+          )}
+        </p>
+      )}
+
+      {pendingError !== null && (
+        <p className="mt-2 text-xs text-destructive">
+          {failureText(
+            pendingError,
+            'Could not load which links are waiting for a code, so this list may be incomplete.'
           )}
         </p>
       )}
@@ -331,8 +388,22 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                     and offering to link an account the user already has is the
                     more confusing of the two. */
                 identities={identities}
+                pending={pending}
                 currentUserId={currentUserId}
                 onReleased={refreshIdentities}
+                olderLinks={
+                  workspaceId !== null && olderLinkCountOf(bridge) > 0
+                    ? {
+                        count: olderLinkCountOf(bridge),
+                        onRequireConfirmation: () =>
+                          showRequireLinkConfirmation({
+                            workspaceId,
+                            bridgeId: bridge.id,
+                            bridgeDisplayName: bridge.displayName,
+                          }),
+                      }
+                    : null
+                }
                 showBundledSignIn={isManaged && bridge.type === 'mattermost'}
                 isAdmin={isAdmin}
                 savingChannelCreation={savingBridgeId === bridge.id}
@@ -420,16 +491,19 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
  * Only Link stays outside the menu: an app you have not claimed an account on
  * has exactly one thing worth doing to it, and burying that is what would make
  * the row's warning unactionable. Everything else — changing or dropping the
- * account, channel creation, the bundled chat's credentials, opening the app,
- * replacing its token, disconnecting it — is in the menu.
+ * account, requiring older links be confirmed, channel creation, the bundled
+ * chat's credentials, opening the app, replacing its token, disconnecting it —
+ * is in the menu.
  */
 export function MessagingAppRow({
   workspaceId,
   serverId,
   bridge,
   identities,
+  pending,
   currentUserId,
   onReleased,
+  olderLinks,
   showBundledSignIn,
   isAdmin,
   savingChannelCreation,
@@ -444,10 +518,15 @@ export function MessagingAppRow({
   /** Only for the bundled chat's sign-in, which is about the gateway. */
   serverId: string;
   bridge: RemoteBridge;
-  /** Accounts the user has claimed in this workspace, or null while unknown. */
+  /** Accounts linked to the user in this workspace, or null while unknown. */
   identities: LinkedIdentity[] | null;
+  /** The user's links still waiting for a code, or null while unknown. */
+  pending: PendingIdentity[] | null;
   currentUserId: string | null;
   onReleased: () => void;
+  /** Set for an admin when the app has links made before links had to be
+   *  confirmed: how many, and how to stop trusting them. */
+  olderLinks: { count: number; onRequireConfirmation: () => void } | null;
   showBundledSignIn: boolean;
   isAdmin: boolean;
   savingChannelCreation: boolean;
@@ -465,11 +544,26 @@ export function MessagingAppRow({
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
 
-  const identity = identities?.find((i) => i.bridgeId === bridge.id) ?? null;
+  const identity = identities === null ? null : linkedIdentityOn(bridge.id, identities);
+  // Only while nothing is linked here: a link that counts says more about the
+  // app than one still waiting for its code.
+  const waiting =
+    identity === null ? (pending?.find((p) => p.bridgeId === bridge.id) ?? null) : null;
   const platform = bridgePlatformLabel(bridge.type);
   const claim = () => {
     if (workspaceId === null) return;
     showClaimIdentity({ workspaceId, bridgeId: bridge.id });
+  };
+  const confirmLink = (
+    target: { id: string; externalUsername: string },
+    kind: 'pending' | 'unverified'
+  ) => {
+    if (workspaceId === null) return;
+    showClaimIdentity({
+      workspaceId,
+      bridgeId: bridge.id,
+      confirm: { identityId: target.id, externalUsername: target.externalUsername, kind },
+    });
   };
 
   // Offered only for the distributed Teams app: re-approving is exactly the
@@ -525,6 +619,29 @@ export function MessagingAppRow({
     }
   };
 
+  // Withdraws only the waiting confirmation. Unlinking is `release`, and is
+  // never what Cancel means.
+  const cancelRequest = async (identityId: string) => {
+    if (workspaceId === null) return;
+    setReleasing(true);
+    setReleaseError(null);
+    try {
+      const result = await rpc.workspaces.cancelIdentityLinkRequest({
+        workspaceId,
+        bridgeId: bridge.id,
+        identityId,
+      });
+      // Re-read either way: a refusal means it was confirmed or cancelled
+      // meanwhile, and the row should say which.
+      onReleased();
+      if (result.kind !== 'cancelled') setReleaseError(linkRequestFailureText(result));
+    } catch (cause) {
+      setReleaseError(failureText(cause, 'Could not cancel this link.'));
+    } finally {
+      setReleasing(false);
+    }
+  };
+
   // What it costs not to be linked, and — where the app has no directory to
   // search — how to become linkable at all. The second half is not obvious and
   // is the reason nothing offered to link on the way in.
@@ -569,7 +686,47 @@ export function MessagingAppRow({
               <span className="shrink-0 text-xs text-destructive">{bridge.status}</span>
             )}
           </div>
-          {identities === null ? null : identity === null ? (
+          {identities === null ? null : identity !== null ? (
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate font-mono text-xs text-foreground-muted">
+                {accountHandle(identity.externalUsername)}
+              </span>
+              {!identity.verified && (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span tabIndex={0} aria-label={NOT_CONFIRMED_EXPLANATION}>
+                        <Badge variant="secondary">Not confirmed</Badge>
+                      </span>
+                    }
+                  />
+                  <TooltipContent className="max-w-xs">{NOT_CONFIRMED_EXPLANATION}</TooltipContent>
+                </Tooltip>
+              )}
+            </span>
+          ) : waiting !== null ? (
+            <span className="flex min-w-0 items-center gap-1 text-xs text-foreground-muted">
+              <Clock className="size-3 shrink-0" />
+              <span className="truncate">
+                <span className="font-mono">{accountHandle(waiting.externalUsername)}</span> ·
+                Waiting for confirmation
+              </span>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span
+                      tabIndex={0}
+                      aria-label={WAITING_EXPLANATION}
+                      className="inline-flex text-foreground-muted"
+                    >
+                      <Info className="size-3" />
+                    </span>
+                  }
+                />
+                <TooltipContent className="max-w-xs">{WAITING_EXPLANATION}</TooltipContent>
+              </Tooltip>
+            </span>
+          ) : (
             <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
               <TriangleAlert className="size-3 shrink-0" />
               No account linked
@@ -588,10 +745,6 @@ export function MessagingAppRow({
                 <TooltipContent className="max-w-xs">{noAccountHelp}</TooltipContent>
               </Tooltip>
             </span>
-          ) : (
-            <span className="truncate font-mono text-xs text-foreground-muted">
-              {handleOf(identity)}
-            </span>
           )}
           {releaseError !== null && (
             <p className="mt-0.5 text-xs text-destructive">{releaseError}</p>
@@ -599,16 +752,40 @@ export function MessagingAppRow({
         </div>
 
         {/* Linking is the one thing an unlinked app needs, so it stays a button
-          rather than going into the menu with the rest. A linked app shows no
-          button at all: the only thing left to do to it is destructive, and a
-          control next to the handle would sit one mis-click from the action
-          that *changes* the account (CHOO-2137). */}
-        {identities !== null && identity === null && (
-          <Button variant="outline" size="xs" className="shrink-0" onClick={claim}>
-            <Link2 className="size-3" />
-            Link
-          </Button>
-        )}
+          rather than going into the menu with the rest — as do the code that
+          finishes a waiting link and the one that confirms an old one. A
+          confirmed link shows no button at all: the only thing left to do to it
+          is destructive, and a control next to the handle would sit one
+          mis-click from the action that *changes* the account (CHOO-2137). */}
+        {identities !== null &&
+          (identity !== null ? (
+            !identity.verified && (
+              <Button
+                variant="outline"
+                size="xs"
+                className="shrink-0"
+                onClick={() => confirmLink(identity, 'unverified')}
+              >
+                <ShieldCheck className="size-3" />
+                Confirm
+              </Button>
+            )
+          ) : waiting !== null ? (
+            <Button
+              variant="outline"
+              size="xs"
+              className="shrink-0"
+              onClick={() => confirmLink(waiting, 'pending')}
+            >
+              <KeyRound className="size-3" />
+              Show code
+            </Button>
+          ) : (
+            <Button variant="outline" size="xs" className="shrink-0" onClick={claim}>
+              <Link2 className="size-3" />
+              Link
+            </Button>
+          ))}
 
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -632,7 +809,19 @@ export function MessagingAppRow({
             {identity !== null && (
               <DropdownMenuItem onClick={() => void release(identity.id)}>
                 <Unlink className="size-4" />
-                Unlink {handleOf(identity)}
+                Unlink {accountHandle(identity.externalUsername)}
+              </DropdownMenuItem>
+            )}
+            {waiting !== null && (
+              <DropdownMenuItem onClick={() => void cancelRequest(waiting.id)}>
+                <X className="size-4" />
+                Cancel link to {accountHandle(waiting.externalUsername)}
+              </DropdownMenuItem>
+            )}
+            {olderLinks !== null && (
+              <DropdownMenuItem onClick={olderLinks.onRequireConfirmation}>
+                <ShieldAlert className="size-4" />
+                Require confirmation for older links ({olderLinks.count})…
               </DropdownMenuItem>
             )}
 
@@ -794,13 +983,6 @@ async function copyWebhookAddress(url: string): Promise<void> {
       variant: 'destructive',
     });
   }
-}
-
-/** The claimed account as a handle. Platforms differ on whether the username
- * they report already carries the sigil, so add one only when it is missing. */
-function handleOf(identity: LinkedIdentity): string {
-  const username = identity.externalUsername;
-  return username.startsWith('@') ? username : `@${username}`;
 }
 
 /** Turn a failed channel-creation toggle into something the user can act on. */

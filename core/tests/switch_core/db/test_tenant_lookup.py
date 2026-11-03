@@ -53,6 +53,7 @@ from switch_core.db.models import (
     CollaborationBridge,
     Invitation,
     MessagingInstall,
+    Organization,
     Room,
     ServerConnector,
     Tenant,
@@ -64,6 +65,7 @@ from switch_core.db.tenant_lookup import (
     SECURE_SEARCH_PATH,
     TENANT_LOOKUPS,
     TENANT_LOOKUPS_BY_NAME,
+    all_organization_ids,
     all_tenant_ids,
     create_lookup_ddl,
     tenant_of_agent_oauth_client,
@@ -108,6 +110,7 @@ _ADDED_SINCE = {
     "tenants_open_to_domain": "7d3f5a19e2c8",
     "tenant_of_sign_in_flow": "e5956cbd3bdc",
     "tenants_bindable_by_user": "5c2e8f17a9d4",
+    "all_organization_ids": "10f6d02ac5bc",
 }
 
 # A third kind of change, and the quietest: a lookup whose body a later
@@ -387,6 +390,22 @@ class TestWhatTheyAnswer:
         fixture = await _two_populated_tenants(rls_harness)
         found = await all_tenant_ids(rls_harness.restricted)
         assert {fixture.tenant_a, fixture.tenant_b} <= set(found)
+
+    async def test_all_organization_ids_sees_every_organization(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Including one with no workspace, which no pass over workspaces
+        would reach."""
+        found_before = set(await all_organization_ids(rls_harness.restricted))
+        ids = [f"org-{uuid.uuid4().hex[:8]}" for _ in range(2)]
+        async with rls_harness.owner() as session:
+            for organization_id in ids:
+                session.add(
+                    Organization(id=organization_id, slug=organization_id, name="O")
+                )
+            await session.commit()
+        found = set(await all_organization_ids(rls_harness.restricted))
+        assert found - found_before == set(ids)
 
     async def test_the_same_question_asked_the_ordinary_way_sees_one_tenant(
         self, rls_harness: RLSHarness

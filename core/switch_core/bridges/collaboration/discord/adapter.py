@@ -5,7 +5,7 @@ import io
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -1111,6 +1111,40 @@ class DiscordAdapter(PlatformAdapter):
         # are registered from, so a renamed argument cannot leave this stale.
         option = COMMANDS_BY_NAME["invite-agent"].args_spec[0].name
         return f"`/invite-agent {option}:agent-name` — the Discord slash command"
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        # Other bots and webhooks are bridged like people (see `_on_message`),
+        # and the id alone does not say which is which.
+        client = self._require_client()
+        try:
+            user = await client.fetch_user(int(external_user_id))
+        except (ValueError, discord.NotFound):
+            return (
+                "This isn't a Discord user's account. It may be a webhook, which "
+                "anyone holding its URL posts as."
+            )
+        except discord.HTTPException as e:
+            raise RuntimeError(
+                f"Could not ask Discord about account {external_user_id}: {e}"
+            ) from e
+        if user.bot or user.system:
+            return "This is a Discord bot's account, which whoever runs it posts as."
+        return None
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        option = COMMANDS_BY_NAME["link-account"].args_spec[0].name
+        slash = f"`/link-account {option}:{code}`"
+        if connection_config.get("event_delivery") == "shared":
+            # The shared connection is not given message text, so a typed
+            # `!link-account` never reaches Switch; the slash command does.
+            return f"Run {slash} from that account in a server channel Switch is in."
+        return (
+            f"Run {slash} from that account in a server channel Switch is in, "
+            f"or post `!link-account {code}` there."
+        )
 
     async def admin_message(
         self,

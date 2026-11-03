@@ -494,6 +494,15 @@ none of it is needed to take part in a conversation.
   are commands for people: when someone asks you to rename or delete an agent
   in chat, point them at the command, or use `update_agent_detail` yourself
   for a rename once they confirm.
+
+  A person links their chat account to their Switch user in Switch Console,
+  which shows them a one-time code. The link counts only once they post
+  `!link-account CODE` from that chat account; Console says exactly how on each
+  platform (on Teams they @mention the Switch app with `link-account CODE`, on
+  Telegram they send `/link_account CODE`). `!unlink-account` lists the
+  Switch users a chat account is linked to, and `!unlink-account NAME` removes
+  one; both act only on the account that sends them. Never ask for a code or
+  post one yourself: it only works from the account it was issued for.
 - **`request_agent_deletion`** — ask for another of your owner's agents to be
   deleted. It deletes nothing: Switch posts the request in your connected
   room, and only the agent's owner or a workspace admin can carry it out by
@@ -887,7 +896,9 @@ ui-avatars.com is not accepted.
     runs, or self-hosted;
   - the messaging apps, and how each platform would be added here: the official
     Switch app or an app they create themselves;
-  - whether their own chat account is linked, and their username on each app;
+  - whether their own chat account is linked (`your_account_link` says whether
+    it is confirmed or still waiting for its code), and their username on each
+    app;
   - the services they connected and which agents use them;
   - their agents and machines.
 

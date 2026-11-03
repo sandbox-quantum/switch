@@ -87,6 +87,10 @@ _ALLOWED_MODULES = {
     # resolution shape as the line above, through the same `tenant_of_api_key`,
     # with the row then read scoped to the tenant it produced.
     "switch_core.management.auth",
+    # The boot-time re-encryption sweep visits every organization, including
+    # one with no workspace to reach it through, binding each in turn
+    # (`organization_session`) to rewrite its connector apps' secrets.
+    "switch_core.db.key_rotation",
     # Core keeps which controller runs each agent in memory, so at startup
     # every tenant's placed definitions are read back into it: enumerate the
     # tenants, then read each one's definitions under its own policy, the same

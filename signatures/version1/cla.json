@@ -455,6 +455,94 @@
       "created_at": "2026-11-02T09:13:33Z",
       "repoId": 1302612528,
       "pullRequestNo": 1144
+    },
+    {
+      "name": "Abhishekanand19",
+      "id": 225566762,
+      "comment_id": 6583279113,
+      "created_at": "2026-11-02T17:07:21Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1329
+    },
+    {
+      "name": "Deepak-Kambala",
+      "id": 190464526,
+      "comment_id": 6584106581,
+      "created_at": "2026-11-02T17:45:32Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1337
+    },
+    {
+      "name": "Shubham-dev-stack",
+      "id": 225232251,
+      "comment_id": 6585764528,
+      "created_at": "2026-11-02T19:01:07Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1343
+    },
+    {
+      "name": "kpunia306",
+      "id": 196219335,
+      "comment_id": 6586619253,
+      "created_at": "2026-11-02T19:36:35Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1346
+    },
+    {
+      "name": "Rushikesh1911",
+      "id": 193617388,
+      "comment_id": 6587681538,
+      "created_at": "2026-11-02T20:28:03Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1347
+    },
+    {
+      "name": "sanjayrohith",
+      "id": 181697431,
+      "comment_id": 6602328643,
+      "created_at": "2026-11-03T11:13:41Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1358
+    },
+    {
+      "name": "jmakar-sbaq",
+      "id": 248518331,
+      "comment_id": 6608354049,
+      "created_at": "2026-11-03T15:46:55Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 971
+    },
+    {
+      "name": "SaaiAravindhRaja",
+      "id": 189733602,
+      "comment_id": 6612239082,
+      "created_at": "2026-11-03T18:30:51Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1384
+    },
+    {
+      "name": "GauravPatil2515",
+      "id": 155764126,
+      "comment_id": 6612701478,
+      "created_at": "2026-11-03T18:53:01Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1391
+    },
+    {
+      "name": "mubudot",
+      "id": 349922873,
+      "comment_id": 6612900404,
+      "created_at": "2026-11-03T19:02:51Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1390
+    },
+    {
+      "name": "farhanmallik05",
+      "id": 173594059,
+      "comment_id": 6613440351,
+      "created_at": "2026-11-03T19:27:53Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1397
     }
   ]
 }
