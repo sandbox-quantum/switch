@@ -362,6 +362,12 @@ export type RemoteRoomSummary = {
   createdAt: string;
   /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */
   writeVisibility?: RoomVisibility;
+  /**
+   * What the signed-in person may do with the room, as the server decides it
+   * by the rules its routes enforce. Absent from a server that does not say,
+   * where Console works it out the same way (`roomPermissionsFor`).
+   */
+  serverPermissions?: { canWrite: boolean; canManage: boolean };
 };
 
 /**

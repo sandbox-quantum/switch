@@ -44,6 +44,19 @@ describe('roomPermissionsFor', () => {
     expect(roomPermissionsFor({ ownerId: 'u-2' }, ME).canWrite).toBe(true);
   });
 
+  it('takes the server’s answer over its own working when the server gives one', () => {
+    expect(
+      roomPermissionsFor(
+        {
+          ownerId: 'u-1',
+          writeVisibility: 'public',
+          serverPermissions: { canWrite: false, canManage: false },
+        },
+        ME
+      )
+    ).toEqual({ canWrite: false, canManage: false });
+  });
+
   it('gives an unknown viewer nothing', () => {
     expect(
       roomPermissionsFor(

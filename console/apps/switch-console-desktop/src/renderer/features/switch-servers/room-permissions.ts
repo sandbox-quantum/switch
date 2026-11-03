@@ -10,14 +10,20 @@ import type { RoomVisibility } from '@shared/core/switch-servers/switch-servers'
 export type RoomPermissions = { canWrite: boolean; canManage: boolean };
 
 /**
- * The gateway's room rule (`authz.can`), worked out for one viewer. A room
+ * What one viewer may do with a room: the server's own answer when it gives
+ * one, otherwise the gateway's room rule (`authz.can`) worked out here. A room
  * whose write access is not known — a server that predates the setting — is
  * treated as public, which is what every room was before it existed.
  */
 export function roomPermissionsFor(
-  room: { ownerId: string | null; writeVisibility?: RoomVisibility },
+  room: {
+    ownerId: string | null;
+    writeVisibility?: RoomVisibility;
+    serverPermissions?: RoomPermissions;
+  },
   viewer: { userId: string | null; isAdmin: boolean }
 ): RoomPermissions {
+  if (room.serverPermissions) return room.serverPermissions;
   if (viewer.userId === null) return { canWrite: false, canManage: false };
   const canManage = viewer.isAdmin || (room.ownerId !== null && room.ownerId === viewer.userId);
   const canWrite = canManage || (room.writeVisibility ?? 'public') === 'public';

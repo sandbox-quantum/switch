@@ -260,7 +260,11 @@ export class SwitchRoomsStore {
    */
   roomPermissions(
     workspaceId: string,
-    room: { ownerId: string | null; writeVisibility?: RoomVisibility }
+    room: {
+      ownerId: string | null;
+      writeVisibility?: RoomVisibility;
+      serverPermissions?: RoomPermissions;
+    }
   ): RoomPermissions {
     const serverId = workspacesStore.serverIdFor(workspaceId);
     const user = serverId ? (switchServersStore.statusFor(serverId)?.user ?? null) : null;

@@ -3299,6 +3299,9 @@ type RoomSummaryJson = {
   archived: boolean;
   created_at: string;
   write_visibility?: string;
+  /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
+  can_write?: boolean;
+  can_manage?: boolean;
 };
 
 function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
@@ -3318,6 +3321,9 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     createdAt: r.created_at,
     ...(r.write_visibility !== undefined
       ? { writeVisibility: visibilityOf(r.write_visibility) }
+      : {}),
+    ...(r.can_write !== undefined && r.can_manage !== undefined
+      ? { serverPermissions: { canWrite: r.can_write, canManage: r.can_manage } }
       : {}),
   };
 }

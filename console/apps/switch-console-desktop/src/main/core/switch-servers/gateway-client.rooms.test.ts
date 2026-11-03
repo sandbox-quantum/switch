@@ -146,6 +146,21 @@ describe('fetchRoomDetail', () => {
   });
 });
 
+describe('what the server says the caller may do', () => {
+  it('carries the server’s own answer when it gives one', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ ...ROOM, can_write: true, can_manage: false })
+    );
+    const room = await fetchRoomDetail(SERVER, 'room-1');
+    expect(room.serverPermissions).toEqual({ canWrite: true, canManage: false });
+  });
+
+  it('leaves it out for a server that does not say, so Console works it out', async () => {
+    const room = await fetchRoomDetail(SERVER, 'room-1');
+    expect(room.serverPermissions).toBeUndefined();
+  });
+});
+
 describe('room writes', () => {
   it('sends a visibility change in the server’s field names', async () => {
     await updateRoom(SERVER, 'room-1', { readVisibility: 'private', writeVisibility: 'private' });
