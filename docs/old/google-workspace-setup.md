@@ -97,9 +97,18 @@ What agents can do changes, and they are told so:
   for a link instead.
 - Calendar: as before.
 
-People connected before the setting changed keep what they granted. Going the
-other way, from `drive-file` back to the full scopes, people connected under
-`drive-file` must connect again before agents can search Drive.
+The setting covers every Google sign-in on the server, through the server's
+client and through [an organization's own](#an-organizations-own-google-client).
+An organization whose own client is Internal, which Google does not review,
+also loses Drive search.
+
+Changing the setting, in either direction, makes everyone connected before the
+change reconnect. Their connection to Google Workspace shows as needing
+reconnection, and Switch refuses to give their agents a Google Workspace token
+or a new grant until they reconnect. Tell people before you change it. If you
+change it back, the connections nobody has remade yet work again.
+
+The Helm chart cannot set `SERVICE_ACCESS_PROFILES` yet.
 
 ## Give Switch the client
 
@@ -218,3 +227,6 @@ using the server's. If the organization's client stops working, its
 workspaces see Google Workspace as unavailable, with the reason, rather than falling
 back to the server's. Removing it sends them back to the server's client, and
 people connected through it reconnect once. The flag is off by default.
+`SERVICE_ACCESS_PROFILES` applies to an organization's client as it does to
+the server's (see
+[An External app without the security assessment](#an-external-app-without-the-security-assessment)).
