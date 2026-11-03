@@ -1,0 +1,54 @@
+slug: supabase
+name: Supabase
+category: Database
+description: Inspect and manage Supabase projects, databases, storage and functions, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Supabase supports RFC 7591 dynamic client registration out of the box:
+    # Core registers a client with its registration endpoint.
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39241, 39242, 39243, 39244, 39245]
+    prompt: consent
+    # Supabase's authorization server does not advertise an RFC 7009 revocation
+    # endpoint in its metadata, so dropped sign-ins are revoked by the user.
+    remove_access: >-
+      Revoke access in Supabase under Account Settings, Authorized Apps,
+      in your Supabase dashboard menu.
+  identity:
+    url: https://api.supabase.com/v1/profile
+    account_id: gotrue_id
+    label: primary_email
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: supabase, url: "https://mcp.supabase.com/mcp" }
+access:
+  read:
+    scopes:
+      - organizations:read
+      - projects:read
+      - database:read
+      - analytics:read
+      - storage:read
+      - edge_functions:read
+      - environment:read
+  write:
+    scopes:
+      - organizations:read
+      - projects:read
+      - projects:write
+      - database:read
+      - database:write
+      - analytics:read
+      - storage:read
+      - storage:write
+      - edge_functions:read
+      - edge_functions:write
+      - environment:read
+      - environment:write
+tools: { mode: pass_through }
