@@ -163,8 +163,8 @@ spec:
             {{- end }}
             {{- include "switch.coreEnv" (merge (dict "omitOwnerCredentials" true) .) | nindent 12 }}
             {{- range .Values.switchCore.extraEnv }}
-            {{- if eq (toString .name) "HOSTED_BOX_PROVISIONING" }}
-            {{- fail "Set hosted agents v2 with switchCore.hostedBoxProvisioning, not switchCore.extraEnv: the value is what the chart's checks read." }}
+            {{- if has (toString .name) (list "HOSTED_BOX_PROVISIONING" "HOSTED_PROVISIONS_PER_MINUTE" "HOSTED_BOX_CEILING" "VISIBILITY_KEYED_ID_KEY_PATH" "VISIBILITY_KEYED_ID_KEY_VERSION" "VISIBILITY_OPERATORS_PATH") }}
+            {{- fail (printf "Set %s with its switchCore value, not switchCore.extraEnv: the chart sets it and checks it." (toString .name)) }}
             {{- end }}
             {{- end }}
             {{- with .Values.switchCore.extraEnv }}

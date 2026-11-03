@@ -256,8 +256,9 @@ switchCore:
   # the chart's own: a list of {name, value} or {name, valueFrom}, as in a pod
   # spec. For a setting this chart has no value for. Never put a secret in
   # `value`: it lands in the pod spec, readable by anyone who can read the
-  # Deployment. Use `valueFrom.secretKeyRef` instead. HOSTED_BOX_PROVISIONING
-  # is refused here: use hostedBoxProvisioning.
+  # Deployment. Use `valueFrom.secretKeyRef` instead. The hosted agents v2
+  # settings above (HOSTED_BOX_PROVISIONING, HOSTED_PROVISIONS_PER_MINUTE,
+  # HOSTED_BOX_CEILING, VISIBILITY_*) are refused here: use their values.
   extraEnv: []
   image: switch-core:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published

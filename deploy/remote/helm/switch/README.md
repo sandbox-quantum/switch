@@ -333,7 +333,10 @@ switchCore:
   setting this chart has no value for (a list of `{name, value}` or
   `{name, valueFrom}`). Never put a secret in `value`: it lands in the pod
   spec, readable by anyone who can read the Deployment. Use
-  `valueFrom.secretKeyRef` instead.
+  `valueFrom.secretKeyRef` instead. The v2 settings the chart sets
+  (`HOSTED_BOX_PROVISIONING`, `HOSTED_PROVISIONS_PER_MINUTE`,
+  `HOSTED_BOX_CEILING`, `VISIBILITY_*`) are refused in `extraEnv`: set their
+  values instead.
 
 **Rolling back** to a release from before hosted agents v2: an older
 switch-core won't start on the upgraded database, so restore the database
