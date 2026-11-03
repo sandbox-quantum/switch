@@ -74,7 +74,12 @@ class FakeTransport:
     def register_handlers(self, handlers: TransportHandlers) -> None:
         self.handlers = handlers
 
-    async def receive_forever(self, progress: DeliveryProgress) -> None:
+    async def receive_forever(
+        self,
+        progress: DeliveryProgress,
+        *,
+        row_types: frozenset[str] | None = None,
+    ) -> None:
         return None
 
     def held_back_released(self, room_id: str) -> None:
