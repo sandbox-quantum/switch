@@ -108,7 +108,13 @@ reconnection, and Switch refuses to give their agents a Google Workspace token
 or a new grant until they reconnect. Tell people before you change it. If you
 change it back, the connections nobody has remade yet work again.
 
-The Helm chart cannot set `SERVICE_ACCESS_PROFILES` yet.
+With the Helm chart, set `switchCore.serviceAccessProfiles`:
+
+```yaml
+switchCore:
+  serviceAccessProfiles:
+    google-workspace: drive-file
+```
 
 ## Give Switch the client
 

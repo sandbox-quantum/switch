@@ -190,7 +190,8 @@ version of their own to them without also giving them a release of their own.
   with its own Internal client also loses Drive search. Changing the setting
   makes everyone connected before the change reconnect: until they do, their
   connection shows as needing reconnection and their agents get no Google
-  Workspace token. The Helm chart cannot set it yet. Without the setting
+  Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
+  `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
   nothing changes.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
