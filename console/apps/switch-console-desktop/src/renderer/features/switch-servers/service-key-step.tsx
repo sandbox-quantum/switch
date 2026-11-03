@@ -20,9 +20,96 @@ import {
 } from '@renderer/lib/ui/select';
 import type {
   ConnectionCatalogEntry,
+  ServiceKeyField,
   ServiceKeyForm,
 } from '@shared/core/switch-servers/connection-catalog';
 import type { ServiceCalls } from './service-calls';
+
+/**
+ * The fields a person fills in to connect with a key, or with a credential
+ * pasted in place of a sign-in: each secret typed into a password input, any
+ * other picked from its choices, each with its help under it, and the link to
+ * where the vendor says how to make one.
+ */
+export function ServiceKeyFields({
+  service,
+  name,
+  label,
+  fields,
+  values,
+  busy,
+  helpUrl,
+  helpText,
+  onChange,
+}: {
+  service: string;
+  /** The service's name, as people read it. */
+  name: string;
+  /** What the group of fields is, for assistive technology. */
+  label: string;
+  fields: ServiceKeyField[];
+  values: Record<string, string>;
+  busy: boolean;
+  helpUrl: string | null;
+  /** The help link's words. */
+  helpText: string;
+  onChange: (field: string, value: string) => void;
+}) {
+  return (
+    <div role="group" aria-label={label} className="space-y-3">
+      {fields.map((field) => {
+        const id = `service-key-${service}-${field.name}`;
+        const value = values[field.name] ?? '';
+        return (
+          <div key={field.name} className="space-y-1">
+            <label htmlFor={id} className="block text-sm font-medium">
+              {field.label}
+            </label>
+            {field.choices ? (
+              <Select
+                value={value || null}
+                onValueChange={(next) => onChange(field.name, next ?? '')}
+              >
+                <SelectTrigger id={id} aria-label={field.label} className="w-full">
+                  <SelectValue placeholder={`Choose a ${field.label.toLowerCase()}`}>
+                    {value || undefined}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {field.choices.map((choice) => (
+                    <SelectItem key={choice} value={choice}>
+                      {choice}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input
+                id={id}
+                type={field.secret ? 'password' : 'text'}
+                autoComplete="off"
+                spellCheck={false}
+                disabled={busy}
+                value={value}
+                onChange={(event) => onChange(field.name, event.target.value)}
+              />
+            )}
+            {field.help && <p className="text-xs text-foreground-muted">{field.help}</p>}
+          </div>
+        );
+      })}
+      {helpUrl && (
+        <button
+          type="button"
+          className="flex w-fit items-center gap-1 text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
+          onClick={() => void openExternalUrl(helpUrl, `Could not open ${name}'s help`)}
+        >
+          {helpText} <ExternalLink className="size-3" />
+        </button>
+      )}
+    </div>
+  );
+}
 
 /**
  * Connecting a service by pasting a key: a form of the fields the catalog
@@ -132,61 +219,20 @@ export function ServiceKeyStep({
           </p>
         )}
         {editing && (
-          <div role="group" aria-label={`${name} key`} className="space-y-3">
-            {form.fields.map((field) => {
-              const id = `service-key-${service}-${field.name}`;
-              const value = values[field.name] ?? '';
-              const set = (next: string) => {
-                setValues((current) => ({ ...current, [field.name]: next }));
-                setError(null);
-              };
-              return (
-                <div key={field.name} className="space-y-1">
-                  <label htmlFor={id} className="block text-sm font-medium">
-                    {field.label}
-                  </label>
-                  {field.choices ? (
-                    <Select value={value || null} onValueChange={(next) => set(next ?? '')}>
-                      <SelectTrigger id={id} aria-label={field.label} className="w-full">
-                        <SelectValue placeholder={`Choose a ${field.label.toLowerCase()}`}>
-                          {value || undefined}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {field.choices.map((choice) => (
-                          <SelectItem key={choice} value={choice}>
-                            {choice}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input
-                      id={id}
-                      type={field.secret ? 'password' : 'text'}
-                      autoComplete="off"
-                      spellCheck={false}
-                      disabled={busy}
-                      value={value}
-                      onChange={(event) => set(event.target.value)}
-                    />
-                  )}
-                  {field.help && <p className="text-xs text-foreground-muted">{field.help}</p>}
-                </div>
-              );
-            })}
-            {form.help_url && (
-              <button
-                type="button"
-                className="flex w-fit items-center gap-1 text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
-                onClick={() =>
-                  void openExternalUrl(form.help_url!, `Could not open ${name}'s help on keys`)
-                }
-              >
-                How to make a {name} key <ExternalLink className="size-3" />
-              </button>
-            )}
-          </div>
+          <ServiceKeyFields
+            service={service}
+            name={name}
+            label={`${name} key`}
+            fields={form.fields}
+            values={values}
+            busy={busy}
+            helpUrl={form.help_url}
+            helpText={`How to make a ${name} key`}
+            onChange={(field, next) => {
+              setValues((current) => ({ ...current, [field]: next }));
+              setError(null);
+            }}
+          />
         )}
         <p className="text-xs text-foreground-muted">
           Switch checks the key with {name}, stores it encrypted, and never shows it again. The

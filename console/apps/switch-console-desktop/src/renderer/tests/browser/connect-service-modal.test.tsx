@@ -20,6 +20,7 @@ const workspaces = vi.hoisted(() => ({
   setServiceGrant: vi.fn(),
   startServiceConnection: vi.fn(),
   getServiceFlow: vi.fn(),
+  connectServiceWithPaste: vi.fn(),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -177,6 +178,55 @@ it('closes as soon as the server has kept the sign-in, handing the warning on', 
   await vi.waitFor(() => expect(onConnected).toHaveBeenCalledWith('Access stays a while.'));
   expect(onClose).toHaveBeenCalledOnce();
   expect(workspaces.setServiceGrant).not.toHaveBeenCalled();
+});
+
+const PASTABLE = entry({
+  paste: [
+    {
+      method: 'token',
+      label: 'Personal access token',
+      fields: [
+        { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
+      ],
+      help_url: null,
+      expires: 'vendor',
+      access_note: 'Reaches what your token allows.',
+    },
+  ],
+});
+
+async function type(target: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(target, value);
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+it('closes as soon as the server has kept a pasted token, handing the warning on', async () => {
+  workspaces.connectServiceWithPaste.mockResolvedValue({
+    warning: 'Some access may remain.',
+    external_identity: 'ada@example.test',
+    method: 'token',
+    choices: {},
+  });
+  const onConnected = vi.fn();
+  const onClose = vi.fn();
+  const modal = await render(PASTABLE, onConnected, onClose);
+  await act(async () => button(/^use a token instead$/i, modal)!.click());
+  await type(modal.querySelector<HTMLInputElement>('input[type="password"]')!, 'SYNTHETIC');
+  await act(async () => button(/^connect example/i, modal)!.click());
+
+  await vi.waitFor(() => expect(onConnected).toHaveBeenCalledWith('Some access may remain.'));
+  expect(workspaces.connectServiceWithPaste).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    service: 'example',
+    method: 'token',
+    fields: { pat: 'SYNTHETIC' },
+    choices: {},
+  });
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(workspaces.startServiceConnection).not.toHaveBeenCalled();
 });
 
 it('stays open with the reason when the server refuses the sign-in', async () => {
