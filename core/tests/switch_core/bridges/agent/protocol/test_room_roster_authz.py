@@ -24,6 +24,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.invite_policy import Inviter
 from switch_core.keys import Keyring
 from switch_core.room_service import MembershipFixed
 
@@ -229,3 +230,34 @@ class TestFixedMembership:
                 await svc.invite_agent_to_room(caller, room_id, "admin-agent")
             with pytest.raises(MembershipFixed, match=channel_type):
                 await svc.add_users_to_room(caller, room_id, ["root"])
+
+
+class _RecordingRoomService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def add_agents_to_room(self, room_id: str, **kwargs: object) -> None:
+        self.calls.append({"room_id": room_id, **kwargs})
+
+
+class TestInviteAgentToRoomNamesTheInviter:
+    async def test_the_calling_agent_is_who_invites(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # The addressing-policy check itself lives in RoomService; this pins
+        # that the tool hands it the calling agent and that agent's owner.
+        svc = _service(session_factory)
+        owner = await _make_user(session_factory, "owner")
+        caller = await _register(svc, "caller-agent", owner)
+        await _register(svc, "invitee-agent", owner)
+        room_id = await _make_public_room(
+            session_factory, owner_id=owner, member_agent_ids=[caller]
+        )
+        room_service = _RecordingRoomService()
+        svc.room_service = room_service  # type: ignore[assignment]
+
+        await svc.invite_agent_to_room(caller, room_id, "invitee-agent")
+
+        (call,) = room_service.calls
+        assert call["invited_by"] == Inviter.agent(caller, owner)
+        assert call["agent_names"] == ["invitee-agent"]

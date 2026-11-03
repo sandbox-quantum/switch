@@ -15,6 +15,7 @@ import pytest
 
 from switch_core.db.models import Agent, CollaborationBridge, Message, Room
 from switch_core.room_service import RoomCreateConfig
+from switch_core.invite_policy import Inviter
 from tests.integration.conftest import Harness, SessionEnv
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
@@ -127,7 +128,7 @@ async def test_no_greeting_when_the_bridge_has_them_disabled(
         await session.commit()
 
     await harness.room_service.add_agents_to_room(
-        result.room.id, agent_ids=[joiner.agent_id]
+        result.room.id, agent_ids=[joiner.agent_id], invited_by=Inviter.system()
     )
     await _wait_joined(joiner_client, transport_room_id)
 

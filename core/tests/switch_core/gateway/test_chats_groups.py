@@ -28,6 +28,7 @@ from switch_core.gateway import rooms as rooms_module
 from switch_core.gateway.schemas import RoomUpdateRequest
 from switch_core.room_changes import RoomChanges, people_concerned
 from switch_core.user_changes import ROOM
+from switch_core.invite_policy import Inviter
 from tests.switch_core.gateway.conftest import (
     _chat_service,
     _FakeActivityListener,
@@ -193,7 +194,7 @@ async def test_an_owner_grant_does_not_make_a_group(chats: _Harness) -> None:
     room_id = await _left_chat(chats, chats.alice)
     [guest] = await _agent_ids(chats, room_id)
     await chats.room_service.remove_agents_from_room(room_id, [guest])
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id], invited_by=Inviter.system())
 
     assert await _reads(chats, chats.alice, room_id) == 200
     assert await _channel_type(chats, room_id) == "direct"

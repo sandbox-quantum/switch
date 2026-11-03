@@ -14,6 +14,7 @@ import pytest
 
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.room_service import RoomCreateConfig
+from switch_core.invite_policy import Inviter
 from tests.integration.conftest import Harness
 
 # Session-scoped event loop: the background clients are created and torn down
@@ -75,7 +76,7 @@ async def test_join_emits_room_join_event(harness: Harness) -> None:
     await _wait_joined(watcher_client, transport_room_id)
 
     # Trigger the observed join.
-    await harness.room_service.add_agents_to_room(room_id, agent_ids=[joiner.agent_id])
+    await harness.room_service.add_agents_to_room(room_id, agent_ids=[joiner.agent_id], invited_by=Inviter.system())
 
     event = await _drain_room_join(harness, watcher.agent_id, room_id)
 
