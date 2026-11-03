@@ -111,7 +111,7 @@ spec:
             - name: HOSTED_IDLE_STOP_MINUTES
               value: {{ .Values.switchCore.hostedIdleStopMinutes | quote }}
             {{- end }}
-            {{- if .Values.switchCore.hostedBoxProvisioning }}
+            {{- if eq (toString .Values.switchCore.hostedBoxProvisioning) "true" }}
             {{- if not .Values.switchCore.hostedControllerSecret }}
             {{- fail "switchCore.hostedBoxProvisioning needs switchCore.hostedControllerSecret: hosted agents v2 runs boxes through the hosted controller config." }}
             {{- end }}
@@ -162,6 +162,11 @@ spec:
               value: /etc/switch-google-workspace/client.json
             {{- end }}
             {{- include "switch.coreEnv" (merge (dict "omitOwnerCredentials" true) .) | nindent 12 }}
+            {{- range .Values.switchCore.extraEnv }}
+            {{- if eq (toString .name) "HOSTED_BOX_PROVISIONING" }}
+            {{- fail "Set hosted agents v2 with switchCore.hostedBoxProvisioning, not switchCore.extraEnv: the value is what the chart's checks read." }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.switchCore.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -230,6 +230,7 @@ switchCore:
   # "hosted_agents" and "agent_management" feature flags (the chart refuses
   # to render without them). The box side (gVisor nodes, the box provisioner
   # and controller) is set up in the cluster separately: deploy/hosted/k8s.
+  # Only true (a real true, or the string "true") turns it on; anything else is off.
   hostedBoxProvisioning: false
   # v2 only. How many boxes switch-core asks for per minute (1-60), and how
   # many may exist at once (1-10000). Empty uses switch-core's defaults (5
@@ -255,7 +256,8 @@ switchCore:
   # the chart's own: a list of {name, value} or {name, valueFrom}, as in a pod
   # spec. For a setting this chart has no value for. Never put a secret in
   # `value`: it lands in the pod spec, readable by anyone who can read the
-  # Deployment. Use `valueFrom.secretKeyRef` instead.
+  # Deployment. Use `valueFrom.secretKeyRef` instead. HOSTED_BOX_PROVISIONING
+  # is refused here: use hostedBoxProvisioning.
   extraEnv: []
   image: switch-core:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
