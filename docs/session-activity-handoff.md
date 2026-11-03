@@ -415,8 +415,9 @@ map. No Node/npx and no credentials in the CLI's environment.
   command to copy: `!cancel`, the agent's mention (the name `post_rich` was
   given) and the first 8 characters of the turn ID, marked as one literal and
   not escaped, so the `@` survives (`renderers.withdraw_hint`). `!cancel`
-  takes that start or the full ID. Where there is no agent to name (the text
-  of a failed publication) or the name would not read back as one mention,
+  takes that start or the full ID. Where there is no agent to name
+  (`rich_fallback_text`, which a failed publication carries on Discord and
+  Telegram) or the name would not read back as one mention,
   and on Teams for a name with `_` in it, the card names the pieces instead.
 - Stop: a press (`INTERRUPT_ACTION`) resolves its turn from
   `turn_status_posts`, is refused if that turn is no longer running, is

@@ -305,7 +305,8 @@ version of their own to them without also giving them a release of their own.
   `!cancel`, the agent's mention and the first 8 characters of the turn ID,
   which `!cancel` takes as well as the full ID, looking them up among that
   agent's queued turns in the room and refusing a start that matches none or
-  several. A cancelled turn's card reads "Cancelled before the agent started.", and
+  several. On Teams, for an agent name with `_` in it, the card shows the ID
+  and how to cancel it, without a command to copy. A cancelled turn's card reads "Cancelled before the agent started.", and
   `POST /agent-sessions/{session_id}/activity` takes `cancelled` as a turn
   status. A session host without `turn.cancel` does not read the command, so
   the room gets Switch's acknowledgement and nothing more (#800).

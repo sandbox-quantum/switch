@@ -1095,7 +1095,8 @@ agent controller; otherwise the room is told it can't. It names an agent by
 name or alias, not a role. The activity card of the turn waiting in the queue
 shows the command its sender can copy and send: `!cancel`, your mention and
 the first 8 characters of its turn ID. Those 8 characters are enough, and so
-is the full ID. When a cancel is
+is the full ID. On Teams, if your name has `_` in it, the card shows the ID
+and how to cancel it, without a command to copy. When a cancel is
 refused, the room is told why: you have already started on that message, it
 is no longer waiting, it was already cancelled, the person is not its sender,
 no message with that ID is waiting for you in that room, or the start of an

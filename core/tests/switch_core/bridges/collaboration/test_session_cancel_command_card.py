@@ -107,8 +107,10 @@ async def test_teams_names_the_pieces_for_a_name_its_markdown_could_eat() -> Non
 
 
 async def test_a_failed_publication_names_the_pieces_on_every_platform() -> None:
-    """The text a `RichContentFailed` carries is drawn from the content alone,
-    with no agent behind it, so it offers no command that names nobody."""
+    """`rich_fallback_text` is drawn from the content alone, with no agent
+    behind it, so it offers no command that names nobody. Discord and Telegram
+    put that text in a `RichContentFailed`; Teams and Mattermost put the card
+    they drew, with the agent's name in it."""
     teams: TeamsAdapter = _teams()[0]
     mattermost: MattermostAdapter = _mattermost()[0]
     discord: DiscordAdapter = _discord()[0]
