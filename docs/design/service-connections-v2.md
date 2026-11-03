@@ -586,14 +586,35 @@ Entry: `core/switch_core/connections/catalog/dropbox/`.
 - Searching inside files depends on the plan (see the operator's guide); the
   one search that matched had the word in a file's name as well as its text.
 - Disconnecting: Dropbox lists a revocation endpoint, `/2/auth/token/revoke`,
-  which is a call authenticated by the access token and taking no token in a
-  form body. The adapter's revoke sends RFC 7009's form, which Dropbox has not
-  been seen to accept, so the entry names `remove_access` (Settings, Security,
-  Connected apps) instead and the sign-in keeps working until the person
-  removes it. Follow-up: a revoke in the vendor's own shape.
+  which is not RFC 7009. Its spec says it disables the access token the call
+  is made with, and with it the refresh token and every other access token
+  for that refresh token. Sent with a made-up token in a form body, as the
+  adapter revokes, it answered 400; with a made-up token as the bearer, 401
+  `invalid_access_token` (measured 2026-11-04, no account involved). Whether
+  a real access token as the bearer revokes the sign-in was not tried, so the
+  entry names `remove_access` (Settings, Security, Connected apps) and the
+  sign-in keeps working until the person removes it.
 - The Connector apps check is the generic token-endpoint one (a made-up code
-  and verifier); that Dropbox answers it as other vendors do has not been
-  tried.
+  and verifier). Dropbox answers a wrong client with
+  `invalid_client: Invalid client_id or client_secret`, the code followed by a
+  reason, so the check reads the code before the colon. A right client's
+  answer was not tried.
+
+Permissions by operation, from Dropbox's API spec
+(`dropbox/dropbox-api-spec`); only the rows marked seen were run:
+
+| Operation | Scope | Read | Write |
+|---|---|---|---|
+| Current account (`get_current_account`) | `account_info.read` | yes (seen) | yes |
+| List a folder, metadata, search, revisions | `files.metadata.read` | yes (list, search seen) | yes |
+| Read, download or link a file's content | `files.content.read` | yes (read seen) | yes |
+| Create a folder, upload, copy, move, delete, restore a revision | `files.content.write` | refused (create folder seen) | yes, not run |
+| Shared links | `sharing.read`, `sharing.write` | not asked for | not asked for |
+| File requests | `file_requests.read`, `file_requests.write` | not asked for | not asked for |
+| Permanent delete | `files.permanent_delete` | not asked for | not asked for |
+
+Tools with no counterpart in the public API (restoring a whole folder,
+transcripts, Markdown conversion) have scopes this entry has not checked.
 
 To connect: Settings, Connections in Switch Console, then Dropbox. To roll
 back, add `dropbox` to `DISABLED_SERVICES`, remove its client under Connector

@@ -209,6 +209,10 @@ version of their own to them without also giving them a release of their own.
   sign-in Switch drops still works until the person removes Switch under
   Connected apps in Dropbox; disconnecting says so. Searching inside files
   depends on the account's Dropbox plan, and Basic accounts get name search.
+- **Connector apps checks read a vendor's reason.** A token endpoint that
+  follows its error code with a reason (Dropbox's
+  `invalid_client: Invalid client_id or client_secret`) is read by its code,
+  so a wrong secret says so rather than "an answer Switch doesn't recognise".
 - **A connection's identity call names its method.** `auth.identity` in an
   OAuth catalog entry gains a required `method` (`GET` or `POST`) and an
   optional `body`, sent only with a `POST`; a `GET` with a body is refused.
