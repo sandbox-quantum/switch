@@ -366,9 +366,8 @@ async def connect_with_paste(
     """
     try:
         await broker.require_workspace_enabled(session, service)
-        await session.commit()
         checked = await broker.check_paste(
-            service, body.method, body.fields, body.choices
+            session, service, body.method, body.fields, body.choices
         )
     except ServiceError as error:
         return service_refusal(error)
