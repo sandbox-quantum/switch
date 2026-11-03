@@ -1,6 +1,6 @@
 import { Alert, Box, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
-import { useState } from "react";
-import { CONNECTORS_NOT_ENABLED } from "../../data/api";
+import { type ReactNode, useState } from "react";
+import { CONNECTORS_NOT_ENABLED, type ConnectorAppScope } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useConnectorApps } from "../../data/hooks";
 import ConnectorAppCard from "./ConnectorAppCard";
@@ -11,6 +11,7 @@ import {
   PUBLIC_URL_BANNER,
   sentBackTo,
 } from "./connectorApps";
+import { ConnectorAppScopeContext } from "./scope";
 
 function Heading({ publicUrl }: { publicUrl: string | null }) {
   return (
@@ -25,12 +26,27 @@ function Heading({ publicUrl }: { publicUrl: string | null }) {
   );
 }
 
-function ConnectorAppsList() {
-  const { data, loading, error, refetch } = useConnectorApps();
+const NOT_MOUNTED = "not mounted";
+
+/** Every app of `scope`, a card each, under `heading`. A 404 means the
+ * routes are not mounted, and shows `notEnabled`, or nothing when it is null. */
+export function ConnectorAppsList({
+  scope,
+  notEnabled,
+  heading: headingOf,
+}: {
+  scope: ConnectorAppScope;
+  notEnabled: string | null;
+  heading: (publicUrl: string | null) => ReactNode;
+}) {
+  const { data, loading, error, refetch } = useConnectorApps(
+    scope,
+    notEnabled ?? NOT_MOUNTED,
+  );
   const [checkFailures, setCheckFailures] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<string | null>(null);
 
-  const heading = <Heading publicUrl={data?.public_url ?? null} />;
+  const heading = headingOf(data?.public_url ?? null);
   if (loading && data === null)
     return (
       <>
@@ -38,18 +54,19 @@ function ConnectorAppsList() {
         <CircularProgress />
       </>
     );
+  if (error === NOT_MOUNTED) return null;
   if (error !== null)
     return (
       <>
         {heading}
-        <Alert severity={error === CONNECTORS_NOT_ENABLED ? "info" : "error"}>{error}</Alert>
+        <Alert severity={error === notEnabled ? "info" : "error"}>{error}</Alert>
       </>
     );
   if (data === null) return heading;
 
   const missingUrl = missingPublicUrl(data.apps, data.public_url);
   return (
-    <>
+    <ConnectorAppScopeContext.Provider value={scope}>
       {heading}
       <Stack spacing={2}>
         {missingUrl && <Alert severity="warning">{PUBLIC_URL_BANNER}</Alert>}
@@ -80,7 +97,7 @@ function ConnectorAppsList() {
           message={toast}
         />
       </Stack>
-    </>
+    </ConnectorAppScopeContext.Provider>
   );
 }
 
@@ -90,7 +107,11 @@ export default function ConnectorAppsPage() {
   return (
     <Box>
       {isOperator ? (
-        <ConnectorAppsList />
+        <ConnectorAppsList
+          scope="server"
+          notEnabled={CONNECTORS_NOT_ENABLED}
+          heading={(publicUrl) => <Heading publicUrl={publicUrl} />}
+        />
       ) : (
         <>
           <Heading publicUrl={null} />

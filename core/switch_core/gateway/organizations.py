@@ -132,7 +132,7 @@ class _OrganizationAccess(NamedTuple):
     platform_access: bool
 
 
-async def _require_organization_admin(
+async def require_organization_admin(
     session: AsyncSession,
     user_store: UserStore,
     organization_store: OrganizationStore,
@@ -288,7 +288,7 @@ async def create_organization_workspace(
     sign-up, which governs who comes onto the server rather than what an
     organization adds. The platform operator is exempt, as everywhere.
     """
-    access = await _require_organization_admin(
+    access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
     organization_id = access.organization_id
@@ -348,7 +348,7 @@ async def list_organization_audit_log(
     actor, and a target that is a person, come with their names, read from
     `users`, which outlives membership.
     """
-    access = await _require_organization_admin(
+    access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
     organization_id = access.organization_id
@@ -393,7 +393,7 @@ async def list_organization_members(
 ) -> list[OrganizationMemberDetail]:
     """Every member of the organization and their role in it. `org_admin` only:
     the list spans every workspace of the organization, not only this one."""
-    access = await _require_organization_admin(
+    access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
     organization_id = access.organization_id
@@ -500,7 +500,7 @@ async def update_organization_member_role(
     they were in only as `org_admin` (`_end_access_through_organization`).
     Recorded in the organization's audit log.
     """
-    access = await _require_organization_admin(
+    access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
     organization_id = access.organization_id
@@ -597,7 +597,7 @@ async def remove_organization_member(
     (`_end_access_through_organization`). Refuses the last `org_admin` too.
     Recorded in the organization's audit log.
     """
-    access = await _require_organization_admin(
+    access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
     organization_id = access.organization_id
