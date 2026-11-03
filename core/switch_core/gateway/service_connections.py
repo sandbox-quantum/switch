@@ -220,16 +220,7 @@ def _paste_form(method: PasteMethod) -> dict[str, Any]:
     return {
         "method": method.name,
         "label": method.label,
-        "fields": [
-            {
-                "name": field.name,
-                "label": field.label,
-                "secret": field.secret,
-                "help": field.help,
-                "choices": field.choices,
-            }
-            for field in method.fields
-        ],
+        "fields": [_field(field) for field in method.fields],
         "help_url": method.help_url,
         # `vendor`: it ends on the date it was made to end; `never`: only
         # the vendor can revoke it.

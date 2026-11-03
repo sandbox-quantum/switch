@@ -2117,6 +2117,12 @@ class TestWithdrawnMethod:
             )
             == "needs_reauthorization"
         )
+        assert broker.reconnect_reason(
+            await standing(broker, connection.service), connection
+        ) == (
+            "method_not_offered",
+            "GitHub was connected in a way this server no longer offers.",
+        )
 
         refused = await _refused(broker, session_factory, world.agent.id)
 
