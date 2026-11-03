@@ -3,7 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
-import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
+import {
+  formatUsage,
+  infoChange,
+  installerFor,
+  isSupervised,
+  main,
+  planServiceReleases,
+} from './main';
 import { dataLayout } from './paths';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import { ReleasesDirInstaller } from './self-update';
@@ -380,5 +387,40 @@ describe.skipIf(process.platform === 'win32')('planServiceReleases', () => {
     await expect(planServiceReleases(cliIn(join(other, '0.31.0')), own)).rejects.toThrow(
       /releases directory of another setup/
     );
+  });
+});
+
+describe('command output', () => {
+  function captureStdout(): string[] {
+    const out: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk));
+      return true;
+    });
+    return out;
+  }
+
+  it('status --json prints what a script can read, with the same exit code', async () => {
+    const out = captureStdout();
+    expect(await main(['status', '--json', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    const view = JSON.parse(out.join(''));
+    expect(view).toMatchObject({ controller: null, assignment: null });
+    expect(typeof view.dataDir).toBe('string');
+  });
+
+  it('status says how to enroll, in plain text when piped', async () => {
+    const out = captureStdout();
+    expect(await main(['status', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    const text = out.join('');
+    expect(text).toContain('Not enrolled.');
+    expect(text).not.toContain('\u001b[');
+  });
+
+  it('shows help in plain text when piped, with bold headings on a terminal', async () => {
+    const out = captureStdout();
+    expect(await main(['help'])).toBe(EXIT_OK);
+    expect(out.join('')).toMatch(/^Usage: switch-agent-controller/);
+    expect(out.join('')).not.toContain('\u001b[');
+    expect(formatUsage({ color: true })).toMatch(/^\u001b\[1mUsage:\u001b\[22m/);
   });
 });

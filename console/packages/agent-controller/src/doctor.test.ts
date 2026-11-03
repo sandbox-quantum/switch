@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
-import { type DoctorInputs, formatChecks, runDoctor } from './doctor';
+import { checksJson, type DoctorInputs, formatChecks, runDoctor } from './doctor';
 import { MemorySecretStore } from './secrets';
 
 function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {
@@ -113,5 +113,54 @@ describe('doctor', () => {
       })
     );
     expect(offline.find((check) => check.name === 'Version')?.detail).toMatch(/offline/);
+  });
+});
+
+describe('doctor output', () => {
+  it("puts each problem's fix under it and ends with a count", async () => {
+    const text = formatChecks(
+      await runDoctor(inputs({ identity: null, service: async () => 'not-installed' }))
+    );
+    const lines = text.split('\n');
+    const enrollment = lines.findIndex((line) => line.startsWith('FAIL  Enrollment'));
+    expect(lines[enrollment]).toMatch(/\/data is not enrolled\.$/);
+    expect(lines[enrollment + 1]).toMatch(/^ +fix: switch-agent-controller enroll --server/);
+    const service = lines.findIndex((line) => line.startsWith('warn  Service'));
+    expect(lines[service + 1]).toMatch(/fix: switch-agent-controller install-service/);
+    expect(lines.at(-1)).toBe('1 problem, 1 warning.');
+  });
+
+  it('prints no fix for a check that passed', async () => {
+    const text = formatChecks(await runDoctor(inputs()));
+    expect(text).not.toContain('fix:');
+    expect(text.split('\n').at(-1)).toMatch(/^All \d+ checks passed\.$/);
+  });
+
+  it('lines the fix up under the detail', async () => {
+    const lines = formatChecks(await runDoctor(inputs({ nodeVersion: 'v20.0.0' }))).split('\n');
+    const node = lines.findIndex((line) => line.startsWith('FAIL  Node'));
+    expect(lines[node + 1]?.indexOf('fix:')).toBe(lines[node]?.indexOf('v20.0.0'));
+  });
+
+  it('colours only on request', async () => {
+    const checks = await runDoctor(inputs({ platform: 'freebsd' }));
+    expect(formatChecks(checks)).not.toContain('\u001b[');
+    const coloured = formatChecks(checks, { color: true });
+    expect(coloured).toContain('\u001b[31mFAIL');
+    expect(coloured.replace(/\u001b\[\d+m/g, '')).toBe(formatChecks(checks));
+  });
+
+  it('prints the checks as JSON, saying whether any failed', async () => {
+    const passing = JSON.parse(checksJson(await runDoctor(inputs())));
+    expect(passing.ok).toBe(true);
+    expect(passing.checks.map((check: { name: string }) => check.name)).toContain('claude');
+    const failing = JSON.parse(checksJson(await runDoctor(inputs({ platform: 'freebsd' }))));
+    expect(failing.ok).toBe(false);
+    expect(failing.checks.find((check: { name: string }) => check.name === 'Platform')).toEqual({
+      name: 'Platform',
+      status: 'fail',
+      detail: 'freebsd is not supported.',
+      fix: 'Use Linux, macOS or Windows.',
+    });
   });
 });
