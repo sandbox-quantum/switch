@@ -6,7 +6,12 @@ import shutil
 
 import pytest
 
-from switch_core.connections.loader import CATALOG_ROOT, CatalogError, load_catalog
+from switch_core.connections.loader import (
+    CATALOG,
+    CATALOG_ROOT,
+    CatalogError,
+    load_catalog,
+)
 from tests.switch_core.connections.test_loader import (
     API_KEY_ENTRY,
     CHOICES_ENTRY,
@@ -192,3 +197,37 @@ def test_a_pasted_credential_needs_an_mcp_server_to_be_checked_at(catalog_copy):
     )
     with pytest.raises(CatalogError, match="this entry has none"):
         load_catalog(catalog_copy)
+
+
+def test_the_shipped_datadog_entry_takes_a_token_or_keys_in_place_of_its_sign_in():
+    definition = CATALOG["datadog"].definition
+    token, keys = definition.auth.paste
+    assert (token.name, token.label, token.expires, token.help_url) == (
+        "token",
+        "Personal access token",
+        "vendor",
+        "https://docs.datadoghq.com/account_management/personal-access-tokens/",
+    )
+    assert [(f.name, f.label, f.secret) for f in token.fields] == [
+        ("pat", "Personal access token", True)
+    ]
+    assert token.headers == {"Authorization": "Bearer {pat}"}
+    # Datadog shows a token by its public part, which names a connection whose
+    # token may not read the account.
+    assert token.alias_of({"pat": "ddpat_ab12cd_SYNTHETICSECRET"}) == "ddpat_ab12cd"
+    assert (keys.name, keys.label, keys.expires, keys.help_url) == (
+        "keys",
+        "API and application keys",
+        "never",
+        "https://docs.datadoghq.com/account_management/api-app-keys/",
+    )
+    assert [(f.name, f.secret) for f in keys.fields] == [
+        ("api_key", True),
+        ("application_key", True),
+    ]
+    assert keys.headers == {
+        "DD_API_KEY": "{api_key}",
+        "DD_APPLICATION_KEY": "{application_key}",
+    }
+    assert keys.alias is None
+    assert definition.methods() == ["oauth", "token", "keys"]

@@ -74,9 +74,11 @@ def _world(
     *,
     public_url: str | None,
     named: RedirectMode | None,
+    allow_non_expiring_keys: bool = False,
 ) -> World:
     """The server as `main` builds it for Datadog: its adapter from the
-    registry, the way back the server names, and the shipped catalog."""
+    registry, the way back the server names, whether it allows keys that
+    never expire, and the shipped catalog."""
     datadog = FakeDatadog()
     redirects = {} if named is None else {"datadog": named}
     adapter = build_adapter(
@@ -106,7 +108,7 @@ def _world(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=public_url,
-        allow_non_expiring_keys=False,
+        allow_non_expiring_keys=allow_non_expiring_keys,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
@@ -520,9 +522,16 @@ class TestUse:
         assert entries["github"]["sign_in_choices"] is None
 
 
+NEVER_EXPIRES = (
+    "Datadog keys do not expire and only Datadog can revoke them, so Switch "
+    "does not hand them to agents."
+)
+
+
 class TestKeysConnectedBefore:
     """A connection made with Datadog's API and application keys, when Datadog
-    was connected with keys, must be made again by signing in."""
+    was connected with keys, is never used where the server does not allow
+    keys that never expire."""
 
     async def test_reads_as_needing_reconnecting_and_is_never_used(
         self, session_factory
@@ -572,8 +581,8 @@ class TestKeysConnectedBefore:
                     resources={},
                 )
         assert (regranted.value.status_code, regranted.value.message) == (
-            409,
-            "Reconnect Datadog under Connectors first.",
+            422,
+            NEVER_EXPIRES,
         )
         async with world.harness.client() as client:
             listed = next(
@@ -585,15 +594,19 @@ class TestKeysConnectedBefore:
                 ).json()["connections"]
                 if entry["slug"] == "datadog"
             )
-        assert (listed["status"], listed["method"]) == ("needs_reauthorization", "keys")
+        assert (
+            listed["status"],
+            listed["method"],
+            listed["reconnect_code"],
+            listed["reconnect_reason"],
+        ) == ("needs_reauthorization", "keys", "method_not_offered", NEVER_EXPIRES)
         async with session_factory() as session:
             with pytest.raises(ServiceError) as refused:
                 await world.broker.issue(
                     session, agent_id, Principal.agent_key(), "datadog"
                 )
         assert (refused.value.status_code, refused.value.message) == (
-            409,
-            "Datadog was connected in a way this server no longer offers. The "
-            "agent's owner must reconnect Datadog from Connectors in Switch Console.",
+            403,
+            NEVER_EXPIRES,
         )
         assert all(not site.paths for site in world.datadog.sites.values())
