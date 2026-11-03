@@ -20,8 +20,9 @@ These can't be done from the repo. Each later step names the one it waits on.
 6. **Secrets, made in the cluster and the secret store, never sent over chat:**
    - in `switch-hosted`: `switch-hosted-provisioner-core` (`token`), `switch-hosted-controller-core` (`token`),
      `switch-operator-actions-bearer` (`bearer`), and `box-map`, created empty;
-   - in the Switch server's namespace: the hosted controller config (`controller.json`), the keyed-id key
-     (`keyed-id.key`) and the operator list (`operators.json`). The three tokens in `controller.json` equal the
+   - in the Switch server's namespace: three Secrets, their names given to the chart as
+     `hostedControllerSecret`, `visibilityKeyedIdKeySecret` and `visibilityOperatorsSecret`, holding the keys
+     `controller.json` (the hosted controller config), `keyed-id.key` and `operators.json` (the operator list). The three tokens in `controller.json` equal the
      three token Secrets above.
    - **Who gives what:** platform generates the three tokens and the keyed-id key. We give them the operator user
      ids for `operators.json`, and `controller.json`'s `allowed_tenant_ids` and `agent_api_endpoint`.
@@ -68,9 +69,9 @@ unchanged. A security reviewer goes through the filled folder before it's applie
 
 ### 4. Deploy the Switch server with the switch off
 
-Deploy Core and the gateway from this branch with the environment's usual values. With
-`switchCore.hostedBoxProvisioning` left out or false, the chart renders as before and the server runs v1. Take
-the database backup just before this step: an older server image won't start on the upgraded database.
+First, take a database backup: the upgrade changes the database, and an older server image won't start on the
+upgraded one. Then deploy Core and the gateway from this branch with the environment's usual values. With
+`switchCore.hostedBoxProvisioning` left out or false, the chart renders as before and the server runs v1.
 
 Check v1 still works as a user, an admin and an operator.
 

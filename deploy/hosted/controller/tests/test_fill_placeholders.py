@@ -25,7 +25,11 @@ CA = "-----BEGIN CERTIFICATE-----\nMIIBexample\n-----END CERTIFICATE-----\n"
 
 
 def _run(
-    tmp_path: Path, *extra: str, out: str = "out", **overrides: str
+    tmp_path: Path,
+    *extra: str,
+    out: str = "out",
+    zones: tuple[str, ...] = ("xx-test-1a",),
+    **overrides: str,
 ) -> subprocess.CompletedProcess[str]:
     ca = tmp_path / "ca.pem"
     ca.write_text(overrides.pop("ca", CA))
@@ -47,8 +51,7 @@ def _run(
         "10.1.0.10",
         "--api-server-ip",
         "10.1.1.10",
-        "--zone",
-        "xx-test-1a",
+        *[arg for zone in zones for arg in ("--zone", zone)],
         *extra,
     ]
     return subprocess.run(argv, capture_output=True, text=True, check=False)
@@ -134,6 +137,11 @@ def test_no_earlier_images_leaves_an_empty_allowed_list(tmp_path: Path) -> None:
             "at most 2",
         ),
         ((), {"kubernetes_service_ip": "kubernetes.default"}, "IPv4 address"),
+        (
+            (),
+            {"ca": CA + "-----BEGIN PRIVATE KEY-----\nxx\n-----END PRIVATE KEY-----\n"},
+            "private key",
+        ),
     ],
 )
 def test_refuses_a_bad_value_and_writes_nothing(
@@ -157,3 +165,12 @@ def test_refuses_a_folder_inside_the_repo(tmp_path: Path) -> None:
     result = _run(tmp_path, out=str(inside))
     assert result.returncode == 1 and "inside this repo" in result.stderr
     assert not inside.exists()
+
+
+def test_fills_zones_in_the_test_clusters_own_region(tmp_path: Path) -> None:
+    """The files carry the test cluster's region in P4; a cluster in that region still fills."""
+    result = _run(tmp_path, zones=("eu-west-3a", "eu-west-3b"))
+    assert result.returncode == 0, result.stderr
+    policies = (tmp_path / "out" / "30-admission-policies.yaml").read_text()
+    assert "matches('^(eu-west-3a|eu-west-3b)$')" in policies
+    assert "eu-west-3[abc]" not in policies

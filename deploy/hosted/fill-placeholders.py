@@ -120,6 +120,10 @@ def checked(args: argparse.Namespace) -> dict[str, object]:
         or "-----END CERTIFICATE-----" not in ca
     ):
         raise Refused(f"--ca-cert {args.ca_cert} isn't a PEM certificate")
+    if "PRIVATE KEY" in ca:
+        raise Refused(
+            f"--ca-cert {args.ca_cert} holds a private key; give only the CA's certificate"
+        )
     return {
         "server_ip": _ip(args.server_ip, "--server-ip"),
         "api": [_ip(a, "--api-server-ip") for a in args.api_server_ip],
