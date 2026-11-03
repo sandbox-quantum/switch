@@ -15,7 +15,12 @@ import {
 import { splitApiKeys } from './api-keys';
 import { OnSignedInServer, SectionLabel } from './settings-server';
 
-export const apiKeysQueryKey = (serverId: string) => ['my-api-keys', serverId];
+/** Keyed on the person as well as the server, so one person's keys are never shown to the next to sign in. */
+export const apiKeysQueryKey = (serverId: string, userId: string) => [
+  'my-api-keys',
+  serverId,
+  userId,
+];
 
 /**
  * Your keys on the server: the registration keys you made to register agents
@@ -30,19 +35,22 @@ export function ApiKeysSettingsPage() {
         title="API keys"
         description="Your keys: the ones you register agents with, and your agents' own."
       />
-      <OnSignedInServer>{({ server }) => <ApiKeys serverId={server.id} />}</OnSignedInServer>
+      <OnSignedInServer>
+        {({ server, user }) => <ApiKeys serverId={server.id} userId={user.id} />}
+      </OnSignedInServer>
     </div>
   );
 }
 
-function ApiKeys({ serverId }: { serverId: string }) {
+function ApiKeys({ serverId, userId }: { serverId: string; userId: string }) {
   const queryClient = useQueryClient();
   const keys = useQuery({
-    queryKey: apiKeysQueryKey(serverId),
+    queryKey: apiKeysQueryKey(serverId, userId),
     queryFn: () => rpc.switchServers.listMyApiKeys(serverId),
   });
   const [created, setCreated] = useState<CreatedRegistrationKey | null>(null);
-  const refresh = () => void queryClient.invalidateQueries({ queryKey: apiKeysQueryKey(serverId) });
+  const refresh = () =>
+    void queryClient.invalidateQueries({ queryKey: apiKeysQueryKey(serverId, userId) });
 
   if (keys.isLoading) {
     return (
@@ -190,7 +198,8 @@ function KeyTable({
         <thead>
           <tr className="border-b border-border text-left text-xs text-foreground-muted">
             <th className="px-3 py-2 font-normal">Label</th>
-            <th className="px-3 py-2 font-normal">Key prefix</th>
+            {/* The start of the key's hash, not of the key: it tells keys apart without showing one. */}
+            <th className="px-3 py-2 font-normal">Fingerprint</th>
             <th className="px-3 py-2 font-normal">Created</th>
             <th className="px-3 py-2" />
           </tr>
@@ -199,9 +208,7 @@ function KeyTable({
           {keys.map((key) => (
             <tr key={key.id} className="border-b border-border last:border-b-0">
               <td className="px-3 py-2 text-foreground">{key.label}</td>
-              <td className="px-3 py-2 font-mono text-xs text-foreground-muted">
-                {key.keyPrefix}…
-              </td>
+              <td className="px-3 py-2 font-mono text-xs text-foreground-muted">{key.keyPrefix}</td>
               <td className="px-3 py-2 text-foreground-muted">{key.createdAt.slice(0, 10)}</td>
               <td className="px-3 py-2">
                 <span className="flex items-center justify-end gap-1">

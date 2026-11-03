@@ -12,9 +12,12 @@ from types import SimpleNamespace
 
 import httpx
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import User
+from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.db.models import TENANT_ZERO_ID, Client, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
@@ -47,10 +50,12 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
 
 
 async def _seed_user(
-    session_factory: async_sessionmaker[AsyncSession], email: str
+    session_factory: async_sessionmaker[AsyncSession],
+    email: str,
+    password_hash: str | None = None,
 ) -> str:
     async with session_factory() as session:
-        user = User(name="Ada", email=email, role="user", password_hash=None)
+        user = User(name="Ada", email=email, role="user", password_hash=password_hash)
         await _USER_STORE.create(session, user)
         await session.commit()
         return user.id
@@ -112,3 +117,55 @@ async def test_signed_out_is_refused(
     ) as anonymous:
         response = await anonymous.patch("/auth/me", json={"name": "Anyone"})
     assert response.status_code == 401
+
+
+async def test_says_whether_the_account_has_a_password_of_its_own(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    sso_email = "sso-name@example.invalid"
+    sso = await _seed_user(session_factory, sso_email)
+    pw_email = "pw-name@example.invalid"
+    pw = await _seed_user(session_factory, pw_email, password_hash="not-a-real-hash")
+    app = _app(session_factory)
+
+    async with _client(app, sso, sso_email) as client:
+        sso_answer = await client.patch("/auth/me", json={"name": "Sso"})
+    async with _client(app, pw, pw_email) as client:
+        pw_answer = await client.patch("/auth/me", json={"name": "Pw"})
+
+    assert sso_answer.json()["has_password"] is False
+    assert pw_answer.json()["has_password"] is True
+
+
+async def test_renames_the_member_client_others_see_in_console_chats(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    email = "cy-name@example.invalid"
+    user_id = await _seed_user(session_factory, email)
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        session.add(
+            Client(
+                tenant_id=TENANT_ZERO_ID,
+                transport_user_id=f"@switch-member-{user_id}:test",
+                display_name="Ada",
+                type=MEMBER_CLIENT_TYPE,
+                user_id=user_id,
+            )
+        )
+        await session.commit()
+
+    async with _client(_app(session_factory), user_id, email) as client:
+        response = await client.patch("/auth/me", json={"name": "Cy Young"})
+
+    assert response.status_code == 200, response.text
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        names = (
+            (
+                await session.execute(
+                    select(Client.display_name).where(Client.user_id == user_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert names == ["Cy Young"]

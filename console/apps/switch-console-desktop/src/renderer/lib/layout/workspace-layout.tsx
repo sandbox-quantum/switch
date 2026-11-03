@@ -1,4 +1,3 @@
-import { detectPlatform } from '@tanstack/hotkeys';
 import { type ReactNode } from 'react';
 import { useDefaultLayout } from 'react-resizable-panels';
 import { useWorkspaceLayoutContext } from '@renderer/lib/layout/layout-provider';
@@ -9,8 +8,6 @@ const LEFT_PANEL_DEFAULT_SIZE = '274px';
 const LEFT_SIDEBAR_MIN_SIZE = '200px';
 const LEFT_SIDEBAR_MAX_SIZE = '30%';
 const MAIN_PANEL_MIN_SIZE = '30%';
-
-const isMac = detectPlatform() === 'mac';
 
 interface WorkspaceLayoutProps {
   leftSidebar: ReactNode;
@@ -29,7 +26,7 @@ interface WorkspaceLayoutProps {
   /** Classes for the view and the persistent layer under the banner. */
   contentClassName: string | undefined;
   /** The strip across the top of the window, above the card: search and docs. */
-  topBar?: ReactNode;
+  topBar: ReactNode;
 }
 
 export function WorkspaceLayout({
@@ -38,7 +35,7 @@ export function WorkspaceLayout({
   persistentLayer = null,
   banner,
   contentClassName,
-  topBar = null,
+  topBar,
 }: WorkspaceLayoutProps) {
   const { leftPanelRef, syncLeftOpenFromPanel, isLeftOpen } = useWorkspaceLayoutContext();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -92,10 +89,9 @@ export function WorkspaceLayout({
         <div
           className={cn(
             'relative flex h-full w-full flex-col overflow-hidden pr-2 pb-2 [-webkit-app-region:drag]',
-            isLeftOpen ? 'pl-px' : 'pl-2',
             // The top bar is the gap above the card, and clears the macOS window
-            // buttons itself; without one, the card keeps its own inset.
-            topBar === null && (isLeftOpen ? 'pt-2' : isMac ? 'pt-9' : 'pt-2')
+            // buttons itself.
+            isLeftOpen ? 'pl-px' : 'pl-2'
           )}
         >
           {topBar}

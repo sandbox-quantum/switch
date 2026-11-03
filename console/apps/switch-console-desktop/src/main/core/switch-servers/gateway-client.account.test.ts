@@ -81,6 +81,23 @@ describe('account', () => {
     expect(user.name).toBe('Ada Lovelace');
   });
 
+  it('says when the account has no password of its own, and leaves it unsaid otherwise', async () => {
+    fetchMock.mockImplementation(async () =>
+      response(200, {
+        id: 'u1',
+        name: 'Ada',
+        email: 'ada@example.com',
+        role: 'user',
+        has_password: false,
+      })
+    );
+    expect((await updateMyName(SERVER, 'Ada')).hasPassword).toBe(false);
+    fetchMock.mockImplementation(async () =>
+      response(200, { id: 'u1', name: 'Ada', email: 'ada@example.com', role: 'user' })
+    );
+    expect(await updateMyName(SERVER, 'Ada')).not.toHaveProperty('hasPassword');
+  });
+
   it('changes the password in the server’s field names', async () => {
     fetchMock.mockImplementation(async () => response(200, { ok: true }));
     await changeMyPassword(SERVER, 'old-pass', 'new-password-1');

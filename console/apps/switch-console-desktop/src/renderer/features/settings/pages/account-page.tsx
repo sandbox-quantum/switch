@@ -24,7 +24,8 @@ export function AccountSettingsPage() {
         description="Your profile in Switch, and how to leave it."
       />
       <OnSignedInServer>
-        {({ server, user }) => <Account server={server} user={user} />}
+        {/* Keyed on the server so a half-typed name never carries over to another one. */}
+        {({ server, user }) => <Account key={server.id} server={server} user={user} />}
       </OnSignedInServer>
     </div>
   );
@@ -38,9 +39,11 @@ const Account = observer(function Account({
   user: SwitchUser;
 }) {
   const showDeleteAccount = useShowModal('deleteAccountModal');
-  // Whether this server signs people in with a password at all; one that uses
-  // only single sign-on has no password of yours to change.
-  const passwords = switchServersStore.authConfigFor(server.id)?.passwordLoginEnabled ?? false;
+  // Only a server that signs people in with a password, and only an account
+  // that has one: one made through single sign-on has no password to change.
+  const passwords =
+    (switchServersStore.authConfigFor(server.id)?.passwordLoginEnabled ?? false) &&
+    user.hasPassword !== false;
   useEffect(() => {
     void switchServersStore.ensureAuthConfig(server.id);
   }, [server.id]);

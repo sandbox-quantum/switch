@@ -655,7 +655,7 @@ export const switchServersController = createRPCController({
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
   },
 
-  /** Change the signed-in person's display name; refreshes the signed-in status after. */
+  /** Change the signed-in person's display name, answering with the updated user. The caller re-reads the signed-in status (`refreshStatus`) so the new name shows everywhere. */
   updateMyName: async (params: { serverId: string; name: string }): Promise<SwitchUser> => {
     const server = await requireReachableServer(params.serverId);
     return updateMyName(server, params.name);

@@ -1379,6 +1379,10 @@ class SessionUserResponse(UserResponse):
     """
 
     server: ServerDeclaration
+    # Whether the account has a password of its own to change. False for one
+    # made through single sign-on, which signs in without one. Added later and
+    # defaulted, so the frozen authentication surface stays compatible.
+    has_password: bool = True
 
 
 class SignupResponse(SessionUserResponse):

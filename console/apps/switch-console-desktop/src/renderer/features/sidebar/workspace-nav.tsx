@@ -99,7 +99,9 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
         })}
       <SidebarMenuButton
         isActive={onSettings}
-        onClick={() => navigate('settings')}
+        // A Switch this Console runs that is not answering is started from
+        // System status, so that is where Settings opens while it is down.
+        onClick={() => (frozen ? navigate('settings', { tab: 'status' }) : navigate('settings'))}
         aria-label="Settings"
       >
         <Settings className="size-[15px] shrink-0" />

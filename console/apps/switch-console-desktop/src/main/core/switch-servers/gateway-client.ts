@@ -551,6 +551,7 @@ type UserResponseJson = {
   email: string;
   role: string;
   server?: ServerDeclarationJson | null;
+  has_password?: boolean;
 };
 
 /**
@@ -575,6 +576,7 @@ function mapUser(json: UserResponseJson): SwitchUser {
     email: json.email,
     role: json.role,
     server: mapServerDeclaration(json.server ?? null),
+    ...(json.has_password !== undefined ? { hasPassword: json.has_password } : {}),
   };
 }
 
@@ -626,8 +628,9 @@ export async function updateMyName(server: SwitchServer, name: string): Promise<
 
 /**
  * Change the signed-in person's password (`PUT /auth/me/password`). Refused
- * with the server's reason — a wrong current password, or an account that
- * signs in through single sign-on and so has none.
+ * with the server's reason, such as a wrong current password. An account made
+ * through single sign-on has no password to change; the server says so on the
+ * user (`hasPassword`), and Settings offers no change for one.
  */
 export async function changeMyPassword(
   server: SwitchServer,
