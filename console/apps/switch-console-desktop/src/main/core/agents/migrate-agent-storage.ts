@@ -195,7 +195,9 @@ async function migrateCredentials(
  * `.switch/agents/`. Earlier versions wrote it with the process umask, which on
  * most machines let every local account read the token. The rewrite renames
  * identical content into place, so a session reading the file meanwhile still
- * sees it whole.
+ * sees it whole. It is a read then a write, not a permissions change, so a
+ * rename or endpoint change of this agent landing between the two is undone;
+ * that window is a few milliseconds, once per install.
  */
 async function protectCredentials(fs: PluginFs, name: string): Promise<boolean> {
   const relPath = agentSettingsRelativePath(name);

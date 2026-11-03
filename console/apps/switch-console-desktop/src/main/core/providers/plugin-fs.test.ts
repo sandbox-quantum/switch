@@ -1,8 +1,18 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPluginFs } from './plugin-fs';
+
+const acl = vi.hoisted(() => ({
+  directory: vi.fn(async (_path: string) => {}),
+  file: vi.fn(async (_path: string) => {}),
+}));
+
+vi.mock('@main/core/fs/windows-owner-acl', () => ({
+  restrictWindowsDirectoryToOwner: acl.directory,
+  restrictWindowsFileToOwner: acl.file,
+}));
 
 /**
  * Against a real temp directory rather than a mocked `node:fs`: the behaviour
@@ -118,5 +128,37 @@ describe.skipIf(process.platform === 'win32')('createPluginFs secret write', () 
     await expect(
       createPluginFs(root).write('../outside.json', 'token', { secret: true })
     ).rejects.toThrow(/path escape/);
+  });
+});
+
+describe('createPluginFs secret write on Windows', () => {
+  const platform = process.platform;
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'plugin-fs-secret-win-'));
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+  });
+
+  afterEach(async () => {
+    Object.defineProperty(process, 'platform', { value: platform });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('restricts the directory, then the still-empty temporary file, before writing the token', async () => {
+    const seen: Array<[string, string, string | null]> = [];
+    acl.directory.mockImplementationOnce(async (p) => void seen.push(['directory', p, null]));
+    acl.file.mockImplementationOnce(
+      async (p) => void seen.push(['file', p, await readFile(p, 'utf8')])
+    );
+
+    await createPluginFs(root).write('.switch/agents/a.json', 'token', { secret: true });
+
+    const dir = path.join(root, '.switch', 'agents');
+    expect(seen).toEqual([
+      ['directory', dir, null],
+      ['file', expect.stringMatching(/a\.json\.[0-9a-f-]{36}$/), ''],
+    ]);
+    expect(await readFile(path.join(dir, 'a.json'), 'utf8')).toBe('token');
   });
 });

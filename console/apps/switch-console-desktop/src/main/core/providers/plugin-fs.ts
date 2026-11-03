@@ -3,7 +3,10 @@ import { promises as fs } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { replaceFile } from '@switch-console/agent-providers';
 import type { PluginFs, PluginFsWriteOptions } from '@switch-console/core/agents/plugins';
-import { restrictWindowsFileToOwner } from '@main/core/fs/restrict-windows-file-to-owner';
+import {
+  restrictWindowsDirectoryToOwner,
+  restrictWindowsFileToOwner,
+} from '@main/core/fs/windows-owner-acl';
 
 /**
  * Write `content` to `abs` readable by its owner alone, in a directory only its
@@ -15,8 +18,10 @@ import { restrictWindowsFileToOwner } from '@main/core/fs/restrict-windows-file-
 export async function writeSecretFile(abs: string, content: string): Promise<void> {
   const dir = dirname(abs);
   await fs.mkdir(dir, { recursive: true });
-  // mkdir's mode reaches only a directory it creates, not one that was already there.
-  await fs.chmod(dir, 0o700);
+  // mkdir's mode reaches only a directory it creates, not one that was already
+  // there; on Windows a mode does nothing for a directory at all.
+  if (process.platform === 'win32') await restrictWindowsDirectoryToOwner(dir);
+  else await fs.chmod(dir, 0o700);
   const temporary = `${abs}.${randomUUID()}`;
   const file = await fs.open(temporary, 'wx', 0o600);
   try {

@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
-import { restrictWindowsFileToOwner } from '@main/core/fs/restrict-windows-file-to-owner';
+import { restrictWindowsFileToOwner } from '@main/core/fs/windows-owner-acl';
 import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
 import { LOCAL_SERVER_PROJECT_NAME } from '../constants';
 import { detectDocker, dockerExecutable } from '../docker';
