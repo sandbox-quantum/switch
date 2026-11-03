@@ -39,7 +39,7 @@ auth:
     prompt: consent           # sent with every authorization
     # authorization_params: { access_type: offline }   # also sent with every
     #   authorization; only keys Core does not set itself (access_type,
-    #   include_granted_scopes)
+    #   include_granted_scopes, token_access_type)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
   identity:                   # the call with the token; dotted paths in its JSON

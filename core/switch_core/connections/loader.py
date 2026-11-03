@@ -63,7 +63,9 @@ AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
-AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+AuthorizationParam = Literal[
+    "access_type", "include_granted_scopes", "token_access_type"
+]
 
 
 class OAuthClient(BaseModel):
@@ -98,8 +100,9 @@ class OAuthClient(BaseModel):
     `select_account`, to let the person choose the account), one value or
     several separated by spaces, as OAuth writes it.
     So are `authorization_params`, which only a vendor-specific key may name
-    (`access_type: offline`, for a vendor that hands out a refresh token only
-    when asked), never one Core sets itself.
+    (`access_type: offline` for Google, `token_access_type: offline` for
+    Dropbox: vendors that hand out a refresh token only when asked), never one
+    Core sets itself.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)

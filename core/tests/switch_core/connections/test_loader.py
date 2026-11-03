@@ -720,6 +720,21 @@ def test_loads_a_post_identity_call_with_or_without_a_body(
     assert (identity.method, identity.body) == ("POST", expected)
 
 
+def test_takes_token_access_type_as_an_authorization_param(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n"
+            "    client_settings: EXAMPLE\n"
+            "    authorization_params: { token_access_type: offline }\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+
+
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
