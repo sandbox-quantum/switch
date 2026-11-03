@@ -113,7 +113,16 @@ const HostRow = observer(function HostRow({
   );
 });
 
-export const RemoteHostsSettingsPage = observer(function RemoteHostsSettingsPage() {
+/**
+ * The SSH hosts you run agents on. `embedded` sets it inside another page,
+ * Settings' Your devices, as a section under that page's heading rather than
+ * a page with a heading of its own.
+ */
+export const RemoteHostsSettingsPage = observer(function RemoteHostsSettingsPage({
+  embedded = false,
+}: {
+  embedded?: boolean;
+}) {
   const queryClient = useQueryClient();
   const { navigate } = useNavigate();
   const [filter, setFilter] = useState<HostFilter>('all');
@@ -172,63 +181,70 @@ export const RemoteHostsSettingsPage = observer(function RemoteHostsSettingsPage
       </div>
     ));
 
+  const description = (
+    <>
+      Host your agents on any SSH devices, allowing your team to work with them 24/7. Check out this{' '}
+      <button
+        type="button"
+        className="cursor-pointer underline underline-offset-2 hover:text-foreground"
+        onClick={() =>
+          void openExternalUrl(SWITCH_DOCS_REMOTE_HOSTING_URL, 'Could not open the documentation')
+        }
+      >
+        doc for cloud hosting ↗︎
+      </button>
+      .
+    </>
+  );
+  const controls = (
+    <div className="flex items-center justify-between gap-2">
+      <ToggleGroup
+        multiple={false}
+        value={[filter]}
+        onValueChange={([value]) => {
+          if (value) setFilter(value as HostFilter);
+        }}
+      >
+        <ToggleGroupItem value="all">All</ToggleGroupItem>
+        <ToggleGroupItem value="ready">Ready</ToggleGroupItem>
+        <ToggleGroupItem value="attention">Needs setup</ToggleGroupItem>
+      </ToggleGroup>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() =>
+          void showAddHost({
+            onboarded: sshHosts,
+            onAdded: (sshHost) => {
+              invalidate();
+              justAddedHost = sshHost;
+              navigate('remoteHost', { sshHost });
+            },
+          })
+        }
+      >
+        <Plus className="size-4" /> Add host
+      </Button>
+    </div>
+  );
+
   // Scrolling and width belong to the settings shell this now sits in, so the
   // list contributes neither.
   return (
-    <div className="space-y-4 pb-10">
-      <PageHeader
-        sticky
-        title="Remote hosts"
-        description={
-          <>
-            Host your agents on any SSH devices, allowing your team to work with them 24/7. Check
-            out this{' '}
-            <button
-              type="button"
-              className="cursor-pointer underline underline-offset-2 hover:text-foreground"
-              onClick={() =>
-                void openExternalUrl(
-                  SWITCH_DOCS_REMOTE_HOSTING_URL,
-                  'Could not open the documentation'
-                )
-              }
-            >
-              doc for cloud hosting ↗︎
-            </button>
-            .
-          </>
-        }
-      >
-        <div className="flex items-center justify-between gap-2">
-          <ToggleGroup
-            multiple={false}
-            value={[filter]}
-            onValueChange={([value]) => {
-              if (value) setFilter(value as HostFilter);
-            }}
-          >
-            <ToggleGroupItem value="all">All</ToggleGroupItem>
-            <ToggleGroupItem value="ready">Ready</ToggleGroupItem>
-            <ToggleGroupItem value="attention">Needs setup</ToggleGroupItem>
-          </ToggleGroup>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() =>
-              void showAddHost({
-                onboarded: sshHosts,
-                onAdded: (sshHost) => {
-                  invalidate();
-                  justAddedHost = sshHost;
-                  navigate('remoteHost', { sshHost });
-                },
-              })
-            }
-          >
-            <Plus className="size-4" /> Add host
-          </Button>
+    <div className={embedded ? 'space-y-3' : 'space-y-4 pb-10'}>
+      {embedded ? (
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium text-foreground">SSH hosts</h3>
+            <p className="text-sm text-foreground-muted">{description}</p>
+          </div>
+          {controls}
         </div>
-      </PageHeader>
+      ) : (
+        <PageHeader sticky title="Remote hosts" description={description}>
+          {controls}
+        </PageHeader>
+      )}
 
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-foreground-muted">
@@ -355,7 +371,7 @@ export const remoteHostsView = {
   canActivate: (): GuardResult => ({
     ok: false,
     redirect: 'settings',
-    params: { tab: 'remote-hosts' },
+    params: { tab: 'devices' },
     discardParams: true,
   }),
 } satisfies ViewDefinition;

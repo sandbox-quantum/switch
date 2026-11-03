@@ -186,9 +186,9 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
               size="sm"
               variant="ghost"
               className="-ml-2"
-              onClick={() => navigate('settings', { tab: 'remote-hosts' })}
+              onClick={() => navigate('settings', { tab: 'devices' })}
             >
-              <ArrowLeft className="size-4" /> All hosts
+              <ArrowLeft className="size-4" /> Your devices
             </Button>
           }
         >
@@ -365,7 +365,7 @@ export const remoteHostView = {
         ? (params as { sshHost?: unknown }).sshHost
         : undefined;
     if (typeof sshHost !== 'string' || sshHost.length === 0) {
-      return { ok: false, redirect: 'settings', params: { tab: 'remote-hosts' } };
+      return { ok: false, redirect: 'settings', params: { tab: 'devices' } };
     }
     return { ok: true };
   },

@@ -137,10 +137,13 @@ const ManagedServerInAdmin = observer(function ManagedServerInAdmin({
   );
 });
 
-const ManagedServerPage = observer(function ManagedServerPage({
+export const ManagedServerPage = observer(function ManagedServerPage({
   server,
+  embedded = false,
 }: {
   server: SwitchServer;
+  /** Set inside another page, Settings' System status, which pads it already. */
+  embedded?: boolean;
 }) {
   const sshHost = server.managementKind === 'remote' ? server.sshHost : null;
   const confirm = useSharedActionConfirm(sshHost);
@@ -240,7 +243,7 @@ const ManagedServerPage = observer(function ManagedServerPage({
   });
 
   return (
-    <div className="min-w-0 pt-10 pb-10">
+    <div className={embedded ? 'min-w-0' : 'min-w-0 pt-10 pb-10'}>
       <div className="w-full max-w-[720px] space-y-[18px]">
         <header className="flex items-center gap-3">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--fill)]">
