@@ -6,7 +6,6 @@ import type {
 } from '@shared/core/switch-servers/connection-catalog';
 import type { ServiceFlow, ServicePaste } from '@shared/core/switch-servers/service-connection';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
-import { lifetimeText } from './connectors-catalog';
 
 /**
  * A service sign-in as the dialog holds it: the paste step open in place of
@@ -195,15 +194,55 @@ export function pasteLinks(
  */
 export function safetyLine(
   connection: Pick<ConnectionCatalogEntry, 'name' | 'token_lifetime'>,
-  way: ServicePasteMethod | 'sign_in'
+  way: Pick<ServicePasteMethod, 'expires'> | 'sign_in'
 ): string | null {
   if (way === 'sign_in')
     return connection.token_lifetime === null
       ? null
       : `Expires: ${lifetimeText(connection.token_lifetime)}, refreshed by Switch`;
-  return way.expires === 'vendor'
-    ? `Expires: on the date you set in ${connection.name}`
-    : `Never expires; only ${connection.name} can revoke it`;
+  return pastedLasts(connection.name, way.expires);
+}
+
+function pastedLasts(name: string, expires: ServicePasteMethod['expires']): string {
+  return expires === 'vendor'
+    ? `Expires: on the date you set in ${name}`
+    : `Never expires; only ${name} can revoke it`;
+}
+
+/** A lifetime in seconds as people say it: in minutes, hours or days. */
+export function lifetimeText(seconds: number): string {
+  if (seconds < 3600) return plural(Math.round(seconds / 60), 'minute');
+  if (seconds < 86_400) return plural(Math.round(seconds / 3600), 'hour');
+  return plural(Math.round(seconds / 86_400), 'day');
+}
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * What a connection made with a credential pasted in place of a sign-in
+ * reaches, said in place of an access level, the way it was pasted, and how
+ * long it lasts; null for a sign-in, a service connected with a key form,
+ * and no connection. A method the server no longer offers here (keys that
+ * never expire, where it no longer allows them) is still named.
+ */
+export function pastedConnection(
+  connection: Pick<
+    ConnectionCatalogEntry,
+    'name' | 'auth_type' | 'method' | 'paste' | 'access_note'
+  >
+): { reach: string; way: string; lasts: string } | null {
+  const method = connection.method;
+  if (connection.auth_type !== 'oauth' || connection.access_note === null) return null;
+  if (method !== 'token' && method !== 'keys') return null;
+  const offered = connection.paste.find((way) => way.method === method);
+  const expires = offered?.expires ?? (method === 'keys' ? 'never' : 'vendor');
+  return {
+    reach: connection.access_note,
+    way: offered?.label ?? (method === 'token' ? 'Pasted token' : 'Pasted keys'),
+    lasts: pastedLasts(connection.name, expires),
+  };
 }
 
 /**
