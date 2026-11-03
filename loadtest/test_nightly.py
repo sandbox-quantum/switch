@@ -17,7 +17,12 @@ from nightly import (  # noqa: E402
     compare,
     datadog_series,
     deadline_after,
+    history,
     report_text,
+    s3_delete,
+    s3_get,
+    s3_put,
+    size_nodegroup,
     verdict,
 )
 from run import parse_args  # noqa: E402
@@ -210,3 +215,24 @@ def test_the_build_is_the_chart_version_when_the_release_says_it():
         {"helm.sh/chart": "switch-0.31.1-dev.271.g989225d"}, "x@sha256:ab"
     ) == ("0.31.1-dev.271.g989225d")
     assert build_of({}, "ghcr.io/x/switch-core:0.31.1") == "0.31.1"
+
+
+def test_a_file_bucket_keeps_a_rehearsals_records_in_a_directory(tmp_path):
+    cfg = _cfg(BUCKET=f"file://{tmp_path}", PREFIX="rehearsal")
+    assert s3_get(cfg, "population.json") is None
+    s3_put(cfg, "population.json", {"base": "n1"})
+    for night in ("2026-11-01", "2026-11-02", "2026-11-03"):
+        s3_put(cfg, f"history/{night}.json", {"night": night})
+    assert s3_get(cfg, "population.json") == {"base": "n1"}
+    assert (tmp_path / "rehearsal" / "population.json").exists()
+    assert [h["night"] for h in history(cfg, before="2026-11-03")] == [
+        "2026-11-01",
+        "2026-11-02",
+    ]
+    s3_delete(cfg, "population.json")
+    assert s3_get(cfg, "population.json") is None
+
+
+def test_no_node_group_prefix_sizes_nothing():
+    # No AWS call: boto3 is not even installed where the tests run.
+    size_nodegroup(_cfg(CORE_NODEGROUP=""), "", 4)

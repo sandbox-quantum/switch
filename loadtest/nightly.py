@@ -94,6 +94,9 @@ class Config:
     prefix: str
     rds_instance: str
     environment: str
+    # Empty inside the cluster (the pod's service account); a context name for
+    # a rehearsal from a machine with a kubeconfig.
+    kube_context: str = ""
     dd_api_key: str = field(repr=False, default="")
     dd_site: str = "datadoghq.com"
     webhook_url: str = field(repr=False, default="")
@@ -137,6 +140,7 @@ class Config:
             prefix=get("PREFIX", "staging/").rstrip("/") + "/",
             rds_instance=get("RDS_INSTANCE", ""),
             environment=get("ENVIRONMENT", "staging"),
+            kube_context=get("KUBE_CONTEXT", ""),
             dd_api_key=e.get("DD_API_KEY", ""),
             dd_site=e.get("DD_SITE", "datadoghq.com"),
             webhook_url=get("WEBHOOK_URL", ""),
@@ -504,8 +508,9 @@ def send_datadog(result: dict, cfg: Config, text: str) -> None:
 
 
 def kubectl(cfg: Config, *args: str, timeout: float = 60) -> str:
+    context = ["--context", cfg.kube_context] if cfg.kube_context else []
     out = subprocess.run(
-        ["kubectl", "-n", cfg.namespace, *args],
+        ["kubectl", *context, "-n", cfg.namespace, *args],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -606,6 +611,10 @@ def nodegroup(cfg: Config, prefix: str) -> str:
 
 
 def size_nodegroup(cfg: Config, prefix: str, desired: int) -> None:
+    """Set a node group's desired size. No prefix, no node group: for a
+    rehearsal in an environment whose nodes are not the test's to size."""
+    if not prefix:
+        return
     eks = _eks()
     name = nodegroup(cfg, prefix)
     sc = eks.describe_nodegroup(clusterName=cfg.cluster, nodegroupName=name)[
@@ -634,7 +643,17 @@ def _s3():
     return boto3.client("s3")
 
 
+def _local(cfg: Config) -> Path | None:
+    """A bucket named file:///some/dir is that directory, for a rehearsal
+    from a machine without the test's bucket."""
+    if cfg.bucket.startswith("file://"):
+        return Path(cfg.bucket.removeprefix("file://")) / cfg.prefix
+    return None
+
+
 def s3_get(cfg: Config, key: str) -> dict | None:
+    if (d := _local(cfg)) is not None:
+        return json.loads((d / key).read_text()) if (d / key).exists() else None
     try:
         body = _s3().get_object(Bucket=cfg.bucket, Key=cfg.prefix + key)["Body"].read()
     except Exception as exc:  # noqa: BLE001 - a missing key reads as nothing
@@ -650,15 +669,26 @@ def s3_put(cfg: Config, key: str, data: dict | bytes) -> None:
         if isinstance(data, bytes)
         else json.dumps(data, indent=1, default=str).encode()
     )
+    if (d := _local(cfg)) is not None:
+        (d / key).parent.mkdir(parents=True, exist_ok=True)
+        (d / key).write_bytes(body)
+        return
     _s3().put_object(Bucket=cfg.bucket, Key=cfg.prefix + key, Body=body)
 
 
 def s3_delete(cfg: Config, key: str) -> None:
+    if (d := _local(cfg)) is not None:
+        (d / key).unlink(missing_ok=True)
+        return
     _s3().delete_object(Bucket=cfg.bucket, Key=cfg.prefix + key)
 
 
 def history(cfg: Config, before: str, nights: int = 14) -> list[dict]:
     """The results of earlier nights, oldest first."""
+    if (d := _local(cfg)) is not None:
+        names = sorted(f.name for f in (d / "history").glob("*.json"))
+        keys = [f"history/{n}" for n in names if Path(n).stem < before][-nights:]
+        return [h for h in (s3_get(cfg, k) for k in keys) if h]
     pages = (
         _s3()
         .get_paginator("list_objects_v2")
@@ -680,7 +710,7 @@ def history(cfg: Config, before: str, nights: int = 14) -> list[dict]:
 def harness_args(cfg: Config, run_id: str, seed: int) -> list[str]:
     return [
         sys.executable, str(HERE / "run.py"),
-        "--namespace", cfg.namespace, "--kube-context", "",
+        "--namespace", cfg.namespace, "--kube-context", cfg.kube_context,
         "--workspace", cfg.workspace,
         "--api-url", cfg.api_url, "--gateway-url", cfg.api_url,
         "--aws-profile", "", "--aws-region", cfg.region,
@@ -797,7 +827,7 @@ def remove_population(cfg: Config, pop: dict, out: Path) -> None:
         rid = f"{pop['base']}s{i}"
         cmd = [
             sys.executable, str(HERE / "run.py"),
-            "--namespace", cfg.namespace, "--kube-context", "",
+            "--namespace", cfg.namespace, "--kube-context", cfg.kube_context,
             "--workspace", cfg.workspace,
             "--api-url", cfg.api_url, "--gateway-url", cfg.api_url,
             "--cleanup", rid,
