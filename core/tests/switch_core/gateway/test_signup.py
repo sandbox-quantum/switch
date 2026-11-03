@@ -10,6 +10,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, CloudMachine, TenantMember, User
@@ -238,6 +239,26 @@ async def test_duplicate_email_is_a_conflict(signup_app):
     assert again.status_code == 409
     assert again.json()["detail"] == "Email already registered"
     assert len(await _machines(app)) == 1
+
+
+class _NamelessUserStore(UserStore):
+    """Writes the user with no name, which `users.name` refuses: an integrity
+    failure that is not the email being taken."""
+
+    async def create(self, session, user: User) -> None:
+        user.name = None  # type: ignore[assignment]
+        await super().create(session, user)
+
+
+async def test_an_integrity_failure_other_than_the_email_is_not_a_conflict(
+    signup_app,
+):
+    app = signup_app
+    app.app.dependency_overrides[get_user_store] = _NamelessUserStore
+    with pytest.raises(IntegrityError, match='null value in column "name"'):
+        await _signup(app)
+    async with app.factory() as session:
+        assert await UserStore().get_by_email(session, "new.person@example.com") is None
 
 
 @pytest.mark.parametrize(

@@ -91,8 +91,10 @@ class _Harness:
         async def _get_agent_id_by_alias(_session, _room_id, token):  # type: ignore[no-untyped-def]
             return (aliases or {}).get(token)
 
-        async def _administers(_session, user):  # type: ignore[no-untyped-def]
+        async def _administers_on_record(_session, _factory, _users, user, **_kw):  # type: ignore[no-untyped-def]
             return user.id in admins
+
+        monkeypatch.setattr(commands, "administers_on_record", _administers_on_record)
 
         async def _remove_agents_from_room(room_id, agent_ids, **_kw):  # type: ignore[no-untyped-def]
             self.removed.append((room_id, list(agent_ids)))
@@ -111,7 +113,7 @@ class _Harness:
             _room_role_store=None,
             _external_user_store=None,
             _connections=SimpleNamespace(live_connection_ids=lambda: set()),
-            _user_store=SimpleNamespace(administers=_administers),
+            _user_store=None,
             _room_service=SimpleNamespace(
                 remove_agents_from_room=_remove_agents_from_room
             ),

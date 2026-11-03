@@ -47,7 +47,10 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
-from switch_core.session_activity.listener import Change
+from switch_core.session_activity.listener import (
+    AgentSessionActivityListener,
+    Change,
+)
 from switch_core.signals import SignalBus
 from switch_core.transport.invites import InviteBus
 from tests.conftest import TEST_KEYRING
@@ -79,7 +82,13 @@ class _FakeListener:
     def __init__(self) -> None:
         self.wakers: dict[str, set[Callable[[str], Awaitable[None]]]] = {}
 
-    def subscribe(self, room_id: str, waker: Callable[[str], Awaitable[None]]) -> None:
+    def subscribe(
+        self,
+        room_id: str,
+        waker: Callable[[str], Awaitable[None]],
+        *,
+        types: frozenset[str] | None = None,
+    ) -> None:
         self.wakers.setdefault(room_id, set()).add(waker)
 
     def unsubscribe(
@@ -92,24 +101,66 @@ class _FakeListener:
             await waker(room_id)
 
 
+class _FakeRoomSubscription:
+    def __init__(
+        self,
+        listener: _FakeActivityListener,
+        tenant_id: str,
+        rooms: Any,
+        on_change: Any,
+        on_resync: Any,
+    ) -> None:
+        self.listener = listener
+        self.tenant_id = tenant_id
+        self.rooms = set(rooms)
+        self.on_change = on_change
+        self.on_resync = on_resync
+        self.delivered = 0
+
+    def set_rooms(self, rooms: Any) -> None:
+        self.rooms = set(rooms)
+
+    def close(self) -> None:
+        self.listener.room_subscriptions.remove(self)
+
+
 class _FakeActivityListener:
     """The session-activity listener; a test delivers changes by hand."""
 
     def __init__(self) -> None:
         self.subscribers: list[tuple[Any, Any]] = []
+        self.room_subscriptions: list[_FakeRoomSubscription] = []
 
     def subscribe(self, tenant_id: str, on_change: Any, on_resync: Any) -> Any:
         entry = (on_change, on_resync)
         self.subscribers.append(entry)
         return lambda: self.subscribers.remove(entry)
 
+    def subscribe_rooms(
+        self, tenant_id: str, rooms: Any, on_change: Any, on_resync: Any
+    ) -> _FakeRoomSubscription:
+        subscription = _FakeRoomSubscription(
+            self, tenant_id, rooms, on_change, on_resync
+        )
+        self.room_subscriptions.append(subscription)
+        return subscription
+
     async def change(self, change: Change) -> None:
         for on_change, _ in list(self.subscribers):
             await on_change(change)
+        for subscription in list(self.room_subscriptions):
+            if (
+                subscription.tenant_id == change.tenant_id
+                and change.room_id in subscription.rooms
+            ):
+                subscription.delivered += 1
+                await subscription.on_change(change)
 
     async def resync(self) -> None:
         for _, on_resync in list(self.subscribers):
             await on_resync()
+        for subscription in list(self.room_subscriptions):
+            await subscription.on_resync()
 
 
 class _Harness(SimpleNamespace):
@@ -205,6 +256,7 @@ async def _user(session: AsyncSession, name: str, role: str | None) -> User:
             tenant_id="00000000-0000-0000-0000-000000000000",
             user_id=user.id,
             role=role,
+            organization_role="org_admin" if role in ("owner", "admin") else "member",
         )
     return user
 
@@ -255,6 +307,8 @@ def _chat_service(
         id_server_name="switch.test",
         media_max_bytes=1024,
         agent_chats_enabled=True,
+        group_chats_enabled=True,
+        buddy_slack_handoff_enabled=True,
         connections=connections,
     )
     room_service.on_room_agents_changed(service.sync_room)
@@ -406,3 +460,30 @@ async def two_processes(
         for run in runs:
             run.cancel()
         await asyncio.gather(*runs, return_exceptions=True)
+
+
+@pytest.fixture
+async def listening_processes(
+    two_processes: tuple[_Process, _Process], postgres_url: str
+) -> AsyncIterator[tuple[_Process, _Process]]:
+    """`two_processes`, each told of session activity by its own listener on
+    the real `NOTIFY` channel, as a switch-core process is, rather than by the
+    test."""
+    listeners = []
+    for process in two_processes:
+        listener = AgentSessionActivityListener(
+            lambda: create_async_engine(postgres_url, poolclass=NullPool)
+        )
+        process.service.activity_listener = listener
+        await listener.start()
+        listeners.append(listener)
+    try:
+        for listener in listeners:
+            await asyncio.wait_for(listener.connected.wait(), _CONNECT_SECONDS)
+        # Let each listener's own connect-time resync pass before any stream
+        # subscribes, or a stream can read it after `ready`.
+        await asyncio.sleep(0.1)
+        yield two_processes
+    finally:
+        for listener in listeners:
+            await listener.stop()

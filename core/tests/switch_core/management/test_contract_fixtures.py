@@ -21,12 +21,13 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.commands import room_control_frame
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.config import ControllerRelease
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.management import controller_routes
+from switch_core.management import controller_routes, socket_calls
 from switch_core.management.schemas import (
     ControllerConnectionRequest,
     ControllerInfoRequest,
@@ -363,6 +364,20 @@ class TestStreamFrames:
             # before a restart), agent.approval_outcome
             provoked += await take(stream, 4)
 
+            # The answer to a call made on the socket.
+            answer = await socket_calls.answer(
+                {"agent_id": agent_id, "operation": "no_such_operation"},
+                1,
+                principal=ControllerPrincipal(
+                    controller_id=controller.controller_id,
+                    owner_id=owner.id,
+                    tenant_id=TENANT_ZERO_ID,
+                ),
+                protocol=harness.protocol,
+                authenticator=harness.management.authenticator,
+            )
+            provoked.append((answer["event"], answer["data"]))
+
             # Addressed to the agent: the row in the room's log, and the
             # agent's own event for it. Its missed count runs from where
             # attaching the agent began counting the room.
@@ -407,6 +422,7 @@ class TestStreamFrames:
                     thread_id=None,
                     surface="slack",
                     requester_name="Ada",
+                    target_message_id=None,
                 ),
             )
             provoked += await take(stream, 1)

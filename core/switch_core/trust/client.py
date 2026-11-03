@@ -11,6 +11,7 @@ call site has to ask whether the feature is on — the same shape as
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -124,14 +125,27 @@ class NullTrustClient:
         return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
 
 
+# How long settings read for a check are kept at most. A change made through
+# the gateway reaches every process at once (`trust/signals.py`); this is for
+# one whose signal was lost.
+SETTINGS_MAX_AGE_SECONDS = 30.0
+
+
 class DynamicTrustClient:
-    """Reads the one server-global ``trust_settings`` row on every call.
+    """Checks with the one server-global ``trust_settings`` row, read once
+    and kept until it changes.
 
     Unlike `HttpTrustClient`, built once at boot from fixed arguments, this
-    resolves its settings fresh each check — so a change made through the
-    gateway's settings endpoint (`gateway/trust_settings.py`) takes effect on
-    the next message, with no restart. Behaves exactly like `NullTrustClient`
-    when no row exists yet, or one is missing `policy_id`/`api_key_encrypted`.
+    follows the settings as they change: a change made through the gateway's
+    settings endpoint (`gateway/trust_settings.py`) makes every process read
+    the row again before its next check (`forget`, `trust/signals.py`), so it
+    takes effect on the next message, with no restart. Settings older than
+    `max_age_seconds` are read again too. Behaves exactly like
+    `NullTrustClient` when no row exists yet, or one is missing
+    `policy_id`/`api_key_encrypted`.
+
+    Every message an agent sends is checked, and reading the row for each one
+    was a transaction per message for a row that hardly ever changes.
     """
 
     def __init__(
@@ -142,21 +156,46 @@ class DynamicTrustClient:
         keyring: Keyring,
         client: httpx.AsyncClient,
         timeout_seconds: float,
+        max_age_seconds: float = SETTINGS_MAX_AGE_SECONDS,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
         self._keyring = keyring
         self._client = client
         self._timeout_seconds = timeout_seconds
+        self._max_age_seconds = max_age_seconds
+        # The client the settings last read make, None for no check, and when
+        # they were read. Nothing until the first check.
+        self._checker: HttpTrustClient | None = None
+        self._read_at: float | None = None
+        # Advanced by `forget`, so settings read before it are not kept.
+        self._generation = 0
+
+    def forget(self) -> None:
+        """Read the settings again before the next check: they changed."""
+        self._generation += 1
+        self._read_at = None
+        self._checker = None
 
     async def check(
         self, *, role: Role, content: str, room_id: str
     ) -> TrustCheckResult:
+        checker = await self._current()
+        if checker is None:
+            return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
+        return await checker.check(role=role, content=content, room_id=room_id)
+
+    async def _current(self) -> HttpTrustClient | None:
+        read_at = self._read_at
+        if read_at is not None and time.monotonic() - read_at < self._max_age_seconds:
+            return self._checker
+        generation = self._generation
         # The DB read and the decrypt below are not network calls to Switch
         # Trust, so neither raises `GuardrailsCheckError` on its own — but a
         # stuck pool or an `UndecryptableError` from a key rotated out too
         # soon is exactly the kind of failure `check_message` exists to fail
         # open on, so anything either raises is folded into the same error.
+        # Nothing is kept then, so the next check reads again.
         try:
             async with self._session_factory() as session:
                 settings = await self._store.get(session)
@@ -165,20 +204,23 @@ class DynamicTrustClient:
                 or not settings.policy_id
                 or not settings.api_key_encrypted
             ):
-                return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
-            api_key = self._keyring.decrypt(settings.api_key_encrypted)
+                checker = None
+            else:
+                checker = HttpTrustClient(
+                    base_url=settings.endpoint,
+                    api_key=self._keyring.decrypt(settings.api_key_encrypted),
+                    policy_id=settings.policy_id,
+                    timeout_seconds=self._timeout_seconds,
+                    client=self._client,
+                )
         except Exception as error:
             raise GuardrailsCheckError(
                 f"Could not read Switch Trust settings: {error}"
             ) from error
-        http_client = HttpTrustClient(
-            base_url=settings.endpoint,
-            api_key=api_key,
-            policy_id=settings.policy_id,
-            timeout_seconds=self._timeout_seconds,
-            client=self._client,
-        )
-        return await http_client.check(role=role, content=content, room_id=room_id)
+        if generation == self._generation:
+            self._checker = checker
+            self._read_at = time.monotonic()
+        return checker
 
 
 class HttpTrustClient:

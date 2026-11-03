@@ -53,7 +53,9 @@ def _build(telemetry: TelemetryService) -> Any:
         room_service=object(),  # type: ignore[arg-type]
         client_lifecycle=object(),  # type: ignore[arg-type]
         collab_lifecycle=object(),  # type: ignore[arg-type]
-        event_buffer=EventBuffer(object(), sequence_base=0, rooms=QuietRooms()),  # type: ignore[arg-type]
+        event_buffer=EventBuffer(
+            object(), sequence_base=0, rooms=QuietRooms(), session_slots=None
+        ),  # type: ignore[arg-type]
         resource_service=object(),  # type: ignore[arg-type]
         api_key_store=object(),  # type: ignore[arg-type]
         external_user_store=object(),  # type: ignore[arg-type]
@@ -73,6 +75,7 @@ def _config() -> Any:
     class _Config:
         agent_auth_cache_ttl_seconds = 1
         agent_auth_cache_max_entries = 16
+        agent_open_limit = 8
         keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
         oauth_issuer_url = None
         oauth_audience = None

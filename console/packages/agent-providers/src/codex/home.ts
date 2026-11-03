@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { chmod, copyFile, lstat, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import type { RuntimeMode } from '../adapter';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
@@ -20,18 +21,26 @@ export function withManagedCodexSandbox(config: string, runtimeMode: RuntimeMode
   return `sandbox_mode = "${mode}"\n${config}`;
 }
 
-/** Native rollouts remain in the persistent session directory on the execution host. */
+/**
+ * Native rollouts remain in the persistent session directory on the execution
+ * host. `keyringLogin` is set when the source home has no auth.json to copy:
+ * the machine's login, if Codex has one, is then in the OS keyring, and a
+ * session with no login of its own is handed it as it starts
+ * (`CodexKeyringLogin`). A copy the session already has is left alone, since
+ * Codex may still read it.
+ */
 export async function prepareCodexSessionHome(input: {
   root: string;
   sessionId: string;
   sourceHome: string;
   config: string;
-}): Promise<string> {
+}): Promise<{ home: string; keyringLogin: boolean }> {
   const key = createHash('sha256').update(input.sessionId).digest('hex');
   const home = join(input.root, key);
   await mkdir(home, { recursive: true, mode: 0o700 });
   await chmod(home, 0o700);
-  await copyCodexAuthenticationOnce(home, input.sourceHome);
+  const keyringLogin = !(await hasCodexAuthFile(input.sourceHome));
+  if (!keyringLogin) await copyCodexAuthenticationOnce(home, input.sourceHome);
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
   const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
   // The session host registers its own `switch` server; an entry of that name
@@ -50,7 +59,34 @@ export async function prepareCodexSessionHome(input: {
   // instructions, and a leftover copy would only be read again by shell.
   await rm(join(home, 'skills', 'switch'), { recursive: true, force: true });
   await linkSkills(join(input.sourceHome, 'skills'), join(home, 'skills'));
-  return home;
+  return { home, keyringLogin };
+}
+
+export const codexHomeNotAbsolute = (home: string) =>
+  `Set CODEX_HOME to an absolute path. It is ${JSON.stringify(home)}, which Codex reads from whichever directory it starts in, so Switch cannot tell which Codex home its sessions would use.`;
+
+/**
+ * The Codex home a session takes its login and configuration from; sign-in
+ * checks look here too. A relative CODEX_HOME is refused rather than
+ * resolved: Codex reads one from whichever directory it starts in, and
+ * Console, the agent controller, a session's host and the Codex a check runs
+ * each start in a different one, so no one resolution would be the home both
+ * sessions and the check mean.
+ */
+export function codexSourceHome(env: Readonly<Record<string, string | undefined>>): string {
+  const configured = env.CODEX_HOME;
+  if (configured && !isAbsolute(configured)) throw new Error(codexHomeNotAbsolute(configured));
+  return configured || join(homedir(), '.codex');
+}
+
+/** Whether a Codex home keeps its login in auth.json, the only form a session copies. */
+export async function hasCodexAuthFile(home: string): Promise<boolean> {
+  try {
+    return (await stat(join(home, 'auth.json'))).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw new Error('Could not load the execution-host Codex login.', { cause: error });
+  }
 }
 
 /** A resumed session keeps its refreshed login; new sessions copy only auth. */

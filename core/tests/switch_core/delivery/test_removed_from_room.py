@@ -163,11 +163,11 @@ async def test_a_message_decided_before_the_removal_stores_nothing_after_it(
     removed = asyncio.Event()
     create = MessageStore.create
 
-    async def create_after_the_removal(self, session, message, attachments):  # type: ignore[no-untyped-def]
+    async def create_after_the_removal(self, session, message, attachments, **kwargs):  # type: ignore[no-untyped-def]
         if message.room_id == left.id and message.body == "@fixer late":
             decided.set()
             await removed.wait()
-        return await create(self, session, message, attachments)
+        return await create(self, session, message, attachments, **kwargs)
 
     monkeypatch.setattr(MessageStore, "create", create_after_the_removal)
     sending = asyncio.create_task(process.say(left, "@fixer late", sender=alice))
@@ -228,11 +228,11 @@ async def test_a_row_decided_before_the_removal_leaves_the_agent_nothing_to_say(
     removed = asyncio.Event()
     create = MessageStore.create
 
-    async def create_after_the_removal(self, session, message, attachments):  # type: ignore[no-untyped-def]
+    async def create_after_the_removal(self, session, message, attachments, **kwargs):  # type: ignore[no-untyped-def]
         if message.room_id == left.id and message.sender_client_id == alice.id:
             decided.set()
             await removed.wait()
-        return await create(self, session, message, attachments)
+        return await create(self, session, message, attachments, **kwargs)
 
     monkeypatch.setattr(MessageStore, "create", create_after_the_removal)
     sending = asyncio.create_task(write(process, left, alice))

@@ -9,7 +9,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.accounts.deletion import AccountDeletion, Workspace
+from switch_core.accounts.deletion import (
+    AccountDeletion,
+    AccountDeletionRefused,
+    Workspace,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -25,8 +29,9 @@ from switch_core.db.stores.hosted_machine_store import (
     claim_conflict,
     owner_stopped,
 )
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
-from switch_core.db.stores.user_store import UserStore
+from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     AuthenticatedSession,
@@ -37,6 +42,7 @@ from switch_core.gateway.auth import (
     hash_password_off_loop,
     initial_tenant_claim,
     list_tenant_memberships,
+    operator_entered_workspace,
     require_admin,
     set_session_cookie,
     verify_password_off_loop,
@@ -48,6 +54,7 @@ from switch_core.gateway.dependencies import (
     get_client_lifecycle,
     get_config,
     get_external_user_store,
+    get_organization_store,
     get_protocol,
     get_resource_service,
     get_room_service,
@@ -70,6 +77,7 @@ from switch_core.gateway.schemas import (
     LinkedIdentity,
     LoginRequest,
     OidcLoginOptionView,
+    PendingIdentity,
     ServerDeclaration,
     SessionStateResponse,
     SessionUserResponse,
@@ -259,7 +267,9 @@ async def signup(
         try:
             async with session.begin_nested():
                 await user_store.create(session, user)
-        except IntegrityError:
+        except IntegrityError as err:
+            if not email_taken(err):
+                raise
             await session.rollback()
             raise HTTPException(
                 status_code=409, detail="Email already registered"
@@ -358,8 +368,16 @@ async def session_state(
     # One connection at a time: release this one before the lookup opens its own.
     await session.commit()
     tenants = await list_tenant_memberships(session_factory, user_store, user.id)
+    entered = await operator_entered_workspace(
+        session_factory, user, auth.tenant_claim, tenants
+    )
     return describe_session_state(
-        config, user, auth.tenant_claim, tenants, client_lifecycle.tenants_isolated
+        config,
+        user,
+        auth.tenant_claim,
+        tenants,
+        entered,
+        client_lifecycle.tenants_isolated,
     )
 
 
@@ -381,11 +399,12 @@ async def my_identities(
 
     An owner-only agent is only reachable by its owner over a bridge that
     appears in this list, so Switch Console reads it to warn when an agent has
-    been sealed on a platform where its owner cannot be recognised.
+    been sealed on a platform where its owner cannot be recognised. A link
+    still waiting for the account to confirm it is not one of them: see
+    `my_pending_identities`.
     """
-    identities = await external_user_store.get_by_user(session, user.id)
     linked: list[LinkedIdentity] = []
-    for identity in identities:
+    for identity, claim in await external_user_store.claims_of_user(session, user.id):
         bridge = await bridge_store.get(session, identity.bridge_id)
         if bridge is None:
             continue
@@ -397,9 +416,48 @@ async def my_identities(
                 bridge_type=bridge.type,
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
+                verified=claim.verified_at is not None,
             )
         )
     return linked
+
+
+@router.get("/auth/me/identities/pending")
+async def my_pending_identities(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> list[PendingIdentity]:
+    """The messaging-app accounts waiting to confirm a link to this user
+    (CHOO-3881), which count for nothing until they do."""
+    pending: list[PendingIdentity] = []
+    for identity, request in await external_user_store.link_requests_of_user(
+        session, user.id
+    ):
+        bridge = await bridge_store.get(session, identity.bridge_id)
+        if bridge is None:
+            continue
+        requested_by = request.requested_by_user_id
+        requester = (
+            await user_store.get(session, requested_by)
+            if requested_by is not None and requested_by != user.id
+            else None
+        )
+        pending.append(
+            PendingIdentity(
+                id=identity.id,
+                bridge_id=identity.bridge_id,
+                bridge_display_name=bridge.display_name,
+                bridge_type=bridge.type,
+                external_user_id=identity.external_user_id,
+                external_username=identity.external_username,
+                requested_by_name=requester.name if requester is not None else None,
+                code_expires_at=request.code_expires_at,
+            )
+        )
+    return pending
 
 
 @router.delete("/auth/me")
@@ -413,6 +471,7 @@ async def delete_my_account(
     ],
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     template_store: Annotated[TemplateStore, Depends(get_template_store)],
@@ -452,6 +511,7 @@ async def delete_my_account(
         rooms=room_service,
         sign_in_flows=request.app.state.sign_in_flows,
         users=user_store,
+        organizations=organization_store,
         agents=agent_store,
         api_keys=api_key_store,
         templates=template_store,
@@ -460,7 +520,10 @@ async def delete_my_account(
     reason = await deletion.refusal(session, user, workspaces)
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
-    await deletion.delete(session, user, workspaces)
+    try:
+        await deletion.delete(session, user, workspaces)
+    except AccountDeletionRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused)) from None
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -518,7 +581,18 @@ async def create_user(
         role=req.role,
         password_hash=password_hash,
     )
-    await user_store.create(session, user)
+    # The check above ran before bcrypt, so a concurrent request for the same
+    # address can have inserted since; the unique constraint is what decides.
+    try:
+        async with session.begin_nested():
+            await user_store.create(session, user)
+    except IntegrityError as err:
+        if not email_taken(err):
+            raise
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="Email already registered"
+        ) from None
     await session.commit()
 
     logger.info("Created user: %s (%s)", user.email, user.id)

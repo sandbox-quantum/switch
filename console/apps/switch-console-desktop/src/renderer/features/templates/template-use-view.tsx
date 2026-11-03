@@ -1260,6 +1260,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         inputs,
         filled,
         templateName: loaded.name,
+        templateId: templateId ?? null,
         entryPoint: 'template',
       });
     } catch (e) {

@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from switch_core.bridges.collaboration.session.renderers import RUNNING_CLOCK_SECONDS
 from switch_core.db.models import AgentSessionActivityItem
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
@@ -94,18 +95,21 @@ def status_state(
     elapsed_seconds: float | None,
     interrupt_turn_id: str | None,
     clock_redraws: bool,
+    closed_by_platform: bool,
 ) -> str:
     """What the turn's message is showing, so an unchanged redraw can be skipped.
 
     The turn's state and its tools count. The clock counts only where the
-    platform redraws for it. What the agent is saying does not: prose is
+    platform redraws for it, and then in the whole minutes a running turn
+    shows. What the agent is saying does not: prose is
     revised on every token, and it goes out with the next change to either,
     and with the edit that ends the turn. The turn a stop control names
     counts, so a queued turn's message stops offering to stop a turn that
-    has ended.
+    has ended. So does the platform having closed the message on its own,
+    since closing it changed what it shows.
     """
     clock = (
-        str(int(elapsed_seconds))
+        str(int(elapsed_seconds // RUNNING_CLOCK_SECONDS))
         if clock_redraws and elapsed_seconds is not None
         else ""
     )
@@ -114,4 +118,5 @@ def status_state(
         for item in view.items
         if item.kind == "tool-activity"
     )
-    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}"
+    closed = ":closed" if closed_by_platform else ""
+    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"
