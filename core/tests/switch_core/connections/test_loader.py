@@ -1814,7 +1814,9 @@ def test_the_shipped_pagerduty_entry_authenticates_and_maps_mcp():
     assert server.name == "pagerduty"
     assert server.url == "https://mcp.{region}/mcp"
     assert server.headers == {"Authorization": "Token token={api_key}"}
-    assert definition.token is not None and definition.token.max_lifetime is None
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
 
 
 def test_loads_an_api_key_entry(catalog_copy):
