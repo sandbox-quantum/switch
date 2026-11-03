@@ -127,6 +127,19 @@ version of their own to them without also giving them a release of their own.
   `.env`, so a page can be checked as each role. Switching is an ordinary
   sign-in, so every check is the server's own. A production build leaves the
   switcher out, and `npm run build` now fails if it gets in.
+- **The Azure DevOps connection.** A person connects Azure DevOps from Switch
+  Console with their Microsoft Entra account, and a granted agent reads and
+  updates work items, repositories, pull requests and pipeline runs, as that
+  person, through Microsoft's remote Azure DevOps MCP server. Each call names
+  its organization, so one connection reaches every organization the person
+  can. Each server's operator registers a multi-tenant Entra app with the
+  Azure DevOps MCP permission (`Ado.Mcp.Tools`), admin-consented, and saves
+  it under Connector apps or names it in `AZURE_DEVOPS_CLIENT_CONFIG_PATH`;
+  it needs `GATEWAY_PUBLIC_URL`. Microsoft documents no read-only scope for
+  the server, so the connection has one level, read and write, and reaches
+  every tool the server lists, wiki, test plan and migration tools included.
+  Entra cannot revoke a sign-in for Switch, so disconnecting says how to have
+  it revoked.
 
 #### Changed
 - **switch-core's logs keep to what matters.** Successful routine polls (health
