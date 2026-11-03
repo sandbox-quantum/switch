@@ -1496,6 +1496,19 @@ class TestPassThrough:
         assert len(pt.vendor.connections_revoked) == 1
         assert warning is None
 
+    async def test_a_reconnect_to_the_same_account_keeps_the_old_sign_in(
+        self, session_factory, tmp_path
+    ) -> None:
+        """At a vendor whose revocation ends every token of the account, as
+        Google's does, revoking the old sign-in would end the new one too."""
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=REVOKES_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        warning = await _reconnect(pt, session_factory, account_id="acct-1")
+        assert pt.vendor.connections_revoked == []
+        assert warning is not None and warning.startswith("Example access already")
+
     async def test_a_reconnect_whose_revocation_failed_says_until_when(
         self, session_factory, tmp_path, monkeypatch
     ) -> None:

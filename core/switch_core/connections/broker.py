@@ -2175,7 +2175,9 @@ class ServiceBroker:
 
         Re-linking keeps the grants (a different account then fails them with
         `grant_account_changed`) and revokes what was issued on the old
-        sign-in, and the old sign-in itself when it is not the new one.
+        sign-in, and the old sign-in itself when it is not the new one. Where
+        the vendor's revocation ends every token of the account, the old
+        sign-in of the same account is kept.
         Commits `session`; returns a warning naming what could not be revoked.
         """
         entry = self._entry(service)
@@ -2218,6 +2220,7 @@ class ServiceBroker:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         previous = await self._store.get_connection(session, user_id, service)
         replaced = None if previous is None else self._signed_in(previous)
+        replaced_account = None if previous is None else previous.account_id
         issued_on_it = (
             ServiceTokenIssuance.owner_id == user_id,
             ServiceTokenIssuance.service == service,
@@ -2249,7 +2252,14 @@ class ServiceBroker:
 
         warnings = []
         ended: set[str] = set()
-        if replaced is not None and replaced.secret.access_token != secret.access_token:
+        # Where a revocation ends every token of the account (Google's does),
+        # revoking the old sign-in of the same account ends the new one too.
+        same_account = replaced_account == account_id and _revocation_ends_tokens(entry)
+        if (
+            replaced is not None
+            and replaced.secret.access_token != secret.access_token
+            and not same_account
+        ):
             try:
                 adapter = await self._revoker(
                     session, service, replaced.oauth_client_id, replaced.choices
