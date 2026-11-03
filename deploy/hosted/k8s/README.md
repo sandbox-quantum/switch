@@ -18,7 +18,9 @@ them from `controller/src/switch_hosted_controller/box_operator.py`.
 
 ## Placeholders
 
-Each must be replaced before applying; none has a default.
+Each must be replaced before applying; none has a default. `../fill-placeholders.py` fills them all, checks each
+value, and writes a copy ready to apply, outside the repo (see `../DEPLOY.md`). It also sets P4's zone rule and the
+cluster's `kubernetes` Service address in the NetworkPolicies (`172.20.0.1` on the test cluster).
 
 | Placeholder | Value |
 |---|---|
@@ -31,7 +33,7 @@ Each must be replaced before applying; none has a default.
 | `__CONTROLLER_IMAGE__` | the hosted controller image (`controller/Dockerfile`), by digest |
 | `__EGRESS_LISTS_IMAGE__` | the egress-lists generator image (the same build), by digest |
 | `__PAUSE_IMAGE__` | the placeholder pod's image, by digest |
-| `__BOX_CA_CERT__` | the CA that signs the Switch server's certificate, if it isn't publicly trusted |
+| `__BOX_CA_CERT__` | the CA certificate (PEM) that signs the Switch server's certificate. Always needed: the provisioner refuses to start without one, so for a publicly trusted certificate give its public CA |
 
 ## Known for later
 
