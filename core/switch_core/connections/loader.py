@@ -163,14 +163,24 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id is read: `method` to `url` with the
+    access token, and the dotted paths in its JSON answer to the id and to a
+    label people recognise (an email, a login). A POST sends `body` as JSON
+    where one is given, and nothing where none is (Dropbox's account call
+    takes no body); a GET never sends one."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"]
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    body: dict[str, object] | None = None
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _body_only_for_post(self) -> "ConnectionIdentity":
+        if self.body is not None and self.method != "POST":
+            raise ValueError("only a POST identity call sends a body")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"

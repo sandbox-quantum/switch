@@ -490,8 +490,9 @@ class OAuthAdapter:
         """The account the token acts as, as the catalog says to read it."""
         response = await self._send(
             self._http.build_request(
-                "GET",
+                self._identity.method,
                 self._identity.url,
+                json=self._identity.body,
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Accept": "application/json",
