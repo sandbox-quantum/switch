@@ -112,6 +112,11 @@ class ApiKeyAdapter:
                     raise InvalidKeyError(
                         f"{field.label} must be one of {', '.join(field.choices)}."
                     )
+            elif field.pattern is not None:
+                if not FIELD_VALUE_RE.fullmatch(value) or not re.fullmatch(
+                    field.pattern, value
+                ):
+                    raise InvalidKeyError(f"{field.label} is invalid.")
             elif not FIELD_VALUE_RE.fullmatch(value):
                 raise InvalidKeyError(
                     f"{field.label} must be one line of printable characters, "
