@@ -103,7 +103,9 @@ class FakeRoomService:
         self.bridge_user_lookups.append((bridge_id, names))
         return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: object = None
+    ) -> RoomCreateResult:
         async with self._sf() as session:
             agent_ids: list[str] = []
             if config.agent_names:

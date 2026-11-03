@@ -453,6 +453,20 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **An agent's addressing policy now governs who can invite it into a
+  room.** It used to govern only who could address the agent once it was
+  there, so anyone who could run `!invite-agent`, call
+  `invite_agent_to_room`, name the agent in a new room, or add it on the
+  room page could pull an owner-only agent into their room. Every invite
+  path now judges the inviter by the invited agent's policy — the person
+  inviting, the inviting agent, a template's runner, and, for an agent
+  added to a channel on the platform itself, whoever added it there when
+  the platform says who that was. A refusal says why and who can invite
+  instead (the agent's owner, or anyone the policy admits); there is no
+  admin bypass. When a platform does not say who added an agent, the join
+  still stands, but the room is told Switch could not verify the inviter
+  and the owner is named there so they can remove it. Agents already in a
+  room are untouched: only agents about to be added are judged.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in

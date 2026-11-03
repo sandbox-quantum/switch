@@ -188,6 +188,13 @@ class InboundAgentJoin(BaseModel):
     channel_type: ChannelType
     agent_name: str
     channel_name: str | None = None
+    # The platform's own id for whoever added the agent's bot to the
+    # channel, when the platform says who it was (Slack's member_joined
+    # event names an inviter; Telegram names who added a member). The join
+    # is judged by the agent's addressing policy as that person (#805).
+    # None when the platform does not say — the join is then let through
+    # but disclosed in the room, never silently trusted.
+    added_by_external_user_id: str | None = None
 
 
 class InboundUserJoin(BaseModel):
@@ -196,6 +203,11 @@ class InboundUserJoin(BaseModel):
     external_user_id: str
     external_username: str
     channel_name: str | None = None
+    # Whoever added this user, in the platform's own ids, when the platform
+    # says who it was. Carried because a "user" who turns out to be an
+    # agent's bot is judged by that agent's addressing policy as this
+    # person (#805); ignored for a human join.
+    added_by_external_user_id: str | None = None
 
 
 class InboundAppJoin(BaseModel):
@@ -206,6 +218,11 @@ class InboundAppJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType
     channel_name: str | None = None
+    # Whoever added the app, in the platform's own ids, when the platform
+    # says who it was (Slack's member_joined event names an inviter). The
+    # agents the new room seats are judged as that person (#805); None when
+    # the platform does not say, and the join is then disclosed instead.
+    added_by_external_user_id: str | None = None
 
 
 class BridgeInstallLink(BaseModel):

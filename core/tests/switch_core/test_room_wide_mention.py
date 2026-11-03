@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.db.models import Agent, ApiKey, Room
 from switch_core.db.stores.room_role_store import RoomRoleStore, validate_role_name
+from switch_core.invites import UserInviter
 from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
@@ -165,7 +166,7 @@ async def test_create_room_refuses_a_reserved_alias_before_provisioning() -> Non
     )
 
     with pytest.raises(AliasError, match="reserved"):
-        await svc.create_room(config)
+        await svc.create_room(config, invited_by=UserInviter("tester"))
 
 
 class TestAgentNames:

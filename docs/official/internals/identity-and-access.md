@@ -119,6 +119,8 @@ A rule admits an attempt when the room matches **and** the group matches **and**
 - **Once there's any rule, everything not admitted is denied.** Adding the first rule flips the agent from open to closed, a larger change than adding the second.
 - **A newly registered agent starts owner-only.** New agents don't inherit the permissive default.
 
+The same policy also governs who may **invite** the agent into a room. An invite is how work reaches an agent, so it is judged as whoever is doing the inviting — the person at the room page or typing `!invite-agent`, the agent calling `invite_agent_to_room` (for agent inviters the policy is asked about the inviting agent, which is what `owner_agents` admits), a template run's runner, and, when an agent's bot is added to a channel on the platform itself, the person who added it whenever the platform reports who that was. Every path is judged in one place (`switch_core/invites.py`), behind `RoomService.create_room` / `add_agents_to_room`, so a new path cannot seat an agent without naming its inviter. A refusal names the agent, says the inviter isn't someone it takes instructions from, and says who can invite instead; no inviter gets an implicit admin bypass. When a platform doesn't report who added an agent, the join is let through but disclosed in the room — a notice says Switch couldn't verify the inviter and names the owner, who can remove the agent — and never silently treated as trusted. Only agents about to be added are judged; an agent already in a room is never removed by a policy change.
+
 Policies are set from the Gateway by the agent's owner or an admin. They aren't agent-facing, so an agent can't widen its own.
 
 ## Identity claims
