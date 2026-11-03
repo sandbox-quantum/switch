@@ -1,0 +1,90 @@
+slug: dropbox
+name: Dropbox
+category: File storage
+description: Search and read your Dropbox files, and add or change them, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Dropbox documents that a refresh token "can be repeatedly re-used and
+  # doesn't expire automatically"; a refresh returns no new one.
+  refresh: reusable
+  oauth:
+    # Dropbox's MCP server is in beta, and it registers clients dynamically
+    # only for its own list of trusted clients, so each server's operator
+    # registers a Dropbox app and saves it under Connector apps, or names it
+    # in DROPBOX_CLIENT_CONFIG_PATH. In the Dropbox App Console: Create app,
+    # Scoped access, Full Dropbox; on Permissions tick the scopes the write
+    # level below asks for (account_info.read, files.metadata.read,
+    # files.content.read, files.content.write) and nothing else; on Settings
+    # add Core's callback as a redirect URI. A new app links only its
+    # developer's own account until "Enable additional users" is clicked, and
+    # at most 500 while in development; once 50 have linked, it has two weeks
+    # to apply for production. A Dropbox team admin may block apps for their
+    # members.
+    registration: static
+    client_settings: DROPBOX
+    # Back to Core's own https callback, as Google's and Airtable's: Dropbox
+    # matches a redirect URI exactly, port included.
+    redirect: [core]
+    # Dropbox hands out a refresh token only when asked for offline access.
+    authorization_params: { token_access_type: offline }
+    # Not checked against a real app: whether Dropbox compares the redirect
+    # URI before a made-up code, and which scopes the app has ticked.
+    unchecked: >-
+      Switch can't check the redirect URI or the scopes ticked on the app's
+      Permissions tab. Connect once to confirm.
+    # Dropbox's metadata advertises /2/auth/token/revoke as its revocation
+    # endpoint, but it is not RFC 7009: it disables the bearer token the call
+    # is made with, and answers a token sent in the form, as Switch revokes,
+    # with HTTP 400 "Invalid authorization value" (measured with a made-up
+    # token). So a sign-in Switch drops lives on until the person removes it.
+    remove_access: >-
+      Remove it in Dropbox under Settings, Connected apps, where it is listed
+      under the name your server's operator gave the app. Until then, the
+      sign-in keeps working.
+  identity:
+    # Dropbox's API takes every call as a POST; this one takes no body and
+    # needs account_info.read. Not yet tried with a token issued for the MCP
+    # server (Switch names it as the sign-in's resource).
+    method: POST
+    url: https://api.dropboxapi.com/2/users/get_current_account
+    account_id: account_id
+    label: email
+# Documented only as short-lived, with the exact expiry in each token
+# response. Dropbox staff put it at four hours (14,400 s); not measured here.
+# A token Dropbox issues for longer is refused, not handed out.
+token: { kind: pass_through, max_lifetime: 14400 }
+mcp:
+  servers:
+    - { name: dropbox, url: "https://mcp.dropbox.com/mcp" }
+access:
+  # Scopes as Dropbox's API reference assigns them to the calls the tools
+  # make; not checked against the beta server itself. Search, folder listing,
+  # metadata and revisions take files.metadata.read; file content takes
+  # files.content.read; the account call takes account_info.read, which
+  # Dropbox does not add unasked. Creating, copying, moving, deleting and
+  # restoring take files.content.write; a delete goes to Deleted files.
+  # Not asked for, though Dropbox's setup page ticks some: sharing.read and
+  # sharing.write (shared links, including inviting people by email),
+  # file_requests.read and file_requests.write (asking others to upload),
+  # files.metadata.write (tags and properties no tool uses),
+  # files.permanent_delete, and any team scope. Dropbox's API refuses a call
+  # without its scope; whether the server still lists those tools is
+  # unverified.
+  #
+  # Connecting asks for the write level, and Dropbox's consent page lists the
+  # scopes with nothing to untick, so every connection is granted it, as
+  # Airtable's is; read records what reading alone needs.
+  read:
+    scopes:
+      - account_info.read
+      - files.metadata.read
+      - files.content.read
+  write:
+    scopes:
+      - account_info.read
+      - files.metadata.read
+      - files.content.read
+      - files.content.write
+tools: { mode: pass_through }
