@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
+    BUDDY_SLACK_HANDOFF,
     FOLLOW_THE_CONVERSATION,
     GROUP_CHATS,
     HOSTED_AGENTS,
@@ -1340,6 +1341,10 @@ class SwitchConfig(BaseSettings):
     @property
     def group_chats_enabled(self) -> bool:
         return self.feature_flags[GROUP_CHATS]
+
+    @property
+    def buddy_slack_handoff_enabled(self) -> bool:
+        return self.feature_flags[BUDDY_SLACK_HANDOFF]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":
