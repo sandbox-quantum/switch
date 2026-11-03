@@ -609,6 +609,9 @@ class ConnectionDefinition(BaseModel):
         return self
 
     def _check_access_profiles(self) -> None:
+        # A placeholder ships no skill, so it has none for a profile to name.
+        if not self.enabled:
+            raise ValueError("only an enabled entry has access profiles")
         if self.adapter != "oauth" or self.access is None:
             raise ValueError(
                 "only an oauth entry with access levels has access profiles"

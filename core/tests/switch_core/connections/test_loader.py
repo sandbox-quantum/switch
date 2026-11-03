@@ -300,6 +300,10 @@ def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
             r"does not have: 'gmail' \(it has: drive-file\)",
         ),
         ({"github": "drive-file"}, r"does not have: 'drive-file' \(it has: none\)"),
+        (
+            {"microsoft-365": "drive-file"},
+            r"does not have: 'drive-file' \(it has: none\)",
+        ),
     ],
 )
 def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
@@ -1163,6 +1167,16 @@ def test_rejects_a_profile_without_the_entrys_levels(catalog_copy):
     with pytest.raises(
         CatalogError,
         match="(?s)google-workspace is invalid.*must name the levels the entry does",
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_on_a_disabled_entry(catalog_copy):
+    _rewrite_google(catalog_copy, "enabled: true", "enabled: false")
+    shutil.rmtree(catalog_copy / "google-workspace" / "skill")
+    with pytest.raises(
+        CatalogError,
+        match="(?s)google-workspace is invalid.*only an enabled entry has access profiles",
     ):
         load_catalog(catalog_copy)
 
