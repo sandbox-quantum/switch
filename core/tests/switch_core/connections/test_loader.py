@@ -30,12 +30,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "github",
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "github",
         "google-workspace",
@@ -44,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["cloudflare"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -942,6 +945,35 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     }
     assert sign_in.identity.headers == {"DD-API-KEY": "{api_key}"}
     # A key never expires, so it is never handed to an agent.
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_cloudflare_entry_authenticates_and_maps_mcp():
+    definition = CATALOG["cloudflare"].definition
+    assert definition.adapter == "api_key"
+    assert definition.category == "Deployment"
+    assert definition.access is None
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("api_key", True),
+    ]
+    assert sign_in.identity.method == "GET"
+    assert (
+        sign_in.identity.url
+        == "https://api.cloudflare.com/client/v4/user/tokens/verify"
+    )
+    assert sign_in.identity.headers == {"Authorization": "Bearer {api_key}"}
+    assert sign_in.identity.account_id == "result.id"
+    assert sign_in.identity.label == "result.status"
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.name == "cloudflare"
+    assert server.url == "https://mcp.cloudflare.com/mcp"
+    assert server.headers == {"Authorization": "Bearer {api_key}"}
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False
