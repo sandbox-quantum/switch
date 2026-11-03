@@ -1,7 +1,7 @@
 import { toast } from 'sonner';
 import type { AdminSection } from '@renderer/features/admin/admin-sections';
 import { isAgentSection } from '@renderer/features/managed-agents/agent-sections';
-import type { SettingsPageTab } from '@renderer/features/settings/components/SettingsPage';
+import { resolveSettingsTab } from '@renderer/features/settings/settings-tabs';
 import { findBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
@@ -27,7 +27,7 @@ export async function openConsoleLink(raw: string): Promise<void> {
   const { link } = parsed;
   if (link.page === 'settings') {
     appState.navigation.navigate('settings', {
-      tab: (link.tab ?? 'general') as SettingsPageTab,
+      tab: resolveSettingsTab(link.tab),
     });
     return;
   }
