@@ -17,6 +17,21 @@ function resolve(
   return resolveTelemetryEnvironment({ build, release, env });
 }
 
+describe('a test build', () => {
+  it('never sends usage, whatever the channel, release flag or environment', () => {
+    for (const build of ['stable', 'canary', 'dev'] as const) {
+      expect(
+        resolveTelemetryEnvironment({
+          build,
+          release: true,
+          env: { SWITCHDASH_TELEMETRY_DEV: '1' },
+          testBuild: true,
+        })
+      ).toEqual({ enabled: false, reason: 'test_build' });
+    }
+  });
+});
+
 describe('a dev run', () => {
   it('is off until a developer opts in', () => {
     expect(resolve('dev')).toEqual({ enabled: false, reason: 'dev_build' });
