@@ -265,7 +265,10 @@ export function ServiceConnectStep({
                     type="button"
                     disabled={busy}
                     className="w-fit text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground disabled:cursor-not-allowed"
-                    onClick={() => dispatch({ type: 'paste', method: link.method })}
+                    onClick={() => {
+                      setValues({});
+                      dispatch({ type: 'paste', method: link.method });
+                    }}
                   >
                     {link.text}
                   </button>
@@ -298,7 +301,10 @@ export function ServiceConnectStep({
             <Button
               variant="outline"
               disabled={busy}
-              onClick={() => dispatch({ type: 'paste', method: null })}
+              onClick={() => {
+                setValues({});
+                dispatch({ type: 'paste', method: null });
+              }}
             >
               Back
             </Button>
