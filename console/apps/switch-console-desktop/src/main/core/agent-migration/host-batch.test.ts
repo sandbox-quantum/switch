@@ -1,6 +1,6 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -102,5 +102,17 @@ describe('credentials files on a host', () => {
     expect(await readFiles(run, [one, two])).toEqual({ [one]: '{"a":1}', [two]: null });
     await deleteFiles(run, [one, two]);
     expect(await readFiles(run, [one])).toEqual({ [one]: null });
+  });
+
+  it('removes the copies an interrupted secret write left beside one, and nothing else', async () => {
+    const dir = join(home, 'agents');
+    await mkdir(dir);
+    const uuid = '0b6f1d2e-3c4a-4b5d-8e9f-a0b1c2d3e4f5';
+    for (const name of ['a.json', `a.json.${uuid}`, 'a.json.bak', `b.json.${uuid}`])
+      await writeFile(join(dir, name), '{"a":1}');
+
+    await deleteFiles(run, [join(dir, 'a.json'), join(home, 'missing', 'c.json')]);
+
+    expect((await readdir(dir)).sort()).toEqual(['a.json.bak', `b.json.${uuid}`]);
   });
 });

@@ -70,6 +70,44 @@ describe('createPluginFs delete', () => {
     const fs = createPluginFs(root);
     await expect(fs.delete('../outside.json')).rejects.toThrow(/path escape/);
   });
+
+  it('removes the copies an interrupted secret write left, and nothing else', async () => {
+    // A secret write renames `<file>.<uuid>` into place; cut off first, the copy
+    // holds the same token, and deleting the agent must not leave it behind.
+    const fs = createPluginFs(root);
+    const dir = path.join(root, '.switch', 'agents');
+    await mkdir(dir, { recursive: true });
+    const uuid = '0b6f1d2e-3c4a-4b5d-8e9f-a0b1c2d3e4f5';
+    for (const name of [
+      'a.json',
+      `a.json.${uuid}`,
+      `a.json.${uuid.replace('0b6f', '1c7a')}`,
+      'a.json.bak',
+      `a.json2.${uuid}`,
+      `b.json.${uuid}`,
+    ]) {
+      await writeFile(path.join(dir, name), 'token');
+    }
+
+    await fs.delete('.switch/agents/a.json');
+
+    expect((await readdir(dir)).sort()).toEqual([
+      'a.json.bak',
+      `a.json2.${uuid}`,
+      `b.json.${uuid}`,
+    ]);
+  });
+
+  it('removes a leftover copy when the file itself was never written', async () => {
+    const fs = createPluginFs(root);
+    const dir = path.join(root, '.switch', 'agents');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'a.json.0b6f1d2e-3c4a-4b5d-8e9f-a0b1c2d3e4f5'), 'token');
+
+    await fs.delete('.switch/agents/a.json');
+
+    expect(await readdir(dir)).toEqual([]);
+  });
 });
 
 const modeOf = async (p: string) => (await stat(p)).mode & 0o777;
@@ -129,6 +167,40 @@ describe.skipIf(process.platform === 'win32')('createPluginFs secret write', () 
       createPluginFs(root).write('../outside.json', 'token', { secret: true })
     ).rejects.toThrow(/path escape/);
   });
+
+  it('protects an existing file and its directory without touching the content', async () => {
+    const dir = path.join(root, '.switch', 'agents');
+    await mkdir(dir, { recursive: true });
+    await chmod(dir, 0o755);
+    await writeFile(path.join(dir, 'a.json'), 'token', { mode: 0o644 });
+    const before = await stat(path.join(dir, 'a.json'));
+
+    expect(await createPluginFs(root).protectSecret('.switch/agents/a.json')).toBe(true);
+
+    const after = await stat(path.join(dir, 'a.json'));
+    expect(after.mode & 0o777).toBe(0o600);
+    expect(await modeOf(dir)).toBe(0o700);
+    // The same file, not a replacement: nothing a concurrent writer did is undone.
+    expect(after.ino).toBe(before.ino);
+    expect(await readFile(path.join(dir, 'a.json'), 'utf8')).toBe('token');
+  });
+
+  it('leaves the directory alone and says so when there is no file to protect', async () => {
+    const dir = path.join(root, '.switch', 'agents');
+    await mkdir(dir, { recursive: true });
+    await chmod(dir, 0o755);
+
+    expect(await createPluginFs(root).protectSecret('.switch/agents/a.json')).toBe(false);
+    expect(await createPluginFs(root).protectSecret('missing/a.json')).toBe(false);
+
+    expect(await modeOf(dir)).toBe(0o755);
+  });
+
+  it('refuses to protect a path outside its root', async () => {
+    await expect(createPluginFs(root).protectSecret('../outside.json')).rejects.toThrow(
+      /path escape/
+    );
+  });
 });
 
 describe('createPluginFs secret write on Windows', () => {
@@ -136,6 +208,7 @@ describe('createPluginFs secret write on Windows', () => {
   let root: string;
 
   beforeEach(async () => {
+    vi.clearAllMocks();
     root = await mkdtemp(path.join(tmpdir(), 'plugin-fs-secret-win-'));
     Object.defineProperty(process, 'platform', { value: 'win32' });
   });
@@ -160,5 +233,16 @@ describe('createPluginFs secret write on Windows', () => {
       ['file', expect.stringMatching(/a\.json\.[0-9a-f-]{36}$/), ''],
     ]);
     expect(await readFile(path.join(dir, 'a.json'), 'utf8')).toBe('token');
+  });
+
+  it('protects an existing file and its directory with owner-only ACLs', async () => {
+    const dir = path.join(root, '.switch', 'agents');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'a.json'), 'token');
+
+    expect(await createPluginFs(root).protectSecret('.switch/agents/a.json')).toBe(true);
+
+    expect(acl.directory).toHaveBeenCalledWith(dir);
+    expect(acl.file).toHaveBeenCalledWith(path.join(dir, 'a.json'));
   });
 });

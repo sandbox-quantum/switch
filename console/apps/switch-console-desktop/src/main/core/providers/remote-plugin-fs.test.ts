@@ -83,14 +83,41 @@ describe('createRemotePluginFs', () => {
   it('delete removes the path and ignores a missing file', async () => {
     // The literal SshFileSystem.remove produces when its stat finds nothing.
     const remove = vi.fn(async () => ({ success: false, error: 'File not found: gone' }));
-    const fs = adapter({ remove });
+    const fs = adapter({ remove, removeSecretTemps: vi.fn(async () => {}) });
     await expect(fs.delete('gone')).resolves.toBeUndefined();
     expect(remove).toHaveBeenCalledWith('gone');
   });
 
   it('delete resolves when the remove succeeds', async () => {
-    const fs = adapter({ remove: vi.fn(async () => ({ success: true })) });
+    const fs = adapter({
+      remove: vi.fn(async () => ({ success: true })),
+      removeSecretTemps: vi.fn(async () => {}),
+    });
     await expect(fs.delete('x')).resolves.toBeUndefined();
+  });
+
+  it('delete also removes what an interrupted secret write of the file left', async () => {
+    const removeSecretTemps = vi.fn(async () => {});
+    const fs = adapter({ remove: vi.fn(async () => ({ success: true })), removeSecretTemps });
+    await fs.delete('.switch/agents/a.json');
+    expect(removeSecretTemps).toHaveBeenCalledWith('.switch/agents/a.json');
+  });
+
+  it('delete throws when those copies cannot be removed', async () => {
+    const fs = adapter({
+      remove: vi.fn(async () => ({ success: true })),
+      removeSecretTemps: vi.fn(async () => {
+        throw new Error('Permission denied');
+      }),
+    });
+    await expect(fs.delete('.switch/agents/a.json')).rejects.toThrow(/Permission denied/);
+  });
+
+  it('protectSecret goes to the remote filesystem and returns what it found', async () => {
+    const protectSecret = vi.fn(async () => false);
+    const fs = adapter({ protectSecret });
+    expect(await fs.protectSecret('.switch/agents/a.json')).toBe(false);
+    expect(protectSecret).toHaveBeenCalledWith('.switch/agents/a.json');
   });
 
   it('delete throws (fails loud) when the file is there but cannot be removed', async () => {

@@ -18,6 +18,7 @@ function fakeFs(seed: Record<string, string>): PluginFs {
       files.delete(p);
       return Promise.resolve();
     },
+    protectSecret: (p) => Promise.resolve(files.has(p)),
     exists: (p) => Promise.resolve(files.has(p)),
     list: (dir) =>
       Promise.resolve(
@@ -359,22 +360,25 @@ describe('migrateAgentStorage', () => {
     expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(true);
   });
 
-  it('re-running after generation 3 rewrites existing credentials as a secret file, unchanged', async () => {
+  it('re-running after generation 3 protects existing credentials without rewriting them', async () => {
     h.completedGeneration.mockResolvedValueOnce(3);
     const ws = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
     const write = vi.spyOn(ws, 'write');
     h.state.workdir = ws;
 
     await migrateAgentStorage();
 
-    expect(write.mock.calls).toEqual([
-      ['.switch/agents/cc-hoot-main.json', credsJson('sw-1'), { secret: true }],
-    ]);
+    // A rewrite could undo a rename or endpoint change landing at the same
+    // moment; changing permissions alone cannot.
+    expect(protectSecret.mock.calls).toEqual([['.switch/agents/cc-hoot-main.json']]);
+    expect(write).not.toHaveBeenCalled();
+    expect(await ws.read('.switch/agents/cc-hoot-main.json')).toBe(credsJson('sw-1'));
     expect(h.readLaunchEnv).not.toHaveBeenCalled();
     expect(h.markComplete).toHaveBeenCalledTimes(1);
   });
 
-  it('writes no credentials for generation 4 when the agent has none', async () => {
+  it('latches generation 4 for an agent with no credentials to protect', async () => {
     h.completedGeneration.mockResolvedValueOnce(3);
     const ws = fakeFs({});
     const write = vi.spyOn(ws, 'write');
@@ -384,6 +388,17 @@ describe('migrateAgentStorage', () => {
 
     expect(write).not.toHaveBeenCalled();
     expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries next boot when credentials cannot be protected', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+    vi.spyOn(ws, 'protectSecret').mockRejectedValueOnce(new Error('Operation not permitted'));
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(h.markComplete).not.toHaveBeenCalled();
   });
 
   it('latches the marker after a clean pass', async () => {

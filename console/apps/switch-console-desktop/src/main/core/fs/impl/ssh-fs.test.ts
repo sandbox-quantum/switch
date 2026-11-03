@@ -135,17 +135,37 @@ describe('SshFileSystem.remove', () => {
   });
 });
 
-function makeSecretWriteFs(failures: { renameThrows?: Error } = {}) {
+/** What an SFTP server answers for a path that is not there. */
+const noSuchFile = () => Object.assign(new Error('No such file'), { code: 2 });
+
+function makeSecretFs(
+  options: { renameThrows?: Error; missing?: string[]; entries?: string[] } = {}
+) {
+  const missing = options.missing ?? [];
   const calls: unknown[][] = [];
   const handle = Buffer.from('handle');
   const step = (name: string) =>
     vi.fn((...args: unknown[]) => {
       const callback = args.pop() as (error?: Error) => void;
       calls.push([name, ...args]);
-      callback();
+      callback(missing.includes(args[0] as string) ? noSuchFile() : undefined);
     });
   const sftp = {
     on: vi.fn(),
+    readdir: vi.fn(
+      (
+        dir: string,
+        callback: (error: Error | undefined, list?: { filename: string }[]) => void
+      ) => {
+        calls.push(['readdir', dir]);
+        if (missing.includes(dir)) callback(noSuchFile());
+        else
+          callback(
+            undefined,
+            (options.entries ?? []).map((filename) => ({ filename }))
+          );
+      }
+    ),
     mkdir: vi.fn((dirPath: string, callback: (error?: Error) => void) => {
       calls.push(['mkdir', dirPath]);
       callback(new Error('File exists'));
@@ -166,10 +186,10 @@ function makeSecretWriteFs(failures: { renameThrows?: Error } = {}) {
     write: step('write'),
     close: step('close'),
     // ssh2 throws, rather than calling back, when the server lacks posix-rename.
-    ext_openssh_rename: failures.renameThrows
+    ext_openssh_rename: options.renameThrows
       ? vi.fn((from: string, to: string) => {
           calls.push(['rename', from, to]);
-          throw failures.renameThrows;
+          throw options.renameThrows;
         })
       : step('rename'),
     unlink: step('unlink'),
@@ -184,7 +204,7 @@ function makeSecretWriteFs(failures: { renameThrows?: Error } = {}) {
 
 describe('SshFileSystem.writeSecret', () => {
   it('writes a 0600 temporary file and renames it over the target, in a 0700 directory', async () => {
-    const { fs, calls, handle } = makeSecretWriteFs();
+    const { fs, calls, handle } = makeSecretFs();
 
     await fs.writeSecret('.switch/agents/a.json', 'token');
 
@@ -207,7 +227,7 @@ describe('SshFileSystem.writeSecret', () => {
   });
 
   it('removes the temporary file and fails when the server cannot rename over the target', async () => {
-    const { fs, calls } = makeSecretWriteFs({
+    const { fs, calls } = makeSecretFs({
       renameThrows: new Error('Server does not support this extended request'),
     });
 
@@ -220,12 +240,64 @@ describe('SshFileSystem.writeSecret', () => {
   });
 
   it('rejects a path escape before reaching SFTP', async () => {
-    const { fs, calls } = makeSecretWriteFs();
+    const { fs, calls } = makeSecretFs();
 
     await expect(fs.writeSecret('../outside.json', 'token')).rejects.toMatchObject({
       code: FileSystemErrorCodes.PATH_ESCAPE,
     });
     expect(calls).toEqual([]);
+  });
+});
+
+describe('SshFileSystem.protectSecret', () => {
+  it('makes an existing file 0600 and its directory 0700, writing nothing', async () => {
+    const { fs, calls } = makeSecretFs();
+
+    expect(await fs.protectSecret('.switch/agents/a.json')).toBe(true);
+
+    expect(calls).toEqual([
+      ['chmod', '/repo/.switch/agents/a.json', 0o600],
+      ['chmod', '/repo/.switch/agents', 0o700],
+    ]);
+  });
+
+  it('changes nothing and says so when there is no file', async () => {
+    const { fs, calls } = makeSecretFs({ missing: ['/repo/.switch/agents/a.json'] });
+
+    expect(await fs.protectSecret('.switch/agents/a.json')).toBe(false);
+
+    expect(calls).toEqual([['chmod', '/repo/.switch/agents/a.json', 0o600]]);
+  });
+});
+
+describe('SshFileSystem.removeSecretTemps', () => {
+  const uuid = '0b6f1d2e-3c4a-4b5d-8e9f-a0b1c2d3e4f5';
+
+  it('removes only the copies an interrupted secret write of the file left', async () => {
+    const { fs, calls } = makeSecretFs({
+      entries: ['a.json', `a.json.${uuid}`, 'a.json.bak', `a.json2.${uuid}`, `b.json.${uuid}`],
+    });
+
+    await fs.removeSecretTemps('.switch/agents/a.json');
+
+    expect(calls).toEqual([
+      ['readdir', '/repo/.switch/agents'],
+      ['unlink', `/repo/.switch/agents/a.json.${uuid}`],
+    ]);
+  });
+
+  it('resolves when the directory is not there', async () => {
+    const { fs, calls } = makeSecretFs({ missing: ['/repo/.switch/agents'] });
+
+    await expect(fs.removeSecretTemps('.switch/agents/a.json')).resolves.toBeUndefined();
+    expect(calls).toEqual([['readdir', '/repo/.switch/agents']]);
+  });
+
+  it('resolves when a copy is gone by the time it is removed', async () => {
+    const temporary = `/repo/.switch/agents/a.json.${uuid}`;
+    const { fs } = makeSecretFs({ entries: [`a.json.${uuid}`], missing: [temporary] });
+
+    await expect(fs.removeSecretTemps('.switch/agents/a.json')).resolves.toBeUndefined();
   });
 });
 

@@ -530,7 +530,12 @@ pnpm run lint
     `PluginFs.write` with `{ secret: true }` — `writeSecretFile` in
     `src/main/core/providers/plugin-fs.ts` locally, `SshFileSystem.writeSecret`
     over SFTP. A plain write takes the umask, typically leaving the token
-    readable by every account on the machine.
+    readable by every account on the machine. To tighten a file already there,
+    use `PluginFs.protectSecret`, which changes permissions only; rewriting the
+    content to the same end can undo a concurrent write. A secret write that is
+    cut off leaves its temporary `<file>.<uuid>` copy behind, so
+    `PluginFs.delete` removes those too: delete the file through it, or through
+    `deleteFiles` on a host, never with a bare `rm`.
   - **Where Switch Console writes the settings file, Claude Code makes it live.**
     Its `env` block becomes real process environment for everything a session
     spawns, so keep the agent id in it in step with `.switch/agents/`; changing

@@ -56,6 +56,10 @@ export function createRemoteHomePluginFs(ctx: IExecutionContext): PluginFs {
       ]);
     },
 
+    async protectSecret(path: string): Promise<boolean> {
+      throw new Error(`remote home fs: cannot protect ${path} as a secret file`);
+    },
+
     async delete(path: string): Promise<void> {
       await ctx.exec('sh', ['-c', 'rm -f "$HOME/$1"', 'sh', checked(path)]);
     },

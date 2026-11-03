@@ -47,8 +47,13 @@ export function createRemotePluginFs(fs: SshFileSystem): PluginFs {
       }
     },
 
+    async protectSecret(path: string): Promise<boolean> {
+      return fs.protectSecret(path);
+    },
+
     async delete(path: string): Promise<void> {
       assertRemoved(path, await fs.remove(path));
+      await fs.removeSecretTemps(path);
     },
 
     async exists(path: string): Promise<boolean> {

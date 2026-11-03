@@ -1,12 +1,23 @@
-import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { replaceFile } from '@switch-console/agent-providers';
 import type { PluginFs, PluginFsWriteOptions } from '@switch-console/core/agents/plugins';
+import { isSecretTempOf, secretTempPath } from '@main/core/fs/secret-temp';
 import {
   restrictWindowsDirectoryToOwner,
   restrictWindowsFileToOwner,
 } from '@main/core/fs/windows-owner-acl';
+
+const isAbsent = (error: unknown) => {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+};
+
+/** `chmod(dir, 0o700)`, or what stands in for it on Windows, where a mode does nothing for a directory. */
+async function restrictSecretDirectory(dir: string): Promise<void> {
+  if (process.platform === 'win32') await restrictWindowsDirectoryToOwner(dir);
+  else await fs.chmod(dir, 0o700);
+}
 
 /**
  * Write `content` to `abs` readable by its owner alone, in a directory only its
@@ -18,11 +29,9 @@ import {
 export async function writeSecretFile(abs: string, content: string): Promise<void> {
   const dir = dirname(abs);
   await fs.mkdir(dir, { recursive: true });
-  // mkdir's mode reaches only a directory it creates, not one that was already
-  // there; on Windows a mode does nothing for a directory at all.
-  if (process.platform === 'win32') await restrictWindowsDirectoryToOwner(dir);
-  else await fs.chmod(dir, 0o700);
-  const temporary = `${abs}.${randomUUID()}`;
+  // mkdir's mode reaches only a directory it creates, not one that was already there.
+  await restrictSecretDirectory(dir);
+  const temporary = secretTempPath(abs);
   const file = await fs.open(temporary, 'wx', 0o600);
   try {
     try {
@@ -36,6 +45,38 @@ export async function writeSecretFile(abs: string, content: string): Promise<voi
   } catch (error) {
     await fs.rm(temporary, { force: true });
     throw error;
+  }
+}
+
+/**
+ * Give an existing file at `abs` the permissions {@link writeSecretFile} would,
+ * without touching its content. Resolves false, changing nothing, when there is
+ * no file.
+ */
+export async function protectSecretFile(abs: string): Promise<boolean> {
+  try {
+    await fs.chmod(abs, 0o600);
+  } catch (error) {
+    if (isAbsent(error)) return false;
+    throw error;
+  }
+  await restrictSecretDirectory(dirname(abs));
+  if (process.platform === 'win32') await restrictWindowsFileToOwner(abs);
+  return true;
+}
+
+/** Remove the temporary copies an interrupted {@link writeSecretFile} of `abs` left beside it. */
+async function removeSecretTemps(abs: string): Promise<void> {
+  const dir = dirname(abs);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch (error) {
+    if (isAbsent(error)) return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (isSecretTempOf(entry, basename(abs))) await fs.rm(join(dir, entry), { force: true });
   }
 }
 
@@ -81,6 +122,10 @@ export function createPluginFs(root: string): PluginFs {
       await fs.writeFile(abs, content, 'utf-8');
     },
 
+    async protectSecret(path: string): Promise<boolean> {
+      return protectSecretFile(resolveSafe(path));
+    },
+
     async delete(path: string): Promise<void> {
       const abs = resolveSafe(path);
       try {
@@ -90,11 +135,11 @@ export function createPluginFs(root: string): PluginFs {
         // A permission error or an I/O failure must propagate: delete is how an
         // agent's Switch token is revoked from disk, and a silent no-op there
         // reports a credential as destroyed while it is still readable.
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-          throw error;
-        }
+        if (!isAbsent(error)) throw error;
       }
+      // Whether or not the file was there: a first write cut off before its
+      // rename leaves only the copy.
+      await removeSecretTemps(abs);
     },
 
     async exists(path: string): Promise<boolean> {

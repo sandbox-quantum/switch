@@ -3,9 +3,9 @@
  * Uses SFTP over SSH for remote filesystem operations
  */
 
-import { randomUUID } from 'node:crypto';
 import { posix as pathPosix } from 'node:path';
 import type { SFTPWrapper } from 'ssh2';
+import { isSecretTempOf, secretTempPath } from '@main/core/fs/secret-temp';
 import { buildRemoteShellCommand } from '@main/core/ssh/lifecycle/remote-shell-profile';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { log } from '@main/lib/logger';
@@ -50,6 +50,9 @@ const MAX_READ_SIZE = 100 * 1024 * 1024;
  * Default max bytes for read operations
  */
 const DEFAULT_MAX_BYTES = 200 * 1024;
+
+const isNotFound = (error: unknown) =>
+  error instanceof FileSystemError && error.code === FileSystemErrorCodes.NOT_FOUND;
 
 function fileEntryMetadataChanged(prev: FileEntry, next: FileEntry): boolean {
   return (
@@ -369,17 +372,13 @@ export class SshFileSystem implements FileSystemProvider {
   async writeSecret(path: string, content: string): Promise<void> {
     const fullPath = this.resolveRemotePath(path);
     const sftp = await this.getSftp();
-    const done = (target: string, run: (callback: (err?: Error | null) => void) => void) =>
-      new Promise<void>((resolve, reject) =>
-        run((err) => (err ? reject(this.mapSftpError(err, target)) : resolve()))
-      );
 
     const dir = pathPosix.dirname(fullPath);
     await this.ensureRemoteDir(sftp, dir);
     // A directory that already existed keeps its mode until it is changed here.
-    await done(dir, (cb) => sftp.chmod(dir, 0o700, cb));
+    await this.sftpDone(dir, (cb) => sftp.chmod(dir, 0o700, cb));
 
-    const temporary = `${fullPath}.${randomUUID()}`;
+    const temporary = secretTempPath(fullPath);
     const handle = await new Promise<Buffer>((resolve, reject) =>
       sftp.open(temporary, 'wx', { mode: 0o600 }, (err, opened) =>
         err ? reject(this.mapSftpError(err, temporary)) : resolve(opened)
@@ -388,18 +387,75 @@ export class SshFileSystem implements FileSystemProvider {
     try {
       try {
         // Not every server applies the mode it is given at open.
-        await done(temporary, (cb) => sftp.fchmod(handle, 0o600, cb));
+        await this.sftpDone(temporary, (cb) => sftp.fchmod(handle, 0o600, cb));
         const buffer = Buffer.from(content, 'utf-8');
         if (buffer.length > 0)
-          await done(temporary, (cb) => sftp.write(handle, buffer, 0, buffer.length, 0, cb));
+          await this.sftpDone(temporary, (cb) =>
+            sftp.write(handle, buffer, 0, buffer.length, 0, cb)
+          );
       } finally {
-        await done(temporary, (cb) => sftp.close(handle, cb));
+        await this.sftpDone(temporary, (cb) => sftp.close(handle, cb));
       }
-      await done(fullPath, (cb) => sftp.ext_openssh_rename(temporary, fullPath, cb));
+      await this.sftpDone(fullPath, (cb) => sftp.ext_openssh_rename(temporary, fullPath, cb));
     } catch (error) {
-      await done(temporary, (cb) => sftp.unlink(temporary, cb)).catch(() => {});
+      await this.sftpDone(temporary, (cb) => sftp.unlink(temporary, cb)).catch(() => {});
       throw error;
     }
+  }
+
+  /**
+   * Give an existing file the permissions {@link writeSecret} would (`0600`, in
+   * a `0700` directory) without touching its content. Resolves false, changing
+   * nothing, when there is no file.
+   */
+  async protectSecret(path: string): Promise<boolean> {
+    const fullPath = this.resolveRemotePath(path);
+    const sftp = await this.getSftp();
+    try {
+      await this.sftpDone(fullPath, (cb) => sftp.chmod(fullPath, 0o600, cb));
+    } catch (error) {
+      if (isNotFound(error)) return false;
+      throw error;
+    }
+    const dir = pathPosix.dirname(fullPath);
+    await this.sftpDone(dir, (cb) => sftp.chmod(dir, 0o700, cb));
+    return true;
+  }
+
+  /** Remove the temporary copies an interrupted {@link writeSecret} of `path` left beside it. */
+  async removeSecretTemps(path: string): Promise<void> {
+    const fullPath = this.resolveRemotePath(path);
+    const sftp = await this.getSftp();
+    const dir = pathPosix.dirname(fullPath);
+    let names: string[];
+    try {
+      names = await new Promise<string[]>((resolve, reject) =>
+        sftp.readdir(dir, (err, list) =>
+          err ? reject(this.mapSftpError(err, dir)) : resolve(list.map((item) => item.filename))
+        )
+      );
+    } catch (error) {
+      if (isNotFound(error)) return;
+      throw error;
+    }
+    for (const name of names) {
+      if (!isSecretTempOf(name, pathPosix.basename(fullPath))) continue;
+      const temporary = `${dir}/${name}`;
+      // Gone already is fine: a write in flight may have just renamed it.
+      await this.sftpDone(temporary, (cb) => sftp.unlink(temporary, cb)).catch((error) => {
+        if (!isNotFound(error)) throw error;
+      });
+    }
+  }
+
+  /** Run one callback-style SFTP call, rejecting with its error mapped to a {@link FileSystemError}. */
+  private sftpDone(
+    target: string,
+    run: (callback: (err?: Error | null) => void) => void
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) =>
+      run((err) => (err ? reject(this.mapSftpError(err, target)) : resolve()))
+    );
   }
 
   /**

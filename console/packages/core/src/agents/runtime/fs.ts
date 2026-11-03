@@ -22,6 +22,18 @@ export interface PluginFs {
    * write the file with ordinary permissions.
    */
   write(path: string, content: string, options?: PluginFsWriteOptions): Promise<void>;
+  /**
+   * Gives an existing file the permissions a `secret` write would, without
+   * reading or rewriting it, so it cannot undo a concurrent write. Resolves
+   * false, changing nothing, when there is no file. An implementation that
+   * cannot do this must throw.
+   */
+  protectSecret(path: string): Promise<boolean>;
+  /**
+   * Also removes any temporary copy an interrupted `secret` write of the file
+   * left beside it. Resolves when the file is already absent; any other
+   * failure throws.
+   */
   delete(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   list(path: string): Promise<string[]>;

@@ -34,6 +34,15 @@ describe('createRemoteHomePluginFs', () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
+  it('refuses to protect a secret file without running anything on the host', async () => {
+    const { ctx, exec } = makeCtx(async () => ({ stdout: '' }));
+
+    await expect(createRemoteHomePluginFs(ctx).protectSecret('.codex/token.json')).rejects.toThrow(
+      /secret/
+    );
+    expect(exec).not.toHaveBeenCalled();
+  });
+
   it('decodes the file content the far side base64-encoded', async () => {
     const content = 'a = "b"\n# ünicode\n';
     const { ctx } = makeCtx(async () => ({

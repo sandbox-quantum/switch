@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SECRET_TEMP_SUFFIX } from '@main/core/fs/secret-temp';
 import { WATCHER_ROOT } from '@main/core/sdk-host/state-roots';
 import type { MachineScript } from './session-handoff';
 
@@ -100,10 +101,28 @@ for (const file of JSON.parse(process.argv[1])) {
 console.log(JSON.stringify(out));
 `;
 
-/** Removes several files on a host in one command. Takes a JSON array of absolute paths. */
+/**
+ * Removes several credentials files on a host in one command, with any
+ * temporary copy an interrupted secret write of one left beside it. Takes a
+ * JSON array of absolute paths.
+ */
 export const DELETE_FILES_SCRIPT = String.raw`
 const fs = require('node:fs');
-for (const file of JSON.parse(process.argv[1])) fs.rmSync(file, { force: true });
+const path = require('node:path');
+const temporary = new RegExp(${JSON.stringify(SECRET_TEMP_SUFFIX)});
+for (const file of JSON.parse(process.argv[1])) {
+  fs.rmSync(file, { force: true });
+  let entries = [];
+  try {
+    entries = fs.readdirSync(path.dirname(file));
+  } catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+  }
+  const name = path.basename(file);
+  for (const entry of entries)
+    if (entry.startsWith(name) && temporary.test(entry.slice(name.length)))
+      fs.rmSync(path.join(path.dirname(file), entry), { force: true });
+}
 console.log('{}');
 `;
 
