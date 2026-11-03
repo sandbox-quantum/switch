@@ -50,7 +50,15 @@ class AuditAction(StrEnum):
     BRIDGE_UPDATED = "collaboration_bridge.updated"
     BRIDGE_DEFAULT_SET = "collaboration_bridge.default_set"
     BRIDGE_DELETED = "collaboration_bridge.deleted"
+    # A claim took effect. Once links needed confirming from the account
+    # (CHOO-3881), that is when the account confirmed one, not when someone
+    # asked for it (`BRIDGE_IDENTITY_LINK_REQUESTED`).
     BRIDGE_IDENTITY_CLAIMED = "collaboration_bridge.identity_claimed"
+    BRIDGE_IDENTITY_LINK_REQUESTED = "collaboration_bridge.identity_link_requested"
+    BRIDGE_IDENTITY_LINK_CANCELLED = "collaboration_bridge.identity_link_cancelled"
+    BRIDGE_IDENTITY_CONFIRMATION_REQUIRED = (
+        "collaboration_bridge.identity_confirmation_required"
+    )
     BRIDGE_IDENTITY_RELEASED = "collaboration_bridge.identity_released"
     MESSAGING_INSTALL_STARTED = "messaging_install.started"
     MESSAGING_INSTALL_CONNECTED = "messaging_install.connected"
@@ -63,6 +71,7 @@ class AuditAction(StrEnum):
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
+    WORKSPACE_SERVICE_CLEARED = "workspace_service.cleared"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -70,6 +79,10 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_CREATED = "organization.workspace_created"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
+    CONNECTOR_APP_SAVED = "organization.connector_app_saved"
+    CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
+    SERVICE_SET = "organization.service_set"
+    SERVICE_CLEARED = "organization.service_cleared"
 
 
 class ServerAuditAction(StrEnum):

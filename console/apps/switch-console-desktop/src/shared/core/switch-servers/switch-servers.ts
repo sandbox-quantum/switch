@@ -776,6 +776,10 @@ export type RemoteExternalUser = {
 export type IdentityClaimant = {
   userId: string;
   userName: string;
+  /** False for a link made before links had to be confirmed. It still counts;
+   * its owner is asked to confirm it. True from a server that predates
+   * confirming, where every link counts the same. */
+  verified: boolean;
 };
 
 /**
@@ -839,16 +843,25 @@ export type ClaimIdentityParams = {
  * Outcome of claiming an identity. `bridge-unavailable` is the one failure a
  * user can act on: an account Switch has never seen has to be provisioned on
  * the platform's side, which a stopped bridge cannot do.
+ *
+ * `pending` is a link waiting for the code to be posted from the account
+ * (CHOO-3881). `code` is null only if the server issued none, in which case
+ * asking for one is the way on. `alreadyLinked` is set when the caller already
+ * held an unconfirmed link to the account, which keeps working meanwhile —
+ * otherwise the link counts for nothing until confirmed. A server that predates
+ * confirming links answers `claimed` straight away.
  */
 export type ClaimIdentityResult =
   | { kind: 'claimed'; identity: LinkedIdentity }
+  | { kind: 'pending'; pending: PendingIdentity; code: LinkCode | null; alreadyLinked: boolean }
   | { kind: 'bridge-unavailable'; message: string }
   | { kind: 'unauthenticated' }
   | { kind: 'error'; message: string };
 
 /**
- * One messaging account the signed-in user has claimed (mirrors the gateway
- * `LinkedIdentity`).
+ * One messaging account linked to the signed-in user (mirrors the gateway
+ * `LinkedIdentity`). Only links that count are listed; one still waiting for
+ * its code is a {@link PendingIdentity}.
  *
  * An agent whose addressing policy names its owner is only reachable by that
  * owner over a bridge that appears in this list — which is why the app reads it
@@ -862,7 +875,88 @@ export type LinkedIdentity = {
   bridgeType: string;
   externalUserId: string;
   externalUsername: string;
+  /** False for a link made before links had to be confirmed: it works, and its
+   * owner is asked to confirm it with a code. */
+  verified: boolean;
 };
+
+/**
+ * A messaging account waiting to confirm a link to the signed-in user (mirrors
+ * the gateway `PendingIdentity`). It counts for nothing until a code is posted
+ * from the account.
+ */
+export type PendingIdentity = {
+  /** The `ExternalUser` row id; what asking for a code and cancelling address. */
+  id: string;
+  bridgeId: string;
+  bridgeDisplayName: string;
+  bridgeType: string;
+  externalUserId: string;
+  externalUsername: string;
+  /** Who started the link, when it was someone else (an admin). */
+  requestedByName: string | null;
+  /** When the last code issued stops working; null when none has been. */
+  codeExpiresAt: string | null;
+};
+
+/**
+ * A one-time code that confirms a link when posted from the account (mirrors
+ * the gateway `LinkCode`). The server keeps no copy, so a lost one is replaced
+ * rather than shown again.
+ */
+export type LinkCode = {
+  code: string;
+  /** ISO timestamp, on the server's clock. */
+  expiresAt: string;
+  /** How long the code lasts, measured when it was issued. Counting from when
+   * it arrived is what keeps a wrong clock on this machine from showing a fresh
+   * code as expired. Null from a server that does not send it. */
+  expiresInSeconds: number | null;
+  /** How to post it on this platform, in Markdown — it differs per platform. */
+  instructions: string;
+};
+
+/**
+ * Why a request about confirming links did nothing. `refused` is the server
+ * declining in its own words: there is nothing to act on — the link was
+ * confirmed or cancelled meanwhile — or the caller may not do it.
+ */
+export type LinkRequestFailure =
+  | { kind: 'refused'; message: string }
+  | { kind: 'unauthenticated' }
+  | { kind: 'error'; message: string };
+
+/** Outcome of asking for a fresh link code. */
+export type IssueLinkCodeResult = { kind: 'issued'; code: LinkCode } | LinkRequestFailure;
+
+/**
+ * Outcome of withdrawing a confirmation that is waiting for its code. Only the
+ * request goes: a link that already works stays.
+ */
+export type CancelLinkRequestResult = { kind: 'cancelled' } | LinkRequestFailure;
+
+/**
+ * A link made before links had to be confirmed, as a workspace admin sees it
+ * (mirrors the gateway `UnconfirmedLink`). It counts until its owner confirms
+ * it, or until an admin requires that they do.
+ */
+export type UnconfirmedLink = {
+  /** The `ExternalUser` row id. */
+  id: string;
+  externalUserId: string;
+  externalUsername: string;
+  /** The Switch user who holds the link. */
+  userId: string;
+  userName: string;
+};
+
+/**
+ * Outcome of requiring confirmation of a messaging app's older links. `moved`
+ * is how many became links waiting for their code; a second run moves none.
+ */
+export type RequireLinkConfirmationResult =
+  | { kind: 'required'; moved: number }
+  | LinkRequestFailure;
 
 /**
  * Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)

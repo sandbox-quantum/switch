@@ -82,7 +82,13 @@ class _FakeListener:
     def __init__(self) -> None:
         self.wakers: dict[str, set[Callable[[str], Awaitable[None]]]] = {}
 
-    def subscribe(self, room_id: str, waker: Callable[[str], Awaitable[None]]) -> None:
+    def subscribe(
+        self,
+        room_id: str,
+        waker: Callable[[str], Awaitable[None]],
+        *,
+        types: frozenset[str] | None = None,
+    ) -> None:
         self.wakers.setdefault(room_id, set()).add(waker)
 
     def unsubscribe(

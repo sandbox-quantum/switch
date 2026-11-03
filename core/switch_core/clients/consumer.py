@@ -50,6 +50,11 @@ SYNC_BACKOFF_CAP = 60.0
 
 
 class Consumer[ActorT: Actor[Any]]:
+    # The types of row this consumer acts on, or None for every row. One that
+    # names them is woken only for those and reads past the rest
+    # (`MessageTransport.receive_forever`).
+    ROW_TYPES: frozenset[str] | None = None
+
     def __init__(self, *, actor: ActorT) -> None:
         self.actor = actor
         # Rooms this consumer has already announced its actor's arrival in.
@@ -117,7 +122,9 @@ class Consumer[ActorT: Actor[Any]]:
         retries = 0
         while self._running:
             try:
-                await self._transport.receive_forever(progress)
+                await self._transport.receive_forever(
+                    progress, row_types=self.ROW_TYPES
+                )
                 retries = 0
             except Exception:
                 if not self._running:

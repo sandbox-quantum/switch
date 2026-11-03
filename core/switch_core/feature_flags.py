@@ -80,6 +80,13 @@ GROUP_CHATS = "group_chats"
 # ignores the fields and makes an internal chat instead.
 BUDDY_SLACK_HANDOFF = "buddy_slack_handoff"
 
+# Connector apps per organization: a workspace signs in to GitHub and the
+# static OAuth services through the app its organization registered, where
+# it registered one, and through the server's otherwise
+# (`connections/organization_apps.py`). With it off every workspace uses the
+# server's apps, as before organizations.
+ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -93,5 +100,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         SWITCH_BUDDY,
         GROUP_CHATS,
         BUDDY_SLACK_HANDOFF,
+        ORGANIZATION_CONNECTOR_APPS,
     }
 )

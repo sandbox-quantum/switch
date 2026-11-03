@@ -7,7 +7,10 @@
       "report_within_s": 60,
       "connection_id": "00000000-0000-4000-8000-0000000000e1",
       "generation": 3141592653,
-      "heartbeat_interval_s": 2.0
+      "heartbeat_interval_s": 2.0,
+      "calls": {
+        "max_in_flight": 64
+      }
     }
   },
   {
@@ -153,6 +156,16 @@
     "data": {
       "code": "taken_over",
       "reason": "another stream attached to this connection and took it over"
+    }
+  },
+  {
+    "event": "call.result",
+    "data": {
+      "id": 1,
+      "status": 404,
+      "body": {
+        "detail": "unknown operation 'no_such_operation'; expected one of: post_message, read_context"
+      }
     }
   }
 ]

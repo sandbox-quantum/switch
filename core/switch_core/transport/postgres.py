@@ -41,8 +41,10 @@ Writing needs nothing of the kind: any process may write as any client.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -173,6 +175,81 @@ MEMBERSHIP_EVENT_TYPE = "m.room.member"
 # before what is left of it is cancelled.
 STOP_GRACE_SECONDS = 5.0
 
+# How often a reader asks which of its rooms have a row past where it read
+# (`PostgresTransport._recheck_forever`).
+RECHECK_SECONDS = 30.0
+
+
+class RoomIds:
+    """The room id behind each transport room id a process's transports
+    have resolved, by tenant, shared between them.
+
+    Every client looks up a room before its first write there, and with
+    each client keeping its own answers, a deployment of thousands of agents
+    behind a load balancer read a room for nearly every message: an agent
+    writes to a room rarely, and seldom twice through the same process. A
+    room's transport id never changes, so this only grows and never goes
+    stale. Keyed by tenant as well, since `rooms.matrix_room_id` is unique per
+    tenant, not globally.
+
+    The first time a transport of a tenant misses, every open room of the
+    tenant is read at once (`TenantRoomIds.read_all_once`), so a process does
+    not read thousands of rooms one at a time as its clients first write to
+    them. A room created after that is read on its own, once.
+    """
+
+    def __init__(self) -> None:
+        self._ids: dict[tuple[str, str], str] = {}
+        # The tenants whose open rooms were read in full, or are being read,
+        # set once the read has ended.
+        self._read: dict[str, asyncio.Event] = {}
+
+    def of_tenant(self, tenant_id: str) -> TenantRoomIds:
+        return TenantRoomIds(self._ids, self._read, tenant_id)
+
+
+class TenantRoomIds:
+    """`RoomIds` as the transports of one tenant read and write it."""
+
+    __slots__ = ("_ids", "_read", "_tenant_id")
+
+    def __init__(
+        self,
+        ids: dict[tuple[str, str], str],
+        read: dict[str, asyncio.Event],
+        tenant_id: str,
+    ) -> None:
+        self._ids = ids
+        self._read = read
+        self._tenant_id = tenant_id
+
+    def get(self, transport_room_id: str) -> str | None:
+        return self._ids.get((self._tenant_id, transport_room_id))
+
+    def __setitem__(self, transport_room_id: str, room_id: str) -> None:
+        self._ids[(self._tenant_id, transport_room_id)] = room_id
+
+    async def read_all_once(
+        self, read: Callable[[], Awaitable[list[tuple[str, str]]]]
+    ) -> None:
+        """Read every open room of the tenant with `read`, the first time
+        this is asked in the process. A caller asking while that read is under
+        way waits for it, holding nothing; one asking after it returns at
+        once. A read that fails is tried again by the next caller."""
+        done = self._read.get(self._tenant_id)
+        if done is not None:
+            await done.wait()
+            return
+        done = self._read[self._tenant_id] = asyncio.Event()
+        try:
+            for transport_room_id, room_id in await read():
+                self._ids[(self._tenant_id, transport_room_id)] = room_id
+        except BaseException:
+            del self._read[self._tenant_id]
+            raise
+        finally:
+            done.set()
+
 
 class PostgresTransport:
     """Carries a room's events in the `messages` table.
@@ -200,6 +277,7 @@ class PostgresTransport:
         room_cache: RoomDeliveryCache,
         message_observer: ParticipantMessageObserver,
         router: MessageRouter,
+        room_ids: RoomIds | None = None,
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
@@ -280,6 +358,9 @@ class PostgresTransport:
         # been recorded through it.
         self._progress: DeliveryProgress | None = None
         self._recorded: dict[str, int] = {}
+        # The row types the current receive is for, or None for every row
+        # (`receive_forever`).
+        self._row_types: frozenset[str] | None = None
         # Rooms this client has been told moved but has not read yet, and the
         # signal its delivery loop waits on. A set because a room that moved
         # twice while the loop was busy is still one read.
@@ -287,8 +368,11 @@ class PostgresTransport:
         self._wake = asyncio.Event()
         self._delivering = False
         # A room's transport id never changes, so this only grows and never
-        # goes stale.
-        self._room_ids: dict[str, str] = {}
+        # goes stale. Shared with every other transport of the tenant in the
+        # process, so a room one client found costs the next client no read.
+        self._room_ids = (room_ids if room_ids is not None else RoomIds()).of_tenant(
+            tenant_id
+        )
 
     # ── Session ───────────────────────────────────────────────────────────────
 
@@ -304,17 +388,27 @@ class PostgresTransport:
     def register_handlers(self, handlers: TransportHandlers) -> None:
         self._handlers = handlers
 
-    async def receive_forever(self, progress: DeliveryProgress) -> None:
+    async def receive_forever(
+        self,
+        progress: DeliveryProgress,
+        *,
+        row_types: frozenset[str] | None = None,
+    ) -> None:
         """Deliver the rows written to this client's rooms, until closed.
 
         Each room is read from where `progress` says, and progress is recorded
         through it as rows are handled. Ending finishes the row in hand first
         and records it, so a reader that resumes from the record neither
         repeats nor skips it.
+
+        With `row_types`, only rows of those types: the client is woken only
+        when one is written and reads past the rest, so a reader that acts on
+        one kind of row costs nothing for every other row of every room.
         """
         self._closed = asyncio.Event()
         self._stopping = False
         self._progress = progress
+        self._row_types = row_types
         # Before the rooms are read, not after they are subscribed: reading
         # them and watching each is several round trips, and a removal rung
         # during those has no membership row for the caller to fall back to.
@@ -328,6 +422,7 @@ class PostgresTransport:
         self._receiving_event.set()
         try:
             delivery = asyncio.create_task(self._deliver_forever())
+            recheck = asyncio.create_task(self._recheck_forever())
             try:
                 async with self._reading_rooms:
                     rooms = await self.joined_rooms()
@@ -344,6 +439,9 @@ class PostgresTransport:
                     await self._watch_joined(rooms)
                 await self._closed.wait()
             finally:
+                recheck.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await recheck
                 await self._finish(delivery)
         finally:
             self._receiving = False
@@ -357,6 +455,46 @@ class PostgresTransport:
             self._unwatch_all()
             self._progress = None
             self._recorded.clear()
+
+    async def _recheck_forever(self) -> None:
+        """Every `RECHECK_SECONDS`, wake the rooms with a row past where this
+        client read, found in one query.
+
+        The process that writes a room's row announces it after its commit
+        (`announcer.py`), and one that died between the two announced
+        nothing: without this, the row would wait for the room's next one.
+        A wake costs a read from the cursor, so a room woken for a row its
+        announcement was about to bring reads it a moment early.
+        """
+        with no_tenant():
+            while not self._stopping:
+                await asyncio.sleep(RECHECK_SECONDS)
+                cursors = {
+                    room_id: cursor
+                    for room_id, cursor in self._cursors.items()
+                    if room_id in self._watching
+                }
+                if not cursors:
+                    continue
+                try:
+                    async with tenant_session(
+                        self._session_factory, self.tenant_id
+                    ) as session:
+                        moved = await self._message_store.rooms_past(
+                            session, cursors, types=self._row_types
+                        )
+                except Exception:
+                    logger.warning(
+                        "Client %s could not check its rooms for rows it was "
+                        "not told of; trying again in %.0fs",
+                        self.user_id,
+                        RECHECK_SECONDS,
+                        exc_info=True,
+                    )
+                    continue
+                for room_id in moved:
+                    if room_id in self._watching:
+                        self._mark_pending(room_id)
 
     async def _finish(self, delivery: asyncio.Task[None]) -> None:
         """End the delivery loop after the row in hand, or cancel it once
@@ -650,7 +788,9 @@ class PostgresTransport:
                     )
                 else:
                     seq = (await progress.resume(session, [room_id])).get(room_id)
-                head = await self._message_store.head_seq(session, room_id)
+                head = await self._message_store.head_seq(
+                    session, room_id, types=self._row_types
+                )
         except Exception:
             # A claim left behind would make every later `_watch` return
             # early on a room nothing is subscribed to.
@@ -679,8 +819,10 @@ class PostgresTransport:
         says the client joined at `joined_at`."""
         self._cursors[room_id] = seq
         self._recorded[room_id] = seq
-        self._room_cache.attach(self.tenant_id, room_id, self)
-        self._listener.subscribe(room_id, self._on_room_advanced)
+        if self._row_types is None:
+            # A reader of some types reads its own rows (`_drain_room`).
+            self._room_cache.attach(self.tenant_id, room_id, self)
+        self._listener.subscribe(room_id, self._on_room_advanced, types=self._row_types)
         self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
         self._joined_at[room_id] = joined_at
 
@@ -722,7 +864,9 @@ class PostgresTransport:
                     session, self.client_id, list(claimed)
                 )
                 places = await progress.resume(session, members)
-                heads = await self._message_store.head_seqs(session, list(members))
+                heads = await self._message_store.head_seqs(
+                    session, list(members), types=self._row_types
+                )
         except Exception:
             for room_id, transport_room_id in claimed.items():
                 self._release_claim(room_id, transport_room_id)
@@ -882,9 +1026,12 @@ class PostgresTransport:
                 cursor = self._cursors.get(room_id)
                 if cursor is None or room_id not in self._watching:
                     return
-                rows, done = await self._read_shared_page(
-                    room_id, tenant_id, cursor, woken_at
-                )
+                if self._row_types is None:
+                    rows, done = await self._read_shared_page(
+                        room_id, tenant_id, cursor, woken_at
+                    )
+                else:
+                    rows, done = await self._read_page(room_id, tenant_id, cursor)
                 if self._cursors.get(room_id) != cursor:
                     # Removed and put back while waiting on the room's
                     # shared read: these rows are from the old
@@ -913,6 +1060,7 @@ class PostgresTransport:
                 room_id,
                 after_seq=cursor,
                 limit=DELIVERY_PAGE,
+                types=self._row_types,
             )
             attachments = await self._message_store.attachments_for(
                 session, [row.id for row in rows]
@@ -1417,9 +1565,19 @@ class PostgresTransport:
         cached = self._room_ids.get(transport_room_id)
         if cached is not None:
             return cached, tenant_id
+        await self._room_ids.read_all_once(self._open_rooms)
+        cached = self._room_ids.get(transport_room_id)
+        if cached is not None:
+            return cached, tenant_id
         async with tenant_session(self._session_factory, tenant_id) as session:
             room_id = await self._resolve_room(session, transport_room_id)
         return room_id, tenant_id
+
+    async def _open_rooms(self) -> list[tuple[str, str]]:
+        async with tenant_session(self._session_factory, self.tenant_id) as session:
+            return await self._room_store.transport_ids_of_open_rooms(
+                session, self.tenant_id
+            )
 
 
 def _now_ms() -> int:
