@@ -1385,6 +1385,21 @@ class ServiceBroker:
             source=choice.source,
         )
 
+    def connection_status(
+        self, standing: ServiceStanding, connection: ServiceConnection | None
+    ) -> str:
+        """The connection's status, as a person or their agent acts on it: one
+        made through an app this server has since replaced, or granted other
+        scopes than this server now asks for, needs reconnecting before anyone
+        uses it and finds out."""
+        if connection is None:
+            return "not_connected"
+        if connection.status == "active" and (
+            standing.client_replaced(connection) or self.scopes_changed(connection)
+        ):
+            return "needs_reauthorization"
+        return connection.status
+
     def scopes_changed(self, connection: ServiceConnection) -> bool:
         """Whether `connection` was granted other scopes than a sign-in asks
         for on this server now, so it must reconnect."""

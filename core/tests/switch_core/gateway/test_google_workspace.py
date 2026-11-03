@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import secrets
 from datetime import timedelta
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -17,6 +18,9 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.operations.my_context import (
+    _services as my_context_services,
+)
 from switch_core.connections.adapters import ConnectionSecret
 from switch_core.connections.adapters.oauth import OAuthAdapter, OAuthClientCredentials
 from switch_core.connections.broker import (
@@ -34,7 +38,8 @@ from switch_core.connections.loader import (
 from switch_core.connections.oauth_clients import LOOPBACK_CALLBACK_PATH
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.connections.sign_in_flows import SignInFlows
-from switch_core.db.models import ServiceConnection, User
+from switch_core.db.models import TENANT_ZERO_ID, ServiceConnection, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.service_connections import (
@@ -454,6 +459,29 @@ class TestTheProfileChanging:
             "Reconnect Google Workspace under Settings, Connections first."
         )
         assert later.google.token_requests == []
+
+    async def test_an_agent_reads_a_connection_out_of_step_as_needing_reconnecting(
+        self, session_factory
+    ) -> None:
+        """`get_my_context` tells an agent what its owner's Connections page
+        says, so it does not offer a service that will refuse it."""
+        world = _world(session_factory, catalog=CATALOG)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+
+        later = _world(session_factory, catalog=DRIVE_FILE)
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            services = await my_context_services(
+                session,
+                SimpleNamespace(service_broker=later.broker),
+                {SERVICE: connection},
+                [],
+                {},
+            )
+        [google] = [entry for entry in services if entry["slug"] == SERVICE]
+        assert google["connection"] == "needs_reauthorization"
 
     @pytest.mark.parametrize(
         ("catalog", "unticked"),

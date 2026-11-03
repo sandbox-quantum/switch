@@ -29,6 +29,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     Agent,
     MessagingInstall,
+    ServiceConnection,
     Tenant,
     TenantMember,
     User,
@@ -166,7 +167,7 @@ async def get_my_context() -> dict[str, Any]:
             )
         )
         connections = {
-            connection.service: connection.status
+            connection.service: connection
             for connection in await _CONNECTIONS.list_connections(session, owner.id)
         }
         grants = {
@@ -284,7 +285,7 @@ def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
 async def _services(
     session: AsyncSession,
     protocol: Any,
-    connections: dict[str, str],
+    connections: dict[str, ServiceConnection],
     agents: list[Agent],
     grants: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
@@ -308,7 +309,9 @@ async def _services(
                 if unavailable is None
                 else unavailable.reason,
                 "unavailable_code": None if unavailable is None else unavailable.code,
-                "connection": connections.get(definition.slug, "not_connected"),
+                "connection": broker.connection_status(
+                    standing, connections.get(definition.slug)
+                ),
                 "agents_using": sorted(
                     names[agent_id]
                     for agent_id, services in grants.items()
