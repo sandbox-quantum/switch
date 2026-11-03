@@ -114,27 +114,34 @@ const RoomTitlebar = observer(function RoomTitlebar() {
   return (
     <Titlebar
       leftSlot={
-        <div className="flex min-w-0 items-center gap-3">
-          <TitlebarBreadcrumb
-            crumbs={[
-              {
-                key: 'room',
-                icon: hasBridgeIcon(bridgeType) ? (
-                  <BridgeIcon bridgeType={bridgeType} size={14} className="shrink-0" />
-                ) : (
-                  <DoorOpen className="size-3.5 shrink-0" />
-                ),
-                label: name ?? 'Room',
-              },
-            ]}
-          />
-          {where && (
-            <span className="shrink-0 rounded-full bg-background-tertiary px-2 py-0.5 text-[11px] text-foreground-muted">
-              {where}
-            </span>
-          )}
+        // The description goes under the name, never beside it, so however
+        // long it is it cannot push the tabs off the bar.
+        <div className="flex min-w-0 flex-col justify-center">
+          <div className="flex min-w-0 items-center gap-3">
+            <TitlebarBreadcrumb
+              crumbs={[
+                {
+                  key: 'room',
+                  icon: hasBridgeIcon(bridgeType) ? (
+                    <BridgeIcon bridgeType={bridgeType} size={14} className="shrink-0" />
+                  ) : (
+                    <DoorOpen className="size-3.5 shrink-0" />
+                  ),
+                  label: name ?? 'Room',
+                },
+              ]}
+            />
+            {where && (
+              <span className="shrink-0 rounded-full bg-background-tertiary px-2 py-0.5 text-[11px] text-foreground-muted">
+                {where}
+              </span>
+            )}
+          </div>
           {description && (
-            <span className="min-w-0 truncate text-sm text-foreground-muted" title={description}>
+            <span
+              className="min-w-0 truncate pl-2 text-xs leading-4 text-foreground-muted"
+              title={description}
+            >
               {description}
             </span>
           )}
