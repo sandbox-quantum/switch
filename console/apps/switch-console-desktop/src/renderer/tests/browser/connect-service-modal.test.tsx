@@ -192,3 +192,44 @@ it('stays open with the reason when the server refuses the sign-in', async () =>
   expect(onClose).not.toHaveBeenCalled();
   expect(modal.querySelector('[data-slot="dialog-close"]')).not.toBeNull();
 });
+
+it('requires a valid stack hostname before starting OAuth and sends it with the selected workspace', async () => {
+  const modal = await render(
+    entry({
+      oauth_fields: [
+        {
+          name: 'stack',
+          label: 'Grafana Cloud stack',
+          help: 'Enter the stack hostname.',
+          pattern: '^[a-z0-9-]+\\.grafana\\.net$',
+        },
+      ],
+    })
+  );
+  const connect = button(/^connect example/i, modal)!;
+  expect(connect.disabled).toBe(true);
+  const input = modal.querySelector('input')!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(input, 'https://example-stack.grafana.net');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(connect.disabled).toBe(true);
+  await act(async () => {
+    setter.call(input, 'example-stack.grafana.net');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(connect.disabled).toBe(false);
+  workspaces.getServiceFlow.mockResolvedValue({
+    status: 'pending',
+    account: null,
+    warning: null,
+    error: null,
+  });
+  await signIn(modal);
+  expect(workspaces.startServiceConnection).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    service: 'example',
+    fields: { stack: 'example-stack.grafana.net' },
+  });
+});

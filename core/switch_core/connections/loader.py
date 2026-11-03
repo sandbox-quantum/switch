@@ -26,6 +26,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -62,6 +63,68 @@ RedirectMode = Literal["loopback", "core"]
 AuthorizationParam = Literal["access_type", "include_granted_scopes"]
 
 
+class OAuthField(BaseModel):
+    """A public value a person types when connecting, such as a Grafana Cloud
+    stack, that names which of the vendor's MCP servers they sign in to.
+
+    It takes one whole host label or path segment of an MCP server's URL on a
+    fixed domain, never the authorization or token URLs, and is held to its
+    anchored `pattern` as well as to the plain characters of a URL part.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    label: str = Field(min_length=1, max_length=80)
+    help: str = Field(min_length=1, max_length=200)
+    pattern: str = Field(min_length=3, max_length=200)
+
+    @model_validator(mode="after")
+    def _anchored(self) -> "OAuthField":
+        if not self.pattern.startswith("^") or not self.pattern.endswith("$"):
+            raise ValueError(f"field {self.name}'s pattern must be anchored, ^...$")
+        try:
+            re.compile(self.pattern, re.ASCII)
+        except re.error:
+            raise ValueError(f"field {self.name}'s pattern is not a regex") from None
+        return self
+
+
+# What any field value may be, whatever its pattern: dot-separated runs of
+# letters, digits, `-` and `_`, so it can never add a path, port or query.
+URL_PART_PATTERN = r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*"
+
+
+def oauth_field_values(
+    fields: list[OAuthField], values: dict[str, str]
+) -> dict[str, str]:
+    """`values` checked against the entry's fields: exactly those names, each
+    a plain URL part that its pattern matches."""
+    if set(values) != {field.name for field in fields}:
+        raise ValueError("provide exactly the connection's fields")
+    for field in fields:
+        value = values[field.name]
+        if (
+            not isinstance(value, str)
+            or len(value) > 253
+            or not re.fullmatch(URL_PART_PATTERN, value, re.ASCII)
+            or not re.fullmatch(field.pattern, value, re.ASCII)
+        ):
+            raise ValueError(f"Invalid {field.label}. {field.help}")
+    return dict(values)
+
+
+def oauth_mcp_url(url: str, values: dict[str, str]) -> str:
+    """An MCP server URL with checked field values put in its `{name}`s."""
+    labels = (urlsplit(url).hostname or "").split(".")
+    for name in template_fields(url):
+        if name not in values:
+            raise ValueError(f"no value for the connection field {name}")
+        if "{" + name + "}" in labels and "." in values[name]:
+            raise ValueError(f"{name} fills one host label, so it has no dots")
+        url = url.replace("{" + name + "}", values[name])
+    return url
+
+
 class OAuthClient(BaseModel):
     """How Core has its OAuth client at the vendor, and where a sign-in returns.
 
@@ -94,6 +157,7 @@ class OAuthClient(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    fields: list[OAuthField] = Field(default_factory=list, max_length=4)
     registration: Literal["dynamic", "static"]
     client_settings: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,62}$")
     redirect: list[RedirectMode] = Field(min_length=1)
@@ -700,6 +764,8 @@ class ConnectionDefinition(BaseModel):
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
         oauth = self.auth.oauth
+        if oauth is not None:
+            _check_oauth_fields(oauth, identity, self.mcp)
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.
         if self.mcp is None and oauth is not None:
@@ -795,6 +861,74 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
             f"Connection {slug} SKILL.md needs frontmatter with name: {slug} and a description."
         )
     return files
+
+
+def _check_oauth_fields(
+    oauth: OAuthClient,
+    identity: "ConnectionIdentity | None",
+    mcp: "ConnectionMcp | None",
+) -> None:
+    """Where an oauth entry's connection fields may go, and that they key the
+    account.
+
+    A field fills one whole host label (with the domain around it fixed) or one
+    whole path segment of an MCP server's URL, and every field is used there.
+    The OAuth endpoints and a REST identity URL stay fixed. Each field is part
+    of the account id, as `connection.<name>`, so connecting to another stack
+    is another account and keeps none of the first one's grants.
+    """
+    for url in (oauth.authorization_url, oauth.token_url, oauth.revocation_url):
+        if url is not None and ("{" in url or "}" in url):
+            raise ValueError("an oauth entry's authorization and token URLs stay fixed")
+    if identity is not None and identity.url is not None and "{" in identity.url:
+        raise ValueError("an oauth entry's identity URL stays fixed")
+    names = {field.name for field in oauth.fields}
+    if len(names) != len(oauth.fields):
+        raise ValueError("two connection fields share a name")
+    if not names:
+        return
+
+    used: set[str] = set()
+    for server in mcp.servers if mcp is not None else []:
+        parts = urlsplit(server.url)
+        if parts.username or parts.password or parts.port:
+            raise ValueError("a templated MCP URL has no userinfo or port")
+        labels = (parts.hostname or "").split(".")
+        segments = parts.path.split("/")
+        fixed_domain = not any("{" in label for label in labels[-2:])
+        for name in template_fields(server.url):
+            marker = "{" + name + "}"
+            whole_label = marker in labels and len(labels) >= 3 and fixed_domain
+            if (
+                name not in names
+                or not (whole_label or marker in segments)
+                or server.url.count(marker)
+                != labels.count(marker) + segments.count(marker)
+            ):
+                raise ValueError(
+                    f"{marker} must fill a whole host label or path segment of "
+                    "an MCP URL on a fixed domain"
+                )
+            used.add(name)
+    if used != names:
+        raise ValueError("every connection field is used in an MCP URL")
+
+    if identity is None:
+        return
+    paths = (
+        identity.account_id
+        if isinstance(identity.account_id, list)
+        else [identity.account_id]
+    )
+    named = {
+        path.removeprefix("connection.")
+        for path in paths
+        if path.startswith("connection.")
+    }
+    if not isinstance(identity.account_id, list) or named != names:
+        raise ValueError(
+            "the account id lists every connection field, as connection.<name>"
+        )
 
 
 def load_catalog(root: Path) -> dict[str, Connection]:

@@ -95,6 +95,7 @@ async def _owned(
 
 class StartFlow(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    fields: dict[str, str] = Field(default_factory=dict, max_length=4)
     port: int = Field(strict=True, ge=1024, le=65535)
     state: str = Field(pattern=TOKEN_PATTERN)
     completion_secret: str = Field(pattern=TOKEN_PATTERN)
@@ -132,6 +133,7 @@ async def start(
             definition=definition,
             tenant_id=require_tenant_id(),
             user_id=user.id,
+            fields=body.fields,
             state=body.state,
             port=body.port,
             completion_secret=body.completion_secret,

@@ -43,7 +43,12 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.connections.loader import (
+    AccessLevel,
+    ConnectionDefinition,
+    oauth_field_values,
+    oauth_mcp_url,
+)
 
 MAX_METADATA_BYTES = 64 * 1024
 
@@ -237,6 +242,20 @@ class OAuthAdapter:
         self._client = client
         self._http = http
         self._endpoints: AuthorizationEndpoints | None = None
+        self._fields: dict[str, str] = {}
+
+    def with_fields(self, values: dict[str, str]) -> OAuthAdapter:
+        try:
+            checked = oauth_field_values(self._oauth.fields, values)
+        except ValueError as error:
+            raise ServiceAdapterError(str(error)) from None
+        if not self._oauth.fields:
+            return self
+        adapter = OAuthAdapter(self._definition, self._client, self._http)
+        adapter._fields = checked
+        if adapter._mcp_url is not None:
+            adapter._mcp_url = oauth_mcp_url(adapter._mcp_url, checked)
+        return adapter
 
     @property
     def _name(self) -> str:
@@ -287,6 +306,11 @@ class OAuthAdapter:
 
     async def endpoints(self) -> AuthorizationEndpoints:
         """The vendor's OAuth endpoints: the catalog's, or discovered once."""
+        if self._oauth.fields and not self._fields:
+            raise ServiceAdapterError(
+                "Provide the connection fields before signing in."
+            )
+
         if self._endpoints is not None:
             return self._endpoints
         if self._oauth.authorization_url is not None and self._oauth.token_url:
@@ -531,7 +555,10 @@ class OAuthAdapter:
                 "redirect_uri": redirect_uri,
             }
         )
-        values = self._credentials(answer.body, {})
+        values = self._credentials(
+            answer.body,
+            {"connection_fields": dict(self._fields)} if self._fields else {},
+        )
         granted = values.get("scope")
         return SignIn(
             ConnectionSecret(values),
@@ -565,6 +592,8 @@ class OAuthAdapter:
                     f"(HTTP {response.status_code})."
                 )
             body = self._json(response, "account")
+        if self._fields:
+            body = {**body, "connection": dict(self._fields)}
         paths = self._identity.account_id
         parts = (
             [_path_value(body, path) for path in paths]
@@ -647,7 +676,8 @@ class OAuthAdapter:
             raise ReauthorizationRequiredError(
                 f"The {self._name} connection holds no refresh token."
             )
-        answer = await self._token_request(
+        adapter = self.with_fields(secret.values.get("connection_fields", {}))
+        answer = await adapter._token_request(
             {"grant_type": "refresh_token", "refresh_token": refresh_token}
         )
         return ConnectionSecret(self._credentials(answer.body, secret.values))
