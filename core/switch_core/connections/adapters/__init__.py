@@ -128,10 +128,12 @@ class ServiceAdapter(Protocol):
 
     async def revoke_issued(self, token: str) -> None: ...
 
-    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> None:
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> bool:
         """Revoke the connection's credential at the vendor, where it can be.
         `method` is how the connection was made (`oauth`, `token` or `keys`),
-        as its row says: what the secret holds follows from it.
+        as its row says: what the secret holds follows from it. True where
+        the vendor ended a credential it knew; False where there was none to
+        end, or the vendor no longer knew it.
         `ConnectionNotRevocable` says what the person must do instead."""
         ...
 
