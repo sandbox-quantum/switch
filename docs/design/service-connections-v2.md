@@ -39,10 +39,11 @@ auth:
     prompt: consent           # sent with every authorization
     # authorization_params: { access_type: offline }   # also sent with every
     #   authorization; only keys Core does not set itself (access_type,
-    #   include_granted_scopes)
+    #   include_granted_scopes, token_access_type)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
-  identity:                   # GET with the token; dotted paths in its JSON
+  identity:                   # method (GET, or POST with an optional static
+    method: GET               # body) with the token; dotted paths in its JSON
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
@@ -537,6 +538,66 @@ To connect: Settings, Connections in Switch Console, then Airtable. To roll
 back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
+
+## Dropbox
+
+Built from a sign-in run against a free Dropbox account on a development app;
+the operator's setup is in [`docs/old/dropbox-setup.md`](../old/dropbox-setup.md).
+Entry: `core/switch_core/connections/catalog/dropbox/`.
+
+- Each server's operator registers a Dropbox app and saves it under Connector
+  apps, or names it in `DROPBOX_CLIENT_CONFIG_PATH`. Dropbox's authorization
+  server advertises dynamic registration, but it is limited to clients Dropbox
+  has trusted (Dropbox's own words), so the registration is static. The
+  browser comes back to Core's own callback, so the server needs
+  `GATEWAY_PUBLIC_URL`. A new app is in development and only its owner can
+  connect until "Enable additional users" is switched on; no check shows
+  that, nor the redirect URI or the app's permissions, so the entry's
+  `unchecked` says to have someone else connect once.
+- Sign-in is authorization code with PKCE `S256` (the metadata lists it), the
+  scopes asked for in `scope`, and `token_access_type=offline` from the entry's
+  `authorization_params`. Without it Dropbox is documented to return a
+  short-lived access token and no refresh token; the sign-in run used it.
+- Access tokens live 14,400 seconds, at sign-in and on a refresh. A refresh
+  answers a new access token alone and the original refresh token stays valid
+  (`refresh: reusable`); a second refresh was not tried.
+- The account is read with `POST /2/users/get_current_account`, which takes no
+  parameters: it answered 200 to a POST with no body and to one with `{}`. This
+  is why an identity call names its `method` and may omit its `body`
+  (`account_id`, `email`).
+- Levels are scopes. Read: `account_info.read`, `files.metadata.read`,
+  `files.content.read`. Write adds `files.content.write`. Dropbox honours a
+  narrower `scope` at authorization, so a read sign-in holds exactly the read
+  scopes (seen).
+- Dropbox's MCP server (`https://mcp.dropbox.com/mcp`, answering as `text/event-stream`) lists
+  its write tools to a read sign-in. Dropbox refuses them: `create_folder`
+  answered "insufficient scope: need [files.content.write]" and made no
+  folder; the same call to the HTTP API answered 401 `missing_scope`. So the
+  entry cannot use `tools.mode: listed` (an OAuth entry's tools pass through)
+  and the grant's level is what limits an agent. Seen working through MCP on a
+  read sign-in: `who_am_i`, `list_folder`, `search`, `get_file_content`.
+  `files.content.write` is what Dropbox's API documents for creating, copying,
+  moving and deleting; only creating a folder was tried. Not asked for:
+  `sharing.*` and `file_requests.*`.
+- The server also holds operations that have no tool of their own, reached
+  through `list_dropbox_operations` and `get_dropbox_operation`; the skill
+  teaches agents to prefer a named tool, look an operation up before running
+  it, and use the schema it returns.
+- Searching inside files depends on the plan (see the operator's guide); the
+  one search that matched had the word in a file's name as well as its text.
+- Disconnecting: Dropbox lists a revocation endpoint, `/2/auth/token/revoke`,
+  which is a call authenticated by the access token and taking no token in a
+  form body. The adapter's revoke sends RFC 7009's form, which Dropbox has not
+  been seen to accept, so the entry names `remove_access` (Settings, Security,
+  Connected apps) instead and the sign-in keeps working until the person
+  removes it. Follow-up: a revoke in the vendor's own shape.
+- The Connector apps check is the generic token-endpoint one (a made-up code
+  and verifier); that Dropbox answers it as other vendors do has not been
+  tried.
+
+To connect: Settings, Connections in Switch Console, then Dropbox. To roll
+back, add `dropbox` to `DISABLED_SERVICES`, remove its client under Connector
+apps or unset `DROPBOX_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
 
 ## Google Workspace
 

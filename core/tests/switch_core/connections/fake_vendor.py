@@ -347,6 +347,9 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        # Answer the account request with the account itself, not under
+        # "account", as a vendor that names its fields at the top does.
+        self.flat_account = False
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -424,7 +427,9 @@ class FakeOAuthServer:
             self.identity_requests.append((request.method, request.content))
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
-            return _json(200, {"account": self.account})
+            return _json(
+                200, self.account if self.flat_account else {"account": self.account}
+            )
         if where == MCP_URL:
             return self._mcp(request)
         return _json(404, {"error": "not_found"})

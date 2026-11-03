@@ -37,7 +37,7 @@ from switch_core.connections.adapters.oauth import (
     StaticClient,
 )
 from switch_core.connections.broker import Principal, ServiceBroker
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import CATALOG_ROOT, ConnectionDefinition
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
@@ -340,6 +340,141 @@ class TestRefresh:
         )
         with pytest.raises(ServiceAdapterError, match="when its access token expires"):
             await adapter.refresh(secret)
+
+
+DROPBOX_READ = ["account_info.read", "files.metadata.read", "files.content.read"]
+DROPBOX_ACCOUNT = {"account_id": "dbid:SYNTHETIC-ACCOUNT", "email": "ada@example.test"}
+
+
+def _dropbox_vendor(**kwargs) -> FakeOAuthServer:
+    vendor = FakeOAuthServer(rotating=False, lifetime=14400, **kwargs)
+    vendor.flat_account = True
+    vendor.account = dict(DROPBOX_ACCOUNT)
+    return vendor
+
+
+def _dropbox_adapter(vendor: FakeOAuthServer) -> OAuthAdapter:
+    """The entry as shipped, with only Dropbox's addresses swapped for the fake's."""
+    text = (CATALOG_ROOT / "dropbox" / "connection.yaml").read_text()
+    text = text.replace(
+        "https://api.dropboxapi.com/2/users/get_current_account", IDENTITY_URL
+    )
+    text = text.replace("https://mcp.dropbox.com/mcp", MCP_URL)
+    return _adapter(vendor, text)[0]
+
+
+async def _dropbox_sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer, scopes):
+    verifier = secrets.token_urlsafe(48)
+    url = await adapter.authorization_url(
+        redirect_uri=REDIRECT,
+        state="state-1",
+        code_challenge=s256(verifier),
+        scopes=scopes,
+    )
+    back = parse_qs(urlsplit(vendor.authorize(url)).query)
+    return await adapter.exchange_code(
+        code=back["code"][0], verifier=verifier, redirect_uri=REDIRECT, scopes=scopes
+    )
+
+
+class TestTheShippedDropboxEntry:
+    """Dropbox's entry run against a fake of its HTTP side. Verified live, not
+    here: that Dropbox answers these requests as the fake does."""
+
+    async def test_signs_in_offline_with_pkce_and_the_scopes_asked(self) -> None:
+        vendor = _dropbox_vendor()
+        signed_in = await _dropbox_sign_in(
+            _dropbox_adapter(vendor), vendor, DROPBOX_READ
+        )
+        asked = vendor.authorizations[-1]
+        assert asked["token_access_type"] == "offline"
+        assert asked["code_challenge_method"] == "S256"
+        assert asked["scope"] == " ".join(DROPBOX_READ)
+        assert signed_in.granted_scopes == DROPBOX_READ
+        assert signed_in.secret.values["refresh_token"]
+
+    async def test_a_narrower_grant_is_what_the_token_answer_names(self) -> None:
+        vendor = _dropbox_vendor()
+        adapter = _dropbox_adapter(vendor)
+        write = [*DROPBOX_READ, "files.content.write"]
+        signed_in = await _dropbox_sign_in(adapter, vendor, write)
+        assert signed_in.granted_scopes == write
+
+    async def test_names_the_account_with_a_post_that_has_no_body(self) -> None:
+        vendor = _dropbox_vendor()
+        adapter = _dropbox_adapter(vendor)
+        signed_in = await _dropbox_sign_in(adapter, vendor, DROPBOX_READ)
+        identity = await adapter.identify(signed_in.secret.access_token or "")
+        assert (identity.account_id, identity.label) == (
+            "dbid:SYNTHETIC-ACCOUNT",
+            "ada@example.test",
+        )
+        assert vendor.identity_requests == [("POST", b"")]
+
+    async def test_a_refresh_answers_a_new_access_token_and_keeps_the_refresh_token(
+        self,
+    ) -> None:
+        vendor = _dropbox_vendor()
+        adapter = _dropbox_adapter(vendor)
+        signed_in = await _dropbox_sign_in(adapter, vendor, DROPBOX_READ)
+        renewed = await adapter.refresh(signed_in.secret)
+        assert renewed.access_token != signed_in.secret.access_token
+        assert (
+            renewed.values["refresh_token"] == signed_in.secret.values["refresh_token"]
+        )
+        again = await adapter.refresh(renewed)
+        assert again.access_token not in (None, renewed.access_token)
+        assert [r["grant_type"] for r in vendor.token_requests[-2:]] == [
+            "refresh_token"
+        ] * 2
+
+    async def test_a_sign_in_without_the_account_scope_must_be_made_again(self) -> None:
+        vendor = _dropbox_vendor()
+        adapter = _dropbox_adapter(vendor)
+        signed_in = await _dropbox_sign_in(adapter, vendor, DROPBOX_READ)
+        vendor.fail[IDENTITY_URL] = (
+            401,
+            {"error": {".tag": "missing_scope", "required_scope": "account_info.read"}},
+        )
+        with pytest.raises(ReauthorizationRequiredError):
+            await adapter.identify(signed_in.secret.access_token or "")
+
+    async def test_dropbox_being_down_when_asked_whose_sign_in_it_is_is_unavailable(
+        self,
+    ) -> None:
+        vendor = _dropbox_vendor()
+        adapter = _dropbox_adapter(vendor)
+        signed_in = await _dropbox_sign_in(adapter, vendor, DROPBOX_READ)
+        vendor.fail[IDENTITY_URL] = (503, {})
+        with pytest.raises(ServiceUnavailableError):
+            await adapter.identify(signed_in.secret.access_token or "")
+
+    async def test_an_account_answer_without_an_id_is_refused(self) -> None:
+        vendor = _dropbox_vendor()
+        adapter = _dropbox_adapter(vendor)
+        signed_in = await _dropbox_sign_in(adapter, vendor, DROPBOX_READ)
+        vendor.account = {"email": "ada@example.test"}
+        with pytest.raises(ServiceAdapterError, match="did not name the account"):
+            await adapter.identify(signed_in.secret.access_token or "")
+
+    async def test_a_revoked_refresh_token_must_be_signed_in_again(self) -> None:
+        vendor = _dropbox_vendor()
+        adapter = _dropbox_adapter(vendor)
+        signed_in = await _dropbox_sign_in(adapter, vendor, DROPBOX_READ)
+        vendor.live_refresh.clear()
+        with pytest.raises(ReauthorizationRequiredError):
+            await adapter.refresh(signed_in.secret)
+
+    async def test_disconnect_says_where_to_remove_switch_and_asks_nothing_of_dropbox(
+        self,
+    ) -> None:
+        vendor = _dropbox_vendor()
+        adapter = _dropbox_adapter(vendor)
+        signed_in = await _dropbox_sign_in(adapter, vendor, DROPBOX_READ)
+        calls = len(vendor.paths)
+        with pytest.raises(ConnectionNotRevocable, match="Connected apps"):
+            await adapter.revoke_connection(signed_in.secret)
+        assert vendor.revoked == [] and len(vendor.paths) == calls
 
 
 class TestIssue:

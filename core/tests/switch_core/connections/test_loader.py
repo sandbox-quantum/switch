@@ -25,18 +25,20 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_dropbox_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "google-workspace",
     ]
@@ -44,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -225,6 +228,59 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_dropbox_entry_signs_in_as_the_live_test_found_it_must():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Dropbox's dynamic registration is for clients it has trusted, so each
+    # server's operator registers an app; sign-ins come back to Core.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "DROPBOX"
+    assert oauth.loopback_ports is None
+    # Without offline, Dropbox hands out a short-lived access token alone.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    # Dropbox answers a new access token on a refresh and keeps the old
+    # refresh token; its access tokens live 4 hours.
+    assert definition.auth.refresh == "reusable"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        14400,
+    )
+    # Switch has not been seen to revoke at Dropbox's advertised endpoint, so
+    # people remove Switch there, and are told the sign-in still works.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None
+    assert "Connected apps" in oauth.remove_access
+    assert oauth.unchecked is not None and "other than its owner" in oauth.unchecked
+    identity = definition.auth.identity
+    assert identity is not None
+    # get_current_account takes no parameters: a POST without a body.
+    assert (identity.method, identity.url, identity.body) == (
+        "POST",
+        "https://api.dropboxapi.com/2/users/get_current_account",
+        None,
+    )
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    # An OAuth entry's tools pass through; the scopes carry the levels.
+    assert definition.tools.mode == "pass_through"
+    assert definition.access is not None and definition.access.write is not None
+    read = ["account_info.read", "files.metadata.read", "files.content.read"]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [*read, "files.content.write"]
+    # Never the scopes that share files or open folders to uploads.
+    asked = {*definition.access.read.scopes, *definition.access.write.scopes}
+    assert not any(scope.startswith(("sharing.", "file_requests.")) for scope in asked)
 
 
 @pytest.fixture

@@ -193,6 +193,28 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **The Dropbox connection.** A person connects Dropbox from Switch Console and
+  a granted agent finds, reads and, if the person allowed writing, creates,
+  copies, moves and deletes files and folders in it, as that person, through
+  Dropbox's MCP server. Reading holds `account_info.read`,
+  `files.metadata.read` and `files.content.read`; writing adds
+  `files.content.write`. Sharing links and file requests are not asked for.
+  The server's operator registers a Dropbox app and saves it under Connector
+  apps, or names it in `DROPBOX_CLIENT_CONFIG_PATH` (Helm:
+  `switchCore.dropboxClientSecret`); see `docs/old/dropbox-setup.md`. Without
+  it, Dropbox is listed as not set up. Like Airtable, it needs
+  `GATEWAY_PUBLIC_URL`. Dropbox's MCP server lists its write tools to every
+  connection and Dropbox refuses them where the sign-in lacks the permission.
+  Dropbox's revocation endpoint is not one Switch revokes through yet, so a
+  sign-in Switch drops still works until the person removes Switch under
+  Connected apps in Dropbox; disconnecting says so. Searching inside files
+  depends on the account's Dropbox plan, and Basic accounts get name search.
+- **A connection's identity call names its method.** `auth.identity` in an
+  OAuth catalog entry gains a required `method` (`GET` or `POST`) and an
+  optional `body`, sent only with a `POST`; a `GET` with a body is refused.
+  Dropbox identifies an account with a `POST` that takes no parameters. The
+  shipped entries say `method: GET`. An `authorization_params` key may now
+  also be `token_access_type`, which Dropbox needs to return a refresh token.
 
 #### Changed
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and

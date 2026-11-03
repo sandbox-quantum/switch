@@ -68,6 +68,8 @@ GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
 AIRTABLE_SECRET = "example-airtable-secret-0000"
+DROPBOX = "dropbox"
+DROPBOX_CALLBACK = f"{PUBLIC}/gateway/service-connections/{DROPBOX}/flows/callback"
 GITHUB_CLIENT_ID = "example-github-client-id"
 GITHUB_SECRET = "example-github-secret-0000"
 
@@ -365,7 +367,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, DROPBOX}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -388,6 +390,16 @@ class TestOnlyTheOperator:
             "workspacesAndBases:read",
             "data.records:write",
             "data.recordComments:write",
+        ]
+        # Dropbox, too, comes back to Core's own callback, and its app lists the
+        # permissions to enable: the read scopes, then the one write adds.
+        assert apps[DROPBOX]["redirect_uris"] == [DROPBOX_CALLBACK]
+        assert apps[DROPBOX]["needs_public_url"] is True
+        assert apps[DROPBOX]["scopes"] == [
+            "account_info.read",
+            "files.metadata.read",
+            "files.content.read",
+            "files.content.write",
         ]
         assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
