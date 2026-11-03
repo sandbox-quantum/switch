@@ -1,4 +1,5 @@
-import { app, shell } from 'electron';
+import { app } from 'electron';
+import { appService } from '@main/core/app/service';
 import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
 import { updateService } from '@main/core/updates/update-service';
 import { IS_CANARY } from '@shared/app-identity';
@@ -40,7 +41,7 @@ export const updateController = createRPCController({
    */
   openLatest: async () => {
     try {
-      await shell.openExternal(await manualDownloadUrl(IS_CANARY));
+      await appService.openExternal(await manualDownloadUrl(IS_CANARY));
       setTimeout(() => {
         try {
           app.quit();
@@ -54,7 +55,7 @@ export const updateController = createRPCController({
 
   openReleaseNotes: async () => {
     try {
-      await shell.openExternal(await updateService.releaseNotesUrl());
+      await appService.openExternal(await updateService.releaseNotesUrl());
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };

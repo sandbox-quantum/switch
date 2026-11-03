@@ -18,7 +18,7 @@ type UpdaterError = Error & {
 /**
  * electron-updater's own failures (a feed it cannot parse, a release with no
  * channel file) carry an `ERR_UPDATER_*` code and say what went wrong in the
- * message. Their first line is the sentence; what follows is a stack trace or
+ * message. Their first line with text is the sentence; what follows is a stack trace or
  * the feed XML the updater could not read.
  */
 function isUpdaterErrorCode(code: unknown): code is string {
@@ -36,7 +36,7 @@ export function formatUpdaterError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error ?? 'Unknown update error');
 
   if (isUpdaterErrorCode(err.code)) {
-    return stripMarkupAndTruncate(message.split('\n', 1)[0] ?? '');
+    return stripMarkupAndTruncate(message.split('\n').find((line) => line.trim()) ?? '');
   }
 
   if (typeof err.statusCode === 'number') {

@@ -33,15 +33,18 @@ describe('the pending-install marker', () => {
     await expect(pendingInstall.take()).resolves.toBeNull();
   });
 
-  it('returns the version handed over, once', async () => {
-    await pendingInstall.set('1.3.0');
+  it('returns the version handed over, and the one it replaces, once', async () => {
+    await pendingInstall.set('1.3.0', '1.2.3');
 
-    await expect(pendingInstall.take()).resolves.toEqual({ targetVersion: '1.3.0' });
+    await expect(pendingInstall.take()).resolves.toEqual({
+      targetVersion: '1.3.0',
+      fromVersion: '1.2.3',
+    });
     await expect(pendingInstall.take()).resolves.toBeNull();
   });
 
   it('is gone after an attempt is abandoned', async () => {
-    await pendingInstall.set('1.3.0');
+    await pendingInstall.set('1.3.0', '1.2.3');
     await pendingInstall.clear();
 
     await expect(pendingInstall.take()).resolves.toBeNull();
@@ -54,7 +57,50 @@ describe('the pending-install marker', () => {
       .insert(kv)
       .values({ key: 'updates:pending-install:handover', value: 'true', updatedAt: Date.now() });
 
-    await expect(pendingInstall.take()).resolves.toEqual({ targetVersion: null });
+    await expect(pendingInstall.take()).resolves.toEqual({
+      targetVersion: null,
+      fromVersion: null,
+    });
     await expect(pendingInstall.take()).resolves.toBeNull();
+  });
+
+  it('reports the latest version when a second attempt overwrites the first', async () => {
+    await pendingInstall.set('1.3.0', '1.2.3');
+    await pendingInstall.set('1.4.0', '1.2.3');
+
+    await expect(pendingInstall.take()).resolves.toEqual({
+      targetVersion: '1.4.0',
+      fromVersion: '1.2.3',
+    });
+  });
+
+  it('prefers the version, and clears both, when both markers are present', async () => {
+    await fixture.db
+      .insert(kv)
+      .values({ key: 'updates:pending-install:handover', value: 'true', updatedAt: Date.now() });
+    await pendingInstall.set('1.3.0', '1.2.3');
+
+    await expect(pendingInstall.take()).resolves.toEqual({
+      targetVersion: '1.3.0',
+      fromVersion: '1.2.3',
+    });
+    await expect(pendingInstall.take()).resolves.toBeNull();
+  });
+
+  it('clears the legacy marker too when an attempt is abandoned', async () => {
+    await fixture.db
+      .insert(kv)
+      .values({ key: 'updates:pending-install:handover', value: 'true', updatedAt: Date.now() });
+    await pendingInstall.clear();
+
+    await expect(pendingInstall.take()).resolves.toBeNull();
+  });
+
+  it('fails loud when the marker cannot be written', async () => {
+    // A handover with no marker could fail without anyone finding out, so the
+    // caller has to hear about it.
+    mocks.db = undefined;
+
+    await expect(pendingInstall.set('1.3.0', '1.2.3')).rejects.toThrow();
   });
 });
