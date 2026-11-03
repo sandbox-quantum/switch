@@ -10,6 +10,10 @@ describeConformance('cline', {
     const probe = spawnSync('cline', ['--version'], { encoding: 'utf8', shell: true });
     return probe.error || probe.status !== 0 ? 'the cline binary is not on PATH' : null;
   },
+  skip: {
+    'user-input':
+      'Cline 3.0.74 answers a clarifying question in plain text: no request.opened, user-input.requested or special tool item fires over ACP, so there is no ask-the-user mechanism to wait on (2026-11-02).',
+  },
   mcpServers: { echo: echoMcpServerSpec() },
   env: {
     // The harness's minimal environment has no home directory on Windows

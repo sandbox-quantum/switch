@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, RuntimeMode } from '../adapter';
+import type { McpServerSpec, ProviderCapabilities, RuntimeMode } from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -33,6 +33,18 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+}
+
+/**
+ * What {@link AcpProviderHooks.prepareMcpServers} prepares for one session.
+ * `env` is merged over the session's own environment before `launch` runs, so
+ * the agent can be pointed at whatever this wrote. `cleanup` removes it when
+ * the session ends, on an interrupt, on the process exiting and on a crash —
+ * call it idempotently, since more than one of those can fire.
+ */
+export interface AcpMcpDelivery {
+  env: Record<string, string>;
+  cleanup(): Promise<void>;
 }
 
 /** One answered question: the option values chosen, already checked against what was offered. */
@@ -98,6 +110,19 @@ export interface AcpProviderHooks {
   launch(input: AcpLaunchInput): Promise<AcpLaunch> | AcpLaunch;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
+  /**
+   * Takes over delivering the session's MCP servers, for an agent that does
+   * not use ACP's own `mcpServers` (Cline does not — see its hooks). Runs once
+   * before `launch`, given the session's servers and environment; without
+   * this hook the adapter sends them to the agent itself and refuses to start
+   * a session needing MCP over HTTP from an agent that does not declare it.
+   * When set, the adapter sends no MCP servers over the wire and does not
+   * require the agent to declare `mcpCapabilities.http`.
+   */
+  prepareMcpServers?(
+    servers: Record<string, McpServerSpec>,
+    env: Record<string, string>
+  ): Promise<AcpMcpDelivery>;
   /**
    * Environment variables the CLI reads (an API key, an endpoint) that a
    * session host should pass through from the machine's environment. The

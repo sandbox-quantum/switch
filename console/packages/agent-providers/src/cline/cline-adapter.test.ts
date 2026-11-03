@@ -1,4 +1,7 @@
+import { existsSync } from 'node:fs';
 import type * as fs from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { FakeAppServer } from '../codex/fake-app-server';
 
@@ -33,7 +36,7 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { clineAcp, createClineAdapter } = await import('./cline-adapter');
+const { clineAcp, clineMcpSettings, createClineAdapter } = await import('./cline-adapter');
 const unusedHandshake = async () => {
   throw new Error('checkSignIn must not call the given handshake');
 };
@@ -67,6 +70,75 @@ it('never sends authenticate at session start', async () => {
     connectorMcpServers: [],
   });
   expect(servers.at(-1)!.received.some((m) => m.method === 'authenticate')).toBe(false);
+  await adapter.stopSession('s');
+});
+
+it('writes stdio and streamable HTTP servers the way Cline reads them, filling envVars from the session', () => {
+  expect(
+    clineMcpSettings(
+      {
+        switch: {
+          transport: 'http',
+          url: 'http://127.0.0.1:4/mcp',
+          headers: { Authorization: 'Bearer t' },
+        },
+        tools: { transport: 'stdio', command: 'node', args: ['s.js'], envVars: ['TOKEN'] },
+      },
+      { TOKEN: 'secret', OTHER: 'unused' }
+    )
+  ).toEqual({
+    mcpServers: {
+      switch: {
+        transport: {
+          type: 'streamableHttp',
+          url: 'http://127.0.0.1:4/mcp',
+          headers: { Authorization: 'Bearer t' },
+        },
+      },
+      tools: {
+        transport: { type: 'stdio', command: 'node', args: ['s.js'], env: { TOKEN: 'secret' } },
+      },
+    },
+  });
+});
+
+it("writes the session's MCP servers to a settings file of its own, never ~/.cline, removed on cleanup", async () => {
+  const delivery = await clineAcp.prepareMcpServers!(
+    { switch: { transport: 'http', url: 'http://127.0.0.1:4/mcp' } },
+    {}
+  );
+  const path = delivery.env.CLINE_MCP_SETTINGS_PATH!;
+  expect(path).not.toContain('.cline');
+  expect(delivery.env.CLINE_SESSION_BACKEND_MODE).toBe('local');
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+    mcpServers: {
+      switch: { transport: { type: 'streamableHttp', url: 'http://127.0.0.1:4/mcp', headers: {} } },
+    },
+  });
+  if (process.platform !== 'win32') {
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect((await stat(dirname(path))).mode & 0o777).toBe(0o700);
+  }
+  await delivery.cleanup();
+  expect(existsSync(dirname(path))).toBe(false);
+});
+
+it.each([
+  ['echo__switch_echo: {"text":"PROBE_TOKEN_9012"}', 'echo'],
+  ['google-workspace__gmail_search: {}', 'google-workspace'],
+  ['composio_search_tools: {"queries":[{"use_case":"echo"}]}', undefined],
+  ['run_commands: {"commands":["ls"]}', undefined],
+  ['read_files: {"paths":["a__b.ts"]}', undefined],
+  [undefined, undefined],
+])('reads the MCP server from the tool title %s', (title, server) => {
+  expect(clineAcp.mcpServerOf!({ toolCallId: 'c', title })).toBe(server);
+});
+
+it('shows spawn_agent calls as subagents', () => {
+  expect(clineAcp.itemType!({ toolCallId: 'c', title: 'spawn_agent: Read the README' })).toBe(
+    'subagent'
+  );
+  expect(clineAcp.itemType!({ toolCallId: 'c', title: 'run_commands: ls' })).toBeUndefined();
 });
 
 it('trusts a given API key without starting a process', async () => {
