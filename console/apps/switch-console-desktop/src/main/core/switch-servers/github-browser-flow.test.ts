@@ -99,6 +99,34 @@ it('refuses unknown local flows and displays a failed completion', async () => {
   expect(cancelGitHubConnection).not.toHaveBeenCalled();
 });
 
+it('fails the sign-in at once when the code cannot be handed to the server', async () => {
+  const { id, url } = await start();
+  vi.mocked(completeGitHubConnection).mockRejectedValue(
+    new Error('Could not reach https://switch.example.test: fetch failed')
+  );
+  expect((await fetch(url + `?state=${id}&code=SYNTHETIC`)).status).toBe(400);
+  vi.mocked(getGitHubFlow).mockResolvedValue({
+    status: 'pending',
+    login: '',
+    error: null,
+    warning: null,
+  });
+  expect(await getGitHubBrowserFlow(server, id)).toEqual({
+    status: 'failed',
+    login: '',
+    error: 'Could not reach https://switch.example.test: fetch failed',
+    warning: null,
+  });
+  // A flow the server finished still reads connected, so a lost answer is safe.
+  vi.mocked(getGitHubFlow).mockResolvedValue({
+    status: 'connected',
+    login: 'example-user',
+    error: null,
+    warning: null,
+  });
+  expect((await getGitHubBrowserFlow(server, id)).status).toBe('connected');
+});
+
 it('ends the sign-in when the listener is sent a refusal, and shows it', async () => {
   const { id, url } = await start();
   const response = await fetch(url + `?state=${id}&error=access_denied`);
