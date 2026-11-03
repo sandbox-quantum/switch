@@ -174,7 +174,7 @@ def test_a_queued_turn_says_how_its_sender_can_withdraw_it() -> None:
 
     assert summary.splitlines() == [
         "Queued. Waiting for the agent to start…",
-        f"Turn ID: {QUEUED_ID} — the sender can withdraw it with !cancel, "
+        "Turn ID: 3f2b8c1e — the sender can withdraw it with !cancel, "
         "the agent's mention and this ID.",
     ]
     assert "`" not in summary

@@ -240,21 +240,56 @@ _MENTION = re.compile(rf"@{NAME_CHAR}+")
 _ID_WRAPPING = "`'\"<>"
 
 
-def parse_cancel_args(args: str) -> str | None:
-    """The turn ID a `!cancel` names, or None when its args do not name one.
+# The card shows the first eight characters of a turn ID; fewer than that names
+# too many turns to be worth looking up.
+SHORT_TURN_ID_LENGTH = 8
+# Where a turn ID (a UUID) has its dashes: a prefix must have them there too.
+_TURN_ID_SHAPE = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+_HEX = frozenset("0123456789abcdef")
+
+
+@dataclass(frozen=True)
+class TurnIdPrefix:
+    """The start of a turn ID, as the activity card shows it, lowercased.
+
+    A type of its own rather than a str: a prefix names a turn only once core
+    has looked it up among the agent's queued turns in the room, and the host
+    takes nothing but a full ID, so a prefix must not pass for one.
+    """
+
+    text: str
+
+
+def _is_turn_id_prefix(token: str) -> bool:
+    if not SHORT_TURN_ID_LENGTH <= len(token) < len(_TURN_ID_SHAPE):
+        return False
+    return all(
+        char == "-" if shape == "-" else char in _HEX
+        for char, shape in zip(token, _TURN_ID_SHAPE, strict=False)
+    )
+
+
+def parse_cancel_args(args: str) -> str | TurnIdPrefix | None:
+    """The turn a `!cancel` names, or None when its args do not name one.
 
     The `@` mentions (the target) are dropped and exactly one token must be
-    left: a turn ID as the activity card shows it, with any backticks, quotes,
-    or angle brackets around it taken off. `current` is refused — a cancel
-    names one queued message, never whatever the session is on.
+    left, with any backticks, quotes, or angle brackets around it taken off:
+    a full turn ID, returned as a str, or its first eight characters or more,
+    as the activity card shows it, returned as a `TurnIdPrefix`. Case does not
+    matter. `current` is refused — a cancel names one queued message, never
+    whatever the session is on.
     """
     rest = _MENTION.sub(" ", strip_emphasis(args)).split()
     if len(rest) != 1:
         return None
-    token = rest[0].strip(_ID_WRAPPING)
-    if token.lower() == CURRENT or not TURN_ID_PATTERN.fullmatch(token):
+    token = rest[0].strip(_ID_WRAPPING).lower()
+    if token == CURRENT:
         return None
-    return token.lower()
+    if TURN_ID_PATTERN.fullmatch(token):
+        return token
+    if _is_turn_id_prefix(token):
+        return TurnIdPrefix(token)
+    return None
 
 
 async def _check_cancel_usage(
@@ -263,7 +298,8 @@ async def _check_cancel_usage(
     """Admin-side usage feedback for `!cancel`.
 
     Like `_check_control_target`, but there is no `-all-agents` form to point
-    to, a role is no target, and the turn ID is checked too. When this
+    to, a role is no target, and the turn ID is checked too: a full ID or
+    the start of one, as the card shows it, passes. When this
     answers, no agent is addressed or the agent stays silent
     (`_decide_cancel`), so a misused `!cancel` gets one reply.
     """
@@ -284,7 +320,7 @@ async def _check_cancel_usage(
 _CANCEL_USAGE = (
     "`!cancel` needs the agent's mention and one turn ID. Type `!cancel`, "
     "then the agent's mention, then the turn ID from the agent's activity "
-    "card."
+    "card. Its first 8 characters are enough."
 )
 
 
@@ -645,7 +681,7 @@ async def _decide_control_command(
     command: str,
     texts: ControlTexts,
     *,
-    turn_id: str | None,
+    turn_id: str | TurnIdPrefix | None,
 ) -> ControlDecision:
     """Shared logic for the session-control commands
     (reset/compact/interrupt/cancel).
@@ -658,7 +694,9 @@ async def _decide_control_command(
 
     Everything here is a read; what it decides to say or relay is left to
     `ControlDecision.answer`. `turn_id` is the queued turn a `cancel`
-    withdraws, and None for every other control.
+    withdraws, and None for every other control. The start of an ID is looked
+    up among the agent's queued turns in the room only when a session here
+    could take the cancel; otherwise the room hears that none can.
     """
 
     def say(body: str) -> ControlDecision:
@@ -694,6 +732,15 @@ async def _decide_control_command(
             refusal = await _retry_refusal(client, meta.room_id, event, agent, target)
             if refusal is not None:
                 return say(refusal)
+        if isinstance(turn_id, TurnIdPrefix):
+            resolved = await _resolve_turn_id_prefix(
+                client, agent.id, meta.room_id, turn_id
+            )
+            if not isinstance(resolved, _Resolved):
+                return say(resolved)
+            withdrawn: str | None = resolved.turn_id
+        else:
+            withdrawn = turn_id
         frame = room_control_frame(
             agent_id=agent.id,
             session_id=placed,
@@ -705,7 +752,7 @@ async def _decide_control_command(
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
             target_message_id=target,
-            turn_id=turn_id,
+            turn_id=withdrawn,
         )
 
         async def relay() -> None:
@@ -944,13 +991,59 @@ async def _cmd_cancel(
 async def _decide_cancel(
     client: AgentRecipient, room: RoomRef, event: CommandEvent
 ) -> ControlDecision:
-    turn_id = parse_cancel_args(event.args)
-    if turn_id is None:
+    named = parse_cancel_args(event.args)
+    if named is None:
         # Misuse is answered by the admin (`_check_cancel_usage`).
         return ControlDecision(queued=None, answer=None)
+    # A full ID goes to the host unchecked: it alone knows whether the turn
+    # is still waiting, and says so. The start of one is looked up only once
+    # it is known that a session here could take the cancel at all.
     return await _decide_control_command(
-        client, room, event, "cancel", _CANCEL, turn_id=turn_id
+        client, room, event, "cancel", _CANCEL, turn_id=named
     )
+
+
+@dataclass(frozen=True)
+class _Resolved:
+    turn_id: str
+
+
+# Without the start of the ID in them: Switch Console tells these apart from
+# the agent's replies by their exact text (`CANCEL_REPLIES`).
+_NO_QUEUED_TURN = (
+    "No message waiting for me in this room has an ID that starts with the one "
+    "you gave. If I've already started on it, use `!interrupt` with my mention "
+    "to stop my current turn."
+)
+_SEVERAL_QUEUED_TURNS = (
+    "More than one message waiting for me in this room has an ID that starts "
+    "with the one you gave, so I can't tell which to cancel."
+)
+
+
+async def _resolve_turn_id_prefix(
+    client: AgentRecipient, agent_id: str, room_id: str, prefix: TurnIdPrefix
+) -> _Resolved | str:
+    """The one queued turn `prefix` names, or why it names none.
+
+    Looked up among this agent's queued turns in this room only, so a prefix
+    never reaches a turn of another agent or room. A str is the refusal to
+    post, said in the room and sent to no host. A turn the host queued for
+    itself (`<commandId>:followup`) is no match: the card never offers its ID,
+    and `!cancel` cannot take it.
+    """
+    async with client.session_factory() as session:
+        rows = await AgentSessionActivityStore().queued_turns_starting_with(
+            session, agent_id, room_id, prefix.text
+        )
+    matches = sorted(
+        {row.turn_id.lower() for row in rows if TURN_ID_PATTERN.fullmatch(row.turn_id)}
+    )
+    if not matches:
+        return _NO_QUEUED_TURN
+    if len(matches) > 1:
+        return _SEVERAL_QUEUED_TURNS
+    return _Resolved(matches[0])
 
 
 async def _cmd_list_room_agents(
@@ -2388,7 +2481,7 @@ COMMANDS: list[Command] = [
         "Withdraw a message of yours that a targeted agent has queued but not "
         "started on yet. Only the message's sender can cancel it. "
         "Usage: `!cancel`, then the agent's mention, then the turn ID from "
-        "the agent's activity card.",
+        "the agent's activity card, or at least its first 8 characters.",
         _cmd_cancel,
         decide=_decide_cancel,
         args_spec=(

@@ -346,6 +346,27 @@ describe('placeTurns', () => {
     });
   });
 
+  it('does not move the next turn under a refused start of a turn ID', () => {
+    const refusals = [
+      "No message waiting for me in this room has an ID that starts with the one you gave. If I've already started on it, use `!interrupt` with my mention to stop my current turn.",
+      "More than one message waiting for me in this room has an ID that starts with the one you gave, so I can't tell which to cancel.",
+    ];
+    for (const refusal of refusals) {
+      const messages = [
+        said('q1', null),
+        said('q2', null),
+        said('cancel', null),
+        { ...said('refused', 'helper'), body: refusal, threadRootId: 'cancel' } as ChatMessage,
+        said('r1', 'helper'),
+      ];
+      const bound = new Map([
+        ['q1', turn('t1')],
+        ['q2', turn('t2', 'running')],
+      ]);
+      expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], r1: ['t2'] });
+    }
+  });
+
   it('matches the text posted for a !cancel', () => {
     const host = readFileSync(
       join(__dirname, '../../../../../packages/agent-providers/src/host/room-cancel-reply.ts'),
@@ -358,18 +379,26 @@ describe('placeTurns', () => {
       'utf8'
     );
     const ack = core.match(/_CANCEL = ControlTexts\(\s*ack="([^"]*)"/)?.[1];
-    const cantCancel = core
-      .match(/_CANT_CANCEL = \(([^)]*)\)/)?.[1]
-      .match(/"[^"]*"/g)
-      ?.map((part) => part.slice(1, -1))
-      .join('');
+    const constant = (name: string) =>
+      core
+        .match(new RegExp(`\\n${name} = \\(([^)]*)\\)`))?.[1]
+        .match(/"[^"]*"/g)
+        ?.map((part) => part.slice(1, -1))
+        .join('');
+    const cantCancel = constant('_CANT_CANCEL');
+    const noQueuedTurn = constant('_NO_QUEUED_TURN');
+    const severalQueuedTurns = constant('_SEVERAL_QUEUED_TURNS');
     const notSent = [...core.matchAll(/f"Could not send \{command\}: ([^"]*)"/g)].map(
       (each) => `Could not send cancel: ${each[1]}`
     );
     expect(ack).toBeDefined();
     expect(cantCancel).toBeDefined();
+    expect(noQueuedTurn).toBeDefined();
+    expect(severalQueuedTurns).toBeDefined();
     expect(notSent.length).toBe(2);
-    expect(new Set([ack, cantCancel, ...notSent, ...answers])).toEqual(CANCEL_REPLIES);
+    expect(
+      new Set([ack, cantCancel, noQueuedTurn, severalQueuedTurns, ...notSent, ...answers])
+    ).toEqual(CANCEL_REPLIES);
   });
 });
 

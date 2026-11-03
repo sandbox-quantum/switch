@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from switch_core.bridges.agent.commands import TurnIdPrefix, parse_cancel_args
 from switch_core.bridges.collaboration.session.renderers import MARKDOWN, Markup
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_status
 from switch_core.bridges.collaboration.teams.adapter import _TEAMS_MARKUP
@@ -189,12 +190,21 @@ def test_a_cancelled_turn_says_so_and_nothing_about_time(
 @pytest.mark.parametrize(
     ("markup", "hint"),
     [
-        (MARKDOWN, _HINT.format(id=f"`{QUEUED_ID}`", cancel="`!cancel`")),
+        (
+            MARKDOWN,
+            "Turn ID: `3f2b8c1e` — the sender can withdraw it with `!cancel`, "
+            "the agent's mention and this ID.",
+        ),
         (
             TELEGRAM_HTML,
-            _HINT.format(id=f"<code>{QUEUED_ID}</code>", cancel="<code>!cancel</code>"),
+            "Turn ID: <code>3f2b8c1e</code> — the sender can withdraw it with "
+            "<code>!cancel</code>, the agent's mention and this ID.",
         ),
-        (_TEAMS_MARKUP, _HINT.format(id=f"**{QUEUED_ID}**", cancel="**!cancel**")),
+        (
+            _TEAMS_MARKUP,
+            "Turn ID: **3f2b8c1e** — the sender can withdraw it with **!cancel**, "
+            "the agent's mention and this ID.",
+        ),
     ],
     ids=["markdown", "telegram", "teams"],
 )
@@ -203,10 +213,15 @@ def test_a_queued_turn_names_its_id_marked_the_way_the_platform_marks_code(
 ) -> None:
     """The id and the command are literals to copy, so each platform marks them
     its own way — a backtick written into the wording would reach Telegram and
-    Teams as a backtick."""
+    Teams as a backtick. The id is its first eight characters, which `!cancel`
+    takes as they are."""
     lines = _drawn(_turn_with_id("queued", QUEUED_ID), markup)
 
     assert lines == [markup.bold("Queued. Waiting for the agent to start…"), hint]
+    assert hint == _HINT.format(
+        id=markup.code(QUEUED_ID[:8]), cancel=markup.code("!cancel")
+    )
+    assert parse_cancel_args(f"@cc {QUEUED_ID[:8]}") == TurnIdPrefix("3f2b8c1e")
     assert not lines[1].startswith("!")
     assert "@" not in lines[1]
 

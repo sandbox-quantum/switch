@@ -411,7 +411,8 @@ map. No Node/npx and no credentials in the CLI's environment.
   notice; question cards; answered-card removal; the unconfirmed-card search
   or notice; and the "host offline" card state. A 5-second tick redraws
   running turns where the platform redraws for the clock, and anything whose
-  agent went offline or came back.
+  agent went offline or came back. The card of a `queued` turn shows the first
+  8 characters of its turn ID, and `!cancel` takes that start or the full ID.
 - Stop: a press (`INTERRUPT_ACTION`) resolves its turn from
   `turn_status_posts`, is refused if that turn is no longer running, is
   judged by the agent's addressing policy in the room (as `!interrupt` is),

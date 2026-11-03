@@ -301,7 +301,10 @@ version of their own to them without also giving them a release of their own.
   message still waiting for it. Only the message's sender can, and the
   message stays in the room's history. Switch relays it as `turn.cancel`, a
   new command in the session contract, and the session tells the room how it
-  went. A queued turn's activity card shows its turn ID and how to cancel it,
+  went. A queued turn's activity card shows the first 8 characters of its
+  turn ID, which `!cancel` takes as well as the full ID, looking them up
+  among that agent's queued turns in the room and refusing a start that
+  matches none or several. The card also says how to cancel it, and
   a cancelled turn's card reads "Cancelled before the agent started.", and
   `POST /agent-sessions/{session_id}/activity` takes `cancelled` as a turn
   status. A session host without `turn.cancel` does not read the command, so

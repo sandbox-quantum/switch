@@ -138,12 +138,16 @@ def withdraw_hint(turn: TurnUpsert) -> list[tuple[str, bool]] | None:
     after a reset or a compaction): nobody sent it and `!cancel` cannot name
     it. The test is the parser's own pattern, so the card never offers an id
     the command would reject.
+
+    The card shows the id's first eight characters, the shortest start
+    `!cancel` takes (`SHORT_TURN_ID_LENGTH` in its parser): core looks them up
+    among the agent's queued turns in the room. The full id works too.
     """
     if turn.status != "queued" or not TURN_ID_PATTERN.fullmatch(turn.turn_id):
         return None
     return [
         ("Turn ID: ", False),
-        (turn.turn_id, True),
+        (turn.turn_id[:8], True),
         (" — the sender can withdraw it with ", False),
         (CANCEL_COMMAND, True),
         (", the agent's mention and this ID.", False),

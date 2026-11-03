@@ -1046,7 +1046,8 @@ async def test_a_queued_turn_names_its_id_as_code_on_its_session_card() -> None:
     ):
         assert _hint_pieces(_session_card(drawn)) == [
             ("Turn ID: ", False),
-            (QUEUED_ID, True),
+            # The first eight characters, which `!cancel` takes.
+            ("3f2b8c1e", True),
             (" — the sender can withdraw it with ", False),
             ("!cancel", True),
             (", the agent's mention and this ID.", False),

@@ -165,7 +165,8 @@ export function placeRequests(
 
 /**
  * What is posted for a `!cancel`: Switch's acknowledgement or refusal
- * (`_CANCEL` and `Could not send cancel` in
+ * (`_CANCEL`, `Could not send cancel`, `_NO_QUEUED_TURN` and
+ * `_SEVERAL_QUEUED_TURNS` in
  * core/switch_core/bridges/agent/commands.py), then the session's answer
  * (`roomCancelReply` in the host). All are posted as the agent, often in a
  * thread, and the timeline shows threads inline.
@@ -175,6 +176,8 @@ export const CANCEL_REPLIES: ReadonlySet<string> = new Set([
   "I can't cancel from here — I have no session connected to this room that could withdraw a queued message.",
   'Could not send cancel: the room command has no stable message ID.',
   "Could not send cancel: the agent's controller is not connected to Switch.",
+  "No message waiting for me in this room has an ID that starts with the one you gave. If I've already started on it, use `!interrupt` with my mention to stop my current turn.",
+  "More than one message waiting for me in this room has an ID that starts with the one you gave, so I can't tell which to cancel.",
   'Cancelled before the agent started. The agent will not receive it.',
   "I couldn't confirm the cancellation; check the activity card.",
   "The agent has already started on that message, so it can't be cancelled. To stop the agent's current turn, use `!interrupt` with its mention.",

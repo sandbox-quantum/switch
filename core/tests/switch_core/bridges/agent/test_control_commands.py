@@ -611,7 +611,32 @@ def test_a_cancel_without_a_turn_is_not_a_frame() -> None:
     ],
 )
 def test_cancel_args_name_one_turn(args: str) -> None:
-    assert parse_cancel_args(args) == TURN
+    named = parse_cancel_args(args)
+    # A full ID stays a plain str: it goes to the host as it is.
+    assert named == TURN
+    assert type(named) is str
+
+
+@pytest.mark.parametrize(
+    ("args", "prefix"),
+    [
+        # The card's eight characters, as copied, wrapped or not.
+        (f"@cc {TURN[:8]}", TURN[:8]),
+        (f"@cc `{TURN[:8]}`", TURN[:8]),
+        (f"@cc '{TURN[:8]}'", TURN[:8]),
+        (f'@cc "{TURN[:8]}"', TURN[:8]),
+        (f"{TURN[:8]} @cc", TURN[:8]),
+        # Case does not matter.
+        (f"@cc {TURN[:8].upper()}", TURN[:8]),
+        (f"@cc `{TURN[:13].upper()}`", TURN[:13]),
+        # More of the ID, up to one character short of it.
+        (f"@cc {TURN[:9]}", TURN[:9]),
+        (f"@cc {TURN[:20]}", TURN[:20]),
+        (f"@cc {TURN[:-1]}", TURN[:-1]),
+    ],
+)
+def test_cancel_args_take_the_start_of_a_turn_id(args: str, prefix: str) -> None:
+    assert parse_cancel_args(args) == commands.TurnIdPrefix(prefix)
 
 
 @pytest.mark.parametrize(
@@ -624,10 +649,19 @@ def test_cancel_args_name_one_turn(args: str) -> None:
         f"@cc {TURN} {TURN}",
         f"@cc {TURN} please",
         f"@cc {TURN}x",
-        f"@cc {TURN[:-1]}",
         f"@cc {TURN.replace('-', '_')}",
         f"@cc {TURN};rm",
         "@cc 1234",
+        # Shorter than the card shows.
+        f"@cc {TURN[:7]}",
+        f"@cc `{TURN[:7]}`",
+        # Not hex, or a dash out of place.
+        "@cc 1b4e28bz",
+        "@cc 1b4e-28ba",
+        f"@cc {TURN[:8]}x",
+        f"@cc {TURN[:8]}_2fa1",
+        f"@cc {TURN[:8]}%",
+        f"@cc {TURN[:8]} {TURN[:8]}",
         # Taking the wrapping off does not make a non-ID one.
         "@cc `current`",
         "@cc <current>",
@@ -638,6 +672,242 @@ def test_cancel_args_name_one_turn(args: str) -> None:
 )
 def test_cancel_args_that_name_no_single_turn_are_refused(args: str) -> None:
     assert parse_cancel_args(args) is None
+
+
+# ── !cancel with the start of a turn ID ──────────────────────────────────────
+
+# Same first eight characters as TURN.
+TWIN = "1b4e28ba-0000-4000-8000-000000000001"
+NO_MATCH = (
+    "No message waiting for me in this room has an ID that starts with the one "
+    "you gave. If I've already started on it, use `!interrupt` with my mention "
+    "to stop my current turn."
+)
+SEVERAL = (
+    "More than one message waiting for me in this room has an ID that starts "
+    "with the one you gave, so I can't tell which to cancel."
+)
+
+
+class _Turns:
+    """`AgentSessionActivityStore` as `_decide_cancel` uses it: turn rows of
+    (agent, room, turn ID, status), filtered the way the query filters."""
+
+    def __init__(self, rows: list[tuple[str, str, str, str]]) -> None:
+        self.rows = rows
+        self.asked: list[tuple[str, str, str]] = []
+
+    def __call__(self) -> _Turns:
+        return self
+
+    async def queued_turns_starting_with(
+        self, _session: Any, agent_id: str, room_id: str, prefix: str
+    ) -> list[SimpleNamespace]:
+        self.asked.append((agent_id, room_id, prefix))
+        return [
+            SimpleNamespace(turn_id=turn_id)
+            for agent, room, turn_id, status in self.rows
+            if (agent, room, status) == (agent_id, room_id, "queued")
+            and turn_id.lower().startswith(prefix.lower())
+        ]
+
+
+async def _cancel_with(
+    monkeypatch: pytest.MonkeyPatch,
+    args: str,
+    rows: list[tuple[str, str, str, str]],
+    *,
+    placed: str | None = "session-1",
+    controller_backed: bool = False,
+) -> tuple[_Reply, list[Any], _Turns]:
+    reply = _Reply()
+    relayed: list[Any] = []
+    turns = _Turns(rows)
+    monkeypatch.setattr(commands, "_reply", reply)
+    monkeypatch.setattr(commands, "_room_surface", _slack)
+    monkeypatch.setattr(commands, "AgentSessionActivityStore", turns)
+    client = _client(
+        reply,
+        command_level="session_dependent",
+        enqueue=[],
+        placed=placed,
+        relayed=relayed,
+    )
+    client._connections.controllers.is_bound = lambda _agent: controller_backed
+
+    await _cmd_cancel(
+        client, SimpleNamespace(room_id="!m:server"), _cancel_event(args), False
+    )
+    return reply, relayed, turns
+
+
+@pytest.mark.asyncio
+async def test_a_prefix_matching_one_queued_turn_relays_its_full_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply, relayed, turns = await _cancel_with(
+        monkeypatch,
+        f"@cc `{TURN[:8].upper()}`",
+        [
+            ("agent-1", "room-1", TURN, "queued"),
+            # The same prefix in another room or with another agent is no match.
+            ("agent-1", "room-2", TWIN, "queued"),
+            ("agent-2", "room-1", TWIN, "queued"),
+        ],
+    )
+
+    assert turns.asked == [("agent-1", "room-1", TURN[:8])]
+    [frame] = relayed
+    assert frame["body"] == {"type": "turn.cancel", "turnId": TURN}
+    assert reply.bodies == ["Asked my session to cancel that message."]
+
+
+@pytest.mark.asyncio
+async def test_a_prefix_matching_no_queued_turn_is_refused_here(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply, relayed, _ = await _cancel_with(
+        monkeypatch,
+        f"@cc {TURN[:8]}",
+        [("agent-1", "room-2", TURN, "queued"), ("agent-2", "room-1", TURN, "queued")],
+    )
+
+    assert reply.bodies == [NO_MATCH]
+    assert relayed == []
+    # Teams turns a known `@name` into a mention even in code.
+    assert "@" not in reply.bodies[0]
+
+
+@pytest.mark.asyncio
+async def test_a_prefix_of_a_started_turn_points_to_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply, relayed, _ = await _cancel_with(
+        monkeypatch, f"@cc {TURN[:8]}", [("agent-1", "room-1", TURN, "running")]
+    )
+
+    assert reply.bodies == [NO_MATCH]
+    assert "`!interrupt`" in reply.bodies[0]
+    assert relayed == []
+
+
+@pytest.mark.asyncio
+async def test_a_prefix_of_a_follow_up_the_host_queued_itself_matches_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply, relayed, _ = await _cancel_with(
+        monkeypatch,
+        f"@cc {TURN[:8]}",
+        [("agent-1", "room-1", f"{TURN}:followup", "queued")],
+    )
+
+    assert reply.bodies == [NO_MATCH]
+    assert relayed == []
+
+
+@pytest.mark.asyncio
+async def test_a_prefix_matching_several_queued_turns_is_refused_here(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        ("agent-1", "room-1", TURN, "queued"),
+        ("agent-1", "room-1", TWIN, "queued"),
+    ]
+    reply, relayed, _ = await _cancel_with(monkeypatch, f"@cc {TURN[:8]}", rows)
+
+    assert reply.bodies == [SEVERAL]
+    assert relayed == []
+    assert "@" not in reply.bodies[0]
+
+    # More of the ID tells them apart.
+    for longer, full in ((TURN[:10], TURN), (TWIN[:10], TWIN)):
+        reply, relayed, _ = await _cancel_with(monkeypatch, f"@cc {longer}", rows)
+
+        [frame] = relayed
+        assert frame["body"] == {"type": "turn.cancel", "turnId": full}
+
+
+@pytest.mark.asyncio
+async def test_a_prefix_with_no_session_here_is_told_no_cancel_is_possible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whether a session here could cancel at all comes first: with none, the
+    start of an ID is not looked up, and the room is not sent to `!interrupt`."""
+    for rows in ([], [("agent-1", "room-1", TURN, "queued")]):
+        reply, relayed, turns = await _cancel_with(
+            monkeypatch, f"@cc {TURN[:8]}", rows, placed=None
+        )
+
+        assert turns.asked == []
+        assert reply.bodies == [commands._CANT_CANCEL]
+        assert relayed == []
+
+
+@pytest.mark.asyncio
+async def test_a_controller_backed_agent_has_a_prefix_looked_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply, relayed, turns = await _cancel_with(
+        monkeypatch,
+        f"@cc {TURN[:8]}",
+        [("agent-1", "room-1", TURN, "queued")],
+        placed=None,
+        controller_backed=True,
+    )
+
+    assert turns.asked == [("agent-1", "room-1", TURN[:8])]
+    [frame] = relayed
+    # The controller routes it to the session working in this room.
+    assert frame["sessionId"] is None
+    assert frame["body"] == {"type": "turn.cancel", "turnId": TURN}
+    assert reply.bodies == ["Asked my session to cancel that message."]
+
+    reply, relayed, _ = await _cancel_with(
+        monkeypatch, f"@cc {TURN[:8]}", [], placed=None, controller_backed=True
+    )
+    assert reply.bodies == [NO_MATCH]
+    assert relayed == []
+
+
+@pytest.mark.asyncio
+async def test_a_full_id_goes_to_the_host_without_a_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host decides whether a full ID is still waiting, so core does not
+    look it up — even when it has no queued turn on record for it."""
+    reply, relayed, turns = await _cancel_with(monkeypatch, f"@cc {TURN.upper()}", [])
+
+    assert turns.asked == []
+    [frame] = relayed
+    assert frame["body"] == {"type": "turn.cancel", "turnId": TURN}
+    assert reply.bodies == ["Asked my session to cancel that message."]
+
+
+@pytest.mark.asyncio
+async def test_the_admin_takes_a_prefix_as_valid_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    for args in (f"@cc {TURN[:8]}", f"@cc `{TURN[:8].upper()}`"):
+        await _check_cancel_usage(
+            _admin_host(agent_names=["cc"], aliases={}, role_names=[]),
+            SimpleNamespace(room_id="!m"),
+            _cancel_event(args),
+            _meta(),
+        )
+    await _check_cancel_usage(
+        _admin_host(agent_names=["cc"], aliases={}, role_names=[]),
+        SimpleNamespace(room_id="!m"),
+        _cancel_event(f"@cc {TURN[:7]}"),
+        _meta(),
+    )
+
+    assert reply.bodies == [commands._CANCEL_USAGE]
+    # Seven characters are too few: the usage says how many will do.
+    assert "first 8 characters" in reply.bodies[0]
+    assert "first 8 characters" in commands.COMMANDS_BY_NAME["cancel"].description
 
 
 @pytest.mark.asyncio
