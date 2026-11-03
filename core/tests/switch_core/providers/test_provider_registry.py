@@ -71,7 +71,7 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "opencode": ("opencode", "OpenCode CLI"),
         "antigravity": ("antigravity", "Antigravity CLI"),
         "cursor": ("cursor", "Cursor CLI"),
-        "kimi": ("kimi", "Kimi Code"),
+        "kimi": ("kimi", "Kimi Code CLI"),
     }
 
 
