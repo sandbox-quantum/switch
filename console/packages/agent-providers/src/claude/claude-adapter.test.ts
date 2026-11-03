@@ -1280,6 +1280,52 @@ describe('ClaudeAdapter background subagents', () => {
     await adapter.stopAll();
   });
 
+  it('completes a call the background subagent made once its result comes, past the turn', async () => {
+    const started = await startSession();
+    const { sdk, adapter, recorder } = started;
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(
+      assistantMessage('msg_1', [
+        {
+          type: 'tool_use',
+          id: 'tool-agent',
+          name: 'Agent',
+          input: { description: 'wait briefly', subagent_type: 'general-purpose' },
+        },
+      ])
+    );
+    query.emit(
+      task('task_started', {
+        task_id: 'agent-1',
+        tool_use_id: 'tool-agent',
+        task_type: 'local_agent',
+        description: 'wait briefly',
+        is_backgrounded: true,
+      })
+    );
+    query.emit(toolResult('tool-agent', 'Async agent launched successfully.'));
+    query.emit({
+      ...assistantMessage('msg_sub', [
+        { type: 'tool_use', id: 'tool-sleep', name: 'Bash', input: { command: 'sleep 20' } },
+      ]),
+      parent_tool_use_id: 'tool-agent',
+    });
+    query.emit(resultMessage([sent!.uuid!]));
+    await recorder.waitFor('turn.completed', () => true, 1_000);
+
+    query.emit({ ...toolResult('tool-sleep', ''), parent_tool_use_id: 'tool-agent' });
+
+    const completed = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'tool-sleep',
+      1_000
+    );
+    expect(completed).toMatchObject({ turnId: 'turn-1', item: { status: 'completed' } });
+    await adapter.stopAll();
+  });
+
   it('fails a background subagent whose task is stopped', async () => {
     const { adapter, recorder, query } = await launchInBackground();
     query.emit(

@@ -205,7 +205,11 @@ interface SessionState {
   turn: ActiveTurn | null;
   pendingApprovals: Map<string, PendingApproval>;
   pendingUserInputs: Map<string, PendingUserInput>;
-  toolItems: Map<string, ProviderItem>;
+  /**
+   * Each started tool call with the turn it started in. A background
+   * subagent's own calls end after that turn, and still end in it.
+   */
+  toolItems: Map<string, { turnId: string; item: ProviderItem }>;
   streamedMessageIds: Set<string>;
   textBlocks: Map<number, TextBlockState>;
   streamMessageId: string | null;
@@ -1082,7 +1086,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         toolName: toolNameForItem(name, toolInput),
         payload: toolInput,
       };
-      session.toolItems.set(id, item);
+      session.toolItems.set(id, { turnId, item });
       this.emit(session, {
         type: 'item.started',
         turnId,
@@ -1093,8 +1097,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleToolResults(session: SessionState, content: unknown): void {
-    const turnId = session.turn?.turnId;
-    if (turnId === undefined || !Array.isArray(content)) return;
+    if (!Array.isArray(content)) return;
 
     for (const block of content) {
       if (!isRecord(block) || block.type !== 'tool_result') continue;
@@ -1103,10 +1106,10 @@ export class ClaudeAdapter implements ProviderAdapter {
       const started = session.toolItems.get(toolUseId);
       if (!started) continue;
       session.toolItems.delete(toolUseId);
-      const backgroundTask =
-        started.type === 'subagent' ? backgroundTaskOf(session, toolUseId) : null;
+      const { turnId, item } = started;
+      const backgroundTask = item.type === 'subagent' ? backgroundTaskOf(session, toolUseId) : null;
       if (backgroundTask !== null) {
-        session.backgroundItems.set(backgroundTask, { turnId, item: started });
+        session.backgroundItems.set(backgroundTask, { turnId, item });
         continue;
       }
       const status: ItemStatus = block.is_error === true ? 'failed' : 'completed';
@@ -1114,7 +1117,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       this.emit(session, {
         type: 'item.completed',
         turnId,
-        item: { ...started, status, ...(text !== undefined ? { text } : {}) },
+        item: { ...item, status, ...(text !== undefined ? { text } : {}) },
         raw: { source: 'claude', payload: block },
       });
     }
