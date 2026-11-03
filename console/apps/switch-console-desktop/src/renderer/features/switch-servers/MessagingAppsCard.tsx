@@ -416,6 +416,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                 }
                 showBundledSignIn={isManaged && bridge.type === 'mattermost'}
                 isAdmin={isAdmin}
+                personal={personal}
                 savingChannelCreation={savingBridgeId === bridge.id}
                 onToggleChannelCreation={(enabled) =>
                   void handleToggleChannelCreation(bridge, enabled)
@@ -516,6 +517,7 @@ export function MessagingAppRow({
   olderLinks,
   showBundledSignIn,
   isAdmin,
+  personal = false,
   savingChannelCreation,
   onToggleChannelCreation,
   onConnectChat,
@@ -539,6 +541,8 @@ export function MessagingAppRow({
   olderLinks: { count: number; onRequireConfirmation: () => void } | null;
   showBundledSignIn: boolean;
   isAdmin: boolean;
+  /** Only your own side of the app, as Settings shows it: no workspace settings in the menu. */
+  personal?: boolean;
   savingChannelCreation: boolean;
   onToggleChannelCreation: (enabled: boolean) => void;
   /** Set on a connection whose chats are connected one at a time, for a user
@@ -845,27 +849,30 @@ export function MessagingAppRow({
               </>
             )}
 
-            <DropdownMenuSeparator />
-            {/* "Off" and "this platform has no such thing" are different claims,
+            {!personal && (
+              <>
+                <DropdownMenuSeparator />
+                {/* "Off" and "this platform has no such thing" are different claims,
               and an unticked box makes them look the same (CHOO-2137). A
               platform that cannot do it at all gets a plain disabled line
               saying so, never an unchecked box. */}
-            {bridge.channelCreationSupported ? (
-              <DropdownMenuCheckboxItem
-                checked={bridge.canCreateChannels}
-                disabled={!isAdmin || savingChannelCreation}
-                onCheckedChange={(next) => onToggleChannelCreation(next)}
-              >
-                Create channels on {platform}
-              </DropdownMenuCheckboxItem>
-            ) : (
-              <DropdownMenuItem disabled>Channels not supported on {platform}</DropdownMenuItem>
+                {bridge.channelCreationSupported ? (
+                  <DropdownMenuCheckboxItem
+                    checked={bridge.canCreateChannels}
+                    disabled={!isAdmin || savingChannelCreation}
+                    onCheckedChange={(next) => onToggleChannelCreation(next)}
+                  >
+                    Create channels on {platform}
+                  </DropdownMenuCheckboxItem>
+                ) : (
+                  <DropdownMenuItem disabled>Channels not supported on {platform}</DropdownMenuItem>
+                )}
+                {channelsLockedReason !== null && (
+                  <p className="px-2 py-1 text-xs text-foreground-muted">{channelsLockedReason}</p>
+                )}
+              </>
             )}
-            {channelsLockedReason !== null && (
-              <p className="px-2 py-1 text-xs text-foreground-muted">{channelsLockedReason}</p>
-            )}
-
-            {bridge.receivesWebhooks && (
+            {!personal && bridge.receivesWebhooks && (
               <>
                 <DropdownMenuSeparator />
                 {/* The address the platform delivers this connection's events
