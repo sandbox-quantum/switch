@@ -149,3 +149,15 @@ next token requests:
 - Reconnecting never narrows what a connection reaches: the bases of every
   grant the person has not removed in Airtable still count (see "What people
   do").
+
+## An organization's own Airtable integration
+
+With the `organization_connector_apps` flag on (with `service_connections`),
+an organization's admins can save its own under **Organization**,
+**Connectors** in the dashboard, with the same callback, checks and
+encryption as above. Every workspace in that organization then signs in
+through the organization's integration instead of the server's; the others keep
+using the server's. If the organization's integration stops working, its
+workspaces see Airtable as unavailable, with the reason, rather than falling
+back to the server's. Removing it sends them back to the server's integration, and
+people connected through it reconnect once. The flag is off by default.

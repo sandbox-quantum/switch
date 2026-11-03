@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 from uvicorn.main import STARTUP_FAILURE
 
+from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -52,6 +53,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     RETIRED_KEY_TYPE,
     ensure_bootstrap_owner,
 )
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -110,6 +112,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
+from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
@@ -156,6 +159,9 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.organization_app_credential_store import (
+    OrganizationAppCredentialStore,
+)
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
@@ -227,6 +233,7 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.setup import build_trust_client
+from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
 from switch_core.visibility.operators import OperatorList, warn_if_operators_hold_admin
@@ -681,12 +688,17 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     session_activity_listener = AgentSessionActivityListener(
         lambda: create_unpooled_engine(config)
     )
+    # Every `NOTIFY` this process sends from its own code, after the commits
+    # they announce, one transaction per batch (`announcer.py`): the router's
+    # messages and own events, and the signals below.
+    announcer = Announcer(session_factory)
     # Signals between switch-core processes (see `signals.py`): the same
     # arrangement again, carrying "who should look" rather than a room's rows.
     signal_bus = SignalBus(
         session_factory,
         lambda: create_unpooled_engine(config),
         process_id=process_id,
+        announcer=announcer,
     )
     # This process's row in `switch_core_processes`, claimed before anything
     # can record a connection against it and held until the process drains.
@@ -808,6 +820,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
     trust_client, trust_http = build_trust_client(session_factory, config)
+    trust_signals = TrustSettingsSignals(client=trust_client, bus=signal_bus)
 
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
@@ -883,6 +896,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             connections=connections,
             frontend_base_url=config.dashboard_base_url,
             message_telemetry=message_telemetry,
+            announcer=announcer,
         ),
         message_store=message_store,
         client_store=client_store,
@@ -960,6 +974,18 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # Clients registered or deleted in another process are started or stopped
     # here too (`clients/client_signals.py`).
     ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
+    # Every process runs each tenant's admin actor, so the process that wrote
+    # a message posts the heads-up it owes (`clients/mention_warnings.py`).
+    router.use_admin(
+        lambda tenant_id: next(
+            (
+                client
+                for client in client_lifecycle.get_by_type("admin", tenant_id)
+                if isinstance(client, SystemActor)
+            ),
+            None,
+        )
+    )
 
     # ── Collaboration bridge lifecycle ───────────────────────────────────────
     collab_lifecycle = CollaborationBridgeLifecycleService(
@@ -1057,6 +1083,12 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
+    # What every post checks first, kept until a signal says it changed.
+    room_access = RoomAccessCache(
+        ttl_seconds=config.agent_auth_cache_ttl_seconds,
+        max_entries=config.room_access_cache_max_entries,
+    )
+    room_access.follow(signal_bus)
     agent_bridge_app, protocol = create_agent_bridge_app(
         agent_store=agent_store,
         agent_session_store=agent_session_store,
@@ -1076,6 +1108,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         ),
         controller_auth=management.authenticator if management is not None else None,
         connections=connections,
+        room_access=room_access,
         telemetry=telemetry,
         trust_client=trust_client,
         gateway_ui=(
@@ -1255,6 +1288,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         chat_service=chat_service,
         connector_apps=connector_apps,
         config=config,
+        trust_settings_changed=trust_signals.changed,
     )
 
     register_platforms(collab_lifecycle)
@@ -1359,6 +1393,16 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # A service is issued only where this server is set up for it, as its
     # catalog entry's adapter says (`connections/registry.py`). Without any,
     # the broker's upkeep still revokes and prunes whatever records exist.
+    # With `organization_connector_apps` on, a workspace whose organization
+    # saved its own app goes through that one (`connections/organization_apps.py`).
+    organization_apps = (
+        OrganizationApps(
+            apps=connector_apps,
+            store=OrganizationAppCredentialStore(config.keyring),
+        )
+        if config.organization_connector_apps_enabled
+        else None
+    )
     service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=config.keyring,
@@ -1370,6 +1414,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             http=service_http,
             registration=service_registration,
         ),
+        organization_apps=organization_apps,
         disabled=config.disabled_services,
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=config.service_token_retention_days),
@@ -1379,9 +1424,11 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    gateway_app.state.organization_apps = organization_apps
     # A connector app the operator saves or removes, put to work in every process.
     ConnectorAppSignals(
         apps=connector_apps,
+        organization_apps=organization_apps,
         broker=service_broker,
         state=gateway_app.state,
         bus=signal_bus,
@@ -1480,6 +1527,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 if telemetry.enabled
                 else None
             )
+            await announcer.start()
             await message_listener.start()
             await session_activity_listener.start()
             await agent_event_listener.start()
@@ -1518,6 +1566,9 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
                 await signal_bus.stop()
+                # Last of them: what the router and the bus handed it is sent,
+                # for a few seconds at most, before the pool closes.
+                await announcer.stop()
                 # Before the operational flush, and bounded: the whole
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.
@@ -2402,6 +2453,17 @@ def migrate() -> None:
     asyncio.run(_migrate_and_grant(config))
 
 
+def _event_loop_factory() -> Callable[[], asyncio.AbstractEventLoop] | None:
+    """uvloop's event loop where it is installed, which is every platform but
+    Windows, and None (asyncio's own) where it is not. uvloop does the loop's
+    scheduling and its socket reads and writes in C."""
+    try:
+        import uvloop
+    except ImportError:
+        return None
+    return uvloop.new_event_loop
+
+
 def main() -> None:
     config = SwitchConfig()
     running_version = switch_core_version()
@@ -2421,7 +2483,7 @@ def main() -> None:
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    if not asyncio.run(run(config, process_id)):
+    if not asyncio.run(run(config, process_id), loop_factory=_event_loop_factory()):
         # The startup error is already logged (uvicorn: "Application startup
         # failed"). Exiting 0 here would read as a clean stop to anything
         # watching the exit status (`restart: on-failure`, Kubernetes, a

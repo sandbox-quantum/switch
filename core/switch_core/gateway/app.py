@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
 from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -57,6 +60,12 @@ from switch_core.gateway.messaging_installs import (
 )
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
+from switch_core.gateway.organization_connector_apps import (
+    router as organization_connector_apps_router,
+)
+from switch_core.gateway.organization_services import (
+    router as organization_services_router,
+)
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.origin_check import (
     OriginCheckMiddleware,
@@ -142,6 +151,7 @@ def create_gateway_app(
     chat_service: ChatService,
     connector_apps: ConnectorApps,
     config: SwitchConfig,
+    trust_settings_changed: Callable[[], None] | None = None,
 ) -> FastAPI:
     init_dependencies(
         agent_store=agent_store,
@@ -168,6 +178,7 @@ def create_gateway_app(
         invite_mailer=invite_mailer,
         user_changes=user_changes,
         config=config,
+        trust_settings_changed=trust_settings_changed,
     )
 
     app = FastAPI(title="Switch Gateway API")
@@ -244,6 +255,13 @@ def create_gateway_app(
         app.include_router(service_flows_router, tags=["service-connections"])
         app.include_router(workspace_services_router, tags=["service-connections"])
         app.include_router(connector_apps_router, tags=["connector-apps"])
+        if config.organization_connector_apps_enabled:
+            app.include_router(
+                organization_connector_apps_router, tags=["connector-apps"]
+            )
+            app.include_router(
+                organization_services_router, tags=["service-connections"]
+            )
 
     # authlib's OIDC client stores transient state/nonce/PKCE in the request
     # session across the IdP redirect round-trip; SameSite=Lax lets the cookie

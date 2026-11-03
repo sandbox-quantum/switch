@@ -67,7 +67,7 @@ class ManagementAuthenticator:
         self._workspace_restricted = workspace_restricted
         self._session_factory = session_factory
         self._controllers = controllers
-        self._token_secret = token_secret
+        self._verified = tokens.VerifiedTokens(secret=token_secret)
         self._presence = presence
         self._auth_cache = auth_cache
 
@@ -107,7 +107,7 @@ class ManagementAuthenticator:
 
     async def authenticate(self, token: str) -> ControllerPrincipal:
         try:
-            claims = tokens.verify_access_token(token, secret=self._token_secret)
+            claims = self._verified.verify(token)
         except tokens.AccessTokenExpired as exc:
             raise ControllerAuthError(
                 reason_codes.TOKEN_EXPIRED,
@@ -118,24 +118,40 @@ class ManagementAuthenticator:
                 reason_codes.INVALID_CREDENTIAL,
                 "The access token is not a valid controller token.",
             ) from exc
+        return await self.current(
+            ControllerPrincipal(
+                controller_id=claims.controller_id,
+                owner_id=claims.owner_id,
+                tenant_id=claims.tenant_id,
+            )
+        )
 
-        if not self._workspace_allowed(claims.tenant_id):
+    async def current(self, principal: ControllerPrincipal) -> ControllerPrincipal:
+        """The controller `principal` names, while it keeps the authority its
+        token gave it: not revoked, and owned by the same person. Every request
+        made with a controller access token is checked here, and every call on
+        a controller's socket, which authenticated once when it opened."""
+        if not self._workspace_allowed(principal.tenant_id):
             # Ahead of the cache, so a controller remembered from before the
             # list changed is refused too.
             raise ControllerAuthError(
                 reason_codes.WORKSPACE_NOT_ENABLED, WORKSPACE_NOT_ENABLED_MESSAGE, 403
             )
 
-        cached = self._auth_cache.controller(claims.tenant_id, claims.controller_id)
-        if cached is not None and cached.owner_id == claims.owner_id:
+        cached = self._auth_cache.controller(
+            principal.tenant_id, principal.controller_id
+        )
+        if cached is not None and cached.owner_id == principal.owner_id:
             return cached
 
-        generation = self._auth_cache.generation
-        async with tenant_session(self._session_factory, claims.tenant_id) as session:
+        ticket = self._auth_cache.ticket()
+        async with tenant_session(
+            self._session_factory, principal.tenant_id
+        ) as session:
             controller = await self._controllers.get(
-                session, claims.tenant_id, claims.controller_id
+                session, principal.tenant_id, principal.controller_id
             )
-        if controller is None or controller.owner_id != claims.owner_id:
+        if controller is None or controller.owner_id != principal.owner_id:
             raise ControllerAuthError(
                 reason_codes.INVALID_CREDENTIAL,
                 "The access token names no controller.",
@@ -144,13 +160,13 @@ class ManagementAuthenticator:
             raise ControllerAuthError(
                 reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
             )
-        principal = ControllerPrincipal(
+        current = ControllerPrincipal(
             controller_id=controller.id,
             owner_id=controller.owner_id,
-            tenant_id=claims.tenant_id,
+            tenant_id=principal.tenant_id,
         )
-        self._auth_cache.put_controller(principal, generation)
-        return principal
+        self._auth_cache.put_controller(current, ticket)
+        return current
 
     async def tenant_of_secret(self, secret: str) -> str | None:
         """The tenant an enrollment code or controller credential belongs to,

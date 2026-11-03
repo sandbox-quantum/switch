@@ -2,7 +2,8 @@
 
 Hosted agents v2's migrations started from upstream's `c7715ebb95c9`, and
 upstream added 12 of its own from the same point. `4e634b519462` merges the two
-heads. The test server's database is stamped `a90e3df4fe3f`, inside our chain,
+heads, and `f3b937246dcd` joins that merge with main's later head (`10f6d02ac5bc`).
+The test server's database is stamped `a90e3df4fe3f`, inside our chain,
 so its next upgrade must run our remaining revision (`e11b7c3d9a2f`) and all 12
 of upstream's, then the merge. This builds a database of its own (never the
 shared test schema) and checks: one head; a fresh database upgrades to it; and
@@ -27,7 +28,9 @@ from switch_core.db.schema_version import record_expand_only
 
 _CORE = Path(__file__).resolve().parents[2]
 _MIGRATION_DB = "migration_upstream_merge"
-_HEAD = "4e634b519462"
+_HEAD = "f3b937246dcd"
+_UPSTREAM_MERGE = "4e634b519462"
+_MAIN_HEAD = "10f6d02ac5bc"
 _TEST_SERVER = "a90e3df4fe3f"
 _OURS_AFTER_TEST_SERVER = "e11b7c3d9a2f"
 
@@ -184,7 +187,13 @@ def test_there_is_exactly_one_head_and_it_is_the_merge() -> None:
     assert script.get_heads() == [_HEAD]
     merge = script.get_revision(_HEAD)
     assert merge is not None
-    assert set(merge._all_down_revisions) == {"9d41b7e2c6a3", _OURS_AFTER_TEST_SERVER}
+    assert set(merge._all_down_revisions) == {_UPSTREAM_MERGE, _MAIN_HEAD}
+    upstream_merge = script.get_revision(_UPSTREAM_MERGE)
+    assert upstream_merge is not None
+    assert set(upstream_merge._all_down_revisions) == {
+        "9d41b7e2c6a3",
+        _OURS_AFTER_TEST_SERVER,
+    }
 
 
 def test_only_a_revision_with_one_parent_is_marked_expand_only() -> None:

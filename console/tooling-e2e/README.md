@@ -137,7 +137,7 @@ passed or not. A teardown that leaves something behind fails the scenario.
 | `unaddressed-history` | Five unaddressed messages arrive in the recipient's room history in the order sent, and none of them as a notification. | — |
 | `operations-front-door` | The operations registry over HTTP: it lists the operations, `list_rooms` returns the room, `read_context` returns a message posted in it. | — |
 | `mattermost-roundtrip` | A room on the Mattermost bridge: an addressed post from the human reaches the agent, and the agent's reply appears as its bot. | Mattermost |
-| `agent-identity` | Renaming an agent from the gateway and with `!rename-agent` renames its Mattermost bot in place, and mentions follow the new name; `!delete-agent`, confirmed, deletes it. | Mattermost |
+| `agent-identity` | The human links their chat account by posting the code the gateway issued, and a replaced code confirms nothing; renaming an agent from the gateway and with `!rename-agent` renames its Mattermost bot in place, and mentions follow the new name; `!delete-agent`, confirmed, deletes it. | Mattermost |
 | `room-group-paths` | The same subgroup name under two parents: a bare name both share is refused naming each path, the path picks one, and a second group of that name under one parent is refused whatever its case. | — |
 | `attachment-names` | A file whose name is not latin-1 is posted, listed by `read_context` and downloaded under its own name (`filename*` in `Content-Disposition`). | — |
 | `client-mistakes` | An outsider inviting itself into a room or reading it gets a 403, and a history timestamp that is not ISO 8601 a 400 naming the parameter; never a 500. | — |

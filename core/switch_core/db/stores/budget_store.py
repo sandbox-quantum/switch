@@ -1,10 +1,13 @@
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
     ColumnElement,
+    Select,
     and_,
+    bindparam,
     cast,
     delete,
     func,
@@ -63,6 +66,73 @@ def _period_start() -> ColumnElement[datetime]:
     )
 
 
+def _standings(*, covering_agent: bool) -> Select[Any]:
+    """The statement `BudgetStore.standings` runs: every budget of the tenant
+    named by the `tenant_id` parameter, or with `covering_agent` only the
+    budgets covering the agent named by `agent_id`.
+
+    Built once, at import: it is run for every message an agent posts and
+    every row decided for an agent, and building it, a correlated subquery
+    and a dozen comparisons, cost more than running it."""
+    period_start = _period_start()
+    agent_clients = aliased(Agent)
+    spent = (
+        select(func.coalesce(func.sum(TenantUsage.amount), 0))
+        .where(
+            TenantUsage.tenant_id == UsageBudget.tenant_id,
+            TenantUsage.metric == UsageBudget.metric,
+            TenantUsage.bucket_start >= period_start,
+            or_(UsageBudget.model == "", TenantUsage.model == UsageBudget.model),
+            or_(
+                and_(
+                    UsageBudget.agent_id.is_(None),
+                    TenantUsage.client_id.in_(
+                        select(agent_clients.client_id).where(
+                            agent_clients.tenant_id == UsageBudget.tenant_id
+                        )
+                    ),
+                ),
+                TenantUsage.client_id == Agent.client_id,
+            ),
+        )
+        .correlate(UsageBudget, Agent)
+        .scalar_subquery()
+    )
+    statement = (
+        select(
+            UsageBudget,
+            Agent.name,
+            spent,
+            period_start + func.make_interval(0, 0, 0, 0, UsageBudget.period_hours),
+        )
+        .outerjoin(
+            Agent,
+            and_(
+                Agent.tenant_id == UsageBudget.tenant_id,
+                Agent.id == UsageBudget.agent_id,
+            ),
+        )
+        .where(UsageBudget.tenant_id == bindparam("tenant_id"))
+        .order_by(
+            UsageBudget.agent_id.nulls_first(),
+            UsageBudget.metric,
+            UsageBudget.model,
+        )
+    )
+    if covering_agent:
+        statement = statement.where(
+            or_(
+                UsageBudget.agent_id.is_(None),
+                UsageBudget.agent_id == bindparam("agent_id"),
+            )
+        )
+    return statement
+
+
+_EVERY_BUDGET = _standings(covering_agent=False)
+_BUDGETS_COVERING_AGENT = _standings(covering_agent=True)
+
+
 class BudgetStore:
     async def standings(
         self, session: AsyncSession, *, tenant_id: str, agent_id: str | None
@@ -78,56 +148,12 @@ class BudgetStore:
         Names the tenant explicitly as well as relying on the bound session,
         for the reason `UsageStore.totals` gives.
         """
-        period_start = _period_start()
-        agent_clients = aliased(Agent)
-        spent = (
-            select(func.coalesce(func.sum(TenantUsage.amount), 0))
-            .where(
-                TenantUsage.tenant_id == UsageBudget.tenant_id,
-                TenantUsage.metric == UsageBudget.metric,
-                TenantUsage.bucket_start >= period_start,
-                or_(UsageBudget.model == "", TenantUsage.model == UsageBudget.model),
-                or_(
-                    and_(
-                        UsageBudget.agent_id.is_(None),
-                        TenantUsage.client_id.in_(
-                            select(agent_clients.client_id).where(
-                                agent_clients.tenant_id == UsageBudget.tenant_id
-                            )
-                        ),
-                    ),
-                    TenantUsage.client_id == Agent.client_id,
-                ),
+        if agent_id is None:
+            rows = await session.execute(_EVERY_BUDGET, {"tenant_id": tenant_id})
+        else:
+            rows = await session.execute(
+                _BUDGETS_COVERING_AGENT, {"tenant_id": tenant_id, "agent_id": agent_id}
             )
-            .correlate(UsageBudget, Agent)
-            .scalar_subquery()
-        )
-        statement = (
-            select(
-                UsageBudget,
-                Agent.name,
-                spent,
-                period_start + func.make_interval(0, 0, 0, 0, UsageBudget.period_hours),
-            )
-            .outerjoin(
-                Agent,
-                and_(
-                    Agent.tenant_id == UsageBudget.tenant_id,
-                    Agent.id == UsageBudget.agent_id,
-                ),
-            )
-            .where(UsageBudget.tenant_id == tenant_id)
-            .order_by(
-                UsageBudget.agent_id.nulls_first(),
-                UsageBudget.metric,
-                UsageBudget.model,
-            )
-        )
-        if agent_id is not None:
-            statement = statement.where(
-                or_(UsageBudget.agent_id.is_(None), UsageBudget.agent_id == agent_id)
-            )
-        rows = await session.execute(statement)
         return [
             BudgetStanding(
                 id=budget.id,

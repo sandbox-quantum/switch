@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from switch_core import room_service as room_service_module
-from switch_core.room_service import RoomService
+from switch_core.room_service import RECONCILE_BATCH_SIZE, RoomService
 
 
 class _FakeSessionCM:
@@ -32,6 +32,7 @@ class _FakeRoomStore:
         self._client_ids_by_room = client_ids_by_room
         self._agent_clients_by_room = agent_clients_by_room
         self.added: list[tuple[str, str]] = []
+        self.batches: list[int] = []
 
     async def get_all(
         self, session: Any, *, include_archived: bool = False
@@ -45,6 +46,25 @@ class _FakeRoomStore:
         self, session: Any, room_id: str
     ) -> dict[str, str]:
         return dict(self._agent_clients_by_room.get(room_id, {}))
+
+    async def client_ids_by_room(
+        self, session: Any, room_ids: list[str]
+    ) -> dict[str, list[str]]:
+        self.batches.append(len(room_ids))
+        return {
+            room_id: list(self._client_ids_by_room[room_id])
+            for room_id in room_ids
+            if room_id in self._client_ids_by_room
+        }
+
+    async def member_agent_clients_by_room(
+        self, session: Any, room_ids: list[str]
+    ) -> dict[str, dict[str, str]]:
+        return {
+            room_id: dict(self._agent_clients_by_room[room_id])
+            for room_id in room_ids
+            if room_id in self._agent_clients_by_room
+        }
 
     async def add_client(self, session: Any, client_id: str, room_id: str) -> None:
         self.added.append((client_id, room_id))
@@ -268,3 +288,28 @@ class TestReconcileRoomClients:
 
         assert matrix.invited == []
         assert room_store.added == []
+
+    async def test_reads_memberships_a_batch_of_rooms_at_a_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Startup waits on this under the boot lock, so its reads must not
+        # grow with one round trip per room.
+        count = RECONCILE_BATCH_SIZE * 2 + 1
+        rooms = [
+            SimpleNamespace(
+                id=f"room-{i}", tenant_id="tenant-1", transport_room_id=f"!{i}:s"
+            )
+            for i in range(count)
+        ]
+        svc, room_store, matrix = _build_service(
+            monkeypatch,
+            rooms=rooms,
+            client_ids_by_room={room.id: ["admin-client"] for room in rooms[1:]},
+            by_type={"admin": [_admin()]},
+        )
+
+        await svc.reconcile_room_clients()
+
+        assert room_store.batches == [RECONCILE_BATCH_SIZE, RECONCILE_BATCH_SIZE, 1]
+        assert matrix.invited == [("!0:s", "@switch-admin:switch.local")]
+        assert room_store.added == [("admin-client", "room-0")]

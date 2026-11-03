@@ -24,6 +24,7 @@ from switch_core.bridges.agent.mcp import create_mcp_app
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -114,6 +115,7 @@ def create_agent_bridge_app(
     trust_client: TrustClient,
     gateway_ui: GatewayUi | None,
     connections: AgentConnectionRegistry | None = None,
+    room_access: RoomAccessCache | None = None,
     telemetry: TelemetryService | None = None,
 ) -> tuple[FastAPI, AgentCore]:
     # One registry for the whole process: the live connection set is the source
@@ -149,6 +151,7 @@ def create_agent_bridge_app(
         config=config,
         approval_outcomes=approval_outcomes,
         trust_client=trust_client,
+        room_access=room_access,
         telemetry=telemetry,
     )
 
