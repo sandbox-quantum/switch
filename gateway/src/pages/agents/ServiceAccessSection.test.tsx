@@ -371,6 +371,21 @@ describe("ServiceAccessSection", () => {
     expect(screen.queryByRole("button", { name: "Grant" })).toBeNull();
   });
 
+  it("offers no Change on a GitHub grant the workspace cannot use, and still removes it", async () => {
+    mockServer(GRANTED, [
+      onOff("active", {
+        slug: "github",
+        name: "GitHub",
+        pass_through: false,
+        workspace_enabled: false,
+      }),
+    ]);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(SWITCHED_OFF("GitHub"))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+  });
+
   const NOT_SET_UP =
     "Example is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
 
