@@ -10,7 +10,7 @@ Expand only: a release from before this revision never reads the column and
 never sends an inventory.
 
 Revision ID: 3b8e5d1f7a92
-Revises: 22e1d92cfd4c
+Revises: 10f6d02ac5bc
 Create Date: 2026-11-03 00:00:00.000000
 
 """
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "3b8e5d1f7a92"
-down_revision: str | None = "22e1d92cfd4c"
+down_revision: str | None = "10f6d02ac5bc"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
