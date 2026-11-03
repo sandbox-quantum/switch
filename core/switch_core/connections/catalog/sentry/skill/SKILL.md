@@ -1,18 +1,22 @@
 ---
 name: sentry
-description: Inspect and manage production errors, stack traces, issues, events and releases in Sentry acting with your owner's Sentry access.
+description: Inspect errors, stack traces, and triage issues in Sentry acting with your owner's Sentry access.
 ---
 
 # Sentry
 
-The `sentry` MCP server gives you tools to inspect errors, crashes, and performance issues in Sentry. Use them to investigate production defects, retrieve stack traces, identify offending releases, and locate affected users.
+The `sentry` MCP server gives you tools to inspect errors, crashes, performance issues, and triage defects in Sentry. Use them to investigate production defects, retrieve stack traces, identify offending releases, and update issue statuses.
+
+## What this connection can change:
+
+- **Triage operations:** Tools permit updating issue statuses (e.g. resolving, unresolving, ignoring) and assigning issues to team members.
+- **Inspect before changing:** Always inspect issue details, frequency, and stack traces before making changes. Never mutate an issue (resolving, assigning, or updating status) without explicit confirmation from the user in the room.
 
 ## How to work with it:
 
 - **Start narrow:** Always scope queries by project (`projectSlug`), organization (`organizationSlug`), environment, or time range. Unbounded searches across large organizations are slow and hit rate limits.
-- **Inspect before changing:** Read issue details, stack traces, and tags before taking actions. Do not mutate issues (such as resolving, assigning, or archiving) unless explicitly requested by the user.
 - **Quote context and links:** When summarizing errors or events, cite the issue ID, exception type, error message, culprit file or function, and direct URL to the Sentry issue so team members can verify your findings.
-- **Respect data privacy:** Stack traces, error tags, and request breadcrumbs may contain sensitive customer or internal environment information. Summarize error traces concisely and never copy unneeded personal data or secrets into conversation rooms.
+- **Respect data privacy:** Stack traces, error tags, and request breadcrumbs may contain sensitive customer or internal environment information. Summarize error traces concisely and never copy unneeded personal data into conversation rooms.
 
 ## Finding things:
 
