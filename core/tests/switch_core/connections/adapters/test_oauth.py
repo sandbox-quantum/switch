@@ -248,6 +248,25 @@ class TestSignIn:
         with pytest.raises(ServiceAdapterError, match="HTTP 405"):
             await adapter.identify(secret.access_token or "")
 
+    async def test_sends_the_vendors_own_authorization_params(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n"
+                "    authorization_params: { token_access_type: offline }\n",
+            ),
+        )
+        url = await adapter.authorization_url(
+            redirect_uri=REDIRECT,
+            state="state-1",
+            code_challenge=s256("verifier"),
+            scopes=["read:items"],
+        )
+        query = parse_qs(urlsplit(url).query)
+        assert query["token_access_type"] == ["offline"]
+        assert query["code_challenge_method"] == ["S256"]
+
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
         adapter, _ = _adapter(vendor)
