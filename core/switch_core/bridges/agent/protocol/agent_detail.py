@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
-from sqlalchemy import ColumnElement, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import (
@@ -200,7 +200,7 @@ async def assemble_agent_detail(
     session: AsyncSession,
     *,
     agent: Agent,
-    visible: ColumnElement[bool],
+    visible_room_ids: set[str],
     agent_store: AgentStore,
     room_store: RoomStore,
     user_store: UserStore,
@@ -221,16 +221,13 @@ async def assemble_agent_detail(
         len(models),
     )
 
-    # Rooms the viewer may not read (`visible` does not hold for) are never
+    # Rooms the viewer may not read (outside `visible_room_ids`) are never
     # named to them: they are left out of the agent's rooms, and a session in
     # one carries no room name.
     rooms = await room_store.get_rooms_for_agent(
         session, agent.id, include_archived=True
     )
-    shown = await room_store.visible_room_ids(
-        session, [room.id for room in rooms], visible
-    )
-    rooms = [room for room in rooms if room.id in shown]
+    rooms = [room for room in rooms if room.id in visible_room_ids]
     room_name_by_id = {room.id: room.name for room in rooms}
 
     room_ids = [room.id for room in rooms]
@@ -264,7 +261,7 @@ async def assemble_agent_detail(
         ]
         if room_id is not None and room_id not in room_name_by_id
     }
-    shown_others = await room_store.visible_room_ids(session, other_room_ids, visible)
+    shown_others = other_room_ids & visible_room_ids
     for other in (await room_store.get_many(session, shown_others)).values():
         room_name_by_id[other.id] = other.name
 

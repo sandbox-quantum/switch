@@ -4,7 +4,6 @@ import logging
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
@@ -353,9 +352,7 @@ class TestUnresolvableSlugs:
             room_id = room.id
 
         async with session_factory() as session:
-            payload = await service.list_room_resources(
-                session, room_id, linked_visible=true()
-            )
+            payload = await service.list_room_resources(session, room_id)
         assert payload["reference_types"]["never_registered"]["missing"] is True
 
 
@@ -404,9 +401,7 @@ class TestPrivateTypeStillReachesAgents:
             room_id = room.id
 
         async with session_factory() as session:
-            payload = await service.list_room_resources(
-                session, room_id, linked_visible=true()
-            )
+            payload = await service.list_room_resources(session, room_id)
 
         entry = payload["reference_types"]["alice_private"]
         assert entry["display_name"] == "Alice Private Type"

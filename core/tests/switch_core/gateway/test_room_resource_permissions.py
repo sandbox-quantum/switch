@@ -443,13 +443,17 @@ async def test_links_and_the_room_graph_name_only_rooms_the_viewer_may_read(
         )
         assert inbound == []
 
-        graph = await get_room_link_graph(session, svc, world.member, False)
+        graph = await get_room_link_graph(
+            session, svc, _ROOM_STORE, world.member, False
+        )
         assert {room.name for room in graph.rooms} == {"public", "theirs"}
         assert [(link.source_room_id, link.target_room_id) for link in graph.links] == [
             (world.public.id, world.theirs.id)
         ]
 
-        admin_graph = await get_room_link_graph(session, svc, world.stranger, True)
+        admin_graph = await get_room_link_graph(
+            session, svc, _ROOM_STORE, world.stranger, True
+        )
         assert {room.name for room in admin_graph.rooms} == {
             "public",
             "theirs",

@@ -7,9 +7,9 @@ import base64
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import ColumnElement, true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -40,17 +40,14 @@ async def _rooms(session_factory: async_sessionmaker[AsyncSession]) -> list[str]
         return [room.id for room in rooms]
 
 
-async def _every_room(_session: AsyncSession, _agent_id: str) -> ColumnElement[bool]:
-    return true()
-
-
 def _list(session_factory: async_sessionmaker[AsyncSession], **kwargs: object):
-    # Which rooms an agent may be told of is `test_linked_rooms_access`'s
-    # concern; here it may be told of every one, so paging alone is tested.
+    # The owner administers the workspace, so every room is visible: what is
+    # under test here is the paging; who sees which room is tested in
+    # test_room_store_agent_visibility.py.
     protocol = SimpleNamespace(
         session_factory=session_factory,
         room_store=RoomStore(),
-        _rooms_visible_to=_every_room,
+        _resolve_acting_identity=AsyncMock(return_value=(None, "owner-1", True)),
     )
     defaults: dict[str, object] = {
         "include_archived": False,

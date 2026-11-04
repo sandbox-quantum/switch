@@ -7,12 +7,13 @@ import logging
 import re
 import secrets
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ColumnElement, func, or_, select
+from sqlalchemy import select
 
 from switch_core.addressing import (
     AddressingPolicy,
@@ -113,7 +114,6 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import has_agent, readable_by
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
@@ -3191,25 +3191,6 @@ class AgentCore:
             )
         return agent, agent.owner_id, owner_is_admin
 
-    async def _rooms_visible_to(
-        self, session: AsyncSession, agent_id: str
-    ) -> ColumnElement[bool]:
-        """The rooms an agent may be told of: those its owner may read, and
-        those it is in. Its owner counts as an admin only by their role in the
-        workspace; the operator flag is left out, so a read records no
-        platform access."""
-        agent = await self.agent_store.get(session, agent_id)
-        if agent is None:
-            raise ValueError(f"Unknown agent: {agent_id}")
-        owner_is_admin = agent.owner_id is not None and (
-            await self.user_store.administers_by_role(
-                session, require_tenant_id(), agent.owner_id
-            )
-        )
-        return or_(
-            readable_by(agent.owner_id, is_admin=owner_is_admin), has_agent(agent_id)
-        )
-
     async def _require_room_action(
         self, session: AsyncSession, agent_id: str, room_id: str, action: Action
     ) -> Room:
@@ -3718,18 +3699,12 @@ class AgentCore:
     ) -> dict[str, Any]:
         """Create a directed link from source_room_id → target_room_id.
 
-        Requires write access to the source room, and a target the agent may
-        be told of (`_rooms_visible_to`): the reply names it.
+        Requires write access to the source room and read access to the
+        target, whose name and description the link shows.
         """
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, source_room_id, "write")
-            visible = await self._rooms_visible_to(session, agent_id)
-            if not await self.room_store.visible_room_ids(
-                session, [target_room_id], visible
-            ):
-                raise PermissionError(
-                    f"Not authorized to link to room {target_room_id}"
-                )
+            await self._require_room_action(session, agent_id, target_room_id, "read")
             result = await self.resource_service.attach_linked_room(
                 session,
                 source_room_id=source_room_id,
@@ -3772,19 +3747,25 @@ class AgentCore:
         limit: int,
         cursor: str | None,
     ) -> tuple[list[Room], str | None]:
-        """One page of the rooms the agent may be told of (`_rooms_visible_to`),
-        oldest first, and the cursor for the next page (None on the last).
-        Archived rooms are excluded unless `include_archived` is set."""
+        """One page of the rooms the agent may see, oldest first, and the
+        cursor for the next page (None on the last): every room its owner may
+        read, plus those it is a member of. Archived rooms are excluded unless
+        `include_archived` is set."""
         if not 1 <= limit <= LIST_ALL_ROOMS_MAX:
             raise ValueError(f"limit must be between 1 and {LIST_ALL_ROOMS_MAX}")
         async with self.session_factory() as session:
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
             rooms = await self.room_store.page_all(
                 session,
-                visible=await self._rooms_visible_to(session, agent_id),
                 include_archived=include_archived,
                 name_contains=name_contains,
                 limit=limit + 1,
                 after=_decode_room_cursor(cursor) if cursor is not None else None,
+                reader_id=owner_id,
+                reader_is_admin=owner_is_admin,
+                member_agent_id=agent_id,
             )
         if len(rooms) <= limit:
             return rooms, None
@@ -3792,22 +3773,41 @@ class AgentCore:
         last = rooms[-1]
         return rooms, _encode_room_cursor(last.created_at, last.id)
 
+    async def rooms_visible_to(
+        self, session: AsyncSession, agent_id: str, *, include_archived: bool
+    ) -> list[Room]:
+        """The rooms the agent's owner may read, plus those the agent is in."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        return await self.room_store.list_visible_to_agent(
+            session,
+            reader_id=owner_id,
+            reader_is_admin=owner_is_admin,
+            member_agent_id=agent_id,
+            include_archived=include_archived,
+        )
+
+    async def _visible_room_ids(self, session: AsyncSession, agent_id: str) -> set[str]:
+        """Ids of `rooms_visible_to`, archived rooms included."""
+        rooms = await self.rooms_visible_to(session, agent_id, include_archived=True)
+        return {r.id for r in rooms}
+
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.
 
         Returns dicts of ``{id, name, description, parent_group_id, room_count,
         path}`` where `path` is the root-first ancestry (e.g. "Parent / Child")
-        and `room_count` is the number of rooms directly in that group.
+        and `room_count` is the number of rooms directly in that group that
+        the agent may see.
         """
         async with self.session_factory() as session:
             result = await session.execute(select(RoomGroup))
             groups = list(result.scalars().all())
-            count_rows = await session.execute(
-                select(Room.group_id, func.count(Room.id))
-                .where(Room.group_id.is_not(None))
-                .group_by(Room.group_id)
+            visible = await self.rooms_visible_to(
+                session, agent_id, include_archived=True
             )
-            counts = {gid: c for gid, c in count_rows.all() if gid is not None}
+        counts = Counter(r.group_id for r in visible if r.group_id is not None)
 
         by_id = {g.id: g for g in groups}
 
@@ -3866,9 +3866,18 @@ class AgentCore:
         (a path, bare name or id). Returns the new group's detail dict.
 
         Raises ValueError if `parent_group_name` is unknown or ambiguous, or if
-        the parent already has a group with this name.
+        the parent already has a group with this name, and PermissionError
+        unless the agent's owner administers the workspace: groups are shared
+        and have no owner of their own.
         """
         async with self.session_factory() as session:
+            _agent, _owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            if not owner_is_admin:
+                raise PermissionError(
+                    "Only a workspace admin's agent can create room groups."
+                )
             parent_group_id = await self._resolve_group_name(session, parent_group_name)
             group = await self.room_group_store.create(
                 session,
@@ -3895,7 +3904,7 @@ class AgentCore:
         self, agent_id: str, group_id: str
     ) -> dict[str, Any]:
         """Return one room group's detail: its fields, ancestry path, the rooms
-        directly in it, and its immediate child groups.
+        directly in it that the agent may see, and its immediate child groups.
 
         Raises ValueError if the group does not exist.
         """
@@ -3904,11 +3913,12 @@ class AgentCore:
             if group is None:
                 raise ValueError(f"Room group not found: {group_id}")
 
-            member_room_rows = await session.execute(
-                select(Room.id, Room.name).where(Room.group_id == group_id)
-            )
             member_rooms = [
-                {"id": rid, "name": rname} for rid, rname in member_room_rows.all()
+                {"id": r.id, "name": r.name}
+                for r in await self.rooms_visible_to(
+                    session, agent_id, include_archived=True
+                )
+                if r.group_id == group_id
             ]
 
             child_rows = await session.execute(
@@ -3971,7 +3981,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=agent,
-                visible=await self._rooms_visible_to(session, agent_id),
+                visible_room_ids=await self._visible_room_ids(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4045,7 +4055,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,
-                visible=await self._rooms_visible_to(session, agent_id),
+                visible_room_ids=await self._visible_room_ids(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4342,21 +4352,12 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         return {"verdict": POST_INVOCATION_OK}
 
-    async def list_room_resources(self, agent_id: str, room_id: str) -> dict[str, Any]:
+    async def list_room_resources(self, room_id: str) -> dict[str, Any]:
         """Return the {reference_types, references, documents} payload for a
         room. Used by ``connect_to_room`` and the ``list_references`` MCP tool.
-        Caller is responsible for verifying agent membership first.
-
-        Its linked rooms are those the agent may be told of
-        (`_rooms_visible_to`): an agent holds no more than its owner does, so
-        a link does not name a private room its owner cannot open, and a room
-        the agent is in always qualifies."""
+        Caller is responsible for verifying agent membership first."""
         async with self.session_factory() as session:
-            return await self.resource_service.list_room_resources(
-                session,
-                room_id,
-                linked_visible=await self._rooms_visible_to(session, agent_id),
-            )
+            return await self.resource_service.list_room_resources(session, room_id)
 
     async def request_document_load(
         self,

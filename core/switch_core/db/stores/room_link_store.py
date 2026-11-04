@@ -1,4 +1,4 @@
-from sqlalchemy import ColumnElement, delete, insert, select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Room, RoomLink
@@ -56,11 +56,7 @@ class RoomLinkStore:
         return result.scalar_one_or_none() is not None
 
     async def list_outbound(
-        self,
-        session: AsyncSession,
-        source_room_id: str,
-        *,
-        visible: ColumnElement[bool],
+        self, session: AsyncSession, source_room_id: str
     ) -> list[tuple[str, str, str, str]]:
         """Return outbound links from `source_room_id`, joined with the target
         room's name and description.
@@ -69,55 +65,41 @@ class RoomLinkStore:
 
         Archived target rooms are excluded — a pointer to an archived room is
         dead weight (the agent cannot connect to it), and mirrors the
-        archived-filtering `RoomStore` queries. So are target rooms `visible`
-        does not hold for: `readable_by` for a person, so a link does not
-        name a private room they cannot open.
+        archived-filtering `RoomStore` queries.
         """
         result = await session.execute(
             select(Room.id, Room.name, Room.description, RoomLink.label)
             .join(RoomLink, RoomLink.target_room_id == Room.id)
             .where(RoomLink.source_room_id == source_room_id)
             .where(Room.archived_at.is_(None))
-            .where(visible)
             .order_by(RoomLink.created_at)
         )
         return [(rid, name, desc, label) for rid, name, desc, label in result.all()]
 
-    async def list_between(
-        self, session: AsyncSession, *, visible: ColumnElement[bool]
-    ) -> list[tuple[str, str, str]]:
-        """Return every link between two rooms `visible` holds for, as
-        ``(source_room_id, target_room_id, label)``."""
-        shown = select(Room.id).where(visible)
+    async def list_all(self, session: AsyncSession) -> list[tuple[str, str, str]]:
+        """Return every link as ``(source_room_id, target_room_id, label)``."""
         result = await session.execute(
-            select(RoomLink.source_room_id, RoomLink.target_room_id, RoomLink.label)
-            .where(RoomLink.source_room_id.in_(shown))
-            .where(RoomLink.target_room_id.in_(shown))
-            .order_by(RoomLink.created_at)
+            select(
+                RoomLink.source_room_id, RoomLink.target_room_id, RoomLink.label
+            ).order_by(RoomLink.created_at)
         )
         return [(s, t, lbl) for s, t, lbl in result.all()]
 
     async def list_inbound(
-        self,
-        session: AsyncSession,
-        target_room_id: str,
-        *,
-        visible: ColumnElement[bool],
+        self, session: AsyncSession, target_room_id: str
     ) -> list[tuple[str, str, str, str]]:
         """Return inbound links pointing at `target_room_id`, joined with the
         source room's name and description.
 
         Each tuple: ``(source_room_id, source_room_name, source_room_description, label)``.
 
-        Archived source rooms, and those `visible` does not hold for, are
-        excluded, mirroring ``list_outbound``.
+        Archived source rooms are excluded, mirroring ``list_outbound``.
         """
         result = await session.execute(
             select(Room.id, Room.name, Room.description, RoomLink.label)
             .join(RoomLink, RoomLink.source_room_id == Room.id)
             .where(RoomLink.target_room_id == target_room_id)
             .where(Room.archived_at.is_(None))
-            .where(visible)
             .order_by(RoomLink.created_at)
         )
         return [(rid, name, desc, label) for rid, name, desc, label in result.all()]

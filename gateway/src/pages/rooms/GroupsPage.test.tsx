@@ -1,11 +1,14 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RoomGroupDetail, RoomSummary } from "../../data/api";
+import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
+import type { UseQueryResult } from "../../data/hooks";
 import GroupsPage from "./GroupsPage";
 
-vi.mock("react-router", () => ({
-  useNavigate: () => vi.fn(),
+vi.mock("../../data/AuthContext", () => ({
+  useAuth: vi.fn(),
 }));
 
 vi.mock("../../data/hooks", () => ({
@@ -13,41 +16,76 @@ vi.mock("../../data/hooks", () => ({
   useRooms: vi.fn(),
 }));
 
+function authState(canAdminTenant: boolean) {
+  return {
+    session: null,
+    user: null,
+    loading: false,
+    loadError: null,
+    isOperator: false,
+    canAdminTenant,
+    refresh: vi.fn(async () => {}),
+    login: vi.fn(async () => {}),
+    logout: vi.fn(async () => {}),
+    switchTo: vi.fn(async () => {}),
+  };
+}
+
+function queryResult<T>(data: T | null): UseQueryResult<T> {
+  return { data, loading: false, error: null, refetch: vi.fn() };
+}
+
+const group: RoomGroupDetail = {
+  id: "g1",
+  name: "Customers",
+  description: null,
+  color: null,
+  parent_group_id: null,
+  room_count: 0,
+  created_at: "2026-01-01",
+};
+
 function room(id: string, name: string, groupId: string | null, canWrite: boolean) {
   return { id, name, group_id: groupId, group_name: null, can_write: canWrite } as unknown as RoomSummary;
 }
 
+function renderAs(isAdmin: boolean, rooms: RoomSummary[] = []) {
+  vi.mocked(useAuth).mockReturnValue(authState(isAdmin));
+  vi.mocked(hooks.useRoomGroups).mockReturnValue(queryResult([group]));
+  vi.mocked(hooks.useRooms).mockReturnValue(queryResult(rooms));
+  render(
+    <MemoryRouter>
+      <GroupsPage />
+    </MemoryRouter>,
+  );
+}
+
 describe("GroupsPage", () => {
-  beforeEach(() => {
-    vi.mocked(hooks.useRoomGroups).mockReturnValue({
-      data: [
-        { id: "g1", name: "Team", color: "#7EB6FF", parent_group_id: null, room_count: 2 } as unknown as RoomGroupDetail,
-      ],
-      loading: false,
-      error: null,
-      refetch: vi.fn(),
-    });
-    vi.mocked(hooks.useRooms).mockReturnValue({
-      data: [
-        room("r1", "planning", "g1", true),
-        room("r2", "leadership", "g1", false),
-        room("r3", "retro", null, true),
-        room("r4", "board", null, false),
-      ],
-      loading: false,
-      error: null,
-      refetch: vi.fn(),
-    });
+  afterEach(cleanup);
+
+  it("lets an admin create, edit and delete groups", () => {
+    renderAs(true);
+    expect(screen.getByRole("button", { name: /new group/i })).toBeTruthy();
+    expect(screen.getByLabelText("Edit Customers")).toBeTruthy();
+    expect(screen.getByLabelText("Delete Customers")).toBeTruthy();
   });
 
-  afterEach(() => {
-    cleanup();
-    vi.clearAllMocks();
+  it("hides group management from anyone else", () => {
+    renderAs(false);
+    expect(screen.getByText("Customers")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /new group/i })).toBeNull();
+    expect(screen.queryByLabelText("Edit Customers")).toBeNull();
+    expect(screen.queryByLabelText("Delete Customers")).toBeNull();
   });
 
   it("files and unfiles only rooms the viewer may write to", async () => {
-    render(<GroupsPage />);
-    fireEvent.click(screen.getByText("Team"));
+    renderAs(false, [
+      room("r1", "planning", "g1", true),
+      room("r2", "leadership", "g1", false),
+      room("r3", "retro", null, true),
+      room("r4", "board", null, false),
+    ]);
+    fireEvent.click(screen.getByText("Customers"));
 
     screen.getByRole("button", { name: "Remove planning from group" });
     expect(screen.queryByRole("button", { name: "Remove leadership from group" })).toBeNull();

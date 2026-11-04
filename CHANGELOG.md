@@ -45,19 +45,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Security
-- **Private rooms are no longer named to people who cannot open them.** The
-  room graph gave everyone in a workspace the name and description of every
-  room in it, and so did an agent's `list_all_rooms`. A room's linked rooms
-  named private rooms on either end, as did the linked rooms an agent is
-  handed on connecting, and linking to a private room replied with its name.
-  An agent's detail named every room it is in. A reference, document or
-  package's "Attached to" list and attached-rooms count took in every room it
-  was attached to, and removing an item from a package named every room that
-  lost it. Each now names only rooms the viewer may read; for an agent, rooms
-  its owner may read and rooms it is in. Linking now needs read access to the
-  target. Workspace admins still see every room. Where a change reaches rooms
-  the viewer cannot open, they are counted without names: a resource's owner
-  sees how many private rooms it is in, and deleting it warns about them.
+- **Counts and replies no longer name private rooms either.** Beyond the
+  room listings below, a reference, document or package's attached-rooms count
+  took in every room it was attached to, an agent's detail named every room
+  it is in, and removing an item from a package named every room that lost
+  it. Each now names, and counts, only rooms the viewer may read; workspace
+  admins still see every room. Whoever may manage a resource is still told
+  how many rooms they cannot open it is in, without their names, and deleting
+  it warns about those rooms too.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when
@@ -96,6 +91,27 @@ version of their own to them without also giving them a release of their own.
   a list of candidates could settle on someone else's private room. That told
   the runner the room existed and could write its name into their new room.
   Now a room the runner cannot read reads as missing.
+
+- **Registering an agent under a parent requires owning the parent.** The
+  agent API's `register-known` and `register-known-bulk` accepted any agent as
+  `parent_agent_id`, copying its name and settings to the new child. They now
+  refuse a parent the registering user does not own, as the dashboard's own
+  subagent registration already did.
+- **Private rooms stay out of room listings for people who cannot read them.**
+  The room link graph, the rooms a document, package or reference is attached
+  to, and an agent's `list_all_rooms` now show only rooms the caller may read
+  (an agent also sees the rooms it is in). Linking a room to another now
+  needs read access to the target, whose name the link shows, including
+  links an agent's `create_room` makes. A room's links, outbound and inbound,
+  leave out rooms the caller cannot read, for people and agents alike. An
+  agent can list a room's participants only from inside the room.
+- **Only a workspace admin manages room groups.** Groups are shared by the
+  whole workspace and have no owner, so any member could rename, move or
+  delete one. Creating, changing and deleting a group, from the dashboard,
+  the API or an agent's `create_room_group`, now needs a workspace admin (for
+  an agent, its owner). Anyone can still file a room they can write into an
+  existing group. Group room counts, and the rooms `get_room_group_detail`
+  lists, now leave out private rooms the caller cannot read.
 
 #### Added
 - **The gateway says what the caller may change in a room.** Rooms, in the

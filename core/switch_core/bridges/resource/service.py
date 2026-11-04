@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import ColumnElement, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import (
@@ -35,7 +35,7 @@ from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
-from switch_core.db.stores.room_store import AttachedRooms, readable_by
+from switch_core.db.stores.room_store import AttachedRooms
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
 
@@ -429,15 +429,8 @@ class ResourceService:
     # ── On-connect / list helpers ─────────────────────────────────────────
 
     async def list_room_resources(
-        self,
-        session: AsyncSession,
-        room_id: str,
-        *,
-        linked_visible: ColumnElement[bool],
+        self, session: AsyncSession, room_id: str
     ) -> dict[str, Any]:
-        """A room's resources and linked rooms, for an agent in it. Linked
-        rooms are those `linked_visible` holds for (the agent's
-        `_rooms_visible_to`)."""
         refs = await self._references.list_for_room(session, room_id)
         docs = await self._documents.list_for_room(session, room_id)
         packages = await self._packages.list_for_room(session, room_id)
@@ -469,9 +462,7 @@ class ResourceService:
                 }
             )
 
-        linked_rows = await self._room_links.list_outbound(
-            session, room_id, visible=linked_visible
-        )
+        linked_rows = await self._room_links.list_outbound(session, room_id)
         linked_rooms = [
             {
                 "target_room_id": rid,
@@ -739,19 +730,9 @@ class ResourceService:
     # ── Room links (gateway) ──────────────────────────────────────────────
 
     async def list_linked_rooms_for_room(
-        self,
-        session: AsyncSession,
-        source_room_id: str,
-        *,
-        reader_id: str | None,
-        reader_is_admin: bool,
+        self, session: AsyncSession, source_room_id: str
     ) -> list[dict[str, Any]]:
-        """The room's outbound links, to rooms the reader may read."""
-        rows = await self._room_links.list_outbound(
-            session,
-            source_room_id,
-            visible=readable_by(reader_id, is_admin=reader_is_admin),
-        )
+        rows = await self._room_links.list_outbound(session, source_room_id)
         return [
             {
                 "target_room_id": rid,
@@ -763,28 +744,32 @@ class ResourceService:
         ]
 
     async def get_room_link_graph(
-        self, session: AsyncSession, *, reader_id: str | None, reader_is_admin: bool
+        self, session: AsyncSession, readable_rooms: list[Room]
     ) -> dict[str, Any]:
-        """Return every room the reader may read, and every directed link
-        between two of them, in a single payload, for the full-graph view in
-        the frontend.
+        """Return `readable_rooms` and the directed links between them in a
+        single payload, for the full-graph view in the frontend. A link with
+        either end outside `readable_rooms` is left out, so the graph says
+        nothing about rooms the caller cannot read.
 
         Each room carries its `group_id`, and the flattened group tree is
         returned under `groups` so the frontend can colour rooms by their
         top-level ancestor group.
         """
-        visible = readable_by(reader_id, is_admin=reader_is_admin)
-        result = await session.execute(
-            select(Room.id, Room.name, Room.description, Room.group_id).where(visible)
-        )
         rooms = [
-            {"id": rid, "name": name, "description": desc, "group_id": gid}
-            for rid, name, desc, gid in result.all()
+            {
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "group_id": r.group_id,
+            }
+            for r in readable_rooms
         ]
-        link_rows = await self._room_links.list_between(session, visible=visible)
+        readable_ids = {r.id for r in readable_rooms}
+        link_rows = await self._room_links.list_all(session)
         links = [
             {"source_room_id": s, "target_room_id": t, "label": lbl}
             for s, t, lbl in link_rows
+            if s in readable_ids and t in readable_ids
         ]
         group_result = await session.execute(
             select(
@@ -801,19 +786,9 @@ class ResourceService:
         return {"rooms": rooms, "links": links, "groups": groups}
 
     async def list_inbound_linked_rooms(
-        self,
-        session: AsyncSession,
-        target_room_id: str,
-        *,
-        reader_id: str | None,
-        reader_is_admin: bool,
+        self, session: AsyncSession, target_room_id: str
     ) -> list[dict[str, Any]]:
-        """The links pointing at the room, from rooms the reader may read."""
-        rows = await self._room_links.list_inbound(
-            session,
-            target_room_id,
-            visible=readable_by(reader_id, is_admin=reader_is_admin),
-        )
+        rows = await self._room_links.list_inbound(session, target_room_id)
         return [
             {
                 "source_room_id": rid,

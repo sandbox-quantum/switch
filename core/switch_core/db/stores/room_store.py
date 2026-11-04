@@ -268,12 +268,20 @@ class RoomStore:
         name_contains: str | None,
         limit: int,
         after: tuple[datetime, str] | None,
-        visible: ColumnElement[bool],
+        reader_id: str | None,
+        reader_is_admin: bool,
+        member_agent_id: str,
     ) -> list[Room]:
         """Up to `limit` rooms after the `(created_at, id)` position `after`,
-        oldest first, whose name contains `name_contains` (any case), of those
-        `visible` holds for."""
-        stmt = select(Room).where(visible)
+        oldest first, whose name contains `name_contains` (any case).
+
+        Only rooms an agent may see are returned: those its owner `reader_id`
+        may read (as `list_readable`; every room for a workspace admin) and
+        those `member_agent_id` is in. An agent with no owner sees public
+        rooms and its own."""
+        stmt = select(Room)
+        if not reader_is_admin:
+            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         if name_contains:
@@ -284,6 +292,23 @@ class RoomStore:
                 > sa_tuple(literal(after[0]), literal(after[1]))
             )
         stmt = stmt.order_by(Room.created_at, Room.id).limit(limit)
+        return list((await session.execute(stmt)).scalars().all())
+
+    async def list_visible_to_agent(
+        self,
+        session: AsyncSession,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
+        member_agent_id: str,
+        include_archived: bool,
+    ) -> list[Room]:
+        """Every room an agent may see, as `page_all` filters them, unpaged."""
+        stmt = select(Room)
+        if not reader_is_admin:
+            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
+        if not include_archived:
+            stmt = stmt.where(Room.archived_at.is_(None))
         return list((await session.execute(stmt)).scalars().all())
 
     async def list_readable(
@@ -958,11 +983,20 @@ def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
     return or_(Room.read_visibility == "public", involves(user_id))
 
 
-def has_agent(agent_id: str) -> ColumnElement[bool]:
-    """True for a `Room` row the agent is in."""
-    return exists().where(
-        room_agents.c.room_id == Room.id, room_agents.c.agent_id == agent_id
-    )
+def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[bool]:
+    """True for a `Room` row an agent may see when its owner is not a
+    workspace admin: public, one the owner takes part in, or one the agent is
+    in. An agent with no owner sees public rooms and its own."""
+    visible = [
+        Room.read_visibility == "public",
+        exists().where(
+            room_agents.c.room_id == Room.id,
+            room_agents.c.agent_id == agent_id,
+        ),
+    ]
+    if reader_id is not None:
+        visible.append(involves(reader_id))
+    return or_(*visible)
 
 
 def involves(user_id: str) -> ColumnElement[bool]:
