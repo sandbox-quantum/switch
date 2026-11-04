@@ -1059,7 +1059,18 @@ class WebexAdapter(PlatformAdapter):
         query = query.strip()
         if not query:
             return []
-        people = await self._require_client().search_people(query, limit=20)
+        try:
+            people = await self._require_client().search_people(query, limit=20)
+        except WebexAPIError as exc:
+            # A free (consumer) Webex org refuses every lookup by name and
+            # answers only an exact email address.
+            if exc.status == 400 and "@" not in query:
+                raise NotImplementedError(
+                    "This Webex organisation does not allow searching people by "
+                    "name. Search by their full email address instead, or have "
+                    "them message the bot once."
+                ) from exc
+            raise
         found: list[DirectoryUser] = []
         for person in people:
             person_id = person.get("id")

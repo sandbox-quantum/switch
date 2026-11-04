@@ -756,3 +756,47 @@ class TestSpaces:
             "room-1", ["ok", "bad", "dup"], ["p-ok", "p-bad", "p-dup"]
         )
         assert left == ["p-bad"]
+
+
+class TestDirectory:
+    async def test_a_name_search_in_a_free_org_explains_itself(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route(
+            "GET",
+            "/v1/people",
+            lambda r: httpx.Response(
+                400,
+                json={
+                    "message": "DisplayName lookups cannot be used in the Consumer org."
+                },
+            ),
+        )
+        with pytest.raises(NotImplementedError, match="full email address"):
+            await adapter.search_directory_users("Ada")
+
+    async def test_an_email_search_finds_the_person(self, webex: FakeWebex) -> None:
+        adapter, _ = await _started(webex)
+        webex.route(
+            "GET",
+            "/v1/people",
+            lambda r: _ok(
+                {
+                    "items": [
+                        {
+                            "id": "p1",
+                            "displayName": "Ada",
+                            "emails": ["ada@example.test"],
+                            "type": "person",
+                        },
+                        {"id": "b1", "displayName": "Some Bot", "type": "bot"},
+                    ]
+                }
+            ),
+        )
+        [person] = await adapter.search_directory_users("ada@example.test")
+        assert (person.external_user_id, person.email) == ("p1", "ada@example.test")
+        assert (
+            webex.sent("GET", "/v1/people")[0].url.params["email"] == "ada@example.test"
+        )
