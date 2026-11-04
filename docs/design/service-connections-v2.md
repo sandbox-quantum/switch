@@ -603,6 +603,27 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## Linear
+
+Built for Linear's remote MCP server at `https://mcp.linear.app/mcp`:
+
+- Linear offers dynamic client registration (RFC 7591) via its discovery
+  document at `https://mcp.linear.app/.well-known/openid-configuration`.
+- Connects through Switch Console in loopback mode (`redirect: [loopback, core]`).
+- Identity: Linear's MCP tokens are scoped to `https://mcp.linear.app/mcp` and
+  refused by `https://api.linear.app/graphql` with 401 Unauthorized; its auth
+  server acts as an OpenID Connect IdP and issues a signed `id_token` (RS256)
+  verified against Linear's JWKS. The account ID comes from `sub` and the label
+  from `email`.
+- Access tokens live 24 hours (86,400 s); refresh tokens rotate on each renewal.
+- Scopes: `openid email read` for read access, and `openid email read write`
+  for write access.
+- Tools pass through from the remote MCP server.
+
+To connect: Settings, Connections in Switch Console, then Linear. Nothing
+needs configuring on the server. To roll back: add `linear` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every

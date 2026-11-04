@@ -114,7 +114,7 @@ def test_linear_needs_no_settings_and_registers_loopback_and_core_redirects() ->
     assert local_adapter._client._request["redirect_uris"] == [
         "http://127.0.0.1/switch-services/callback"
     ]
-    assert local_adapter._client._request["scope"] == "read write"
+    assert local_adapter._client._request["scope"] == "openid email read write"
 
     public_reg = ClientRegistration(
         session_factory=async_sessionmaker(),

@@ -163,22 +163,24 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: `method` (`GET` or `POST`) to
-    `url` with the access token (and an optional static JSON `body` for a
-    `POST`, never holding the token), and the dotted paths in its JSON answer
-    to the id and to a label people recognise (an email, a login)."""
+    """Where the account's stable id is read: a GET to `url` with the access
+    token, or the OpenID Connect `id_token` returned with it (`id_token:
+    true`), and the dotted paths in its JSON answer or verified claims to the
+    id and to a label people recognise (an email, a login)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    method: Literal["GET", "POST"]
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
-    body: dict[str, object] | None = None
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    id_token: bool = False
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
 
     @model_validator(mode="after")
-    def _no_body_on_get(self) -> "ConnectionIdentity":
-        if self.method == "GET" and self.body is not None:
-            raise ValueError("a GET identity call sends no body")
+    def _one_source(self) -> "ConnectionIdentity":
+        if (self.url is not None) == self.id_token:
+            raise ValueError(
+                "identity reads a URL with the access token, or the id_token: "
+                "one of the two"
+            )
         return self
 
 
@@ -708,6 +710,20 @@ class ConnectionDefinition(BaseModel):
             for level in (self.access.read, self.access.write)
         ):
             raise ValueError("an oauth entry's levels name OAuth scopes")
+        if self.auth.identity is not None and self.auth.identity.id_token:
+            if oauth is not None and oauth.authorization_url is not None:
+                raise ValueError(
+                    "reading identity from id_token discovers the issuer and "
+                    "signing keys, so authorization_url is not named"
+                )
+            if self.access is not None and any(
+                level is not None and "openid" not in (level.scopes or ())
+                for level in (self.access.read, self.access.write)
+            ):
+                raise ValueError(
+                    "an entry that reads identity from id_token needs the openid "
+                    "scope at every access level"
+                )
 
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while

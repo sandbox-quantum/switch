@@ -251,17 +251,14 @@ def test_the_shipped_linear_entry_signs_in_as_the_spike_found_it_must():
         ("linear", "https://mcp.linear.app/mcp")
     ]
     assert definition.access is not None and definition.access.write is not None
-    assert definition.access.read.scopes == ["read"]
-    assert definition.access.write.scopes == ["read", "write"]
+    assert definition.access.read.scopes == ["openid", "email", "read"]
+    assert definition.access.write.scopes == ["openid", "email", "read", "write"]
     identity = definition.auth.identity
     assert identity is not None
-    assert identity.method == "POST"
-    assert identity.url == "https://api.linear.app/graphql"
-    assert identity.body == {"query": "query { viewer { id email name } }"}
-    assert (identity.account_id, identity.label) == (
-        "data.viewer.id",
-        "data.viewer.email",
-    )
+    # api.linear.app refuses the MCP server's tokens and there is no userinfo
+    # endpoint, so the account is read from the signed OpenID Connect id_token.
+    assert (identity.id_token, identity.url) == (True, None)
+    assert (identity.account_id, identity.label) == ("sub", "email")
 
 
 @pytest.fixture
@@ -498,7 +495,6 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
-    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -534,8 +530,7 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
     assert definition.auth.identity is not None
-    assert definition.auth.identity.method == "GET"
-    assert definition.auth.identity.body is None
+    assert definition.auth.identity.id_token is False
     assert definition.auth.identity.account_id == "account.id"
     assert definition.token is not None
     assert definition.token.kind == "pass_through"
@@ -584,7 +579,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
+            "  identity:\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -697,19 +692,19 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "unchecked is for a static client",
         ),
         (
-            "    method: GET\n",
-            "",
-            "method",
+            "    url: https://api.example.test/me\n",
+            "    url: https://api.example.test/me\n    id_token: true\n",
+            "identity reads a URL with the access token, or the id_token",
         ),
         (
-            "    method: GET\n",
-            "    method: PUT\n",
-            "method",
+            "    url: https://api.example.test/me\n",
+            "    id_token: false\n",
+            "identity reads a URL with the access token, or the id_token",
         ),
         (
-            "    method: GET\n",
-            '    method: GET\n    body: { query: "viewer" }\n',
-            "a GET identity call sends no body",
+            "    url: https://api.example.test/me\n",
+            "    url: https://api.example.test/me\n    method: POST\n",
+            "method",
         ),
     ],
 )
@@ -722,30 +717,47 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
         load_catalog(catalog_copy)
 
 
+ID_TOKEN_ENTRY = OAUTH_ENTRY.replace(
+    "    url: https://api.example.test/me\n    account_id: account.id\n"
+    "    label: account.email\n",
+    "    id_token: true\n    account_id: sub\n    label: email\n",
+).replace(
+    'read: { scopes: ["read:items"] }\n'
+    '  write: { scopes: ["read:items", "write:items"] }',
+    'read: { scopes: ["openid", "email", "read:items"] }\n'
+    '  write: { scopes: ["openid", "email", "read:items", "write:items"] }',
+)
+
+
+def test_loads_an_oauth_entry_that_reads_its_identity_from_the_id_token(catalog_copy):
+    assert ID_TOKEN_ENTRY != OAUTH_ENTRY
+    _write_example(catalog_copy, ID_TOKEN_ENTRY)
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.id_token, identity.url) == (True, None)
+    assert (identity.account_id, identity.label) == ("sub", "email")
+
+
 @pytest.mark.parametrize(
-    ("identity_replacement", "expected_body"),
+    ("old", "new", "message"),
     [
         (
-            '    method: POST\n    body: { query: "query { viewer { id } }" }\n',
-            {"query": "query { viewer { id } }"},
+            'read: { scopes: ["openid", "email", "read:items"] }',
+            'read: { scopes: ["email", "read:items"] }',
+            "needs the openid scope at every access level",
         ),
         (
-            "    method: POST\n",
-            None,
+            '"openid", "email", "read:items", "write:items"',
+            '"email", "read:items", "write:items"',
+            "needs the openid scope at every access level",
         ),
     ],
 )
-def test_loads_an_oauth_entry_with_post_identity(
-    catalog_copy, identity_replacement, expected_body
-):
-    _write_example(
-        catalog_copy,
-        OAUTH_ENTRY.replace("    method: GET\n", identity_replacement),
-    )
-    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
-    assert identity is not None
-    assert identity.method == "POST"
-    assert identity.body == expected_body
+def test_an_id_token_identity_needs_the_openid_scope(catalog_copy, old, new, message):
+    assert old in ID_TOKEN_ENTRY
+    _write_example(catalog_copy, ID_TOKEN_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
 
 
 def test_placeholders_keep_their_short_form():

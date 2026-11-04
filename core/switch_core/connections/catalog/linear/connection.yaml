@@ -18,13 +18,13 @@ auth:
     redirect: [loopback, core]
     revocation_discovered: true
   identity:
-    # Linear exposes no REST /me endpoint; viewer identity comes from GraphQL.
-    method: POST
-    url: https://api.linear.app/graphql
-    body:
-      query: "query { viewer { id email name } }"
-    account_id: data.viewer.id
-    label: data.viewer.email
+    # Linear's MCP server issues tokens scoped to https://mcp.linear.app/mcp
+    # that https://api.linear.app/graphql refuses (401), and publishes no
+    # userinfo endpoint; it signs an OpenID Connect id_token (RS256) carrying
+    # sub and email instead.
+    id_token: true
+    account_id: sub
+    label: email
 # Linear's MCP OAuth tokens live 24 hours (measured ~86,399-86,400 s). Agents
 # still re-request hourly while an issued copy may remain valid up to 24 hours.
 token: { kind: pass_through, max_lifetime: 86400 }
@@ -32,14 +32,19 @@ mcp:
   servers:
     - { name: linear, url: "https://mcp.linear.app/mcp" }
 access:
-  # Narrowest scopes advertised by https://mcp.linear.app/.well-known/oauth-protected-resource/mcp:
-  # `read` alone for read-only connections; `read` and `write` when writes are chosen,
+  # Narrowest scopes advertised by https://mcp.linear.app/.well-known/openid-configuration:
+  # `openid` and `email` for the signed id_token, plus `read` alone for
+  # read-only connections and `read` and `write` when writes are chosen,
   # leaving out `admin` and `issues:create`-only variants.
   read:
     scopes:
+      - openid
+      - email
       - read
   write:
     scopes:
+      - openid
+      - email
       - read
       - write
 tools: { mode: pass_through }

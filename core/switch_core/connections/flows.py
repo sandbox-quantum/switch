@@ -328,7 +328,11 @@ class ServiceFlows:
                 redirect_uri=flow.stored.redirect_uri,
                 scopes=list(flow.stored.details["scopes"]),
             )
-            account = await adapter.identify(signed_in.secret.access_token or "")
+            account = await adapter.identify(
+                signed_in.secret.access_token or "",
+                id_token=signed_in.id_token,
+                client_id=signed_in.client_id,
+            )
         except ReauthorizationRequiredError:
             await self.failed(
                 checking, f"{flow.name} refused the sign-in. Connect again."
@@ -346,7 +350,9 @@ class ServiceFlows:
 
     def consent(self, exchange: Exchange) -> AccessLevel:
         """What the person consented to, as the vendor granted it."""
-        granted = set(exchange.signed_in.granted_scopes)
+        granted = set(exchange.signed_in.granted_scopes) | set(
+            exchange.account.oidc_scopes
+        )
         details = exchange.flow.details
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:

@@ -23,6 +23,8 @@ from typing import Any
 from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 import httpx
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -31,6 +33,9 @@ from switch_core.connections.adapters import (
     IssueRequest,
 )
 from switch_core.connections.loader import AccessLevel
+
+SIGNING_KID = "vendor-key-1"
+_SIGNING_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
 class FakeVendor:
@@ -329,10 +334,13 @@ class FakeOAuthServer:
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
         self.mcp_calls: list[dict[str, Any]] = []
-        self.identity_requests: list[httpx.Request] = []
-        self.identity_response: dict[str, Any] | None = None
         self.paths: list[str] = []
         self.fail: dict[str, tuple[int, Any]] = {}
+        # An OpenID Connect vendor signs an id_token with the key its JWKS
+        # publishes, but only where `openid` was asked for.
+        self.issues_id_tokens = True
+        self.openid_issuer = ISSUER
+        self.signing_key = _SIGNING_KEY
         self.metadata: dict[str, Any] = {
             "issuer": ISSUER,
             "authorization_endpoint": f"{ISSUER}/authorize",
@@ -376,18 +384,46 @@ class FakeOAuthServer:
         separator = "&" if "?" in query["redirect_uri"] else "?"
         return f"{query['redirect_uri']}{separator}code={code}&state={query['state']}"
 
-    def mint(self, scopes: list[str]) -> dict[str, Any]:
+    def mint(
+        self, scopes: list[str], *, client_id: str | None = None
+    ) -> dict[str, Any]:
         access = f"vendor_access_{secrets.token_hex(8)}"
         refresh = f"vendor_refresh_{secrets.token_hex(8)}"
         self.live_access[access] = scopes
         self.live_refresh[refresh] = scopes
-        return {
+        body: dict[str, Any] = {
             "access_token": access,
             "token_type": "Bearer",
             "expires_in": self.lifetime,
             "refresh_token": refresh,
             "scope": " ".join(scopes),
         }
+        if client_id is not None and "openid" in scopes and self.issues_id_tokens:
+            body["id_token"] = self.id_token(client_id)
+        return body
+
+    def id_token(self, client_id: str, **overrides: Any) -> str:
+        """An id_token as the vendor signs one, with `overrides` of its claims
+        (a claim set to None is left out)."""
+        claims: dict[str, Any] = {
+            "iss": ISSUER,
+            "aud": client_id,
+            "sub": "usr_oidc_1",
+            "email": "ada@example.test",
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 300,
+            **overrides,
+        }
+        claims = {key: value for key, value in claims.items() if value is not None}
+        return jwt.encode(
+            claims, self.signing_key, algorithm="RS256", headers={"kid": SIGNING_KID}
+        )
+
+    def jwks(self) -> dict[str, Any]:
+        key = json.loads(
+            jwt.algorithms.RSAAlgorithm.to_jwk(self.signing_key.public_key())
+        )
+        return {"keys": [{**key, "kid": SIGNING_KID, "alg": "RS256", "use": "sig"}]}
 
     # ── HTTP ─────────────────────────────────────────────────────────────────
 
@@ -411,6 +447,17 @@ class FakeOAuthServer:
             )
         if where == f"{ISSUER}/.well-known/oauth-authorization-server":
             return _json(200, self.metadata)
+        if where == f"{ISSUER}/.well-known/openid-configuration":
+            return _json(
+                200,
+                {
+                    **self.metadata,
+                    "issuer": self.openid_issuer,
+                    "jwks_uri": f"{ISSUER}/.well-known/jwks.json",
+                },
+            )
+        if where == f"{ISSUER}/.well-known/jwks.json":
+            return _json(200, self.jwks())
         if where == f"{ISSUER}/token" and request.method == "POST":
             return self._token(request)
         if where == f"{ISSUER}/register" and request.method == "POST":
@@ -420,16 +467,10 @@ class FakeOAuthServer:
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
-        if where == IDENTITY_URL and request.method in ("GET", "POST"):
-            self.identity_requests.append(request)
+        if where == IDENTITY_URL and request.method == "GET":
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
-            body = (
-                self.identity_response
-                if self.identity_response is not None
-                else {"account": self.account}
-            )
-            return _json(200, body)
+            return _json(200, {"account": self.account})
         if where == MCP_URL:
             return self._mcp(request)
         return _json(404, {"error": "not_found"})
@@ -485,7 +526,7 @@ class FakeOAuthServer:
                 or pending.resource != form.get("resource")
             ):
                 return _json(400, {"error": "invalid_grant"})
-            return _json(200, self.mint(pending.scopes))
+            return _json(200, self.mint(pending.scopes, client_id=pending.client_id))
         if form.get("grant_type") == "refresh_token":
             refresh = form.get("refresh_token", "")
             scopes = self.live_refresh.get(refresh)
