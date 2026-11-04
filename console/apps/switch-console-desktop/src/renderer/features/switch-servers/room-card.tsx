@@ -135,7 +135,7 @@ export function RoomCard({
                 </Button>
               }
             />
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent align="end" className="min-w-48">
               <DropdownMenuItem onClick={onArchive}>
                 {card.archived ? (
                   <ArchiveRestore className="size-4" />
