@@ -66,7 +66,10 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   },
 }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { servers: [{ id: 'srv', name: 'Server' }] },
+  switchServersStore: {
+    servers: [{ id: 'srv', name: 'Server' }],
+    statusFor: () => ({ connected: true, user: { id: 'me' } }),
+  },
 }));
 // The store's own rule for "yours": owned, a member, or an agent of yours inside.
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
@@ -177,7 +180,9 @@ async function render(): Promise<void> {
 }
 
 const names = () =>
-  [...container.querySelectorAll('button.group\\/room span.truncate')].map((s) => s.textContent);
+  [...container.querySelectorAll('tbody tr td:first-child span.truncate')].map(
+    (s) => s.textContent
+  );
 const toggle = (label: string) =>
   [...container.querySelectorAll('button')].find((b) => b.textContent === label);
 
@@ -188,38 +193,43 @@ it('lists your rooms by default, and drops a chat once you are removed from it',
   expect(names()).toEqual(['yaml-room']);
 });
 
-it('offers All rooms to someone who can read more: bridged rooms, never chats they are not in', async () => {
+it('shows every room you can read under All rooms, never chats you are not in', async () => {
   await render();
   await act(async () => toggle('All rooms')!.click());
-  expect(names()).toEqual(['#public-slack', 'bobs-chat', 'private-tool-room', 'yaml-room']);
+  expect(names()).toEqual(['bobs-chat', 'private-tool-room', 'public-slack', 'yaml-room']);
   await removeFromBobsChat();
-  expect(names()).toEqual(['#public-slack', 'private-tool-room', 'yaml-room']);
+  expect(names()).toEqual(['private-tool-room', 'public-slack', 'yaml-room']);
 });
 
-it('offers no choice to someone who can read only their own rooms', async () => {
-  rooms.list.all = [
-    room('bobs-chat', {
-      viewerIsMember: true,
-      channelType: 'channel_private',
-      isConsoleChat: true,
-    }),
-  ];
+it('keeps the same columns in both, and marks a room only its people reach', async () => {
   await render();
-  expect(toggle('All rooms')).toBeUndefined();
+  const headers = [...container.querySelectorAll('thead th')].map((th) => th.textContent);
+  expect(headers).toEqual([
+    'Room',
+    'Messaging app',
+    'Group',
+    'Owner',
+    'Access',
+    'Agents · people',
+    'Created',
+  ]);
+  expect(container.querySelector('[aria-label="Private channel"]')).not.toBeNull();
 });
 
 it('lists archived rooms under Archived, and brings one back', async () => {
   archivedRooms.list = [
-    room('old-slack', { bridgeType: 'slack', bridgeDisplayName: 'Slack', archived: true }),
+    room('old-slack', {
+      bridgeType: 'slack',
+      bridgeDisplayName: 'Slack',
+      archived: true,
+      viewerIsMember: true,
+    }),
   ];
   await render();
   for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
-  const fold = [...container.querySelectorAll('button')].find((b) =>
-    /^Archived/.test(b.textContent ?? '')
-  );
-  expect(fold?.textContent).toBe('Archived (1)');
-  await act(async () => fold!.click());
-  expect(container.textContent).toContain('#old-slack');
+  await act(async () => toggle('Archived')!.click());
+  for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+  expect(names()).toEqual(['old-slack']);
   await act(async () => toggle('Unarchive')!.click());
   expect(setRoomArchived).toHaveBeenCalledWith({
     workspaceId: 'ws',

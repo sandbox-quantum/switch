@@ -368,6 +368,13 @@ export type RemoteRoomSummary = {
    * where Console works it out the same way (`roomPermissionsFor`).
    */
   serverPermissions?: { canWrite: boolean; canManage: boolean; canUnlink: boolean };
+  /** The group the room is filed under, when the server says (the list does). */
+  groupId?: string | null;
+  groupName?: string | null;
+  ownerName?: string | null;
+  readVisibility?: RoomVisibility;
+  /** How many people Switch knows are in the room, when the server says. */
+  connectedUserCount?: number;
 };
 
 /**
