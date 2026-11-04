@@ -2334,9 +2334,7 @@ it('runs a steer as its own turn when the running turn ended as it arrived, send
   expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
   emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
   await until(() =>
-    expect(host.snapshot().turns.find((turn) => turn.turnId === 'first')?.status).toBe(
-      'completed'
-    )
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'first')?.status).toBe('completed')
   );
   // The queued message waits for the provider's own turn as well, which is
   // now the one running: the one a stop would interrupt.

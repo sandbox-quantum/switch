@@ -42,7 +42,6 @@ const MANAGED: ManagedAgentView = {
     instructions: '',
     autoApprove: false,
     autoMode: false,
-    steerMessages: true,
     directory: null,
     isolation: 'shared',
   },

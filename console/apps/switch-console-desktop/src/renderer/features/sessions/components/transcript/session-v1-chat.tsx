@@ -6,11 +6,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
-import {
-  DELIVERY_NOTICE_CODES,
-  messageDelivery,
-  messageDeliveryLabel,
-} from './message-delivery';
+import { DELIVERY_NOTICE_CODES, messageDelivery, messageDeliveryLabel } from './message-delivery';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
 import { sessionStatePill } from './session-state';
 import { SessionStatePill } from './session-state-pill';
@@ -119,9 +115,7 @@ export function SessionV1Chat({
   );
   const noticesAfter = (itemId: string | null) =>
     view.notices
-      .filter(
-        (notice) => notice.afterItemId === itemId && !DELIVERY_NOTICE_CODES.has(notice.code)
-      )
+      .filter((notice) => notice.afterItemId === itemId && !DELIVERY_NOTICE_CODES.has(notice.code))
       .map((notice, index) => (
         <p
           role="status"
