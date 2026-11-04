@@ -137,6 +137,7 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     work.length > 0 ||
     isThinking(turn) ||
     turn.status === 'interrupted' ||
+    turn.status === 'cancelled' ||
     turn.status === 'error' ||
     turn.requests.length > 0 ||
     turnWarnings(turn).length > 0
@@ -174,7 +175,8 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const label = reasoningLabel(reasoning, running && reasoning !== null);
   const work = turnTools(turn);
   const thinking = isThinking(turn) && !(label && !reasoning?.completedAt);
-  const ended = turn.status === 'interrupted' || turn.status === 'error';
+  const ended =
+    turn.status === 'interrupted' || turn.status === 'cancelled' || turn.status === 'error';
   const requests = turn.requests;
   if (!turnShown(activity, turn)) return null;
   return (
@@ -211,16 +213,25 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           active
         />
       )}
+      {turn.status === 'queued' && (
+        <p className="ms-6 text-xs break-all text-foreground-muted">
+          Turn <code className="select-all">{turn.turnId}</code>
+        </p>
+      )}
       {ended && (
         <div role="status">
           <WorkLogRow
             icon={<FailedIcon />}
             label={turnEndLabel(
-              turn.status === 'interrupted' ? 'Stopped' : 'The turn ended with an error',
+              turn.status === 'cancelled'
+                ? 'Cancelled before the agent started.'
+                : turn.status === 'interrupted'
+                  ? 'Stopped'
+                  : 'The turn ended with an error',
               endReason
             )}
             title={endReason ?? undefined}
-            tone="failed"
+            tone={turn.status === 'cancelled' ? 'passive' : 'failed'}
           />
           {turn.status === 'error' && turn.messageId && (
             <RetryTurn activity={activity} turn={turn} />

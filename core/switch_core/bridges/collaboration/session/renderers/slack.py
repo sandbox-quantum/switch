@@ -1185,6 +1185,7 @@ def render_activity_plan(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    cancel_command: str | None = None,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
 
@@ -1227,6 +1228,7 @@ def render_activity_plan(
             ],
         }
     ]
+    _queued_turn_hint(blocks, turn, cancel_command)
     _fit_details(blocks, _MAX_POST_BYTES)
     # After the fit, and never part of it: the control is a fixed few hundred
     # bytes that must survive whatever trimming the steps need, and a message
@@ -1269,6 +1271,7 @@ def render_activity_stream(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    cancel_command: str | None = None,
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
@@ -1297,6 +1300,7 @@ def render_activity_stream(
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
         turn.status not in TURN_ENDED,
     )
+    _queued_turn_hint(blocks, turn, cancel_command)
     _fit_details(blocks, _MAX_STREAM_BYTES)
     # Read off the last section before the control is appended: the title is the
     # heading of the newest plan block, and the control has no title at all.
@@ -1309,6 +1313,17 @@ def render_activity_stream(
         )
     blocks.append(control)
     return StreamedActivity(title=title, blocks=blocks, spent_control=None)
+
+
+def _queued_turn_hint(
+    blocks: list[dict[str, Any]], turn: TurnUpsert, cancel_command: str | None
+) -> None:
+    if turn.status == "queued" and cancel_command:
+        blocks[-1]["tasks"][0]["details"] = _rich_text(
+            _truncate_prose(
+                f"Turn {turn.turn_id}\n{cancel_command}", _MAX_PLAN_TASK_DETAILS
+            )
+        )
 
 
 def _spent_control(block_id: str) -> dict[str, Any]:

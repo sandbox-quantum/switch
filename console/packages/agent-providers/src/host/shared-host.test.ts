@@ -1577,3 +1577,107 @@ it('tells the room once when every post of a turn was refused, and not when one 
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+it.each([200, 422, 400])(
+  'reports cancelled rows and only downgrades a 422 (server returns %i)',
+  async (httpStatus) => {
+    const host = await start({ rooms: true });
+    try {
+      host.switchCore.state.cancelledStatus = httpStatus;
+      for (const commandId of ['active', 'queued'])
+        await host.parent.ask({
+          type: 'command',
+          requesterName: null,
+          command: relayed('current', commandId, {
+            type: 'message.send',
+            text: commandId,
+            attachments: [],
+            delivery: 'queue',
+          }),
+        });
+      const result = await host.parent.ask({
+        type: 'command',
+        requesterName: null,
+        command: relayed('current', 'cancel-queued', { type: 'turn.cancel', turnId: 'queued' }),
+      });
+      expect(result).toMatchObject({ ok: true, value: { status: 'applied' } });
+      const rows = () =>
+        host.switchCore.calls
+          .filter(
+            (call) =>
+              call.path.endsWith('/activity') &&
+              (call.body as { turn_id: string; kind: string; status: string }).turn_id ===
+                'queued' &&
+              (call.body as { kind: string }).kind === 'turn' &&
+              (call.body as { status: string }).status !== 'queued'
+          )
+          .map((call) => call.body as { status: string; revision: number });
+      await until(() => expect(rows()).toHaveLength(httpStatus === 422 ? 2 : 1));
+      expect(rows().map((row) => row.status)).toEqual(
+        httpStatus === 422 ? ['cancelled', 'interrupted'] : ['cancelled']
+      );
+      if (httpStatus === 422) expect(rows()[1]!.revision).toBe(rows()[0]!.revision);
+      const events = (await readFile(join(host.root, 'events.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      expect(
+        events
+          .filter((event) => event.body.type === 'turn.upsert' && event.body.turnId === 'queued')
+          .at(-1)?.body.status
+      ).toBe('cancelled');
+      host.emit({ type: 'turn.completed', turnId: 'active', outcome: 'completed', usage: [] });
+      await until(() =>
+        expect(
+          host.switchCore.calls.some(
+            (call) =>
+              call.path.endsWith('/activity') &&
+              (call.body as { status: string }).status === 'completed'
+          )
+        ).toBe(true)
+      );
+      expect(host.turns.map((turn) => turn.turnId)).toEqual(['active']);
+    } finally {
+      await host.stop();
+    }
+  }
+);
+
+it('answers a stale queued-card cancellation with a host refusal in its room, once', async () => {
+  const host = await start({ rooms: true });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Already working') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const command: Command = {
+      ...relayed('current', 'cancel-started', {
+        type: 'turn.cancel',
+        turnId: host.turns[0]!.turnId,
+      }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'mattermost',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'cancel-message',
+      },
+    };
+    const reply = await host.parent.ask({ type: 'command', requesterName: null, command });
+    expect(reply).toMatchObject({
+      ok: true,
+      value: { status: 'rejected', message: expect.stringContaining('!interrupt') },
+    });
+    const answers = () =>
+      host.parent.sent.filter((entry) => entry.kind === 'ask' && entry.ask?.type === 'room-reply');
+    await until(() => expect(answers()).toHaveLength(1));
+    expect(answers()[0]!.ask).toMatchObject({
+      roomId: 'room',
+      threadId: 'thread',
+      body: expect.stringContaining('use !interrupt'),
+    });
+    await host.parent.ask({ type: 'command', requesterName: null, command });
+    expect(answers()).toHaveLength(1);
+    expect(host.adapter.interruptTurn).not.toHaveBeenCalled();
+  } finally {
+    await host.stop();
+  }
+});

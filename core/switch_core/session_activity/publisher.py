@@ -1118,6 +1118,11 @@ class AgentSessionActivityPublisher:
             view.turn,
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
+            cancel_command=(
+                f"!cancel @{target.agent.name} {view.turn.turn_id[:8]}"
+                if view.turn.status == "queued"
+                else None
+            ),
         )
         state = status_state(
             view,
