@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 import weakref
 from collections import OrderedDict
@@ -2763,7 +2764,7 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
-        if event_type != "posted":
+        if event_type not in ("posted", "post_edited"):
             return
 
         data = event.get("data", {})
@@ -2785,10 +2786,23 @@ class MattermostAdapter(PlatformAdapter):
             return
 
         post_id = post.get("id", "")
+        edit_revision: int | None = None
+        if event_type == "post_edited":
+            # Note: The websocket payload exposes only the post author in post.user_id,
+            # not the editor, so editor authorization cannot be verified here without
+            # an external API call.
+            edit_at = post.get("edit_at") or 0
+            edit_revision = int(edit_at) * 1000
+            if not edit_revision:
+                edit_revision = int(time.time() * 1_000_000)
+            seen_key = f"edit:{post_id}:{edit_revision}"
+        else:
+            seen_key = post_id
+
         with self._seen_lock:
-            if post_id in self._seen_post_ids:
+            if seen_key in self._seen_post_ids:
                 return
-            self._seen_post_ids[post_id] = None
+            self._seen_post_ids[seen_key] = None
             if len(self._seen_post_ids) > self._seen_post_ids_max:
                 self._seen_post_ids.popitem(last=False)
 
@@ -2873,6 +2887,7 @@ class MattermostAdapter(PlatformAdapter):
                 channel_name=channel_name,
                 attachments=attachments,
                 attachment_failures=attachment_failures,
+                edit_revision=edit_revision,
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]

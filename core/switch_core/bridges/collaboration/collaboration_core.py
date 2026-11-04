@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -47,7 +48,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
-from switch_core.db.models import BridgeMessageMap, Client, ExternalUser
+from switch_core.db.models import BridgeMessageMap, Client, ExternalUser, Message
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -1145,6 +1146,15 @@ class CollaborationCore:
         if human_actor is None:
             return
 
+        if msg.edit_revision is not None:
+            await self._handle_inbound_edit(
+                msg=msg,
+                human_actor=human_actor,
+                room_id=room_id,
+                transport_room_id=transport_room_id,
+            )
+            return
+
         content = self._adapter.translate_inbound(msg.content)
         if mention_target is not None and (
             mention_regex(mention_target).search(strip_emphasis(content)) is None
@@ -1322,6 +1332,57 @@ class CollaborationCore:
                 external_channel_id=msg.channel_id,
                 transport_event_id=first_event_id,
                 external_post_id=msg.message_ref,
+            )
+
+    async def _handle_inbound_edit(
+        self,
+        *,
+        msg: InboundMessage,
+        human_actor: Actor[ClientConfig],
+        room_id: str,
+        transport_room_id: str,
+    ) -> None:
+        original_event_id = await self._event_for_external_post(msg.message_ref)
+        if original_event_id is None:
+            logger.warning(
+                "[BRIDGE-IN] edit ignored: original message %s not found in room %s",
+                msg.message_ref,
+                transport_room_id,
+            )
+            return
+
+        async with self._session_factory() as session:
+            original = (
+                await session.execute(
+                    select(Message).where(
+                        Message.tenant_id == self._bridge_tenant_id,
+                        Message.room_id == room_id,
+                        Message.transport_event_id == original_event_id,
+                    )
+                )
+            ).scalar_one_or_none()
+
+        if original is None or original.sender_id != human_actor.client_id:
+            logger.warning(
+                "[BRIDGE-IN] edit rejected: actor %s does not match original sender %s for message %s",
+                human_actor.client_id,
+                original.sender_id if original else None,
+                msg.message_ref,
+            )
+            return
+
+        content = self._adapter.translate_inbound(msg.content)
+        replacement_content: dict[str, object] = {
+            "m.relates_to": {"rel_type": "m.replace", "event_id": original_event_id},
+            "m.new_content": {"body": content},
+            "revision": msg.edit_revision,
+        }
+        idempotency_key = f"platform-edit-{original_event_id}-{msg.edit_revision}"
+        with writes_derived_from(human_actor.client_id, idempotency_key):
+            await human_actor.send_event(
+                transport_room_id,
+                "com.switch.message_edit",
+                replacement_content,
             )
 
     async def _post_trust_notice(
