@@ -110,11 +110,24 @@ describe('useThisComputer on a first sign-in (B38)', () => {
     act(() => root.unmount());
   });
 
-  it('a read that fails while signed in keeps the v1 path (ruled: unknown flags never show the v2 ask), with no refresh', async () => {
+  it('a read that fails while signed in never enrols: it only reads and asks, with no refresh', async () => {
     vi.clearAllMocks();
     flagsState.set('down', state('down', { error: 'The server did not answer in time.' }));
     const root = await open('down');
     expect(refresh).not.toHaveBeenCalled();
+    expect(getOverview).toHaveBeenCalledTimes(1);
+    expect(enable).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it('a good read with v2 off, then a failed read: enrolled once by the good read, never again by the failed one', async () => {
+    vi.clearAllMocks();
+    flagsState.set('flaky', state('flaky', { fetchedAt: 1 }));
+    const root = await open('flaky');
+    expect(enable).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      emit(state('flaky', { fetchedAt: 1, error: 'The server did not answer in time.' }))
+    );
     expect(enable).toHaveBeenCalledTimes(1);
     act(() => root.unmount());
   });

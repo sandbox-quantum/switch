@@ -33,6 +33,7 @@ export function ManagedRunLocationNotice({
   serverId,
   workspaceId,
   onEnabled,
+  autoEnable = true,
 }: {
   machine: NewAgentMachine;
   label: string;
@@ -40,6 +41,8 @@ export function ManagedRunLocationNotice({
   serverId: string;
   workspaceId: string;
   onEnabled: () => void;
+  /** False where the person must say so first (hosted agents v2): only the button turns the machine on. */
+  autoEnable?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [enabling, setEnabling] = useState(false);
@@ -55,10 +58,10 @@ export function ManagedRunLocationNotice({
   // management that is how agents run, so asking first only stands in the way.
   // Tried once per machine; if it fails, the button below is the way to retry.
   useEffect(() => {
-    if (!canEnable || autoTried === where) return;
+    if (!autoEnable || !canEnable || autoTried === where) return;
     setAutoTried(where);
     void enableRef.current();
-  }, [canEnable, where, autoTried]);
+  }, [autoEnable, canEnable, where, autoTried]);
 
   if (enabling)
     return (

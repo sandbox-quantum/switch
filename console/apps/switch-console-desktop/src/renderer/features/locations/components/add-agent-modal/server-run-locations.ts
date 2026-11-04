@@ -1,3 +1,5 @@
+import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
+import { addsWithoutAsking } from '@shared/core/feature-flags/ask-first';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 
 const MACHINE_PREFIX = 'machine:';
@@ -219,4 +221,75 @@ export function offlineSharedCloudMachine(
   )
     return null;
   return machine;
+}
+
+/**
+ * Whether Add agent may turn the chosen machine on by itself, as upstream does.
+ * Only when the server's flags were actually read (`flagsReadOk`) and that same
+ * read says hosted agents v2 is off. Unknown, a failed read, or v2 on: nothing
+ * is added without the person's click (the ask-first promise, B38), and the
+ * form shows the machine's own "turn on" button instead.
+ */
+export function autoEnablesMachine(flagsReadOk: boolean, hostedV2: boolean): boolean {
+  return addsWithoutAsking(flagsReadOk, hostedV2);
+}
+
+/**
+ * The person's v2 box when Add agent should start it: `wake` for one put away
+ * (retained) or asleep after a quiet spell (stopped or stopping, `sleeping`),
+ * so the form calls ensure; `owner-stopped` for one its owner stopped, which
+ * ensure leaves as it is (Core's `ensure_machine`), so the form says so and
+ * points at the Your cloud card's Start;
+ * `starting` for one already on its way up, including one Core calls ready
+ * whose controller isn't online yet (`onlineMachineIds`, the owner's machines
+ * that are online). Null with v2 off, with no box or more than one, and for a
+ * box that is ready and online (picked as usual) or in error (its own card asks
+ * for a repair).
+ */
+export function boxWakeState(
+  cloudMachines: readonly CloudMachine[] | null | undefined,
+  hostedV2: boolean,
+  onlineMachineIds: ReadonlySet<string> = new Set()
+): { machine: CloudMachine; action: 'wake' | 'starting' | 'owner-stopped' } | null {
+  if (!hostedV2) return null;
+  const boxes = (cloudMachines ?? []).filter(
+    (machine) =>
+      machine.backend === 'box' && machine.state !== 'deleting' && machine.state !== 'deleted'
+  );
+  if (boxes.length !== 1) return null;
+  const box = boxes[0]!;
+  if (box.state === 'retained' || box.desired_state === 'retained')
+    return { machine: box, action: 'wake' };
+  if (box.state === 'stopped' || box.state === 'stopping')
+    return { machine: box, action: box.sleeping ? 'wake' : 'owner-stopped' };
+  if (box.state === 'queued' || box.state === 'provisioning')
+    return { machine: box, action: 'starting' };
+  if (box.state === 'ready' && !(box.controller_id && onlineMachineIds.has(box.controller_id)))
+    return { machine: box, action: 'starting' };
+  return null;
+}
+
+/**
+ * Whether Add agent holds back "This computer" (and its turn-on prompt) on
+ * hosted agents v2: while the box is still being found, or is being woken or
+ * starting. Not for a box its owner stopped (the form says so and lets the
+ * person choose), and not once a wake of that box has failed (`failedWakeId`),
+ * so the form never sits on "Starting…" with no way forward.
+ */
+export function holdsThisComputer(input: {
+  v2: boolean;
+  boxPicked: boolean;
+  findingBox: boolean;
+  boxWake: {
+    machine: { machine_id: string };
+    action: 'wake' | 'starting' | 'owner-stopped';
+  } | null;
+  failedWakeId: string | null;
+}): boolean {
+  if (!input.v2 || input.boxPicked) return false;
+  if (input.boxWake) {
+    if (input.boxWake.action === 'owner-stopped') return false;
+    return input.boxWake.machine.machine_id !== input.failedWakeId;
+  }
+  return input.findingBox;
 }

@@ -1,4 +1,5 @@
 import type { EmbeddedControllerOverview } from '@shared/core/embedded-controller/embedded-controller';
+import { addsWithoutAsking } from '@shared/core/feature-flags/ask-first';
 import {
   FLAGS_NOT_READ_YET,
   type ServerFeatureFlags,
@@ -43,13 +44,19 @@ export async function setUpThisComputer(
 
 /**
  * What opening a page does about this computer, by the server's flags:
- * `wait` until they are known (so a v2 server never enrols on a first guess);
- * with hosted agents v2 on, `read` only and ask before enrolling (B38); with it
- * off, `enrol` straight away, exactly as upstream does.
+ * `wait` until they have answered (so a v2 server never enrols on a first
+ * guess); `enrol` straight away, exactly as upstream does, only when they were
+ * read (`readOk`) and that read says hosted agents v2 is off
+ * (`addsWithoutAsking`); otherwise (v2 on, or a read that failed) `read` only
+ * and ask before enrolling (B38).
  */
-export function openingSetup(flagsKnown: boolean, hostedV2: boolean): 'wait' | 'read' | 'enrol' {
+export function openingSetup(
+  flagsKnown: boolean,
+  readOk: boolean,
+  hostedV2: boolean | null
+): 'wait' | 'read' | 'enrol' {
   if (!flagsKnown) return 'wait';
-  return hostedV2 ? 'read' : 'enrol';
+  return addsWithoutAsking(readOk, hostedV2) ? 'enrol' : 'read';
 }
 
 /**
