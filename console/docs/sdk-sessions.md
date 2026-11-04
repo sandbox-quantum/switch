@@ -211,6 +211,43 @@ the person has taken it, a restart before the fresh conversation has run a turn
 starts another without asking, since that one was never the copy and never
 answered.
 
+## Messages sent while the agent is working
+
+A message that arrives while a turn is running either **steers** into that turn
+— the agent reads it now, mid-task, so a correction such as "no, use the other
+file" lands while it still matters — or **queues** for a turn of its own after
+the running one ends.
+
+- **Which providers steer.** A session advertises `capabilities.input: 'steer'`
+  when its provider's adapter can fold a message into the running turn (Claude
+  Code, Codex and OpenCode), and `queue` otherwise (Antigravity, Cursor). A
+  queue-only session refuses a message that asks to steer, and queues exactly as
+  before.
+- **The default.** Console chat and room messages ask to steer whenever the
+  session offers it. The host steers a message only into a turn already handed
+  to the provider, and only when that turn belongs to the same conversation: the
+  same room thread (a thread's root message counts as its thread), or the
+  session's direct chat. A message from another thread or room, or from the
+  direct chat into a room's turn, queues, so a different request is never folded
+  into unrelated work. The first message, an initial prompt and the follow-up
+  after a reset or compaction always queue.
+- **What the activity shows.** A steered message is drawn in the running turn
+  instead of a turn of its own, and that turn records a `MESSAGE_STEERED` notice,
+  which the room's activity card shows. In Console the message is labelled
+  **Steered into the running turn**; a queued one reads **Queued · runs next**
+  or **Queued · N ahead** until its turn starts.
+- **When the turn ends as the message arrives.** The provider then runs the
+  message as a turn of its own rather than steering it (Codex also does this
+  when it declines a steer). The message moves to that turn, a `STEER_QUEUED`
+  notice says so, and queued messages wait for it as well. Nothing is sent twice.
+- **When the provider refuses.** A steer the provider rejects outright fails
+  visibly (`STEER_FAILED`, the message's turn marked `error`, and a room told,
+  as for any failed turn); it is not retried.
+- **Restarts.** A steered message is dispatched once and ends with the turn it
+  joined. A host restart treats it like any dispatched turn: it is reported
+  interrupted if that turn had not ended, and never resent. The queue keeps its
+  order.
+
 ## Context, models and attachments
 
 Reset starts a fresh native conversation under a new server-issued epoch. The

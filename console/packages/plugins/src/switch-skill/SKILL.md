@@ -121,6 +121,14 @@ does, and there is no polling tool to call.
   `BEGIN OPENING MESSAGE` / `END OPENING MESSAGE` markers. You did not write
   them, but the person sees them as yours: do not repeat them.
 
+  A message can reach you while you are still working on an earlier one from
+  the same thread (Claude Code, Codex and OpenCode): it joins the work under
+  way rather than waiting for it to finish. It is usually a correction or a
+  stop ("no, use the other file") — take it into account at once, change
+  course if it asks you to, and answer both in the thread rather than
+  finishing the old plan first. Messages from another thread or room still
+  wait for their own turn.
+
   The first message you get from a room that has instructions of its own is
   preceded by them, between `BEGIN ROOM INSTRUCTIONS` / `END ROOM
   INSTRUCTIONS` markers (`[Switch] Room <room> has instructions of its

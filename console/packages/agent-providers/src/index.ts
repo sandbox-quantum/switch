@@ -15,7 +15,12 @@ export type {
   StdioMcpServerSpec,
   TurnAttachment,
 } from './adapter';
-export { ProviderSessionError, ProviderUnavailableError, runtimeModeFor } from './adapter';
+export {
+  inputCapability,
+  ProviderSessionError,
+  ProviderUnavailableError,
+  runtimeModeFor,
+} from './adapter';
 export type { ClaudeAdapterLogger, ClaudeAdapterOptions } from './claude/claude-adapter';
 export { ClaudeAdapter, createClaudeAdapter } from './claude/claude-adapter';
 export type {

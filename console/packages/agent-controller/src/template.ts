@@ -3,6 +3,7 @@ import {
   agentLaunchDefinitionSchema,
   controllerConnectionId,
   EXECUTION_INHERIT_ENV,
+  inputCapability,
   providerRuntime,
   runtimeModeFor,
   type ProviderCapabilities,
@@ -116,7 +117,7 @@ export function buildWatcherTemplate(input: {
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: inputCapability(capabilities),
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,

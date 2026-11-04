@@ -6,7 +6,11 @@ describe('a room command', () => {
     type: 'message',
     payload: { sender: '@owner:example.test', sender_name: 'Owner', message_id: '$m', body: 'hi' },
   };
-  const command = (message: unknown, firstOfConversation = false) =>
+  const command = (
+    message: unknown,
+    firstOfConversation = false,
+    delivery: 'queue' | 'steer' = 'queue'
+  ) =>
     roomCommand({
       agentId: 'agent',
       sessionId: 'session',
@@ -17,6 +21,7 @@ describe('a room command', () => {
       attachments: [],
       preface: null,
       firstOfConversation,
+      delivery,
     });
   const text = (message: unknown, first = false) => {
     const body = command(message, first).body;
@@ -26,6 +31,11 @@ describe('a room command', () => {
 
   it('is named by the room message it answers', () => {
     expect(command(event).commandId).toBe(roomCommandId('agent', '!room:example.test', '$m'));
+  });
+
+  it('asks for the delivery the session offers', () => {
+    expect(command(event, false, 'steer').body).toMatchObject({ delivery: 'steer' });
+    expect(command(event, false, 'queue').body).toMatchObject({ delivery: 'queue' });
   });
 
   it('reminds the agent to reply with post_message, every time', () => {

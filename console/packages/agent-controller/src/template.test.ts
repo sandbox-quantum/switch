@@ -2,7 +2,7 @@ import { controllerConnectionId, sharedConfigSchema } from '@switch-console/agen
 import { sessionLaunchConfig } from '@switch-console/plugins/agents';
 import { SWITCH_SKILL_CONTEXT, SWITCH_SKILL_FILE } from '@switch-console/plugins/switch-skill';
 import { describe, expect, it } from 'vitest';
-import { PROVIDERS } from './schemas';
+import { PROVIDERS, type Provider } from './schemas';
 import {
   advancedConfigDefinitionProblem,
   buildWatcherTemplate,
@@ -226,6 +226,23 @@ describe('buildWatcherTemplate', () => {
     });
     expect(codex.session.capabilities).toMatchObject({ approvals: true, questions: false });
     expect(claude.session.capabilities).toMatchObject({ approvals: true, questions: true });
+  });
+
+  it('offers steering where the provider can steer, and queues everywhere else', () => {
+    const input = (provider: Provider) =>
+      buildWatcherTemplate({
+        agentId: 'agent-1',
+        provider,
+        definition,
+        cwd: '/w',
+        credentialsPath: '/c',
+        binaryPath: null,
+      }).session.capabilities.input;
+    expect(input('claude')).toBe('steer');
+    expect(input('codex')).toBe('steer');
+    expect(input('opencode')).toBe('steer');
+    expect(input('cursor')).toBe('queue');
+    expect(input('antigravity')).toBe('queue');
   });
 });
 
