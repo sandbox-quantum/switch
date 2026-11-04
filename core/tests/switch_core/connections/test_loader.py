@@ -15,7 +15,6 @@ PLACEHOLDERS = {
     "gitlab",
     "bitbucket",
     "microsoft-365",
-    "new-relic",
     "notion",
     "linear",
     "salesforce",
@@ -32,6 +31,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "new-relic",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,6 +39,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "new-relic",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
@@ -1046,3 +1047,26 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)
+
+
+def test_new_relic_uses_a_regional_user_key_without_promising_read_only():
+    entry = CATALOG["new-relic"]
+    definition = entry.definition
+    assert definition.enabled and definition.adapter == "api_key"
+    assert definition.auth.refresh == "none"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(field.name, field.secret) for field in sign_in.fields] == [
+        ("api_key", True),
+        ("region", False),
+    ]
+    assert sign_in.fields[1].choices == [
+        "newrelic.com",
+        "eu.newrelic.com",
+        "jp.newrelic.com",
+    ]
+    assert sign_in.identity.account_id == "data.actor.user.id"
+    assert sign_in.identity.label == "data.actor.user.email"
+    assert definition.access is None
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    assert "SKILL.md" in entry.skill_files

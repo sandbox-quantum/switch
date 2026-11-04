@@ -1,7 +1,40 @@
 slug: new-relic
 name: New Relic
 category: Observability
-description: Query New Relic telemetry and alerts.
-enabled: false
+description: Query New Relic telemetry and alerts with your user key.
+enabled: true
+adapter: api_key
 auth:
   type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: User API key
+        secret: true
+        help: Use a user key from API keys, not a license or browser key. Its permissions follow your New Relic role.
+      - name: region
+        label: New Relic region
+        secret: false
+        help: Choose the region where your New Relic account stores its data.
+        choices:
+          - newrelic.com
+          - eu.newrelic.com
+          - jp.newrelic.com
+    identity:
+      method: POST
+      url: "https://api.{region}/graphql"
+      headers: { API-Key: "{api_key}" }
+      body: { query: "{ actor { user { id email } } }" }
+      account_id: data.actor.user.id
+      label: data.actor.user.email
+    help_url: https://docs.newrelic.com/docs/agentic-ai/mcp/setup/
+# The key keeps its vendor permissions. No read-only level is promised, and
+# disconnecting forgets it without revoking it at New Relic.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: new-relic
+      url: "https://mcp.{region}/mcp/"
+      headers: { api-key: "{api_key}" }
+tools: { mode: pass_through }
