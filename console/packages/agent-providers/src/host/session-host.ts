@@ -19,7 +19,7 @@ import type {
   Snapshot,
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { ProviderConversationUnavailableError } from '../adapter';
+import { ProviderConversationUnavailableError, SteerNotSentError } from '../adapter';
 import type {
   ProviderAdapter,
   ProviderSessionStartInput,
@@ -693,9 +693,9 @@ export class HostedSession {
     return true;
   }
 
-  command(input: Command): Promise<Snapshot['commandStatuses'][number]> {
+  command(input: Command, expectedTurnId?: string): Promise<Snapshot['commandStatuses'][number]> {
     const command = commandSchema.parse(input);
-    const result = this.serial.then(() => this.accept(command));
+    const result = this.serial.then(() => this.accept(command, expectedTurnId));
     this.serial = result.catch(() => {});
     return result;
   }
@@ -732,7 +732,10 @@ export class HostedSession {
     return { ...command, origin: original.origin, body: original.body };
   }
 
-  private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
+  private async accept(
+    command: Command,
+    expectedTurnId?: string
+  ): Promise<Snapshot['commandStatuses'][number]> {
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
@@ -846,7 +849,8 @@ export class HostedSession {
         const taken =
           body.delivery === 'steer' &&
           this.activeTurn !== null &&
-          (await this.steerMessage(command));
+          (expectedTurnId === undefined || expectedTurnId === this.activeTurn) &&
+          (await this.steerMessage(command, expectedTurnId));
         if (!taken) await this.queueMessage(command);
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
@@ -1043,6 +1047,7 @@ export class HostedSession {
   private async queueMessage(command: Command): Promise<void> {
     if (command.body.type !== 'message.send') return;
     const turnId = command.commandId;
+    const wasQueued = this.activeTurn !== null || this.queue.length > 0;
     await this.publish({
       type: 'turn.upsert',
       turnId,
@@ -1057,7 +1062,7 @@ export class HostedSession {
         revision: 1,
         kind: 'user-message',
         status: 'completed',
-        title: '',
+        title: wasQueued ? 'Queued behind the running turn' : '',
         text: command.body.text,
         attachments: command.body.attachments,
         origin: command.origin,
@@ -1074,27 +1079,35 @@ export class HostedSession {
    * own behind the running one (Codex, when its `turn/steer` is refused) —
    * adopted as that turn. Returns false when the provider refused the
    * message outright, so the caller queues it instead: a provider that took
-   * a message says so in its result, and one that threw did not take it, so
-   * queueing it delivers it exactly once.
+   * only a confirmed unsent message is safe to queue; an uncertain outcome
+   * is recorded without resending.
    */
-  private async steerMessage(command: Command): Promise<boolean> {
+  private async steerMessage(command: Command, expectedTurnId?: string): Promise<boolean> {
     if (command.body.type !== 'message.send') return false;
     const body = command.body;
     const attachments = body.attachments.length
       ? await this.config.stageAttachments!(body.attachments)
       : [];
     if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
+    if (expectedTurnId && expectedTurnId !== this.activeTurn) return false;
     await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
     this.dispatched.add(command.commandId);
+    if (expectedTurnId && expectedTurnId !== this.activeTurn) {
+      this.dispatched.delete(command.commandId);
+      return false;
+    }
     let result: ProviderTurnStartResult;
     try {
       result = await this.adapter.sendTurn({
         sessionId: this.config.session.sessionId,
         turnId: command.commandId,
+        expectedTurnId,
         text: body.text,
         attachments,
       });
     } catch (error) {
+      if (!(error instanceof SteerNotSentError)) throw error;
+      this.dispatched.delete(command.commandId);
       await this.publish({
         type: 'notice',
         level: 'warning',
@@ -1141,7 +1154,7 @@ export class HostedSession {
         revision: 1,
         kind: 'user-message',
         status: 'completed',
-        title: '',
+        title: 'Queued behind the running turn',
         text: body.text,
         attachments: body.attachments,
         origin: command.origin,

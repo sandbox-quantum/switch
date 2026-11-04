@@ -3,7 +3,7 @@ import {
   REPLY_REMINDER,
   roomCommand,
   roomCommandId,
-  roomMessageDelivery,
+  roomMessageSteerTarget,
   roomMessageSchema,
 } from './room-prompt';
 
@@ -92,24 +92,66 @@ describe('a room command', () => {
 });
 
 describe('the delivery a room message is sent with', () => {
-  const turn = (status: 'queued' | 'running' | 'completed' | 'interrupted' | 'error') => ({
-    status,
+  const origin = {
+    surface: 'switch-web' as const,
+    actorId: 'starter',
+    roomId: 'room',
+    threadId: null,
+    messageId: 'root',
+  };
+  const message = (sender = 'starter', thread = 'root', extra = {}) =>
+    roomMessageSchema.parse({
+      type: 'message',
+      payload: {
+        sender,
+        sender_name: sender,
+        sender_role: 'member',
+        message_id: 'reply',
+        thread_id: thread,
+        body: 'correction',
+        ...extra,
+      },
+    });
+  const input = {
+    canSteer: true,
+    roomId: 'room',
+    message: message(),
+    turns: [{ turnId: 'running', status: 'running' }],
+    items: [{ turnId: 'running', kind: 'user-message', origin }],
+  };
+  it('steers the starter or owner in the running thread', () => {
+    expect(roomMessageSteerTarget(input)).toBe('running');
+    expect(
+      roomMessageSteerTarget({
+        ...input,
+        message: message('owner', 'root', { sender_owns_agent: true }),
+      })
+    ).toBe('running');
   });
-
-  it('steers when the provider can and a turn is running', () => {
-    expect(roomMessageDelivery({ canSteer: true, turns: [turn('running')] })).toBe('steer');
+  it('queues another sender, thread, room, unknown sender, or agent', () => {
+    expect(roomMessageSteerTarget({ ...input, message: message('other') })).toBeUndefined();
+    expect(
+      roomMessageSteerTarget({ ...input, message: message('starter', 'other') })
+    ).toBeUndefined();
+    expect(roomMessageSteerTarget({ ...input, roomId: 'other' })).toBeUndefined();
+    expect(
+      roomMessageSteerTarget({
+        ...input,
+        message: message('starter', 'root', { sender_role: null }),
+      })
+    ).toBeUndefined();
   });
-
-  it('steers when a turn is queued, which will be running by the time it lands', () => {
-    expect(roomMessageDelivery({ canSteer: true, turns: [turn('queued')] })).toBe('steer');
-  });
-
-  it('queues when no turn is in flight', () => {
-    expect(roomMessageDelivery({ canSteer: true, turns: [] })).toBe('queue');
-    expect(roomMessageDelivery({ canSteer: true, turns: [turn('completed')] })).toBe('queue');
-  });
-
-  it('queues whatever the turns when the provider cannot steer', () => {
-    expect(roomMessageDelivery({ canSteer: false, turns: [turn('running')] })).toBe('queue');
+  it('queues when disabled, unsupported, idle, or origin is unknown', () => {
+    expect(
+      roomMessageSteerTarget({
+        ...input,
+        message: message('starter', 'root', { mid_turn_delivery: 'queue' }),
+      })
+    ).toBeUndefined();
+    expect(roomMessageSteerTarget({ ...input, canSteer: false })).toBeUndefined();
+    expect(
+      roomMessageSteerTarget({ ...input, turns: [{ turnId: 'running', status: 'queued' }] })
+    ).toBeUndefined();
+    expect(roomMessageSteerTarget({ ...input, items: [] })).toBeUndefined();
   });
 });

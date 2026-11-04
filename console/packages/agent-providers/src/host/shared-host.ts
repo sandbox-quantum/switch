@@ -22,7 +22,7 @@ import {
   planAttachments,
   roomCommand,
   roomFreshStartCommandId,
-  roomMessageDelivery,
+  roomMessageSteerTarget,
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
@@ -721,7 +721,9 @@ export async function runSharedHost(
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
-      requesterName: string | null
+      requesterName: string | null,
+      roomAdmission = false,
+      expectedTurnId?: string
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -730,7 +732,11 @@ export async function runSharedHost(
         console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
         return `The command is not readable: ${parsed.error.message}`;
       }
-      const command = current(parsed.data);
+      const received = parsed.data;
+      // Only the authenticated room-event path can establish steering eligibility.
+      if (!roomAdmission && received.body.type === 'message.send')
+        received.body = { ...received.body, delivery: 'queue' };
+      const command = current(received);
       if (!command) return 'There is no turn running to interrupt.';
       if (command.sessionId !== options.session.sessionId) {
         console.warn(`Ignoring command ${command.commandId}, which is for another session.`);
@@ -747,7 +753,7 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.some((entry) => entry.commandId === command.commandId);
       try {
-        await host!.command(command);
+        await host!.command(command, expectedTurnId);
       } catch (error) {
         await host!.reject(command, error);
       }
@@ -835,6 +841,13 @@ export async function runSharedHost(
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
         const snapshot = host!.snapshot();
+        const expectedTurnId = roomMessageSteerTarget({
+          canSteer: snapshot.session.capabilities.input === 'steer',
+          roomId: event.roomId,
+          message: message.data,
+          turns: snapshot.turns,
+          items: snapshot.items,
+        });
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
@@ -845,15 +858,12 @@ export async function runSharedHost(
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: snapshot.turns.length === 0,
-          delivery: roomMessageDelivery({
-            canSteer: snapshot.session.capabilities.input === 'steer',
-            turns: snapshot.turns,
-          }),
+          delivery: expectedTurnId ? 'steer' : 'queue',
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null);
+        const outcome = await run(command, null, true, expectedTurnId);
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)

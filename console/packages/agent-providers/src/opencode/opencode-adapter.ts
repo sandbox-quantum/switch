@@ -7,6 +7,7 @@ import {
   type ProviderSendTurnInput,
   type ProviderSession,
   ProviderSessionError,
+  SteerNotSentError,
   type ProviderSessionStartInput,
   type ProviderTurnStartResult,
   type RuntimeMode,
@@ -244,6 +245,8 @@ export class OpencodeAdapter implements ProviderAdapter {
     const model = input.model ? parseModelId(input.model.id) : record.model;
     const variant = input.model ? input.model.options?.variant : record.variant;
     const steeredInto = record.activeTurnId;
+    if (input.expectedTurnId && steeredInto !== input.expectedTurnId)
+      throw new SteerNotSentError('The authorized turn is no longer running.');
     const turnId = steeredInto ?? input.turnId;
     const previousAwaitingBusy = record.awaitingBusy;
 

@@ -33,17 +33,15 @@ provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;
 its initial prompt is not automatically sent again.
 
-A message sent while a turn is running is steered into that turn when the
-provider takes mid-turn messages — Claude Code, Codex and OpenCode do — so a
-correction reaches the agent while it can still change what the turn does.
-The message shows in the transcript under the running turn, marked as
-steered. On a provider that cannot steer, and whenever no turn is running,
-a message queues and runs as the next turn, as every message did before.
-There is no setting for this: steering is the default wherever the provider
-supports it, and the session's advertised input capability says which of the
-two a session does. A steer the provider refuses at the last moment falls
-back to queueing, with a notice in the transcript, so the message is never
-lost to a steering failure.
+An agent's **Steer messages while working** setting defaults to on. When a
+supported provider (Claude Code, Codex, or OpenCode) is running a turn, a room
+message can steer it if it is in the same room and thread and comes from the
+turn starter or the agent's owner. Other room messages queue. Turn the setting
+off to always queue. If Switch cannot verify the sender or the turn's origin,
+it queues the message. Console session messages also queue, because they do
+not carry the room and thread identity needed for this check. A steered message
+appears under the running turn in the transcript; if the authorized turn has
+changed before dispatch, the message queues instead.
 
 ## Server isolation
 

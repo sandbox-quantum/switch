@@ -985,3 +985,15 @@ async def test_the_live_step_label_lands_on_the_page_the_call_is_actually_on() -
     pages = [block for block in drawn.blocks if block["type"] == "plan"]
     assert "Running: Grep" not in pages[0]["title"]
     assert pages[1]["title"].endswith("· Running: Grep")
+
+
+async def test_activity_shows_how_messages_were_delivered() -> None:
+    steered = _item(kind="user-message", title="Steered into the running turn")
+    queued = _item(kind="user-message", title="Queued behind the running turn")
+    assert "1 message steered into this turn." in turn_state(
+        [steered], _turn("running"), tool_detail=True
+    )
+    assert "Message queued behind the previous turn." in turn_state(
+        [queued], _turn("completed"), tool_detail=True
+    )
+    assert "steered into this turn" in render_activity_text([steered], _turn())

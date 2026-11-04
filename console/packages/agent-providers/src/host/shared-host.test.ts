@@ -409,6 +409,24 @@ it('names itself to its parent, which makes its tool calls, before the provider 
   }
 });
 
+it('queues a direct command that asks to steer without room authorization', async () => {
+  const host = await start();
+  try {
+    const epoch = await host.snapshotEpoch();
+    const command = relayed(epoch, 'direct-steer', {
+      type: 'message.send',
+      delivery: 'steer',
+      text: 'hello',
+      attachments: [],
+    });
+    const result = await host.parent.ask({ type: 'command', command, requesterName: null });
+    expect(result).toMatchObject({ ok: true, value: { status: 'applied' } });
+    await until(() => expect(host.turns).toHaveLength(1));
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
 it('runs a command its controller relayed from Console, once', async () => {
   const host = await start();
   try {

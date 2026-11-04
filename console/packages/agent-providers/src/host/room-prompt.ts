@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { Attachment, Command, Surface } from '@switch-console/shared/session-v1';
+import type { Attachment, Command, Origin, Surface } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { ATTACHMENT_MIME_TYPES, MAX_ATTACHMENT_BYTES } from './attachments';
 
@@ -33,6 +33,8 @@ export const roomMessageSchema = z.object({
       .default([]),
     opening_message: z.string().nullish(),
     sender_role: z.enum(['owner', 'admin', 'member']).nullish(),
+    sender_owns_agent: z.boolean().optional(),
+    mid_turn_delivery: z.enum(['steer', 'queue']).optional(),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
   }),
@@ -164,7 +166,7 @@ export function roomCommand(input: {
   firstOfConversation: boolean;
   /**
    * How the message is delivered: steered into a running turn, or queued
-   * behind it. `roomMessageDelivery` decides; absent means queued.
+   * behind it. `roomMessageSteerTarget` decides; absent means queued.
    */
   delivery?: 'queue' | 'steer';
 }): Command {
@@ -219,29 +221,38 @@ export function roomCommand(input: {
       threadId: payload.thread_id ?? null,
       messageId: payload.message_id,
     },
-    body: { type: 'message.send', text, attachments, delivery: input.delivery ?? 'queue' },
+    body: {
+      type: 'message.send',
+      text,
+      attachments,
+      delivery: input.delivery ?? 'queue',
+    },
   };
 }
 
-/**
- * How a room message is delivered to its session. When the provider takes
- * mid-turn messages and a turn is in flight, the message steers that turn,
- * so a correction lands while it can still change what the agent does;
- * otherwise it queues behind the turn, as every message did before
- * steering. The host resolves the request against the turn it actually has
- * running when the message arrives, so a turn that finished in between
- * costs nothing: the message simply starts the next one. Who may address
- * the agent at all is decided before a message reaches the host, and
- * delivery never widens it — steering changes when a message arrives,
- * never whose messages arrive.
- */
-export function roomMessageDelivery(input: {
-  /** Whether the session advertises mid-turn delivery (its provider steers). */
+/** Select the running turn only for an authorized human in its thread. */
+export function roomMessageSteerTarget(input: {
   canSteer: boolean;
-  turns: readonly { status: 'queued' | 'running' | 'completed' | 'interrupted' | 'error' }[];
-}): 'queue' | 'steer' {
-  if (!input.canSteer) return 'queue';
-  return input.turns.some((turn) => turn.status === 'running' || turn.status === 'queued')
-    ? 'steer'
-    : 'queue';
+  roomId: string;
+  message: RoomMessage;
+  turns: readonly { turnId: string; status: string }[];
+  items: readonly {
+    turnId: string;
+    kind: string;
+    origin: Origin | null;
+  }[];
+}): string | undefined {
+  const { payload } = input.message;
+  if (!input.canSteer || payload.mid_turn_delivery === 'queue' || !payload.sender_role) return;
+  const running = input.turns.find((turn) => turn.status === 'running');
+  if (!running) return;
+  const origin = input.items.find(
+    (item) => item.turnId === running.turnId && item.kind === 'user-message'
+  )?.origin;
+  if (!origin || origin.roomId !== input.roomId || !origin.messageId) return;
+  const incomingThread = payload.thread_id ?? payload.message_id;
+  const runningThread = origin.threadId ?? origin.messageId;
+  if (incomingThread !== runningThread) return;
+  if (payload.sender !== origin.actorId && payload.sender_owns_agent !== true) return;
+  return running.turnId;
 }

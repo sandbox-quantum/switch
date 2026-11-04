@@ -181,7 +181,7 @@ describe('session-v1 client transport', () => {
     expect(vi.mocked(wire.api.submit).mock.calls[0][0]).not.toHaveProperty('origin');
     expect(client.getSnapshot().snapshot?.commandStatuses[0].status).toBe('accepted');
   });
-  it('steers a message sent while a turn is running on a steering session', async () => {
+  it('queues a Console message without an authorized room thread', async () => {
     const wire = transport();
     const busy = initial();
     busy.session.capabilities.input = 'steer';
@@ -192,7 +192,7 @@ describe('session-v1 client transport', () => {
     await client.connect();
     await client.send('Use the other file instead', 'send');
     expect(wire.api.submit).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.objectContaining({ delivery: 'steer' }) })
+      expect.objectContaining({ body: expect.objectContaining({ delivery: 'queue' }) })
     );
   });
   it('queues a message on a steering session with no turn in flight', async () => {
