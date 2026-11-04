@@ -1,7 +1,49 @@
 slug: gitlab
 name: GitLab
 category: Source control
-description: Work with GitLab projects, merge requests and issues.
-enabled: false
+description: Work with issues, merge requests and pipelines in your GitLab.com projects, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # A refresh ends the previous access and refresh tokens at once.
+  refresh: rotating
+  oauth:
+    # Each server's operator registers a GitLab OAuth application and saves it
+    # under Connector apps, or names its settings in GITLAB_CLIENT_CONFIG_PATH.
+    # GitLab offers dynamic registration too, but gives such a client only the
+    # mcp scope and no refresh grant, whatever it asks for (measured): it could
+    # not read the account, and every sign-in would end after two hours.
+    registration: static
+    client_settings: GITLAB
+    # Back to Core's own callback, as Airtable's and Google's.
+    redirect: [core]
+    # GitLab compares the redirect URI only with a real code, and checks the
+    # scopes an application may grant only when someone signs in.
+    unchecked: >-
+      Switch can't check the redirect URI, or that the application has the mcp
+      and read_user scopes. Have someone connect once to confirm.
+    revocation_discovered: true
+  # The mcp scope alone cannot read the account; read_user can.
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+# GitLab's access tokens live two hours (expires_in 7200).
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  # The owner of a top-level group allows MCP for its projects, under the
+  # group's settings; until then GitLab refuses them. GitLab.com only: a
+  # self-managed instance has a host of its own.
+  servers:
+    - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
+access:
+  # GitLab's consent page lists the scopes with nothing to untick, and the MCP
+  # server reads and writes with mcp alone, within the person's own project
+  # permissions. So every connection is the write level. Not asked for: api,
+  # which opens the whole REST API, beyond the MCP server's tools.
+  read:
+    scopes: [mcp, read_user]
+  write:
+    scopes: [mcp, read_user]
+tools: { mode: pass_through }
