@@ -75,7 +75,7 @@ choices are load-bearing rather than incidental:
 ### Which Amplitude project
 
 The relay keeps one Amplitude project per environment and files each event
-under the one its `flint_env` resource attribute names: `prod`, `staging`,
+under the one its `switch_trust.env` resource attribute names: `prod`, `staging`,
 `dev` or `local`. An event naming none goes to production, and one naming
 anything else is dropped and counted. So every event says where it belongs,
 even `prod`:
@@ -93,7 +93,7 @@ even `prod`:
   a test holds every build step to it. A server Console runs for the user is
   given Console's.
 
-`flint_env` rides on the resource, beside the client id. It describes where
+`switch_trust.env` rides on the resource, beside the client id. It describes where
 the reporting process runs, not anything inside the deployment, so it is not
 an identifier in the sense of the rule above.
 
@@ -102,7 +102,7 @@ an identifier in the sense of the rule above.
 Staff use the product too, and their usage is real but is not adoption. Three
 signals tell it apart, none of them an identifier:
 
-- **`flint_internal`** on the resource: `"true"` or `"false"` from the server,
+- **`switch_trust.internal`** on the resource: `"true"` or `"false"` from the server,
   set by `TELEMETRY_INTERNAL` (Helm `switchCore.telemetry.internal`) on the
   company's own deployments and never on a customer's. Switch Console sends
   `"true"` when any account it is signed in to a Switch server with is on
@@ -113,7 +113,7 @@ signals tell it apart, none of them an identifier:
   so a deployment that serves both staff and customers can be split.
   `user_internal_active_1d` / `_7d` do the same for the active counts, so
   customer activity is `user_active_*` minus them.
-- Each deployment's `flint.client_id`, for the company's own deployments by
+- Each deployment's `switch_trust.client_id`, for the company's own deployments by
   name.
 
 `tenant_id` is deliberately not one of them: no identifier for anything inside
@@ -174,7 +174,7 @@ The relay admits a sender on a client id and nothing else, so the server needs
 one. It does not have one today.
 
 **A per-deployment id**: a random UUID generated once on first use and stored in
-the database, sent as the `flint.client_id` resource attribute. It identifies
+the database, sent as the `switch_trust.client_id` resource attribute. It identifies
 the installation, and nothing else — it is not derived from a hostname, a
 licence, a tenant, an account or any customer value, and it survives restarts
 and redeploys so that a deployment is one Amplitude subject over its whole life
@@ -218,9 +218,9 @@ On every event:
 |---|---|
 | `service.name` | `switch-core`, always |
 | `service.version` | the running version, as `/version` reports it; omitted when unknown |
-| `flint.client_id` | the per-deployment id |
-| `flint_env` | `prod` \| `staging` \| `dev` \| `local`, from `TELEMETRY_ENVIRONMENT` |
-| `flint_internal` | `true` \| `false`, from `TELEMETRY_INTERNAL` |
+| `switch_trust.client_id` | the per-deployment id |
+| `switch_trust.env` | `prod` \| `staging` \| `dev` \| `local`, from `TELEMETRY_ENVIRONMENT` |
+| `switch_trust.internal` | `true` \| `false`, from `TELEMETRY_INTERNAL` |
 
 The rule against free text holds here too. `service.name` is a constant rather
 than the `SERVICE_NAME` setting, and the `ENVIRONMENT` setting is not sent as

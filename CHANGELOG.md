@@ -195,6 +195,13 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Telemetry attributes use `switch_trust.*` names.** `flint.client_id`,
+  `flint_env` and `flint_internal` are now `switch_trust.client_id`,
+  `switch_trust.env` and `switch_trust.internal` on usage events. The
+  operational OTLP export to your own collector carries
+  `switch_trust.client_id` in place of `flint.client_id` too, so update any
+  collector rule or query that matches the old name. What is sent is otherwise
+  unchanged.
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and
   downgrade the database before rolling back.** Every existing workspace gets
   an organization of its own, and its owners become the organization's admins.
@@ -2531,6 +2538,10 @@ version of their own to them without also giving them a release of their own.
   before. Older versions of Console load those images whatever the server says.
 
 #### Changed
+- **Usage data attributes use `switch_trust.*` names.** `flint.client_id`,
+  `flint_env` and `flint_internal` are now `switch_trust.client_id`,
+  `switch_trust.env` and `switch_trust.internal`. Only the names change; what
+  is sent, and the opt-out, do not.
 - **Link your account right after adding a messaging app.** Every way into
   connecting an app, including a Console link from switch-buddy, now ends by
   offering to link your own account on it (Telegram explains how instead).

@@ -94,9 +94,9 @@ class TestTagging:
         await service.aclose()
 
         assert sink.sent[0].resource == {
-            "flint.client_id": "deployment-uuid",
-            "flint_env": "prod",
-            "flint_internal": "false",
+            "switch_trust.client_id": "deployment-uuid",
+            "switch_trust.env": "prod",
+            "switch_trust.internal": "false",
             "service.version": "1.2.3",
         }
 
@@ -104,7 +104,7 @@ class TestTagging:
     async def test_every_event_says_which_amplitude_project_it_belongs_in(
         self, environment: str
     ) -> None:
-        """The relay sends each event to the Amplitude project its `flint_env`
+        """The relay sends each event to the Amplitude project its `switch_trust.env`
         names, so a development server's usage never lands in production's."""
         sink = _RecordingSink()
         service = TelemetryService(
@@ -119,7 +119,7 @@ class TestTagging:
         service.emit("deployment_started", tenant_count=1)
         await service.aclose()
 
-        assert sink.sent[0].resource["flint_env"] == environment
+        assert sink.sent[0].resource["switch_trust.env"] == environment
 
     @pytest.mark.parametrize(("internal", "sent"), [(True, "true"), (False, "false")])
     async def test_every_event_says_whether_the_deployment_is_the_companys_own(
@@ -139,7 +139,7 @@ class TestTagging:
         service.emit("deployment_started", tenant_count=1)
         await service.aclose()
 
-        assert sink.sent[0].resource["flint_internal"] == sent
+        assert sink.sent[0].resource["switch_trust.internal"] == sent
 
     async def test_an_unknown_version_is_omitted_rather_than_empty(self) -> None:
         """An absent attribute reads as "not known"; an empty string reads as a
@@ -210,9 +210,9 @@ class TestTheWireFormat:
                 name="switch_core.usage_snapshot",
                 properties={"room_count": 7, "from_template": True, "kind": "user"},
                 resource={
-                    "flint.client_id": "deployment-uuid",
-                    "flint_env": "dev",
-                    "flint_internal": "false",
+                    "switch_trust.client_id": "deployment-uuid",
+                    "switch_trust.env": "dev",
+                    "switch_trust.internal": "false",
                 },
                 timestamp_ns=1_700_000_000_000_000_000,
             )
@@ -266,9 +266,9 @@ class TestTheWireFormat:
                     "failed_attempts_before_success": 0,
                 },
                 resource={
-                    "flint.client_id": "deployment-uuid",
-                    "flint_env": "prod",
-                    "flint_internal": "false",
+                    "switch_trust.client_id": "deployment-uuid",
+                    "switch_trust.env": "prod",
+                    "switch_trust.internal": "false",
                 },
                 timestamp_ns=1_700_000_000_000_000_000,
             )
@@ -294,11 +294,11 @@ class TestTheWireFormat:
             for a in body["resourceLogs"][0]["resource"]["attributes"]
         }
 
-        assert resource["flint.client_id"] == {"stringValue": "deployment-uuid"}
+        assert resource["switch_trust.client_id"] == {"stringValue": "deployment-uuid"}
         assert resource["service.name"] == {"stringValue": "switch-core"}
         # The relay sends each event to the Amplitude project this names.
-        assert resource["flint_env"] == {"stringValue": "dev"}
-        assert resource["flint_internal"] == {"stringValue": "false"}
+        assert resource["switch_trust.env"] == {"stringValue": "dev"}
+        assert resource["switch_trust.internal"] == {"stringValue": "false"}
 
     async def test_the_sink_sends_no_service_or_environment_name_a_record_carries(
         self,
@@ -320,9 +320,9 @@ class TestTheWireFormat:
                 resource={
                     "service.name": "acme-corp-switch",
                     "deployment.environment": "acme-corp-prod",
-                    "flint.client_id": "deployment-uuid",
-                    "flint_env": "prod",
-                    "flint_internal": "false",
+                    "switch_trust.client_id": "deployment-uuid",
+                    "switch_trust.env": "prod",
+                    "switch_trust.internal": "false",
                 },
                 timestamp_ns=1,
             )
@@ -461,9 +461,9 @@ def _a_record() -> TelemetryRecord:
         name="switch_core.deployment_started",
         properties={"tenant_count": 1},
         resource={
-            "flint.client_id": "deployment-uuid",
-            "flint_env": "dev",
-            "flint_internal": "false",
+            "switch_trust.client_id": "deployment-uuid",
+            "switch_trust.env": "dev",
+            "switch_trust.internal": "false",
         },
         timestamp_ns=1,
     )

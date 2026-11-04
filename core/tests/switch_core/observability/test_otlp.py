@@ -69,7 +69,7 @@ def test_attributes_are_ordered_by_key():
 
 def test_resource_carries_the_deployment_id_the_relay_guards_on():
     attributes = RESOURCE.attributes()
-    assert attributes["flint.client_id"] == RESOURCE.deployment_id
+    assert attributes["switch_trust.client_id"] == RESOURCE.deployment_id
     assert attributes["service.name"] == "switch-core"
     assert attributes["deployment.environment"] == "pilot"
 

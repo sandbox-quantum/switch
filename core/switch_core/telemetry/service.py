@@ -53,14 +53,14 @@ class TelemetryService:
         self._session_factory = session_factory
         self._installed_at = installed_at
         self._resource = {
-            "flint.client_id": client_id,
+            "switch_trust.client_id": client_id,
             # The relay picks the Amplitude project from this. Sent even as
             # `prod`, so an event says where it belongs rather than relying on
             # what the relay does with silence.
-            "flint_env": telemetry_environment,
+            "switch_trust.env": telemetry_environment,
             # A string, as Switch Console sends it, where `unknown` is a third
             # answer; a deployment always knows which it is.
-            "flint_internal": "true" if telemetry_internal else "false",
+            "switch_trust.internal": "true" if telemetry_internal else "false",
         }
         # Omitted rather than sent empty: an absent attribute reads as "not
         # known", where `""` reads as a real version named nothing.
