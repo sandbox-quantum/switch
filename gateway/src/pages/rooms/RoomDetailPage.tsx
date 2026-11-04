@@ -98,9 +98,11 @@ export default function RoomDetailPage() {
     (user.id === room.owner_id ||
       canAdminTenant ||
       room.write_visibility === "public");
-  // Delete is stricter — owner or admin only, never via public write.
-  const canDelete =
+  // Access changes and delete are stricter — owner or admin only, never via
+  // public write. An ownerless room is therefore admin-only.
+  const canChangeAccess =
     !!user && (user.id === room.owner_id || canAdminTenant);
+  const canDelete = canChangeAccess;
 
   return (
     <Box>
@@ -135,6 +137,7 @@ export default function RoomDetailPage() {
         <EditableFieldsSection
           room={room}
           canWrite={canWrite}
+          canChangeAccess={canChangeAccess}
           onSaved={refetch}
         />
         <Divider />
@@ -599,10 +602,12 @@ function RoleRow({
 function EditableFieldsSection({
   room,
   canWrite,
+  canChangeAccess,
   onSaved,
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  canChangeAccess: boolean;
   onSaved: () => void;
 }) {
   const [name, setName] = useState(room.name);
@@ -637,7 +642,9 @@ function EditableFieldsSection({
           !isBridged && description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
-        ...(access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
+        ...(canChangeAccess && access !== toAccessLevel(room)
+          ? fromAccessLevel(access)
+          : {}),
       });
       onSaved();
     } catch (err) {
@@ -645,7 +652,16 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, onSaved]);
+  }, [
+    room,
+    name,
+    description,
+    instructions,
+    access,
+    isBridged,
+    canChangeAccess,
+    onSaved,
+  ]);
 
   return (
     <Stack spacing={2}>
@@ -691,7 +707,15 @@ function EditableFieldsSection({
       <AccessSelect
         value={access}
         onChange={setAccess}
-        disabled={!canWrite || saving}
+        disabled={!canChangeAccess || saving}
+        helpers={
+          !canChangeAccess
+            ? {
+                [access]:
+                  "Only the room owner or a tenant admin can change Access.",
+              }
+            : undefined
+        }
         sx={{ maxWidth: 360 }}
       />
       <Box>
