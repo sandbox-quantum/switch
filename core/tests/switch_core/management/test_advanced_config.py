@@ -42,7 +42,14 @@ def test_the_served_provider_list() -> None:
 def test_the_served_schema() -> None:
     providers = advanced_config_schema()["providers"]
 
-    assert set(providers) == {"claude", "codex", "opencode", "cursor", "antigravity", "goose"}
+    assert set(providers) == {
+        "claude",
+        "codex",
+        "opencode",
+        "cursor",
+        "antigravity",
+        "goose",
+    }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
         "tools",
         "disallowedTools",
