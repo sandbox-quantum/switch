@@ -92,6 +92,7 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     assert result.pop("google-workspace") == "not_connected"
     assert result.pop("datadog") == "not_connected"
     assert result.pop("gitlab") == "not_connected"
+    assert result.pop("intercom") == "not_connected"
     assert result.pop("notion") == "not_connected"
     assert result.pop("sentry") == "not_connected"
     assert result.pop("linear") == "not_connected"

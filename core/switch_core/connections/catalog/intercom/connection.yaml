@@ -1,0 +1,59 @@
+slug: intercom
+name: Intercom
+category: Customer support
+description: Search and read Intercom conversations and contacts, as you.
+enabled: true
+publisher: Intercom
+links:
+  documentation: https://developers.intercom.com/docs
+  support: https://www.intercom.com/help
+  privacy: https://www.intercom.com/legal/privacy
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: access_token
+        label: Access Token
+        secret: true
+        help: Developer Hub, your app, Authentication. Start with a read-only token.
+    # Intercom's documented identity endpoint (REST API, not the MCP server).
+    # This entry pastes a key rather than signs in with OAuth because an
+    # OAuth-with-DCR attempt (live DCR registration and PKCE S256 against the
+    # real hosted MCP server, 2026-11-03) could not be completed end to end:
+    # Intercom's own consent page (app.intercom.com) returned a generic
+    # error on every attempt, independent of this plugin's request, so no
+    # access token was obtained to test the identity call under OAuth.
+    # Pasting an Access Token from Developer Hub sidesteps that page
+    # entirely. This identity call has not yet been live-tested against a
+    # real Developer Hub token in this session; confirm it on first connect
+    # and update this comment with the measured result.
+    identity:
+      method: GET
+      url: "https://api.intercom.io/me"
+      headers: { Authorization: "Bearer {access_token}" }
+      account_id: id
+      label: email
+    help_url: https://developers.intercom.com/docs/build-an-integration/learn-more/authentication
+# A Developer Hub Access Token does not expire and only Intercom can revoke
+# it, so it is never handed to an agent: whatever runs beside the agent
+# could keep it for good. Disconnecting here forgets the token locally but
+# cannot revoke it at Intercom (the api_key adapter's revoke_connection
+# always refuses, confirmed from its source); revoke it in Developer Hub,
+# your app, Authentication, if it should stop working.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    # US-hosted workspaces only; Intercom's hosted MCP does not serve AU
+    # workspaces, and the EU host (mcp.eu.intercom.com) would need its own
+    # catalog entry, which this one does not attempt. The server's protected-
+    # resource metadata confirms bearer tokens go in the Authorization header
+    # (bearer_methods_supported: [header]), but whether this specific token
+    # type (a Developer Hub Access Token, not an OAuth-issued one) is
+    # accepted here has not yet been live-tested in this session; confirm on
+    # first connect.
+    - name: intercom
+      url: "https://mcp.intercom.com/mcp"
+      headers: { Authorization: "Bearer {access_token}" }
+tools: { mode: pass_through }
