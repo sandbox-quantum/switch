@@ -120,6 +120,16 @@ describe("an agent's connection cards", () => {
     expect(connectionCardStatus(datadog)).toBe('Off');
   });
 
+  it('offers vendor-enforced read and write levels for an MCP pass-through connector', () => {
+    const [azure] = agentConnectionCards(
+      [service('azure-devops', { grant_access_levels: ['read', 'write'] })],
+      [grant('azure-devops', { access: 'read' })]
+    ).cards;
+
+    expect(azure.kind).toBe('levels');
+    expect(connectionCardStatus(azure)).toBe('Read only');
+  });
+
   it("says what a grant does, else why it can't be turned on, else what the service is", () => {
     const [granted, unavailable, stale, plain] = agentConnectionCards(
       [

@@ -130,13 +130,18 @@ class VendorServer {
     const signal = AbortSignal.timeout(timeoutMs);
     let rejected: string | null = null;
     for (let attempt = 0; ; attempt += 1) {
-      const credential: ServiceCredential = await withinSignal(
+      const current: {
+        credential: ServiceCredential;
+        access?: 'read' | 'write';
+      } = await withinSignal(
         this.credential(rejected),
         signal,
         `The agent host did not hand out a ${this.service} token within ${timeoutMs / 1000} s.`
       );
+      const serviceCredential: ServiceCredential = current.credential;
+      const access = current.access;
       try {
-        return await this.connected(credential, signal, exchange);
+        return await this.connected(serviceCredential, access, signal, exchange);
       } catch (error) {
         if (signal.aborted)
           throw new Error(`${this.service} did not ${what} within ${timeoutMs / 1000} s.`);
@@ -145,21 +150,27 @@ class VendorServer {
           throw new Error(
             `${this.service} refused this agent's token again after Switch issued a new one.`
           );
-        rejected = credential.token;
+        rejected = serviceCredential.token;
       }
     }
   }
 
-  private async credential(rejected: string | null): Promise<ServiceCredential> {
+  private async credential(
+    rejected: string | null
+  ): Promise<{ credential: ServiceCredential; access?: 'read' | 'write' }> {
     const answer = serviceTokenAnswerSchema.parse(
       await this.deps.ask({ type: 'service-token', service: this.service, rejected })
     );
     if (answer.kind === 'refused') throw new Error(answer.message);
-    return redactServiceToken(this.deps.redactions, answer.token);
+    return {
+      credential: redactServiceToken(this.deps.redactions, answer.token),
+      ...(answer.access === undefined ? {} : { access: answer.access }),
+    };
   }
 
   private async connected<T>(
     credential: ServiceCredential,
+    access: 'read' | 'write' | undefined,
     signal: AbortSignal,
     exchange: (client: Client) => Promise<T>
   ): Promise<T> {
@@ -174,6 +185,10 @@ class VendorServer {
         credential.render(template),
       ])
     );
+    if (this.server.read_only_header !== undefined && this.server.read_only_header !== null) {
+      if (access === 'write') delete headers[this.server.read_only_header];
+      else headers[this.server.read_only_header] = 'true';
+    }
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers },
       fetch: (url, init) =>

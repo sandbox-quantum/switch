@@ -18,6 +18,7 @@ export const REJECTION_WINDOW_MS = 60_000;
 const STILL_USABLE_MS = 60_000;
 /** A cached token's grant is read again at most this often, when the token is asked for. */
 export const GRANT_CHECK_MS = 30_000;
+type GrantStatus = 'current' | 'changed' | 'unknown';
 
 /**
  * The service tokens of one agent's sessions on this machine: one per
@@ -72,8 +73,10 @@ export class AgentServiceTokens {
       cached = undefined;
     }
     if (cached && cached.useUntil - now > REFRESH_BEFORE_MS) {
-      if (await this.grantStands(service, cached, now)) return tokenAnswer(cached);
-      if (this.cached.get(service) === cached) this.cached.delete(service);
+      const status = await this.grantStatus(service, cached, now);
+      if (status === 'current') return tokenAnswer(cached);
+      if (status === 'unknown') return tokenAnswer({ ...cached, access: 'read' });
+      this.cached.delete(service);
       cached = undefined;
     }
 
@@ -91,27 +94,32 @@ export class AgentServiceTokens {
     const final = endsServiceUse(outcome.code);
     if (final) this.cached.delete(service);
     else if (cached && cached.useUntil - this.deps.now() > STILL_USABLE_MS) {
+      const status = await this.grantStatus(service, cached, this.deps.now());
+      if (status === 'changed') {
+        this.cached.delete(service);
+        return { kind: 'refused', code: outcome.code, message: outcome.message, final };
+      }
       console.warn(
         `Switch could not renew this agent's ${service} token (${outcome.message}); handing out the current one, which is used until ${new Date(cached.useUntil).toISOString()}.`
       );
-      return tokenAnswer(cached);
+      return tokenAnswer(status === 'unknown' ? { ...cached, access: 'read' } : cached);
     }
     return { kind: 'refused', code: outcome.code, message: outcome.message, final };
   }
 
   /**
    * Whether `token`'s grant is the one it was issued under, read from Switch
-   * at most every `GRANT_CHECK_MS` per service. While the grants cannot be
-   * read the token stands, with a warning, as it would until it expired.
+   * at most every `GRANT_CHECK_MS` per service. If the grants cannot be read,
+   * keep the token but use read-only MCP policy until Switch is reachable.
    */
-  private async grantStands(
+  private async grantStatus(
     service: string,
     token: IssuedServiceToken,
     now: number
-  ): Promise<boolean> {
-    if (token.grantRevision === null) return true;
+  ): Promise<GrantStatus> {
+    if (token.grantRevision === null) return 'current';
     const checked = this.checkedAt.get(service);
-    if (checked !== undefined && now - checked < GRANT_CHECK_MS) return true;
+    if (checked !== undefined && now - checked < GRANT_CHECK_MS) return 'current';
     let revisions: Map<string, number | undefined>;
     try {
       revisions = await this.readRevisions();
@@ -119,10 +127,10 @@ export class AgentServiceTokens {
       console.warn(
         `Switch could not be reached to check this agent's ${service} grant (${error instanceof Error ? error.message : String(error)}); handing out the current token, which expires at ${new Date(token.expiresAt).toISOString()}.`
       );
-      return true;
+      return 'unknown';
     }
     this.checkedAt.set(service, this.deps.now());
-    return revisions.get(service) === token.grantRevision;
+    return revisions.get(service) === token.grantRevision ? 'current' : 'changed';
   }
 
   /** One read of the grants at a time; services asking meanwhile share it. */
@@ -157,5 +165,10 @@ export class AgentServiceTokens {
 }
 
 function tokenAnswer(token: IssuedServiceToken): ServiceTokenAnswer {
-  return { kind: 'token', token: token.token, expiresAt: new Date(token.expiresAt).toISOString() };
+  return {
+    kind: 'token',
+    token: token.token,
+    expiresAt: new Date(token.expiresAt).toISOString(),
+    ...(token.access === undefined ? {} : { access: token.access }),
+  };
 }

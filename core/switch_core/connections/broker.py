@@ -317,6 +317,7 @@ class ServiceToken:
     # The grant's revision it was issued under: an agent host holding the
     # token compares it with the grants answer, and asks again once it moves.
     grant_revision: int
+    access: AccessLevel
 
 
 # A pasted key reaches whatever its vendor let it.
@@ -336,6 +337,15 @@ def _passes_through(entry: Connection) -> bool:
     """Whether `entry` hands its agents the owner's own token."""
     token = entry.definition.token
     return token is not None and token.kind == "pass_through"
+
+
+def _grant_is_on_or_off(entry: Connection) -> bool:
+    """Whether a pass-through grant has no vendor-enforced read-only level."""
+    mcp = entry.definition.mcp
+    has_read_only_header = mcp is not None and any(
+        server.read_only_header is not None for server in mcp.servers
+    )
+    return _passes_through(entry) and not has_read_only_header
 
 
 def _issued_to_agents(entry: Connection) -> bool:
@@ -427,7 +437,6 @@ class _GrantTerms:
     reach: dict[str, Any]
     tool_mode: Literal["allow", "deny"]
     tools: list[str]
-    passes_through: bool
 
 
 @dataclass(frozen=True)
@@ -766,7 +775,7 @@ class ServiceBroker:
             # The owner's own token reaches what the connection does, so the
             # grant's level is the connection's, as it is now.
             _consent(connection)
-            if _passes_through(entry)
+            if _grant_is_on_or_off(entry)
             else "write"
             if grant.access == "write"
             else "read"
@@ -927,6 +936,7 @@ class ServiceBroker:
             min(issued.expires_at, now + USE_WITHIN),
             issued.resources,
             decision.grant_revision,
+            decision.access,
         )
 
     def _token_policy(self, service: str) -> TokenPolicy:
@@ -1287,7 +1297,7 @@ class ServiceBroker:
         # granted: the host restarts a running session without it. The grant
         # is kept, so switching it back on returns it.
         switched_off = await self.workspace_disabled(session)
-        grants = []
+        grants: list[dict[str, Any]] = []
         for grant in await self._store.list_grants(session, agent.id):
             if grant.service in switched_off:
                 continue
@@ -1324,6 +1334,11 @@ class ServiceBroker:
                             {
                                 "name": server.name,
                                 "url": server.url,
+                                **(
+                                    {"read_only_header": server.read_only_header}
+                                    if server.read_only_header is not None
+                                    else {}
+                                ),
                                 "headers": server.headers
                                 or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
                             }
@@ -1335,6 +1350,10 @@ class ServiceBroker:
                     "cli_tools": [] if cli is None else [cli.model_dump(mode="json")],
                 }
             )
+            if grant.access == "read" and mcp is not None:
+                for server, serialized in zip(mcp.servers, grants[-1]["mcp_servers"]):
+                    if server.read_only_header is not None:
+                        serialized["headers"][server.read_only_header] = "true"
         return grants
 
     async def standing(self, session: AsyncSession, service: str) -> ServiceStanding:
@@ -1485,7 +1504,7 @@ class ServiceBroker:
                 f"Reconnect {name} under Settings, Connections first.",
                 retryable=False,
             )
-        if _passes_through(entry):
+        if _grant_is_on_or_off(entry):
             if access is not None or tool_mode is not None or tools is not None:
                 raise ServiceError(
                     422,
@@ -1534,7 +1553,6 @@ class ServiceBroker:
             reach=reach,
             tool_mode=mode,
             tools=chosen,
-            passes_through=_passes_through(entry),
         )
 
     async def check_grant_terms(
@@ -1595,7 +1613,9 @@ class ServiceBroker:
             ) from None
         return CheckedGrant(
             service=service,
-            access=None if terms.passes_through else terms.access,
+            access=(
+                None if _grant_is_on_or_off(self._entry(service)) else terms.access
+            ),
             resources=checked,
         )
 
@@ -1614,11 +1634,11 @@ class ServiceBroker:
         """Create or replace the agent's grant on its owner's own connection.
 
         A new grant with no `access` reads, with the level's tools. A
-        pass-through service's grant is on or off: it names no level or tools,
-        and takes the connection's. Commits `session`. Replacing a grant with
-        one that reaches less, or on a different account, revokes what was
-        issued under the old one, and the warning says when some of it could
-        not be revoked yet.
+        pass-through service without a vendor-enforced read-only mode has an
+        on-or-off grant: it names no level or tools, and takes the connection's.
+        Commits `session`. Replacing a grant with one that reaches less, or on
+        a different account, revokes what was issued under the old one, and the
+        warning says when some of it could not be revoked yet.
         """
         if agent.owner_id != actor_id:
             raise ServiceError(404, NOT_FOUND, "Agent not found.", retryable=False)

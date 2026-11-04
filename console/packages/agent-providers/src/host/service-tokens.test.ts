@@ -314,7 +314,7 @@ describe('AgentServiceTokens', () => {
       });
     });
 
-    it('keeps the token, with a warning, while the grants cannot be read', async () => {
+    it('keeps a token read-only, with a warning, while the grants cannot be read', async () => {
       const t = tokens([]);
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       t.issue.mockResolvedValueOnce({
@@ -322,13 +322,37 @@ describe('AgentServiceTokens', () => {
         expiresAt: t.at() + HOUR,
         useUntil: t.at() + HOUR,
         grantRevision: 1,
+        access: 'write',
       });
       t.readGrants.mockRejectedValue(new Error('offline'));
       await t.service.answer('github', null);
       t.advance(GRANT_CHECK_MS);
-      expect(await t.service.answer('github', null)).toMatchObject({ token: 'synthetic-one' });
+      expect(await t.service.answer('github', null)).toMatchObject({
+        token: 'synthetic-one',
+        access: 'read',
+      });
       expect(warn.mock.calls[0]?.[0]).toContain('offline');
       expect(t.issue).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a cached write token read-only if renewal and grant checks fail', async () => {
+      const t = tokens([]);
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      t.issue.mockResolvedValueOnce({
+        token: 'synthetic-one',
+        expiresAt: t.at() + HOUR,
+        useUntil: t.at() + HOUR,
+        grantRevision: 1,
+        access: 'write',
+      });
+      t.readGrants.mockRejectedValue(new Error('offline'));
+      await t.service.answer('github', null);
+      t.advance(HOUR - REFRESH_BEFORE_MS + 1);
+      t.issue.mockRejectedValueOnce(new Error('offline'));
+      expect(await t.service.answer('github', null)).toMatchObject({
+        token: 'synthetic-one',
+        access: 'read',
+      });
     });
 
     it('never reads the grants for a token from a Switch that names no revision', async () => {

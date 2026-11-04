@@ -16,7 +16,7 @@ GitHub works as it did.
 | One adapter, GitHub's, built by hand in `main.py` | Built from the catalog (`connections/registry.py`): each enabled entry names its `adapter`, `github`, the generic `oauth`, or `api_key` |
 | Catalog `connection.yaml` v2 | v3: `adapter`, `token`, `auth.oauth`, `auth.identity`, `mcp` or `cli` (below) |
 | Every token minted per issue, at most an hour | `minted` (GitHub) or `pass_through`: the owner's own access token, with the catalog's lifetime cap |
-| Grants with a level, tools and resources | A pass-through grant is **on or off**: it takes the connection's level |
+| Grants with a level, tools and resources | A pass-through grant is **on or off**, unless the vendor enforces a read-only MCP header |
 | Connecting through GitHub's own flow | A generic flow for `oauth` entries; GitHub keeps its own |
 | No vendor tools in a session | One loopback MCP server per granted vendor server, run by the session host |
 | A service is set up or not | `DISABLED_SERVICES` switches one off, with a reason people see |
@@ -55,6 +55,14 @@ access:
   write: { scopes: [...] }
 tools: { mode: pass_through } # the vendor's tool list as it is, until classified
 ```
+
+An OAuth MCP server that supports an enforced read-only mode can name its
+`read_only_header`. The session host sends that header with the value `true`
+for read-level grants, and omits it for write-level grants; the credential
+never reaches the coding tool. The token response carries the current grant
+level too, so the session host updates this header when a grant changes instead
+of relying on the session-start snapshot. The catalog cannot use this field to
+override `Authorization`.
 
 The loader stays strict and refuses an entry whose fields contradict its
 adapter: a GitHub entry with MCP servers, a pass-through GitHub token, an
@@ -237,14 +245,16 @@ hash shipped in the catalog, never a newer one a vendor publishes.
 
 ## Grants
 
-A pass-through service's grant names no level, tools or resources: the broker
-gives it the connection's level and refuses one that names any, and issuing
-reads the level from the connection as it is now, so reconnecting read-only
-narrows every grant at once. Console and the dashboard show such a service as a
-switch beside GitHub's grant and repository picker, saying that the agent acts
-as its owner there, that off stops its sessions within a minute, and, for a
-token that lives longer, that a token already handed out stays valid until it
-expires or the owner disconnects.
+A pass-through service with no vendor-enforced read-only MCP header has an
+on-or-off grant: the broker gives it the connection's level and refuses a
+grant that names one, tools or resources. Issuing reads the level from the
+connection as it is now, so reconnecting read-only narrows every grant at
+once. If an MCP server declares `read_only_header`, the grant can instead
+select read or write: Switch still passes through the owner's token, but the
+session host sets the vendor's read-only header for read grants. Console and
+the dashboard show the appropriate grant controls and explain that off stops
+the session's access within a minute; a token already handed out may remain
+valid until it expires or the owner disconnects.
 
 `GET /gateway/service-connections/{service}/agents` lists the caller's own
 agents in the workspace, each with whether it holds a grant on the service and

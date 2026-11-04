@@ -9,8 +9,8 @@ import { validServiceToken } from './service-github';
  * agent's own Switch endpoint: its own key, or the agent controller's relay,
  * which forwards `/agents/{id}/...` as the controller. A grant gives the
  * session its service's skill and, through the agent host, the service's
- * tokens. A change of access reaches its tokens within half a minute
- * (`AgentServiceTokens`); a service granted or taken away needs new tools, so
+ * tokens. A change of access reaches its tools within half a minute
+ * (`AgentServiceTokens`); adding or removing a service may need new tools, so
  * the agent's watcher restarts the session's host on its own conversation
  * once it is idle (`session-services.ts`).
  */
@@ -95,6 +95,8 @@ export const serviceGrantSchema = z.object({
       z.object({
         name: z.string().regex(SLUG),
         url: z.string().url(),
+        /** Read-only header, set dynamically from the current token's grant level. */
+        read_only_header: z.string().regex(HEADER_NAME).nullable().optional(),
         headers: z
           .record(z.string().regex(HEADER_NAME), z.string())
           .default({ Authorization: 'Bearer {token}' }),
@@ -192,7 +194,12 @@ export function endsServiceUse(code: string): boolean {
 
 /** What a session host is answered when it asks for a service token. */
 export const serviceTokenAnswerSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('token'), token: z.string().min(1), expiresAt: z.string() }),
+  z.object({
+    kind: z.literal('token'),
+    token: z.string().min(1),
+    expiresAt: z.string(),
+    access: z.enum(['read', 'write']).optional(),
+  }),
   z.object({
     kind: z.literal('refused'),
     code: z.string(),
@@ -216,6 +223,7 @@ export type IssuedServiceToken = {
   expiresAt: number;
   useUntil: number;
   grantRevision: number | null;
+  access?: 'read' | 'write';
 };
 export type ServiceRefusal = { code: string; message: string; retryable: boolean };
 
@@ -226,6 +234,7 @@ const issuedSchema = z.object({
   expires_in: z.number().int().nonnegative().optional(),
   use_until: z.string().optional(),
   grant_revision: z.number().int().optional(),
+  access: z.enum(['read', 'write']).optional(),
 });
 const refusalSchema = z.object({
   error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }),
@@ -291,6 +300,7 @@ export async function issueServiceToken(
     expiresAt: localExpiry,
     useUntil: localExpiry - (expiresAt - useUntil),
     grantRevision: issued.data.grant_revision ?? null,
+    ...(issued.data.access === undefined ? {} : { access: issued.data.access }),
   };
 }
 

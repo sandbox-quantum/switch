@@ -1,0 +1,57 @@
+slug: azure-devops
+name: Azure DevOps
+category: Project management
+description: Read and update Azure DevOps work items, repos and pipelines, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Microsoft Entra ID issues a new refresh token upon refresh.
+  refresh: rotating
+  oauth:
+    # Each server's operator registers a Microsoft Entra ID application and
+    # names its settings in AZURE_DEVOPS_CLIENT_CONFIG_PATH. Entra ID offers no
+    # dynamic client registration. A tenant admin must grant admin consent for
+    # the Azure DevOps delegated permission (user_impersonation).
+    registration: static
+    client_settings: AZURE_DEVOPS
+    # Redirects back to Core's callback (<GATEWAY_PUBLIC_URL>/gateway/service-connections/azure-devops/flows/callback),
+    # configured as a Web redirect URI in the Entra ID app registration.
+    redirect: [core]
+    prompt: consent select_account
+    # Nothing Switch asks Entra ID during the app check shows admin consent
+    # or tenant restriction settings.
+    unchecked: >-
+      Switch can't check admin consent, tenant restrictions, or that the
+      redirect URI matches. Have someone connect once to confirm.
+    # Microsoft Entra ID does not publish a standard RFC 7009 token revocation
+    # endpoint, so sign-ins must be removed by the user in their Microsoft account.
+    remove_access: >-
+      Remove it in your Microsoft account under App permissions
+      (https://myaccount.microsoft.com). Existing access tokens are not revoked
+      immediately; their expiry is controlled by Entra ID and tenant policy.
+  identity:
+    # Azure DevOps Visual Studio Profile service, checked using the bearer token.
+    url: https://app.vssps.visualstudio.com/_apis/profile/profiles/me
+    account_id: id
+    label: emailAddress
+# Entra's default token lifetime varies from 60 to 90 minutes; Switch caps the
+# lifetime handed to agents at one hour.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # Omitting the organization requires it in each tool call. Azure DevOps
+    # enforces read-only grants when this header is set by the session host.
+    - { name: azure-devops, url: "https://mcp.dev.azure.com/", read_only_header: X-MCP-Readonly }
+access:
+  # Azure DevOps uses the same user_impersonation scope for both levels;
+  # read-only access is enforced by the MCP server header above.
+  read:
+    scopes:
+      - 499b84ac-1321-427f-aa17-267ca6975798/user_impersonation
+      - offline_access
+  write:
+    scopes:
+      - 499b84ac-1321-427f-aa17-267ca6975798/user_impersonation
+      - offline_access
+tools: { mode: pass_through }
