@@ -372,6 +372,20 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["shell", "read_file", "write", "str_replace", "grep", "glob"],
             [],
         ),
+        (
+            "qwen",
+            "Qwen Code CLI",
+            [
+                "run_shell_command",
+                "read_file",
+                "write_file",
+                "edit",
+                "grep_search",
+                "glob",
+                "agent",
+            ],
+            [],
+        ),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(

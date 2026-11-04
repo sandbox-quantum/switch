@@ -72,7 +72,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Qwen Code run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -86,7 +86,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/qwen/qwen-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -127,3 +128,18 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**Qwen Code** runs `qwen --acp`. Qwen's own default mode is `auto`, where its
+classifier approves tools without asking, so every session is put in the mode
+Switch chose: approval-required in `default`, auto-accept-edits in
+`auto-edit`, auto in `auto` and full-access in `yolo`. It signs in to the
+provider chosen with `/auth` in an interactive `qwen` (Qwen OAuth's free tier
+ended on 2026-04-15). Its sign-in check reads that choice from
+`settings.json` under `QWEN_HOME`, else `~/.qwen`, and looks for the key Qwen
+would use: the model provider's `envKey`, else the auth type's own variable,
+in the environment, the settings' `env`, `security.auth.apiKey` or a
+user-level `.env`. It never starts Qwen or calls a model. Questions from its
+`ask_user_question` tool arrive as permission requests carrying
+`_meta.qwenQuestions`; they are asked in Switch and answered with the chosen
+labels, keyed by question index. MCP tools are named `mcp__<server>__<tool>`
+and subagents are the `agent` tool.
