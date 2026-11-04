@@ -414,6 +414,51 @@ may not read the current user. A Datadog administrator turns MCP access on for
 the organization (Organization Settings, Preferences), and the application key
 needs `mcp_read`, and `mcp_write` for changes.
 
+### PagerDuty
+
+PagerDuty uses the same `api_key` pattern with a **User API token**, an
+account with Advanced Permissions, and a fixed service region. This avoids
+operator OAuth app setup; PagerDuty supports static OAuth but does not support
+dynamic client registration. User tokens inherit the person's PagerDuty
+permissions; this connector offers no separate read-only access level.
+Account-level tokens and Events integration keys are not supported.
+
+The [official hosted MCP guide](https://docs.pagerduty.com/ai-automation/advance/pagerduty-mcp-server)
+documents `Authorization: Token token=…` and the hosted endpoints:
+`https://mcp.pagerduty.com/mcp` for global/US accounts and
+`https://mcp.eu.pagerduty.com/mcp` for EU accounts. Region is restricted to
+`pagerduty.com` or `eu.pagerduty.com`, never an arbitrary URL. The matching
+[regional REST host](https://docs.pagerduty.com/get-started/service-regions)
+is `api.pagerduty.com` or `api.eu.pagerduty.com`.
+
+Validation uses `GET /users/me` with the same authorization header. The
+[official REST schema](https://github.com/PagerDuty/api-schema/blob/main/reference/REST/openapiv3.json)
+documents that this operation requires user-level authentication and returns
+a `user` object: `user.id` identifies the connected person and `user.email`
+labels the connection. A successful identity response does not prove MCP
+entitlement or permission for every operation.
+
+The token has no expiry or refresh (`max_lifetime: null`). Switch uses the
+existing encrypted connector secret representation. Disconnecting forgets
+Switch's copy; it **cannot revoke the token at PagerDuty**. Revoke the token
+in the PagerDuty user's API Access settings if it should stop working elsewhere.
+
+The current non-expiring-key policy above still applies: the enabled catalog
+entry and Console logo ship, but Core reports `key_never_expires` and refuses
+connecting, granting and issuance. A server-side execution path that keeps
+the permanent credential out of the session host is needed before this
+connector can support the live room workflow. Do not work around this by
+inventing an expiry or enabling issuance in the adapter.
+
+Automated tests use synthetic identities and mocked HTTP responses. Live QA
+still needs authorized US/EU test accounts with Advanced Permissions, a
+non-notifying incident, and the supported execution path: connect, grant,
+inspect incidents/services/on-call/escalation context, perform an explicitly
+requested change, verify vendor permission denial, remove the grant and
+observe denial within a minute, then disconnect and revoke at PagerDuty.
+Check transcripts, rooms, logs and coding-tool env/args/files for disclosure,
+and record the issue's connect → grant → room task → grant-off video.
+
 ## Adding a connector
 
 A connector is a catalog entry and a skill, with no code, when the vendor fits
