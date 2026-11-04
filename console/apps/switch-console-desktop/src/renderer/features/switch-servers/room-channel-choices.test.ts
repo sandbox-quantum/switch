@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { channelChoiceCards, optionsForBridge } from './room-channel-choices';
+import { channelChoiceCards, optionsForBridge, channelIdProblem } from './room-channel-choices';
 import { DEFAULT_ROOM_OPTIONS } from './room-create-request';
+
+// Mattermost's shape (26 lowercase letters and digits), kept low-entropy so it reads as made up.
+const MATTERMOST_ID = 'mm' + '0'.repeat(24);
 
 const bridge = (type: string, channelIdsRefused: string | null = null) => ({
   type,
@@ -58,5 +61,27 @@ describe('keeping the channel choice to what the app offers', () => {
       kind: 'new',
       private: false,
     });
+  });
+});
+
+describe('channelIdProblem', () => {
+  it('accepts an id of each platform’s shape', () => {
+    expect(channelIdProblem('slack', 'C0123ABCD')).toBeNull();
+    expect(channelIdProblem('slack', 'G01ABCDEF')).toBeNull();
+    expect(channelIdProblem('mattermost', MATTERMOST_ID)).toBeNull();
+    expect(channelIdProblem('discord', '1234567890123456789')).toBeNull();
+    expect(channelIdProblem('teams', '19:a1b2c3d4e5f6@thread.tacv2')).toBeNull();
+  });
+
+  it('says where to find the id when it is not of the shape', () => {
+    expect(channelIdProblem('slack', '#general')).toMatch(/starts with C or G/);
+    expect(channelIdProblem('mattermost', 'town-square')).toMatch(/View Info/);
+    expect(channelIdProblem('discord', 'general')).toMatch(/Copy Channel ID/);
+    expect(channelIdProblem('teams', '19%3aabc%40thread.tacv2')).toMatch(/%3a/);
+  });
+
+  it('says nothing for a blank id or a platform it does not know', () => {
+    expect(channelIdProblem('slack', '  ')).toBeNull();
+    expect(channelIdProblem('zulip', 'anything')).toBeNull();
   });
 });

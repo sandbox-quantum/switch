@@ -96,13 +96,15 @@ describe('roomCreateRequest', () => {
 
 describe('roomOptionsReady', () => {
   it('needs a channel id only when binding an existing channel', () => {
-    expect(roomOptionsReady(DEFAULT_ROOM_OPTIONS)).toBe(true);
+    expect(roomOptionsReady(DEFAULT_ROOM_OPTIONS, 'slack')).toBe(true);
     const existing = (id: string) => ({
       ...DEFAULT_ROOM_OPTIONS,
       channel: { kind: 'existing' as const, externalChannelId: id },
     });
-    expect(roomOptionsReady(existing('  '))).toBe(false);
-    expect(roomOptionsReady(existing('C1'))).toBe(true);
+    expect(roomOptionsReady(existing('  '), 'slack')).toBe(false);
+    expect(roomOptionsReady(existing('C0123ABCD'), 'slack')).toBe(true);
+    // An id not of the app's shape is held back, with the reason shown beside it.
+    expect(roomOptionsReady(existing('general'), 'slack')).toBe(false);
   });
 });
 

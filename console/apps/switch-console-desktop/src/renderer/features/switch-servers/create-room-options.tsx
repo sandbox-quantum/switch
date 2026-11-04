@@ -15,7 +15,7 @@ import {
 } from '@renderer/lib/ui/select';
 import { cn } from '@renderer/utils/utils';
 import type { RemoteBridge, RoomAccess } from '@shared/core/switch-servers/switch-servers';
-import { type ChannelChoice, channelChoiceCards } from './room-channel-choices';
+import { type ChannelChoice, channelChoiceCards, channelIdProblem } from './room-channel-choices';
 import type { RoomCreateOptions } from './room-create-request';
 
 const NO_GROUP = '__none__';
@@ -80,22 +80,42 @@ export function RoomChannelField({
         ))}
       </div>
       {value.channel.kind === 'existing' && (
-        <Input
-          aria-label="Channel id"
-          placeholder="The channel’s id"
-          value={value.channel.externalChannelId}
-          onChange={(event) =>
-            onChange({
-              ...value,
-              channel: { kind: 'existing', externalChannelId: event.target.value },
-            })
-          }
-        />
+        <ExistingChannelId bridge={bridge} value={value} onChange={onChange} />
       )}
       <span className="text-xs text-foreground-muted">
         Console can’t move a room to another channel later.
       </span>
     </Field>
+  );
+}
+
+function ExistingChannelId({
+  bridge,
+  value,
+  onChange,
+}: {
+  bridge: RemoteBridge;
+  value: RoomCreateOptions;
+  onChange: (next: RoomCreateOptions) => void;
+}) {
+  if (value.channel.kind !== 'existing') return null;
+  const problem = channelIdProblem(bridge.type, value.channel.externalChannelId);
+  return (
+    <>
+      <Input
+        aria-label="Channel id"
+        placeholder="The channel’s id"
+        value={value.channel.externalChannelId}
+        onChange={(event) =>
+          onChange({
+            ...value,
+            channel: { kind: 'existing', externalChannelId: event.target.value },
+          })
+        }
+        aria-invalid={problem !== null}
+      />
+      {problem && <span className="text-xs text-destructive">{problem}</span>}
+    </>
   );
 }
 

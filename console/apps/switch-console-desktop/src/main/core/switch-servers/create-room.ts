@@ -22,12 +22,15 @@ function isBridgeFailure(detail: string): boolean {
   return /bridge/i.test(detail) && /not running|unavailable|not found/i.test(detail);
 }
 
+const EXISTING_CHANNEL_REFUSED =
+  'Switch couldn’t use that channel. Check the id, that the Switch app is in the channel, and that no other room already uses it.';
+
 /**
  * Create a room on `server` and map recoverable gateway failures onto a typed
  * {@link CreateRoomResult}, so the modal can name what went wrong instead of
  * surfacing a raw status line — or worse, appearing to do nothing.
  *
- * Unmapped failures still throw: an unexpected 500 is a bug, not a form error,
+ * Unmapped failures still throw: any other unexpected 500 is a bug, not a form error,
  * and should reach the logs rather than be flattened into the same inline
  * message as a typo in the room name.
  */
@@ -56,6 +59,17 @@ export async function createRoomOnServer(
           ? { kind: 'bridge-unavailable', message }
           : { kind: 'invalid', message };
       }
+      // The messaging app turned the request down (`BridgeOperationError`).
+      if (cause.kind === 'http' && cause.status === 502)
+        return {
+          kind: 'error',
+          message: `The messaging app could not make the room: ${cause.detail ?? cause.message}`,
+        };
+      // A named channel the server cannot use fails as a fault rather than a
+      // 400: an id the app does not know, a channel its bot is not in, or one
+      // another room already uses. Said so, since Console is where the id was typed.
+      if (cause.kind === 'http' && cause.status === 500 && params.channel?.kind === 'existing')
+        return { kind: 'invalid', message: EXISTING_CHANNEL_REFUSED };
       if (cause.kind === 'network') return { kind: 'error', message: cause.message };
     }
     throw cause;

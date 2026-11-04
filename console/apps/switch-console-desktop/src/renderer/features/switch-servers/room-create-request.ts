@@ -1,4 +1,5 @@
 import type { NewRoomChannel, RoomAccess } from '@shared/core/switch-servers/switch-servers';
+import { channelIdProblem } from './room-channel-choices';
 
 /** What the New room dialog asks the server for: a Switch Console chat when no messaging app is chosen, else a room bridged to the chosen one. */
 export type RoomCreateRequest =
@@ -101,9 +102,11 @@ function roomOptionsParams(options: RoomCreateOptions) {
   };
 }
 
-/** Whether More options are complete: an existing channel has to be named. */
-export function roomOptionsReady(options: RoomCreateOptions): boolean {
-  return options.channel.kind !== 'existing' || options.channel.externalChannelId.trim() !== '';
+/** Whether the options can be sent: an existing channel has to be named, by an id of its app's shape. */
+export function roomOptionsReady(options: RoomCreateOptions, bridgeType: string): boolean {
+  if (options.channel.kind !== 'existing') return true;
+  const id = options.channel.externalChannelId;
+  return id.trim() !== '' && channelIdProblem(bridgeType, id) === null;
 }
 
 /** A room needs only a name; a bridged room's description is optional, as its channel topic is. */

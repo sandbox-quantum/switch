@@ -82,3 +82,40 @@ export function optionsForBridge(
         : 'public';
   return offered.has(choice) ? options : { ...options, channel: { kind: 'new', private: false } };
 }
+
+/**
+ * What is wrong with `id` as a channel id on `bridgeType`, saying where to
+ * find the right one, or null when it has the platform's shape (or the
+ * platform is one Console does not know). Checked here because the server
+ * reports a malformed id only as a fault: a Discord id that is not a number,
+ * say, fails as it is read.
+ */
+export function channelIdProblem(bridgeType: string, id: string): string | null {
+  const value = id.trim();
+  if (value === '') return null;
+  const shape = CHANNEL_ID_SHAPE[bridgeType];
+  return shape && !shape.pattern.test(value) ? shape.problem : null;
+}
+
+const CHANNEL_ID_SHAPE: Record<string, { pattern: RegExp; problem: string }> = {
+  slack: {
+    pattern: /^[CG][A-Z0-9]{6,}$/,
+    problem:
+      'A Slack channel id starts with C or G, like C0123ABCD. It is at the bottom of the channel’s details.',
+  },
+  mattermost: {
+    pattern: /^[a-z0-9]{26}$/,
+    problem:
+      'A Mattermost channel id is 26 lowercase letters and digits. It is under the channel’s View Info.',
+  },
+  discord: {
+    pattern: /^\d{15,22}$/,
+    problem:
+      'A Discord channel id is a long number. With Developer Mode on, right-click the channel and choose Copy Channel ID.',
+  },
+  teams: {
+    pattern: /^19:[^\s/?#%@]+@thread\.(?:tacv2|skype)$/,
+    problem:
+      'A Teams channel id looks like 19:…@thread.tacv2. It is in the channel’s link, where : is written %3a and @ is %40.',
+  },
+};

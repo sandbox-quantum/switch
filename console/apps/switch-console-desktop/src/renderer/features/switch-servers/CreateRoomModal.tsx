@@ -193,7 +193,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     startingAgentState !== 'pending' &&
     !nowhere &&
     canCreate({ name }) &&
-    (selectedBridge === null || roomOptionsReady(roomOptions)) &&
+    (selectedBridge === null || roomOptionsReady(roomOptions, selectedBridge.type)) &&
     !isSubmitting;
 
   async function handleSubmit() {
@@ -419,6 +419,10 @@ export const CreateRoomModal = observer(function CreateRoomModal({
           onChange={(next) => {
             setWhere(next);
             setError(null);
+            // A channel, and above all a typed id, belongs to the app it was
+            // chosen for: another app starts again from a new public channel.
+            if (next !== where)
+              setOptions((now) => ({ ...now, channel: DEFAULT_ROOM_OPTIONS.channel }));
             // A bridged room starts with agents only.
             if (next !== SWITCH_CONSOLE)
               changePicks(shownPicked.filter((each) => each.kind === 'agent'));

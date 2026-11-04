@@ -150,6 +150,26 @@ describe('createRoomOnServer', () => {
     await expect(createRoomOnServer(SERVER, PARAMS)).resolves.toMatchObject({ kind: 'error' });
   });
 
+  it('says the messaging app refused when the server reports a bridge operation failure', async () => {
+    fetchMock.mockResolvedValue(response(502, { detail: 'channel_not_found' }));
+
+    await expect(createRoomOnServer(SERVER, PARAMS)).resolves.toEqual({
+      kind: 'error',
+      message: 'The messaging app could not make the room: channel_not_found',
+    });
+  });
+
+  it('explains a fault on an existing channel in terms of the id that was typed', async () => {
+    fetchMock.mockResolvedValue(response(500, 'Internal Server Error'));
+
+    const result = await createRoomOnServer(SERVER, {
+      ...PARAMS,
+      channel: { kind: 'existing', externalChannelId: 'C0123ABCD' },
+    });
+    expect(result).toMatchObject({ kind: 'invalid' });
+    expect(result.kind === 'invalid' && result.message).toMatch(/Check the id/);
+  });
+
   it('rethrows a server fault rather than flattening it into a form error', async () => {
     fetchMock.mockResolvedValue(response(500, 'Internal Server Error'));
 
