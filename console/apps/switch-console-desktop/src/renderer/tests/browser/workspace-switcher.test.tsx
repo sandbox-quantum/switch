@@ -3,7 +3,11 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import type { Workspace, WorkspaceRole } from '@shared/core/workspaces/workspaces';
+import type {
+  OrganizationRole,
+  Workspace,
+  WorkspaceRole,
+} from '@shared/core/workspaces/workspaces';
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -29,6 +33,10 @@ const state = vi.hoisted(() => ({
   unavailable: new Set<string>(),
   noMembership: new Set<string>(),
   noCreate: new Set<string>(),
+  /** Servers that have organizations, and the ones that refuse adding a workspace. */
+  organizations: new Set<string>(),
+  noAdd: new Set<string>(),
+  showModal: vi.fn(),
   listPendingInvitations: vi.fn(),
   acceptPendingInvitation: vi.fn(),
   listJoinableWorkspaces: vi.fn(),
@@ -41,7 +49,13 @@ vi.mock('@renderer/lib/ipc', () => ({
     switchServers: {
       listPendingInvitations: state.listPendingInvitations,
       listJoinableWorkspaces: state.listJoinableWorkspaces,
-      canCreateWorkspace: (serverId: string) => Promise.resolve(!state.noCreate.has(serverId)),
+      workspaceCreation: (serverId: string) =>
+        Promise.resolve({
+          canCreate: !state.noCreate.has(serverId),
+          canAddWorkspace: !state.noAdd.has(serverId),
+          organizations: state.organizations.has(serverId),
+          workspaceId: state.activeId,
+        }),
     },
   },
   events: { on: () => () => {}, emit: () => {} },
@@ -73,6 +87,11 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
+  workspaceCreationKey: (serverId: string, workspaceId: string | null) => [
+    'workspace-creation',
+    serverId,
+    workspaceId,
+  ],
   workspacesStore: {
     get activeId() {
       return state.activeId;
@@ -132,7 +151,7 @@ vi.mock('@renderer/lib/layout/navigation-provider', () => ({
 }));
 
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
-  useShowModal: () => () => {},
+  useShowModal: () => state.showModal,
 }));
 
 vi.mock('@renderer/lib/hooks/use-toast', () => ({
@@ -165,7 +184,11 @@ function server(id: string, name: string): SwitchServer {
 function workspace(
   id: string,
   serverId: string,
-  patch: { tenantId?: string | null; role?: WorkspaceRole | null } = {}
+  patch: {
+    tenantId?: string | null;
+    role?: WorkspaceRole | null;
+    organization?: { id: string; name: string | null; role: OrganizationRole };
+  } = {}
 ): Workspace {
   const tenantId = patch.tenantId === undefined ? `tenant-${id}` : patch.tenantId;
   return {
@@ -175,6 +198,9 @@ function workspace(
     tenantId,
     slug: tenantId === null ? null : id,
     role: patch.role === undefined ? 'member' : patch.role,
+    organizationId: patch.organization?.id ?? null,
+    organizationName: patch.organization?.name ?? null,
+    organizationRole: patch.organization?.role ?? null,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   };
@@ -230,6 +256,9 @@ beforeEach(() => {
   state.unavailable.clear();
   state.noMembership.clear();
   state.noCreate.clear();
+  state.organizations.clear();
+  state.noAdd.clear();
+  state.showModal.mockReset();
   state.listPendingInvitations.mockReset().mockResolvedValue({ kind: 'listed', invitations: [] });
   state.acceptPendingInvitation.mockReset();
   state.listJoinableWorkspaces.mockReset().mockResolvedValue({ kind: 'listed', workspaces: [] });
@@ -437,6 +466,125 @@ describe('new workspaces from the switcher', () => {
       'New workspace',
       undefined,
     ]);
+  });
+});
+
+describe('organizations in the switcher', () => {
+  const ACME = { id: 'o-1', name: 'Acme', role: 'org_admin' } as const;
+  const GLOBEX = { id: 'o-2', name: 'Globex', role: 'member' } as const;
+
+  function menuRows(): string[] {
+    return [...document.querySelectorAll('[role="menuitem"], [data-org-heading]')].map(
+      (item) => item.textContent ?? ''
+    );
+  }
+
+  it('heads each organization’s workspaces with its name where there are several', async () => {
+    state.organizations.add('srv-1');
+    await openSwitcher(
+      [server('srv-1', 'Cloud')],
+      [
+        workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' }),
+        workspace('ws-b', 'srv-1', { organization: GLOBEX }),
+        workspace('ws-c', 'srv-1', { organization: ACME }),
+      ],
+      'ws-a'
+    );
+    await settle();
+
+    const text = menuRows().join(' | ');
+    expect(text.indexOf('Acme')).toBeLessThan(text.indexOf('ws-c'));
+    expect(text.indexOf('ws-c')).toBeLessThan(text.indexOf('Globex'));
+    expect(text.indexOf('Globex')).toBeLessThan(text.indexOf('ws-b'));
+  });
+
+  it('lists everything unheaded where an organization could not be named', async () => {
+    state.organizations.add('srv-1');
+    await openSwitcher(
+      [server('srv-1', 'Cloud')],
+      [
+        workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' }),
+        workspace('ws-b', 'srv-1', { organization: { id: 'o-9', name: null, role: 'member' } }),
+      ],
+      'ws-a'
+    );
+    await settle();
+
+    expect(document.querySelectorAll('[data-org-heading]')).toHaveLength(0);
+    expect(menuRows().some((text) => text.startsWith('Add workspace'))).toBe(false);
+  });
+
+  it('offers an org admin Add workspace in their organization only', async () => {
+    state.organizations.add('srv-1');
+    await openSwitcher(
+      [server('srv-1', 'Cloud')],
+      [
+        workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' }),
+        workspace('ws-b', 'srv-1', { organization: GLOBEX }),
+      ],
+      'ws-a'
+    );
+    await settle();
+
+    const adds = menuRows().filter((text) => text.startsWith('Add workspace'));
+    expect(adds).toEqual(['Add workspace']);
+    const add = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (item) => item.textContent === 'Add workspace'
+    )!;
+    await act(async () => add.click());
+
+    expect(state.showModal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serverId: 'srv-1',
+        target: { kind: 'organization-workspace', through: 'ws-a', organizationName: 'Acme' },
+      })
+    );
+  });
+
+  it('names the organization on Add workspace when there is only one', async () => {
+    state.organizations.add('srv-1');
+    await openSwitcher(
+      [server('srv-1', 'Cloud')],
+      [workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' })],
+      'ws-a'
+    );
+    await settle();
+
+    expect(menuRows()).toContain('Add workspace to Acme');
+  });
+
+  it('does not offer Add workspace where the server refuses it', async () => {
+    state.organizations.add('srv-1');
+    state.noAdd.add('srv-1');
+    await openSwitcher(
+      [server('srv-1', 'Cloud')],
+      [workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' })],
+      'ws-a'
+    );
+    await settle();
+
+    expect(menuRows().some((text) => text.startsWith('Add workspace'))).toBe(false);
+  });
+
+  it('says Create organization where the server has organizations', async () => {
+    state.organizations.add('srv-1');
+    await openSwitcher(
+      [server('srv-1', 'Cloud'), server('srv-2', 'Old')],
+      [workspace('ws-a', 'srv-1', { organization: GLOBEX }), workspace('ws-b', 'srv-2')],
+      'ws-a'
+    );
+    await settle();
+
+    const rows = menuRows();
+    expect(rows).toContain('Create organization');
+    expect(rows).toContain('New workspace');
+    const create = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (item) => item.textContent === 'Create organization'
+    )!;
+    await act(async () => create.click());
+    expect(state.showModal).toHaveBeenCalledWith(
+      expect.objectContaining({ serverId: 'srv-1', target: { kind: 'organization' } })
+    );
   });
 });
 

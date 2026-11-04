@@ -124,6 +124,7 @@ export const SERVER_TOO_OLD_FOR_ACTIVITY =
   'This Switch server is too old for live chat activity — update the server.';
 
 /** What the chat's Stop, Reset and Compact post to the room for an agent. */
-export type ChatControlCommand = 'interrupt' | 'reset' | 'compact';
+/** Stop, Reset and Compact, and `retry`: run again the turn a message started, which failed. */
+export type ChatControlCommand = 'interrupt' | 'reset' | 'compact' | 'retry';
 
 export const chatControlAcceptedSchema = z.object({ commandId: z.string() });

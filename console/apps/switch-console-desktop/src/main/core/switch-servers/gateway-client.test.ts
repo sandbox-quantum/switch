@@ -80,6 +80,11 @@ const {
   fetchJoinableWorkspaces,
   fetchBridgeTeams,
   fetchMessagingAppInstalls,
+  fetchMyIdentities,
+  fetchMyPendingIdentities,
+  fetchUnconfirmedLinks,
+  requireLinkConfirmation,
+  searchBridgeDirectory,
   fetchTeamsPackage,
   joinWorkspaceByDomain,
   fetchJoinDomains,
@@ -88,7 +93,11 @@ const {
   removeBridgeTeam,
   createInvitation,
   fetchInvitations,
-  fetchCanCreateWorkspace,
+  createOrganization,
+  createOrganizationWorkspace,
+  fetchOrganizationNames,
+  fetchTenants,
+  fetchWorkspaceCreation,
   fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
@@ -113,6 +122,7 @@ const {
   updateManagementController,
   fetchManagementControllers,
   giveMachineLogin,
+  recheckMachineProvider,
   fetchMachineOperation,
   fetchAgentManagementAccess,
   updateCanManageAgents,
@@ -2336,6 +2346,308 @@ describe('messaging-app installs', () => {
   });
 });
 
+/**
+ * Links have to be confirmed with a code posted from the account (CHOO-3881).
+ * A server from before that sends none of the new fields, and every link it
+ * reports counts — so a missing `verified` reads as confirmed and a missing
+ * pending route as nothing pending.
+ */
+describe('linked messaging accounts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const LINKED = {
+    id: 'eu-1',
+    bridge_id: 'b1',
+    bridge_display_name: 'Acme',
+    bridge_type: 'slack',
+    external_user_id: 'U1',
+    external_username: 'ada',
+  };
+
+  it('reads whether each link is confirmed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([{ ...LINKED, verified: false }]) as never);
+
+    await expect(fetchMyIdentities(SERVER)).resolves.toMatchObject([{ verified: false }]);
+  });
+
+  it('reads a link from a server that predates confirming as confirmed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([LINKED]) as never);
+
+    await expect(fetchMyIdentities(SERVER)).resolves.toMatchObject([{ verified: true }]);
+  });
+
+  it('lists the links waiting for a code', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        { ...LINKED, requested_by_name: 'Grace', code_expires_at: '2026-10-27T12:30:00Z' },
+      ]) as never
+    );
+
+    await expect(fetchMyPendingIdentities(SERVER)).resolves.toEqual([
+      {
+        id: 'eu-1',
+        bridgeId: 'b1',
+        bridgeDisplayName: 'Acme',
+        bridgeType: 'slack',
+        externalUserId: 'U1',
+        externalUsername: 'ada',
+        requestedByName: 'Grace',
+        codeExpiresAt: '2026-10-27T12:30:00Z',
+      },
+    ]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/auth/me/identities/pending');
+  });
+
+  it('reads a server without the pending route as having none pending', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchMyPendingIdentities(SERVER)).resolves.toEqual([]);
+  });
+
+  it('raises on any other failure to list them', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, '{"detail":"boom"}') as never);
+
+    await expect(fetchMyPendingIdentities(SERVER)).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('reads who has confirmed a directory entry, old servers as confirmed', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        users: [
+          {
+            external_user_id: 'U1',
+            username: 'ada',
+            display_name: 'Ada',
+            claimed_by: [
+              { user_id: 'u1', user_name: 'Ada', verified: false },
+              { user_id: 'u2', user_name: 'Grace' },
+            ],
+          },
+        ],
+      }) as never
+    );
+
+    const { users } = await searchBridgeDirectory(SERVER, 'b1', 'ada');
+
+    expect(users[0]!.claimedBy).toEqual([
+      { userId: 'u1', userName: 'Ada', verified: false },
+      { userId: 'u2', userName: 'Grace', verified: true },
+    ]);
+  });
+});
+
+/**
+ * An admin can stop trusting a messaging app's links made before links had to
+ * be confirmed (CHOO-3881). A server from before that has neither route.
+ */
+describe('older links an admin can require confirming', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists them for one app', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          id: 'eu-1',
+          external_user_id: 'U1',
+          external_username: 'ada',
+          user_id: 'u1',
+          user_name: 'Ada',
+        },
+      ]) as never
+    );
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).resolves.toEqual([
+      { id: 'eu-1', externalUserId: 'U1', externalUsername: 'ada', userId: 'u1', userName: 'Ada' },
+    ]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/identities/unconfirmed');
+  });
+
+  it('reads a server without the route as having none', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).resolves.toEqual([]);
+  });
+
+  it('raises when the caller may not see them', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admins only"}') as never);
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('requires confirming the links named, and says how many moved', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ moved: 1 }) as never);
+
+    await expect(
+      requireLinkConfirmation(SERVER, 'b1', [{ id: 'eu-1', userId: 'u-1' }])
+    ).resolves.toBe(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe(
+      'https://switch.example.com/gateway/collaborations/b1/identities/require-confirmation'
+    );
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ links: [{ id: 'eu-1', user_id: 'u-1' }] });
+  });
+});
+
+describe('organizations', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const WORKSPACE_JSON = {
+    id: 't1',
+    slug: 'acme',
+    name: 'Acme',
+    role: 'owner',
+    organization_id: 'o1',
+    organization_role: 'org_admin',
+  };
+  const WORKSPACE = {
+    id: 't1',
+    slug: 'acme',
+    name: 'Acme',
+    role: 'owner',
+    organizationId: 'o1',
+    organizationRole: 'org_admin',
+  };
+
+  function requests(): Array<{ url: string; method: string; body: unknown }> {
+    return (
+      fetchMock.mock.calls as unknown as Array<[string, { method?: string; body?: string }]>
+    ).map(([url, init]) => ({
+      url,
+      method: init.method ?? 'GET',
+      body: init.body === undefined ? undefined : JSON.parse(init.body),
+    }));
+  }
+
+  it('reads each membership’s organization and the caller’s role in it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        WORKSPACE_JSON,
+        { id: 't2', slug: 'old', name: 'Old', role: 'member' },
+      ]) as never
+    );
+
+    await expect(fetchTenants(SERVER)).resolves.toEqual([
+      WORKSPACE,
+      {
+        id: 't2',
+        slug: 'old',
+        name: 'Old',
+        role: 'member',
+        organizationId: null,
+        organizationRole: null,
+      },
+    ]);
+  });
+
+  it('refuses an organization role it does not know', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([{ ...WORKSPACE_JSON, organization_role: 'billing' }]) as never
+    );
+    await expect(fetchTenants(SERVER)).rejects.toThrow(/unknown organization role: billing/);
+  });
+
+  it('names the organizations by id', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([{ id: 'o1', slug: 'acme', name: 'Acme Inc', role: 'org_admin' }]) as never
+    );
+    await expect(fetchOrganizationNames(SERVER)).resolves.toEqual(new Map([['o1', 'Acme Inc']]));
+  });
+
+  it('creates an organization and answers with its first workspace', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        organization: { id: 'o1', slug: 'acme', name: 'Acme', role: 'org_admin' },
+        workspace: WORKSPACE_JSON,
+      }) as never
+    );
+
+    await expect(createOrganization(SERVER, 'Acme')).resolves.toEqual(WORKSPACE);
+    expect(requests()).toEqual([
+      {
+        url: 'https://switch.example.com/gateway/organizations',
+        method: 'POST',
+        body: { name: 'Acme' },
+      },
+    ]);
+  });
+
+  it('creates a workspace on a server from before organizations', async () => {
+    fetchMock
+      .mockResolvedValueOnce(errorResponse(404, '{"detail":"Not Found"}') as never)
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 't1', slug: 'acme', name: 'Acme', role: 'owner' }) as never
+      );
+
+    await expect(createOrganization(SERVER, 'Acme')).resolves.toEqual({
+      id: 't1',
+      slug: 'acme',
+      name: 'Acme',
+      role: 'owner',
+      organizationId: null,
+      organizationRole: null,
+    });
+    expect(requests().map((r) => r.url)).toEqual([
+      'https://switch.example.com/gateway/organizations',
+      'https://switch.example.com/gateway/tenants',
+    ]);
+  });
+
+  it('passes on a refusal rather than retrying under the old route', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(403, '{"detail":"Creating organizations is turned off"}') as never
+    );
+
+    await expect(createOrganization(SERVER, 'Acme')).rejects.toMatchObject({ status: 403 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds a workspace to the selected workspace’s organization', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...WORKSPACE_JSON, id: 't3' }) as never);
+
+    await expect(createOrganizationWorkspace(SERVER, 'Labs')).resolves.toEqual({
+      ...WORKSPACE,
+      id: 't3',
+    });
+    expect(requests()).toEqual([
+      {
+        url: 'https://switch.example.com/gateway/organizations/current/workspaces',
+        method: 'POST',
+        body: { name: 'Labs' },
+      },
+    ]);
+  });
+});
+
 describe('acceptInvitation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -2372,7 +2684,14 @@ describe('acceptInvitation', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ token: 'tok-1' });
     expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
-    expect(tenant).toEqual({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' });
+    expect(tenant).toEqual({
+      id: 't1',
+      slug: 'cryo',
+      name: 'Cryo Team',
+      role: 'member',
+      organizationId: null,
+      organizationRole: null,
+    });
   });
 
   it('raises when the server joins the workspace but sends no cookie', async () => {
@@ -2616,7 +2935,14 @@ describe('invitations addressed to the signed-in account', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ tenant_id: 't1', invitation_id: 'inv-1' });
     expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
-    expect(tenant).toEqual({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' });
+    expect(tenant).toEqual({
+      id: 't1',
+      slug: 'cryo',
+      name: 'Cryo Team',
+      role: 'member',
+      organizationId: null,
+      organizationRole: null,
+    });
   });
 });
 
@@ -2665,7 +2991,14 @@ describe('joining a workspace by e-mail domain', () => {
     fetchMock.mockResolvedValue({
       status: 200,
       ok: true,
-      json: async () => ({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' }),
+      json: async () => ({
+        id: 't9',
+        slug: 'skunk',
+        name: 'Skunkworks',
+        role: 'member',
+        organization_id: 'o1',
+        organization_role: 'member',
+      }),
       headers: { get: () => null, getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
       text: async () => '',
     } as never);
@@ -2676,7 +3009,14 @@ describe('joining a workspace by e-mail domain', () => {
     expect(url).toBe('https://switch.example.com/gateway/joinable-tenants/t9/join');
     expect(init.method).toBe('POST');
     expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
-    expect(tenant).toEqual({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' });
+    expect(tenant).toEqual({
+      id: 't9',
+      slug: 'skunk',
+      name: 'Skunkworks',
+      role: 'member',
+      organizationId: 'o1',
+      organizationRole: 'member',
+    });
   });
 
   it("reads a workspace's domains and the admin's own", async () => {
@@ -2825,18 +3165,41 @@ describe('workspace invitations', () => {
     await expect(fetchInviteEmailEnabled(SERVER)).resolves.toBeNull();
   });
 
-  it('reads whether the server lets the account create a workspace', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: false }) as never);
-    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(false);
+  it('reads what the server lets the account create', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ can_create_workspace: false, can_add_workspace: true }) as never
+    );
+    await expect(fetchWorkspaceCreation(SERVER)).resolves.toEqual({
+      canCreate: false,
+      canAddWorkspace: true,
+      organizations: true,
+    });
 
+    // Older servers refused nothing up front, so nothing is hidden on them, and
+    // have no organizations to add to.
     fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: true }) as never);
-    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
-
-    // Older servers refused nothing up front, so nothing is hidden on them.
+    await expect(fetchWorkspaceCreation(SERVER)).resolves.toEqual({
+      canCreate: true,
+      canAddWorkspace: false,
+      organizations: false,
+    });
     fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
-    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+    await expect(fetchWorkspaceCreation(SERVER)).resolves.toEqual({
+      canCreate: true,
+      canAddWorkspace: false,
+      organizations: false,
+    });
     fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
-    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+    await expect(fetchWorkspaceCreation(SERVER)).resolves.toEqual({
+      canCreate: true,
+      canAddWorkspace: false,
+      organizations: false,
+    });
+  });
+
+  it('refuses an unreadable answer about adding a workspace', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ can_add_workspace: 'yes' }) as never);
+    await expect(fetchWorkspaceCreation(SERVER)).rejects.toThrow(/can_add_workspace/);
   });
 
   it('keeps the link when an older server says nothing about the e-mail', async () => {
@@ -2946,6 +3309,100 @@ describe('agent management calls', () => {
     expect(JSON.parse(String(init.body))).toEqual({ name: 'laptop', description: null });
   });
 
+  it('reads what a machine last reported, and tolerates a report missing parts', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          id: 'controller-1',
+          name: 'box',
+          description: null,
+          kind: 'daemon',
+          state: 'offline',
+          last_seen_at: '2026-10-01T10:30:00Z',
+          revoked_at: null,
+          platform: { os: 'linux', arch: 'x64', os_version: '6.8' },
+          version: '1.0.0',
+          release: { wanted: '1.1.0', running: '1.0.0', current: false },
+          connection: {
+            connected_at: '2026-10-01T10:00:00Z',
+            disconnected_at: '2026-10-01T11:00:00Z',
+            disconnect_reason: 'socket_closed',
+          },
+          created_at: '2026-09-01T00:00:00Z',
+          status: {
+            observed_at: '2026-10-01T10:30:00Z',
+            controller: { version: '1.0.0', updated_by: 'self' },
+            machine: { disk_free_bytes: 10, disk_total_bytes: 100, sessions_running: 1 },
+            update: { target: '1.1.0', state: 'waiting_idle' },
+            providers: [
+              {
+                provider: 'claude',
+                installed: true,
+                auth: 'ok',
+                auth_source: 'sealed',
+                version: '2.1.0',
+                checked_at: '2026-10-01T10:29:00Z',
+              },
+            ],
+            agents: [
+              { agent_id: 'a1', process: 'running', attached: true, sessions: { active: 2 } },
+              { process: 'running' },
+            ],
+          },
+        },
+        {
+          id: 'controller-2',
+          name: 'new',
+          description: null,
+          kind: 'daemon',
+          state: 'unknown',
+          last_seen_at: null,
+          revoked_at: null,
+        },
+      ])
+    );
+    const [reported, fresh] = await fetchManagementControllers(SERVER);
+    expect(reported?.platform).toEqual({ os: 'linux', arch: 'x64', osVersion: '6.8' });
+    expect(reported?.connection?.disconnectReason).toBe('socket_closed');
+    expect(reported?.release?.current).toBe(false);
+    expect(reported?.report).toEqual({
+      observedAt: '2026-10-01T10:30:00Z',
+      updatedBy: 'self',
+      update: { target: '1.1.0', state: 'waiting_idle', problem: null },
+      resources: {
+        diskFreeBytes: 10,
+        diskTotalBytes: 100,
+        memFreeBytes: 0,
+        memTotalBytes: 0,
+        sessionsRunning: 1,
+        sessionsMax: 0,
+      },
+      providerChecks: [
+        {
+          provider: 'claude',
+          version: '2.1.0',
+          authSource: 'sealed',
+          checkedAt: '2026-10-01T10:29:00Z',
+        },
+      ],
+      agents: [
+        {
+          agentId: 'a1',
+          process: 'running',
+          attached: true,
+          activeSessions: 2,
+          restarts10m: 0,
+          since: null,
+          reason: null,
+          detail: null,
+        },
+      ],
+    });
+    expect(fresh?.report).toBeNull();
+    expect(fresh?.connection).toBeNull();
+    expect(fresh?.version).toBeNull();
+  });
+
   it('reads the key a machine takes logins sealed to, and gives it one', async () => {
     fetchMock.mockImplementation(async () =>
       respond(200, [
@@ -3031,6 +3488,23 @@ describe('agent management calls', () => {
     );
   });
 
+  it('asks a machine to recheck one provider as a provider.recheck operation', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(201, { id: 'op-3', kind: 'provider.recheck', state: 'pending' })
+    );
+    expect(await recheckMachineProvider(SERVER, 'controller-1', 'codex')).toEqual({
+      operationId: 'op-3',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/operations');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({
+      controller_id: 'controller-1',
+      kind: 'provider.recheck',
+      params: { provider: 'codex' },
+    });
+  });
+
   it("reads each machine's providers from its last status report, and invents none", async () => {
     const controller = {
       name: 'box',
@@ -3057,6 +3531,13 @@ describe('agent management calls', () => {
               },
               { provider: 'codex', installed: true, auth: 'something-new' },
               { provider: 'opencode', installed: false, auth: 'unknown' },
+              {
+                provider: 'cursor',
+                installed: true,
+                auth: 'missing',
+                auth_problem: 'Signing in again will not help.',
+                login_helps: false,
+              },
               { installed: true, auth: 'ok' },
               'garbage',
             ],
@@ -3073,9 +3554,22 @@ describe('agent management calls', () => {
       [
         'reported',
         [
-          { provider: 'claude', installed: true, auth: 'ok', problem: null },
-          { provider: 'codex', installed: true, auth: 'unknown', problem: null },
-          { provider: 'opencode', installed: false, auth: 'unknown', problem: null },
+          { provider: 'claude', installed: true, auth: 'ok', problem: null, loginHelps: true },
+          { provider: 'codex', installed: true, auth: 'unknown', problem: null, loginHelps: true },
+          {
+            provider: 'opencode',
+            installed: false,
+            auth: 'unknown',
+            problem: null,
+            loginHelps: true,
+          },
+          {
+            provider: 'cursor',
+            installed: true,
+            auth: 'missing',
+            problem: 'Signing in again will not help.',
+            loginHelps: false,
+          },
         ],
       ],
       ['silent', []],

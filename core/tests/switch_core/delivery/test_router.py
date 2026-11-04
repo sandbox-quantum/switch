@@ -32,6 +32,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from switch_core.bridges.agent.protocol import event_buffer
 from switch_core.bridges.agent.protocol.agent_connections import (
     PROTOCOL_VERSION,
     ClientDeclaration,
@@ -48,6 +49,7 @@ from switch_core.db.models import (
     PendingAttachmentGroup,
     Room,
 )
+from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery import router as router_module
@@ -428,6 +430,11 @@ class TestFailuresStayWithTheAgent:
                 return text("SELECT 1 / 0")
             return claim(self, tenant_id, agent_id)
 
+        # The agents' events are stored together first, and when that fails,
+        # one at a time, each in a savepoint of its own.
+        monkeypatch.setattr(
+            event_buffer, "_STORE_OWN_EVENTS", RawStatement(text("SELECT 1 / 0"))
+        )
         monkeypatch.setattr(EventBuffer, "_claim", failing_claim)
         registry = MetricsRegistry()
         install(registry)
@@ -578,6 +585,18 @@ class TestCost:
         return process, room, alice, names
 
     @staticmethod
+    async def _events_in(session_factory: SessionFactory, room: Room) -> int:
+        """How many own events, of any agent, were stored for the room."""
+        async with tenant_session(session_factory, room.tenant_id) as session:
+            return int(
+                await session.scalar(
+                    text("SELECT count(*) FROM agent_events WHERE room_id = :room"),
+                    {"room": room.id},
+                )
+                or 0
+            )
+
+    @staticmethod
     def _kinds(statements: list[str]) -> dict[str, int]:
         kinds: dict[str, int] = {}
         for statement in statements:
@@ -608,11 +627,54 @@ class TestCost:
         assert small.get("SELECT") == large.get("SELECT"), (small, large)
         assert small == large
 
-    async def test_writes_grow_with_the_agents_a_message_is_for(
+    @pytest.mark.parametrize("agents", [1, 2])
+    async def test_a_direct_room_reads_no_agent_count_per_message(
+        self,
+        agents: int,
+        session_factory: SessionFactory,
+        statement_counts: StatementCounts,
+    ) -> None:
+        """Whether a direct room holds one agent rides on the room's own read,
+        so every message there costs no query for the room's agents: one
+        agent hears an unnamed message, two do not."""
+        process = process_on(session_factory)
+        room = await make_room(session_factory, channel_type="direct")
+        alice = await make_person(session_factory, "alice")
+        await add_member(session_factory, room, alice)
+        ids = []
+        for n in range(agents):
+            agent, client = await make_agent(
+                session_factory, f"d{n}-{uuid.uuid4().hex[:4]}"
+            )
+            await add_member(session_factory, room, client, agent=agent)
+            _go_live(process, agent.id)
+            ids.append(agent.id)
+        await process.say(room, "hello", sender=alice)
+        await process.idle()
+        before = [len(await own_events(session_factory, i)) for i in ids]
+
+        with statement_counts.scope("direct") as scope:
+            await process.say(room, "just chatting", sender=alice)
+        await process.idle()
+
+        agent_reads = [
+            s
+            for s in (" ".join(st.split()) for st in scope.statements)
+            if s.startswith("SELECT room_agents.agent_id FROM room_agents")
+        ]
+        assert agent_reads == []
+        after = [len(await own_events(session_factory, i)) for i in ids]
+        heard = 1 if agents == 1 else 0
+        assert after == [b + heard for b in before]
+
+    async def test_writes_do_not_grow_with_the_agents_a_message_is_for(
         self, session_factory: SessionFactory, statement_counts: StatementCounts
     ) -> None:
         """Naming every agent in the room: the reads are what they are for a
-        room of one, and each agent named costs its own event's writes."""
+        room of one, and so are the writes. The agents' events are stored
+        together (`EventBuffer.store_together`): one statement locks their
+        rows in `agent_event_heads`, and one inserts their events and moves
+        their heads, in one savepoint."""
         counted = []
         for size in (1, 6):
             process, room, alice, names = await self._room_of(session_factory, size)
@@ -621,17 +683,15 @@ class TestCost:
                 await process.say(room, body, sender=alice)
             await process.idle()
             counted.append(self._kinds(scope.statements))
+            assert await self._events_in(session_factory, room) == size
 
         small, large = counted
-        assert small.get("SELECT") == large.get("SELECT"), (small, large)
-        # One message, then per agent named: its number and its event, each
-        # in a savepoint of its own.
-        per_agent = {
-            kind: (large.get(kind, 0) - small.get(kind, 0)) // 5
-            for kind in ("INSERT", "SAVEPOINT", "RELEASE")
-        }
-        assert per_agent == {"INSERT": 2, "SAVEPOINT": 1, "RELEASE": 1}, (small, large)
-        assert large.get("INSERT", 0) == 1 + 2 * 6
+        assert small == large, (small, large)
+        assert (large.get("SAVEPOINT"), large.get("RELEASE")) == (1, 1), large
+        # The message, and the lock on the agents' heads.
+        assert large.get("INSERT") == 2, large
+        # Their events, and their heads moved.
+        assert large.get("WITH") == 1, large
 
 
 def _message(room: Room, sender: Client, body: str) -> Message:

@@ -2,6 +2,7 @@ import { open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { codexSourceHome } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { localOpenCodeDatabasePath, readOpenCodeConsole } from './local-opencode-sign-in';
@@ -21,7 +22,7 @@ export type LocalSignInProvider = 'codex' | 'opencode' | 'antigravity';
 export function localProviderAuthPath(provider: LocalSignInProvider): string {
   switch (provider) {
     case 'codex':
-      return join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json');
+      return join(codexSourceHome(process.env), 'auth.json');
     case 'opencode':
       return join(
         process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'),

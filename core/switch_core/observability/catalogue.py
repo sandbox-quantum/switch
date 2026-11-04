@@ -475,6 +475,18 @@ AGENT_CONNECTIONS_REFUSED = _spec(
     "revision in common), unauthorized (no valid credential), other.",
     "reason",
 )
+# An agent or controller connection told to open again later because this
+# process was already opening as many as it takes at once (`open_gate.py`).
+# A burst of these is a reconnect storm being paced, after a pod went away.
+AGENT_OPENS_DEFERRED = _spec(
+    "switch.agent.opens_deferred",
+    "sum",
+    "{connection}",
+    "Agent and controller connection opens refused with a time to come back, "
+    "because this process was opening as many as it takes at once. By route: "
+    "agent_socket, agent_event_stream, controller_open, controller_socket.",
+    "route",
+)
 AGENT_CONNECTIONS_EXPIRED = _spec(
     "switch.agent.connections_expired",
     "sum",
@@ -663,6 +675,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENT_BUFFER_SCAN_DURATION,
         AGENT_CONNECTIONS_REFUSED,
         AGENT_CONNECTIONS_EXPIRED,
+        AGENT_OPENS_DEFERRED,
         AGENT_CONNECTIONS_OPENED,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,

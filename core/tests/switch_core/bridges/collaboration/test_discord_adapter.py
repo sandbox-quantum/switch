@@ -63,6 +63,11 @@ class _FakeMessage:
         self.content = ""
         self.threads_created: list[str] = []
 
+    @property
+    def clean_content(self) -> str:
+        # Discord's text with mentions resolved; these fakes carry none.
+        return self.content
+
     async def edit(self, *, content: str) -> None:
         self.edited = content
 

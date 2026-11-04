@@ -36,7 +36,12 @@ import {
 import { CumulativeUsage, mergeUsage, type UsageCounts } from '../usage';
 import { featureArgs, mcpServerConfigArgs, tomlString } from './config-args';
 import { mapCodexItem } from './item-mapping';
-import { CODEX_KEYRING_READ_TIMEOUT_MS, readCodexKeyringApiKey } from './keyring-login';
+import {
+  CODEX_EPHEMERAL_LOGIN_ARGS,
+  CODEX_KEYRING_READ_TIMEOUT_MS,
+  readCodexCredentialStore,
+  readCodexKeyringApiKey,
+} from './keyring-login';
 import {
   CODEX_CLIENT_METHODS,
   CODEX_CLIENT_NOTIFICATIONS,
@@ -82,14 +87,6 @@ export const CODEX_KEYRING_SIGN_IN_REQUIRED =
   'the login it keeps in the OS keyring: the keychain may be locked, or access to its ' +
   '"Codex Auth" item may have been denied.';
 
-/**
- * Where a session that is handed a keyring login keeps it: in the memory of
- * its own Codex process, never in a file or the keyring. Given on the command
- * line, it outranks the user's and the project's configuration, and survives
- * Codex falling back to its defaults over a configuration it cannot read.
- */
-const EPHEMERAL_LOGIN_ARGS = ['-c', 'cli_auth_credentials_store="ephemeral"'];
-
 const accountSchema = z.object({
   account: z.unknown().nullable(),
   requiresOpenaiAuth: z.boolean(),
@@ -129,6 +126,8 @@ interface CodexSessionState {
   client: StdioJsonRpcClient;
   model?: string;
   effort?: string;
+  /** A warning about the session's setup to say again once its first turn is running. */
+  firstTurnNotice?: string;
   compaction?: { resolve: () => void; reject: (error: Error) => void };
   activeNativeTurnId?: string;
   /** Caller turn ids handed to `turn/start` but not yet bound to a native id. */
@@ -228,6 +227,47 @@ async function configuredSandbox(codexHome: string | undefined): Promise<CodexSa
   return typeof mode === 'string' && SANDBOX_MODES.has(mode as CodexSandboxMode)
     ? (mode as CodexSandboxMode)
     : null;
+}
+
+/** The model the configuration in `codexHome` names, which a thread left on its default inherits. */
+async function configuredModel(codexHome: string | undefined): Promise<string | null> {
+  if (!codexHome) return null;
+  let text: string;
+  try {
+    text = await readFile(join(codexHome, 'config.toml'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  const model = parse(text).model;
+  return typeof model === 'string' && model.trim() ? model.trim() : null;
+}
+
+/**
+ * The model a thread left on its default should run: the configuration's when
+ * the signed-in account can use it, otherwise the account's own default, with
+ * why. A configuration written for another account (or an API key) names a
+ * model this sign-in is refused, and every turn would fail on it.
+ */
+async function defaultModelFor(
+  client: StdioJsonRpcClient,
+  configured: string | null
+): Promise<{ model: string; warning: string } | null> {
+  if (configured === null) return null;
+  const offered: { model: string; isDefault?: boolean }[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: { data: { model: string; isDefault?: boolean }[]; nextCursor: string | null } =
+      await client.request('model/list', { cursor, limit: 100 });
+    offered.push(...page.data);
+    cursor = page.nextCursor;
+  } while (cursor);
+  if (offered.length === 0 || offered.some((each) => each.model === configured)) return null;
+  const fallback = offered.find((each) => each.isDefault) ?? offered[0]!;
+  return {
+    model: fallback.model,
+    warning: `This Codex sign-in cannot use ${configured}, the model its configuration names, so this session runs ${fallback.model}. Pick a model in the agent's settings to choose another.`,
+  };
 }
 
 /**
@@ -399,7 +439,7 @@ export class CodexAdapter implements ProviderAdapter {
     }
     const client = new StdioJsonRpcClient({
       command: this.binaryPath,
-      args: handOver ? [...args, ...EPHEMERAL_LOGIN_ARGS] : args,
+      args: handOver ? [...args, ...CODEX_EPHEMERAL_LOGIN_ARGS] : args,
       cwd: input.cwd,
       env,
       logger: this.logger,
@@ -429,6 +469,7 @@ export class CodexAdapter implements ProviderAdapter {
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
 
     let sandboxWarning: string | undefined;
+    let modelWarning: string | undefined;
     try {
       const initializeParams: CodexInitializeParams = {
         clientInfo: { name: CLIENT_NAME, title: 'Switch Console', version: CLIENT_VERSION },
@@ -446,6 +487,23 @@ export class CodexAdapter implements ProviderAdapter {
 
       const configured = await configuredSandbox(input.env.CODEX_HOME);
       const sandbox = sandboxFor(input.runtimeMode, configured);
+      const fallback = input.model?.id
+        ? null
+        : await defaultModelFor(client, await configuredModel(input.env.CODEX_HOME)).catch(
+            (error: unknown) => {
+              // The session still starts on whatever the configuration names, as it always did.
+              this.logger.warn('Could not check the configured model against this sign-in', {
+                sessionId: input.sessionId,
+                error: String(error),
+              });
+              return null;
+            }
+          );
+      if (fallback) {
+        state.model = fallback.model;
+        modelWarning = fallback.warning;
+        state.firstTurnNotice = fallback.warning;
+      }
       if (sandbox !== configured)
         sandboxWarning = `Auto mode runs Codex in the ${sandbox} sandbox instead of the configured ${configured}: unsandboxed, nothing would reach its automatic review.`;
       const config = {
@@ -453,7 +511,11 @@ export class CodexAdapter implements ProviderAdapter {
         ...(mode.approvalPolicy ? { approvalPolicy: mode.approvalPolicy } : {}),
         ...(sandbox ? { sandbox } : {}),
         approvalsReviewer: mode.approvalsReviewer,
-        ...(input.model?.id ? { model: input.model.id } : {}),
+        ...(input.model?.id
+          ? { model: input.model.id }
+          : fallback
+            ? { model: fallback.model }
+            : {}),
         ...(input.systemContext ? { developerInstructions: input.systemContext } : {}),
       };
       const opened = await this.openThread(client, config, input.resume?.nativeSessionId);
@@ -486,9 +548,10 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     this.emit(state, { type: 'session.started', nativeSessionId: state.threadId });
-    if (sandboxWarning) {
-      this.logger.warn(sandboxWarning, { sessionId: input.sessionId });
-      this.emit(state, { type: 'runtime.warning', message: sandboxWarning });
+    for (const warning of [sandboxWarning, modelWarning]) {
+      if (!warning) continue;
+      this.logger.warn(warning, { sessionId: input.sessionId });
+      this.emit(state, { type: 'runtime.warning', message: warning });
     }
     this.emit(state, { type: 'session.state.changed', status: 'ready' });
     return { sessionId: input.sessionId, nativeSessionId: state.threadId, provider: PROVIDER };
@@ -759,10 +822,7 @@ export class CodexAdapter implements ProviderAdapter {
     cwd: string,
     login: CodexKeyringLogin
   ): Promise<void> {
-    const { config } = z
-      .object({ config: z.object({ cli_auth_credentials_store: z.unknown() }) })
-      .parse(await client.request('config/read', { cwd }));
-    const store = config.cli_auth_credentials_store;
+    const store = await readCodexCredentialStore(client, cwd);
     if (store !== 'ephemeral')
       throw new Error(
         `Codex's configuration on the execution machine sets cli_auth_credentials_store to ${JSON.stringify(store ?? null)} for this session where Switch asked for "ephemeral" (an administrator's managed configuration or requirements can do this), so Switch did not hand the session the API key from the OS keyring: Codex would have saved another copy of it.`
@@ -863,6 +923,12 @@ export class CodexAdapter implements ProviderAdapter {
         turnId,
         raw: { source: CODEX_SERVER_NOTIFICATIONS.turnStarted, payload },
       });
+      // Said again inside the first turn, where the chat shows it: a warning
+      // from before any turn reaches only the host's own log.
+      if (state.firstTurnNotice) {
+        this.emit(state, { type: 'runtime.warning', message: state.firstTurnNotice });
+        state.firstTurnNotice = undefined;
+      }
     });
 
     client.onNotification(CODEX_SERVER_NOTIFICATIONS.turnCompleted, (params) => {
