@@ -30,6 +30,7 @@ import {
   machineCategory,
   machineConnection,
 } from './machine-state';
+import { type PlacedAgents, placedAgents } from './machine-state';
 import { useDeviceActions } from './use-device-actions';
 import { useMachineDetails } from './use-machines';
 
@@ -122,8 +123,7 @@ function DevicesBody({
     filter === 'all' ? list : list.filter((machine) => machineCategory(machine) === filter);
   const live = shown(arranged.live);
   const removed = shown(arranged.removed);
-  const agentsOn = (machine: MachineDetail) =>
-    (managed.data ?? []).filter((agent) => agent.machine?.id === machine.id).length;
+  const agentsOn = (machine: MachineDetail) => placedAgents(managed, machine.id);
 
   return (
     <div className="flex flex-col gap-6 pt-4 pb-10">
@@ -180,7 +180,7 @@ function DeviceCard({
 }: {
   serverId: string;
   machine: MachineDetail;
-  agentCount: number;
+  agentCount: PlacedAgents;
 }) {
   const { navigate } = useNavigate();
   const connection = machineConnection(machine);
@@ -258,9 +258,13 @@ function DeviceCard({
             : machine.name}
         </div>
         <div className="truncate text-sm text-foreground-muted">
-          {agentCount === 0
-            ? 'No agents'
-            : `${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}`}
+          {agentCount.kind === 'loading'
+            ? 'Agents…'
+            : agentCount.kind === 'unreadable'
+              ? 'Agents could not be listed'
+              : agentCount.count === 0
+                ? 'No agents'
+                : `${agentCount.count} ${agentCount.count === 1 ? 'agent' : 'agents'}`}
         </div>
       </div>
       {actions.error && (

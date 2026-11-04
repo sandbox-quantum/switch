@@ -1,5 +1,5 @@
 import { format } from 'date-fns';
-import { ExternalLink, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ExternalLink, MoreHorizontal, Pencil, Plus, RotateCw, Trash2 } from 'lucide-react';
 import { CopyButton } from '@renderer/features/admin/copy-button';
 import { CloudMachineCard } from '@renderer/features/cloud-agents/cloud-machine-card';
 import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
@@ -39,6 +39,7 @@ import {
   type MachineTone,
   platformLabel,
 } from './machine-state';
+import type { PlacedAgents } from './machine-state';
 import { useDeviceActions } from './use-device-actions';
 
 /** A notice's box, in the server page's hues. */
@@ -81,17 +82,20 @@ export function MachineDetails({
   serverId,
   machine,
   placed,
+  placedState,
 }: {
   serverId: string;
   machine: MachineDetail;
   /** The managed agents placed on it. */
   placed: ManagedAgentView[];
+  /** Whether `placed` is read yet, for Remove's warning about the agents it strands. */
+  placedState: PlacedAgents;
 }) {
   const connection = machineConnection(machine);
   const notices = machineNotices(machine);
   const removed = machine.state === 'revoked';
   const showAddAgentModal = useShowModal('addAgentModal');
-  const actions = useDeviceActions(serverId, machine, placed.length);
+  const actions = useDeviceActions(serverId, machine, placedState);
   const owner = switchServersStore.statusFor(serverId)?.user?.name ?? null;
 
   return (
@@ -109,6 +113,17 @@ export function MachineDetails({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {actions.restartable && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={actions.restarting}
+              onClick={() => void actions.restart()}
+            >
+              <RotateCw className="size-3.5" />
+              Restart controller
+            </Button>
+          )}
           {actions.renamable && (
             <Button size="sm" variant="outline" onClick={actions.rename}>
               <Pencil className="size-3.5" />

@@ -10,6 +10,7 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { MachineDetails } from './machine-details';
+import { placedAgents } from './machine-state';
 import { useMachineDetails } from './use-machines';
 
 type MachineParams = { serverId: string; machineId: string; name: string };
@@ -62,6 +63,7 @@ const MachinePanel = observer(function MachinePanel() {
               serverId={params.serverId}
               machine={machine}
               placed={(managed.data ?? []).filter((agent) => agent.machine?.id === machine.id)}
+              placedState={placedAgents(managed, machine.id)}
             />
           )}
         </div>

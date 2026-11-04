@@ -1,4 +1,8 @@
-import type { MachineDetail, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import type {
+  MachineDetail,
+  ManagedAgentView,
+  OwnedMachine,
+} from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 
 export type MachineTone = 'ok' | 'warning' | 'problem' | 'idle';
@@ -310,4 +314,26 @@ export function machineCategory(machine: Pick<MachineDetail, 'local' | 'cloud'>)
   if (machine.cloud) return 'cloud';
   if (machine.local?.kind === 'ssh-host') return 'ssh-host';
   return 'computer';
+}
+
+/**
+ * How many of the person's agents are placed on a device, as far as their
+ * agent list says: not yet read, could not be read, or a count. Removing a
+ * device warns about the agents it strands, so it waits for the list.
+ */
+export type PlacedAgents =
+  | { kind: 'known'; count: number }
+  | { kind: 'loading' }
+  | { kind: 'unreadable' };
+
+export function placedAgents(
+  managed: { data: ManagedAgentView[] | null | undefined; isError: boolean },
+  machineId: string
+): PlacedAgents {
+  if (managed.isError) return { kind: 'unreadable' };
+  if (managed.data === undefined) return { kind: 'loading' };
+  return {
+    kind: 'known',
+    count: (managed.data ?? []).filter((agent) => agent.machine?.id === machineId).length,
+  };
 }

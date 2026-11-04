@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type {
   MachineDetail,
   MachineProviderDetail,
+  ManagedAgentView,
 } from '@shared/core/managed-agents/managed-agents';
 import {
   arrangeMachines,
@@ -10,6 +11,7 @@ import {
   machineCategory,
   machineConnection,
   machineNotices,
+  placedAgents,
   moveTarget,
   platformLabel,
   sessionsLabel,
@@ -284,5 +286,24 @@ describe('machineCategory', () => {
       'computer'
     );
     expect(machineCategory(machine({ id: 'd' }))).toBe('computer');
+  });
+});
+
+describe('placedAgents', () => {
+  const on = (id: string | null) =>
+    ({
+      machine: id ? { id, name: id, kind: 'daemon', state: 'online' } : null,
+    }) as ManagedAgentView;
+
+  it('counts the agents placed on the device once the list is read', () => {
+    expect(
+      placedAgents({ data: [on('m1'), on('m1'), on('m2'), on(null)], isError: false }, 'm1')
+    ).toEqual({ kind: 'known', count: 2 });
+    expect(placedAgents({ data: null, isError: false }, 'm1')).toEqual({ kind: 'known', count: 0 });
+  });
+
+  it('says when the list is not read yet, or could not be', () => {
+    expect(placedAgents({ data: undefined, isError: false }, 'm1')).toEqual({ kind: 'loading' });
+    expect(placedAgents({ data: undefined, isError: true }, 'm1')).toEqual({ kind: 'unreadable' });
   });
 });
