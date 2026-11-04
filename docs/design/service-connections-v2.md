@@ -603,6 +603,47 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## Canva
+
+Built from Canva's official Model Context Protocol server and Developer Portal
+documentation:
+
+- **Official remote MCP server.** Reached at
+  `https://api.canva.com/connect/v1/mcp` as the `canva` MCP server.
+- **Static OAuth client per server.** Each server's operator registers a Canva
+  app in the Canva Developer Portal, enables Canva MCP under "Outside Canva",
+  registers Switch Console's loopback callback ports
+  (`http://127.0.0.1:39231/switch-services/callback`), and saves the client
+  credentials under Connector apps in Switch Console or names its settings file
+  in `CANVA_CLIENT_CONFIG_PATH`.
+- **Discovery.** Authorization and token endpoints are discovered from the MCP
+  server's RFC 9728 protected resource metadata:
+  `https://www.canva.com/api/oauth/authorize` and
+  `https://api.canva.com/auth/v1/oauth/token`. PKCE S256 and HTTP Basic client
+  authentication are required.
+- **Tokens and refresh.** Access tokens live 4 hours (14,400 s), with single-use
+  rotating refresh tokens (`refresh: rotating`). An agent's copy is held to that
+  lifetime cap and renewed automatically before expiry.
+- **Identity.** Read with `GET https://api.canva.com/rest/v1/users/me` using the
+  Bearer token; requires no specific scope and returns `team_user.user_id` as the
+  stable account identifier and label.
+- **Least access scopes.** The read-only level asks for `design:meta:read` and
+  `design:content:read` to search and inspect designs. The create and edit level
+  adds `design:content:write`. Organization, asset, folder, comment, and brand
+  template scopes are omitted by default.
+- **Revocation.** Revocation is configured explicitly at
+  `https://api.canva.com/rest/v1/oauth/revoke`. Disconnecting revokes the refresh
+  token, which revokes its token lineage and user consent at Canva.
+- **Transactional editing workflow in the skill.** Modifying designs uses Canva's
+  transaction protocol (`start-editing-transaction` → `perform-editing-operations`
+  → `commit-editing-transaction`), using only returned element IDs. Deletions and
+  consequential changes require explicit confirmation; design text is treated as
+  data, not instructions.
+
+To connect: Settings, Connections in Switch Console, then Canva. To roll back,
+add `canva` to `DISABLED_SERVICES`, remove its client under Connector apps or
+unset `CANVA_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
