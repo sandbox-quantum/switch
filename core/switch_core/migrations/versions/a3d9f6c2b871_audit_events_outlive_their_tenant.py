@@ -14,7 +14,7 @@ fail on the history of a workspace deleted in between, and checks every new
 row.
 
 Revision ID: a3d9f6c2b871
-Revises: e5a9c3d71f08
+Revises: 10f6d02ac5bc
 Create Date: 2026-10-21 00:00:00.000000
 
 """
@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "a3d9f6c2b871"
-down_revision: str | Sequence[str] | None = "e5a9c3d71f08"
+down_revision: str | Sequence[str] | None = "10f6d02ac5bc"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

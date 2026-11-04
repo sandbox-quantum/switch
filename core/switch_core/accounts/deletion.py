@@ -14,6 +14,8 @@ ahead would strand something nobody else could reach:
 - the server's own administrator account, which the server recreates on every
   start anyway;
 - a workspace with other people in it whose only owner is this person;
+- an organization with other people in it whose only `org_admin` is this
+  person;
 - a cloud machine, whose teardown is driven from its row;
 - an active messaging app installed in a workspace nobody else is in, which
   would keep receiving messages for no one.
@@ -37,6 +39,7 @@ a user cannot be added without saying what happens to it here.
 from __future__ import annotations
 
 import logging
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -47,6 +50,7 @@ from switch_core.accounts.workspace_deletion import (
     delete_workspace,
 )
 from switch_core.accounts.workspace_deletion import refusal as workspace_refusal
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.resource.service import ReferenceTypeInUseError
 from switch_core.connections.broker import ServiceError
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -63,6 +67,8 @@ from switch_core.db.models import (
     MessagingInstall,
     MessagingInstallState,
     OidcIdentity,
+    Organization,
+    OrganizationMember,
     Package,
     Reference,
     ReferenceType,
@@ -80,7 +86,7 @@ from switch_core.db.models import (
     WorkspaceServiceSetting,
 )
 from switch_core.db.rls_ddl import GLOBAL_TABLES
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.tenant_context import tenant_scope
 
@@ -93,6 +99,7 @@ if TYPE_CHECKING:
     from switch_core.connections.sign_in_flows import SignInFlows
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.api_key_store import ApiKeyStore
+    from switch_core.db.stores.organization_store import OrganizationStore
     from switch_core.db.stores.template_store import TemplateStore
     from switch_core.db.stores.user_store import UserStore
     from switch_core.room_service import RoomService
@@ -139,14 +146,20 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("workspace_service_settings", "updated_by"): "handed over",
     ("service_app_credentials", "updated_by"): "handed over",
     ("provider_connections", "user_id"): "database cascades",
+    ("organization_members", "user_id"): "database cascades",
     ("template_installs", "owner_id"): "database cascades",
     ("external_user_claims", "user_id"): "database cascades",
+    ("external_user_link_requests", "user_id"): "database cascades",
+    ("external_user_link_requests", "requested_by_user_id"): "database clears",
     ("chat_operations", "user_id"): "database cascades",
     ("chat_hidden", "user_id"): "database cascades",
     ("chat_owner_grants", "user_id"): "database cascades",
+    ("chat_reads", "user_id"): "database cascades",
     ("service_connections", "user_id"): "database cascades",
     ("sign_in_flows", "user_id"): "database cascades",
     ("clients", "user_id"): "database clears",
+    ("organization_app_credentials", "updated_by"): "database clears",
+    ("organization_service_settings", "updated_by"): "database clears",
 }
 
 
@@ -254,6 +267,7 @@ class AccountDeletion:
     rooms: RoomService
     sign_in_flows: SignInFlows
     users: UserStore
+    organizations: OrganizationStore
     agents: AgentStore
     api_keys: ApiKeyStore
     templates: TemplateStore
@@ -310,6 +324,11 @@ class AccountDeletion:
 
     async def _workspace_refusal(self, user: User, workspace: Workspace) -> str | None:
         async with tenant_session(self.session_factory, workspace.id) as session:
+            organization_refusal = await self._organization_refusal(
+                session, user, workspace.id
+            )
+            if organization_refusal is not None:
+                return organization_refusal
             members = await self.users.list_tenant_members(session)
             # A former member is never alone in a workspace: what they left
             # there is handed over or cleared like anything else they left.
@@ -318,7 +337,8 @@ class AccountDeletion:
             )
             if (
                 not alone
-                and workspace.role == "owner"
+                and await self.users.tenant_role(session, workspace.id, user.id)
+                == "owner"
                 and await self.users.count_owners(session) <= 1
             ):
                 return (
@@ -339,6 +359,35 @@ class AccountDeletion:
                     )
         return None
 
+    async def _organization_refusal(
+        self, session: AsyncSession, user: User, tenant_id: str
+    ) -> str | None:
+        """Refuse the last `org_admin` of the organization `tenant_id` belongs
+        to while anyone else is in it: nobody would be left to run it."""
+        if (
+            await self.users.organization_role(session, tenant_id, user.id)
+            != ORGANIZATION_ADMIN_ROLE
+        ):
+            return None
+        tenant = await session.get(Tenant, tenant_id)
+        assert tenant is not None and tenant.organization_id is not None
+        organization = await session.get(Organization, tenant.organization_id)
+        assert organization is not None
+        roles = set(
+            await session.scalars(
+                select(OrganizationMember.role).where(
+                    OrganizationMember.organization_id == organization.id,
+                    OrganizationMember.user_id != user.id,
+                )
+            )
+        )
+        if not roles or ORGANIZATION_ADMIN_ROLE in roles:
+            return None
+        return (
+            f"You're the only organization admin of {organization.name}, which "
+            "has other members. Make one of them an organization admin first."
+        )
+
     async def delete(
         self,
         session: AsyncSession,
@@ -352,8 +401,11 @@ class AccountDeletion:
         themselves, or the server's operator; each workspace's audit log names
         them.
 
-        Raises `AccountDeletionIncomplete` when it fails partway."""
+        Raises `AccountDeletionRefused` before anything is changed if an
+        organization's last `org_admin` check no longer holds, and
+        `AccountDeletionIncomplete` when it fails partway."""
         user_id = user.id
+        await self._leave_organizations_as_admin(user, workspaces)
         completed: list[Workspace] = []
         try:
             for workspace in workspaces:
@@ -375,6 +427,66 @@ class AccountDeletion:
         logger.info(
             "Deleted the account of user %s at the request of %s", user_id, actor_id
         )
+
+    async def _leave_organizations_as_admin(
+        self, user: User, workspaces: list[Workspace]
+    ) -> None:
+        """Take the person's `org_admin` rows away, each under the lock every
+        write that could leave an organization without an `org_admin` takes
+        (`OrganizationStore.lock_admins`), so `refusal` holds against another
+        admin stepping down at the same moment. Every check runs before any
+        row goes."""
+        organizations: dict[str, str] = {}
+        for workspace in workspaces:
+            async with tenant_session(self.session_factory, workspace.id) as session:
+                tenant = await session.get(Tenant, workspace.id)
+                if (
+                    tenant is not None
+                    and tenant.organization_id is not None
+                    and await self.users.organization_role(
+                        session, workspace.id, user.id
+                    )
+                    == ORGANIZATION_ADMIN_ROLE
+                ):
+                    organizations[tenant.organization_id] = workspace.name
+        if not organizations:
+            return
+        async with AsyncExitStack() as stack:
+            held = []
+            for organization_id in sorted(organizations):
+                session = await stack.enter_async_context(
+                    organization_session(self.session_factory, organization_id)
+                )
+                held.append((organization_id, session))
+                admins = await self.organizations.lock_admins(session, organization_id)
+                still_admin = (
+                    await self.organizations.role(session, organization_id, user.id)
+                    == ORGANIZATION_ADMIN_ROLE
+                )
+                others = await session.scalar(
+                    select(func.count())
+                    .select_from(OrganizationMember)
+                    .where(
+                        OrganizationMember.organization_id == organization_id,
+                        OrganizationMember.user_id != user.id,
+                    )
+                )
+                if still_admin and admins <= 1 and others:
+                    organization = await session.get(Organization, organization_id)
+                    assert organization is not None
+                    raise AccountDeletionRefused(
+                        f"You're the only organization admin of {organization.name}, "
+                        "which has other members. Make one of them an "
+                        "organization admin first."
+                    )
+            for organization_id, session in held:
+                await session.execute(
+                    delete(OrganizationMember).where(
+                        OrganizationMember.organization_id == organization_id,
+                        OrganizationMember.user_id == user.id,
+                    )
+                )
+                await session.commit()
 
     async def _hand_over_server_settings(
         self, session: AsyncSession, user_id: str
@@ -471,7 +583,10 @@ class AccountDeletion:
                 target_type="user",
                 target_id=user_id,
                 details={
-                    "role": workspace.role,
+                    "role": await self.users.tenant_role(session, tenant_id, user_id),
+                    "organization_role": await self.users.organization_role(
+                        session, tenant_id, user_id
+                    ),
                     "agents_deleted": len(agent_ids),
                     "machines_deleted": len(controller_ids),
                     "handed_to": successor,

@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING
 from switch_core.db.models import ClientRoom, Message
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.db.stores.client_store import ClientStore
@@ -74,6 +76,24 @@ class PostgresProvisioning:
         self._client_store = client_store
         self._router = router
         self._invites = invites
+        self._membership_listeners: tuple[
+            Callable[[str, str, list[str]], None], ...
+        ] = ()
+
+    def on_membership_changed(
+        self, listener: Callable[[str, str, list[str]], None]
+    ) -> None:
+        """Call `listener(tenant_id, room_id, [client_id])` once a membership
+        written here has committed, a join or a removal (`room_changes`). It
+        must not block."""
+        self._membership_listeners = (*self._membership_listeners, listener)
+
+    def _membership_changed(self, tenant_id: str, room_id: str, client_id: str) -> None:
+        for listener in self._membership_listeners:
+            try:
+                listener(tenant_id, room_id, [client_id])
+            except Exception:
+                logger.exception("Membership listener failed for room %s", room_id)
 
     async def create_room(self, name: str, topic: str) -> str:
         """Mint the id the caller will store on its own room row.
@@ -116,35 +136,63 @@ class PostgresProvisioning:
             return
 
         async with self._session_factory() as session:
-            if not await self._room_store.add_client(
-                session, client_id, switch_room_id
-            ):
-                # Recorded by another writer meanwhile, which wrote the
-                # arrival too.
-                return
-            arrival = Message(
-                room_id=switch_room_id,
-                transport_event_id=f"sw_{uuid.uuid4().hex}",
-                sender_id=user_id,
-                sender_client_id=client_id,
-                sender_name=display_name,
-                event_type=MEMBERSHIP_EVENT_TYPE,
-                msgtype=None,
-                body=None,
-                formatted_body=None,
-                thread_root_event_id=None,
-                content={"membership": "join", "displayname": display_name},
-            )
-            routed = await self._router.store(
+            committed = await self._write_join(
                 session,
-                tenant_id=tenant_id,
-                room_id=switch_room_id,
-                transport_room_id=room_id,
-                message=arrival,
-                attachments=[],
+                room_id,
+                user_id,
+                (switch_room_id, tenant_id, client_id, display_name),
             )
             await session.commit()
-        routed.committed()
+        committed()
+
+    async def record_join(
+        self, session: AsyncSession, room_id: str, user_id: str
+    ) -> Callable[[], None]:
+        """Write a membership and its arrival in the caller's transaction, for
+        a client that is never live, so it commits with whatever else the
+        caller writes. Returns what to run once the caller has committed.
+        Already a member is success, with nothing to run."""
+        resolved = await self._resolve(session, room_id, user_id)
+        return await self._write_join(session, room_id, user_id, resolved)
+
+    async def _write_join(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        user_id: str,
+        resolved: tuple[str, str, str, str],
+    ) -> Callable[[], None]:
+        switch_room_id, tenant_id, client_id, display_name = resolved
+        if not await self._room_store.add_client(session, client_id, switch_room_id):
+            # Recorded by another writer meanwhile, which wrote the arrival too.
+            return lambda: None
+        arrival = Message(
+            room_id=switch_room_id,
+            transport_event_id=f"sw_{uuid.uuid4().hex}",
+            sender_id=user_id,
+            sender_client_id=client_id,
+            sender_name=display_name,
+            event_type=MEMBERSHIP_EVENT_TYPE,
+            msgtype=None,
+            body=None,
+            formatted_body=None,
+            thread_root_event_id=None,
+            content={"membership": "join", "displayname": display_name},
+        )
+        routed = await self._router.store(
+            session,
+            tenant_id=tenant_id,
+            room_id=switch_room_id,
+            transport_room_id=room_id,
+            message=arrival,
+            attachments=[],
+        )
+
+        def committed() -> None:
+            routed.committed()
+            self._membership_changed(tenant_id, switch_room_id, client_id)
+
+        return committed
 
     async def kick_user(self, room_id: str, user_id: str) -> None:
         """Remove a membership, stopping a live client's delivery with it.
@@ -178,6 +226,7 @@ class PostgresProvisioning:
             await session.commit()
         await removed.committed()
         await self._invites.remove(client_id, room_id)
+        self._membership_changed(tenant_id, switch_room_id, client_id)
 
     async def delete_room(self, room_id: str) -> None:
         """Nothing of its own to discard.

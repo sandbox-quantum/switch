@@ -27,6 +27,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
@@ -61,6 +62,7 @@ def _app(
     overrides[gw_deps.get_system_session] = _session_dep
     overrides[gw_deps.get_session_factory] = lambda: session_factory
     overrides[gw_deps.get_user_store] = lambda: UserStore()
+    overrides[gw_deps.get_organization_store] = lambda: OrganizationStore()
     overrides[gw_deps.get_agent_store] = lambda: AgentStore()
     overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     overrides[gw_deps.get_template_store] = lambda: TemplateStore()

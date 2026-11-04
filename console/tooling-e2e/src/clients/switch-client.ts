@@ -222,6 +222,22 @@ interface SwitchRequest {
   timeoutMs?: number;
 }
 
+export interface OrganizationSummary {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+}
+
+export interface WorkspaceMembership {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+  organization_role: string | null;
+  organization_id: string | null;
+}
+
 export class SwitchClient {
   private readonly apiUrl: string;
   /** The deployment-wide registration key; agents it registers belong to a bootstrap account. */
@@ -450,6 +466,80 @@ export class SwitchClient {
     this.issued.record(cookie.slice("switch_auth=".length));
     this.gatewayCookie = cookie;
     return (parsed as { id: string }).id;
+  }
+
+  /**
+   * `POST /gateway/organizations` — create an organization with its first
+   * workspace. The caller becomes its organization admin and the workspace's
+   * owner, and the server re-mints their session into the workspace, so from
+   * here on this client acts there.
+   */
+  async createOrganization(name: string): Promise<{
+    organization: OrganizationSummary;
+    workspace: WorkspaceMembership;
+  }> {
+    const { parsed, response } = await this.rawRequest(
+      "POST",
+      "/gateway/organizations",
+      {
+        cookie: await this.gatewayLogin(),
+        body: { name },
+      },
+    );
+    const cookie = sessionCookieFrom(response);
+    if (!cookie)
+      throw new Error(
+        "Creating an organization returned no switch_auth cookie for its workspace.",
+      );
+    this.issued.record(cookie.slice("switch_auth=".length));
+    this.gatewayCookie = cookie;
+    return parsed as {
+      organization: OrganizationSummary;
+      workspace: WorkspaceMembership;
+    };
+  }
+
+  /** `GET /gateway/organizations/current/audit-events` — the organization's audit log, newest first; organization admin only. */
+  async organizationAuditEvents(): Promise<
+    {
+      action: string;
+      actor_user_id: string | null;
+      target_id: string | null;
+      details: Record<string, unknown> | null;
+    }[]
+  > {
+    return this.gateway("GET", "/organizations/current/audit-events");
+  }
+
+  /** `GET /gateway/organizations/current` — the current workspace's organization and the caller's role there. */
+  async currentOrganization(): Promise<{
+    id: string;
+    name: string;
+    role: string | null;
+  }> {
+    return this.gateway("GET", "/organizations/current");
+  }
+
+  /** `GET /gateway/organizations` — the caller's organizations and their role in each. */
+  async organizations(): Promise<OrganizationSummary[]> {
+    return this.gateway<OrganizationSummary[]>("GET", "/organizations");
+  }
+
+  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
+  async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
+    return this.gateway<WorkspaceMembership[]>(
+      "GET",
+      "/organizations/current/workspaces",
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces` — add a workspace to the current organization; the session stays put. */
+  async createOrganizationWorkspace(name: string): Promise<WorkspaceMembership> {
+    return this.gateway<WorkspaceMembership>(
+      "POST",
+      "/organizations/current/workspaces",
+      { name },
+    );
   }
 
   /** `POST /gateway/agents/register` — an agent owned by the signed-in user, in their current workspace. */
@@ -774,15 +864,19 @@ export class SwitchClient {
 
   /**
    * `POST /gateway/collaborations/{bridge}/identities` on the default bridge
-   * of `bridgeType` — link a chat account to the signed-in Switch user, so
-   * Switch can recognise that person in a room (what the rename and delete
-   * chat commands check).
+   * of `bridgeType` — start linking a chat account to the signed-in Switch
+   * user, so Switch can recognise that person in a room (what the rename and
+   * delete chat commands check).
+   *
+   * The link counts only once the account posts the returned code
+   * (`!link-account CODE`); `code` is null when the account had already
+   * confirmed it.
    */
   async claimIdentity(
     bridgeType: string,
     externalUserId: string,
     username: string,
-  ): Promise<void> {
+  ): Promise<{ bridgeId: string; identityId: string; code: string | null }> {
     const bridges = await this.gateway<
       { bridge_id: string; bridge_type: string; is_default?: boolean }[]
     >("GET", "/collaborations");
@@ -792,15 +886,83 @@ export class SwitchClient {
       throw new Error(
         `No ${bridgeType} collaboration bridge on this Switch server`,
       );
+    const body = await this.gateway<{
+      id: string;
+      link_request: { code: { code: string } | null } | null;
+    }>("POST", `/collaborations/${bridge.bridge_id}/identities`, {
+      external_user_id: externalUserId,
+      username,
+      user_id: null,
+      expects_confirmation: true,
+    });
+    if (body.link_request && !body.link_request.code)
+      throw new Error("A link for yourself came back without a code");
+    return {
+      bridgeId: bridge.bridge_id,
+      identityId: body.id,
+      code: body.link_request?.code?.code ?? null,
+    };
+  }
+
+  /**
+   * `DELETE /gateway/collaborations/{bridge}/identities/{identity}` — unlink
+   * the signed-in user from a chat account, or cancel a link still waiting
+   * for its code.
+   */
+  async releaseIdentity(bridgeId: string, identityId: string): Promise<void> {
     await this.gateway(
-      "POST",
-      `/collaborations/${bridge.bridge_id}/identities`,
-      {
-        external_user_id: externalUserId,
-        username,
-        user_id: null,
-      },
+      "DELETE",
+      `/collaborations/${bridgeId}/identities/${identityId}`,
     );
+  }
+
+  /**
+   * `DELETE /gateway/collaborations/{bridge}/identities/{identity}/request` —
+   * stop waiting for a chat account to confirm the signed-in user's link,
+   * leaving any link it already has.
+   */
+  async cancelLinkRequest(bridgeId: string, identityId: string): Promise<void> {
+    await this.gateway(
+      "DELETE",
+      `/collaborations/${bridgeId}/identities/${identityId}/request`,
+    );
+  }
+
+  /**
+   * `GET /gateway/collaborations/{bridge}/identities/unconfirmed` — the
+   * links on a bridge made before links needed confirming, by identity id.
+   * Admin only.
+   */
+  async unconfirmedLinkIds(bridgeId: string): Promise<string[]> {
+    const rows = await this.gateway<{ id: string }[]>(
+      "GET",
+      `/collaborations/${bridgeId}/identities/unconfirmed`,
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * `GET /gateway/auth/me/identities/pending` — the chat accounts waiting to
+   * confirm a link to the signed-in user, by identity id.
+   */
+  async pendingIdentityIds(): Promise<string[]> {
+    const rows = await this.gateway<{ id: string }[]>(
+      "GET",
+      "/auth/me/identities/pending",
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * `POST /gateway/collaborations/{bridge}/identities/{identity}/code` — a
+   * fresh code for the signed-in user's waiting link, replacing the last.
+   */
+  async issueLinkCode(bridgeId: string, identityId: string): Promise<string> {
+    const body = await this.gateway<{ code: string }>(
+      "POST",
+      `/collaborations/${bridgeId}/identities/${identityId}/code`,
+    );
+    return body.code;
   }
 
   async listAgents(): Promise<AgentSummary[]> {
@@ -812,6 +974,59 @@ export class SwitchClient {
       name: row.name,
       createdAt: row.created_at,
     }));
+  }
+
+  /** `GET /gateway/organizations/current/members` — the organization of the bound workspace, `org_admin` only. */
+  async organizationMembers(): Promise<{ user_id: string; role: string }[]> {
+    return this.gateway<{ user_id: string; role: string }[]>(
+      "GET",
+      "/organizations/current/members",
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current/members/{user_id}` — grant or take back `org_admin`. */
+  async setOrganizationRole(
+    userId: string,
+    role: "org_admin" | "member",
+  ): Promise<{ user_id: string; role: string }> {
+    return this.gateway<{ user_id: string; role: string }>(
+      "PATCH",
+      `/organizations/current/members/${encodeURIComponent(userId)}`,
+      { role },
+    );
+  }
+
+  /** `DELETE /gateway/organizations/current/members/{user_id}` — remove someone from the organization. */
+  async removeOrganizationMember(userId: string): Promise<void> {
+    await this.gateway<unknown>(
+      "DELETE",
+      `/organizations/current/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /** `GET /gateway/tenants/{tenant_id}/members` — the workspace roster, with each person's organization role. */
+  async workspaceMembers(tenantId: string): Promise<
+    {
+      user_id: string;
+      role: string;
+      organization_role: string | null;
+      via_organization: boolean;
+    }[]
+  > {
+    return this.gateway("GET", `/tenants/${encodeURIComponent(tenantId)}/members`);
+  }
+
+  /** `DELETE /gateway/tenants/{tenant_id}/members/{user_id}` — remove someone from a workspace. */
+  async removeWorkspaceMember(tenantId: string, userId: string): Promise<void> {
+    await this.gateway<unknown>(
+      "DELETE",
+      `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /** `GET /gateway/operator/workspaces` — every workspace on the server, platform operator only. */
+  async operatorWorkspaces(): Promise<{ id: string; name: string }[]> {
+    return this.gateway<{ id: string; name: string }[]>("GET", "/operator/workspaces");
   }
 
   /** `GET /gateway/auth/session` — the workspace this admin session is bound to. */

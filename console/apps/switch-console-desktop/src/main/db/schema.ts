@@ -4,7 +4,7 @@ import { versionedJsonColumn } from '@main/db/versioned-column';
 import { agentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sessionConfig } from '@shared/core/sessions/session-config';
-import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
+import type { OrganizationRole, WorkspaceRole } from '@shared/core/workspaces/workspaces';
 
 // ---------------------------------------------------------------------------
 // Data model (Switch Console rework — diverges from upstream; see
@@ -171,6 +171,13 @@ export const workspaces = sqliteTable(
      * the notion does not apply.
      */
     role: text('role').$type<WorkspaceRole>(),
+    /**
+     * The workspace's organization on the gateway, its name, and the caller's
+     * role in it, as last reported. Null on a server from before organizations.
+     */
+    organizationId: text('organization_id'),
+    organizationName: text('organization_name'),
+    organizationRole: text('organization_role').$type<OrganizationRole>(),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),

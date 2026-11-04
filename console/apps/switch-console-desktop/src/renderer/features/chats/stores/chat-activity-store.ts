@@ -1,5 +1,6 @@
 import { makeAutoObservable, observable, reaction, runInAction } from 'mobx';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { log } from '@renderer/utils/logger';
 import type {
   ChatActivityItem,
   ChatActivityTarget,
@@ -9,9 +10,15 @@ import type {
   RoomActivity,
 } from '@shared/core/chats/activity';
 import { SERVER_TOO_OLD_FOR_ACTIVITY } from '@shared/core/chats/activity';
-import type { ChatStreamState } from '@shared/core/chats/chats';
+import type { ChatMessage, ChatStreamState } from '@shared/core/chats/chats';
 import type { ReasoningList, ReasoningTurn, ToolDetail } from '@shared/core/sessions/reasoning';
-import { bindTurns, groupTurns, itemKey, type TurnActivity } from '../activity-join';
+import {
+  bindTurns,
+  groupTurns,
+  itemKey,
+  settleTurnsByNotices,
+  type TurnActivity,
+} from '../activity-join';
 import { chatFailure, serverTooOld } from './chat-errors';
 
 /**
@@ -37,13 +44,19 @@ export type ActivityApi = {
   /** Call `onChange` whenever the server's local or SSH placements change. */
   watchPlacements: (serverId: string, onChange: () => void) => () => void;
   roomActivity: (serverId: string, roomId: string) => Promise<RoomActivity>;
+  /** The room's messages loaded here, oldest first: a host's notice that a turn ended is among them. */
+  roomMessages: (serverId: string, roomId: string) => readonly ChatMessage[];
   control: (input: {
     serverId: string;
     roomId: string;
     requestId: string;
     agentId: string;
     command: ChatControlCommand;
+    /** The message a `retry` runs again; null for every other command. */
+    messageId: string | null;
   }) => Promise<string>;
+  /** Whether the session's host can retry a turn; `unknown` when no host of this Console answers for it. */
+  retrySupport: (hostAgentKey: string, sessionId: string) => Promise<'yes' | 'no' | 'unknown'>;
   answerApproval: (input: {
     serverId: string;
     agentId: string;
@@ -59,13 +72,31 @@ export type ActivityApi = {
  * it is only ever sent again under the same request id, which Switch answers
  * with the command it already posted.
  */
+/** The commands the chat's own controls post: Stop, Reset and Compact. */
+export type SessionControl = Exclude<ChatControlCommand, 'retry'>;
+
 export type ControlRequest = {
   requestId: string;
-  command: ChatControlCommand;
+  command: SessionControl;
   state: 'sending' | 'requested' | 'failed' | 'unknown';
   /** The room message the command is; the agent's answer threads under it. */
   commandId: string | null;
   error: string | null;
+};
+
+/**
+ * A Retry of a failed turn sent from here: `requested` once Switch posted it,
+ * not once the turn runs again. `unknown`: no answer came back, so it may have
+ * been posted; it is only ever sent again under the same request id, which
+ * Switch answers with the command it already posted.
+ */
+export type RetryRequest = {
+  requestId: string;
+  messageId: string;
+  state: 'sending' | 'requested' | 'failed' | 'unknown';
+  error: string | null;
+  /** When Switch took it, so a retry no new turn followed can be told apart. */
+  requestedAt: number | null;
 };
 
 const unsettled = (control: ControlRequest) =>
@@ -79,8 +110,12 @@ export class AgentActivity {
   resolveError: string | null = null;
   /** Why the room's activity snapshot could not be read; null once it has been. */
   feedError: string | null = null;
+  /** Why the host's reasoning could not be read; null once a read succeeds. */
+  reasoningError: string | null = null;
   readonly items = observable.map<string, ChatActivityItem>({}, { deep: false });
   readonly approvals = observable.map<string, ChatApproval>({}, { deep: false });
+  /** Retries sent from here, by the failed turn each runs again. */
+  readonly retries = observable.map<string, RetryRequest>({}, { deep: false });
   controls: ControlRequest[] = [];
   reasoning = new Map<string, ReasoningTurn>();
   /** Tool item id → what the call was given and gave back; local and SSH hosts only. */
@@ -155,7 +190,12 @@ export class AgentActivity {
   }
 
   get allTurns(): TurnActivity[] {
-    return groupTurns(this.items.values(), this.approvals.values());
+    return settleTurnsByNotices(
+      groupTurns(this.items.values(), this.approvals.values()),
+      this.api.roomMessages(this.serverId, this.roomId),
+      this.agentId,
+      this.roomId
+    );
   }
 
   /** Turns joined to the room messages that started them. */
@@ -204,7 +244,7 @@ export class AgentActivity {
    * whose outcome is unknown is sent again under its own request id instead,
    * so a Reset that landed before its answer was lost never runs twice.
    */
-  async control(command: ChatControlCommand): Promise<void> {
+  async control(command: SessionControl): Promise<void> {
     const unknown = this.controls.find(
       (control) => control.state === 'unknown' && control.command === command
     );
@@ -217,6 +257,55 @@ export class AgentActivity {
       error: null,
     });
     return this.post(this.controls.at(-1)!);
+  }
+
+  /**
+   * Ask the agent to run again the turn a message started, which failed. Pressed
+   * again while it is being posted or once posted, nothing more is sent; one
+   * whose answer was lost goes again under its own request id.
+   */
+  async retry(turn: TurnActivity): Promise<void> {
+    const messageId = turn.messageId;
+    if (!messageId) return;
+    const held = this.retries.get(turn.turnId);
+    if (held?.state === 'sending' || held?.state === 'requested') return;
+    const requestId = held?.state === 'unknown' ? held.requestId : crypto.randomUUID();
+    const update = (change: Partial<RetryRequest>) =>
+      runInAction(() => {
+        const current = this.retries.get(turn.turnId);
+        if (current?.requestId === requestId)
+          this.retries.set(turn.turnId, { ...current, ...change });
+      });
+    runInAction(() =>
+      this.retries.set(turn.turnId, {
+        requestId,
+        messageId,
+        state: 'sending',
+        error: null,
+        requestedAt: null,
+      })
+    );
+    try {
+      await this.api.control({
+        serverId: this.serverId,
+        roomId: this.roomId,
+        requestId,
+        agentId: this.agentId,
+        command: 'retry',
+        messageId,
+      });
+      update({ state: 'requested', requestedAt: Date.now() });
+    } catch (error) {
+      const failure = chatFailure(error);
+      update({ state: failure.uncertain ? 'unknown' : 'failed', error: failure.message });
+    }
+  }
+
+  /** Whether this agent's session can retry a turn, asked of the host running it here. */
+  async retrySupport(): Promise<'yes' | 'no' | 'unknown'> {
+    const target = this.target;
+    if (target?.kind !== 'session') return 'unknown';
+    return this.api.retrySupport(target.hostAgentKey, target.sessionId);
   }
 
   /** Send a command whose outcome is unknown again, under the same request id. */
@@ -243,6 +332,7 @@ export class AgentActivity {
         requestId: held.requestId,
         agentId: this.agentId,
         command,
+        messageId: null,
       });
       runInAction(() => {
         held.state = 'requested';
@@ -291,8 +381,24 @@ export class AgentActivity {
       .filter((turn) => turn.sessionId === target.sessionId)
       .map((turn) => turn.turnId);
     if (!turnIds.length) return;
-    const list = await this.api.reasoning(target.hostAgentKey, target.sessionId, turnIds);
+    let list: ReasoningList | null;
+    try {
+      list = await this.api.reasoning(target.hostAgentKey, target.sessionId, turnIds);
+    } catch (error) {
+      const message = failureText(error, "The agent's reasoning could not be read.");
+      if (this.reasoningError === null)
+        log.warn('Could not read agent reasoning from its host; retrying while it works', {
+          agentId: this.agentId,
+          sessionId: target.sessionId,
+          error: message,
+        });
+      runInAction(() => {
+        this.reasoningError = message;
+      });
+      return;
+    }
     runInAction(() => {
+      this.reasoningError = null;
       if (!list) return;
       for (const turn of list.turns) this.reasoning.set(turn.turnId, turn);
       for (const turn of list.tools ?? [])
