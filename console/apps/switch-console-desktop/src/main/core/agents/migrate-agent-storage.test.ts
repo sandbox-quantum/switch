@@ -253,12 +253,15 @@ describe('migrateAgentStorage', () => {
     h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-other') });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
     h.state.workdir = ws;
 
     await migrateAgentStorage();
 
     expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(false);
     expect(await ws.read('.switch/agents/agent-id-1.json')).toBe(credsJson('sw-other'));
+    // Kept, so made private: the token in it is no less live for being refused.
+    expect(protectSecret).toHaveBeenCalledWith('.switch/agents/agent-id-1.json', undefined);
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('different Switch agent'),
       expect.objectContaining({ foundSwitchAgentId: 'sw-other', providerId: 'codex' })

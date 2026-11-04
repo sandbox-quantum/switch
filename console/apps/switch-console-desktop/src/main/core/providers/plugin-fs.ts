@@ -42,7 +42,7 @@ async function restrictSecretDirectory(dir: string): Promise<void> {
  * owner can enter: the `secret` write of {@link PluginFs}, for a file holding a
  * credential. The content goes into a temporary file created `0600` and is
  * renamed over `abs`, so it never sits in a file anyone else can read, and an
- * existing file left wider by an earlier version is replaced rather than kept.
+ * existing file with wider permissions is replaced rather than kept.
  */
 export async function writeSecretFile(abs: string, content: string): Promise<void> {
   const dir = dirname(abs);

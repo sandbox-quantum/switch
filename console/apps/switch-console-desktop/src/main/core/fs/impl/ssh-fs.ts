@@ -365,8 +365,8 @@ export class SshFileSystem implements FileSystemProvider {
    * its owner can enter (`0700`, when this account owns it): the `secret` write
    * of `PluginFs`, for a file holding a credential. The content goes into a temporary file created
    * `0600` and is renamed over the target with OpenSSH's POSIX rename, so it
-   * never sits in a file anyone else can read, and an existing file left wider
-   * by an earlier version is replaced rather than kept. A server without that
+   * never sits in a file anyone else can read, and an existing file with wider
+   * permissions is replaced rather than kept. A server without that
    * rename fails the write rather than falling back to one that could expose
    * the credential.
    */
