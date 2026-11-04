@@ -695,6 +695,14 @@
       "created_at": "2026-11-04T17:49:22Z",
       "repoId": 1302612528,
       "pullRequestNo": 1491
+    },
+    {
+      "name": "kartikangiras",
+      "id": 173607705,
+      "comment_id": 6638196890,
+      "created_at": "2026-11-04T18:05:44Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 1495
     }
   ]
 }
