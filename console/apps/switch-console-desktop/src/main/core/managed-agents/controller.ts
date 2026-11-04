@@ -89,6 +89,17 @@ function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
   return controllersOn(serverId, ownedMachines);
 }
 
+/** Runs a management call, giving a refusal Switch explains (a 4xx) in Switch's own words. */
+async function inSwitchsWords<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (error instanceof GatewayError && error.status !== undefined && error.status < 500)
+      throw new Error(managementErrorMessage(error));
+    throw error;
+  }
+}
+
 /**
  * The signed-in user's managed agents on a server, as the server holds them:
  * every one, whatever machine it runs on. Console keeps no copy.
@@ -219,8 +230,9 @@ export const managedAgentsController = createRPCController({
 
   /**
    * A one-time code to enroll a new machine with, and the address it enrolls
-   * against: the one the server names, else the one Console reaches it at.
-   * `loopback` says that address only works on this computer.
+   * against: the one the server names, else the one Console reaches it at,
+   * which `fallback` discloses. `loopback` says that address only works on
+   * this computer.
    */
   machineEnrollment: (serverId: string): Promise<MachineEnrollment> =>
     withReachableServerWorkspaceSession(serverId, async (server) => {
@@ -231,6 +243,7 @@ export const managedAgentsController = createRPCController({
         expiresAt: issued.expiresAt,
         serverUrl,
         loopback: isLoopbackUrl(serverUrl),
+        fallback: issued.serverUrl === null,
       };
     }),
 
@@ -268,15 +281,9 @@ export const managedAgentsController = createRPCController({
     machineId: string;
     changes: { name?: string; description?: string | null };
   }): Promise<void> =>
-    withReachableServerWorkspaceSession(params.serverId, async (server) => {
-      try {
-        await updateManagementController(server, params.machineId, params.changes);
-      } catch (error) {
-        if (error instanceof GatewayError && error.status !== undefined && error.status < 500)
-          throw new Error(managementErrorMessage(error));
-        throw error;
-      }
-    }),
+    withReachableServerWorkspaceSession(params.serverId, (server) =>
+      inSwitchsWords(() => updateManagementController(server, params.machineId, params.changes))
+    ),
 
   /**
    * Removes one of the owner's machines from Switch: its credential is
@@ -284,15 +291,9 @@ export const managedAgentsController = createRPCController({
    * it, and do not run until they are moved.
    */
   removeMachine: (params: { serverId: string; machineId: string }): Promise<void> =>
-    withReachableServerWorkspaceSession(params.serverId, async (server) => {
-      try {
-        await revokeManagementController(server, params.machineId);
-      } catch (error) {
-        if (error instanceof GatewayError && error.status !== undefined && error.status < 500)
-          throw new Error(managementErrorMessage(error));
-        throw error;
-      }
-    }),
+    withReachableServerWorkspaceSession(params.serverId, (server) =>
+      inSwitchsWords(() => revokeManagementController(server, params.machineId))
+    ),
 
   /** How a recheck went, by the operation `recheckMachineProvider` answered. */
   machineRecheckOutcome: (params: {
@@ -316,18 +317,14 @@ export const managedAgentsController = createRPCController({
   }): Promise<void> =>
     withReachableServerWorkspaceSession(params.serverId, async (server) => {
       const definition = definitionBody(params.changes.definition);
-      try {
-        await updateManagedAgent(server, params.agentId, {
+      await inSwitchsWords(() =>
+        updateManagedAgent(server, params.agentId, {
           definition: Object.keys(definition).length > 0 ? definition : null,
           ...(params.changes.machineId !== undefined
             ? { controllerId: params.changes.machineId }
             : {}),
-        });
-      } catch (error) {
-        if (error instanceof GatewayError && error.status !== undefined && error.status < 500)
-          throw new Error(managementErrorMessage(error));
-        throw error;
-      }
+        })
+      );
     }),
 
   /** Starts or stops it on its machine. */

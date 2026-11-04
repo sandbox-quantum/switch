@@ -107,12 +107,24 @@ export function AddMachineModal({ serverId, onClose }: Props) {
               </Field>
             </FieldGroup>
 
-            {issued.loopback && (
+            {issued.loopback ? (
               <p className="rounded-md border border-border bg-background-1 px-3 py-2 text-xs text-foreground-muted">
                 This server is at {issued.serverUrl}, which only this computer can reach. Another
                 device needs an address it can reach Switch at: change <code>--server</code> to
                 that.
               </p>
+            ) : (
+              issued.fallback && (
+                <p
+                  role="status"
+                  className="rounded-md border border-border-warning bg-background-warning px-3 py-2 text-xs text-foreground-warning"
+                >
+                  This server has no public address set, so these commands use the address this
+                  Console reaches it at, {issued.serverUrl}. If the device reaches Switch at another
+                  address (behind a proxy, or by an internal name), change <code>--server</code> to
+                  that.
+                </p>
+              )
             )}
 
             {nameTooLong || descriptionTooLong ? (

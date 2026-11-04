@@ -37,9 +37,11 @@ import {
   machineKindLabel,
   machineNotices,
   type MachineTone,
+  placedAgents,
   platformLabel,
+  resourceLabel,
+  sessionsLabel,
 } from './machine-state';
-import type { PlacedAgents } from './machine-state';
 import { useDeviceActions } from './use-device-actions';
 
 /** A notice's box, in the server page's hues. */
@@ -81,16 +83,17 @@ const PROCESS_TONE: Record<string, MachineTone> = {
 export function MachineDetails({
   serverId,
   machine,
-  placed,
-  placedState,
+  managed,
 }: {
   serverId: string;
   machine: MachineDetail;
-  /** The managed agents placed on it. */
-  placed: ManagedAgentView[];
-  /** Whether `placed` is read yet, for Remove's warning about the agents it strands. */
-  placedState: PlacedAgents;
+  /** The person's managed agents, as their list query has them. */
+  managed: { data: ManagedAgentView[] | null | undefined; isError: boolean };
 }) {
+  // Null until the list is read (or when it could not be): nothing can then be said about whose an agent is.
+  const mine = managed.isError || managed.data === undefined ? null : (managed.data ?? []);
+  const placed = (mine ?? []).filter((agent) => agent.machine?.id === machine.id);
+  const placedState = placedAgents(managed, machine.id);
   const connection = machineConnection(machine);
   const notices = machineNotices(machine);
   const removed = machine.state === 'revoked';
@@ -142,7 +145,10 @@ export function MachineDetails({
                   : 'It can take a new agent once it is online.'
               }
               onClick={() =>
-                showAddAgentModal({ entryPoint: 'machine_page', machineId: machine.id })
+                showAddAgentModal({
+                  entryPoint: 'machine_page',
+                  machine: { serverId, machineId: machine.id },
+                })
               }
             >
               <Plus className="size-4" />
@@ -185,7 +191,7 @@ export function MachineDetails({
       )}
       {machine.cloud && !removed && <CloudMachineSection serverId={serverId} machine={machine} />}
       {/* Kept on a removed device: its agents stay placed on it until they are moved. */}
-      <AgentsCard machine={machine} placed={placed} />
+      <AgentsCard machine={machine} placed={placed} mine={mine} />
       {!removed && <MachineProviders serverId={serverId} machine={machine} />}
     </div>
   );
@@ -268,10 +274,11 @@ function ConnectionCard({ machine }: { machine: MachineDetail }) {
 }
 
 function Usage({ free, total }: { free: number; total: number }) {
-  if (total <= 0) return <>—</>;
+  const label = resourceLabel(free, total, formatBytes);
+  if (label === null) return <>—</>;
   return (
     <div>
-      {formatBytes(free)} free of {formatBytes(total)}
+      {label}
       <Progress
         value={Math.round(((total - free) / total) * 100)}
         aria-label="Used"
@@ -304,11 +311,7 @@ function SystemCard({ machine }: { machine: MachineDetail }) {
               <Row label="Memory">
                 <Usage free={resources.memFreeBytes} total={resources.memTotalBytes} />
               </Row>
-              <Row label="Sessions">
-                {resources.sessionsMax > 0
-                  ? `${resources.sessionsRunning} of ${resources.sessionsMax} running`
-                  : `${resources.sessionsRunning} running now`}
-              </Row>
+              <Row label="Sessions">{`${sessionsLabel(resources)} running`}</Row>
             </>
           )}
         </dl>
@@ -373,15 +376,26 @@ function CloudMachineSection({ serverId, machine }: { serverId: string; machine:
 
 /**
  * The agents on the device: those placed on it, each opening its page and
- * movable to another device, and any others it reports running, which this
- * person cannot open.
+ * movable to another device, and any others it reports running that are not
+ * this person's, which they cannot open. Until their agents are listed none
+ * is called someone else's, and one of theirs placed elsewhere (the device
+ * still reporting an agent just moved off it) is not either.
  */
-function AgentsCard({ machine, placed }: { machine: MachineDetail; placed: ManagedAgentView[] }) {
+function AgentsCard({
+  machine,
+  placed,
+  mine,
+}: {
+  machine: MachineDetail;
+  placed: ManagedAgentView[];
+  mine: ManagedAgentView[] | null;
+}) {
   const { navigate } = useNavigate();
   const showMoveModal = useShowModal('moveAgentModal');
-  const unlisted = machine.agents.filter(
-    (report) => !placed.some((agent) => agent.agentId === report.agentId)
-  );
+  const unlisted =
+    mine === null
+      ? []
+      : machine.agents.filter((report) => !mine.some((agent) => agent.agentId === report.agentId));
   const count = placed.length + unlisted.length;
   return (
     <Card

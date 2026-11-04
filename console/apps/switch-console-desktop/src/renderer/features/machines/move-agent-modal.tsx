@@ -58,16 +58,21 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
         a.machine.name.localeCompare(b.machine.name)
     );
   const folder = agent.status?.directory ?? agent.definition.directory;
+  // The list refreshes while the dialog is open: a pick whose device went
+  // offline or lost its provider since is no pick, so Move cannot send it.
+  const chosen =
+    others.find(({ machine, target }) => machine.id === picked && target.selectable)?.machine.id ??
+    null;
 
   const move = async () => {
-    if (!picked) return;
+    if (!chosen) return;
     setMoving(true);
     setError(null);
     try {
       await rpc.managedAgents.update({
         serverId: agent.serverId,
         agentId: agent.agentId,
-        changes: { definition: {}, machineId: picked },
+        changes: { definition: {}, machineId: chosen },
       });
       await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, agent.serverId] });
       onSuccess();
@@ -109,7 +114,7 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
                 key={machine.id}
                 machine={machine}
                 target={target}
-                picked={picked === machine.id}
+                picked={chosen === machine.id}
                 onPick={() => setPicked(machine.id)}
               />
             ))}
@@ -132,7 +137,7 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <ConfirmButton onClick={() => void move()} disabled={!picked || moving}>
+        <ConfirmButton onClick={() => void move()} disabled={!chosen || moving}>
           {moving ? 'Moving…' : `Move ${label}`}
         </ConfirmButton>
       </DialogFooter>

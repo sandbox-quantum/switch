@@ -17,8 +17,6 @@ export function ProviderStatusRow({
   name,
   installed,
   status,
-  meta,
-  actions,
   onClick,
 }: {
   providerId: string;
@@ -26,10 +24,6 @@ export function ProviderStatusRow({
   installed: boolean;
   /** The line under the name: sign-in state, or a check in progress. */
   status: ReactNode;
-  /** A short note after the name, such as the version. */
-  meta?: string;
-  /** Buttons beside the badge. Not with `onClick`: a button cannot hold buttons. */
-  actions?: ReactNode;
   /** Makes the whole row a button. */
   onClick?: () => void;
 }) {
@@ -47,12 +41,8 @@ export function ProviderStatusRow({
       </div>
       <div className="flex w-full min-w-0 flex-col gap-0.5">
         <div className="flex w-full items-center justify-between gap-2">
-          <span className="min-w-0 truncate text-sm text-foreground">
-            {name}
-            {meta && <span className="text-foreground-muted"> · {meta}</span>}
-          </span>
+          <span className="min-w-0 truncate text-sm text-foreground">{name}</span>
           <div className="flex shrink-0 items-center gap-1.5">
-            {actions}
             {installed ? <InstalledBadge /> : <UninstalledBadge />}
           </div>
         </div>

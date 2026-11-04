@@ -1,14 +1,19 @@
 import { useQuery } from '@tanstack/react-query';
-import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
+import {
+  MANAGED_AGENTS_KEY,
+  refreshEvery,
+} from '@renderer/features/managed-agents/use-managed-agents';
+import { useUserChangesLive } from '@renderer/features/managed-agents/use-user-changes';
 import { serverAvailability } from '@renderer/features/switch-servers/server-availability';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 
 /**
- * How often the page reads the machines again: often enough that a machine
- * going on- or offline shows while the page is looked at. react-query pauses
- * while the window is hidden.
+ * How often the page reads the machines again against a server that does not
+ * push changes: often enough that a machine going on- or offline shows while
+ * the page is looked at. One that pushes them says when to read. react-query
+ * pauses while the window is hidden.
  */
 const MACHINES_REFRESH_MS = 5_000;
 
@@ -19,6 +24,7 @@ const MACHINES_REFRESH_MS = 5_000;
  * those refreshes this too.
  */
 export function useMachineDetails(serverId: string) {
+  const pushed = useUserChangesLive(serverId);
   const signedIn =
     switchServersStore.isConnected(serverId) && serverAvailability(serverId) !== 'dormant';
   return useQuery({
@@ -30,7 +36,8 @@ export function useMachineDetails(serverId: string) {
     ],
     queryFn: () => rpc.managedAgents.machineDetails(serverId),
     enabled: signedIn,
-    refetchInterval: MACHINES_REFRESH_MS,
+    refetchInterval: (query) =>
+      refreshEvery(MACHINES_REFRESH_MS, pushed, query.state.status === 'error'),
     retry: false,
   });
 }

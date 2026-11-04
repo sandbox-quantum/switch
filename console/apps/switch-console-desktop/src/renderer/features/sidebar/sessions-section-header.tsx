@@ -344,7 +344,7 @@ export const SessionsSectionHeader = observer(function SessionsSectionHeader({
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={() => showAddLocationModal({ entryPoint: 'sidebar', machineId: null })}
+                onClick={() => showAddLocationModal({ entryPoint: 'sidebar', machine: null })}
               >
                 <UserPlus className="mr-1.5 h-4 w-4" />
                 Add an agent

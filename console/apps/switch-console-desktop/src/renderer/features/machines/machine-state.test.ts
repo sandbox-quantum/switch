@@ -72,6 +72,12 @@ describe('machineConnection', () => {
       'Never connected'
     );
   });
+
+  it('calls a machine the server says is online online, with no connection recorded yet', () => {
+    const online = machine({ id: 'm', state: 'online', connection: null });
+    expect(machineConnection(online)).toEqual({ label: 'Online', tone: 'ok', title: 'Connected.' });
+    expect(machineNotices(online).map((notice) => notice.key)).not.toContain('connection');
+  });
 });
 
 describe('controllerRelease', () => {

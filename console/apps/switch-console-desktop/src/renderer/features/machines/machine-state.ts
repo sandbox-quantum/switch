@@ -33,17 +33,20 @@ export function machineConnection(machine: MachineDetail): MachineBadge {
       tone: 'idle',
       title: machine.revokedAt ? `Removed from Switch ${when(machine.revokedAt)}.` : 'Removed.',
     };
+  // Online is decided by the server; the connection ledger can be empty even
+  // then (the server sends none until it has recorded a connect), so it only
+  // adds when.
+  if (machine.state === 'online')
+    return {
+      label: 'Online',
+      tone: 'ok',
+      title: connection ? `Connected since ${when(connection.connectedAt)}.` : 'Connected.',
+    };
   if (machine.state === 'unknown' || connection === null)
     return {
       label: 'Never connected',
       tone: 'idle',
       title: 'Has never connected to Switch. It does once its controller is started.',
-    };
-  if (machine.state === 'online')
-    return {
-      label: 'Online',
-      tone: 'ok',
-      title: `Connected since ${when(connection.connectedAt)}.`,
     };
   const why = connection.disconnectReason
     ? (DISCONNECT_REASON[connection.disconnectReason] ?? connection.disconnectReason)
@@ -215,7 +218,10 @@ export function machineNotices(machine: MachineDetail): MachineNotice[] {
       title: 'Offline',
       body: `${connection.title} The agents placed on it do not run until it is back.`,
     });
-  else if (machine.state === 'unknown' || machine.connection === null)
+  else if (
+    machine.state === 'unknown' ||
+    (machine.state !== 'online' && machine.connection === null)
+  )
     notices.push({
       key: 'connection',
       tone: 'idle',

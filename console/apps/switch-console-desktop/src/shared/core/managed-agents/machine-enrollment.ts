@@ -12,6 +12,11 @@ export type MachineEnrollment = {
   serverUrl: string;
   /** `serverUrl` names this computer, so no other machine can reach it there. */
   loopback: boolean;
+  /**
+   * The server names no public address (`GATEWAY_PUBLIC_URL`), so `serverUrl`
+   * is the one this Console reaches it at, which another machine may not.
+   */
+  fallback: boolean;
 };
 
 /** The longest name and description a machine can enroll with. */

@@ -104,8 +104,13 @@ function DevicesBody({
   const managed = useManagedAgents(serverId);
   const [showRemoved, setShowRemoved] = useState(false);
 
-  if (machines.error && !frozen)
-    return (
+  // A frozen workspace's banner already says why the server cannot answer.
+  if (machines.error)
+    return frozen ? (
+      <p className="pt-4 text-sm text-foreground-muted">
+        Your devices show here once the server answers again.
+      </p>
+    ) : (
       <p role="alert" className="pt-4 text-sm text-destructive">
         {failureText(machines.error, 'Could not load your devices.')}
       </p>

@@ -10,18 +10,21 @@ export type AddLocationModalProps = BaseModalProps<void> & {
    * under the same heading as the ones that did not.
    */
   entryPoint: UiEntryPoint;
-  /** The machine the agent goes on, picked already: null to start on this computer. */
-  machineId: string | null;
+  /**
+   * The machine the agent goes on, picked already, with the server it is on
+   * (which need not be the active one): null to start on this computer.
+   */
+  machine: { serverId: string; machineId: string } | null;
 };
 
-export function AddAgentModal({ onClose, entryPoint, machineId }: AddLocationModalProps) {
+export function AddAgentModal({ onClose, entryPoint, machine }: AddLocationModalProps) {
   return (
     <NewAgentForm
       onClose={onClose}
       onBack={null}
       entryPoint={entryPoint}
-      serverId={null}
-      initialRunLocation={machineId ? machineRunLocation(machineId) : 'local'}
+      serverId={machine?.serverId ?? null}
+      initialRunLocation={machine ? machineRunLocation(machine.machineId) : 'local'}
     />
   );
 }

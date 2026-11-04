@@ -133,13 +133,16 @@ function MachineProviderRow({
         operationId: operationId!,
       }),
     enabled: operationId !== null,
+    retry: false,
+    // A read that failed ends the wait: its error is shown, and Recheck asks again.
     refetchInterval: (query) =>
-      query.state.data?.state === 'pending' || query.state.data === undefined
+      query.state.status !== 'error' &&
+      (query.state.data?.state === 'pending' || query.state.data === undefined)
         ? RECHECK_POLL_MS
         : false,
   });
   const result = outcome.data;
-  const done = result !== undefined && result.state !== 'pending';
+  const done = outcome.isError || (result !== undefined && result.state !== 'pending');
   // What the machine found arrives with its report: read it now rather than at the next poll.
   useEffect(() => {
     if (done) void queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
@@ -156,9 +159,11 @@ function MachineProviderRow({
 
   const failure = recheck.error
     ? failureText(recheck.error, `Could not ask ${machine.name} to check ${name}.`)
-    : result?.state === 'failed'
-      ? result.message
-      : null;
+    : outcome.error
+      ? failureText(outcome.error, `Could not find out how ${machine.name} checked ${name}.`)
+      : result?.state === 'failed'
+        ? result.message
+        : null;
 
   return (
     <>
