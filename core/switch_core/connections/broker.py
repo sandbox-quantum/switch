@@ -1263,6 +1263,31 @@ class ServiceBroker:
     def _signed_in(self, connection: ServiceConnection) -> SignIn:
         return SignIn(self._secret(connection), connection.oauth_client_id)
 
+    def _shares_grant(
+        self,
+        service: str,
+        held: tuple[str | None, str],
+        revoked: tuple[str | None, str],
+    ) -> bool:
+        """Whether revoking a sign-in would also end the one held: the vendor
+        ends every sign-in of an account through a client when one is revoked
+        (`revocation_ends_grant`), and both are the same account's through the
+        same client. Each is (OAuth client, account id); a sign-in from before
+        clients were recorded went through the server's client.
+        """
+        entry = self._catalog.get(service)
+        oauth = None if entry is None else entry.definition.auth.oauth
+        if oauth is None or not oauth.revocation_ends_grant:
+            return False
+        server = self._adapters.get(service)
+        server_client = None if server is None else server.current_client_id()
+        held_client = held[0] or server_client
+        return (
+            held_client is not None
+            and held_client == (revoked[0] or server_client)
+            and held[1] == revoked[1]
+        )
+
     async def _revoker(
         self, session: AsyncSession, service: str, oauth_client_id: str | None
     ) -> ServiceAdapter:
@@ -1800,6 +1825,14 @@ class ServiceBroker:
             previous = await self._store.get_connection(session, user_id, service)
             kept = previous is not None and (
                 self._secret(previous).access_token == secret.access_token
+                # Revoking it would end the kept one too, at a vendor that
+                # revokes whole grants. It stays live at the vendor, in the
+                # grant the kept one holds.
+                or self._shares_grant(
+                    service,
+                    (previous.oauth_client_id, previous.account_id),
+                    (oauth_client_id, account_id),
+                )
             )
             await session.rollback()
             note = (
@@ -1821,6 +1854,7 @@ class ServiceBroker:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         previous = await self._store.get_connection(session, user_id, service)
         replaced = None if previous is None else self._signed_in(previous)
+        replaced_account = "" if previous is None else previous.account_id
         issued_on_it = (
             ServiceTokenIssuance.owner_id == user_id,
             ServiceTokenIssuance.service == service,
@@ -1849,7 +1883,17 @@ class ServiceBroker:
         await session.commit()
 
         warnings = []
-        if replaced is not None and replaced.secret.access_token != secret.access_token:
+        if (
+            replaced is not None
+            and replaced.secret.access_token != secret.access_token
+            # At a vendor that revokes whole grants, revoking the same
+            # account's old sign-in would end the new one too.
+            and not self._shares_grant(
+                service,
+                (oauth_client_id, account_id),
+                (replaced.oauth_client_id, replaced_account),
+            )
+        ):
             try:
                 adapter = await self._revoker(
                     session, service, replaced.oauth_client_id

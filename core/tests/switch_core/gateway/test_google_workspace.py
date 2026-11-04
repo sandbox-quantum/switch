@@ -94,6 +94,7 @@ def _world(
     client_settings: bool = True,
     disabled: dict[str, str] | None = None,
     catalog: dict[str, Connection] = CATALOG,
+    workspace_gate: bool = False,
 ) -> World:
     google = FakeGoogle()
     adapters = build_adapters(
@@ -126,7 +127,7 @@ def _world(
         store=STORE,
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
-        workspace_gate=False,
+        workspace_gate=workspace_gate,
         public_url=PUBLIC,
     )
     harness = build_harness(session_factory)
@@ -565,6 +566,104 @@ class TestAgents:
         refreshed = await adapter.refresh(ConnectionSecret(before))
         assert refreshed.values["refresh_token"] == before["refresh_token"]
         assert refreshed.access_token != before["access_token"]
+
+
+class TestReconnect:
+    """Google ends every sign-in of the account through the client when any
+    of them is revoked, so a reconnect must not revoke the sign-in it
+    replaces: that would end the new one too."""
+
+    async def test_reconnecting_keeps_the_new_sign_in_working(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            first = json.loads(
+                TEST_KEYRING.decrypt(
+                    (await _connection(session_factory, ada.id)).encrypted_secret
+                )
+            )
+            await _connect(world, client, ada)
+        second = json.loads(
+            TEST_KEYRING.decrypt(
+                (await _connection(session_factory, ada.id)).encrypted_secret
+            )
+        )
+        assert second["refresh_token"] != first["refresh_token"]
+        assert world.google.revoked == []
+        assert second["access_token"] in world.google.live_access
+        adapter = world.broker._adapters[SERVICE]
+        refreshed = await adapter.refresh(ConnectionSecret(second))
+        assert refreshed.access_token in world.google.live_access
+
+    async def test_reconnecting_another_account_revokes_the_old_one(
+        self, session_factory
+    ) -> None:
+        """A revocation ends one account's sign-ins only, so the old
+        account's is revoked as before."""
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            first = json.loads(
+                TEST_KEYRING.decrypt(
+                    (await _connection(session_factory, ada.id)).encrypted_secret
+                )
+            )
+            world.google.account = {
+                "sub": "100000000000000000002",
+                "email": "ada.other@example.test",
+            }
+            await _connect(world, client, ada)
+        second = json.loads(
+            TEST_KEYRING.decrypt(
+                (await _connection(session_factory, ada.id)).encrypted_secret
+            )
+        )
+        assert [revoked["token"] for revoked in world.google.revoked] == [
+            first["refresh_token"]
+        ]
+        assert first["refresh_token"] not in world.google.live_refresh
+        adapter = world.broker._adapters[SERVICE]
+        refreshed = await adapter.refresh(ConnectionSecret(second))
+        assert refreshed.access_token in world.google.live_access
+
+    async def test_a_sign_in_switch_does_not_keep_leaves_the_connection_working(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, workspace_gate=True)
+        ada = await add_member(session_factory, "ada")
+
+        async def switch(enabled: bool) -> None:
+            async with session_factory() as session:
+                await WorkspaceServiceStore().set_enabled(
+                    session, SERVICE, enabled, ada.id
+                )
+                await session.commit()
+
+        await switch(True)
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            state, secret, code = await _signed_in(world, client, ada)
+            # Switched off while the person was at Google.
+            await switch(False)
+            refused = await client.post(
+                f"{FLOWS}/{state}/complete",
+                json={"completion_secret": secret, "code": code},
+                cookies=cookies_for(ada),
+            )
+        assert refused.status_code == 403, refused.text
+        kept = json.loads(
+            TEST_KEYRING.decrypt(
+                (await _connection(session_factory, ada.id)).encrypted_secret
+            )
+        )
+        assert world.google.revoked == []
+        adapter = world.broker._adapters[SERVICE]
+        refreshed = await adapter.refresh(ConnectionSecret(kept))
+        assert refreshed.access_token in world.google.live_access
 
 
 class TestDisconnect:
