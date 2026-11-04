@@ -46,27 +46,38 @@ export async function locateSharedHost(
 ): Promise<{ ctx: IExecutionContext; entrypoint: string } | null> {
   const bundle = resolveSharedHostBundlePath();
   if (transport.kind !== 'ssh') return { ctx: new LocalExecutionContext(), entrypoint: bundle };
-  return locateBundle(transport, dir, await bundleName());
+  return locateBundle(transport, dir, (await sharedHostBundle()).file);
 }
 
-/** The last bundle hashed, so a file that has not changed is not read again. */
-let hashed: { path: string; mtimeMs: number; size: number; name: string } | null = null;
+type SshTransport = Extract<LocationTransport, { kind: 'ssh' }>;
 
-/** This build's bundle's file name on a host: named after its SHA-256. */
-async function bundleName(): Promise<string> {
+/** The last bundle hashed, so a file that has not changed is not read again. */
+let hashed: {
+  path: string;
+  mtimeMs: number;
+  size: number;
+  bundle: { identity: string; file: string };
+} | null = null;
+
+/**
+ * This build's shared-host bundle as a host knows it: its SHA-256, which is
+ * what a watcher records as the `bundleIdentity` it runs, and the file name it
+ * is deployed under, which is named after it.
+ */
+export async function sharedHostBundle(): Promise<{ identity: string; file: string }> {
   const path = resolveSharedHostBundlePath();
   const { mtimeMs, size } = await stat(path);
   if (hashed?.path === path && hashed.mtimeMs === mtimeMs && hashed.size === size)
-    return hashed.name;
-  const hash = createHash('sha256')
+    return hashed.bundle;
+  const identity = createHash('sha256')
     .update(await readFile(path))
     .digest('hex');
-  hashed = { path, mtimeMs, size, name: `shared-host-${hash}.mjs` };
-  return hashed.name;
+  hashed = { path, mtimeMs, size, bundle: { identity, file: `shared-host-${identity}.mjs` } };
+  return hashed.bundle;
 }
 
 async function locateBundle(
-  transport: Extract<LocationTransport, { kind: 'ssh' }>,
+  transport: SshTransport,
   dir: string,
   name: string
 ): Promise<{ ctx: IExecutionContext; entrypoint: string } | null> {
@@ -82,13 +93,70 @@ async function locateBundle(
 /** How much a one-off command may print here before Node stops reading it. */
 const REQUEST_MAX_BUFFER = 64 * 1024 * 1024;
 
+/** A private file staged for one of the shared host's commands, and how to take it away. */
+type StagedFile = { path: string; remove: () => Promise<void> };
+
+/**
+ * Stages `content` as a file named `name` that only the user can read, for one
+ * of the shared host's commands to read rather than take on its command line,
+ * where `ps` would show it to everyone. It is written here first, mode 0600,
+ * in a directory of its own. For an SSH host it is then copied over SFTP into
+ * a new private directory under the state root `root`, made as a launch's is
+ * (`MAKE_LAUNCH_DIR`), and made 0600 there as well. `remove()` takes away both
+ * copies; a staging that fails part way removes what it had made.
+ */
+async function stagePrivateFile(
+  name: string,
+  content: string,
+  remote: { transport: SshTransport; ctx: IExecutionContext; root: string } | null
+): Promise<StagedFile> {
+  const local = await mkdtemp(join(tmpdir(), 'switch-sdk-launch-'));
+  const localFile = join(local, name);
+  let remoteDir: string | null = null;
+  const remove = async () => {
+    try {
+      if (remote && remoteDir)
+        await remote.ctx.exec('node', [
+          '-e',
+          "require('node:fs').rmSync(process.argv[1],{recursive:true,force:true})",
+          remoteDir,
+        ]);
+    } finally {
+      await rm(local, { recursive: true, force: true });
+    }
+  };
+  try {
+    await writeFile(localFile, content, { mode: 0o600 });
+    if (!remote) return { path: localFile, remove };
+    const proxy = await ensureSshConnected(remote.transport.connectionId, remote.transport.host);
+    remoteDir = (
+      await remote.ctx.exec('node', ['-e', MAKE_LAUNCH_DIR, remote.root, String(STALE_LAUNCH_MS)])
+    ).stdout.trim();
+    const fs = new SshFileSystem(proxy, remoteDir);
+    try {
+      await fs.copyLocalFile(localFile, name);
+    } finally {
+      fs.close();
+    }
+    const path = `${remoteDir}/${name}`;
+    await remote.ctx.exec('node', [
+      '-e',
+      "require('node:fs').chmodSync(process.argv[1],0o600)",
+      path,
+    ]);
+    return { path, remove };
+  } catch (error) {
+    await remove();
+    throw error;
+  }
+}
+
 /**
  * Answers a request with one of this build's shared host's one-off commands.
- * The request is staged as a file only the user can read, in a private
- * directory beside a launch's configuration, and removed afterwards, since it
- * can carry a shell setup a command line would show to `ps`. Here it runs on
- * Console's own runtime, as local sessions do; on an SSH host it runs on the
- * host's `node`.
+ * The request is staged as a private file (`stagePrivateFile`) beside a
+ * launch's configuration and removed afterwards, since it can carry a shell
+ * setup a command line would show to `ps`. Here it runs on Console's own
+ * runtime, as local sessions do; on an SSH host it runs on the host's `node`.
  *
  * `deploy` uploads this build's bundle to an SSH host first when it is not
  * there, which only a launch may do. Without it the command runs only where
@@ -102,19 +170,17 @@ export async function runHostRequest(
   options: { deploy: boolean; timeout: number }
 ): Promise<{ stdout: string; stderr: string }> {
   if (transport.kind !== 'ssh') {
-    const local = await mkdtemp(join(tmpdir(), 'switch-sdk-request-'));
+    const staged = await stagePrivateFile('request.json', JSON.stringify(request), null);
     const ctx = new LocalExecutionContext();
     try {
-      const path = join(local, 'request.json');
-      await writeFile(path, JSON.stringify(request), { mode: 0o600 });
-      return await ctx.exec(process.execPath, [resolveSharedHostBundlePath(), mode, path], {
+      return await ctx.exec(process.execPath, [resolveSharedHostBundlePath(), mode, staged.path], {
         env: { ELECTRON_RUN_AS_NODE: '1' },
         timeout: options.timeout,
         maxBuffer: REQUEST_MAX_BUFFER,
       });
     } finally {
       ctx.dispose();
-      await rm(local, { recursive: true, force: true });
+      await staged.remove();
     }
   }
   const bundle = options.deploy
@@ -126,26 +192,18 @@ export async function runHostRequest(
     );
   const proxy = await ensureSshConnected(transport.connectionId, transport.host);
   const ctx = new SshExecutionContext(proxy, { root: transport.dir });
-  let staged: string | null = null;
+  let staged: StagedFile | null = null;
   try {
-    // Staged as a launch is, and sweeping what abandoned launches left: the
+    // Staged as a launch is, and swept with what abandoned launches left: the
     // script takes a state root, and finds `sdk-launch` beside its kind.
-    const root = posix.join(posix.dirname(bundle.staging), 'sdk-sessions', 'cli-conversations');
-    staged = (
-      await ctx.exec('node', ['-e', MAKE_LAUNCH_DIR, root, String(STALE_LAUNCH_MS)])
-    ).stdout.trim();
-    const local = await mkdtemp(join(tmpdir(), 'switch-sdk-request-'));
-    const fs = new SshFileSystem(proxy, staged);
-    try {
-      await writeFile(join(local, 'request.json'), JSON.stringify(request), { mode: 0o600 });
-      await fs.copyLocalFile(join(local, 'request.json'), 'request.json');
-    } finally {
-      fs.close();
-      await rm(local, { recursive: true, force: true });
-    }
-    const path = `${staged}/request.json`;
-    await ctx.exec('node', ['-e', "require('node:fs').chmodSync(process.argv[1],0o600)", path]);
-    return await ctx.exec('node', [bundle.entrypoint, mode, path], { timeout: options.timeout });
+    staged = await stagePrivateFile('request.json', JSON.stringify(request), {
+      transport,
+      ctx,
+      root: posix.join(posix.dirname(bundle.staging), 'sdk-sessions', 'cli-conversations'),
+    });
+    return await ctx.exec('node', [bundle.entrypoint, mode, staged.path], {
+      timeout: options.timeout,
+    });
   } catch (error) {
     // A bundle that has gone is one reason a launch fails; the next checks
     // again. A command that ran and refused says nothing about the bundle.
@@ -161,18 +219,12 @@ export async function runHostRequest(
     // Not allowed to hide why the command failed. What is left is swept with
     // abandoned launches (`HOST_PREPARE`).
     if (staged)
-      await ctx
-        .exec('node', [
-          '-e',
-          "require('node:fs').rmSync(process.argv[1],{recursive:true,force:true})",
-          staged,
-        ])
-        .catch((error: unknown) =>
-          log.warn('Could not remove a staged host request', {
-            host: transport.host,
-            error: String(error),
-          })
-        );
+      await staged.remove().catch((error: unknown) =>
+        log.warn('Could not remove a staged host request', {
+          host: transport.host,
+          error: String(error),
+        })
+      );
     ctx.dispose();
   }
 }
@@ -182,10 +234,8 @@ export async function runHostRequest(
  * the host has another build's or none. Its staging directory sits beside the
  * bundle's, where `HOST_PREPARE` made both.
  */
-async function thisBuildsBundle(
-  transport: Extract<LocationTransport, { kind: 'ssh' }>
-): Promise<HostBundle | null> {
-  const name = await bundleName();
+async function thisBuildsBundle(transport: SshTransport): Promise<HostBundle | null> {
+  const name = (await sharedHostBundle()).file;
   const located = await locateBundle(transport, transport.dir, name);
   if (!located) return null;
   located.ctx.dispose();
@@ -225,7 +275,7 @@ export async function deploySharedHost(
 /** The state root of `identity`'s watcher on an SSH host, and a context to act
  * in it, without deploying the host bundle. */
 export async function resolveWatcherRoot(
-  transport: Extract<LocationTransport, { kind: 'ssh' }>,
+  transport: SshTransport,
   sessionPath: string,
   identity: string
 ): Promise<{ ctx: IExecutionContext; root: string }> {
@@ -249,51 +299,20 @@ export async function runSharedHostCommand(
   mode: '--ensure' | '--ensure-watch' | '--restart',
   resuming: boolean
 ) {
-  const local = await mkdtemp(join(tmpdir(), 'switch-sdk-launch-'));
-  const localFile = join(local, 'config.json');
-  let remote: string | null = null;
+  const staged = await stagePrivateFile(
+    'config.json',
+    JSON.stringify(config),
+    transport.kind === 'ssh' ? { transport, ctx: deployed.ctx, root: deployed.root } : null
+  );
   try {
-    await writeFile(localFile, JSON.stringify(config), { mode: 0o600 });
-    let configPath = localFile;
-    if (transport.kind === 'ssh') {
-      const proxy = await ensureSshConnected(transport.connectionId, transport.host);
-      const result = await deployed.ctx.exec('node', [
-        '-e',
-        MAKE_LAUNCH_DIR,
-        deployed.root,
-        String(STALE_LAUNCH_MS),
-      ]);
-      remote = result.stdout.trim();
-      const fs = new SshFileSystem(proxy, remote);
-      try {
-        await fs.copyLocalFile(localFile, 'config.json');
-      } finally {
-        fs.close();
-      }
-      configPath = `${remote}/config.json`;
-      await deployed.ctx.exec('node', [
-        '-e',
-        "require('node:fs').chmodSync(process.argv[1],0o600)",
-        configPath,
-      ]);
-    }
     return await deployed.ctx.exec('node', [
       deployed.entrypoint,
       deployed.root,
-      configPath,
+      staged.path,
       mode,
       String(resuming),
     ]);
   } finally {
-    try {
-      if (remote)
-        await deployed.ctx.exec('node', [
-          '-e',
-          "require('node:fs').rmSync(process.argv[1],{recursive:true,force:true})",
-          remote,
-        ]);
-    } finally {
-      await rm(local, { recursive: true, force: true });
-    }
+    await staged.remove();
   }
 }

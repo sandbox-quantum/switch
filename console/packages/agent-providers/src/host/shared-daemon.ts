@@ -4,7 +4,11 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
-import { answerCliConversationRequest } from './cli-conversations';
+import {
+  answerCliConversationRequest,
+  CLI_CONVERSATION_MODES,
+  type CliConversationMode,
+} from './cli-conversations';
 import { type ControlContext, ensureSessions, serveControl } from './control';
 import { dirMode } from './host-permissions';
 import { materializeHostedProvider } from './hosted-provider';
@@ -79,7 +83,7 @@ async function main(): Promise<void> {
     }
     return;
   }
-  if (root === '--cli-conversations' || root === '--fork-cli-conversation') {
+  if (isCliConversationMode(root)) {
     // Answered on stdout either way, so Console can say why one failed.
     try {
       console.log(JSON.stringify(await answerCliConversationRequest(root, configPath)));
@@ -307,6 +311,10 @@ async function helper(): Promise<void> {
   }
 }
 
+function isCliConversationMode(value: string): value is CliConversationMode {
+  return (CLI_CONVERSATION_MODES as readonly string[]).includes(value);
+}
+
 if (root === '--git-credential' || root === '--github-cli') await helper();
 else
   try {
@@ -316,8 +324,7 @@ else
       root !== undefined &&
       root !== '--probe' &&
       root !== '--models' &&
-      root !== '--cli-conversations' &&
-      root !== '--fork-cli-conversation' &&
+      !isCliConversationMode(root) &&
       mode !== '--supervise' &&
       mode !== '--watch-supervise'
     ) {

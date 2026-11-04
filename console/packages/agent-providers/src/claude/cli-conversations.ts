@@ -1,14 +1,18 @@
 import { execFile } from 'node:child_process';
-import { readFile, readdir } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
+  deleteSession as sdkDeleteSession,
   forkSession as sdkForkSession,
+  getSessionInfo as sdkGetSessionInfo,
   listSessions as sdkListSessions,
+  type SDKSessionInfo,
   type SessionStore,
   type SessionStoreEntry,
+  tagSession as sdkTagSession,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
@@ -36,8 +40,34 @@ export type CliConversationList = z.infer<typeof cliConversationListSchema>;
 
 export const forkedCliConversationSchema = z.object({ nativeSessionId: z.string() });
 
+/** How many copies `--delete-cli-conversation-copies` removed. */
+export const deletedCliConversationCopiesSchema = z.object({ deleted: z.number().int().min(0) });
+
 /** What a fork is titled in Claude Code's own `/resume` list, so it reads as taken. */
 const FORK_TITLE_SUFFIX = ' (continued in Switch Console)';
+
+/**
+ * How every copy Switch makes is tagged: with this and the id of the Console
+ * session that owns it. The tag is what a copy left by a session that never
+ * started is found and removed by, and it survives a rename where the title
+ * would not.
+ */
+const COPY_TAG_PREFIX = 'switch-console:';
+
+/** The tag of the copy a Console session continues. */
+export function cliConversationCopyTag(consoleSessionId: string): string {
+  return `${COPY_TAG_PREFIX}${consoleSessionId}`;
+}
+
+/**
+ * Whether a conversation is a copy Switch made to continue another, by its
+ * tag or, for a copy made before copies were tagged, its title.
+ */
+function isSwitchCopy(session: Pick<SDKSessionInfo, 'tag' | 'summary'>): boolean {
+  return (
+    session.tag?.startsWith(COPY_TAG_PREFIX) === true || session.summary.endsWith(FORK_TITLE_SUFFIX)
+  );
+}
 
 /**
  * One running Claude Code process's own record, `sessions/<pid>.json` under its
@@ -69,7 +99,10 @@ export type ProcessInfo = { startedAt: number | null; command: string };
 
 export interface CliConversationDeps {
   listSessions: typeof sdkListSessions;
+  getSessionInfo: typeof sdkGetSessionInfo;
   forkSession: typeof sdkForkSession;
+  tagSession: typeof sdkTagSession;
+  deleteSession: typeof sdkDeleteSession;
   processExists: (pid: number) => boolean;
   /** What `ps` says about these processes, in one call; null when it cannot be asked. */
   processes: (pids: number[]) => Promise<Map<number, ProcessInfo> | null>;
@@ -77,7 +110,10 @@ export interface CliConversationDeps {
 
 const defaultDeps: CliConversationDeps = {
   listSessions: sdkListSessions,
+  getSessionInfo: sdkGetSessionInfo,
   forkSession: sdkForkSession,
+  tagSession: sdkTagSession,
+  deleteSession: sdkDeleteSession,
   processExists,
   processes,
 };
@@ -86,8 +122,9 @@ const defaultDeps: CliConversationDeps = {
  * The conversations started in `dir` from Claude Code's own terminal or IDE
  * clients, with the process that has each one open. Conversations a program
  * started through the SDK, Switch's own sessions among them, are left out, and
- * so are the copies Switch made to continue: one whose session went away, or
- * whose copy finished after Console stopped waiting, is not a CLI conversation.
+ * so are the copies Switch made to continue, renamed or not: one whose session
+ * went away, or whose copy finished after Console stopped waiting, is not a
+ * CLI conversation.
  *
  * `env` is the session's execution environment, so the conversations are
  * looked for in the config directory the session's Claude Code will use.
@@ -106,7 +143,7 @@ export async function listClaudeCliConversations(
   return {
     ownershipKnown: ownership !== null && ownership.complete,
     conversations: sessions
-      .filter((session) => !session.summary.endsWith(FORK_TITLE_SUFFIX))
+      .filter((session) => !isSwitchCopy(session))
       .sort((a, b) => b.lastModified - a.lastModified)
       .map((session) => ({
         nativeSessionId: session.sessionId,
@@ -124,39 +161,93 @@ export async function listClaudeCliConversations(
  * written to it. Refused while a running Claude Code process has it open, so
  * the copy is never taken from the middle of a turn; and, where Claude Code
  * cannot say which conversations are open, unless the person said this one
- * is closed (`confirmedClosed`).
+ * is closed (`confirmedClosed`). A copy Switch made is not copied again.
+ *
+ * The copy is tagged with the Console session that owns it
+ * ({@link cliConversationCopyTag}), so one whose session never started can be
+ * found and removed ({@link deleteClaudeCliConversationCopies}). A copy that
+ * cannot be tagged is removed at once, since nothing could find it later.
  */
 export async function forkClaudeCliConversation(
-  dir: string,
-  nativeSessionId: string,
-  confirmedClosed: boolean,
+  request: {
+    dir: string;
+    nativeSessionId: string;
+    consoleSessionId: string;
+    confirmedClosed: boolean;
+  },
   env: Record<string, string | undefined>,
   deps: CliConversationDeps = defaultDeps
 ): Promise<{ nativeSessionId: string }> {
+  const { dir, nativeSessionId } = request;
   const ownership = await claudeHolders(claudeConfigDir(env), deps);
   const holder = ownership?.holders.get(nativeSessionId);
   if (holder)
     throw new Error(
       `This conversation is open in Claude Code (process ${holder.pid}). Close it there, then try again.`
     );
-  if ((ownership === null || !ownership.complete) && !confirmedClosed)
-    throw new Error(
-      'Console cannot tell whether this conversation is open in Claude Code right now. Choose it again and confirm it is closed.'
-    );
+  if (!request.confirmedClosed) {
+    if (ownership === null)
+      throw new Error(
+        'Console cannot tell whether this conversation is open in Claude Code right now. Choose it again and confirm it is closed.'
+      );
+    if (!ownership.complete)
+      throw new Error(
+        'Console could not read which conversations Claude Code has open right now. Try again in a moment.'
+      );
+  }
   return withClaudeConfigDir(env, async () => {
-    const listed = await deps.listSessions({
-      dir,
-      includeProgrammatic: false,
-      includeWorktrees: false,
-    });
-    const source = listed.find((session) => session.sessionId === nativeSessionId);
+    const source = await deps.getSessionInfo(nativeSessionId, { dir });
     if (!source)
       throw new Error(`Claude Code has no conversation ${nativeSessionId} in ${dir} to continue.`);
+    if (isSwitchCopy(source))
+      throw new Error(
+        'This conversation is a copy Switch Console made to continue another one. Choose the conversation it was copied from.'
+      );
     const fork = await deps.forkSession(nativeSessionId, {
       dir,
       title: `${source.summary.slice(0, 200)}${FORK_TITLE_SUFFIX}`,
     });
+    try {
+      await deps.tagSession(fork.sessionId, cliConversationCopyTag(request.consoleSessionId), {
+        dir,
+      });
+    } catch (error) {
+      try {
+        await deps.deleteSession(fork.sessionId, { dir });
+      } catch (removal) {
+        throw new Error(
+          `Could not mark the copy ${fork.sessionId} of this conversation as Switch Console's (${String(error)}), nor remove it (${String(removal)}).`,
+          { cause: error }
+        );
+      }
+      throw new Error(
+        `Could not mark the copy of this conversation as Switch Console's, so it was removed: ${String(error)}`,
+        { cause: error }
+      );
+    }
     return { nativeSessionId: fork.sessionId };
+  });
+}
+
+/**
+ * Removes the copies in `dir` tagged as the given Console session's, and says
+ * how many there were: what is left when a session's copy was made but the
+ * session never started. Only a conversation carrying exactly that session's
+ * tag is removed.
+ */
+export async function deleteClaudeCliConversationCopies(
+  dir: string,
+  consoleSessionId: string,
+  env: Record<string, string | undefined>,
+  deps: CliConversationDeps = defaultDeps
+): Promise<{ deleted: number }> {
+  const tag = cliConversationCopyTag(consoleSessionId);
+  return withClaudeConfigDir(env, async () => {
+    const copies = (
+      await deps.listSessions({ dir, includeProgrammatic: true, includeWorktrees: false })
+    ).filter((session) => session.tag === tag);
+    for (const copy of copies) await deps.deleteSession(copy.sessionId, { dir });
+    return { deleted: copies.length };
   });
 }
 
@@ -166,6 +257,10 @@ export async function forkClaudeCliConversation(
  * session uses without changing this process's environment, which a host
  * running other work cannot afford. Read only; a conversation is found by its
  * id under any project, as Claude Code's own resume finds it.
+ *
+ * Only a last line that is not JSON is left out: a write Claude Code has not
+ * finished. Anywhere else such a line is a transcript this cannot read whole,
+ * and reading it is refused rather than shown with a gap.
  */
 export function configDirSessionStore(configDir: string): SessionStore {
   return {
@@ -174,36 +269,55 @@ export function configDirSessionStore(configDir: string): SessionStore {
     },
     load: async ({ sessionId, subpath }) => {
       if (subpath !== undefined) return null;
-      const projects = join(configDir, 'projects');
-      let names: string[];
-      try {
-        names = await readdir(projects);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-        throw error;
-      }
-      for (const name of names) {
-        let text: string;
+      const path = await savedConversationPath(configDir, sessionId);
+      if (path === null) return null;
+      const lines = (await readFile(path, 'utf8')).split('\n');
+      let last = lines.length - 1;
+      while (last >= 0 && !lines[last]!.trim()) last--;
+      return lines.flatMap((line, index): SessionStoreEntry[] => {
+        if (!line.trim()) return [];
         try {
-          text = await readFile(join(projects, name, `${sessionId}.jsonl`), 'utf8');
+          return [JSON.parse(line) as SessionStoreEntry];
         } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code === 'ENOENT' || code === 'ENOTDIR') continue;
-          throw error;
+          if (index === last) return [];
+          throw new Error(
+            `Line ${index + 1} of Claude Code's saved conversation ${path} is not JSON: ${String(error)}`,
+            { cause: error }
+          );
         }
-        // A line cut short by a write in progress is the only one left out.
-        return text.split('\n').flatMap((line): SessionStoreEntry[] => {
-          if (!line.trim()) return [];
-          try {
-            return [JSON.parse(line) as SessionStoreEntry];
-          } catch {
-            return [];
-          }
-        });
-      }
-      return null;
+      });
     },
   };
+}
+
+/**
+ * Where Claude Code saved the conversation with this id under a config
+ * directory, `projects/<directory>/<id>.jsonl` in whichever project it was
+ * started in; null when it saved none.
+ */
+export async function savedConversationPath(
+  configDir: string,
+  sessionId: string
+): Promise<string | null> {
+  const projects = join(configDir, 'projects');
+  let names: string[];
+  try {
+    names = await readdir(projects);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  for (const name of names) {
+    const path = join(projects, name, `${sessionId}.jsonl`);
+    try {
+      await access(path);
+      return path;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+    }
+  }
+  return null;
 }
 
 /** Where Claude Code keeps its conversations for a process with this environment. */

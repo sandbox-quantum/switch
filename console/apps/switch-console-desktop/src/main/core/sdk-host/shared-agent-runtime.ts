@@ -6,10 +6,11 @@ import {
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
 import { announceSessionIssue, recordRemoteHostFailure } from './host-failures';
+import { listHostWatchers, watcherRunsBundle } from './host-watchers';
 import { reconcileInitialPrompt } from './initial-prompt';
 import { stopLegacySidecar } from './legacy-sidecar';
 import { readLocalHostFailure, startLocalSession } from './local-host';
-import { deploySharedHost } from './shared-host-deployment';
+import { deploySharedHost, sharedHostBundle } from './shared-host-deployment';
 import { withSidecar } from './sidecar-control';
 export { deploySharedHost } from './shared-host-deployment';
 import { randomUUID } from 'node:crypto';
@@ -45,6 +46,7 @@ import { hostDependencyStore } from '@main/core/dependencies/host-dependency-sto
 import type { LocationTransport } from '@main/core/locations/location-transport';
 import { ensureServerSessionReady } from '@main/core/managed-switch-server/session-readiness';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { cliConversationForkInFlight } from '@main/core/sessions/cli-conversation-forks';
 import { setInitialPromptDelivery } from '@main/core/sessions/operations/set-initial-prompt-delivery';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { getPersistedRoomConnection } from '@main/core/switch-rooms/session-room-store';
@@ -199,20 +201,24 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         ]);
         return JSON.parse(result.stdout);
       };
+      // A sidecar on another build reads the configuration with its own
+      // schema: an older one refuses the key and could not import the history
+      // anyway. So it is asked which build it runs before it is handed one.
+      if (
+        config.importHistory &&
+        watcherRunsBundle(
+          (await listHostWatchers(deployed.ctx)).get(agent.switchAgentId),
+          await sharedHostBundle()
+        ) === false
+      )
+        throw new Error(
+          `The Room watcher on ${this.transport.host} does not run this version of Switch Console's host, so it cannot continue a CLI conversation. Press Update on its Room watcher, then start this session again.`
+        );
       // Started by the agent's sidecar, which is then its parent: it talks to
       // the session over IPC, and Console reaches it through the sidecar.
       await withSidecar(session.agentId, (client) =>
         client.ensure({ config, resuming: isResuming, restart, startSource })
-      ).catch((error: unknown) => {
-        // A sidecar older than this Console reads the configuration strictly
-        // and refuses the key, and could not import the history anyway.
-        if (config.importHistory && String(error).includes('importHistory'))
-          throw new Error(
-            `The Room watcher on ${this.transport.kind === 'ssh' ? this.transport.host : 'this machine'} runs an older version of Switch Console's host, which cannot continue a CLI conversation. Press Update on its Room watcher, then start this session again.`,
-            { cause: error }
-          );
-        throw error;
-      });
+      );
     } else {
       // A local session is supervised by Console, so it ends when Console does.
       root = sharedSessionRoot(session.id);
@@ -418,12 +424,7 @@ export async function buildSharedHostConfig(
   params: { sessionPath: string; sessionEnvVars: Record<string, string>; shellSetup?: string },
   transport: LocationTransport
 ): Promise<SharedHostConfig> {
-  // Console stopped between saving the session and copying the conversation:
-  // started now, it would open a new conversation in place of that one.
-  if (session.cliConversation && !session.providerSessionId)
-    throw new Error(
-      `This session was to continue the Claude Code conversation “${session.cliConversation.title}”, but its copy was never made. Delete it and start a new session from that conversation.`
-    );
+  const providerSessionId = session.providerSessionId ?? (await copyBeingMade(session));
   const agent = await getAgentById(session.agentId);
   if (!agent?.switchAgentId) throw new Error('Link the agent to Switch before launching its host.');
   const launch = await agentLaunchConfig(session.agentId);
@@ -491,9 +492,7 @@ export async function buildSharedHostConfig(
         runtimeMode: runtimeModeFor(agent),
         env: params.sessionEnvVars,
         mcpServers: {},
-        ...(session.providerSessionId
-          ? { resume: { nativeSessionId: session.providerSessionId } }
-          : {}),
+        ...(providerSessionId ? { resume: { nativeSessionId: providerSessionId } } : {}),
         ...(sessionLaunch.agent
           ? {
               agentName: sessionLaunch.agent.name,
@@ -533,6 +532,26 @@ export async function buildSharedHostConfig(
     },
   };
   return config;
+}
+
+/**
+ * The copy a session that continues a CLI conversation resumes, when its row
+ * does not hold one yet: the session is saved before its copy is made, so one
+ * started meanwhile waits for the copy. Without a copy in flight, Console
+ * stopped while copying, and the session refuses to start rather than open a
+ * new conversation in place of the one it was made to continue. Undefined for
+ * every other session.
+ */
+async function copyBeingMade(
+  session: Pick<Session, 'id' | 'cliConversation'>
+): Promise<string | undefined> {
+  if (!session.cliConversation) return undefined;
+  const copy = cliConversationForkInFlight(session.id);
+  if (!copy)
+    throw new Error(
+      `This session was to continue the Claude Code conversation “${session.cliConversation.title}”, but its copy was never made. Delete it and start a new session from that conversation.`
+    );
+  return copy;
 }
 
 /** The generation a session's host last recorded, or null if it has recorded none. */

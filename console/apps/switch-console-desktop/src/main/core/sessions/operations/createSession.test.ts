@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionRow } from '@main/db/schema';
+import { cliConversationForkInFlight } from '../cli-conversation-forks';
 import { createSession } from './createSession';
 
 const mocks = vi.hoisted(() => ({
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   registerSession: vi.fn(),
   startSession: vi.fn(),
   forkCliConversation: vi.fn(),
+  discardCliConversationCopies: vi.fn(),
   setProviderSessionId: vi.fn(),
 }));
 
@@ -22,6 +24,7 @@ vi.mock('./set-provider-session-id', () => ({
 
 vi.mock('../cli-conversations', () => ({
   forkCliConversation: mocks.forkCliConversation,
+  discardCliConversationCopies: mocks.discardCliConversationCopies,
 }));
 
 vi.mock('@main/core/agents/getAgentById', () => ({
@@ -135,6 +138,7 @@ describe('createSession', () => {
     expect(mocks.setProviderSessionId).toHaveBeenCalledWith('session-1', 'copy-1');
     expect(result.data.session.providerSessionId).toBe('copy-1');
     expect(result.data.session.cliConversation).toEqual(cliConversation);
+    expect(mocks.discardCliConversationCopies).not.toHaveBeenCalled();
     expect(mocks.startSession).toHaveBeenCalledWith(
       expect.objectContaining({ providerSessionId: 'copy-1' }),
       false,
@@ -143,7 +147,7 @@ describe('createSession', () => {
     );
   });
 
-  it('does not start a session deleted while its conversation was being copied', async () => {
+  it('does not start a session deleted while its conversation was being copied, and removes the copy', async () => {
     mocks.forkCliConversation.mockResolvedValue('copy-1');
     mocks.setProviderSessionId.mockResolvedValue(false);
     const result = await createSession({
@@ -157,8 +161,35 @@ describe('createSession', () => {
         message: 'This session was deleted while its conversation was being copied.',
       },
     });
+    expect(mocks.discardCliConversationCopies).toHaveBeenCalledWith(
+      expect.objectContaining({ dir: '/repo' }),
+      'session-1'
+    );
     expect(mocks.provisionSessionRuntime).not.toHaveBeenCalled();
     expect(mocks.startSession).not.toHaveBeenCalled();
+  });
+
+  it('lets anything that starts the session while its copy is made wait for the copy', async () => {
+    let made!: (id: string) => void;
+    mocks.forkCliConversation.mockReturnValue(
+      new Promise<string>((resolve) => {
+        made = resolve;
+      })
+    );
+    mocks.setProviderSessionId.mockResolvedValue(true);
+    const created = createSession({
+      ...baseParams,
+      cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build', confirmedClosed: true },
+    });
+    await vi.waitFor(() => expect(mocks.forkCliConversation).toHaveBeenCalled());
+    const waiting = cliConversationForkInFlight('session-1');
+    expect(waiting).toBeDefined();
+    made('copy-1');
+    // Settled once the row holds the copy, not merely once the copy exists.
+    await expect(waiting).resolves.toBe('copy-1');
+    expect(mocks.setProviderSessionId).toHaveBeenCalledWith('session-1', 'copy-1');
+    await created;
+    expect(cliConversationForkInFlight('session-1')).toBeUndefined();
   });
 
   it('takes the session away again when the CLI conversation cannot be copied', async () => {
@@ -180,6 +211,10 @@ describe('createSession', () => {
       },
     });
     expect(mocks.deleteFn).toHaveBeenCalledTimes(1);
+    expect(mocks.discardCliConversationCopies).toHaveBeenCalledWith(
+      expect.objectContaining({ dir: '/repo' }),
+      'session-1'
+    );
     expect(mocks.startSession).not.toHaveBeenCalled();
   });
 

@@ -1,7 +1,8 @@
 /**
  * The new-session dialog's Conversation field offers the Claude Code CLI
- * conversations in the agent's folder, will not take one a terminal has open,
- * and asks for confirmation where Claude Code cannot say which are open.
+ * conversations in the agent's folder, read when its picker opens, will not
+ * take one a terminal has open, and asks for confirmation where Claude Code
+ * cannot say which are open.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, useState } from 'react';
@@ -78,6 +79,10 @@ function Harness() {
 
 async function render(list: CliConversationList) {
   listCliConversations.mockResolvedValue({ success: true, data: list });
+  await mount();
+}
+
+async function mount() {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -95,11 +100,31 @@ async function render(list: CliConversationList) {
   );
 }
 
+it('lists the conversations only once the picker opens, and says it is looking meanwhile', async () => {
+  let answer!: (value: unknown) => void;
+  listCliConversations.mockReturnValue(
+    new Promise((resolve) => {
+      answer = resolve;
+    })
+  );
+  await mount();
+  await expect.element(page.getByText('New conversation')).toBeVisible();
+  expect(listCliConversations).not.toHaveBeenCalled();
+  await page.getByText('New conversation').click();
+  await expect.element(page.getByText('Looking for CLI conversations…')).toBeVisible();
+  expect(listCliConversations).toHaveBeenCalledWith('agent-1');
+  await act(async () =>
+    answer({ success: true, data: { ownershipKnown: true, conversations: [CLOSED] } })
+  );
+  await expect.element(page.getByRole('option', { name: /Fix the flaky build/ })).toBeVisible();
+  await expect.element(page.getByText('Looking for CLI conversations…')).not.toBeInTheDocument();
+});
+
 it('offers a closed conversation and not one a terminal has open', async () => {
   await render({ ownershipKnown: true, conversations: [OPEN, CLOSED] });
-  expect(listCliConversations).toHaveBeenCalledWith('agent-1');
   await expect.element(page.getByText('New conversation')).toBeVisible();
   await page.getByText('New conversation').click();
+  expect(listCliConversations).toHaveBeenCalledWith('agent-1');
   await expect.element(page.getByText('Open in Claude Code (process 41)')).toBeVisible();
   await expect
     .element(page.getByRole('option', { name: /Refactor the session host/ }))
@@ -124,16 +149,8 @@ it('says why nothing is offered', async () => {
     success: false,
     error: { message: 'Open the agent’s folder in Console first.' },
   });
-  container = document.createElement('div');
-  document.body.appendChild(container);
-  root = createRoot(container);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () =>
-    root!.render(
-      <QueryClientProvider client={client}>
-        <Harness />
-      </QueryClientProvider>
-    )
-  );
+  await mount();
+  await page.getByText('New conversation').click();
   await expect.element(page.getByText('Open the agent’s folder in Console first.')).toBeVisible();
+  await expect.element(page.getByText('Could not list the conversations.')).toBeVisible();
 });

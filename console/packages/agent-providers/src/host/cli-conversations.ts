@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import {
   type CliConversationList,
+  deleteClaudeCliConversationCopies,
   forkClaudeCliConversation,
   listClaudeCliConversations,
 } from '../claude/cli-conversations';
@@ -13,6 +14,14 @@ import { executionEnvironment } from './shared-config';
  * terminal, say, rather than that a command exited 1.
  */
 export const cliConversationFailureSchema = z.object({ error: z.string() });
+
+/** The host's one-off conversation commands. */
+export const CLI_CONVERSATION_MODES = [
+  '--cli-conversations',
+  '--fork-cli-conversation',
+  '--delete-cli-conversation-copies',
+] as const;
+export type CliConversationMode = (typeof CLI_CONVERSATION_MODES)[number];
 
 /**
  * What Console asks a conversation command, staged as a private file because
@@ -30,6 +39,12 @@ export const cliConversationRequestSchema = z.strictObject({
   /** The conversation to copy, for `--fork-cli-conversation`. */
   nativeSessionId: z.string().min(1).optional(),
   /**
+   * The Console session a copy is for, for `--fork-cli-conversation`, which
+   * tags the copy with it, and `--delete-cli-conversation-copies`, which
+   * removes the copies tagged with it.
+   */
+  consoleSessionId: z.string().min(1).optional(),
+  /**
    * The person said the conversation is closed, for a copy where Claude Code
    * cannot say which conversations are open. Absent means they did not.
    */
@@ -37,11 +52,11 @@ export const cliConversationRequestSchema = z.strictObject({
 });
 export type CliConversationRequest = z.infer<typeof cliConversationRequestSchema>;
 
-/** Answers `--cli-conversations` or `--fork-cli-conversation` for the request at `path`. */
+/** Answers one of the {@link CLI_CONVERSATION_MODES} for the request at `path`. */
 export async function answerCliConversationRequest(
-  mode: '--cli-conversations' | '--fork-cli-conversation',
+  mode: CliConversationMode,
   path: string
-): Promise<CliConversationList | { nativeSessionId: string }> {
+): Promise<CliConversationList | { nativeSessionId: string } | { deleted: number }> {
   const request = cliConversationRequestSchema.parse(JSON.parse(await readFile(path, 'utf8')));
   if (request.provider !== 'claude')
     throw new Error(
@@ -54,11 +69,17 @@ export async function answerCliConversationRequest(
     request.inheritEnv
   );
   if (mode === '--cli-conversations') return listClaudeCliConversations(request.dir, env);
+  if (!request.consoleSessionId) throw new Error('Name the Console session the copy is for.');
+  if (mode === '--delete-cli-conversation-copies')
+    return deleteClaudeCliConversationCopies(request.dir, request.consoleSessionId, env);
   if (!request.nativeSessionId) throw new Error('Name the conversation to copy.');
   return forkClaudeCliConversation(
-    request.dir,
-    request.nativeSessionId,
-    request.confirmedClosed === true,
+    {
+      dir: request.dir,
+      nativeSessionId: request.nativeSessionId,
+      consoleSessionId: request.consoleSessionId,
+      confirmedClosed: request.confirmedClosed === true,
+    },
     env
   );
 }

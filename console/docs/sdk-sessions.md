@@ -115,12 +115,13 @@ these discovery fixes.
 
 A Claude Code agent's session can continue a conversation that was started in
 Claude Code's own terminal or IDE clients in the agent's folder. Pick it under
-**Conversation** in the new-session dialog. The list is read on the session's
-execution host, local or SSH, with the Agent SDK's `listSessions`. Conversations a
-program started through the SDK are left out, Switch's own sessions included,
-and so are the copies Console's sessions in that folder already run. Only Claude
-Code conversations can be continued; Codex runs each session in a private
-`CODEX_HOME` and records no running conversations to check against.
+**Conversation** in the new-session dialog. The list is read when that picker
+first opens, not with the dialog, on the session's execution host, local or
+SSH, with the Agent SDK's `listSessions`. Conversations a program started
+through the SDK are left out, Switch's own sessions included, and so are the
+copies Console made (below). Only Claude Code conversations can be continued;
+Codex runs each session in a private `CODEX_HOME` and records no running
+conversations to check against.
 
 Conversations are looked for where the session's Claude Code will look: the
 host applies the agent's shell setup and inherited variables, as it does before
@@ -129,18 +130,32 @@ sends that request as a private file, in a directory only the user can read
 beside a launch's configuration, not on a command line. Listing only reads the
 host. On an SSH host that does not yet have this Console's host bundle the
 dialog says so instead of deploying it; starting a session, which copies the
-conversation, deploys it as any launch does. A Room watcher older than this
-Console cannot start such a session, and Console says to update it.
+conversation, deploys it as any launch does. A Room watcher that does not run
+this Console's host bundle cannot start such a session. Console asks which
+bundle it runs before handing the session over (the watcher's `health.json`,
+written by the process alive now, or while that process is down its
+supervisor's record of the file it starts) and says to update the watcher.
 
 The session never writes to the CLI's conversation. Starting the session copies
 it under a new id (the SDK's `forkSession`), and the session resumes the copy.
-The session is recorded before the copy is made and removed again if the copy
-fails. A session whose copy was never recorded (Console stopped while copying)
-refuses to start rather than open a new conversation. The copy is titled
+The source is read with `getSessionInfo`, and a copy Console made is refused as
+one. Each copy is tagged `switch-console:<session id>` (`tagSession`) as soon as
+it is made; a copy that cannot be tagged is removed at once. The session is
+recorded before the copy is made. Something that starts it while the copy is
+being made waits for the copy. If the copy fails, or the session's row was
+deleted while it was made, the session is removed again and Console removes
+the conversations in the folder tagged with that session's id, and nothing
+else. When the copy's outcome is unknown (a timeout or a dropped connection,
+so it may be made after Console stopped waiting), or removing it fails,
+Console also tries again with the next list or copy in that location. A session
+whose copy was never recorded (Console stopped while copying) refuses to start
+rather than open a new conversation. The copy is titled
 `… (continued in Switch Console)`, so Claude Code's own `/resume` list shows it
-is taken, and the dialog never offers such copies, including one whose session
-is gone or that finished after Console stopped waiting. The original stays the terminal's. Continuing it there afterwards
-starts a separate branch that does not include what happened in Console.
+is taken. The dialog never offers a copy, by its tag (a renamed one included)
+or by that title (one made before copies were tagged), whether or not its
+session still exists. The original stays the terminal's. Continuing it there
+afterwards starts a separate branch that does not include what happened in
+Console.
 
 A conversation that a running Claude Code process has open cannot be picked, and
 the copy is refused if one has opened it since. Claude Code records each running
@@ -152,14 +167,17 @@ else no longer holds the conversation unless it started at the recorded time
 (`ps -o lstart=` in UTC). A live process `ps` cannot describe is taken to hold
 its conversation. When a live Claude Code process's record cannot be read, or
 this Claude Code keeps no records, the dialog asks for confirmation that the
-conversation is closed, and the copy is refused without it: the check runs
-again when the copy is made.
+conversation is closed. The check runs again when the copy is made: without
+that confirmation, a Claude Code that keeps no records refuses the copy and
+asks for it, and a record that cannot be read just then refuses it and asks to
+try again.
 
 No earlier prompt is sent again. Before the provider starts, the session's
 transcript is filled with the copy's earlier turns, up to the last 500 items:
 prompts, slash and `!` commands as they were typed, Claude's replies, and the
 tools it ran, with a failed tool marked as failed. Reasoning, subagents' own
-messages, the context Claude Code adds on its own (in its own tags; markup a
+messages, the entries Claude Code marks as hidden (a loaded skill's
+instructions, say), the context it adds on its own (in its own tags; markup a
 person pasted stays) and its notes that a turn was stopped are left out, as
 they are from a live transcript. Imported turns carry ids starting
 `imported:` (`isImportedTurn` in `@switch-console/shared/session-v1`), and
@@ -167,15 +185,20 @@ nothing that asks whether a session has run anything counts them: its
 initial prompt is still delivered, its first room message still opens the
 conversation, and its agent instructions are not announced as changed. Where the conversation
 was compacted, an item marks it instead of showing the summary as a prompt.
-Text is scrubbed of service tokens before it is cut into parts. A notice after
-those turns says how many items were not shown, and settles the import: the
-host reads it back from its event journal on restart. Items are recorded in
-batches bounded in count and bytes. An import cut short by a crash runs again
-and publishes only what it had not. If the conversation cannot be read, a warning
-says so once and the session goes on to resume it, which decides whether it is
-there. Because the session continues a conversation that already had answers, a
-copy that cannot be resumed is never quietly replaced with a new conversation.
-Console asks for the explicit fresh start instead.
+Text is scrubbed of service tokens before it is cut into parts, and an item the
+conversation repeats is shown once. A notice after those turns says how many
+items were not shown, and settles the import: the host reads it back from its
+event journal on restart. Items are recorded in batches bounded in count and
+bytes. An import cut short by a crash runs again and publishes only what it had
+not. A saved transcript is read whole or not at all: only a last line cut short
+by a write in progress is left out. If the conversation cannot be read, or its
+turns cannot be recorded, a warning says so once and the session goes on to
+resume it, which decides whether it is there. Because the session continues a
+conversation that already had answers, a copy that cannot be resumed is never
+quietly replaced with a new conversation. Console asks for the explicit fresh
+start instead. Once the person has taken it, a restart before the fresh
+conversation has run a turn starts another without asking, since that one was
+never the copy and never answered.
 
 ## Context, models and attachments
 

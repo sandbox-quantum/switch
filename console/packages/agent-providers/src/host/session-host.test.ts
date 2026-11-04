@@ -764,6 +764,107 @@ it('says how much of a continued conversation it left out, a long latest turn in
   );
 });
 
+it('starts afresh without asking again once the person chose a fresh start over a copy it could not resume', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const fixture = continuing('claude', async () => structuredClone(CLI_TURNS));
+  vi.mocked(fixture.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('claude', 'session', 'No saved conversation')
+  );
+  const host = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  expect(host.resetDecisionPending).toBe(true);
+  const reset: Command = { ...message('fresh-start'), body: { type: 'session.reset' } };
+  expect((await host.command(reset)).status).toBe('applied');
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(vi.mocked(fixture.adapter.startSession).mock.calls[1]![0].resume).toBeUndefined();
+  await host.shutdown();
+
+  // Claude Code saves a conversation only once a turn has run in it, so the
+  // fresh one cannot be resumed either. It was never answered, and it is not
+  // the copy the session was made to continue: nothing is lost by starting
+  // another.
+  const next = continuing('claude', async () => structuredClone(CLI_TURNS));
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('claude', 'session', 'No saved conversation')
+  );
+  const restarted = await startHost(root, next.config, next.adapter);
+  hosts.push(restarted);
+  expect(restarted.resetDecisionPending).toBe(false);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(next.adapter.startSession).mock.calls[0]![0].resume).toEqual({
+    nativeSessionId: 'native',
+  });
+  expect(vi.mocked(next.adapter.startSession).mock.calls[1]![0].resume).toBeUndefined();
+  await until(() =>
+    expect(restarted.replay(0).events.map((e) => e.body)).toContainEqual(
+      expect.objectContaining({ code: 'CONVERSATION_STARTED_FRESH' })
+    )
+  );
+});
+
+it('starts a continued session with a warning when its earlier turns cannot be recorded', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const fixture = continuing('claude', async () => [
+    {
+      turnId: 'cli:prompt-1',
+      items: [
+        {
+          itemId: 'cli:prompt-1',
+          // Not a kind the transcript records, so the event is refused.
+          kind: 'reasoning' as never,
+          status: 'completed',
+          title: '',
+          text: 'Fix the build',
+        },
+      ],
+    },
+  ]);
+  const host = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(fixture.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ resume: { nativeSessionId: 'cli-copy' } })
+  );
+  const codes = host.snapshot().notices.map((notice) => notice.code);
+  expect(codes).toContain('HISTORY_UNAVAILABLE');
+  expect(codes).not.toContain('HISTORY_IMPORTED');
+  expect(host.snapshot().items).toEqual([]);
+
+  // Settled by the warning: a later start does not try again.
+  await host.shutdown();
+  const next = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const restarted = await startHost(root, next.config, next.adapter);
+  hosts.push(restarted);
+  await until(() => expect(restarted.snapshot().session.status).toBe('ready'));
+  expect(next.adapter.conversationHistory).not.toHaveBeenCalled();
+});
+
+it('publishes an item a continued conversation repeats once, as it first appears', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const item = (text: string) => ({
+    itemId: 'cli:answer-1:0',
+    kind: 'assistant-message' as const,
+    status: 'completed' as const,
+    title: '',
+    text,
+  });
+  const fixture = continuing('claude', async () => [
+    { turnId: 'cli:prompt-1', items: [item('First')] },
+    { turnId: 'cli:prompt-1', items: [item('Second')] },
+  ]);
+  const host = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(host.snapshot().turns.map((turn) => turn.turnId)).toEqual(['imported:cli:prompt-1']);
+  expect(host.snapshot().items.map((i) => [i.itemId, i.text])).toEqual([
+    ['imported:cli:answer-1:0', 'First'],
+  ]);
+  expect(host.snapshot().notices.map((notice) => notice.code)).toContain('HISTORY_IMPORTED');
+});
+
 it('refuses to start a continued session that has no copy to resume, rather than start afresh', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
   roots.push(root);

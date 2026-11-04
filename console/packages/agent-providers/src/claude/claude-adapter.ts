@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, existsSync } from 'node:fs';
-import { access, readdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { getSessionMessages, query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -66,7 +66,7 @@ import {
   toolTitle,
   truncate,
 } from './claude-mapping';
-import { claudeConfigDir, configDirSessionStore } from './cli-conversations';
+import { claudeConfigDir, configDirSessionStore, savedConversationPath } from './cli-conversations';
 
 const PROVIDER = 'claude';
 const ASK_USER_QUESTION = 'AskUserQuestion';
@@ -157,24 +157,7 @@ async function claudeConversationSaved(
   nativeSessionId: string,
   env: Record<string, string>
 ): Promise<boolean> {
-  const configDir = claudeConfigDir(env);
-  let projects: string[];
-  try {
-    projects = await readdir(join(configDir, 'projects'));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
-  for (const project of projects) {
-    try {
-      await access(join(configDir, 'projects', project, `${nativeSessionId}.jsonl`));
-      return true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
-    }
-  }
-  return false;
+  return (await savedConversationPath(claudeConfigDir(env), nativeSessionId)) !== null;
 }
 
 type EventBody<T extends ProviderRuntimeEvent = ProviderRuntimeEvent> =

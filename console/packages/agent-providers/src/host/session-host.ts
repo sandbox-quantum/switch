@@ -431,11 +431,13 @@ export class HostedSession {
    * {@link HISTORY_ITEM_LIMIT} items, a batch to a journal write, under ids
    * marked as imported (`IMPORTED_TURN_PREFIX`). Settled by the notice that
    * ends it. An import a crash cut short runs again on the next start and
-   * publishes only what it had not.
+   * publishes only what it had not; an item the conversation itself repeats
+   * is published once.
    *
-   * A conversation that cannot be read is said in the transcript, once, and
-   * does not stop the session: resuming is what decides whether the
-   * conversation is there, and asks before replacing it.
+   * A conversation that cannot be read, or whose turns cannot be recorded, is
+   * said in the transcript, once, and does not stop the session: resuming is
+   * what decides whether the conversation is there, and asks before replacing
+   * it.
    */
   private async importHistory(nativeSessionId: string): Promise<void> {
     let turns: ConversationHistoryTurn[];
@@ -448,19 +450,15 @@ export class HostedSession {
         this.config.input.env
       );
     } catch (error) {
-      await this.publish({
-        type: 'notice',
-        level: 'warning',
-        code: 'HISTORY_UNAVAILABLE',
-        message: `Could not show the earlier turns of the conversation this session continues: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      this.historyImported = true;
+      await this.historyUnavailable(error);
       return;
     }
     const shown = recentTurns(turns, HISTORY_ITEM_LIMIT);
-    // What an import a crash cut short already published stays as it was:
-    // published again it could differ (a token scrubbed since), and two
-    // versions of one revision are a conflict the transcript refuses.
+    // What an import a crash cut short already published stays as it was, and
+    // an id the conversation repeats is published the first time only:
+    // published again it could differ (a token scrubbed since, or another
+    // entry's text), and two versions of one revision are a conflict the
+    // transcript refuses.
     const present = this.replica.snapshot();
     const publishedTurns = new Set(present.turns.map((turn) => turn.turnId));
     const publishedItems = new Set(present.items.map((item) => item.itemId));
@@ -468,8 +466,10 @@ export class HostedSession {
     let shortened = false;
     for (const turn of shown) {
       const turnId = `${IMPORTED_TURN_PREFIX}${turn.turnId}`;
-      if (!publishedTurns.has(turnId))
+      if (!publishedTurns.has(turnId)) {
+        publishedTurns.add(turnId);
         bodies.push({ type: 'turn.upsert', turnId, status: 'completed', commandId: null });
+      }
       for (const item of turn.items) {
         // Scrubbed whole before it is cut, as the chat projector does, so no
         // part carries a token in pieces that the scrub of each part would miss.
@@ -498,35 +498,58 @@ export class HostedSession {
           text,
           1
         );
-        for (const part of parts)
-          if (!publishedItems.has(part.itemId)) bodies.push({ type: 'item.upsert', item: part });
+        for (const part of parts) {
+          if (publishedItems.has(part.itemId)) continue;
+          publishedItems.add(part.itemId);
+          bodies.push({ type: 'item.upsert', item: part });
+        }
       }
     }
-    // Batched to spare a flush to disk per event, and bounded in bytes too, so
-    // no one write is larger than a single event could already make it.
-    let batch: HostBody[] = [];
-    let batchBytes = 0;
-    for (const body of bodies) {
-      const bytes = Buffer.byteLength(JSON.stringify(body));
-      if (
-        batch.length &&
-        (batch.length >= HISTORY_BATCH || batchBytes + bytes > HISTORY_BATCH_BYTES)
-      ) {
-        await this.publishBatch(batch);
-        batch = [];
-        batchBytes = 0;
-      }
-      batch.push(body);
-      batchBytes += bytes;
-    }
-    if (batch.length) await this.publishBatch(batch);
     const total = turns.reduce((count, turn) => count + turn.items.length, 0);
     const kept = shown.reduce((count, turn) => count + turn.items.length, 0);
+    try {
+      // Batched to spare a flush to disk per event, and bounded in bytes too,
+      // so no one write is larger than a single event could already make it.
+      let batch: HostBody[] = [];
+      let batchBytes = 0;
+      for (const body of bodies) {
+        const bytes = Buffer.byteLength(JSON.stringify(body));
+        if (
+          batch.length &&
+          (batch.length >= HISTORY_BATCH || batchBytes + bytes > HISTORY_BATCH_BYTES)
+        ) {
+          await this.publishBatch(batch);
+          batch = [];
+          batchBytes = 0;
+        }
+        batch.push(body);
+        batchBytes += bytes;
+      }
+      if (batch.length) await this.publishBatch(batch);
+      await this.publish({
+        type: 'notice',
+        level: 'info',
+        code: 'HISTORY_IMPORTED',
+        message: `${kept < total ? `Above are the last ${kept} of the ${total} messages and tool calls in the conversation this session continues; the earlier ones are not shown here.` : 'Above is the conversation this session continues.'} It was copied when the session started, and the agent has all of it. The original is unchanged.${shortened ? ' Long messages are cut short here.' : ''}`,
+      });
+    } catch (error) {
+      await this.historyUnavailable(error);
+      return;
+    }
+    this.historyImported = true;
+  }
+
+  /**
+   * Says in the transcript why the earlier turns of the conversation this
+   * session continues are not shown, or not all of them, and settles the
+   * import so it is said once.
+   */
+  private async historyUnavailable(error: unknown): Promise<void> {
     await this.publish({
       type: 'notice',
-      level: 'info',
-      code: 'HISTORY_IMPORTED',
-      message: `${kept < total ? `Above are the last ${kept} of the ${total} messages and tool calls in the conversation this session continues; the earlier ones are not shown here.` : 'Above is the conversation this session continues.'} It was copied when the session started, and the agent has all of it. The original is unchanged.${shortened ? ' Long messages are cut short here.' : ''}`,
+      level: 'warning',
+      code: 'HISTORY_UNAVAILABLE',
+      message: `Could not show the earlier turns of the conversation this session continues: ${error instanceof Error ? error.message : String(error)}`,
     });
     this.historyImported = true;
   }

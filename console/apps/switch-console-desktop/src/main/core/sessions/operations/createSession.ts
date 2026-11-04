@@ -14,7 +14,8 @@ import type {
   CreateSessionParams,
 } from '@shared/core/sessions/sessions';
 import type { SessionStartSource } from '@shared/core/telemetry/reporting';
-import { forkCliConversation } from '../cli-conversations';
+import { trackCliConversationFork } from '../cli-conversation-forks';
+import { discardCliConversationCopies, forkCliConversation } from '../cli-conversations';
 import { provisionSessionRuntime } from '../session-builder';
 import { sessionRuntimeManager } from '../session-runtime-manager';
 import { mapSessionRowToSession } from '../utils/utils';
@@ -97,23 +98,31 @@ export async function createSession(
   if (adopted) return ok({ session });
   if (!location) return err({ type: 'agent-not-found' });
   if (params.cliConversation) {
-    // Copied once the session's row holds its id, so no copy is left without
-    // a session to own it, and one that cannot be made (open in a terminal,
-    // say) takes the row away again. The copy is what the session resumes;
-    // the CLI's own conversation is never written to.
+    // Copied once the session's row holds its id, tagged with it, so a copy
+    // always names a session to own it. One that cannot be made (open in a
+    // terminal, say) takes the row away again, and whatever copy was made is
+    // removed. The copy is what the session resumes; the CLI's own
+    // conversation is never written to. Anything that starts the session
+    // while the copy is made waits for it (`trackCliConversationFork`).
+    const { nativeSessionId, confirmedClosed } = params.cliConversation;
+    const owner = { id: session.id, title: session.title };
     try {
-      const providerSessionId = await forkCliConversation(
-        location,
-        { id: session.id, title: session.title },
-        params.cliConversation.nativeSessionId,
-        params.cliConversation.confirmedClosed
+      const providerSessionId = await trackCliConversationFork(
+        session.id,
+        (async () => {
+          const copy = await forkCliConversation(location, owner, nativeSessionId, confirmedClosed);
+          // Into the row as it stands after the copy, which can take a while.
+          if (!(await setProviderSessionId(owner.id, copy)))
+            throw new Error('This session was deleted while its conversation was being copied.');
+          return copy;
+        })()
       );
-      // Into the row as it stands after the copy, which can take a while.
-      if (!(await setProviderSessionId(session.id, providerSessionId)))
-        throw new Error('This session was deleted while its conversation was being copied.');
       session = { ...session, providerSessionId };
     } catch (e) {
       await db.delete(sessions).where(eq(sessions.id, session.id));
+      // Not waited for: it never throws, and the reason the session did not
+      // start is what the person is waiting to hear.
+      void discardCliConversationCopies(location, session.id);
       return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });
     }
   }

@@ -17,10 +17,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   listHostWatchers,
   watcherIsCurrent,
+  watcherRunsBundle,
   WATCHER_STATUS_SCRIPT,
   type HostWatcherStatus,
 } from './host-watchers';
@@ -155,4 +156,43 @@ it('reports each watcher’s process, what it wrote about itself, and why it sto
   } finally {
     await rm(base, { recursive: true, force: true });
   }
+});
+
+describe('which bundle a watcher runs', () => {
+  const bundle = { identity: 'abc123', file: BUNDLE_FILE };
+  const health = (extra: object) => ({
+    state: 'connected',
+    detail: null,
+    since: '2026-11-01T00:00:00.000Z',
+    placements: {},
+    pid: 101,
+    updatedAt: '2026-11-01T00:00:00.000Z',
+    ...extra,
+  });
+
+  it('takes the word of the watcher process alive now', () => {
+    expect(watcherRunsBundle(status({ health: health({ bundle: 'abc123' }) }), bundle)).toBe(true);
+    expect(watcherRunsBundle(status({ health: health({ bundle: 'older' }) }), bundle)).toBe(false);
+  });
+
+  it.each([
+    ['a watcher too old to say', status({ health: health({}) })],
+    ['a file a previous process left', status({ health: health({ bundle: 'abc123', pid: 99 }) })],
+    ['a watcher that wrote nothing', status({ health: null })],
+  ])('does not take %s to run this build', (_label, watcher) => {
+    expect(watcherRunsBundle(watcher, bundle)).toBe(false);
+  });
+
+  it('asks the supervisor while the watcher process is down', () => {
+    const down = { workerAlive: false, health: health({ bundle: 'abc123' }) };
+    expect(watcherRunsBundle(status(down), bundle)).toBe(true);
+    expect(watcherRunsBundle(status({ ...down, build: '/…/shared-host-old.mjs' }), bundle)).toBe(
+      false
+    );
+  });
+
+  it('has no answer when no watcher is running', () => {
+    expect(watcherRunsBundle(undefined, bundle)).toBeNull();
+    expect(watcherRunsBundle(status({ running: false, workerAlive: false }), bundle)).toBeNull();
+  });
 });

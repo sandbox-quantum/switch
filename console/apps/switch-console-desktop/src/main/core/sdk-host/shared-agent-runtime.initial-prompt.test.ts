@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   behavior: {} as Record<string, unknown>,
   ready: vi.fn(),
   sidecarEnsure: vi.fn(),
+  watchers: vi.fn(),
 }));
 
 // Console runs every agent here; none was moved to a managed machine.
@@ -66,6 +67,11 @@ vi.mock('./shared-host-deployment', () => ({
     entrypoint: 'run.mjs',
   })),
   runSharedHostCommand: vi.fn(),
+  sharedHostBundle: async () => ({ identity: 'this-build', file: 'shared-host-this-build.mjs' }),
+}));
+vi.mock('./host-watchers', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  listHostWatchers: mocks.watchers,
 }));
 vi.mock('./local-host', () => ({
   startLocalSession: mocks.runHost,
@@ -102,6 +108,7 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn() } }));
 
 const { SharedAgentRuntime, buildSharedHostConfig } = await import('./shared-agent-runtime');
+const { trackCliConversationFork } = await import('@main/core/sessions/cli-conversation-forks');
 
 const session = {
   id: 'session-1',
@@ -194,25 +201,95 @@ it('refuses to start a continued session whose copy was never made', async () =>
   ).rejects.toThrow('its copy was never made');
 });
 
-it('explains an older Room watcher that refuses a continued session', async () => {
+it('starts a session whose copy is still being made with that copy, once it is made', async () => {
+  let made!: (id: string) => void;
+  void trackCliConversationFork(
+    'session-1',
+    new Promise<string>((resolve) => {
+      made = resolve;
+    })
+  );
+  const config = buildSharedHostConfig(
+    { ...session, cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' } },
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  made('copy-1');
+  await expect(config).resolves.toMatchObject({
+    start: { input: { resume: { nativeSessionId: 'copy-1' } } },
+    importHistory: true,
+  });
+});
+
+/** A watcher on the host, with what its process says it runs. */
+function watcherRunning(bundle: string | undefined) {
+  return new Map([
+    [
+      'remote-agent',
+      {
+        agentId: 'remote-agent',
+        root: '/state/watcher',
+        running: true,
+        build: `/state/sdk-host/shared-host-${bundle ?? 'unknown'}.mjs`,
+        enabled: true,
+        spawn: true,
+        stoodDown: false,
+        supervisorPid: 40,
+        workerPid: 41,
+        workerAlive: true,
+        health: {
+          state: 'connected',
+          detail: null,
+          since: '2026-11-01T00:00:00.000Z',
+          placements: {},
+          pid: 41,
+          updatedAt: '2026-11-01T00:00:00.000Z',
+          ...(bundle ? { bundle } : {}),
+        },
+        failure: null,
+        takenOver: null,
+      },
+    ],
+  ]);
+}
+
+const continued = {
+  ...session,
+  providerSessionId: 'copy-1',
+  cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' },
+};
+
+it.each([
+  ['an older build', 'older-build'],
+  ['a build too old to say', undefined],
+])(
+  'refuses a continued session before handing it to a Room watcher on %s',
+  async (_label, bundle) => {
+    const agent = new SharedAgentRuntime(
+      { kind: 'ssh', connectionId: 'host-1', host: 'build-box' } as LocationTransport,
+      { sessionId: session.id, sessionPath: '/work', sessionEnvVars: {} }
+    );
+    mocks.watchers.mockResolvedValue(watcherRunning(bundle));
+
+    await expect(agent.start(continued, false, undefined, 'user')).rejects.toThrow(
+      "The Room watcher on build-box does not run this version of Switch Console's host"
+    );
+    expect(mocks.sidecarEnsure).not.toHaveBeenCalled();
+  }
+);
+
+it('hands a continued session to a Room watcher on this build', async () => {
   const agent = new SharedAgentRuntime(
     { kind: 'ssh', connectionId: 'host-1', host: 'build-box' } as LocationTransport,
     { sessionId: session.id, sessionPath: '/work', sessionEnvVars: {} }
   );
-  mocks.sidecarEnsure.mockRejectedValueOnce(new Error('Unrecognized key: "importHistory"'));
+  mocks.watchers.mockResolvedValue(watcherRunning('this-build'));
 
-  await expect(
-    agent.start(
-      {
-        ...session,
-        providerSessionId: 'copy-1',
-        cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' },
-      },
-      false,
-      undefined,
-      'user'
-    )
-  ).rejects.toThrow('The Room watcher on build-box runs an older version');
+  await agent.start(continued, false, undefined, 'user');
+
+  expect(mocks.sidecarEnsure).toHaveBeenCalledWith(
+    expect.objectContaining({ config: expect.objectContaining({ importHistory: true }) })
+  );
 });
 
 it('hands the host how a new session started, so it can tell Switch', async () => {

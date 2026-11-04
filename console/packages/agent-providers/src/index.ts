@@ -181,11 +181,13 @@ export type { SharedHostConfig } from './host/shared-config';
 export { providerReadinessSchema } from './readiness';
 export {
   cliConversationListSchema,
+  deletedCliConversationCopiesSchema,
   forkedCliConversationSchema,
   type CliConversationList,
 } from './claude/cli-conversations';
 export {
   cliConversationFailureSchema,
+  type CliConversationMode,
   type CliConversationRequest,
 } from './host/cli-conversations';
 export { verifyClaudeSignIn } from './claude/sign-in';

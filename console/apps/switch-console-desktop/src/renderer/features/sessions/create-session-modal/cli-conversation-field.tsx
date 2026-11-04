@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
+import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Checkbox } from '@renderer/lib/ui/checkbox';
@@ -19,25 +20,33 @@ import type { CliConversation, CliConversationList } from '@shared/core/sessions
 
 /**
  * The conversations started in Claude Code's own CLI in an agent's folder, read
- * on the machine its sessions run on. Not asked for when `agentId` is null.
+ * on the machine its sessions run on. Asked for only once `request` is called,
+ * when the person opens the picker: each read runs on the agent's host, and
+ * most sessions start a new conversation. Never asked for when `agentId` is
+ * null.
  */
 export function useCliConversations(agentId: string | null): {
   list: CliConversationList | null;
   loading: boolean;
   error: string | null;
+  request: () => void;
 } {
+  const [requestedFor, setRequestedFor] = useState<string | null>(null);
   const query = useQuery({
     queryKey: ['cliConversations', agentId],
     queryFn: () => rpc.sessions.listCliConversations(agentId!),
-    enabled: agentId !== null,
-    // Read afresh each time the dialog opens, since whether a terminal has one
-    // open changes from minute to minute, but not on every return to the
-    // window: each read runs on the agent's host. The copy checks again.
+    enabled: agentId !== null && requestedFor === agentId,
+    // Read afresh each time the dialog is opened and the picker with it, since
+    // whether a terminal has one open changes from minute to minute; kept for
+    // the rest of that dialog, and not read again on every return to the
+    // window. The copy checks again.
     staleTime: 0,
+    gcTime: 0,
     refetchOnWindowFocus: false,
   });
   const result = query.data;
   return {
+    request: () => setRequestedFor(agentId),
     list: result?.success ? result.data : null,
     loading: query.isLoading,
     error: query.error
@@ -61,7 +70,8 @@ function openInLabel(openIn: NonNullable<CliConversation['openIn']>): string {
  * started in Claude Code's CLI, which the session continues from a copy so the
  * terminal's own is never written to. One a terminal has open cannot be
  * picked; where Claude Code does not record which are open, picking one asks
- * the person to say it is closed.
+ * the person to say it is closed. The conversations are read when the picker
+ * first opens.
  */
 export function CliConversationField({
   conversations,
@@ -76,7 +86,7 @@ export function CliConversationField({
   confirmedClosed: boolean;
   onConfirmedClosedChange: (next: boolean) => void;
 }) {
-  const { list, loading, error } = conversations;
+  const { list, loading, error, request } = conversations;
   const items = list?.conversations ?? [];
   return (
     <Field>
@@ -95,17 +105,14 @@ export function CliConversationField({
         filter={(item: CliConversation, query) =>
           item.title.toLowerCase().includes(query.toLowerCase())
         }
+        onOpenChange={(open: boolean) => {
+          if (open) request();
+        }}
         autoHighlight
       >
-        <ComboboxTrigger
-          disabled={loading || items.length === 0}
-          className={cn(
-            TRIGGER,
-            (loading || items.length === 0) && 'cursor-not-allowed opacity-60'
-          )}
-        >
+        <ComboboxTrigger className={TRIGGER}>
           <span className={cn('flex-1 truncate text-left', !value && 'text-foreground-muted')}>
-            {value ? value.title : loading ? 'Looking for CLI conversations…' : 'New conversation'}
+            {value ? value.title : 'New conversation'}
           </span>
           <ChevronDown className="size-3.5 shrink-0 text-foreground-muted" />
         </ComboboxTrigger>
@@ -130,7 +137,13 @@ export function CliConversationField({
               </ComboboxItem>
             )}
           </ComboboxList>
-          <ComboboxEmpty>No conversations found</ComboboxEmpty>
+          <ComboboxEmpty>
+            {loading
+              ? 'Looking for CLI conversations…'
+              : error
+                ? 'Could not list the conversations.'
+                : 'No conversations found'}
+          </ComboboxEmpty>
         </ComboboxContent>
       </Combobox>
       {value && (
@@ -150,7 +163,7 @@ export function CliConversationField({
           ? error
           : value
             ? 'The session continues a copy of this conversation and shows what was said in it. The original in Claude Code stays as it was.'
-            : !loading && items.length === 0
+            : list && items.length === 0
               ? 'No conversations started in the Claude Code CLI in this agent’s folder.'
               : 'Or continue a conversation started in the Claude Code CLI in this agent’s folder.'}
       </p>
