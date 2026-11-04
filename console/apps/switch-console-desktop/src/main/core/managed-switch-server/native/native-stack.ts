@@ -12,6 +12,7 @@ import { RELEASE_REPO_NAME, RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type DeployedTelemetry,
+  type LocalServerAdminPages,
   type StartLocalServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
@@ -50,6 +51,7 @@ import {
   waitForCoreHealth,
 } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
+import { checkoutGatewayUi, nativeAdminPages } from './gateway-ui';
 import {
   mattermostCallbackBaseUrl,
   pullMattermostImage,
@@ -363,6 +365,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     owner: RELEASE_REPO_OWNER,
     repo: RELEASE_REPO_NAME,
     checkoutRoot,
+    buildGatewayUiFromSource: import.meta.env.DEV,
     onMessage,
   });
 
@@ -419,6 +422,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       telemetryEnvironment: currentFlintEnv(),
       telemetryInternal: (await currentInternalFlag()) === 'true',
       telemetryEndpoint: nativeServerTelemetryEndpoint(),
+      gatewayUiDir: install.gatewayUiDir,
     });
     await writeDeployedVersion(layout, install.version);
     onMessage('Starting switch-core…');
@@ -605,6 +609,31 @@ export function nativeServerTelemetryEndpoint(): string {
     }
   );
   return TELEMETRY_RELAY_ORIGIN;
+}
+
+/**
+ * Whether a start now would hand switch-core the gateway's pages: the
+ * checkout has a build of them, this build's bundle ships them, or (dev
+ * builds) a downloaded install would build them.
+ */
+export async function nativeAdminPagesOnRestart(
+  checkoutRoot: string | null,
+  bundleRoot: string | null
+): Promise<boolean> {
+  if (checkoutRoot !== null) return (await checkoutGatewayUi(checkoutRoot)) !== null;
+  const bundle = await readLocalServerBundle(bundleRoot, managedSwitchVersion());
+  if (bundle !== null) return bundle.gatewayUi !== null;
+  return import.meta.env.DEV;
+}
+
+/** What the running native server's admin pages are doing, for its page to
+ * show the links to them, or offer the restart that turns them on. */
+export function readNativeAdminPages(
+  layout: NativeLayout,
+  checkoutRoot: string | null,
+  bundleRoot: string | null
+): Promise<LocalServerAdminPages> {
+  return nativeAdminPages(layout, () => nativeAdminPagesOnRestart(checkoutRoot, bundleRoot));
 }
 
 export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {

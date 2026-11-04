@@ -10,6 +10,7 @@ import {
 } from '@shared/core/switch-servers/switch-servers';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { serverAvailability } from './server-availability';
+import { servesWebGateway } from './server-gateway';
 import { switchServersStore } from './switch-servers-store';
 
 /** Cache key for an agent's room membership: workspace + Switch agent id. */
@@ -133,25 +134,26 @@ export class SwitchRoomsStore {
 
   /**
    * URL of a room's detail page in the gateway web app, or null if the room's
-   * owning server isn't known yet (names/workspaces are loaded by loadRoomNames).
+   * owning server isn't known yet (names/workspaces are loaded by loadRoomNames)
+   * or serves no web gateway (a native local server started without its pages).
    */
   gatewayRoomUrl(roomId: string): string | null {
     const serverId = this.roomServerId(roomId);
     if (!serverId) return null;
     const server = switchServersStore.servers.find((s) => s.id === serverId);
-    if (!server) return null;
+    if (!server || !servesWebGateway(server)) return null;
     const base = dashboardOrigin(server).replace(/\/+$/, '');
     return `${base}/rooms/${roomId}`;
   }
 
   /**
    * URL of an agent's detail page in the gateway web app, or null if the server
-   * isn't known. Unlike rooms, the caller supplies the server id directly (an
-   * agent carries its owning server on its config).
+   * isn't known or serves no web gateway. Unlike rooms, the caller supplies
+   * the server id directly (an agent carries its owning server on its config).
    */
   gatewayAgentUrl(serverId: string, switchAgentId: string): string | null {
     const server = switchServersStore.servers.find((s) => s.id === serverId);
-    if (!server) return null;
+    if (!server || !servesWebGateway(server)) return null;
     const base = dashboardOrigin(server).replace(/\/+$/, '');
     return `${base}/agents/${switchAgentId}`;
   }
