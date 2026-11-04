@@ -25,18 +25,20 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_dropbox_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "google-workspace",
     ]
@@ -44,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -225,6 +228,60 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_dropbox_entry_signs_in_as_dropbox_documents_it():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Dropbox registers clients dynamically only for its trusted list, so
+    # each server's operator registers a Dropbox app.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "DROPBOX"
+    # A refresh token comes only with offline access.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    assert definition.auth.refresh == "reusable"
+    # Endpoints come from the MCP server's metadata, which offers S256.
+    assert (oauth.authorization_url, oauth.token_url) == (None, None)
+    # Dropbox's revocation endpoint is not RFC 7009, so people remove Switch
+    # themselves.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None
+    assert "Connected apps" in oauth.remove_access
+    assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url, identity.body) == (
+        "POST",
+        "https://api.dropboxapi.com/2/users/get_current_account",
+        None,
+    )
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        4 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = ["account_info.read", "files.metadata.read", "files.content.read"]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [*read, "files.content.write"]
+    # Never permanent deletion, sharing, file requests or a team scope.
+    every = set(definition.access.write.scopes)
+    assert "files.permanent_delete" not in every
+    assert not any(
+        scope.startswith(("sharing.", "file_requests.", "team", "members."))
+        for scope in every
+    )
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 @pytest.fixture
@@ -461,6 +518,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -534,6 +592,38 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
 
 
 @pytest.mark.parametrize(
+    ("body", "expected"),
+    [("", None), ("    body: { include: all }\n", {"include": "all"})],
+    ids=["no-body", "json-body"],
+)
+def test_loads_a_post_identity_call_with_or_without_a_body(
+    catalog_copy, body, expected
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("    method: GET\n", f"    method: POST\n{body}"),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == ("POST", expected)
+
+
+def test_takes_token_access_type_as_an_authorization_param(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n"
+            "    client_settings: EXAMPLE\n"
+            "    authorization_params: { token_access_type: offline }\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+
+
+@pytest.mark.parametrize(
     ("old", "new", "message"),
     [
         (
@@ -543,7 +633,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -654,6 +744,13 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    unchecked: Publish it.\n",
             "unchecked is for a static client",
+        ),
+        ("    method: GET\n", "", "method"),
+        ("    method: GET\n", "    method: PUT\n", "method"),
+        (
+            "    method: GET\n",
+            "    method: GET\n    body: { include: all }\n",
+            "only a POST identity call sends a body",
         ),
     ],
 )

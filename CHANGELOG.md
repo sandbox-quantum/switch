@@ -193,6 +193,18 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **The Dropbox connection.** A person connects Dropbox from Switch Console,
+  read-only or read and write, and a granted agent searches and reads their
+  files, and at the write level creates, copies, moves, deletes and restores
+  them, as that person, through Dropbox's MCP server (in beta). Each
+  server's operator registers a Dropbox app and saves it under Connector
+  apps, or names it in `DROPBOX_CLIENT_CONFIG_PATH`; like Airtable, it needs
+  `GATEWAY_PUBLIC_URL`. Sharing, file requests and permanent deletion are
+  not asked for. Dropbox's revocation endpoint is not the standard one, so
+  disconnecting says where in Dropbox to remove the app. A catalog entry's
+  identity call now names its `method`, `GET` or `POST` with an optional JSON
+  body, and `token_access_type` joins the authorization parameters an entry
+  may set.
 
 #### Changed
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and
