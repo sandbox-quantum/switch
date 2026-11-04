@@ -35,6 +35,10 @@ See [`docs/old/LOCAL_DEVELOPMENT.md`](docs/old/LOCAL_DEVELOPMENT.md) for the
 fuller account of this setup — what each port serves, and how to point
 Switch Console at your local server.
 
+New here? [`docs/contributing/quickstart.md`](docs/contributing/quickstart.md)
+takes you from a fresh clone to an agent answering in a room in about five
+minutes.
+
 ## Common commands
 
 Run `just` with no arguments to list every recipe. The most-used ones:
