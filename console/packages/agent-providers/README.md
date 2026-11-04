@@ -35,6 +35,7 @@ protocols. These adapters are the only Console session runtime.
 | `mistral-vibe` | `vibe-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume through `session/load`, model selection through a `model` config option, MCP registration, approvals, and questions as ACP form elicitations. |
 | `qwen` | `qwen --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model selection through a `model` config option, MCP registration, approvals and questions; hooks for its modes, sign-in check, tool metadata and question requests. |
 | `droid` | `droid exec --output-format acp` (Factory Droid), ACP over stdio, on the generic ACP adapter | Native sessions, resume, MCP registration, and approvals; the runtime modes map to Droid's autonomy levels. |
+| `cline` | `cline --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection and approvals. Its ACP mode ignores the MCP servers sent in `session/new`, so they go in a per-session settings file named by `CLINE_MCP_SETTINGS_PATH` (`mcpServersAtLaunch`). |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -84,11 +85,12 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | kiro (ACP) | 3.0.0 | 9/10 (2026-11-04) | Kiro runs Switch's sessions on its V3 engine (it recognises the client); the run with the engine forced to V3 by flag matched. `user-input` is skipped: Kiro offers its `user_input` tool only in its spec workflows, so in the default `vibe` mode (and V2's default agent) it asks in prose and ends the turn. Once, the first session after a controller started was refused `session/set_model` (its `session/new` named no `model` option yet); the host's retry started it, and six more starts with a model did not repeat it. The suite skips itself until `kiro-cli whoami` says signed in; set `KIRO_API_KEY` in the shell to run it with a key, which the test passes through. |
 | mistral-vibe (ACP) | vibe-acp 3.1.0 | 10/10 (2026-11-06) | Run on Vibe's default model, Mistral Medium 3.5 (`mistral-vibe-cli-latest`), with the key in `$VIBE_HOME/.env`. A key set as `MISTRAL_API_KEY` in the shell works too; the test passes it, and `VIBE_HOME`, through. |
 | goose (ACP) | 1.57.0 | 9/10 (2026-11-04, Amazon Linux 2023) | `user-input` skipped: Goose uses ACP form elicitation, which the generic client does not advertise (`userInput: false`); without the skip the scenario times out at 180s waiting for `user-input.requested`. Real-CLI scenarios run one at a time with 65s spacing; full back-to-back suite can hit Gemini free-tier limits. |
+| cline (ACP) | 3.0.74 | not recorded | Signs in over ACP only with a Cline account, ClinePass or a ChatGPT subscription (or `CLINE_API_KEY`); a key saved for another provider with `cline auth` is not used. MCP servers reach it through `CLINE_MCP_SETTINGS_PATH`, verified against a local server on 2026-11-04. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor, Antigravity, DeepSeek Harness, Kiro, Mistral Vibe and Qwen Code run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity, DeepSeek Harness, Kiro, Mistral Vibe, Qwen Code and Cline run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -103,7 +105,7 @@ covers the protocol and chooses behaviour from what the agent advertises in
 
 Everything else that differs between CLIs is in its hooks file
 (`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
-`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`, `src/mistral-vibe/mistral-vibe-acp.ts`, `src/qwen/qwen-acp.ts`):
+`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`, `src/mistral-vibe/mistral-vibe-acp.ts`, `src/qwen/qwen-acp.ts`, `src/cline/cline-adapter.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -250,3 +252,10 @@ out, so the sign-in check starts a session instead: `session/new` loads the
 configured provider's credentials, runs no model call and stores nothing
 until a prompt. It never sends `authenticate`, which in Qwen clears the
 cached credentials first.
+**Cline** reads its MCP servers from its own settings file, not from
+`session/new`, so its `launch` writes the session's servers to a private
+temporary `cline_mcp_settings.json` and points `CLINE_MCP_SETTINGS_PATH` at
+it; the file is removed when the process exits, and the person's own Cline
+settings are not touched. Its sign-in check reads the sign-in Cline saved
+(`providers.json`) and never calls `authenticate`. Tool calls are titled
+`<tool>: <input>`, and an MCP tool is named `<server>__<tool>`.

@@ -61,6 +61,7 @@ it('records the auth type where every Antigravity ACP version reads it, keeping 
     binaryPath: '/home/u/.local/bin/antigravity-acp',
     cwd: profile,
     env: { GEMINI_HOME: profile, PATH: '/usr/bin:/bin' },
+    mcpServers: {},
   });
   expect(JSON.parse(await readFile(join(profile, 'settings.json'), 'utf8'))).toEqual({
     auth: { type: 'oauth-personal' },
