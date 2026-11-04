@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These providers are the only Console session runtime.
 
 ## Shape
 
@@ -67,12 +67,13 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
+| goose (ACP) | 1.43.0 | blocked (2026-10-27) | Five real-CLI checks pass without inference: configuration readiness and all session mode mappings. An empty isolated profile skips all ten conformance scenarios as unconfigured. A simple turn with Ollama/qwen3:8b fails because the sandbox cannot connect to localhost:11434; approve/deny execution and the remaining model scenarios are unverified. `user-input` is unsupported by this integration: Goose requires ACP form elicitation, which the shared adapter does not advertise. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Goose run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -127,3 +128,36 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**Goose** runs `goose acp --with-builtin developer` over stdio. The explicit
+builtin restores developer tools when the session registers MCP servers (observed
+with Goose 1.43.0). Run `goose configure` on the execution
+host, or set `GOOSE_PROVIDER` and `GOOSE_MODEL`. “Signed in” means a model
+provider and model are configured, not that credentials or inference were
+validated. Readiness uses Goose 1.43.0's read-only
+`_goose/unstable/defaults/read` after initialization; it never authenticates,
+creates a session or sends a prompt. Older versions without that endpoint
+cannot report readiness through this hook.
+
+Goose's `todo__todo_write` internal planning-note approvals are automatically
+allowed once (also recognized by the exact title `todo: todo write` when tool
+metadata is absent). Other tools retain the session mode's approval behavior;
+in `approval-required` mode they still require approval.
+
+The session host sets `GOOSE_DISABLE_KEYRING=1` to avoid keyring prompts or
+hangs on headless machines. Supply model credentials through the host's
+inherited provider environment or Goose's file-backed configuration; credentials
+stored only in the OS keyring are unavailable. To configure file-backed credentials,
+run `GOOSE_DISABLE_KEYRING=1 goose configure` on the execution host.
+`GOOSE_PROVIDER`, `GOOSE_MODEL`, `GOOSE_FAST_MODEL`,
+`GOOSE_PATH_ROOT`, `GOOSE_ADDITIONAL_CONFIG_FILES`, the XDG configuration/data/state
+directories and `OLLAMA_HOST` are inherited. Goose's initial mode is forced to
+`approve`, then every new or resumed session explicitly receives
+`session/set_mode`: `approval-required` → `approve`, `auto-accept-edits` and
+`auto` → `smart_approve`, `full-access` → `auto`. Goose describes `smart_approve`
+as asking only for sensitive tool calls; its `ask_before` policy can still require
+approval for shell, write and edit. Goose's own saved `always_allow` rules can bypass
+those prompts, including rules persisted by choosing `allow_always`; use
+`allow_once` when verifying approvals. These mode IDs were accepted by the
+installed 1.43.0 CLI on 2026-10-27; real allow/deny execution still needs a working
+model provider.
