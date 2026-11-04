@@ -2617,6 +2617,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Qwen Code as an agent provider.** Agents can run on Qwen Code
+  (`qwen --acp`, installed from `@qwen-code/qwen-code`). It signs in with an
+  OpenAI-compatible key: `OPENAI_API_KEY`, with `OPENAI_BASE_URL` naming the
+  provider (Qwen sends the key to Alibaba Cloud Model Studio without it) and
+  `OPENAI_MODEL` the model. Every runtime mode maps to one of Qwen's own, set
+  as each session starts; Qwen's questions are asked in the room; subagents
+  and MCP tools reached through Qwen's deferred tools are recognised.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
