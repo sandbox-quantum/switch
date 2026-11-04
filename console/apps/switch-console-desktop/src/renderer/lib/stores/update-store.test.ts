@@ -203,4 +203,15 @@ describe('the release notes link', () => {
       description: 'no browser',
     });
   });
+
+  it('says so when "Download manually" could not open the page', async () => {
+    // Main does not quit in this case, so without a toast nothing happens.
+    rpcUpdate.openLatest.mockResolvedValue({ success: false, error: 'no browser' });
+
+    await new UpdateStore().openLatest();
+
+    expect(toast.error).toHaveBeenCalledWith('Could not open the download page', {
+      description: 'no browser',
+    });
+  });
 });

@@ -269,11 +269,15 @@ class UpdateService implements IInitializable, IDisposable {
     void pendingInstall.clear();
     trackEvent('update_install_started', { outcome: 'failure' });
     this.installRequested = false;
+    // A scheduled check skipped during the install did not re-arm the timer.
+    this.scheduleNextCheck();
   }
 
   private setupAutoUpdater(): void {
     autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = true;
+    // Off when the launch found a failed install, for the same reason as
+    // `setInstallOnQuit`.
+    autoUpdater.autoInstallOnAppQuit = !this.installFailure;
     autoUpdater.autoRunAppAfterInstall = true;
     autoUpdater.allowPrerelease = ALLOW_PRERELEASE;
     autoUpdater.allowDowngrade = ALLOW_DOWNGRADE;

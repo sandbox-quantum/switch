@@ -336,6 +336,25 @@ describe('what one install attempt reports', async () => {
     expect(h.checkForUpdatesAndNotify).not.toHaveBeenCalled();
   });
 
+  it('checks again on schedule after an install that failed', async () => {
+    // A scheduled check that fires during the install is skipped, and the
+    // failed attempt must re-arm the timer, or a fixed release is never offered.
+    // Clear the timer that earlier checks left, so only the attempt can arm one.
+    updateService.dispose();
+    updateService.quitAndInstall();
+    await expect(updateService.checkForUpdates('scheduled')).resolves.toBeNull();
+    await vi.advanceTimersByTimeAsync(250);
+    h.handlers.get('error')?.(new Error('Could not write the app bundle'));
+    h.checkForUpdatesAndNotify.mockReset();
+    h.checkForUpdatesAndNotify.mockResolvedValue({ isUpdateAvailable: false });
+
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+    expect(h.checkForUpdatesAndNotify).toHaveBeenCalled();
+    updateService.dispose();
+    h.checkForUpdatesAndNotify.mockReset();
+  });
+
   it('stops installing on quit after a failure, until a newer version is offered', async () => {
     updateService.quitAndInstall();
     await vi.advanceTimersByTimeAsync(250);
@@ -461,6 +480,9 @@ describe('the launch after an install', () => {
       foundAtLaunch: true,
     });
     expect(restarted.getState().installFailedAtLaunch).toBe(true);
+    // "Download manually" quits the app, and that quit must not start a second
+    // install. The updater is set up after the failure is found.
+    expect(h.updater.autoInstallOnAppQuit).toBe(false);
 
     // The check that follows finds the same release. Offering it again would
     // only fail the same way, so the failure stays on screen.

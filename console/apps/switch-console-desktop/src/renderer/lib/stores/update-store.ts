@@ -343,13 +343,16 @@ export class UpdateStore {
     }
   }
 
-  /** Open the release page to download the update by hand. Main quits the app after. */
+  /**
+   * Open the release page to download the update by hand. Main quits the app
+   * after. If the page does not open, main does not quit, so say why.
+   */
   async openLatest(): Promise<void> {
-    try {
-      await rpc.update.openLatest();
-    } catch {
-      // openLatest quits the app — errors are best-effort
-    }
+    await reportOpenAttempt(
+      rpc.update.openLatest(),
+      'Could not open the download page',
+      "Switch Console couldn't open the download page."
+    );
   }
 
   /**
