@@ -46,6 +46,8 @@ auth:
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
+    # For a vendor with MCP-only identity, set mcp_tool to its identity tool.
+    # url must then match a catalog MCP server; paths refer to structuredContent.
 token: { kind: pass_through, max_lifetime: 28800 }
 mcp:
   servers:
@@ -602,6 +604,57 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `enabled: false`, or remove its client (under Connectors, or by unsetting
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
+
+## Sentry
+
+The Sentry Cloud connector uses the official remote endpoint,
+`https://mcp.sentry.dev/mcp`, with dynamic OAuth registration and Console's
+existing loopback callback. No operator app is required. Enable connections
+locally with `FEATURE_FLAGS_ENABLED=service_connections`. Self-hosted Sentry
+and local Sentry servers are outside this connector's scope.
+
+Sentry's [OAuth metadata](https://mcp.sentry.dev/.well-known/oauth-authorization-server)
+advertises PKCE S256, refresh and revocation. Its
+[OAuth architecture](https://github.com/getsentry/sentry-mcp/blob/main/docs/cloudflare/oauth-architecture.md)
+separates MCP tokens from upstream Sentry tokens. Sending the MCP token to a
+Sentry REST identity endpoint would therefore be wrong. The catalog names the
+server's [`whoami` tool](https://github.com/getsentry/sentry-mcp/blob/main/packages/mcp-core/src/tools/catalog/whoami.ts)
+instead: Core initializes an MCP connection, acknowledges initialization and
+calls that one tool with no arguments, then reads `user.id` and `user.email`
+from `structuredContent`. Free-form text cannot establish account identity.
+The lookup is bounded in size and time, does not follow redirects, and does
+not execute server requests or return vendor error payloads to the caller.
+
+An OAuth entry can omit `access.read` when the vendor cannot enforce it;
+at least one access level is required. Sentry offers only `access.write`.
+Its requested scopes are `org:read`, `project:write`, `team:write` and
+`event:write`; no admin/delete or alert-management scope is requested.
+Sentry's consented skills and user role further limit the available tools.
+The connection can change issues, projects and teams. Neither a skill's
+instructions nor a URL query parameter is an OAuth read-only boundary.
+Tools remain `pass_through`.
+
+**Lifecycle verification remains outstanding.** The one-hour lifetime cap is
+conservative, based on the Cloudflare provider's default initial access-token
+lifetime, not a credentialed measurement. Sentry's current
+[refresh callback](https://github.com/getsentry/sentry-mcp/blob/main/packages/mcp-cloudflare/src/server/oauth/helpers.ts)
+can issue a token for the remaining upstream lifetime, potentially longer
+than Switch accepts. Switch still refuses overlong tokens; no expiration is
+invented or truncated. Automatic refresh cannot be claimed to work against
+live Sentry until this has been checked and the vendor returns a lifetime
+within the cap. Extending or bypassing Switch's lifetime checks is not part
+of this connector.
+
+Without an authorized Sentry account, the remaining manual checks are:
+connect and verify identity, record initial and refreshed lifetimes without
+recording the values, grant to an agent and investigate an issue from a room,
+confirm the grant-off stops calls within a minute, disconnect and verify
+vendor revocation, and inspect transcripts/room messages/logs for sensitive
+data. Record the requested demonstration video with synthetic diagnostics.
+The automated tests use stand-ins and cannot replace those checks.
+
+To roll back, add `sentry` to `DISABLED_SERVICES` or set its entry's
+`enabled: false`.
 
 ## Not yet
 

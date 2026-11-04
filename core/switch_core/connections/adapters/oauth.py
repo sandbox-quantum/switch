@@ -37,6 +37,7 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
+from switch_core.connections.adapters.mcp_identity import identify as identify_mcp
 from switch_core.connections.loader import AccessLevel, ConnectionDefinition
 
 MAX_METADATA_BYTES = 64 * 1024
@@ -488,6 +489,15 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
+        if self._identity.mcp_tool is not None:
+            body = await identify_mcp(
+                self._http,
+                url=self._identity.url,
+                tool=self._identity.mcp_tool,
+                token=access_token,
+                name=self._name,
+            )
+            return self._account(body)
         response = await self._send(
             self._http.build_request(
                 "GET",
@@ -508,6 +518,9 @@ class OAuthAdapter:
                 f"(HTTP {response.status_code})."
             )
         body = self._json(response, "account")
+        return self._account(body)
+
+    def _account(self, body: dict[str, Any]) -> Identity:
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
         if type(account_id) is int:
