@@ -1615,6 +1615,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         "Switch is running on http://%s:%d", config.server_host, config.server_port
     )
 
+    # Before the server takes a connection or a session report, either of
+    # which can report a milestone this settles.
+    await telemetry.settle_superseded_milestones()
     telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
     # The funnel's first step, and only for a deployment with an install date.
     await telemetry.emit_milestone("deployment_installed")

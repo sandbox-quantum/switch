@@ -565,7 +565,11 @@ export class LocalServerService {
 
   private async runStart(activate: boolean): Promise<StartLocalServerResult> {
     if (this.busy) {
-      return { kind: 'error', message: 'A local-server operation is already in progress.' };
+      return {
+        kind: 'error',
+        message: 'A local-server operation is already in progress.',
+        failure: 'operation_in_progress',
+      };
     }
     this.busy = true;
     this.startAbort = new AbortController();
@@ -707,7 +711,7 @@ export class LocalServerService {
       this.failUpgrade(message);
       await recordLocalActivity('start-failed', message);
       reportManagedServerStartThrew('local');
-      return { kind: 'error', message };
+      return { kind: 'error', message, failure: 'unexpected' };
     } finally {
       host.dispose();
       this.busy = false;

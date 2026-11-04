@@ -50,6 +50,7 @@ from switch_core.gateway.auth import (
     verify_password_off_loop,
 )
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_agent_store,
     get_api_key_store,
     get_bridge_store,
@@ -91,6 +92,7 @@ from switch_core.gateway.schemas import (
 )
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
+from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
 
@@ -216,6 +218,7 @@ async def _refuse_signup(
             config.gateway_signup_max_per_hour,
         )
         await session.rollback()
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "rate_limited"})
         raise HTTPException(
             status_code=429,
             detail="Too many sign-ups on this server in the last hour. Try again later.",
@@ -223,6 +226,7 @@ async def _refuse_signup(
         )
     if await user_store.get_by_email(session, email) is not None:
         await session.rollback()
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "email_taken"})
         raise HTTPException(status_code=409, detail="Email already registered")
 
 
@@ -246,6 +250,7 @@ async def signup(
     fails the sign-up: the response says why instead.
     """
     if not config.gateway_signup_open:
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "disabled"})
         raise HTTPException(
             status_code=403, detail="Sign-up is disabled on this server"
         )
@@ -275,11 +280,15 @@ async def signup(
             if not email_taken(err):
                 raise
             await session.rollback()
+            emit_safely(
+                current_telemetry(), "signup_refused", {"reason": "email_taken"}
+            )
             raise HTTPException(
                 status_code=409, detail="Email already registered"
             ) from None
         await session.commit()
         logger.info("Signed up user: %s (%s)", user.email, user.id)
+        emit_safely(current_telemetry(), "account_created", {"method": "signup"})
 
         set_session_cookie(
             response,
@@ -628,6 +637,7 @@ async def create_user(
     await session.commit()
 
     logger.info("Created user: %s (%s)", user.email, user.id)
+    emit_safely(current_telemetry(), "account_created", {"method": "admin"})
     return UserResponse(
         id=user.id,
         name=user.name,
