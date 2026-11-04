@@ -34,6 +34,7 @@ auth:
       your account menu, where each sign-in is listed separately. Until then,
       any Airtable connection you make reaches the bases it shared too.
   identity:
+    method: GET
     url: https://api.airtable.com/v0/meta/whoami
     account_id: id
     # Airtable returns the email only with user.email:read, which its MCP

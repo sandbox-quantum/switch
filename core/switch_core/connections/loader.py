@@ -29,7 +29,7 @@ the skill file sessions are then given.
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -179,14 +179,23 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id is read: `method` to `url` with the
+    bearer token, and an optional static JSON `body` for a POST. The dotted
+    paths in its JSON answer name the id and a label people recognise (an
+    email, a login)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"]
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    body: dict[str, Any] | None = None
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _body_for_post(self) -> "ConnectionIdentity":
+        if self.body is not None and self.method == "GET":
+            raise ValueError("only a POST identity call sends a body")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
