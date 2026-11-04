@@ -1,13 +1,28 @@
-import React, { useCallback } from 'react';
+import { observer } from 'mobx-react-lite';
+import React from 'react';
 import { MigrationSettingsPage } from '@renderer/features/agent-migration/migration-settings-page';
 import { DevicesSettingsPage } from '@renderer/features/machines/devices-settings-page';
 import { RemoteHostsSettingsPage } from '@renderer/features/remote-hosts/views/remote-hosts-view';
+import { openServerPage } from '@renderer/features/switch-servers/open-server-page';
+import { servesWebGateway } from '@renderer/features/switch-servers/server-gateway';
 import { PageHeader } from '@renderer/lib/components/page-header';
-import { PageContent, PageLayout, PageSidebarMenu } from '@renderer/lib/components/page-layout';
+import { PageContent, PageLayout, PageSidebarSections } from '@renderer/lib/components/page-layout';
 import { useAnyServerFeatureFlag } from '@renderer/lib/hooks/useFeatureFlags';
 import { openExternalUrl } from '@renderer/lib/open-external';
+import { dashboardOrigin } from '@shared/core/switch-servers/switch-servers';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
+import { AccountSettingsPage } from '../pages/account-page';
+import { ApiKeysSettingsPage } from '../pages/api-keys-page';
+import { MessagingAppsSettingsPage } from '../pages/messaging-apps-page';
+import { settingsServer } from '../pages/settings-server';
+import { SystemStatusSettingsPage } from '../pages/system-status-page';
+import {
+  type SettingsItemId,
+  type SettingsPageTab,
+  settingsSections,
+  shownSettingsTab,
+} from '../settings-tabs';
 import NotificationSettingsCard from './NotificationSettingsCard';
 import { OnboardingChecklistRow } from './OnboardingSettingsRow';
 import { ReplayOnboardingRow } from './ReplayOnboardingRow';
@@ -18,33 +33,18 @@ import {
 } from './SessionSettingsRows';
 import TelemetrySettingsCard from './TelemetrySettingsCard';
 import ThemeCard from './ThemeCard';
-import { UpdateCard } from './UpdateCard';
 
-export type SettingsPageTab =
-  | 'general'
-  | 'clis-models'
-  | 'integrations'
-  | 'connections'
-  | 'browser'
-  | 'interface'
-  | 'remote-hosts'
-  | 'devices'
-  | 'managed-agents'
-  | 'docs';
+export { resolveSettingsTab, type SettingsPageTab } from '../settings-tabs';
 
-// ---------------------------------------------------------------------------
-// Tab page components
-// ---------------------------------------------------------------------------
-
-function GeneralSettingsPage() {
+function PreferencesSettingsPage() {
   return (
     <div className="space-y-8 pb-10">
       <PageHeader
         sticky
-        title="General"
-        description="Manage your account, privacy settings, notifications, and app updates."
+        title="Preferences"
+        description="How Switch Console looks and behaves on this computer."
       />
-      <UpdateCard />
+      <ThemeCard />
       <AutoGenerateSessionNamesRow />
       <AutoTrustWorktreesRow />
       <PreserveSessionNameCapitalizationRow />
@@ -56,48 +56,19 @@ function GeneralSettingsPage() {
   );
 }
 
-function InterfaceSettingsPage() {
-  return (
-    <div className="space-y-8 pb-4">
-      <PageHeader
-        sticky
-        title="Interface"
-        description="Customize the appearance and behavior of the app."
-      />
-      <ThemeCard />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// SettingsPage
-// ---------------------------------------------------------------------------
-
-/**
- * The tabs that have a pane to show. `docs` is an external link, and several
- * `SettingsPageTab` values are hidden in v0, so this is a subset.
- */
-const TAB_CONTENT: Partial<Record<SettingsPageTab, () => React.ReactNode>> = {
-  general: () => <GeneralSettingsPage />,
+const TAB_CONTENT: Record<SettingsPageTab, () => React.ReactNode> = {
+  preferences: () => <PreferencesSettingsPage />,
+  'messaging-apps': () => <MessagingAppsSettingsPage />,
   'clis-models': () => <AgentsSettingsPage />,
-  interface: () => <InterfaceSettingsPage />,
+  'api-keys': () => <ApiKeysSettingsPage />,
   'remote-hosts': () => <RemoteHostsSettingsPage />,
   devices: () => <DevicesSettingsPage />,
   'managed-agents': () => <MigrationSettingsPage />,
+  status: () => <SystemStatusSettingsPage />,
+  account: () => <AccountSettingsPage />,
 };
 
-/**
- * A persisted snapshot can name a tab this build no longer renders — one hidden
- * in v0, or retired outright. Showing Settings with an empty pane and no tab
- * selected reads as broken, so fall back to General.
- */
-export function resolveSettingsTab(tab: unknown): SettingsPageTab {
-  return typeof tab === 'string' && Object.hasOwn(TAB_CONTENT, tab)
-    ? (tab as SettingsPageTab)
-    : 'general';
-}
-
-export function SettingsPage({
+export const SettingsPage = observer(function SettingsPage({
   tab: activeTab,
   onTabChange,
 }: {
@@ -107,50 +78,39 @@ export function SettingsPage({
   // Only offered while some server runs agent management: elsewhere there is
   // nothing to move to managed and nothing managed to look after.
   const agentManagement = useAnyServerFeatureFlag('agent_management');
-  const handleDocsClick = useCallback(() => {
-    void openExternalUrl(SWITCH_CONSOLE_DOCS_URL, 'Could not open the documentation');
-  }, []);
+  const { server, user } = settingsServer();
+  // Workspace settings are the gateway's, open to every member there. A
+  // Switch this Console runs without Docker serves no gateway.
+  const workspaceSettings = server !== null && user !== null && servesWebGateway(server);
+  const sections = settingsSections({
+    hasServer: server !== null,
+    agentManagement,
+    workspaceSettings,
+  });
+  const shownTab = shownSettingsTab(activeTab, sections);
 
-  type Tab = {
-    id: SettingsPageTab;
-    label: string;
-    isExternal?: boolean;
+  const select = (id: SettingsItemId) => {
+    if (id === 'docs') {
+      void openExternalUrl(SWITCH_CONSOLE_DOCS_URL, 'Could not open the documentation');
+    } else if (id === 'workspace-settings') {
+      if (server) void openServerPage(server.id, `${dashboardOrigin(server)}/workspace`);
+    } else {
+      onTabChange(id);
+    }
   };
-  const allTabs: Tab[] = [
-    // Switch Console v0 hides Account, Integrations, Connections (SSH), and Browser tabs.
-    { id: 'general', label: 'General' },
-    { id: 'clis-models', label: 'Agent providers' },
-    { id: 'devices', label: 'Your devices' },
-    { id: 'remote-hosts', label: 'Remote hosts' },
-    { id: 'managed-agents', label: 'Managed agents' },
-    { id: 'interface', label: 'Interface' },
-    { id: 'docs', label: 'Docs', isExternal: true },
-  ];
-  const needsAgentManagement = (tab: SettingsPageTab) =>
-    tab === 'managed-agents' || tab === 'devices';
-  const tabs = allTabs.filter((tab) => agentManagement || !needsAgentManagement(tab.id));
-
-  const shownTab = !agentManagement && needsAgentManagement(activeTab) ? 'general' : activeTab;
-  const currentContent = TAB_CONTENT[shownTab]?.();
 
   return (
     <PageLayout
-      width={880}
+      width={960}
       sidebar={
-        <PageSidebarMenu
-          items={tabs}
+        <PageSidebarSections
+          sections={sections}
           activeId={shownTab}
-          onSelect={(item) => {
-            if (item.isExternal) {
-              handleDocsClick();
-            } else {
-              onTabChange(item.id);
-            }
-          }}
+          onSelect={(item) => select(item.id)}
         />
       }
     >
-      {currentContent && <PageContent>{currentContent}</PageContent>}
+      <PageContent>{TAB_CONTENT[shownTab]()}</PageContent>
     </PageLayout>
   );
-}
+});

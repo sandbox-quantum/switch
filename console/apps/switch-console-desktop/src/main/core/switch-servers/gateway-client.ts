@@ -97,6 +97,8 @@ import {
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
   type RetireOutcome,
+  type SwitchApiKey,
+  type CreatedRegistrationKey,
   type SwitchAuthConfig,
   type SwitchServer,
   type SwitchServerDeclaration,
@@ -549,6 +551,7 @@ type UserResponseJson = {
   email: string;
   role: string;
   server?: ServerDeclarationJson | null;
+  has_password?: boolean;
 };
 
 /**
@@ -573,6 +576,7 @@ function mapUser(json: UserResponseJson): SwitchUser {
     email: json.email,
     role: json.role,
     server: mapServerDeclaration(json.server ?? null),
+    ...(json.has_password !== undefined ? { hasPassword: json.has_password } : {}),
   };
 }
 
@@ -597,6 +601,47 @@ export async function deleteMyAccount(server: SwitchServer, email: string): Prom
       authenticated: true,
       method: 'DELETE',
       body: { email },
+    });
+  } catch (error) {
+    if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
+    throw error;
+  }
+}
+
+/**
+ * Change the signed-in person's display name (`PATCH /auth/me`), resolving to
+ * the user as the server now has it. A refusal surfaces in the server's words.
+ */
+export async function updateMyName(server: SwitchServer, name: string): Promise<SwitchUser> {
+  try {
+    const res = await gatewayFetch(server, '/auth/me', {
+      authenticated: true,
+      method: 'PATCH',
+      body: { name },
+    });
+    return mapUser((await res.json()) as UserResponseJson);
+  } catch (error) {
+    if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
+    throw error;
+  }
+}
+
+/**
+ * Change the signed-in person's password (`PUT /auth/me/password`). Refused
+ * with the server's reason, such as a wrong current password. An account made
+ * through single sign-on has no password to change; the server says so on the
+ * user (`hasPassword`), and Settings offers no change for one.
+ */
+export async function changeMyPassword(
+  server: SwitchServer,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  try {
+    await gatewayFetch(server, '/auth/me/password', {
+      authenticated: true,
+      method: 'PUT',
+      body: { current_password: currentPassword, new_password: newPassword },
     });
   } catch (error) {
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
@@ -4727,6 +4772,53 @@ export async function deleteManagedAgent(
 }
 
 type ApiKeyJson = { id: string; label: string; type: string };
+type ApiKeyDetailJson = ApiKeyJson & { key_prefix: string; created_at: string };
+
+/**
+ * The signed-in person's own API keys (`GET /api-keys`): the registration
+ * keys they made, their agents' keys, and the deployment's bootstrap key when
+ * it was issued to them. Nobody else's.
+ */
+export async function fetchMyApiKeys(server: SwitchServer): Promise<SwitchApiKey[]> {
+  const res = await gatewayFetch(server, '/api-keys', { authenticated: true });
+  return ((await res.json()) as ApiKeyDetailJson[]).map((key) => ({
+    id: key.id,
+    label: key.label,
+    type: key.type,
+    keyPrefix: key.key_prefix,
+    createdAt: key.created_at,
+  }));
+}
+
+/** Make a registration key (`POST /api-keys`). Its value is in the answer and nowhere else. */
+export async function createRegistrationKey(
+  server: SwitchServer,
+  label: string
+): Promise<CreatedRegistrationKey> {
+  const res = await gatewayFetch(server, '/api-keys', {
+    authenticated: true,
+    method: 'POST',
+    body: { label },
+  });
+  const json = (await res.json()) as { id: string; label: string; key: string; created_at: string };
+  return { id: json.id, label: json.label, key: json.key, createdAt: json.created_at };
+}
+
+/** One of the signed-in person's keys in full (`GET /api-keys/{id}/reveal`). The server audits it. */
+export async function revealApiKey(server: SwitchServer, keyId: string): Promise<string> {
+  const res = await gatewayFetch(server, `/api-keys/${encodeURIComponent(keyId)}/reveal`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as { key: string }).key;
+}
+
+/** Delete one of the signed-in person's keys (`DELETE /api-keys/{id}`); it stops working at once. */
+export async function deleteApiKey(server: SwitchServer, keyId: string): Promise<void> {
+  await gatewayFetch(server, `/api-keys/${encodeURIComponent(keyId)}`, {
+    authenticated: true,
+    method: 'DELETE',
+  });
+}
 
 /**
  * An agent's own API key, revealed through the owner's session

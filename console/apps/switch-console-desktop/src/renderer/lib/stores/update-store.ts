@@ -352,7 +352,7 @@ export class UpdateStore {
       action: {
         label: createUpdateToastActionLabel(),
         onClick: () => {
-          appState.navigation.navigate('settings', { tab: 'general' });
+          appState.navigation.navigate('settings', { tab: 'status' });
           if (this.state.status === 'available') {
             void this.download();
           }
