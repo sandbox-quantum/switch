@@ -97,6 +97,22 @@ it('reports the turn itself as a row revised by event sequence, placed where it 
   ]);
 });
 
+it.each(['Steered', 'Queued'])(
+  'reports the %s message label on the activity card',
+  async (title) => {
+    const lines = await reporter();
+    const message = item({
+      itemId: 'user-message',
+      kind: 'user-message',
+      title,
+      status: 'completed',
+    });
+    expect(rows(lines.reports(event(2, message), originOf, noUsage))).toEqual([
+      expect.objectContaining({ title, kind: 'user-message', turn_id: 'turn', ...placed }),
+    ]);
+  }
+);
+
 it("carries an ended turn's usage on its row, and nothing on a turn still running", async () => {
   const lines = await reporter();
   const spent = [

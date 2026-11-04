@@ -2343,6 +2343,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Steer a running turn.** Eligible messages from the turn starter or agent
+  owner reach the active turn on providers that support it. Choose **Always
+  queue** in the agent settings to keep all messages in the queue.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
