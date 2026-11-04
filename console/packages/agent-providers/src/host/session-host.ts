@@ -29,11 +29,19 @@ import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
+import { amendedRoomText } from './room-prompt';
 import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
   z.object({ type: z.literal('dispatched'), commandId: z.string() }),
+  z.object({
+    type: z.literal('amended'),
+    commandId: z.string(),
+    revision: z.number().int(),
+    editId: z.string(),
+    text: z.string(),
+  }),
   z.object({
     type: z.literal('finished'),
     commandId: z.string(),
@@ -98,6 +106,12 @@ export type ApprovalOutcome = {
   answeredBy: string | null;
 };
 
+type CommandEditState = {
+  dispatched: boolean;
+  lastRevision: number;
+  notified: boolean;
+};
+
 /** Execution owner for a local-only session. Shared server leases are an external boundary. */
 export class HostedSession {
   private readonly projector: ChatProjector;
@@ -105,6 +119,7 @@ export class HostedSession {
   private readonly commands = new Map<string, Command>();
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
+  private readonly commandStates = new Map<string, CommandEditState>();
   private readonly roomReplies = new Set<string>();
   private readonly postedTurns = new Set<string>();
   /** Turns whose posts to the room were refused, with the last refusal. */
@@ -172,6 +187,22 @@ export class HostedSession {
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
       if (record.type === 'dispatched') this.dispatched.add(record.commandId);
+      if (record.type === 'amended') {
+        if (!this.dispatched.has(record.commandId)) {
+          const command = this.commands.get(record.commandId);
+          let state = this.commandStates.get(record.commandId);
+          if (!state) {
+            state = { dispatched: false, lastRevision: 0, notified: false };
+            this.commandStates.set(record.commandId, state);
+          }
+          if (record.revision > state.lastRevision) {
+            state.lastRevision = record.revision;
+            if (command && command.body.type === 'message.send') {
+              command.body.text = record.text;
+            }
+          }
+        }
+      }
       if (record.type === 'finished') {
         this.finished.add(record.commandId);
         if (record.usage) this.usage.set(record.commandId, record.usage);
@@ -400,6 +431,7 @@ export class HostedSession {
     this.decisionCode = code;
     this.queue.length = 0;
     this.activeTurn = null;
+    this.commandStates.clear();
     this.config.session.status = 'error';
     this.config.session.capabilities = {
       ...this.config.session.capabilities,
@@ -851,6 +883,13 @@ export class HostedSession {
           },
         });
         this.queue.push(command);
+        if (!this.commandStates.has(command.commandId)) {
+          this.commandStates.set(command.commandId, {
+            dispatched: false,
+            lastRevision: 0,
+            notified: false,
+          });
+        }
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -979,6 +1018,7 @@ export class HostedSession {
             status: 'interrupted',
           });
         this.queue.length = 0;
+        this.commandStates.clear();
         if (this.adapter.hasSession(session.sessionId))
           await this.adapter.stopSession(session.sessionId);
         else {
@@ -1042,11 +1082,93 @@ export class HostedSession {
     return status;
   }
 
+  async amendRoomMessage(
+    commandId: string,
+    revision: number,
+    editId: string,
+    newBody: string
+  ): Promise<void> {
+    const command = this.commands.get(commandId);
+    if (!command || command.body.type !== 'message.send') return;
+    let state = this.commandStates.get(commandId);
+    if (!state) {
+      state = {
+        dispatched: this.dispatched.has(commandId) || this.activeTurn === commandId,
+        lastRevision: 0,
+        notified: false,
+      };
+      this.commandStates.set(commandId, state);
+    }
+    if (revision <= state.lastRevision) return;
+
+    const isQueued =
+      !state.dispatched &&
+      this.activeTurn !== commandId &&
+      this.queue.some((c) => c.commandId === commandId);
+
+    if (!isQueued) {
+      if (!state.notified) {
+        state.notified = true;
+        await this.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'QUEUED_MESSAGE_EDIT_DISPATCHED',
+          message:
+            'This message was edited after the agent began processing it. The original version was used.',
+        });
+      }
+      return;
+    }
+
+    const amended = amendedRoomText(command.body.text, newBody);
+    if (!amended.changed) {
+      if (!state.notified) {
+        state.notified = true;
+        await this.publish({
+          type: 'notice',
+          level: 'warning',
+          code: 'QUEUED_MESSAGE_EDIT_REJECTED',
+          message: 'Message edit was rejected and original text retained.',
+        });
+      }
+      return;
+    }
+
+    // Synchronously update command and revision state before any asynchronous suspension
+    command.body.text = amended.text;
+    state.lastRevision = revision;
+    state.notified = false;
+
+    await this.inbox.append({
+      type: 'amended',
+      commandId,
+      revision,
+      editId,
+      text: amended.text,
+    });
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId: `user-${command.commandId}`,
+        turnId: command.commandId,
+        revision: 2,
+        kind: 'user-message',
+        status: 'completed',
+        title: '',
+        text: amended.text,
+        attachments: command.body.attachments,
+        origin: command.origin,
+      },
+    });
+  }
+
   private async runNext(): Promise<void> {
     if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
     const command = this.queue.shift();
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
+    const state = this.commandStates.get(command.commandId);
+    if (state) state.dispatched = true;
     try {
       const attachments = command.body.attachments.length
         ? await this.config.stageAttachments!(command.body.attachments)
@@ -1075,6 +1197,7 @@ export class HostedSession {
       });
       await this.replyIfUnposted(command.commandId, 'error', String(error));
       this.activeTurn = null;
+      this.commandStates.delete(command.commandId);
       void this.runNext().catch((error: unknown) => this.fail(error));
     }
   }
@@ -1163,6 +1286,7 @@ export class HostedSession {
           await this.publish({ ...turn, status: 'interrupted' });
       this.queue.length = 0;
       this.activeTurn = null;
+      this.commandStates.clear();
       this.questions.clear();
     }
     if (event.type === 'session.started') {
@@ -1250,6 +1374,7 @@ export class HostedSession {
       });
       this.finished.add(event.turnId);
       if (event.usage.length > 0) this.usage.set(event.turnId, event.usage);
+      this.commandStates.delete(event.turnId);
     }
     await this.publishAll(this.projector.ingest(event, Date.now()));
     if (event.type === 'turn.completed') {

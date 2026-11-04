@@ -1241,8 +1241,34 @@ export async function runAgentHost(
       // this journal holds its own copy; neither is a second message.
       if (queued(event.roomId, event.messageId)) return;
       const waiting = held.get(event.roomId);
-      if (waiting) waiting.events.push({ ...event, spawning });
-      else {
+      if (waiting) {
+        if (
+          event.event &&
+          typeof event.event === 'object' &&
+          'type' in event.event &&
+          event.event.type === 'message_edit' &&
+          'payload' in event.event &&
+          event.event.payload &&
+          typeof event.event.payload === 'object' &&
+          'message_id' in event.event.payload &&
+          'body' in event.event.payload
+        ) {
+          const editPayload = event.event.payload as { message_id: string; body: string };
+          const target = waiting.events.find((e) => e.messageId === editPayload.message_id);
+          if (
+            target &&
+            target.event &&
+            typeof target.event === 'object' &&
+            'payload' in target.event &&
+            target.event.payload &&
+            typeof target.event.payload === 'object' &&
+            'body' in target.event.payload
+          ) {
+            (target.event.payload as { body: string }).body = editPayload.body;
+          }
+        }
+        waiting.events.push({ ...event, spawning });
+      } else {
         held.set(event.roomId, { events: [{ ...event, spawning }], since: Date.now() });
         console.warn(
           `No session of this agent can take room ${event.roomId}'s messages yet, and starting one is off; holding them until one can.`
