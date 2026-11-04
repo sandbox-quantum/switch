@@ -74,7 +74,7 @@ export function LibraryItemFields({
             value={form.urlsText}
             onChange={(e) => set({ urlsText: e.target.value })}
             placeholder="https://… (one per line)"
-            className="min-h-20 font-mono text-xs"
+            className="min-h-20 font-mono text-xs md:text-xs"
           />
           <p className="text-xs text-foreground-muted">{type?.valueHint || 'One link per line.'}</p>
         </Field>
@@ -121,13 +121,14 @@ export function LibraryItemFields({
       {canChangeAccess && (
         <Field>
           <FieldLabel>Who can see it</FieldLabel>
-          <SegmentedControl
-            value={form.access}
-            onChange={(access) => set({ access })}
-            options={LIBRARY_ACCESS_OPTIONS}
-            ariaLabel="Who can see it"
-            className="w-max"
-          />
+          <div className="flex">
+            <SegmentedControl
+              value={form.access}
+              onChange={(access) => set({ access })}
+              options={LIBRARY_ACCESS_OPTIONS}
+              ariaLabel="Who can see it"
+            />
+          </div>
           <p className="text-xs text-foreground-muted">
             {LIBRARY_ACCESS_OPTIONS.find((o) => o.value === form.access)?.hint}
           </p>
@@ -170,7 +171,7 @@ export function DocumentContentField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="Markdown"
-          className="max-h-[45vh] min-h-48 font-mono text-xs"
+          className="max-h-[45vh] min-h-48 font-mono text-xs md:text-xs"
         />
       ) : (
         <div className="max-h-[45vh] min-h-48 overflow-y-auto rounded-md border border-border px-3 py-2">
