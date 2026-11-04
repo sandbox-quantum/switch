@@ -189,6 +189,7 @@ describe('machineNotices', () => {
             version: null,
             authSource: null,
             checkedAt: null,
+            loginHelps: true,
           },
           {
             provider: 'other',
@@ -198,6 +199,7 @@ describe('machineNotices', () => {
             version: null,
             authSource: null,
             checkedAt: null,
+            loginHelps: true,
           },
         ],
       })
@@ -234,6 +236,7 @@ describe('moveTarget', () => {
     version: null,
     authSource: null,
     checkedAt: null,
+    loginHelps: true,
   };
 
   it('takes an agent on a connected machine with its provider signed in', () => {
