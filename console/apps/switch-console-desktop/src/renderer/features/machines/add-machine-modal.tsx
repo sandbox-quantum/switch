@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import { CopyButton } from '@renderer/features/admin/copy-button';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -33,8 +33,8 @@ type Props = BaseModalProps<void> & { serverId: string };
 export function AddMachineModal({ serverId, onClose }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  // A fresh code each time the dialog opens, never one from the cache.
-  const [opening] = useState(() => crypto.randomUUID());
+  // A fresh code each time the dialog opens or "New code" is pressed, never one from the cache.
+  const [opening, setOpening] = useState(() => crypto.randomUUID());
   const enrollment = useQuery({
     queryKey: ['machine-enrollment', serverId, opening],
     queryFn: () => rpc.managedAgents.machineEnrollment(serverId),
@@ -46,6 +46,17 @@ export function AddMachineModal({ serverId, onClose }: Props) {
   const descriptionTooLong = description.trim().length > MAX_MACHINE_DESCRIPTION;
   const issued = enrollment.data;
   const machine = { name, description };
+  // Nothing else re-renders the dialog when the code runs out.
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!issued) return;
+    const timer = setTimeout(
+      rerender,
+      Math.max(0, new Date(issued.expiresAt).getTime() - Date.now()) + 500
+    );
+    return () => clearTimeout(timer);
+  }, [issued]);
+  const expired = issued !== undefined && new Date(issued.expiresAt).getTime() <= Date.now();
 
   return (
     <>
@@ -123,13 +134,26 @@ export function AddMachineModal({ serverId, onClose }: Props) {
               </>
             )}
 
+            <p className="flex items-center gap-2 text-xs">
+              {expired ? (
+                <span role="alert" className="text-destructive">
+                  The code has expired: get a new one before running the commands.
+                </span>
+              ) : (
+                <span className="text-foreground-muted">
+                  The code is single use and valid until{' '}
+                  {new Date(issued.expiresAt).toLocaleTimeString()}.
+                </span>
+              )}
+              <Button size="sm" variant="ghost" onClick={() => setOpening(crypto.randomUUID())}>
+                New code
+              </Button>
+            </p>
             <p className="text-xs text-foreground-muted">
-              The code is single use and valid until{' '}
-              {new Date(issued.expiresAt).toLocaleTimeString()}. The device shows up in Settings →
-              Devices once its controller reports; if it does not, run{' '}
-              <code>switch-agent-controller doctor</code> on it. A computer you reach over SSH can
-              also join without this: create an agent on it, and Switch Console sets its controller
-              up.
+              The device shows up in Settings → Devices once its controller reports; if it does not,
+              run <code>switch-agent-controller doctor</code> on it. A computer you reach over SSH
+              can also join without this: create an agent on it, and Switch Console sets its
+              controller up.
             </p>
           </>
         )}
