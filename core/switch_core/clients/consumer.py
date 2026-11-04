@@ -24,6 +24,7 @@ from switch_core.events import (
     SwitchEvent,
     ToolCallReport,
 )
+from switch_core.messages.edits import MESSAGE_EDIT_EVENT_TYPE
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -284,6 +285,10 @@ class Consumer[ActorT: Actor[Any]]:
         self, room: RoomRef, event: InboundCustomEvent
     ) -> None:
         if self._should_ignore(room, event):
+            return
+        # Decided for the agents by the router as it was written, and nothing
+        # a platform or the room's other readers are told about.
+        if event.event_type == MESSAGE_EDIT_EVENT_TYPE:
             return
 
         entry = self._EVENT_DISPATCH.get(event.event_type)
