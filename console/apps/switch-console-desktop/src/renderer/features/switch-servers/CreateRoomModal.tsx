@@ -402,9 +402,15 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               {failureText(bridgesQuery.error, 'Could not load messaging apps.')}
             </p>
           )}
-          {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
       </DialogContentArea>
+      {/* Outside the scrolling form, beside the button that caused it, so a
+          refusal is never scrolled out of sight under a long form. */}
+      {error && (
+        <p role="alert" className="px-6 pb-2 text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <DialogFooter className="sm:justify-between">
         <MessagingAppSelector
           bridges={bridges}
