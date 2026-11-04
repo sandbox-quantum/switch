@@ -1009,6 +1009,38 @@ class TestPassThrough:
         assert grant["cli_tools"] == []
         assert grant["skill"]["name"] == "example"
 
+    async def test_read_grant_uses_read_url_and_downgrade_routes_to_read_url(
+        self, session_factory, tmp_path
+    ) -> None:
+        entry_with_read_url = OAUTH_ENTRY.replace(
+            '- { name: example, url: "https://mcp.example.test/v1/mcp" }',
+            '- { name: example, url: "https://mcp.example.test/v1/mcp", read_url: "https://mcp.example.test/v1/mcp?read_only=true" }',
+        )
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=entry_with_read_url
+        )
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            # 1. Write grant with consent=write uses primary url
+            [grant] = await pt.broker.grants_for(session, agent, Principal.agent_key())
+            assert grant["mcp_servers"][0]["url"] == "https://mcp.example.test/v1/mcp"
+
+            # 2. Downgraded pass-through connection (consent=read) routes to read_url
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == pt.world.owner.id)
+                .values(consent="read")
+            )
+            await session.commit()
+            [downgraded] = await pt.broker.grants_for(
+                session, agent, Principal.agent_key()
+            )
+            assert (
+                downgraded["mcp_servers"][0]["url"]
+                == "https://mcp.example.test/v1/mcp?read_only=true"
+            )
+
     async def test_the_grant_names_the_vendors_cli_as_the_catalog_has_it(
         self, session_factory, tmp_path
     ) -> None:

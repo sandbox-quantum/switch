@@ -7,6 +7,7 @@ from switch_core.connections.loader import (
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
     CatalogError,
+    McpServer,
     load_catalog,
     with_access_profiles,
 )
@@ -33,6 +34,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "supabase",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +42,49 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "supabase",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["supabase"].skill_files
+
+
+def test_the_shipped_supabase_entry_signs_in_as_specified():
+    entry = CATALOG["supabase"]
+    definition = entry.definition
+    assert definition.slug == "supabase"
+    assert definition.name == "Supabase"
+    assert definition.category == "Database"
+    assert definition.enabled is True
+    assert definition.adapter == "oauth"
+    assert definition.auth.oauth is not None
+    assert definition.auth.oauth.registration == "dynamic"
+    assert definition.auth.oauth.redirect == ["loopback"]
+    assert definition.auth.oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert definition.mcp is not None
+    assert len(definition.mcp.servers) == 1
+    assert definition.mcp.servers[0].name == "supabase"
+    assert definition.mcp.servers[0].url == "https://mcp.supabase.com/mcp"
+    assert (
+        definition.mcp.servers[0].read_url
+        == "https://mcp.supabase.com/mcp?read_only=true"
+    )
+    assert definition.tools is not None
+    assert definition.tools.mode == "pass_through"
+    assert definition.auth.identity is not None
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "gotrue_id",
+        "primary_email",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86400,
+    )
+    assert "SKILL.md" in entry.skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1200,3 +1239,44 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+def test_mcp_server_read_url_must_share_origin_and_path():
+    server = McpServer(
+        name="supabase",
+        url="https://mcp.supabase.com/mcp",
+        read_url="https://mcp.supabase.com/mcp?read_only=true",
+    )
+    assert server.read_url == "https://mcp.supabase.com/mcp?read_only=true"
+
+    with pytest.raises(ValueError, match="read_url must share origin and path"):
+        McpServer(
+            name="supabase",
+            url="https://mcp.supabase.com/mcp",
+            read_url="https://mcp.evil.com/mcp?read_only=true",
+        )
+
+    with pytest.raises(ValueError, match="read_url must share origin and path"):
+        McpServer(
+            name="supabase",
+            url="https://mcp.supabase.com/mcp",
+            read_url="https://mcp.supabase.com/other",
+        )
+
+
+def test_oauth_path_value_single_element_indexing():
+    from switch_core.connections.adapters import ServiceAdapterError
+    from switch_core.connections.adapters.oauth import _path_value
+
+    doc = {"organizations": [{"id": "org_123", "name": "Test Org"}]}
+    assert _path_value(doc, "organizations.0.id") == "org_123"
+
+    assert _path_value([{"id": "usr_456"}], "0.id") == "usr_456"
+
+    assert _path_value({"id": "usr_789"}, "id") == "usr_789"
+
+    with pytest.raises(ServiceAdapterError, match="Expected a single element"):
+        _path_value({"organizations": []}, "organizations.0.id")
+
+    with pytest.raises(ServiceAdapterError, match="Expected a single element"):
+        _path_value({"organizations": [{"id": "1"}, {"id": "2"}]}, "organizations.0.id")

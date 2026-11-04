@@ -153,9 +153,19 @@ def _https(url: object, what: str) -> str:
 def _path_value(document: Any, path: str) -> Any:
     value = document
     for part in path.split("."):
-        if not isinstance(value, dict):
+        if isinstance(value, dict):
+            value = value.get(part)
+        elif isinstance(value, list) and part.isdigit():
+            idx = int(part)
+            if len(value) != 1:
+                raise ServiceAdapterError(
+                    f"Expected a single element in list for identity path {path!r}, found {len(value)}."
+                )
+            if idx != 0:
+                return None
+            value = value[0]
+        else:
             return None
-        value = value.get(part)
     return value
 
 
