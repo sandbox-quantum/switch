@@ -288,3 +288,30 @@ it('says so when the archived chats cannot be listed', async () => {
   await act(async () => toggle('Archived')!.click());
   expect(container.textContent).toContain('Your archived chats could not be listed.');
 });
+
+it('archives a room from its menu only once you confirm', async () => {
+  await render();
+  await act(async () =>
+    cardFor('yaml-room')
+      .querySelector<HTMLButtonElement>('[aria-label="yaml-room actions"]')!
+      .click()
+  );
+  await settle();
+  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+    (each) => each.textContent === 'Archive'
+  )!;
+  await act(async () => item.click());
+  await settle();
+  expect(setRoomArchived).not.toHaveBeenCalled();
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialog.textContent).toContain('Archive yaml-room?');
+  const confirm = [...dialog.querySelectorAll('button')].find(
+    (b) => b.textContent?.trim() === 'Archive'
+  )!;
+  await act(async () => confirm.click());
+  expect(setRoomArchived).toHaveBeenCalledWith({
+    workspaceId: 'ws',
+    roomId: 'yaml-room',
+    archived: true,
+  });
+});

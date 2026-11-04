@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { useArchiveRoomConfirm } from '@renderer/features/switch-rooms/archive-room-confirm';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
@@ -78,6 +79,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   const [scope, setScope] = useState<Scope>('mine');
   const [state, setState] = useState<State>('active');
   const [picked, setFilter] = useState<RoomsFilter>(NO_FILTER);
+  const confirmArchive = useArchiveRoomConfirm();
 
   useEffect(() => {
     void refreshSidebarRoomState(false);
@@ -282,12 +284,20 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
                     card={card}
                     showYours={scope === 'all'}
                     onOpen={() => void openRoom(card.id)}
-                    onArchive={mayArchive(card) ? () => void setArchived(card) : null}
+                    onArchive={
+                      mayArchive(card)
+                        ? () =>
+                            card.archived
+                              ? void setArchived(card)
+                              : confirmArchive.request(card.name, () => void setArchived(card))
+                        : null
+                    }
                   />
                 </div>
               ))}
             </div>
           )}
+          {confirmArchive.dialog}
         </div>
       )}
     </ServerPage>

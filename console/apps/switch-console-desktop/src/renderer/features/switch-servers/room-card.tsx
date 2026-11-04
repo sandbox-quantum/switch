@@ -142,8 +142,7 @@ export function RoomCard({
                 ) : (
                   <Archive className="size-4" />
                 )}
-                {/* The room is hidden for everyone, not just you. */}
-                {card.archived ? 'Unarchive' : 'Archive for everyone'}
+                {card.archived ? 'Unarchive' : 'Archive'}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
