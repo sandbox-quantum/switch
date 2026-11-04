@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `amp` | `amp-acp`, ACP over stdio, on the generic ACP adapter | Amp has no native ACP; the community `amp-acp` bridge drives the Amp CLI. Permissions are Amp modes `default`/`bypass`; sign-in is shared with `amp login` / `AMP_API_KEY`. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -68,6 +69,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| amp (ACP via amp-acp) | amp-acp 0.12.0 / Amp CLI 0.0.1793764839 | 5/10 (2026-11-04) | Prerequisite: install the Amp CLI, run `amp login` (or set `AMP_API_KEY`), and install `amp-acp@0.12.0`. Sign-in is checked with `amp account list --json` (no credits). Amp exposes effort as an `amp-mode` config option (low/medium/high/ultra), not a `model` select, so Console's model dropdown stays empty and Amp's default medium mode is used. Passed: `simple-turn`, `file-write-full-access`, `interrupt`, `resume`, `mcp-registered`. Skipped: `approval-required` / `approval-declined` (Amp Neo does not ask by default; amp-acp does not emit ACP `session/request_permission` for Amp `ask` rules — verified 2026-11-04), `steer-mid-turn` (serialized prompts; no mid-turn delivery), `user-input`, `subagent`. Auto-approve is Amp `bypass` (`dangerouslyAllowAll`). |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
@@ -127,3 +129,9 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**Amp** runs through `amp-acp`, which drives the Amp CLI. Launch sets
+`AMP_CLI_PATH` when the Amp binary is resolvable. Sign-in is checked with
+`amp account list --json` (or treated as signed in when `AMP_API_KEY` is set)
+and never calls `authenticate`, which would run interactive `--setup`.
+Permission modes map onto Amp's `default` / `bypass` session modes.
