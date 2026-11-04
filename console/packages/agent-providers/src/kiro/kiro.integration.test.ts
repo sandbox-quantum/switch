@@ -17,7 +17,7 @@ describeConformance('kiro', {
   timeoutMs: 300_000,
   skip: {
     'user-input':
-      "kiro-cli 3.0.0 offers its user_input tool only in its spec workflows, not in the default agent or vibe mode, on either engine: asked to use it, the agent asks in prose and ends the turn (2026-11-04).",
+      'kiro-cli 3.0.0 offers its user_input tool only in its spec workflows, not in the default vibe mode (nor V2’s default agent): asked to use it, the agent asks in prose and ends the turn (2026-11-04).',
   },
   mcpServers: { echo: echoMcpServerSpec() },
   // The harness hands the CLI a minimal environment, so a key in the shell
