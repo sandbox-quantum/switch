@@ -503,6 +503,33 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.level_tools("write") == []
 
 
+def test_loads_an_identity_read_from_the_mcp_servers_tool(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    url: https://api.example.test/me\n", "    mcp_tool: whoami\n"
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.mcp_tool, identity.account_id) == (
+        None,
+        "whoami",
+        "account.id",
+    )
+
+
+def test_an_identity_read_from_a_tool_needs_the_mcp_servers(catalog_copy):
+    _write_example(
+        catalog_copy,
+        CLI_ENTRY.replace(
+            "    url: https://api.example.test/me\n", "    mcp_tool: whoami\n"
+        ),
+    )
+    with pytest.raises(CatalogError, match="mcp_tool needs the entry's MCP servers"):
+        load_catalog(catalog_copy)
+
+
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     _write_example(
         catalog_copy,
@@ -604,6 +631,21 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
         ("max_lifetime: 3600", "max_lifetime: 60", "max_lifetime"),
         ("max_lifetime: 3600", "max_lifetime: null", "name its max_lifetime"),
         ("account_id: account.id", "account_id: account/id", "account_id"),
+        (
+            "    url: https://api.example.test/me\n",
+            "    url: https://api.example.test/me\n    mcp_tool: whoami\n",
+            "from a url or from an mcp_tool",
+        ),
+        (
+            "    url: https://api.example.test/me\n",
+            "",
+            "from a url or from an mcp_tool",
+        ),
+        (
+            "    url: https://api.example.test/me\n",
+            "    mcp_tool: who am i\n",
+            "mcp_tool",
+        ),
         (
             "    redirect: [loopback, core]\n",
             "    redirect: [core]\n    loopback_ports: [43123]\n",

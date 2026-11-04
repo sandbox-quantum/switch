@@ -437,6 +437,11 @@ Then:
   mentions an access token, an API key, `GH_TOKEN` or `gh auth`.
 - No two entries may give a session a server of the same name, and none may
   be named `switch`.
+- `auth.identity` names where the account's stable id is read: a `url` the
+  access token is sent to with a GET, or, where the vendor's MCP server issues
+  tokens of its own that its API does not take (Cloudflare's), an `mcp_tool`
+  on the entry's first MCP server, called with no arguments. Its structured
+  answer is read the same way, by `account_id` and `label`.
 - Tests: the shipped entry's values in `tests/switch_core/connections/
   test_loader.py`, and anything the adapter does differently in its own tests.
 - QA by hand against the real vendor, from Switch Console (which starts every
