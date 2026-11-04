@@ -66,7 +66,9 @@ const OFFLINE_AFTER_MS = 20_000;
 
 const cli = fileURLToPath(new URL('../dist/cli.mjs', import.meta.url));
 if (!existsSync(cli))
-  fail(`${cli} is missing: build the workspace packages first (pnpm -r --filter './packages/**' run build).`);
+  fail(
+    `${cli} is missing: build the workspace packages first (pnpm -r --filter './packages/**' run build).`
+  );
 
 const server = localServer(args['user-data-dir']);
 const root = join(homedir(), '.switch', 'dev-machines', args['user-data-dir']);
@@ -119,7 +121,9 @@ function localServer(userDataDir) {
   const portsFile = join(base, 'ports.json');
   const envFile = join(base, 'native', 'run', 'switch-core.env');
   if (!existsSync(portsFile))
-    fail(`No local server in ${base}. Start one from the Console run with SWITCH_CONSOLE_USER_DATA_DIR=${userDataDir}.`);
+    fail(
+      `No local server in ${base}. Start one from the Console run with SWITCH_CONSOLE_USER_DATA_DIR=${userDataDir}.`
+    );
   if (!existsSync(envFile))
     fail(`${envFile} is missing: only a local server that runs without Docker is supported.`);
   const env = Object.fromEntries(
@@ -144,7 +148,10 @@ async function signIn() {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: server.email, password: server.password }),
   });
-  if (!res.ok) fail(`Signing in to ${server.url} failed with HTTP ${res.status}. Is the local server running?`);
+  if (!res.ok)
+    fail(
+      `Signing in to ${server.url} failed with HTTP ${res.status}. Is the local server running?`
+    );
   const session = res.headers
     .getSetCookie()
     .map((header) => header.split(';')[0])
@@ -158,8 +165,7 @@ async function enrollmentCode() {
     method: 'POST',
     headers: { cookie },
   });
-  if (!res.ok)
-    fail(`The server gave no enrollment code (HTTP ${res.status}): ${await res.text()}`);
+  if (!res.ok) fail(`The server gave no enrollment code (HTTP ${res.status}): ${await res.text()}`);
   return (await res.json()).code;
 }
 
