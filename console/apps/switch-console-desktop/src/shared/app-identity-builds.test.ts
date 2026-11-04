@@ -13,7 +13,7 @@ type Identity = typeof AppIdentity;
  * reads `import.meta.env` once, at load, through a cast the test runner doesn't
  * rewrite, so its real source is compiled and run here with that build's env.
  */
-function identityOf(build: string): Identity {
+function identityOf(build: string, extra: Record<string, string> = {}): Identity {
   const source = readFileSync(join(import.meta.dirname, 'app-identity.ts'), 'utf8');
   const reading = '(import.meta as ImportMetaWithEnv).env';
   expect(source.split(reading)).toHaveLength(2);
@@ -24,7 +24,7 @@ function identityOf(build: string): Identity {
   runInNewContext(outputText, {
     module,
     exports: module.exports,
-    __env: { DEV: false, VITE_BUILD: build },
+    __env: { DEV: false, VITE_BUILD: build, ...extra },
   });
   return module.exports;
 }
@@ -80,6 +80,14 @@ describe('the build identities', () => {
     ]);
   });
 
+  it('fills in a server address only on a test build packaged with one', () => {
+    const url = { VITE_DEFAULT_SERVER_URL: 'https://test-server.example' };
+    expect(identityOf('test', url).DEFAULT_SERVER_URL).toBe('https://test-server.example');
+    expect(identityOf('test').DEFAULT_SERVER_URL).toBeNull();
+    expect(identityOf('', url).DEFAULT_SERVER_URL).toBeNull();
+    expect(identityOf('canary', url).DEFAULT_SERVER_URL).toBeNull();
+  });
+
   it('gives the test build its own install, data folder and keychain name', () => {
     const id = identityOf('test');
     expect([
@@ -92,12 +100,12 @@ describe('the build identities', () => {
       id.IS_CANARY,
       id.IS_TEST_BUILD,
     ]).toEqual([
-      'com.switchdash.test',
-      'Switch Console Test',
-      'Switchdash Test',
-      'switch-console-test',
-      'switchdash-test',
-      'switch-console-test',
+      'com.switchdash.hostedv2',
+      'Switch Console Hosted Agents v2',
+      'Switchdash Hosted v2',
+      'switch-console-hosted-agents-v2',
+      'switchdash-hosted-v2',
+      'switch-console-hosted-agents-v2',
       false,
       true,
     ]);

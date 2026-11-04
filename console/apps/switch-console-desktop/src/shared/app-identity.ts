@@ -1,5 +1,10 @@
 type ImportMetaWithEnv = ImportMeta & {
-  env?: { DEV?: boolean; VITE_BUILD?: string; VITE_RELEASE?: string };
+  env?: {
+    DEV?: boolean;
+    VITE_BUILD?: string;
+    VITE_RELEASE?: string;
+    VITE_DEFAULT_SERVER_URL?: string;
+  };
 };
 
 const env = (import.meta as ImportMetaWithEnv).env;
@@ -42,19 +47,19 @@ const isRelease = env?.VITE_RELEASE === '1';
 // branch on the channel — giving canary its own would start it empty and leave
 // it unable to decrypt the sign-ins stable saved.
 export const APP_ID = isTest
-  ? 'com.switchdash.test'
+  ? 'com.switchdash.hostedv2'
   : isCanary
     ? 'com.switchdash.canary'
     : 'com.switchdash.stable';
 export const PRODUCT_NAME = isTest
-  ? 'Switch Console Test'
+  ? 'Switch Console Hosted Agents v2'
   : isCanary
     ? 'Switch Console Canary'
     : 'Switch Console';
 // The test build's own name, so its keychain key is its own too.
-export const OS_APP_NAME = isTest ? 'Switchdash Test' : 'Switchdash';
+export const OS_APP_NAME = isTest ? 'Switchdash Hosted v2' : 'Switchdash';
 export const APP_NAME_LOWER = isTest
-  ? 'switch-console-test'
+  ? 'switch-console-hosted-agents-v2'
   : isCanary
     ? 'switch-console-canary'
     : 'switch-console';
@@ -64,15 +69,22 @@ export const DEV_USER_DATA_DIR_NAME = 'switchdash-dev';
 export const USER_DATA_DIR_NAME = isDev
   ? DEV_USER_DATA_DIR_NAME
   : isTest
-    ? 'switchdash-test'
+    ? 'switchdash-hosted-v2'
     : 'switchdash';
 // The test build never checks for updates (IS_TEST_BUILD); the name is only ever logged.
 export const UPDATE_CHANNEL = isTest ? 'none' : isCanary ? 'v1-canary' : 'v1-stable';
 export const ARTIFACT_PREFIX = isTest
-  ? 'switch-console-test'
+  ? 'switch-console-hosted-agents-v2'
   : isCanary
     ? 'switch-console-canary'
     : 'switch-console';
+// The test build can start the "Server address" box at the test server's
+// address, so a tester needn't paste it; they can still change it. The address
+// comes from VITE_DEFAULT_SERVER_URL, set only in the command that packages that
+// build, so no internal host name lives in this repo. Every other build, and a
+// test build packaged without it, starts the box empty.
+export const DEFAULT_SERVER_URL: string | null =
+  isTest && env?.VITE_DEFAULT_SERVER_URL ? env.VITE_DEFAULT_SERVER_URL : null;
 export const IS_CANARY = isCanary;
 export const IS_TEST_BUILD = isTest;
 export const IS_DEV = isDev;

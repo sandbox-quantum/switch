@@ -9,7 +9,7 @@ import {
 
 // A build for testers: the stable build with its own identity, so it installs beside
 // Switch Console and Switch Console Canary without replacing either, and keeps its own
-// data (`switchdash-test`) and keychain name (set at run time from app-identity.ts with
+// data (`switchdash-hosted-v2`) and keychain name (set at run time from app-identity.ts with
 // VITE_BUILD=test). It publishes nothing and checks for no updates. Packaged on a Mac
 // without a Developer ID it gets the stable config's ad-hoc signature: it launches, and
 // macOS asks once (right-click, then Open).
