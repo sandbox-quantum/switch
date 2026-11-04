@@ -159,7 +159,7 @@ export function roomCommand(input: {
   steering?: {
     supported: boolean;
     mode?: 'steer' | 'queue';
-    running: Command['origin'] | null;
+    running: { origin: Command['origin']; steeringActorId?: string } | null;
   };
   attachments: PlannedAttachment[];
   /** Said before the message, such as that the agent's instructions changed; null for nothing. */
@@ -210,16 +210,16 @@ export function roomCommand(input: {
     unreadNotice(input.message.missed) +
     `\n${REPLY_REMINDER}`;
   const { steering } = input;
-  const actorId = payload.steering_actor_id ?? payload.sender;
+  const running = steering?.running;
   const threadId = payload.thread_id ?? null;
   const delivery =
     steering?.supported &&
     steering.mode !== 'queue' &&
-    steering.running?.roomId === input.roomId &&
-    (steering.running.threadId ?? steering.running.messageId) ===
-      (threadId ?? payload.message_id) &&
+    running?.origin.roomId === input.roomId &&
+    (running.origin.threadId ?? running.origin.messageId) === (threadId ?? payload.message_id) &&
     (payload.sender_owns_agent ||
-      (typeof payload.steering_actor_id === 'string' && steering.running.actorId === actorId))
+      (typeof payload.steering_actor_id === 'string' &&
+        running.steeringActorId === payload.steering_actor_id))
       ? 'steer'
       : 'queue';
   return {
@@ -229,7 +229,7 @@ export function roomCommand(input: {
     epoch: input.epoch,
     origin: {
       surface: input.surface,
-      actorId,
+      actorId: payload.sender,
       roomId: input.roomId,
       threadId,
       messageId: payload.message_id,

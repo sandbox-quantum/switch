@@ -724,7 +724,8 @@ export async function runSharedHost(
     const run = async (
       value: unknown,
       requesterName: string | null,
-      roomSteerTarget?: string
+      roomSteerTarget?: string,
+      steeringActorId?: string
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -750,7 +751,7 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.some((entry) => entry.commandId === command.commandId);
       try {
-        await host!.command(command, roomSteerTarget);
+        await host!.command(command, roomSteerTarget, steeringActorId);
       } catch (error) {
         await host!.reject(command, error);
       }
@@ -853,7 +854,7 @@ export async function runSharedHost(
           steering: {
             supported: adapter.capabilities.steering,
             mode: options.midTurnMessages,
-            running: running?.origin ?? null,
+            running,
           },
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
@@ -862,7 +863,12 @@ export async function runSharedHost(
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null, running?.turnId);
+        const outcome = await run(
+          command,
+          null,
+          running?.turnId,
+          message.data.payload.steering_actor_id ?? undefined
+        );
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)

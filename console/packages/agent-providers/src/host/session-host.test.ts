@@ -139,12 +139,19 @@ async function start(provider: Session['provider'], steering = false) {
 }
 it('labels a steered message on the running turn and deduplicates it', async () => {
   const { host, adapter } = await start('claude', true);
-  await host.command(message('first'));
+  const first = message('first');
+  first.origin = { ...first.origin, actorId: '@starter:example.test', roomId: 'room' };
+  await host.command(first, undefined, 'starter-user-id');
   await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  expect(host.runningMessage()).toMatchObject({
+    origin: { actorId: '@starter:example.test' },
+    steeringActorId: 'starter-user-id',
+  });
   vi.mocked(adapter.sendTurn).mockResolvedValueOnce({ turnId: 'correction', steeredInto: 'first' });
   const correction = message('correction', 'steer');
-  expect((await host.command(correction)).status).toBe('applied');
-  await host.command(correction);
+  correction.origin = { ...first.origin, actorId: '@other-account:example.test' };
+  expect((await host.command(correction, 'first', 'starter-user-id')).status).toBe('applied');
+  await host.command(correction, 'first', 'starter-user-id');
   expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
   expect(host.snapshot().turns).toHaveLength(1);
   expect(host.snapshot().items).toEqual(

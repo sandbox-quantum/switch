@@ -32,7 +32,11 @@ import type { Redactions } from './redaction';
 import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('accepted'), command: commandSchema }),
+  z.object({
+    type: z.literal('accepted'),
+    command: commandSchema,
+    steeringActorId: z.string().optional(),
+  }),
   z.object({ type: z.literal('dispatched'), commandId: z.string() }),
   z.object({ type: z.literal('steer-queued'), commandId: z.string() }),
   z.object({ type: z.literal('steered'), commandId: z.string(), turnId: z.string() }),
@@ -106,6 +110,7 @@ export class HostedSession {
   private readonly projector: ChatProjector;
   private replica: SessionReplica;
   private readonly commands = new Map<string, Command>();
+  private readonly steeringActors = new Map<string, string>();
   private readonly dispatched = new Set<string>();
   private readonly steerQueued = new Set<string>();
   private readonly steeredTurns = new Map<string, string>();
@@ -177,7 +182,11 @@ export class HostedSession {
       this.replica.apply(event);
     }
     for (const record of inbox.records) {
-      if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
+      if (record.type === 'accepted') {
+        this.commands.set(record.command.commandId, record.command);
+        if (record.steeringActorId !== undefined)
+          this.steeringActors.set(record.command.commandId, record.steeringActorId);
+      }
       if (record.type === 'dispatched') this.dispatched.add(record.commandId);
       if (record.type === 'steer-queued') {
         this.dispatched.delete(record.commandId);
@@ -741,7 +750,7 @@ export class HostedSession {
     return true;
   }
 
-  runningMessage(): { turnId: string; origin: Origin } | null {
+  runningMessage(): { turnId: string; origin: Origin; steeringActorId?: string } | null {
     const turnId = this.activeTurn;
     if (
       !turnId ||
@@ -750,12 +759,13 @@ export class HostedSession {
     )
       return null;
     const origin = this.commands.get(turnId)?.origin;
-    return origin ? { turnId, origin } : null;
+    return origin ? { turnId, origin, steeringActorId: this.steeringActors.get(turnId) } : null;
   }
 
   private directSteerTarget(origin: Origin): string | null {
     const running = this.runningMessage();
     if (
+      origin.roomId === null &&
       running?.origin.actorId === origin.actorId &&
       running.origin.roomId === origin.roomId &&
       (running.origin.threadId ?? running.origin.messageId) ===
@@ -765,9 +775,13 @@ export class HostedSession {
     return null;
   }
 
-  command(input: Command, roomSteerTarget?: string): Promise<Snapshot['commandStatuses'][number]> {
+  command(
+    input: Command,
+    roomSteerTarget?: string,
+    steeringActorId?: string
+  ): Promise<Snapshot['commandStatuses'][number]> {
     const command = commandSchema.parse(input);
-    const result = this.serial.then(() => this.accept(command, roomSteerTarget));
+    const result = this.serial.then(() => this.accept(command, roomSteerTarget, steeringActorId));
     this.serial = result.catch(() => {});
     return result;
   }
@@ -810,7 +824,8 @@ export class HostedSession {
 
   private async accept(
     command: Command,
-    roomSteerTarget?: string
+    roomSteerTarget?: string,
+    steeringActorId?: string
   ): Promise<Snapshot['commandStatuses'][number]> {
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
@@ -904,8 +919,9 @@ export class HostedSession {
         ? (roomSteerTarget ?? this.directSteerTarget(command.origin))
         : null;
     if (body.type === 'request.answer') this.validateAnswer(command);
-    await this.inbox.append({ type: 'accepted', command });
+    await this.inbox.append({ type: 'accepted', command, steeringActorId });
     this.commands.set(command.commandId, command);
+    if (steeringActorId !== undefined) this.steeringActors.set(command.commandId, steeringActorId);
     await this.publish({
       type: 'command.status',
       commandId: command.commandId,
