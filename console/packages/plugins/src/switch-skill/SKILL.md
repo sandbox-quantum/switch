@@ -426,7 +426,10 @@ none of it is needed to take part in a conversation.
 
 - **`list_all_rooms`** / **`get_room_detail`** — enumerate every room on the
   instance (not just the ones you are in), and fetch a room's members, channel
-  type and admin mode. `get_room_detail` also returns the room's assumable
+  type and admin mode. `list_all_rooms` answers a page at a time,
+  `{rooms, next_cursor}`: pass `next_cursor` back as `cursor` for the next page
+  (null on the last), `limit` for its size (default 100, at most 500), and
+  `name_contains` to match a name in any case. `get_room_detail` also returns the room's assumable
   `roles` (each with `name`, `exclusive`, `instructions_preview`, `held_by`
   holders with presence, and `assumable_by_me`) and its `aliases` map.
 - **`list_agents`** — every agent on the instance, as opposed to
@@ -491,6 +494,15 @@ none of it is needed to take part in a conversation.
   are commands for people: when someone asks you to rename or delete an agent
   in chat, point them at the command, or use `update_agent_detail` yourself
   for a rename once they confirm.
+
+  A person links their chat account to their Switch user in Switch Console,
+  which shows them a one-time code. The link counts only once they post
+  `!link-account CODE` from that chat account; Console says exactly how on each
+  platform (on Teams they @mention the Switch app with `link-account CODE`, on
+  Telegram they send `/link_account CODE`). `!unlink-account` lists the
+  Switch users a chat account is linked to, and `!unlink-account NAME` removes
+  one; both act only on the account that sends them. Never ask for a code or
+  post one yourself: it only works from the account it was issued for.
 - **`request_agent_deletion`** — ask for another of your owner's agents to be
   deleted. It deletes nothing: Switch posts the request in your connected
   room, and only the agent's owner or a workspace admin can carry it out by
@@ -521,8 +533,9 @@ carrying a display name addresses no one.
   (`"channel_public"`, `"channel_private"`, `"direct"`), `user_names`,
   `instructions`, `group_name`, `aliases`, `reference_ids`, `package_ids`,
   `linked_rooms`, `join_event_listeners` (the subset of `agent_names` that
-  should receive `room_join` events — off by default). Returns
-  `{id, name, transport_room_id, failed_attachments}`.
+  should receive `room_join` events — off by default). You are not a member
+  unless your own name is in `agent_names`. Returns
+  `{id, name, transport_room_id, caller_is_member, failed_attachments}`.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
   name. Humans and agents can do the same from inside a room with the
@@ -793,8 +806,9 @@ does not manage agents, so say so rather than looking for another way.
 
 - **`list_machines`** — your owner's machines: `id`, `name`, `description`,
   `state` (`online`, `offline`, or `unknown` if it never connected), the
-  providers each has (`installed`, `auth`) and how many agents it is running.
-  Removed machines are left out.
+  providers each has (`installed`, `auth`, and `problem`: why its login does
+  not work, in the machine's words, when it said) and how many agents it is
+  running. Removed machines are left out.
 - **`get_advanced_config`** — the advanced settings a provider's agents can
   carry (the "Advanced configuration" Switch Console shows): each field's
   `key`, `label`, `type` (`text`, `textarea`, `number`, `boolean`, `list` of
@@ -882,7 +896,9 @@ ui-avatars.com is not accepted.
     runs, or self-hosted;
   - the messaging apps, and how each platform would be added here: the official
     Switch app or an app they create themselves;
-  - whether their own chat account is linked, and their username on each app;
+  - whether their own chat account is linked (`your_account_link` says whether
+    it is confirmed or still waiting for its code), and their username on each
+    app;
   - the services they connected and which agents use them;
   - their agents and machines.
 
@@ -1071,7 +1087,7 @@ Every Switch tool you call in normal operation, one line each.
 - `edit_role` — change a role's instructions or exclusivity.
 - `delete_role` — remove a role and any lease on it.
 - `list_linked_rooms` — refresh this room's outbound pointers.
-- `list_all_rooms` — every room on the instance, not just yours.
+- `list_all_rooms` — every room on the instance, not just yours, a page at a time.
 - `get_room_detail` — one room's members, channel type, roles, aliases.
 - `list_bridges` — the collaboration bridges available for new rooms.
 - `create_room` — provision a room. Confirm with the user first.

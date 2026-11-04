@@ -4,6 +4,8 @@ import {
   allFeatureFlagsOff,
   type FeatureFlagKey,
   type FeatureFlags,
+  FLAGS_NOT_READ_YET,
+  type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
 import { featureFlagsChangedChannel } from '@shared/events/featureFlagEvents';
 
@@ -66,6 +68,39 @@ export function useFeatureFlags(serverId: string | null | undefined): FeatureFla
   }, [serverId]);
 
   return flags;
+}
+
+/** Whether a server's flags say anything yet: read once, or tried and failed (then they stay off). */
+export function flagsSettled(state: Pick<ServerFeatureFlags, 'fetchedAt' | 'error'>): boolean {
+  return state.fetchedAt !== null || (state.error !== null && state.error !== FLAGS_NOT_READ_YET);
+}
+
+/**
+ * Whether a server's flags are known yet, kept current. Before they are, what
+ * they decide is unknown, and a view that would show the wrong thing either
+ * way can wait for them.
+ */
+export function useFeatureFlagsKnown(serverId: string | null | undefined): boolean {
+  const [settled, setSettled] = useState(() => (serverId ? known.has(serverId) : true));
+  useEffect(() => {
+    if (!serverId) {
+      setSettled(true);
+      return;
+    }
+    setSettled(known.has(serverId));
+    let current = true;
+    const off = events.on(featureFlagsChangedChannel, (state) => {
+      if (state.serverId === serverId && flagsSettled(state)) setSettled(true);
+    });
+    void rpc.featureFlags.get(serverId).then((res) => {
+      if (current && res?.success && flagsSettled(res.data)) setSettled(true);
+    });
+    return () => {
+      current = false;
+      off();
+    };
+  }, [serverId]);
+  return settled;
 }
 
 /**

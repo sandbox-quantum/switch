@@ -322,8 +322,8 @@ class TestListMachines:
             client,
             laptop,
             providers=[
-                provider("claude"),
-                provider("codex", auth="missing"),
+                provider("claude", auth_problem="Said before a given login worked."),
+                provider("codex", auth="missing", auth_problem="In the OS keyring."),
                 provider("cursor", installed=False),
             ],
             agents=[
@@ -351,18 +351,21 @@ class TestListMachines:
                     "installed": True,
                     "version": "1.0.0",
                     "auth": "ok",
+                    "problem": None,
                 },
                 {
                     "provider": "codex",
                     "installed": True,
                     "version": "1.0.0",
                     "auth": "missing",
+                    "problem": "In the OS keyring.",
                 },
                 {
                     "provider": "cursor",
                     "installed": False,
                     "version": None,
                     "auth": "ok",
+                    "problem": None,
                 },
             ],
             "agents_running": 2,
@@ -585,6 +588,18 @@ class TestCreateAgent:
                 [provider("claude", auth="expired")],
                 "provider_login_expired",
                 "the claude login on machine 'laptop' has expired",
+            ),
+            (
+                [
+                    provider(
+                        "claude",
+                        auth="missing",
+                        auth_problem="An administrator pins where it keeps logins.",
+                    )
+                ],
+                "provider_login_missing",
+                "claude cannot be used on machine 'laptop'; your owner needs to fix "
+                "this there: An administrator pins where it keeps logins.",
             ),
         ],
     )

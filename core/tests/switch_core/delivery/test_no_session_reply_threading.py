@@ -80,6 +80,9 @@ def _fake_self(
     async def _no_notice(_session: object) -> None:
         return None
 
+    async def _still_here(_row: object) -> bool:
+        return True  # still a member of the room, so the reply is posted
+
     ns = SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="cc-bug-fixing"),
         tenant_id=TENANT_ZERO_ID,
@@ -97,6 +100,7 @@ def _fake_self(
         _triggered_by_auto_reply=AgentRecipient._triggered_by_auto_reply,
         actor=SimpleNamespace(send_message=send_message),
         _report_addressed=lambda *a, **k: None,
+        _still_here=_still_here,
     )
     # Exercise the real sender-tagging and auto-reply helpers.
     ns._sender_handle = AgentRecipient._sender_handle.__get__(ns)
