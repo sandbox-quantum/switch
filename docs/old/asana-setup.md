@@ -1,5 +1,11 @@
 # Asana on a self-hosted server
 
+> **Connection blocked:** The current connector checks identity through
+> Asana's REST API, but [Asana documents MCP-app tokens](https://developers.asana.com/docs/integrating-with-asanas-mcp-server)
+> as valid only with its MCP server. A real MCP-app connection is not expected to
+> complete until Switch can read identity through MCP. Live connection and
+> grant-removal verification are still pending.
+
 Agents can read and update tasks and projects in their owners' Asana
 workspaces once the server's operator registers an Asana MCP app. Each
 person then connects their own Asana account from Switch Console and turns
@@ -43,9 +49,11 @@ In Asana's [developer console](https://app.asana.com/0/my-apps), choose
    workspace selected. Specific workspaces with an empty list refuses
    everyone, at Asana's consent page, with nothing wrong in Switch.
 
-There are no permission scopes to pick: an MCP app's consent is the single
-`default` scope, and every authorization may use every tool the server
-offers, within each person's own Asana permissions.
+There are no permission scopes to pick. Asana's integration guide permits
+`default` or an omitted scope and says every authorization may use every
+tool the server offers, within each person's own Asana permissions. Its
+troubleshooting guidance recommends omitting `scope` if it is rejected;
+the current Switch connector sends `default`.
 
 ## Give Switch the client
 
@@ -136,13 +144,10 @@ agents' next token requests:
 - Advanced task search (`search_tasks`) needs a paid Asana plan. On a free
   plan it is refused, and agents fall back to the basic task and project
   tools.
-- Connecting reads the account from Asana's REST API (`/users/me`). Asana
-  documents an MCP app's tokens as working only with the MCP server, so
-  whether that read succeeds with an MCP app's token is Asana's to keep
-  true; a connect that fails at the checking step, after consent succeeded,
-  is this limit, not a wrong client or redirect. The account is also
-  available from the server's own `get_user` tool, which needs no REST
-  call.
+- The current OAuth adapter sends the MCP endpoint URL as the `resource`
+  parameter. Asana's integration guide instead names
+  `https://mcp.asana.com/v2` for the standard server. This difference has
+  not been verified with a real app and may prevent authorization.
 
 ## An organization's own Asana app
 
