@@ -543,6 +543,61 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## Cloudflare
+
+Built from Cloudflare's API MCP server's published source
+([cloudflare/mcp](https://github.com/cloudflare/mcp)) and its authorization
+server's metadata, not yet from a sign-in run (below):
+
+- **One server, the whole API.** `mcp.cloudflare.com/mcp` serves Cloudflare's
+  whole API in Code Mode: `search` finds endpoints in its OpenAPI description,
+  `execute` runs a short JavaScript function that calls them, `docs` searches
+  the documentation and `whoami` names the account. The product servers
+  (`observability.mcp.cloudflare.com` and the rest) each need a sign-in of
+  their own, so one connection would be several; the API server alone covers
+  DNS, Workers and their logs, and scopes narrow it.
+- **Dynamic registration, any loopback port.** The authorization server
+  (workers-oauth-provider) offers RFC 7591 registration, PKCE S256 only, and
+  takes a loopback redirect on any port (RFC 8252), so the entry fixes none.
+  Sign-ins come back to Switch Console, which needs no `GATEWAY_PUBLIC_URL`.
+- **Tokens of its own.** The server issues its own tokens and keeps the
+  Cloudflare one behind them, so `api.cloudflare.com/client/v4/user` refuses
+  the token Switch holds. Its `whoami` tool says whose a token is (`user:<id>`
+  and the email), and the entry reads the account from it (`mcp_tool`, under
+  Adding a connector). Access tokens are issued for an hour; a refreshed one
+  lives as long as the Cloudflare token behind it, and a longer one is held
+  back until it has an hour left. Refresh tokens rotate; the previous one is
+  taken until the new one is used.
+- **Scopes are a starting point.** The consent page is pre-ticked with the
+  scopes asked for, and the person may tick more or fewer; the granted scopes
+  come back with the token and decide the level recorded. A person who widens
+  a read sign-in gets a read connection whose token reaches further, as with
+  any vendor whose consent screen can widen. The skill tells the agent not to
+  rely on a refusal. Required by the server whatever is asked:
+  `offline_access`, `user:read`, `account:read`. Read adds `zone.read` (listing
+  zones), `dns.read`, `workers-scripts.read`, `workers-routes.read` and
+  `workers-observability.read`; write adds the matching `.write` scopes. A
+  Workers Logs query is a POST that Cloudflare gates on
+  `workers-observability.write`, so reading the logs themselves needs the
+  write level; read lists detected issues and their occurrences. Not asked
+  for: `zone.write` (creating and deleting zones), `workers-scripts.admin`,
+  and `logs.write`, which sets up Logpush jobs that copy logs to a
+  destination outside Cloudflare. A refused call's error names the permission
+  it needed; Switch does not step up, so the owner connects again.
+- **Revocation.** The metadata advertises RFC 7009 revocation at the token
+  endpoint; revoking the refresh token ends the grant and every access token
+  issued under it. The server does not then revoke its own Cloudflare sign-in
+  behind the grant, which nothing Switch held can reach.
+
+Still to measure with a real account, before relying on the comments: the
+loopback sign-in and consent from Switch Console, `whoami` with the token,
+a refresh, a read sign-in refused a DNS change, a grant switched off stopping
+a session within a minute, and disconnect.
+
+To connect: Settings, Connections in Switch Console, then Cloudflare. Nothing
+needs configuring on the server. To roll back, add `cloudflare` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP
