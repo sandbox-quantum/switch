@@ -61,10 +61,21 @@ export interface RoomJoinPayload {
   listening: boolean;
 }
 
+export interface MessageEditPayload {
+  message_id: string;
+  body: string;
+  edit_id: string;
+  /**
+   * The platform edit revision in integer microseconds since UNIX epoch.
+   * Safe integer: ~1.73e15 is well within JavaScript Number.MAX_SAFE_INTEGER (9e15).
+   */
+  revision: number;
+}
+
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload;
+  payload: MessagePayload | CommandPayload | RoomJoinPayload | MessageEditPayload;
   /**
    * The event's number in the agent's own events (`s`). It is present on the push
    * transport and absent on the legacy poll. It is also absent on a message
