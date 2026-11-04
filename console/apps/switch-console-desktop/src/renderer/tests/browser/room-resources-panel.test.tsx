@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const listRoomResources = vi.hoisted(() => vi.fn());
 const setRoomResourceAttached = vi.hoisted(() => vi.fn());
 const listLinkedRooms = vi.hoisted(() => vi.fn());
+const navigate = vi.hoisted(() => vi.fn());
 const permissions = vi.hoisted(() => ({
   value: { canWrite: true, canManage: false, canUnlink: true },
 }));
@@ -42,6 +43,13 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     roomPermissions: () => permissions.value,
     readableRoomsInWorkspace: () => [],
   },
+}));
+
+vi.mock('@renderer/lib/layout/navigation-provider', () => ({
+  useNavigate: () => ({ navigate }),
+}));
+vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
+  workspacesStore: { serverIdFor: () => 'srv-1', activeId: 'ws-1' },
 }));
 
 import { RoomResourcesPanel } from '@renderer/features/switch-rooms/room-resources-panel';
@@ -217,5 +225,20 @@ describe('the Resources tab', () => {
     expect(el.textContent).not.toContain('Link a room');
     expect(el.querySelector('[aria-label^="Detach"]')).toBeNull();
     expect(el.querySelector('[aria-label^="Delete"]')).toBeNull();
+  });
+
+  it('opens a reference or document from the library on its Library page, not a room-only one', async () => {
+    const el = await renderPanel();
+    await act(async () =>
+      el.querySelector<HTMLButtonElement>('[aria-label="Show Guide in the Library"]')!.click()
+    );
+    expect(navigate).toHaveBeenCalledWith('libraryItem', {
+      serverId: 'srv-1',
+      kind: 'documents',
+      itemId: 'd-1',
+    });
+    expect(el.querySelector('[aria-label="Show Repo in the Library"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Show Standup notes in the Library"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Show Onboarding in the Library"]')).toBeNull();
   });
 });

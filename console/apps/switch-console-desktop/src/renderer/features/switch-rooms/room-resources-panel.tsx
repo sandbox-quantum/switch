@@ -1,5 +1,15 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, FileText, Link2, Loader2, Package, Plus, Search, X } from 'lucide-react';
+import {
+  ExternalLink,
+  FileText,
+  Library,
+  Link2,
+  Loader2,
+  Package,
+  Plus,
+  Search,
+  X,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
@@ -19,6 +29,7 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { Input } from '@renderer/lib/ui/input';
+import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type { RoomResource, RoomResourceKind } from '@shared/core/switch-servers/switch-servers';
 import { useRoomDetail } from './room-participants';
 import { attachableResources, resourcesByOrigin } from './room-resources';
@@ -116,6 +127,8 @@ const ResourceSection = observer(function ResourceSection({
   canUnlink: boolean;
 }) {
   const queryClient = useQueryClient();
+  const { navigate } = useNavigate();
+  const serverId = workspacesStore.serverIdFor(workspaceId);
   const key = roomResourcesKey(workspaceId, roomId, kind);
   const attached = useQuery({
     queryKey: key,
@@ -197,6 +210,11 @@ const ResourceSection = observer(function ResourceSection({
                         ? () => setReading(resource)
                         : null
                   }
+                  onShowInLibrary={
+                    serverId !== null && kind !== 'packages'
+                      ? () => navigate('libraryItem', { serverId, kind, itemId: resource.id })
+                      : null
+                  }
                   removeLabel={canUnlink ? `Detach ${resource.name}` : null}
                   busy={busy === resource.id}
                   onRemove={() => void detach(resource)}
@@ -261,11 +279,14 @@ function ResourceRow({
   busy,
   confirm = false,
   onRemove,
+  onShowInLibrary = null,
 }: {
   resource: RoomResource;
   /** The packages that brought it in, by name. */
   via: string[];
   onOpen: (() => void) | null;
+  /** Opens its page in the Library; null for what has none there. */
+  onShowInLibrary?: (() => void) | null;
   /** The remove button's label, or null for someone who may not remove it. */
   removeLabel: string | null;
   busy: boolean;
@@ -309,6 +330,17 @@ function ResourceRow({
         </button>
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
+      )}
+      {onShowInLibrary && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`Show ${resource.name} in the Library`}
+          title="Show in the Library"
+          onClick={onShowInLibrary}
+        >
+          <Library />
+        </Button>
       )}
       {removeLabel && confirm && armed && (
         <span className="flex shrink-0 items-center gap-1">
@@ -490,9 +522,13 @@ function DocumentDialog({
               {failureText(content.error, 'Could not read this document.')}
             </p>
           ) : (
-            <pre className="rounded-md bg-background-1 p-3 font-mono text-xs whitespace-pre-wrap text-foreground">
-              {content.data.content}
-            </pre>
+            <div className="rounded-md border border-border px-4 py-3">
+              {content.data.content.trim() ? (
+                <MarkdownRenderer content={content.data.content} variant="compact" />
+              ) : (
+                <p className="text-sm text-foreground-muted italic">Empty.</p>
+              )}
+            </div>
           )}
         </DialogContentArea>
       </DialogContent>

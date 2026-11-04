@@ -1,0 +1,192 @@
+import type {
+  LibraryDeleteResult,
+  LibraryDocument,
+  LibraryItem,
+  LibraryItemChanges,
+  LibraryItemInput,
+  LibraryItemRoom,
+  LibraryKind,
+  LibraryVisibility,
+  ReferenceTypeOption,
+} from '@shared/core/switch-servers/library';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { gatewayFetch } from './gateway-client';
+
+// The workspace library's references and documents, through the gateway's
+// `/references` and `/documents` routes. Attaching one to a room is the room
+// resources call in gateway-client.
+
+type LibraryItemJson = {
+  id: string;
+  owner_id: string;
+  owner_name?: string | null;
+  read_visibility: string;
+  write_visibility: string;
+  name: string;
+  description: string;
+  instructions?: string;
+  type?: string;
+  type_display_name?: string | null;
+  value?: { urls?: unknown };
+  content?: string;
+  attached_rooms_count?: number;
+  packages?: string[];
+  scope?: 'global' | 'room';
+  created_at: string;
+};
+
+function visibility(value: string): LibraryVisibility {
+  return value === 'public' ? 'public' : 'private';
+}
+
+export function mapLibraryItem(kind: LibraryKind, r: LibraryItemJson): LibraryItem {
+  const urls = Array.isArray(r.value?.urls)
+    ? r.value.urls.filter((url): url is string => typeof url === 'string')
+    : [];
+  return {
+    id: r.id,
+    kind,
+    name: r.name,
+    description: r.description,
+    instructions: r.instructions ?? '',
+    ownerId: r.owner_id,
+    ownerName: r.owner_name ?? null,
+    readVisibility: visibility(r.read_visibility),
+    writeVisibility: visibility(r.write_visibility),
+    type: kind === 'references' ? (r.type ?? null) : null,
+    typeLabel: kind === 'references' ? (r.type_display_name ?? r.type ?? null) : null,
+    urls,
+    attachedRoomsCount: r.attached_rooms_count ?? 0,
+    packageIds: r.packages ?? [],
+    createdAt: r.created_at,
+  };
+}
+
+function itemPath(kind: LibraryKind, id: string): string {
+  return `/${kind}/${encodeURIComponent(id)}`;
+}
+
+/** The library items of one kind the signed-in person may read (`GET /{kind}`). */
+export async function fetchLibraryItems(
+  server: SwitchServer,
+  kind: LibraryKind
+): Promise<LibraryItem[]> {
+  const res = await gatewayFetch(server, `/${kind}`, { authenticated: true });
+  // Agents' room-only documents are the room's, not the library's.
+  return ((await res.json()) as LibraryItemJson[])
+    .filter((r) => r.scope !== 'room')
+    .map((r) => mapLibraryItem(kind, r));
+}
+
+/** One library item; a document comes with its content. */
+export async function fetchLibraryItem(
+  server: SwitchServer,
+  kind: LibraryKind,
+  id: string
+): Promise<LibraryItem | LibraryDocument> {
+  const res = await gatewayFetch(server, itemPath(kind, id), { authenticated: true });
+  const json = (await res.json()) as LibraryItemJson;
+  const item = mapLibraryItem(kind, json);
+  return kind === 'documents' ? { ...item, content: json.content ?? '' } : item;
+}
+
+function body(kind: LibraryKind, input: LibraryItemChanges & { type?: string }) {
+  return {
+    ...(input.name !== undefined ? { name: input.name } : {}),
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
+    ...(input.readVisibility !== undefined ? { read_visibility: input.readVisibility } : {}),
+    ...(input.writeVisibility !== undefined ? { write_visibility: input.writeVisibility } : {}),
+    ...(kind === 'references' && input.type !== undefined ? { type: input.type } : {}),
+    ...(kind === 'references' && input.urls !== undefined ? { value: { urls: input.urls } } : {}),
+    ...(kind === 'documents' && input.content !== undefined ? { content: input.content } : {}),
+  };
+}
+
+/** Add a reference or document to the library. Refusals propagate in the gateway's words. */
+export async function createLibraryItem(
+  server: SwitchServer,
+  kind: LibraryKind,
+  input: LibraryItemInput
+): Promise<LibraryItem> {
+  const res = await gatewayFetch(server, `/${kind}`, {
+    authenticated: true,
+    method: 'POST',
+    body: body(kind, input),
+  });
+  return mapLibraryItem(kind, (await res.json()) as LibraryItemJson);
+}
+
+/** Change a library item; only the fields given are sent. */
+export async function updateLibraryItem(
+  server: SwitchServer,
+  kind: LibraryKind,
+  id: string,
+  changes: LibraryItemChanges
+): Promise<LibraryItem | LibraryDocument> {
+  const res = await gatewayFetch(server, itemPath(kind, id), {
+    authenticated: true,
+    method: 'PATCH',
+    body: body(kind, changes),
+  });
+  const json = (await res.json()) as LibraryItemJson;
+  const item = mapLibraryItem(kind, json);
+  return kind === 'documents' ? { ...item, content: json.content ?? '' } : item;
+}
+
+/** Delete a library item, detaching it from every room and package it was in. */
+export async function deleteLibraryItem(
+  server: SwitchServer,
+  kind: LibraryKind,
+  id: string
+): Promise<LibraryDeleteResult> {
+  const res = await gatewayFetch(server, itemPath(kind, id), {
+    authenticated: true,
+    method: 'DELETE',
+  });
+  const json = (await res.json()) as {
+    detached_room_ids?: string[];
+    affected_package_ids?: string[];
+  };
+  return {
+    detachedRoomIds: json.detached_room_ids ?? [],
+    affectedPackageIds: json.affected_package_ids ?? [],
+  };
+}
+
+/** The rooms a library item is attached to that the signed-in person can see. */
+export async function fetchLibraryItemRooms(
+  server: SwitchServer,
+  kind: LibraryKind,
+  id: string
+): Promise<LibraryItemRoom[]> {
+  const res = await gatewayFetch(server, `${itemPath(kind, id)}/rooms`, { authenticated: true });
+  return ((await res.json()) as { room_id: string; room_name: string }[]).map((r) => ({
+    roomId: r.room_id,
+    roomName: r.room_name,
+  }));
+}
+
+/** The types a new reference may be given: Switch's own, then those people wrote. */
+export async function fetchReferenceTypes(server: SwitchServer): Promise<ReferenceTypeOption[]> {
+  const res = await gatewayFetch(server, '/references/reference-types', { authenticated: true });
+  const json = (await res.json()) as {
+    type: string;
+    display_name: string;
+    value_hint?: string | null;
+    is_builtin?: boolean;
+    owner_name?: string | null;
+  }[];
+  return json
+    .map((t) => ({
+      type: t.type,
+      displayName: t.display_name,
+      valueHint: t.value_hint ?? '',
+      isBuiltin: t.is_builtin ?? false,
+      ownerName: t.owner_name ?? null,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.isBuiltin) - Number(a.isBuiltin) || a.displayName.localeCompare(b.displayName)
+    );
+}
