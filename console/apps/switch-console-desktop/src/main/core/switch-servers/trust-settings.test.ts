@@ -59,6 +59,7 @@ const SETTINGS_JSON = {
   has_api_key: true,
   api_key_last4: '-key',
   enabled: true,
+  share_agent_instructions: false,
 };
 
 const SETTINGS = {
@@ -67,6 +68,7 @@ const SETTINGS = {
   hasApiKey: true,
   apiKeyLast4: '-key',
   enabled: true,
+  shareAgentInstructions: false,
 };
 
 const fetchMock = vi.fn();
@@ -149,6 +151,25 @@ describe('updateTrustSettingsOnServer', () => {
 
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse(init.body)).toMatchObject({ api_key: 'new-key' });
+  });
+
+  it('sends share_agent_instructions only when it is given', async () => {
+    fetchMock.mockResolvedValue(response(200, SETTINGS_JSON));
+
+    await updateTrustSettingsOnServer(SERVER, { ...SAVE_PARAMS, shareAgentInstructions: true });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toMatchObject({ share_agent_instructions: true });
+  });
+
+  it('reads a server from before the setting as not reporting it', async () => {
+    const { share_agent_instructions: _omitted, ...older } = SETTINGS_JSON;
+    fetchMock.mockResolvedValue(response(200, older));
+
+    await expect(updateTrustSettingsOnServer(SERVER, SAVE_PARAMS)).resolves.toEqual({
+      kind: 'saved',
+      settings: { ...SETTINGS, shareAgentInstructions: null },
+    });
   });
 
   it('maps a rejected session onto unauthenticated', async () => {

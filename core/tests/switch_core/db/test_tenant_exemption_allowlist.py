@@ -71,6 +71,10 @@ _ALLOWED_MODULES = {
     # workspace: enumerate, then read each one's connections under its own
     # policy, the same shape as service-token upkeep above.
     "switch_core.gateway.connector_apps",
+    # The Switch Trust agent inventory sends every tenant's agents, one
+    # snapshot per tenant: enumerate, then read each one's agents under its
+    # own policy, the same shape as session-activity upkeep above.
+    "switch_core.trust.inventory",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time.
     "switch_core.bridges.agent.protocol.agent_core",
@@ -232,6 +236,8 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
     # deployment, so there is no tenant for a policy to narrow on.
     "switch_core.trust.client",
+    # The agent inventory sync reads the same row to learn where to send.
+    "switch_core.trust.inventory",
     #
     # ── The OAuth client Core registers for itself at a vendor that offers
     # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The

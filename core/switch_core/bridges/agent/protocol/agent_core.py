@@ -147,6 +147,7 @@ from switch_core.trust.client import (
     check_message,
     trust_annotation,
 )
+from switch_core.trust.identity import TrustAgent, agent_label
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -861,6 +862,13 @@ class AgentCore:
             agent = await self.agent_store.get(session, agent_id)
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
+        # A running agent's guardrail checks name it from the row its actor
+        # holds, as a rename does (`rename_agent`): here now, and in every
+        # other process once they re-read its client.
+        actor = self.client_lifecycle.get(agent.client_id)
+        if isinstance(actor, AgentActor):
+            actor.set_agent(agent)
+        self.client_lifecycle.announce(tenant_id, [agent.client_id])
         identity = agent_identity(agent)
         failures: list[str] = []
         for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
@@ -1680,11 +1688,17 @@ class AgentCore:
         content then would be indistinguishable from not checking at all —
         having already posted a notice in the room in place of the real
         content."""
+        agent = client.agent
         check = await check_message(
             self.trust_client,
             role="assistant",
             content=content,
             room_id=room.id,
+            agent=TrustAgent(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                label=agent_label(agent.name, agent.display_name),
+            ),
         )
         if check.blocked or (
             check.outcome == "redacted" and check.redacted_content is None

@@ -107,6 +107,7 @@ async def test_get_with_no_row_reports_off_with_the_default_endpoint(
     assert body["has_api_key"] is False
     assert body["api_key_last4"] is None
     assert body["endpoint"] == "https://api.switchagents.ai"
+    assert body["share_agent_instructions"] is False
 
 
 async def test_put_then_get_round_trips_without_exposing_the_key(
@@ -147,6 +148,31 @@ async def test_put_without_api_key_leaves_the_stored_key_untouched(
     assert body["api_key_last4"] == "-key"
 
 
+async def test_sharing_instructions_is_saved_and_kept_by_a_save_without_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    admin = await _add_user(session_factory, name="op", role="admin")
+    async with _client(session_factory, admin) as client:
+        first = await client.put("/trust-settings", json=_CONFIGURED_BODY)
+        turned_on = await client.put(
+            "/trust-settings",
+            json={
+                "endpoint": "https://trust.example",
+                "policy_id": "pol_123",
+                "share_agent_instructions": True,
+            },
+        )
+        # What a client from before the setting sends.
+        kept = await client.put(
+            "/trust-settings",
+            json={"endpoint": "https://trust.example", "policy_id": "pol_123"},
+        )
+
+    assert first.json()["share_agent_instructions"] is False
+    assert turned_on.json()["share_agent_instructions"] is True
+    assert kept.json()["share_agent_instructions"] is True
+
+
 async def test_delete_turns_it_off(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -158,7 +184,23 @@ async def test_delete_turns_it_off(
 
     assert delete_resp.status_code == 200
     assert delete_resp.json()["enabled"] is False
+    assert delete_resp.json()["has_api_key"] is False
     assert get_resp.json()["enabled"] is False
+
+
+async def test_turning_it_back_on_keeps_the_sharing_choice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    admin = await _add_user(session_factory, name="op", role="admin")
+    async with _client(session_factory, admin) as client:
+        await client.put(
+            "/trust-settings",
+            json={**_CONFIGURED_BODY, "share_agent_instructions": True},
+        )
+        await client.delete("/trust-settings")
+        back_on = await client.put("/trust-settings", json=_CONFIGURED_BODY)
+
+    assert back_on.json()["share_agent_instructions"] is True
 
 
 async def test_saving_and_clearing_tell_every_process(

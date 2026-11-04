@@ -53,6 +53,19 @@ class _NoBridges:
         return []
 
 
+class _Clients:
+    """No running clients; records which clients were announced changed."""
+
+    def __init__(self) -> None:
+        self.announced: list[tuple[str, list[str]]] = []
+
+    def get(self, client_id: str) -> None:
+        return None
+
+    def announce(self, tenant_id: str, client_ids: list[str]) -> None:
+        self.announced.append((tenant_id, list(client_ids)))
+
+
 def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
@@ -65,6 +78,7 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
     svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
     svc.room_role_store = RoomRoleStore()  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[assignment]
+    svc.client_lifecycle = _Clients()  # type: ignore[assignment]
     return svc
 
 
@@ -392,6 +406,11 @@ class TestUpdateAgentDetail:
         assert detail.description == "Reviews pull requests"
         assert detail.display_name == "Reviewer"
         assert detail.icon_url == "https://example.com/reviewer.png"
+        # Every process re-reads the agent, so its guardrail checks carry the
+        # new name.
+        clients = svc.client_lifecycle
+        assert isinstance(clients, _Clients)
+        assert len(clients.announced) == 1
 
     async def test_empty_string_clears_display_name_and_icon(
         self, session_factory: async_sessionmaker[AsyncSession]

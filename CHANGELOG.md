@@ -106,6 +106,25 @@ version of their own to them without also giving them a release of their own.
   lists, now leave out private rooms the caller cannot read.
 
 #### Added
+- **Switch Trust lists your agents.** With a Switch Trust API key saved,
+  Switch sends Switch Trust the agents of every workspace, so they appear in
+  its AI inventory: each agent's coding agent, model, tools, granted services,
+  permission settings, who may address it, and its owner. Changes reach it
+  within a minute or two, and a deleted agent or workspace leaves the
+  inventory. Clearing the Switch Trust settings, or pointing them at another
+  endpoint or key, removes the agents from the Switch Trust they named
+  before. Clearing them keeps the endpoint and the **Share agent
+  instructions** choice, so turning Switch Trust back on does not reset it. A managed agent's
+  instructions are included only when a deployment operator turns on **Share
+  agent instructions** (`share_agent_instructions` on `PUT /trust-settings`,
+  off by default). Listing agents does not count toward guardrails usage.
+- **Guardrail checks name the agent that sent the message.** A message an
+  agent sends is checked as that agent, the one the inventory lists, instead
+  of as one shared "Switch Rooms Agents" identity. A person's message relayed
+  from a platform is still checked under the shared identity. Each agent whose
+  messages are checked now counts toward Switch Trust's agents under
+  management on its own, where all of Switch's checks counted as one agent
+  before.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -2397,6 +2416,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Share agent instructions with Switch Trust.** The server's Switch Trust
+  settings have a checkbox for whether the agent inventory sent to Switch
+  Trust includes each managed agent's instructions. Shown for servers that
+  send an inventory.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

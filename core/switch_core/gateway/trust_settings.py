@@ -47,6 +47,7 @@ def _to_response(
             has_api_key=False,
             api_key_last4=None,
             enabled=False,
+            share_agent_instructions=False,
         )
     api_key_last4 = None
     if settings.api_key_encrypted:
@@ -67,6 +68,7 @@ def _to_response(
         has_api_key=settings.api_key_encrypted is not None,
         api_key_last4=api_key_last4,
         enabled=bool(settings.policy_id and settings.api_key_encrypted),
+        share_agent_instructions=settings.share_agent_instructions,
     )
 
 
@@ -99,6 +101,7 @@ async def update_trust_settings(
         endpoint=req.endpoint,
         policy_id=req.policy_id,
         api_key_encrypted=api_key_encrypted,
+        share_agent_instructions=req.share_agent_instructions,
     )
     await session.commit()
     trust_settings_changed()
@@ -111,7 +114,7 @@ async def delete_trust_settings(
     config: Annotated[SwitchConfig, Depends(get_config)],
     _admin: Annotated[User, Depends(require_admin)],
 ) -> TrustSettingsResponse:
-    await TrustSettingsStore().clear(session)
+    settings = await TrustSettingsStore().clear(session)
     await session.commit()
     trust_settings_changed()
-    return _to_response(None, config)
+    return _to_response(settings, config)

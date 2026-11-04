@@ -20,10 +20,16 @@ type FormState = {
   endpoint: string;
   policyId: string;
   apiKey: string;
+  shareAgentInstructions: boolean;
 };
 
 function formFor(settings: TrustSettings): FormState {
-  return { endpoint: settings.endpoint, policyId: settings.policyId ?? '', apiKey: '' };
+  return {
+    endpoint: settings.endpoint,
+    policyId: settings.policyId ?? '',
+    apiKey: '',
+    shareAgentInstructions: settings.shareAgentInstructions ?? false,
+  };
 }
 
 /** The three recoverable failure kinds every Switch Trust call can produce,
@@ -123,6 +129,9 @@ export const GuardrailsSection = observer(function GuardrailsSection({
           endpoint: form.endpoint.trim(),
           policyId: form.policyId.trim() === '' ? null : form.policyId.trim(),
           ...(form.apiKey.trim() === '' ? {} : { apiKey: form.apiKey.trim() }),
+          ...(settings?.shareAgentInstructions == null
+            ? {}
+            : { shareAgentInstructions: form.shareAgentInstructions }),
         })
       );
     } catch (cause) {
@@ -169,6 +178,8 @@ export const GuardrailsSection = observer(function GuardrailsSection({
             <p className="text-xs text-foreground-muted">
               Every message this server sends is checked before it goes out once an endpoint and an
               API key are set.
+              {settings.shareAgentInstructions !== null &&
+                ' With an API key, this server also lists its agents in Switch Trust’s AI inventory: their runtime, model, tools, granted services and permission settings.'}
             </p>
             <FieldGroup>
               <Field>
@@ -213,6 +224,24 @@ export const GuardrailsSection = observer(function GuardrailsSection({
                 />
               </Field>
             </FieldGroup>
+            {settings.shareAgentInstructions !== null && (
+              <label className="group/field flex cursor-pointer items-start gap-2.5">
+                <Checkbox
+                  checked={form.shareAgentInstructions}
+                  onCheckedChange={(checked) =>
+                    setForm({ ...form, shareAgentInstructions: checked === true })
+                  }
+                  className="mt-0.5"
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className="text-sm font-medium">Share agent instructions</span>
+                  <span className="text-xs text-foreground-muted">
+                    Include each managed agent’s instructions in the inventory, so Switch Trust can
+                    assess them. Off: the inventory lists agents without their instructions.
+                  </span>
+                </span>
+              </label>
+            )}
             {actionError && <p className="text-xs text-destructive">{actionError}</p>}
             <div className="flex items-center gap-2">
               <Button

@@ -744,6 +744,10 @@ export type TrustSettings = {
   apiKeyLast4: string | null;
   /** `policyId` and an API key are both set. */
   enabled: boolean;
+  /** Whether the agent inventory this server sends Switch Trust carries each
+   * managed agent's instructions. Null for a server from before the setting,
+   * which sends no inventory at all. */
+  shareAgentInstructions: boolean | null;
 };
 
 /** Outcome of loading Switch Trust's settings (`GET /trust-settings`).
@@ -765,6 +769,8 @@ export type UpdateTrustSettingsParams = {
   endpoint: string;
   policyId: string | null;
   apiKey?: string;
+  /** Left unset for a server that does not report the setting. */
+  shareAgentInstructions?: boolean;
 };
 
 /** Outcome of saving Switch Trust's settings. Mirrors {@link

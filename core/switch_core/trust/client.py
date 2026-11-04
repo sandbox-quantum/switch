@@ -21,17 +21,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.stores.trust_settings_store import TrustSettingsStore
 from switch_core.keys import Keyring
+from switch_core.trust.identity import TrustAgent, agent_fingerprint
 
 logger = logging.getLogger(__name__)
 
 Role = Literal["user", "assistant"]
 
-# Every check is reported under one constant agent identity: Switch has no
-# single "agent" to attribute a check to (a room can hold several, and a
-# human-authored message has none at all), so this collapses all of Switch's
-# traffic onto one Switch Trust agent rather than inventing a per-sender
-# identity Switch Trust has no use for. `x-agent-session-id` (the room) and
-# `x-agent-turn-id` (one per check) carry the per-call distinction instead.
+# The agent identity a check carries when no agent wrote the message: a
+# person's message relayed from a platform. A message an agent sends carries
+# that agent's own identity (`TrustAgent`), the one the agent inventory
+# describes (`trust/inventory.py`). `x-agent-session-id` (the room) and
+# `x-agent-turn-id` (one per check) carry the per-call distinction.
 _AGENT_NAME = "Switch Rooms Agents"
 
 # The outcome a check settles on. "errored" covers both what the wire protocol
@@ -112,7 +112,7 @@ class TrustCheckResult:
 
 class TrustClient(Protocol):
     async def check(
-        self, *, role: Role, content: str, room_id: str
+        self, *, role: Role, content: str, room_id: str, agent: TrustAgent | None
     ) -> TrustCheckResult: ...
 
 
@@ -120,7 +120,7 @@ class NullTrustClient:
     """Off: every message is allowed, and no request is made."""
 
     async def check(
-        self, *, role: Role, content: str, room_id: str
+        self, *, role: Role, content: str, room_id: str, agent: TrustAgent | None
     ) -> TrustCheckResult:
         return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
 
@@ -156,9 +156,11 @@ class DynamicTrustClient:
         keyring: Keyring,
         client: httpx.AsyncClient,
         timeout_seconds: float,
+        server_id: str,
         max_age_seconds: float = SETTINGS_MAX_AGE_SECONDS,
     ) -> None:
         self._session_factory = session_factory
+        self._server_id = server_id
         self._store = store
         self._keyring = keyring
         self._client = client
@@ -178,12 +180,14 @@ class DynamicTrustClient:
         self._checker = None
 
     async def check(
-        self, *, role: Role, content: str, room_id: str
+        self, *, role: Role, content: str, room_id: str, agent: TrustAgent | None
     ) -> TrustCheckResult:
         checker = await self._current()
         if checker is None:
             return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
-        return await checker.check(role=role, content=content, room_id=room_id)
+        return await checker.check(
+            role=role, content=content, room_id=room_id, agent=agent
+        )
 
     async def _current(self) -> HttpTrustClient | None:
         read_at = self._read_at
@@ -212,6 +216,7 @@ class DynamicTrustClient:
                     policy_id=settings.policy_id,
                     timeout_seconds=self._timeout_seconds,
                     client=self._client,
+                    server_id=self._server_id,
                 )
         except Exception as error:
             raise GuardrailsCheckError(
@@ -221,6 +226,14 @@ class DynamicTrustClient:
             self._checker = checker
             self._read_at = time.monotonic()
         return checker
+
+
+def header_text(text: str) -> str:
+    """`text` without the characters no header value may carry: line breaks
+    and other control characters, which would otherwise fail the request
+    while it is built, before `check_message` could fail open. The rest goes
+    out as UTF-8, which Switch Trust reads header values as."""
+    return "".join(c for c in text if c.isprintable())
 
 
 class HttpTrustClient:
@@ -240,23 +253,35 @@ class HttpTrustClient:
         policy_id: str,
         timeout_seconds: float,
         client: httpx.AsyncClient,
+        server_id: str,
     ) -> None:
         self._url = base_url.rstrip("/") + "/guardrails/check"
+        self._server_id = server_id
         self._headers = {
             "Content-Type": "application/json",
             "x-guardrails-policy-id": policy_id,
             "x-flintai-api-key": api_key,
-            "x-agent-name": _AGENT_NAME,
         }
         self._timeout_seconds = timeout_seconds
         self._client = client
 
+    def _agent_headers(self, agent: TrustAgent | None) -> dict[str, str]:
+        if agent is None:
+            return {"x-agent-name": _AGENT_NAME}
+        return {
+            "x-agent-id": agent_fingerprint(
+                self._server_id, agent.tenant_id, agent.agent_id
+            ),
+            "x-agent-name": header_text(agent.label),
+        }
+
     async def check(
-        self, *, role: Role, content: str, room_id: str
+        self, *, role: Role, content: str, room_id: str, agent: TrustAgent | None
     ) -> TrustCheckResult:
         payload = {"messages": [{"role": role, "content": content}]}
-        headers = {
+        fields = {
             **self._headers,
+            **self._agent_headers(agent),
             "x-agent-session-id": room_id,
             # One per check, not per logical "turn" a host might recognise —
             # Switch has no such id to hand it (see `TrustClient.check`'s
@@ -264,6 +289,9 @@ class HttpTrustClient:
             # relies on it being stable across retries.
             "x-agent-turn-id": str(uuid.uuid4()),
         }
+        # Encoded here, as UTF-8: httpx would encode a `str` value as ASCII
+        # and refuse an agent named `Café bot` while building the request.
+        headers = {name.encode(): value.encode() for name, value in fields.items()}
         try:
             response = await self._client.post(
                 self._url,
@@ -358,7 +386,12 @@ def trust_redaction_notice(result: TrustCheckResult) -> str | None:
 
 
 async def check_message(
-    client: TrustClient, *, role: Role, content: str, room_id: str
+    client: TrustClient,
+    *,
+    role: Role,
+    content: str,
+    room_id: str,
+    agent: TrustAgent | None,
 ) -> TrustCheckResult:
     """`client.check`, failing open: a Switch Trust outage degrades to
     unchecked messages rather than to no messaging at all. Logged loudly
@@ -366,7 +399,9 @@ async def check_message(
     `outcome="errored"` rather than `"ok"`, so callers give it the same
     quiet in-chat annotation as an engine-side error."""
     try:
-        return await client.check(role=role, content=content, room_id=room_id)
+        return await client.check(
+            role=role, content=content, room_id=room_id, agent=agent
+        )
     except GuardrailsCheckError:
         logger.warning(
             "Switch Trust check failed; message allowed through unchecked",

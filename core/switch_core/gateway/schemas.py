@@ -1855,12 +1855,15 @@ class TrustSettingsResponse(BaseModel):
     has_api_key: bool
     api_key_last4: str | None
     enabled: bool
+    share_agent_instructions: bool
 
 
 class TrustSettingsUpdateRequest(BaseModel):
     """`api_key` omitted (or null) leaves whatever key is already stored
     untouched, so changing the endpoint or policy id doesn't force re-entering
     the secret. Use `DELETE /trust-settings` to turn Switch Trust off.
+    `share_agent_instructions` omitted leaves the stored choice untouched too,
+    so a client from before the setting can still save the rest.
 
     No `timeout_seconds` here: unlike the rest of Switch Trust's settings,
     the check timeout is fixed at deploy time (`SwitchConfig.
@@ -1869,6 +1872,7 @@ class TrustSettingsUpdateRequest(BaseModel):
     endpoint: str
     policy_id: str | None
     api_key: str | None = None
+    share_agent_instructions: bool | None = None
 
     @model_validator(mode="after")
     def _validate_endpoint(self) -> TrustSettingsUpdateRequest:

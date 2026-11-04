@@ -196,6 +196,8 @@ GLOBAL_TABLES = frozenset(
         "switch_core_processes",
         "ownership_leases",
         "trust_settings",
+        "trust_inventory_targets",
+        "trust_inventory_sent",
         "service_oauth_clients",
         "schema_expand_only_revisions",
         "service_app_credentials",
