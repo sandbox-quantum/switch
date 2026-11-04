@@ -283,31 +283,42 @@ export class UpdateStore {
   }
 
   async check(): Promise<void> {
-    runInAction(() => {
-      this.state = { status: 'checking' };
-    });
+    // Main refuses a check during an install, and that refusal reads as "nothing to install".
+    if (this.state.status === 'installing') return;
+    if (this.state.status !== 'install-failed') {
+      runInAction(() => {
+        this.state = { status: 'checking' };
+      });
+    }
     try {
       const res = await rpc.update.check();
       if (!res) {
-        runInAction(() => {
-          this.state = { status: 'error', message: 'Update API unavailable' };
-        });
+        this._setCheckResult({ status: 'error', message: 'Update API unavailable' });
         return;
       }
       if (!res.success) {
-        runInAction(() => {
-          this.state = { status: 'error', message: res.error ?? 'Failed to check for updates' };
+        this._setCheckResult({
+          status: 'error',
+          message: res.error ?? 'Failed to check for updates',
         });
       } else if (res.result === null) {
-        runInAction(() => {
-          this.state = { status: 'idle' };
-        });
+        this._setCheckResult({ status: 'idle' });
       }
     } catch {
-      runInAction(() => {
-        this.state = { status: 'error', message: 'Failed to check for updates' };
-      });
+      this._setCheckResult({ status: 'error', message: 'Failed to check for updates' });
     }
+  }
+
+  /**
+   * Main sends `installing` and `install-failed` itself, and it keeps them
+   * through a failed check. A check result must not replace them: "Try again" on
+   * an `error` state would download the version that already failed.
+   */
+  private _setCheckResult(state: UpdateState): void {
+    if (this.state.status === 'installing' || this.state.status === 'install-failed') return;
+    runInAction(() => {
+      this.state = state;
+    });
   }
 
   async download(): Promise<void> {

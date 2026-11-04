@@ -24,6 +24,8 @@ const h = vi.hoisted(() => ({
     from: null as string | null,
     legacy: false,
     failWrite: false,
+    /** While set, the marker write does not settle until this promise does. */
+    pendingWrite: null as Promise<void> | null,
   },
 }));
 
@@ -50,6 +52,7 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEv
 vi.mock('./pending-install', () => ({
   pendingInstall: {
     set: async (target: string, from: string) => {
+      if (h.pending.pendingWrite) await h.pending.pendingWrite;
       if (h.pending.failWrite) throw new Error('SQLITE_FULL: database or disk is full');
       h.pending.target = target;
       h.pending.from = from;
@@ -145,6 +148,7 @@ beforeEach(() => {
   h.isTranslocated.mockReset();
   h.isTranslocated.mockReturnValue(false);
   h.pending.failWrite = false;
+  h.pending.pendingWrite = null;
 });
 
 describe('what a check reports', () => {
@@ -320,6 +324,34 @@ describe('what one install attempt reports', async () => {
     expect(installEvents()).toEqual([['update_install_started', { outcome: 'failure' }]]);
   });
 
+  it('waits for the marker write before the handover', async () => {
+    let finishWrite = () => {};
+    h.pending.pendingWrite = new Promise((resolve) => {
+      finishWrite = resolve;
+    });
+
+    updateService.quitAndInstall();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.quitAndInstall).not.toHaveBeenCalled();
+
+    finishWrite();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(h.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not hand over after dispose', async () => {
+    updateService.quitAndInstall();
+    await vi.advanceTimersByTimeAsync(100);
+    updateService.dispose();
+    await vi.advanceTimersByTimeAsync(250);
+    const handovers = h.quitAndInstall.mock.calls.length;
+    // Dispose also cleared the restart guard, so only an error can end the
+    // attempt that the next test would otherwise see as still open.
+    h.handlers.get('error')?.(new Error('Could not write the app bundle'));
+
+    expect(handovers).toBe(0);
+  });
+
   it('records the version that handed over next to the target', async () => {
     updateService.quitAndInstall();
     await vi.advanceTimersByTimeAsync(250);
@@ -355,7 +387,7 @@ describe('what one install attempt reports', async () => {
     h.checkForUpdatesAndNotify.mockReset();
   });
 
-  it('stops installing on quit after a failure, until a newer version is offered', async () => {
+  it('stops installing on quit after a failure, until a newer version is downloaded', async () => {
     updateService.quitAndInstall();
     await vi.advanceTimersByTimeAsync(250);
     h.handlers.get('error')?.(new Error('Could not write the app bundle'));
@@ -364,7 +396,11 @@ describe('what one install attempt reports', async () => {
     // second install that could fail without a word.
     expect(h.updater.autoInstallOnAppQuit).toBe(false);
 
+    // The installer on disk is still the one that failed.
     h.handlers.get('update-available')?.({ version: '1.4.0' });
+    expect(h.updater.autoInstallOnAppQuit).toBe(false);
+
+    h.handlers.get('update-downloaded')?.({ version: '1.4.0' });
     expect(h.updater.autoInstallOnAppQuit).toBe(true);
   });
 });

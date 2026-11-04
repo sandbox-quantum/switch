@@ -225,7 +225,9 @@ class UpdateService implements IInitializable, IDisposable {
    * off after a failed install, because "Download manually" quits the app and a
    * second install on that quit could fail without a word. Windows reads the
    * flag at quit. On macOS, Squirrel.Mac can already hold a staged update, so
-   * the flag does not stop every install there.
+   * the flag does not stop every install there. It comes back on only when a
+   * download replaces the failed installer, because until then a quit runs the
+   * failed installer. The updater reads the flag after it sends that event.
    */
   private setInstallOnQuit(on: boolean): void {
     if (!this.fake) autoUpdater.autoInstallOnAppQuit = on;
@@ -310,7 +312,6 @@ class UpdateService implements IInitializable, IDisposable {
       }
       // A newer version is a new chance.
       this.installFailure = undefined;
-      this.setInstallOnQuit(true);
       this.updateState.status = 'available';
       this.updateState.availableVersion = info.version;
       this.updateState.updateInfo = info;
@@ -373,6 +374,7 @@ class UpdateService implements IInitializable, IDisposable {
     },
 
     downloaded: (version: string) => {
+      this.setInstallOnQuit(true);
       this.updateState.status = 'downloaded';
       this.updateState.rollbackVersion = this.updateState.currentVersion;
       events.emit(updateDownloadedEvent, { version });
@@ -722,6 +724,10 @@ class UpdateService implements IInitializable, IDisposable {
     if (this.installRestartGuardTimer) {
       clearTimeout(this.installRestartGuardTimer);
       this.installRestartGuardTimer = undefined;
+    }
+    if (this.installHandoverTimer) {
+      clearTimeout(this.installHandoverTimer);
+      this.installHandoverTimer = undefined;
     }
   }
 }

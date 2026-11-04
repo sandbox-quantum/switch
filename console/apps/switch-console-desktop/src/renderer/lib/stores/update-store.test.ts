@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { menuCheckForUpdatesChannel } from '@shared/events/appEvents';
 import {
   updateAvailableEvent,
+  updateCheckingEvent,
   updateDownloadedEvent,
   updateDownloadingEvent,
   updateInstallFailedEvent,
@@ -62,6 +64,15 @@ function emit(event: unknown, payload?: unknown): void {
   const handler = handlers.get(event);
   if (!handler) throw new Error('no handler registered for the event');
   handler(payload);
+}
+
+/** A started store, past the check that every start makes. */
+async function startedStore(): Promise<InstanceType<typeof UpdateStore>> {
+  const store = new UpdateStore();
+  store.start();
+  await vi.waitFor(() => expect(rpcUpdate.check).toHaveBeenCalledWith('startup'));
+  rpcUpdate.check.mockClear();
+  return store;
 }
 
 describe('the "Update Available" toast', () => {
@@ -177,6 +188,72 @@ describe('an update that did not install', () => {
         error: message,
       })
     ).toEqual({ status: 'install-failed', message });
+  });
+});
+
+describe('a check that the user starts', () => {
+  const message = "Version 2.0.0 didn't install: Switch Console restarted on version 1.0.0.";
+  const failed = { version: '2.0.0', message, foundAtLaunch: false };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handlers.clear();
+    localStorage.clear();
+  });
+
+  it.each([
+    ['fails', () => Promise.resolve({ success: false, error: 'getaddrinfo ENOTFOUND' })],
+    ['finds nothing', () => Promise.resolve({ success: true, result: null })],
+    ['gets no answer', () => Promise.resolve(null)],
+    ['rejects', () => Promise.reject(new Error('IPC closed'))],
+  ])('keeps install-failed when the check %s', async (_label, answer) => {
+    const store = await startedStore();
+    emit(updateInstallFailedEvent, failed);
+    rpcUpdate.check.mockImplementation(answer);
+
+    await store.check();
+
+    expect(rpcUpdate.check).toHaveBeenCalled();
+    expect(store.state).toEqual({ status: 'install-failed', message });
+  });
+
+  it('keeps install-failed when main sends it again during the check', async () => {
+    const store = await startedStore();
+    emit(updateInstallFailedEvent, failed);
+    rpcUpdate.check.mockImplementation(async () => {
+      emit(updateCheckingEvent);
+      emit(updateInstallFailedEvent, failed);
+      return { success: false, error: 'getaddrinfo ENOTFOUND' };
+    });
+
+    await store.check();
+
+    expect(store.state).toEqual({ status: 'install-failed', message });
+  });
+
+  it.each([
+    ['the store', (store: InstanceType<typeof UpdateStore>) => store.check()],
+    ['the menu', () => emit(menuCheckForUpdatesChannel)],
+  ])('does not ask main to check during an install, from %s', async (_label, startCheck) => {
+    const store = await startedStore();
+    emit(updateInstallingEvent);
+
+    await startCheck(store);
+
+    expect(rpcUpdate.check).not.toHaveBeenCalled();
+    expect(store.state).toEqual({ status: 'installing' });
+  });
+
+  it('keeps installing when an earlier check finds nothing', async () => {
+    const store = await startedStore();
+    rpcUpdate.check.mockImplementation(async () => {
+      emit(updateInstallingEvent);
+      return { success: true, result: null };
+    });
+
+    await store.check();
+
+    expect(store.state).toEqual({ status: 'installing' });
   });
 });
 
