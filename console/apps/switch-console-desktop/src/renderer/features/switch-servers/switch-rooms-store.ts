@@ -163,8 +163,9 @@ export class SwitchRoomsStore {
    *
    * In a workspace on a server this install manages, that is **every** room: you
    * run the deployment, so there is nothing on it you should have to go
-   * elsewhere to see. Anywhere else it is the rooms you created, which would
-   * otherwise disappear the moment you made one and put no agent in it.
+   * elsewhere to see. Anywhere else it is the rooms you created (which would
+   * otherwise disappear the moment you made one and put no agent in it), the
+   * rooms you are a member of, and the rooms your agents are in.
    *
    * The sidebar tree shows one workspace at a time, so these follow the same
    * scope rule as locations do — including that no active workspace hides
@@ -183,11 +184,14 @@ export class SwitchRoomsStore {
   listedRoomsInWorkspace(workspaceId: string): RemoteRoomSummary[] {
     const serverId = workspacesStore.serverIdFor(workspaceId);
     const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;
-    return (
-      (managed
-        ? this.allRoomsByWorkspace.get(workspaceId)
-        : this.ownedRoomsByWorkspace.get(workspaceId)) ?? []
+    if (managed) return this.allRoomsByWorkspace.get(workspaceId) ?? [];
+    const own = this.ownedRoomsByWorkspace.get(workspaceId) ?? [];
+    const ownIds = new Set(own.map((room) => room.id));
+    // And the rooms the user's agents are in, managed ones included, by their membership.
+    const ofAgents = (this.allRoomsByWorkspace.get(workspaceId) ?? []).filter(
+      (room) => !ownIds.has(room.id) && this.localMemberIdsByRoom.has(room.id)
     );
+    return [...own, ...ofAgents];
   }
 
   /**
@@ -340,7 +344,9 @@ export class SwitchRoomsStore {
             this.allRoomsByWorkspace.set(workspace.id, active);
             this.ownedRoomsByWorkspace.set(
               workspace.id,
-              signedInUserId ? active.filter((r) => r.ownerId === signedInUserId) : []
+              signedInUserId
+                ? active.filter((r) => r.ownerId === signedInUserId || r.viewerIsMember)
+                : []
             );
           });
         } catch (cause) {
@@ -439,7 +445,14 @@ export class SwitchRoomsStore {
    */
   get localMemberIdsByRoom(): Map<string, string[]> {
     const byRoom = new Map<string, string[]>();
+    // Only agents tracked or on screen now: a deleted agent's, or another
+    // account's, memberships stay in the cache but claim no room.
+    const current = new Set([
+      ...this.trackedIdentities.map((a) => key(a.workspaceId, a.switchAgentId)),
+      ...this.watchedIdentities.keys(),
+    ]);
     for (const [cacheKey, memberships] of this.roomsByAgent) {
+      if (!current.has(cacheKey)) continue;
       const switchAgentId = cacheKey.slice(cacheKey.indexOf(':') + 1);
       for (const membership of memberships) {
         if (membership.archived) continue;

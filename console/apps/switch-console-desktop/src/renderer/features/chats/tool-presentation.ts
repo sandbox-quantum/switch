@@ -334,35 +334,3 @@ export function shortPath(path: string): string {
   const parts = path.split('/').filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join('/')}` : path;
 }
-
-const COUNTED: Record<Exclude<ToolKind, 'switch'>, (count: number) => string> = {
-  shell: (n) => `Ran ${n} ${n === 1 ? 'command' : 'commands'}`,
-  read: (n) => `Read ${n} ${n === 1 ? 'file' : 'files'}`,
-  edit: (n) => `Edited ${n} ${n === 1 ? 'file' : 'files'}`,
-  search: (n) => `Searched ${n} ${n === 1 ? 'time' : 'times'}`,
-  web: (n) => `Searched the web ${n} ${n === 1 ? 'time' : 'times'}`,
-  agent: (n) => `Ran ${n} ${n === 1 ? 'agent' : 'agents'}`,
-  todo: (n) => `Updated the to-do list${n === 1 ? '' : ` ${n} times`}`,
-  mcp: (n) => `Called ${n} ${n === 1 ? 'tool' : 'tools'}`,
-  other: (n) => `Used ${n} ${n === 1 ? 'tool' : 'tools'}`,
-};
-
-/**
- * One line for a run of tool calls, by kind in the order each first appears:
- * "Ran 2 commands, read 3 files and edited 1 file". The kind is the icon's
- * when every call shares it, and null when they are mixed.
- */
-export function summarizeTools(kinds: ToolKind[]): { label: string; kind: ToolKind | null } {
-  const counts = new Map<Exclude<ToolKind, 'switch'>, number>();
-  for (const kind of kinds) {
-    const counted = kind === 'switch' ? 'other' : kind;
-    counts.set(counted, (counts.get(counted) ?? 0) + 1);
-  }
-  const parts = [...counts].map(([kind, count], index) => {
-    const text = COUNTED[kind](count);
-    return index === 0 ? text : text.charAt(0).toLowerCase() + text.slice(1);
-  });
-  const label =
-    parts.length < 2 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
-  return { label, kind: counts.size === 1 ? kinds[0]! : null };
-}

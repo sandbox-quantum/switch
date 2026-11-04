@@ -187,12 +187,54 @@ jobs:
       - name: E2E surface snapshot is current
         run: uv run --project core python scripts/e2e_surface.py --check
 
-      # Store tests boot real Postgres via testcontainers; ubuntu-latest ships
-      # Docker so the containers come up without extra setup. The slow
-      # integration suite (Postgres + Tuwunel) is excluded from the default run
-      # and is not part of PR CI.
+  # The tests, apart from the checks above so they can be split across
+  # runners. Store tests boot real Postgres via testcontainers; ubuntu-latest
+  # ships Docker so the containers come up without extra setup. The slow
+  # integration suite (Postgres + Tuwunel) is excluded from the default run
+  # and is not part of PR CI.
+  backend-tests:
+    name: Backend (core) tests (${{ matrix.group }}/3)
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    # A shard takes about five minutes. One that hangs fails here rather than
+    # holding a runner for the default six hours.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --project core
+
+      # Each runner takes a third of the tests, dealt out one at a time
+      # (`least_duration` with no durations file to read). The slow tests sit
+      # together, so equal contiguous slices would leave one runner with most
+      # of the time; dealt out, the three come within a few percent of each
+      # other. Within a runner, one pytest-xdist worker per CPU. The Postgres
+      # fixture is session-scoped, and a session is per worker, so each worker
+      # boots and owns a container of its own: no test shares a database with
+      # another running at the same time.
+      #
+      # A test still running after five minutes fails (pytest-timeout), with
+      # its name and stack, and the rest of the shard carries on.
       - name: pytest
-        run: uv run --project core pytest -c core/pyproject.toml core/tests/
+        run: >-
+          uv run --project core pytest -c core/pyproject.toml core/tests/
+          -n auto
+          --splits 3 --group ${{ matrix.group }}
+          --splitting-algorithm least_duration
+          --timeout 300
 
   console:
     name: Switch Console

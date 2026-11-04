@@ -649,6 +649,10 @@ Pass `omitOwnerCredentials: true` in the context for the serving container:
 it gets no DB_OWNER_* and DB_MIGRATE_ON_BOOT=false, because its init container
 has already migrated as the owner. Only the init container and the Job hold
 the owner's password.
+
+Pass `omitTeamsApp: true` for the two that migrate: they run no Teams app and
+mount no federated token, so TEAMS_APP_FEDERATED_TOKEN_FILE would name a file
+that is not there, and SwitchConfig refuses to load on that.
 */}}
 {{- define "switch.coreEnv" -}}
 - name: DB_HOST
@@ -997,7 +1001,7 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: "true"
 {{- end }}
 {{- end }}
-{{- if .Values.switchCore.teamsApp.enabled }}
+{{- if and .Values.switchCore.teamsApp.enabled (not .omitTeamsApp) }}
 - name: TEAMS_APP_CLIENT_ID
   value: {{ required "switchCore.teamsApp.clientId is required when switchCore.teamsApp.enabled" .Values.switchCore.teamsApp.clientId | quote }}
 - name: TEAMS_APP_TENANT_ID
@@ -1072,6 +1076,22 @@ releases took, so an existing Slack or Discord deployment keeps working.
 */}}
 {{- define "switch.messagingPublicUrl" -}}
 {{- coalesce .Values.switchCore.messagingPublicUrl .Values.switchCore.slackApp.messagingPublicUrl .Values.switchCore.discordApp.messagingPublicUrl | default "" -}}
+{{- end }}
+
+{{/*
+The ServiceAccount switch-core runs as. An account made elsewhere has to be
+named: falling back to `default` would quietly hand switch-core's identity,
+and whatever trusts it, to every pod in the namespace that names no account.
+*/}}
+{{- define "switch.coreServiceAccountName" -}}
+{{- $sa := .Values.switchCore.serviceAccount -}}
+{{- if $sa.name -}}
+{{- $sa.name -}}
+{{- else if $sa.create -}}
+{{- printf "%s-switch-core" (include "switch.fullname" .) -}}
+{{- else -}}
+{{- fail "switchCore.serviceAccount.name is required when switchCore.serviceAccount.create is false: name the existing ServiceAccount switch-core should run as." -}}
+{{- end -}}
 {{- end }}
 
 {{/*

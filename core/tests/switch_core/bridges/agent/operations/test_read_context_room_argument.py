@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
+from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.operations import context as op_context
@@ -32,10 +33,15 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer, Reader
 from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
-from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.db.models import TENANT_ZERO_ID, room_agents
+from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.room_store import RoomStore
 from tests.db_buffer import db_buffer_on, say, seed_member
+from tests.session_counting import CountingSessionFactory
 
 AGENT = "agent-1"
 CONN = "conn-1"
@@ -46,9 +52,15 @@ OTHER_ROOM = "room-elsewhere"
 class _Protocol:
     """Just enough protocol to answer a read: a registry and a recorder."""
 
-    def __init__(self, registry: AgentConnectionRegistry, buffer: EventBuffer) -> None:
+    def __init__(
+        self,
+        registry: AgentConnectionRegistry,
+        buffer: EventBuffer,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
         self.connections = registry
         self.event_buffer = buffer
+        self.session_factory = session_factory
         self.calls: list[tuple[str, str]] = []
         self.members: set[str] = {CONNECTED_ROOM, OTHER_ROOM}
         self.while_in_flight: list[Callable[[], Awaitable[None]]] = []
@@ -73,7 +85,7 @@ async def protocol(
     for room_id in (CONNECTED_ROOM, OTHER_ROOM):
         await seed_member(session_factory, AGENT, room_id)
     registry = AgentConnectionRegistry()
-    service = _Protocol(registry, db_buffer)
+    service = _Protocol(registry, db_buffer, session_factory)
     monkeypatch.setattr(op_context, "_protocol", service)
     return service
 
@@ -184,6 +196,36 @@ async def test_an_unconnected_caller_naming_no_room_is_told_to_connect(
     """The old error survives, but only for the case it actually describes."""
     with pytest.raises(ValueError, match="connect_to_room"):
         await read_context()
+
+
+@pytest.mark.asyncio
+async def test_a_read_costs_one_session(
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+    unbound_caller: None,
+) -> None:
+    """The room's head, the membership check and the history are read in one
+    session: one pool checkout and one transaction for the whole read."""
+    counting = CountingSessionFactory(session_factory)
+    await seed_member(session_factory, AGENT, OTHER_ROOM)
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        await session.execute(
+            insert(room_agents).values(room_id=OTHER_ROOM, agent_id=AGENT)
+        )
+        await session.commit()
+    await say(session_factory, OTHER_ROOM, "catch me up")
+    core = object.__new__(AgentCore)
+    core.connections = AgentConnectionRegistry()
+    core.session_factory = counting  # type: ignore[assignment]
+    core.message_store = MessageStore()
+    core.room_store = RoomStore()
+    core.event_buffer = db_buffer_on(counting)  # type: ignore[arg-type]
+    monkeypatch.setattr(op_context, "_protocol", core)
+
+    context = await read_context(room_id=OTHER_ROOM)
+
+    assert [thread["root"]["body"] for thread in context["threads"]] == ["catch me up"]
+    assert counting.opened == 1
 
 
 @pytest.mark.asyncio
@@ -311,6 +353,7 @@ async def test_a_read_that_lands_after_losing_the_room_clears_nothing(
                 host_id="host-1",
                 epoch="epoch-1",
                 room_id=CONNECTED_ROOM,
+                placed_by_controller=False,
             ),
         )
     )
@@ -354,6 +397,7 @@ async def test_a_session_reading_after_a_restart_takes_its_rooms_count(
                 host_id="host-1",
                 epoch="epoch-1",
                 room_id=CONNECTED_ROOM,
+                placed_by_controller=False,
             ),
         )
     )
