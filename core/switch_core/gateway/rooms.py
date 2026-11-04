@@ -243,6 +243,7 @@ async def _build_room_detail(
         instructions=room.instructions,
         protection_config=room.protection_config,
         observe_config=room.observe_config,
+        tool_detail=room.tool_detail,
         agent_ids=agent_ids,
         agent_statuses={
             aid: statuses[aid].value for aid in agent_ids if aid in statuses
@@ -917,7 +918,11 @@ async def patch_room(
     # for the room's owner and tenant admins — plain write access (which a
     # publicly-writable room grants to everyone) is not enough. Otherwise any
     # user could re-permission any room and lock out its owner.
-    if req.read_visibility is not None or req.write_visibility is not None:
+    if (
+        req.read_visibility is not None
+        or req.write_visibility is not None
+        or req.tool_detail is not None
+    ):
         try:
             require_manage(Principal(user.id, is_admin), target.owner_id)
         except PermissionError as e:
@@ -931,6 +936,7 @@ async def patch_room(
             admin_mode=req.admin_mode,
             read_visibility=req.read_visibility,
             write_visibility=req.write_visibility,
+            tool_detail=req.tool_detail,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -1198,6 +1198,12 @@ class Room(TenantScoped, Base):
     write_visibility: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="public"
     )
+    # Whether a tool call's redacted input and output, as its host reports
+    # them, are kept and shown in this room. Off until the room's owner or a
+    # workspace admin switches it on; while off, none is stored or served.
+    tool_detail: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -3757,6 +3763,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    # A tool call's redacted input and output, kept only while its room has
+    # `Room.tool_detail` on, and served only while it still does.
+    tool_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     command_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The Switch message the turn answers, so a platform threads it there.

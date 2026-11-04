@@ -36,7 +36,7 @@ own than by a `Markup` that returns its argument.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from switch_core.sessions.contract import (
@@ -100,6 +100,10 @@ _OUTCOME = {
 # log is body text.
 _LOG_TITLE = 200
 _LOG_DETAIL = 120
+# A call's own input and output, where its room shows them: longer than a
+# result line, because it is what a reader opened the log to see, and folded
+# onto the call's line like everything else here.
+_LOG_TOOL_DETAIL = 300
 
 _LOG_UNTITLED = "(untitled)"
 _LOG_EMPTY = "No activity."
@@ -389,12 +393,14 @@ def in_activity_log(item: Item) -> bool:
     return item.kind == "assistant-message" and bool(item.text)
 
 
-def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
+def _log_line(
+    item: Item, *, escape: Callable[[str], str], tool_detail: str | None
+) -> str:
     """One item as the single line the log gives it.
 
     What the agent said is folded onto one line like everything else in here,
     its own paragraph breaks removed: a sentence spread over four lines is
-    indistinguishable from four things having happened.
+    indistinguishable from four things having happened. So is a call's detail.
     """
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
@@ -403,6 +409,9 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
     if item.text:
         line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
+    if tool_detail and item.kind == "tool-activity":
+        folded = " ".join(tool_detail.split())
+        line += f" — {_fit(folded, _LOG_TOOL_DETAIL, escape=escape)}"
     return line
 
 
@@ -415,6 +424,7 @@ def activity_log(
     markup: Markup,
     elapsed_seconds: float | None,
     heading: bool,
+    tool_details: Mapping[str, str],
 ) -> str:
     """What a turn did and what it said, one to a line, oldest cut first.
 
@@ -439,6 +449,9 @@ def activity_log(
     `heading` says whether the log has to name the turn it belongs to. It does
     wherever it is read apart from that turn's own message; a caller declining
     it is saying the status directly above already names the turn.
+
+    `tool_details` is each call's redacted input and output, by item id, for a
+    room that shows them. A platform that shows none passes `NO_TOOL_DETAILS`.
     """
     head = None
     if heading:
@@ -458,7 +471,9 @@ def activity_log(
     lines: list[str] = []
     omitted = 0
     for position, item in enumerate(reversed(shown), start=1):
-        line = _log_line(item, escape=escape)
+        line = _log_line(
+            item, escape=escape, tool_detail=tool_details.get(item.item_id)
+        )
         if spent + len(line) + 1 > limit:
             omitted = len(shown) - position + 1
             break

@@ -12,8 +12,9 @@ reads it the same way rather than each keeping its own copy to drift.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from switch_core import messaging_platforms
 from switch_core.sessions.contract import (
@@ -30,6 +31,12 @@ from switch_core.sessions.contract import (
 # is worth redrawing a message for. Seconds would sit still between those
 # redraws and read as a card that had stopped.
 RUNNING_CLOCK_SECONDS = 60
+
+# A tool call's redacted input and output, by item id, beside the items rather
+# than in them: the session contract carries no tool output, and only a room
+# with tool detail switched on is given any. What a renderer draws for a room
+# that has it off, and for a platform that shows none.
+NO_TOOL_DETAILS: Mapping[str, str] = MappingProxyType({})
 
 # Where the turn itself has got to. One message per turn is edited in place, so
 # without this a turn that finished and a turn that stalled read identically:

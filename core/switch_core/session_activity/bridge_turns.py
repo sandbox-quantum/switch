@@ -13,10 +13,14 @@ steps to be recorded to the moment its end was recorded.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from switch_core.bridges.collaboration.session.renderers import RUNNING_CLOCK_SECONDS
+from switch_core.bridges.collaboration.session.renderers import (
+    NO_TOOL_DETAILS,
+    RUNNING_CLOCK_SECONDS,
+)
 from switch_core.db.models import AgentSessionActivityItem
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
@@ -33,6 +37,9 @@ class TurnView:
     # The turn's own row: where it was asked, and when it started and ended.
     row: AgentSessionActivityItem
     started_at: datetime
+    # Each call's redacted input and output, by item id; empty unless the
+    # turn's room had tool detail on when the view was read.
+    tool_details: Mapping[str, str]
 
     @property
     def ended(self) -> bool:
@@ -55,8 +62,14 @@ class TurnView:
         return max(0.0, elapsed)
 
 
-def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
-    """The turn its rows describe, or None until its own row has been reported."""
+def turn_view(
+    rows: list[AgentSessionActivityItem], *, shows_tool_detail: bool
+) -> TurnView | None:
+    """The turn its rows describe, or None until its own row has been reported.
+
+    `shows_tool_detail` is whether the turn's room has tool detail on now. What
+    a row kept while it was on is left out once it is off.
+    """
     row = next((r for r in rows if r.item_id == TURN_ITEM_ID), None)
     if row is None:
         return None
@@ -76,6 +89,15 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
         for step in steps
     ]
     started_at = min((step.created_at for step in steps), default=row.created_at)
+    tool_details = (
+        {
+            step.item_id: step.tool_detail
+            for step in steps
+            if step.kind == "tool-activity" and step.tool_detail
+        }
+        if shows_tool_detail
+        else NO_TOOL_DETAILS
+    )
     return TurnView(
         turn=TurnUpsert(
             type="turn.upsert",
@@ -86,6 +108,7 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
         items=items,
         row=row,
         started_at=started_at,
+        tool_details=tool_details,
     )
 
 

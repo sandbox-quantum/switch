@@ -8,6 +8,7 @@ import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { cliToolsBase, pinnedBinary } from './cli-binaries';
+import { handedSecrets } from './handed-secrets';
 import { HostWaker } from './handoff';
 import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
@@ -482,6 +483,17 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    // The same for a tool call's detail: a server that predates it refuses the
+    // row, which goes again without it, and the call is drawn by its title.
+    const sentWithoutDetail = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (item.kind !== 'activity' || !item.row.tool_detail || error.status !== 422) return false;
+      const { tool_detail: _detail, ...row } = item.row;
+      console.warn(
+        `Switch refused the tool detail of ${row.item_id} in turn ${row.turn_id}, so the call is shown without it: ${error.message}`
+      );
+      await send({ kind: 'activity', row });
+      return true;
+    };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
@@ -493,7 +505,8 @@ export async function runSharedHost(
         const reports = reporter.reports(
           event,
           (turnId) => host!.originOf(turnId),
-          (turnId) => host!.usageOf(turnId)
+          (turnId) => host!.usageOf(turnId),
+          (turnId, itemId) => host!.toolDetailOf(turnId, itemId)
         );
         for (const item of reports) {
           try {
@@ -502,6 +515,7 @@ export async function runSharedHost(
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
             if (await sentWithoutUsage(item, error)) continue;
+            if (await sentWithoutDetail(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -1167,6 +1181,7 @@ export async function hostSessionProcess(input: {
       (secret) => redactions.add(secret)
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
+    for (const secret of handedSecrets(prepared.input, process.env)) redactions.add(secret);
     // The people watching see it as a notice; the agent reads it with the
     // context it resumes under, so it does not go looking for tools it no
     // longer has.

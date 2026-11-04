@@ -22,7 +22,10 @@ rather than about how much room there was.
 
 from __future__ import annotations
 
-from switch_core.bridges.collaboration.session.renderers import MARKDOWN
+from switch_core.bridges.collaboration.session.renderers import (
+    MARKDOWN,
+    NO_TOOL_DETAILS,
+)
 from switch_core.bridges.collaboration.session.renderers.neutral import activity_log
 from switch_core.sessions.contract import Item
 
@@ -59,6 +62,7 @@ def _log(
         markup=MARKDOWN,
         elapsed_seconds=None,
         heading=heading,
+        tool_details=NO_TOOL_DETAILS,
     ).splitlines()
 
 
@@ -173,6 +177,7 @@ def test_a_remark_is_escaped_the_way_a_call_name_is() -> None:
         markup=MARKDOWN,
         elapsed_seconds=None,
         heading=False,
+        tool_details=NO_TOOL_DETAILS,
     ).splitlines()
 
     assert lines == ["❝ &lt;b>not bold&lt;/b>"]
@@ -306,6 +311,7 @@ def test_host_text_is_put_through_the_platforms_own_escape() -> None:
         markup=MARKDOWN,
         elapsed_seconds=None,
         heading=True,
+        tool_details=NO_TOOL_DETAILS,
     )
 
     assert "*not bold*" in seen

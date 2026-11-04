@@ -45,6 +45,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.session.renderers import (
     MARKDOWN,
+    NO_TOOL_DETAILS,
     Markup,
     RequestReference,
 )
@@ -174,6 +175,9 @@ class TurnActivity:
     # yet redrawn still names A after B has started, so a press on it is refused
     # for naming an ended turn rather than silently stopping B.
     interrupt_turn_id: str | None = None
+    # Each call's redacted input and output, by item id, only where the room
+    # has tool detail on. Beside the items because the contract carries none.
+    tool_details: Mapping[str, str] = NO_TOOL_DETAILS
 
 
 @dataclass(frozen=True)
@@ -192,6 +196,9 @@ class ActivitySnapshot:
     turn: TurnUpsert
     elapsed_seconds: float | None
     read_at: datetime
+    # As on `TurnActivity`: read with the turn, so a room that switched tool
+    # detail off since the turn was drawn is shown none.
+    tool_details: Mapping[str, str]
 
 
 @dataclass(frozen=True)

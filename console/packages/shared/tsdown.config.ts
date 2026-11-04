@@ -5,6 +5,7 @@ export default defineConfig({
     index: 'src/index.ts',
     'session-v1': 'src/session-v1/index.ts',
     'windows-spawn': 'src/windows-spawn.ts',
+    'redact-secrets': 'src/redact-secrets.ts',
   },
   format: ['esm'],
   dts: true,

@@ -103,6 +103,8 @@ class RoomDetail(RoomSummary):
     instructions: str | None
     protection_config: dict[str, Any] | None
     observe_config: dict[str, Any] | None
+    # Whether tool calls' redacted input and output are kept and shown here.
+    tool_detail: bool
     agent_ids: list[str]
     agent_statuses: dict[str, str]
     roles: list[RoomRoleDetail] = []
@@ -150,6 +152,8 @@ class RoomUpdateRequest(BaseModel):
     admin_mode: bool | None = None
     read_visibility: str | None = None
     write_visibility: str | None = None
+    # Only the room's owner or a workspace admin may change it.
+    tool_detail: bool | None = None
 
 
 class RoomSetGroupRequest(BaseModel):

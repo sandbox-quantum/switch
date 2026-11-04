@@ -49,6 +49,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_QUEUED_NOTE,
+    NO_TOOL_DETAILS,
     Drawn,
     Markup,
     offered_controls,
@@ -2193,6 +2194,7 @@ class TeamsAdapter(PlatformAdapter):
                 markup=self.rich_markup(),
                 elapsed_seconds=content.elapsed_seconds,
                 heading=False,
+                tool_details=NO_TOOL_DETAILS,
             )
         )
 

@@ -792,10 +792,11 @@ class ChatService:
 
     async def reads_room(
         self, session: AsyncSession, tenant_id: str, user_id: str, room_id: str | None
-    ) -> tuple[bool, bool]:
-        """Whether the user still holds a role in the tenant, and whether they
-        may read `room_id` now (`readable_rooms`, for that one room), in one
-        query. A step outside any room is read by nobody here."""
+    ) -> tuple[bool, bool, bool]:
+        """Whether the user still holds a role in the tenant, whether they may
+        read `room_id` now (`readable_rooms`, for that one room), and whether
+        the room has tool detail on, in one query. A step outside any room is
+        read by nobody here and shows no detail."""
         member = exists().where(
             TenantMember.tenant_id == tenant_id, TenantMember.user_id == user_id
         )
@@ -811,8 +812,13 @@ class ChatService:
             if room_id is not None
             else false()
         )
-        row = (await session.execute(select(member, reads))).one()
-        return bool(row[0]), bool(row[0] and row[1])
+        shows = (
+            exists().where(Room.id == room_id, Room.tool_detail.is_(True))
+            if room_id is not None
+            else false()
+        )
+        row = (await session.execute(select(member, reads, shows))).one()
+        return bool(row[0]), bool(row[0] and row[1]), bool(row[2])
 
     async def approval(
         self, session: AsyncSession, agent_id: str, session_id: str, request_id: str

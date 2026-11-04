@@ -66,6 +66,7 @@ def _step(**overrides):
         message_id=None,
         occurred_at=datetime(2026, 9, 23, 12, 0, tzinfo=UTC),
         usage=[],
+        tool_detail=None,
     )
     values.update(overrides)
     return values
@@ -141,6 +142,7 @@ def _turn(turn_id: str, revision: int, status: str, usage=()):
         title="",
         text="",
         usage=list(usage),
+        tool_detail=None,
     )
 
 

@@ -818,6 +818,7 @@ class RoomStore:
         admin_mode: bool | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
+        tool_detail: bool | None = None,
     ) -> None:
         room = await session.get(Room, room_id)
         if room is None:
@@ -836,7 +837,26 @@ class RoomStore:
             room.read_visibility = read_visibility
         if write_visibility is not None:
             room.write_visibility = write_visibility
+        if tool_detail is not None:
+            room.tool_detail = tool_detail
         await session.flush()
+
+    async def shows_tool_detail(
+        self, session: AsyncSession, room_id: str | None, *, lock: bool
+    ) -> bool:
+        """Whether `room_id` has tool detail switched on. A step in no room
+        shows it nowhere.
+
+        `lock` reads under a share lock, which holds a concurrent change to
+        the switch until the caller's transaction ends: what a writer stores
+        is then ordered against the switch going off.
+        """
+        if room_id is None:
+            return False
+        statement = select(Room.tool_detail).where(Room.id == room_id)
+        if lock:
+            statement = statement.with_for_update(read=True)
+        return bool(await session.scalar(statement))
 
     async def set_platform_name(
         self, session: AsyncSession, room_id: str, name: str, channel_name: str
