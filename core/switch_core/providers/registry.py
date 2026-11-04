@@ -198,6 +198,11 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="task", description="Delegates to a subagent"),
         ),
     ),
+    AgentProvider(
+        id="kiro",
+        label="Kiro CLI",
+        sign_in_command="kiro-cli login",
+    ),
 )
 
 

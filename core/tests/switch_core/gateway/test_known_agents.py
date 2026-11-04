@@ -397,6 +397,7 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["bash", "view", "create", "edit", "grep", "glob", "task"],
             [],
         ),
+        ("kiro", "Kiro CLI", [], []),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(
