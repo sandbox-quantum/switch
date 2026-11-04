@@ -1,3 +1,4 @@
+import { promises as nodeFs } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,11 +9,22 @@ const acl = vi.hoisted(() => ({
   directory: vi.fn(async (_path: string) => {}),
   file: vi.fn(async (_path: string) => {}),
 }));
+const warn = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/core/fs/windows-owner-acl', () => ({
   restrictWindowsDirectoryToOwner: acl.directory,
   restrictWindowsFileToOwner: acl.file,
 }));
+vi.mock('@main/lib/logger', () => ({ log: { warn } }));
+
+/** Make `chmod` of `target` fail with `code`, as it does for a path another account owns. */
+function refuseChmod(target: string, code: string) {
+  const real = nodeFs.chmod;
+  return vi.spyOn(nodeFs, 'chmod').mockImplementation(async (p, mode) => {
+    if (p === target) throw Object.assign(new Error(`${code}: chmod '${target}'`), { code });
+    return real(p, mode);
+  });
+}
 
 /**
  * Against a real temp directory rather than a mocked `node:fs`: the behaviour
@@ -120,6 +132,8 @@ describe.skipIf(process.platform === 'win32')('createPluginFs secret write', () 
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    warn.mockClear();
     await rm(root, { recursive: true, force: true });
   });
 
@@ -196,10 +210,80 @@ describe.skipIf(process.platform === 'win32')('createPluginFs secret write', () 
     expect(await modeOf(dir)).toBe(0o755);
   });
 
+  it('writes the file 0600 and warns when its directory belongs to another account', async () => {
+    const dir = path.join(root, '.switch', 'agents');
+    await mkdir(dir, { recursive: true });
+    await chmod(dir, 0o755);
+    refuseChmod(dir, 'EPERM');
+
+    await createPluginFs(root).write('.switch/agents/a.json', 'token', { secret: true });
+
+    expect(await readFile(path.join(dir, 'a.json'), 'utf8')).toBe('token');
+    expect(await modeOf(path.join(dir, 'a.json'))).toBe(0o600);
+    expect(await modeOf(dir)).toBe(0o755);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('another account'), { dir });
+  });
+
+  it('still fails when the directory cannot be changed for any other reason', async () => {
+    const dir = path.join(root, '.switch', 'agents');
+    await mkdir(dir, { recursive: true });
+    refuseChmod(dir, 'EROFS');
+
+    await expect(
+      createPluginFs(root).write('.switch/agents/a.json', 'token', { secret: true })
+    ).rejects.toThrow(/EROFS/);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it('protects only the file when asked to leave its directory alone', async () => {
+    const dir = path.join(root, '.claude');
+    await mkdir(dir, { recursive: true });
+    await chmod(dir, 0o755);
+    await writeFile(path.join(dir, 'settings.local.json'), '{}', { mode: 0o644 });
+
+    expect(
+      await createPluginFs(root).protectSecret('.claude/settings.local.json', { fileOnly: true })
+    ).toBe(true);
+
+    expect(await modeOf(path.join(dir, 'settings.local.json'))).toBe(0o600);
+    expect(await modeOf(dir)).toBe(0o755);
+  });
+
   it('refuses to protect a path outside its root', async () => {
     await expect(createPluginFs(root).protectSecret('../outside.json')).rejects.toThrow(
       /path escape/
     );
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('createPluginFs list', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'plugin-fs-list-'));
+  });
+
+  afterEach(async () => {
+    await chmod(path.join(root, 'locked'), 0o755).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('answers [] for a directory that is not there, strict or not', async () => {
+    const fs = createPluginFs(root);
+    await writeFile(path.join(root, 'afile'), 'x');
+    expect(await fs.list('missing')).toEqual([]);
+    expect(await fs.list('missing', { strict: true })).toEqual([]);
+    expect(await fs.list('afile', { strict: true })).toEqual([]);
+  });
+
+  it('throws for a directory it may not read only when strict', async () => {
+    const fs = createPluginFs(root);
+    await mkdir(path.join(root, 'locked'));
+    await writeFile(path.join(root, 'locked', 'a.json'), 'token');
+    await chmod(path.join(root, 'locked'), 0o000);
+
+    expect(await fs.list('locked')).toEqual([]);
+    await expect(fs.list('locked', { strict: true })).rejects.toMatchObject({ code: 'EACCES' });
   });
 });
 

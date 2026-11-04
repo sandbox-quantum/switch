@@ -113,11 +113,15 @@ describe('createRemotePluginFs', () => {
     await expect(fs.delete('.switch/agents/a.json')).rejects.toThrow(/Permission denied/);
   });
 
-  it('protectSecret goes to the remote filesystem and returns what it found', async () => {
+  it('protectSecret goes to the remote filesystem, options and all, and returns what it found', async () => {
     const protectSecret = vi.fn(async () => false);
     const fs = adapter({ protectSecret });
     expect(await fs.protectSecret('.switch/agents/a.json')).toBe(false);
-    expect(protectSecret).toHaveBeenCalledWith('.switch/agents/a.json');
+    await fs.protectSecret('.claude/settings.local.json', { fileOnly: true });
+    expect(protectSecret.mock.calls).toEqual([
+      ['.switch/agents/a.json', undefined],
+      ['.claude/settings.local.json', { fileOnly: true }],
+    ]);
   });
 
   it('delete throws (fails loud) when the file is there but cannot be removed', async () => {
@@ -149,6 +153,23 @@ describe('createRemotePluginFs', () => {
       'b.settings.json',
     ]);
     expect(list).toHaveBeenCalledWith('.claude/switch-subagents', { includeHidden: true });
+  });
+
+  it('a strict list answers [] for a missing directory and throws on anything else', async () => {
+    const missing = adapter({
+      list: vi.fn(async () => {
+        throw new FileSystemError('No such file', FileSystemErrorCodes.NOT_FOUND);
+      }),
+    });
+    expect(await missing.list('gone', { strict: true })).toEqual([]);
+
+    const broken = adapter({
+      list: vi.fn(async () => {
+        throw new FileSystemError('channel open failure', FileSystemErrorCodes.CONNECTION_ERROR);
+      }),
+    });
+    expect(await broken.list('x')).toEqual([]);
+    await expect(broken.list('x', { strict: true })).rejects.toThrow(/channel open failure/);
   });
 
   it('list returns [] when the directory is missing', async () => {

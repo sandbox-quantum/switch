@@ -1,22 +1,40 @@
 import { promises as fs } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { replaceFile } from '@switch-console/agent-providers';
-import type { PluginFs, PluginFsWriteOptions } from '@switch-console/core/agents/plugins';
+import type {
+  PluginFs,
+  PluginFsListOptions,
+  PluginFsProtectOptions,
+  PluginFsWriteOptions,
+} from '@switch-console/core/agents/plugins';
 import { isSecretTempOf, secretTempPath } from '@main/core/fs/secret-temp';
 import {
   restrictWindowsDirectoryToOwner,
   restrictWindowsFileToOwner,
 } from '@main/core/fs/windows-owner-acl';
+import { log } from '@main/lib/logger';
 
 const isAbsent = (error: unknown) => {
   const code = (error as NodeJS.ErrnoException).code;
   return code === 'ENOENT' || code === 'ENOTDIR';
 };
 
-/** `chmod(dir, 0o700)`, or what stands in for it on Windows, where a mode does nothing for a directory. */
+/**
+ * `chmod(dir, 0o700)`, or what stands in for it on Windows, where a mode does
+ * nothing for a directory. A directory another account owns cannot be changed
+ * by this one; it is left as it is with a warning rather than failing the
+ * operation, since the secret file in it is private either way.
+ */
 async function restrictSecretDirectory(dir: string): Promise<void> {
-  if (process.platform === 'win32') await restrictWindowsDirectoryToOwner(dir);
-  else await fs.chmod(dir, 0o700);
+  if (process.platform === 'win32') return restrictWindowsDirectoryToOwner(dir);
+  try {
+    await fs.chmod(dir, 0o700);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+    log.warn('plugin-fs: secret directory belongs to another account; left as it is', {
+      dir,
+    });
+  }
 }
 
 /**
@@ -53,14 +71,17 @@ export async function writeSecretFile(abs: string, content: string): Promise<voi
  * without touching its content. Resolves false, changing nothing, when there is
  * no file.
  */
-export async function protectSecretFile(abs: string): Promise<boolean> {
+export async function protectSecretFile(
+  abs: string,
+  options?: PluginFsProtectOptions
+): Promise<boolean> {
   try {
     await fs.chmod(abs, 0o600);
   } catch (error) {
     if (isAbsent(error)) return false;
     throw error;
   }
-  await restrictSecretDirectory(dirname(abs));
+  if (!options?.fileOnly) await restrictSecretDirectory(dirname(abs));
   if (process.platform === 'win32') await restrictWindowsFileToOwner(abs);
   return true;
 }
@@ -122,8 +143,8 @@ export function createPluginFs(root: string): PluginFs {
       await fs.writeFile(abs, content, 'utf-8');
     },
 
-    async protectSecret(path: string): Promise<boolean> {
-      return protectSecretFile(resolveSafe(path));
+    async protectSecret(path: string, options?: PluginFsProtectOptions): Promise<boolean> {
+      return protectSecretFile(resolveSafe(path), options);
     },
 
     async delete(path: string): Promise<void> {
@@ -151,10 +172,11 @@ export function createPluginFs(root: string): PluginFs {
       }
     },
 
-    async list(path: string): Promise<string[]> {
+    async list(path: string, options?: PluginFsListOptions): Promise<string[]> {
       try {
         return await fs.readdir(resolveSafe(path));
-      } catch {
+      } catch (error) {
+        if (options?.strict && !isAbsent(error)) throw error;
         return [];
       }
     },

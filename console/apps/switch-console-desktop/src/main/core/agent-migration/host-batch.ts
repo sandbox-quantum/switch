@@ -110,18 +110,22 @@ export const DELETE_FILES_SCRIPT = String.raw`
 const fs = require('node:fs');
 const path = require('node:path');
 const temporary = new RegExp(${JSON.stringify(SECRET_TEMP_SUFFIX)});
+const byDir = new Map();
 for (const file of JSON.parse(process.argv[1])) {
   fs.rmSync(file, { force: true });
+  const dir = path.dirname(file);
+  byDir.set(dir, [...(byDir.get(dir) ?? []), path.basename(file)]);
+}
+for (const [dir, names] of byDir) {
   let entries = [];
   try {
-    entries = fs.readdirSync(path.dirname(file));
+    entries = fs.readdirSync(dir);
   } catch (error) {
     if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
   }
-  const name = path.basename(file);
   for (const entry of entries)
-    if (entry.startsWith(name) && temporary.test(entry.slice(name.length)))
-      fs.rmSync(path.join(path.dirname(file), entry), { force: true });
+    if (names.some((name) => entry.startsWith(name) && temporary.test(entry.slice(name.length))))
+      fs.rmSync(path.join(dir, entry), { force: true });
 }
 console.log('{}');
 `;

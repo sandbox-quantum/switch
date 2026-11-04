@@ -3,6 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FileSystemErrorCodes, type FileEntry, type FileListResult } from '../types';
 import { SshFileSystem } from './ssh-fs';
 
+const h = vi.hoisted(() => ({ warn: vi.fn() }));
+
+vi.mock('@main/lib/logger', () => ({
+  log: { warn: h.warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
 type SftpMkdirError = Error & { code?: number };
 
 function listResult(entries: FileEntry[]): FileListResult {
@@ -137,18 +143,28 @@ describe('SshFileSystem.remove', () => {
 
 /** What an SFTP server answers for a path that is not there. */
 const noSuchFile = () => Object.assign(new Error('No such file'), { code: 2 });
+/** What an SFTP server answers for a path this account may not change. */
+const permissionDenied = () => Object.assign(new Error('Permission denied'), { code: 3 });
 
 function makeSecretFs(
-  options: { renameThrows?: Error; missing?: string[]; entries?: string[] } = {}
+  options: { renameThrows?: Error; missing?: string[]; denied?: string[]; entries?: string[] } = {}
 ) {
   const missing = options.missing ?? [];
+  const denied = options.denied ?? [];
   const calls: unknown[][] = [];
   const handle = Buffer.from('handle');
   const step = (name: string) =>
     vi.fn((...args: unknown[]) => {
       const callback = args.pop() as (error?: Error) => void;
       calls.push([name, ...args]);
-      callback(missing.includes(args[0] as string) ? noSuchFile() : undefined);
+      const target = args[0] as string;
+      callback(
+        missing.includes(target)
+          ? noSuchFile()
+          : denied.includes(target)
+            ? permissionDenied()
+            : undefined
+      );
     });
   const sftp = {
     on: vi.fn(),
@@ -226,6 +242,25 @@ describe('SshFileSystem.writeSecret', () => {
     expect(calls).toContainEqual(['rename', temporary, '/repo/.switch/agents/a.json']);
   });
 
+  it('writes the file and warns when its directory belongs to another account', async () => {
+    const { fs, calls } = makeSecretFs({ denied: ['/repo/.switch/agents'] });
+
+    await fs.writeSecret('.switch/agents/a.json', 'token');
+
+    expect(calls.map((call) => call[0])).toEqual([
+      'mkdir',
+      'chmod',
+      'open',
+      'fchmod',
+      'write',
+      'close',
+      'rename',
+    ]);
+    expect(h.warn).toHaveBeenCalledWith(expect.stringContaining('another account'), {
+      dir: '/repo/.switch/agents',
+    });
+  });
+
   it('removes the temporary file and fails when the server cannot rename over the target', async () => {
     const { fs, calls } = makeSecretFs({
       renameThrows: new Error('Server does not support this extended request'),
@@ -259,6 +294,22 @@ describe('SshFileSystem.protectSecret', () => {
       ['chmod', '/repo/.switch/agents/a.json', 0o600],
       ['chmod', '/repo/.switch/agents', 0o700],
     ]);
+  });
+
+  it('leaves the directory alone when asked to protect only the file', async () => {
+    const { fs, calls } = makeSecretFs();
+
+    expect(await fs.protectSecret('.claude/settings.local.json', { fileOnly: true })).toBe(true);
+
+    expect(calls).toEqual([['chmod', '/repo/.claude/settings.local.json', 0o600]]);
+  });
+
+  it('still fails when the file itself cannot be changed', async () => {
+    const { fs } = makeSecretFs({ denied: ['/repo/.switch/agents/a.json'] });
+
+    await expect(fs.protectSecret('.switch/agents/a.json')).rejects.toMatchObject({
+      code: FileSystemErrorCodes.PERMISSION_DENIED,
+    });
   });
 
   it('changes nothing and says so when there is no file', async () => {

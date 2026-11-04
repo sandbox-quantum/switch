@@ -1,12 +1,32 @@
 export interface PluginFsWriteOptions {
   /**
-   * The file holds a credential: it is readable by its owner alone (`0600`,
-   * an owner-only ACL on Windows) inside a directory only its owner can enter
-   * (`0700`), including when either already existed with wider permissions.
-   * The content is written to a private temporary file and renamed into place,
-   * so it is never readable by anyone else, even briefly.
+   * The file holds a credential. It is readable by its owner alone (`0600`),
+   * including when it already existed with wider permissions: the content is
+   * written to a private temporary file and renamed into place, so it is never
+   * readable by anyone else, even briefly. Its directory is made one only its
+   * owner can enter (`0700`) when this account owns it; one owned by another
+   * account is left as it is, with a warning, since the file is private either
+   * way. On Windows both get owner-only ACLs, and a failure to apply one is a
+   * warning rather than an error.
    */
   secret?: boolean;
+}
+
+export interface PluginFsProtectOptions {
+  /**
+   * Leave the file's directory alone: for a credential kept in a directory
+   * that belongs to another tool, such as `.claude/`.
+   */
+  fileOnly?: boolean;
+}
+
+export interface PluginFsListOptions {
+  /**
+   * Throw on any failure other than the directory not being there, rather
+   * than answering `[]`, for a caller that must not mistake an unreadable
+   * directory for an empty one.
+   */
+  strict?: boolean;
 }
 
 export interface PluginFs {
@@ -18,7 +38,7 @@ export interface PluginFs {
    */
   read(path: string): Promise<string | null>;
   /**
-   * An implementation that cannot honour `secret` must throw rather than
+   * An implementation that does not support `secret` must throw rather than
    * write the file with ordinary permissions.
    */
   write(path: string, content: string, options?: PluginFsWriteOptions): Promise<void>;
@@ -26,9 +46,9 @@ export interface PluginFs {
    * Gives an existing file the permissions a `secret` write would, without
    * reading or rewriting it, so it cannot undo a concurrent write. Resolves
    * false, changing nothing, when there is no file. An implementation that
-   * cannot do this must throw.
+   * does not support this must throw.
    */
-  protectSecret(path: string): Promise<boolean>;
+  protectSecret(path: string, options?: PluginFsProtectOptions): Promise<boolean>;
   /**
    * Also removes any temporary copy an interrupted `secret` write of the file
    * left beside it. Resolves when the file is already absent; any other
@@ -36,5 +56,5 @@ export interface PluginFs {
    */
   delete(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
-  list(path: string): Promise<string[]>;
+  list(path: string, options?: PluginFsListOptions): Promise<string[]>;
 }

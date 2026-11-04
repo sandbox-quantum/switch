@@ -111,6 +111,21 @@ export function mergeAgentCredentials(
 }
 
 /**
+ * Whether a settings file's text carries a Switch token in its `env` block,
+ * which makes it a credential however it was written. False for text that is
+ * not a JSON object.
+ */
+export function holdsSwitchToken(raw: string | null): boolean {
+  if (raw === null) return false;
+  try {
+    const parsed = JSON.parse(raw) as { env?: Record<string, unknown> } | null;
+    return typeof parsed?.env?.SWITCH_API_TOKEN === 'string';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Update ONLY `SWITCH_API_ENDPOINT` in an already-provisioned settings file,
  * returning the new file text — or `null` when the file is not a provisioned
  * Switch agent (missing/unparseable, or its `env` names no endpoint and agent

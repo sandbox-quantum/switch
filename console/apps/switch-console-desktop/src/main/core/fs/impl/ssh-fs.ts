@@ -5,6 +5,7 @@
 
 import { posix as pathPosix } from 'node:path';
 import type { SFTPWrapper } from 'ssh2';
+import { isPermissionDenied } from '@main/core/fs/permission-denied';
 import { isSecretTempOf, secretTempPath } from '@main/core/fs/secret-temp';
 import { buildRemoteShellCommand } from '@main/core/ssh/lifecycle/remote-shell-profile';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
@@ -361,8 +362,8 @@ export class SshFileSystem implements FileSystemProvider {
 
   /**
    * Write a file readable by its owner alone (`0600`) inside a directory only
-   * its owner can enter (`0700`): the `secret` write of `PluginFs`, for a file
-   * holding a credential. The content goes into a temporary file created
+   * its owner can enter (`0700`, when this account owns it): the `secret` write
+   * of `PluginFs`, for a file holding a credential. The content goes into a temporary file created
    * `0600` and is renamed over the target with OpenSSH's POSIX rename, so it
    * never sits in a file anyone else can read, and an existing file left wider
    * by an earlier version is replaced rather than kept. A server without that
@@ -376,7 +377,7 @@ export class SshFileSystem implements FileSystemProvider {
     const dir = pathPosix.dirname(fullPath);
     await this.ensureRemoteDir(sftp, dir);
     // A directory that already existed keeps its mode until it is changed here.
-    await this.sftpDone(dir, (cb) => sftp.chmod(dir, 0o700, cb));
+    await this.restrictSecretDirectory(sftp, dir);
 
     const temporary = secretTempPath(fullPath);
     const handle = await new Promise<Buffer>((resolve, reject) =>
@@ -405,10 +406,10 @@ export class SshFileSystem implements FileSystemProvider {
 
   /**
    * Give an existing file the permissions {@link writeSecret} would (`0600`, in
-   * a `0700` directory) without touching its content. Resolves false, changing
-   * nothing, when there is no file.
+   * a `0700` directory unless `fileOnly`) without touching its content.
+   * Resolves false, changing nothing, when there is no file.
    */
-  async protectSecret(path: string): Promise<boolean> {
+  async protectSecret(path: string, options?: { fileOnly?: boolean }): Promise<boolean> {
     const fullPath = this.resolveRemotePath(path);
     const sftp = await this.getSftp();
     try {
@@ -417,9 +418,22 @@ export class SshFileSystem implements FileSystemProvider {
       if (isNotFound(error)) return false;
       throw error;
     }
-    const dir = pathPosix.dirname(fullPath);
-    await this.sftpDone(dir, (cb) => sftp.chmod(dir, 0o700, cb));
+    if (!options?.fileOnly) await this.restrictSecretDirectory(sftp, pathPosix.dirname(fullPath));
     return true;
+  }
+
+  /**
+   * `chmod(dir, 0o700)`. A directory another account owns cannot be changed by
+   * this one; it is left as it is with a warning rather than failing the
+   * operation, since the secret file in it is private either way.
+   */
+  private async restrictSecretDirectory(sftp: SFTPWrapper, dir: string): Promise<void> {
+    try {
+      await this.sftpDone(dir, (cb) => sftp.chmod(dir, 0o700, cb));
+    } catch (error) {
+      if (!isPermissionDenied(error)) throw error;
+      log.warn('ssh-fs: secret directory belongs to another account; left as it is', { dir });
+    }
   }
 
   /** Remove the temporary copies an interrupted {@link writeSecret} of `path` left beside it. */

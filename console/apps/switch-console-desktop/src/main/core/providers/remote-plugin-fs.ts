@@ -1,5 +1,10 @@
 import { posix as pathPosix } from 'node:path';
-import type { PluginFs, PluginFsWriteOptions } from '@switch-console/core/agents/plugins';
+import type {
+  PluginFs,
+  PluginFsListOptions,
+  PluginFsProtectOptions,
+  PluginFsWriteOptions,
+} from '@switch-console/core/agents/plugins';
 import { assertRemoved } from '@main/core/fs/assert-removed';
 import type { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
@@ -47,8 +52,8 @@ export function createRemotePluginFs(fs: SshFileSystem): PluginFs {
       }
     },
 
-    async protectSecret(path: string): Promise<boolean> {
-      return fs.protectSecret(path);
+    async protectSecret(path: string, options?: PluginFsProtectOptions): Promise<boolean> {
+      return fs.protectSecret(path, options);
     },
 
     async delete(path: string): Promise<void> {
@@ -60,11 +65,14 @@ export function createRemotePluginFs(fs: SshFileSystem): PluginFs {
       return fs.exists(path);
     },
 
-    async list(path: string): Promise<string[]> {
+    async list(path: string, options?: PluginFsListOptions): Promise<string[]> {
       try {
         const result = await fs.list(path, { includeHidden: true });
         return result.entries.map((entry) => pathPosix.basename(entry.path));
-      } catch {
+      } catch (error) {
+        const absent =
+          error instanceof FileSystemError && error.code === FileSystemErrorCodes.NOT_FOUND;
+        if (options?.strict && !absent) throw error;
         return [];
       }
     },

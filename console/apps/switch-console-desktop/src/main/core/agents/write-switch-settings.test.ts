@@ -14,6 +14,7 @@ import {
   ForeignAgentCredentialsError,
   foreignCredentialsEndpoint,
   foreignCredentialsOwnerFs,
+  holdsSwitchToken,
   mergeSwitchApiEndpoint,
   mergeSwitchSettings,
   removeSwitchSettings,
@@ -522,5 +523,16 @@ describe('removeSwitchSettings', () => {
     await fs.rm(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH), { force: true });
 
     expect(await detectSwitchAgent(dir)).toBeNull();
+  });
+});
+
+describe('holdsSwitchToken', () => {
+  it('is true only for settings whose env carries a token', () => {
+    expect(holdsSwitchToken(JSON.stringify({ env: { SWITCH_API_TOKEN: 'secret' } }))).toBe(true);
+    expect(holdsSwitchToken(JSON.stringify({ env: { SWITCH_AGENT_ID: 'a' } }))).toBe(false);
+    expect(holdsSwitchToken(JSON.stringify({ SWITCH_API_TOKEN: 'not in env' }))).toBe(false);
+    expect(holdsSwitchToken('null')).toBe(false);
+    expect(holdsSwitchToken('{')).toBe(false);
+    expect(holdsSwitchToken(null)).toBe(false);
   });
 });

@@ -526,16 +526,20 @@ pnpm run lint
   the credential. Do not add a token back to it: two copies is how one goes stale
   and authenticates as the wrong agent.
   - **It is readable by its owner alone:** `0600` in a `0700` `.switch/agents/`,
-    with an owner-only ACL on Windows. Every write of it goes through
-    `PluginFs.write` with `{ secret: true }` — `writeSecretFile` in
-    `src/main/core/providers/plugin-fs.ts` locally, `SshFileSystem.writeSecret`
-    over SFTP. A plain write takes the umask, typically leaving the token
-    readable by every account on the machine. To tighten a file already there,
-    use `PluginFs.protectSecret`, which changes permissions only; rewriting the
-    content to the same end can undo a concurrent write. A secret write that is
-    cut off leaves its temporary `<file>.<uuid>` copy behind, so
-    `PluginFs.delete` removes those too: delete the file through it, or through
-    `deleteFiles` on a host, never with a bare `rm`.
+    with owner-only ACLs on Windows. Every write of it is a secret write:
+    `PluginFs.write` with `{ secret: true }`, or what that calls —
+    `writeSecretFile` in `src/main/core/providers/plugin-fs.ts` locally,
+    `SshFileSystem.writeSecret` over SFTP. A plain write takes the umask,
+    typically leaving the token readable by every account on the machine. A
+    directory another account owns is left as it is, with a warning, rather
+    than failing the write; the file is private either way.
+  - To tighten a file already there, use `PluginFs.protectSecret`, which
+    changes permissions only; rewriting the content to the same end can undo a
+    concurrent write. `{ fileOnly: true }` leaves the directory alone, for a
+    legacy file in `.claude/` that still holds a token.
+  - A secret write that is cut off leaves its temporary `<file>.<uuid>` copy
+    behind, so `PluginFs.delete` removes those too: delete the file through it,
+    or through `deleteFiles` on a host, never with a bare `rm`.
   - **Where Switch Console writes the settings file, Claude Code makes it live.**
     Its `env` block becomes real process environment for everything a session
     spawns, so keep the agent id in it in step with `.switch/agents/`; changing

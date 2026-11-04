@@ -95,6 +95,8 @@ describe('propagateServerApiUrl', () => {
         SWITCH_AGENT_ID: 'switch-agent-1',
       },
     });
+    const claudeDir = path.dirname(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH));
+    const claudeDirMode = (await nodeFs.stat(claudeDir)).mode & 0o777;
     await fixture.db.insert(locations).values({ id: 'loc-1', name: 'Local', sshHost: '', dir });
     await fixture.db.insert(agents).values({
       id: 'agent-1',
@@ -124,6 +126,13 @@ describe('propagateServerApiUrl', () => {
       SWITCH_API_TOKEN: 'secret-token',
       SWITCH_AGENT_ID: 'switch-agent-1',
     });
+    // It still holds a token, so it is the owner's alone; `.claude/` is Claude
+    // Code's and keeps its mode.
+    if (process.platform !== 'win32') {
+      const file = path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH);
+      expect((await nodeFs.stat(file)).mode & 0o777).toBe(0o600);
+      expect((await nodeFs.stat(claudeDir)).mode & 0o777).toBe(claudeDirMode);
+    }
 
     // DB mirror follows the file.
     const [row] = await fixture.db

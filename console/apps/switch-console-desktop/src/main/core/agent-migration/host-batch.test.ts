@@ -104,15 +104,26 @@ describe('credentials files on a host', () => {
     expect(await readFiles(run, [one])).toEqual({ [one]: null });
   });
 
-  it('removes the copies an interrupted secret write left beside one, and nothing else', async () => {
+  it('removes the copies an interrupted secret write left beside each, and nothing else', async () => {
     const dir = join(home, 'agents');
     await mkdir(dir);
     const uuid = '0b6f1d2e-3c4a-4b5d-8e9f-a0b1c2d3e4f5';
-    for (const name of ['a.json', `a.json.${uuid}`, 'a.json.bak', `b.json.${uuid}`])
+    for (const name of [
+      'a.json',
+      `a.json.${uuid}`,
+      'a.json.bak',
+      'b.json',
+      `b.json.${uuid}`,
+      `c.json.${uuid}`,
+    ])
       await writeFile(join(dir, name), '{"a":1}');
 
-    await deleteFiles(run, [join(dir, 'a.json'), join(home, 'missing', 'c.json')]);
+    await deleteFiles(run, [
+      join(dir, 'a.json'),
+      join(dir, 'b.json'),
+      join(home, 'gone', 'd.json'),
+    ]);
 
-    expect((await readdir(dir)).sort()).toEqual(['a.json.bak', `b.json.${uuid}`]);
+    expect((await readdir(dir)).sort()).toEqual(['a.json.bak', `c.json.${uuid}`]);
   });
 });
