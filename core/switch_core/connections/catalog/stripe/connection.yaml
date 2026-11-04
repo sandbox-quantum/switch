@@ -1,0 +1,42 @@
+slug: stripe
+name: Stripe
+category: Payments
+description: Inspect Stripe payments, customers, subscriptions, and disputes acting with your Stripe account credentials.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.stripe.com/v1/account
+    account_id: id
+    label: email
+# Stripe OAuth access tokens expire after 24 hours (86,400 seconds) when issued
+# via the standard authorization flow with refresh token rotation.
+token:
+  kind: pass_through
+  max_lifetime: 86400
+# Stripe's official remote MCP server at https://mcp.stripe.com handles
+# authentication via OAuth and surfaces tools scoped to the connected account.
+# A single OAuth grant covers all MCP capabilities; Stripe does not publish
+# granular read/write scope strings for its MCP authorization server.
+# Safe operational boundaries are enforced via SKILL.md.
+mcp:
+  servers:
+    - name: stripe
+      url: "https://mcp.stripe.com"
+access:
+  read:
+    scopes:
+      - "mcp"
+  write:
+    scopes:
+      - "mcp"
+tools:
+  mode: pass_through

@@ -32,6 +32,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "stripe",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +40,50 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "stripe",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["stripe"].skill_files
+
+
+def test_the_shipped_stripe_entry_signs_in_and_configures_adapter():
+    definition = CATALOG["stripe"].definition
+    assert definition.slug == "stripe"
+    assert definition.name == "Stripe"
+    assert definition.category == "Payments"
+    assert definition.enabled is True
+    assert definition.adapter == "oauth"
+    assert definition.auth.refresh == "rotating"
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (oauth.registration, oauth.redirect) == ("dynamic", ["loopback"])
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == ("https://api.stripe.com/v1/account", "id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("stripe", "https://mcp.stripe.com")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["mcp"]
+    assert definition.access.write.scopes == ["mcp"]
+    assert "SKILL.md" in CATALOG["stripe"].skill_files
+    assert "Query Stripe payments" in CATALOG["stripe"].skill_files["SKILL.md"]
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
