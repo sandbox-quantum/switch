@@ -2,6 +2,7 @@ import { checkAcpSignIn, createAcpAdapter } from '../acp/acp-adapter';
 import type { AcpProviderHooks } from '../acp/hooks';
 import type { ProviderAdapter } from '../adapter';
 import { antigravityAcp } from '../antigravity/antigravity-adapter';
+import { auggieAcp } from '../auggie/auggie-adapter';
 import { createClaudeAdapter } from '../claude/claude-adapter';
 import { checkClaudeSignIn, CLAUDE_LOGIN } from '../claude/sign-in';
 import { createCodexAdapter } from '../codex/codex-adapter';
@@ -100,6 +101,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   },
   acpProviderRuntime(antigravityAcp),
   acpProviderRuntime(cursorAcp),
+  acpProviderRuntime(auggieAcp),
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));
