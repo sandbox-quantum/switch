@@ -77,6 +77,7 @@ def _world(
     disabled: dict[str, str] | None = None,
     workspace_gate: bool = False,
     organization_apps: object = None,
+    write_only: bool = False,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
@@ -87,6 +88,11 @@ def _world(
             "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
         ),
     )
+    if write_only:
+        path = root / "example" / "connection.yaml"
+        path.write_text(
+            path.read_text().replace('  read: { scopes: ["read:items"] }\n', "")
+        )
     catalog = load_catalog(root)
     oauth = catalog["example"].definition.auth.oauth
     assert oauth is not None
@@ -803,4 +809,41 @@ class TestWorkspaceSwitch:
             + " Switch has stopped using the Example sign-in but cannot revoke it, "
             "so it still works. Remove Switch under Connected apps in Example.",
         }
+        assert await _connection(session_factory, ada.id) is None
+
+
+class TestWriteOnly:
+    async def test_connect_screen_catalog_and_consent_are_write(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        world = _world(session_factory, tmp_path / "catalog", write_only=True)
+        from switch_core.gateway import service_connections
+
+        monkeypatch.setattr(service_connections, "CATALOG", world.broker._catalog)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            response = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(ada)
+            )
+            example = next(
+                x for x in response.json()["connections"] if x["slug"] == "example"
+            )
+            assert example["requested_access"] == "write"
+            completed = await _loopback_connect(world, Console(client, ada))
+            assert completed.json()["consent"] == "write"
+        connection = await _connection(session_factory, ada.id)
+        assert connection.consent == "write"
+
+    async def test_missing_write_scope_fails_instead_of_connecting_read(
+        self, session_factory, tmp_path
+    ):
+        world = _world(session_factory, tmp_path / "catalog", write_only=True)
+        ada = await add_member(session_factory, "ada")
+        mint = world.vendor.mint
+        world.vendor.mint = lambda scopes: mint(["read:items"])
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            response = await console.complete(await _loopback_code(world, console))
+            assert response.status_code == 400
+            assert "needs to write" in response.text
         assert await _connection(session_factory, ada.id) is None

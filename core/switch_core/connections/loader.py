@@ -510,8 +510,14 @@ class LevelAccess(BaseModel):
 
 class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    read: LevelAccess
+    read: LevelAccess | None = None
     write: LevelAccess | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_level(self) -> "ConnectionAccess":
+        if self.read is None and self.write is None:
+            raise ValueError("access needs at least one read or write level")
+        return self
 
 
 class ConnectionTools(BaseModel):
@@ -639,6 +645,8 @@ class ConnectionDefinition(BaseModel):
             )
 
     def _check_github(self) -> None:
+        if self.access is not None and self.access.read is None:
+            raise ValueError("a github entry needs a read level")
         if self.auth.oauth is not None or self.auth.identity is not None:
             raise ValueError(
                 "the github adapter takes its client from the GitHub App settings"
