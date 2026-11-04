@@ -1,4 +1,6 @@
 import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
+import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
+import { type ChatSummary, chatAgentLabel } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { matchQuality, type SearchItem, type SearchItemKind } from '@shared/core/search';
 import type { RemoteRoomSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -87,6 +89,31 @@ function item(
   score: number
 ): SearchItem {
   return { kind, id, locationId: null, sessionId: null, title, subtitle, score };
+}
+
+/**
+ * Matches the user's 1:1 chats with agents, by the chat's name and the agent's.
+ * Drawn as chats (the item's `id` is the room); a chat the user no longer has
+ * is not in the list, so it is not found.
+ */
+export function matchDirectChats(chats: ChatSummary[], query: string): SearchItem[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return finalise(
+    chats.flatMap((chat) => {
+      if (!isConsoleDirectChatSummary(chat)) return [];
+      const agent = chat.agents[0] ? chatAgentLabel(chat.agents[0]) : '';
+      const score = rank(chat.name, q) ?? rank(agent, q);
+      return score === null ? [] : [item('session', chat.roomId, chat.name, agent, score)];
+    })
+  );
+}
+
+/** What an indexed search may show: no legacy agents or sessions when they are left out. */
+export function withoutLegacy(items: SearchItem[], includeLegacy: boolean): SearchItem[] {
+  return includeLegacy
+    ? items
+    : items.filter((each) => each.kind !== 'session' && each.kind !== 'agent');
 }
 
 /**

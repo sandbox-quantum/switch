@@ -722,6 +722,28 @@ describe('ClaudeAdapter turn attribution', () => {
     expect(recorder.ofType('runtime.error')[0]?.message).toBe('Reached the turn limit');
   });
 
+  it('reports a success result with is_error as an error turn with the error text', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'large request' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(
+      resultMessage([String(sent?.uuid)], {
+        subtype: 'success',
+        is_error: true,
+        result: 'API Error: 400 ... The message size (30296644 bytes) exceeds 30.000MB limit.',
+      })
+    );
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe(
+      'API Error: 400 ... The message size (30296644 bytes) exceeds 30.000MB limit.'
+    );
+    expect(recorder.ofType('runtime.error')[0]?.message).toBe(
+      'API Error: 400 ... The message size (30296644 bytes) exceeds 30.000MB limit.'
+    );
+  });
+
   it('ignores a result for sends this adapter never made', async () => {
     const { sdk, adapter, recorder } = await startSession();
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });

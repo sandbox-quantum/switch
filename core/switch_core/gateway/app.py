@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -29,6 +30,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
@@ -57,6 +59,13 @@ from switch_core.gateway.messaging_installs import (
 )
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
+from switch_core.gateway.organization_connector_apps import (
+    router as organization_connector_apps_router,
+)
+from switch_core.gateway.organization_services import (
+    router as organization_services_router,
+)
+from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.ownership import router as ownership_router
 from switch_core.gateway.packages import router as packages_router
 from switch_core.gateway.providers import router as providers_router
@@ -101,6 +110,7 @@ def create_gateway_app(
     api_key_store: ApiKeyStore,
     invitation_store: InvitationStore,
     join_domain_store: JoinDomainStore,
+    organization_store: OrganizationStore,
     template_store: TemplateStore,
     usage_store: UsageStore,
     budget_store: BudgetStore,
@@ -112,6 +122,7 @@ def create_gateway_app(
     chat_service: ChatService,
     connector_apps: ConnectorApps,
     config: SwitchConfig,
+    trust_settings_changed: Callable[[], None] | None = None,
 ) -> FastAPI:
     init_dependencies(
         agent_store=agent_store,
@@ -128,6 +139,7 @@ def create_gateway_app(
         api_key_store=api_key_store,
         invitation_store=invitation_store,
         join_domain_store=join_domain_store,
+        organization_store=organization_store,
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,
@@ -137,6 +149,7 @@ def create_gateway_app(
         invite_mailer=invite_mailer,
         user_changes=user_changes,
         config=config,
+        trust_settings_changed=trust_settings_changed,
     )
 
     app = FastAPI(title="Switch Gateway API")
@@ -173,6 +186,13 @@ def create_gateway_app(
         app.include_router(service_flows_router, tags=["service-connections"])
         app.include_router(workspace_services_router, tags=["service-connections"])
         app.include_router(connector_apps_router, tags=["connector-apps"])
+        if config.organization_connector_apps_enabled:
+            app.include_router(
+                organization_connector_apps_router, tags=["connector-apps"]
+            )
+            app.include_router(
+                organization_services_router, tags=["service-connections"]
+            )
 
     # authlib's OIDC client stores transient state/nonce/PKCE in the request
     # session across the IdP redirect round-trip; SameSite=Lax lets the cookie
@@ -199,6 +219,7 @@ def create_gateway_app(
     app.include_router(auth_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
+    app.include_router(organizations_router, tags=["organizations"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
     app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])

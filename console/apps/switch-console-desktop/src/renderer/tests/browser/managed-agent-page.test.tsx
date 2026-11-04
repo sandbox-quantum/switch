@@ -105,7 +105,7 @@ const AGENT: ManagedAgentView = {
 const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
-  providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
+  providers: [{ provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true }],
   acceptsLogins: false,
   cloud: false,
   workspacesDir: '/home/me/workspaces',
