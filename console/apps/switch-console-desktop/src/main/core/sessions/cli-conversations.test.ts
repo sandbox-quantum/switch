@@ -1,3 +1,4 @@
+import { MAX_SESSIONS_PER_REQUEST } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   discardCliConversationCopies,
@@ -71,6 +72,29 @@ function hostAnswers(answers: Record<string, unknown>) {
     if (answer instanceof Error) throw answer;
     return { stdout: `${JSON.stringify(answer)}\n`, stderr: '' };
   });
+}
+
+/**
+ * Answers a list with no conversations, and a removal with one copy found for
+ * each session it names, but fails a removal that names `failing`.
+ */
+function hostRemovesCopies(failing: string | null) {
+  mocks.runHostRequest.mockImplementation(
+    async (_transport, mode: string, request: { consoleSessionIds?: string[] }) => {
+      if (mode === '--cli-conversations')
+        return { stdout: '{"ownershipKnown":true,"conversations":[]}\n', stderr: '' };
+      const sessionIds = request.consoleSessionIds ?? [];
+      if (failing !== null && sessionIds.includes(failing))
+        throw new Error('ssh: connection reset');
+      const deleted = Object.fromEntries(sessionIds.map((id) => [id, 1]));
+      return { stdout: `${JSON.stringify({ deleted })}\n`, stderr: '' };
+    }
+  );
+}
+
+/** Ids for `count` sessions, in order. */
+function sessionIds(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `session-${index + 1}`);
 }
 
 /** What the host prints for a copy it refused to make. */
@@ -341,6 +365,49 @@ it('asks the host once for every session whose copies it is removing', async () 
   await listCliConversations('agent');
   await removalsSettle();
   expect(asked()).toContainEqual(['--delete-cli-conversation-copies', ['session-2']]);
+});
+
+it('removes the copies of more sessions than one request may name in several requests', async () => {
+  const ids = sessionIds(MAX_SESSIONS_PER_REQUEST + 1);
+  hostRemovesCopies(null);
+  await Promise.all(ids.map((id) => discardCliConversationCopies(location as never, id)));
+  expect(asked()).toEqual([
+    ['--delete-cli-conversation-copies', ids.slice(0, MAX_SESSIONS_PER_REQUEST)],
+    ['--delete-cli-conversation-copies', ids.slice(MAX_SESSIONS_PER_REQUEST)],
+  ]);
+  mocks.runHostRequest.mockClear();
+  await listCliConversations('agent');
+  await removalsSettle();
+  expect(asked()).toEqual([['--cli-conversations', undefined]]);
+});
+
+it('still asks about the other sessions when one request of a removal fails, and tries again only those it named', async () => {
+  const ids = sessionIds(MAX_SESSIONS_PER_REQUEST + 1);
+  const firstRequest = ids.slice(0, MAX_SESSIONS_PER_REQUEST);
+  hostAnswers({ '--delete-cli-conversation-copies': new Error('ssh: connection reset') });
+  await Promise.all(ids.map((id) => discardCliConversationCopies(location as never, id)));
+  hostRemovesCopies('session-1');
+  mocks.runHostRequest.mockClear();
+  mocks.warn.mockClear();
+  await listCliConversations('agent');
+  await removalsSettle();
+  expect(asked()).toEqual([
+    ['--cli-conversations', undefined],
+    ['--delete-cli-conversation-copies', firstRequest],
+    ['--delete-cli-conversation-copies', ids.slice(MAX_SESSIONS_PER_REQUEST)],
+  ]);
+  expect(mocks.warn).toHaveBeenCalledTimes(1);
+  expect(mocks.warn).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({ stage: 'failed', sessionIds: firstRequest })
+  );
+  mocks.runHostRequest.mockClear();
+  await listCliConversations('agent');
+  await removalsSettle();
+  expect(asked()).toEqual([
+    ['--cli-conversations', undefined],
+    ['--delete-cli-conversation-copies', firstRequest],
+  ]);
 });
 
 it('does not hold up a list or a copy for the removals it starts', async () => {

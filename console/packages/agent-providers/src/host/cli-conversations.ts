@@ -24,6 +24,20 @@ export const CLI_CONVERSATION_MODES = [
 export type CliConversationMode = (typeof CLI_CONVERSATION_MODES)[number];
 
 /**
+ * The most inherited names a request may carry, so a request is refused
+ * before an unbounded list is read. Console sends `EXECUTION_INHERIT_ENV`,
+ * well under this, with room for it to grow.
+ */
+export const MAX_INHERITED_NAMES = 512;
+
+/**
+ * The most Console sessions one `--delete-cli-conversation-copies` request may
+ * name, so a request is refused before an unbounded list is read. Console asks
+ * about more in several requests.
+ */
+export const MAX_SESSIONS_PER_REQUEST = 200;
+
+/**
  * What Console asks a conversation command, staged as a private file because
  * a shell setup may hold secrets a command line would show to `ps`. The
  * session's variables, shell setup and inherited names are what its host would
@@ -35,7 +49,7 @@ export const cliConversationRequestSchema = z.strictObject({
   dir: z.string().min(1),
   env: z.record(z.string(), z.string()),
   shellSetup: z.string().optional(),
-  inheritEnv: z.array(z.string()),
+  inheritEnv: z.array(z.string()).max(MAX_INHERITED_NAMES),
   /** The conversation to copy, for `--fork-cli-conversation`. */
   nativeSessionId: z.string().min(1).optional(),
   /** The Console session a copy is for, for `--fork-cli-conversation`, which tags the copy with it. */
@@ -44,7 +58,7 @@ export const cliConversationRequestSchema = z.strictObject({
    * The Console sessions whose copies `--delete-cli-conversation-copies`
    * removes: the conversations tagged with exactly one of them.
    */
-  consoleSessionIds: z.array(z.string().min(1)).min(1).optional(),
+  consoleSessionIds: z.array(z.string().min(1)).min(1).max(MAX_SESSIONS_PER_REQUEST).optional(),
   /**
    * The person said the conversation is closed, for a copy where Claude Code
    * cannot say which conversations are open. Absent means they did not.

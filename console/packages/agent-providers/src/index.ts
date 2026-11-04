@@ -189,6 +189,7 @@ export {
   cliConversationFailureSchema,
   type CliConversationMode,
   type CliConversationRequest,
+  MAX_SESSIONS_PER_REQUEST,
 } from './host/cli-conversations';
 export { verifyClaudeSignIn } from './claude/sign-in';
 export type { ProviderReadiness, SignInCheckInput } from './readiness';

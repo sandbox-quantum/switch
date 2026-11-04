@@ -6,6 +6,7 @@ import {
   deletedCliConversationCopiesSchema,
   EXECUTION_INHERIT_ENV,
   forkedCliConversationSchema,
+  MAX_SESSIONS_PER_REQUEST,
 } from '@switch-console/agent-providers';
 import { err, ok, type Result } from '@switch-console/shared';
 import type { z } from 'zod';
@@ -161,11 +162,35 @@ function removeUnsettledCopies(location: LocationProvider): Promise<void> {
   return next;
 }
 
-/** One attempt at {@link removeUnsettledCopies}, with one request to the host. Never throws. */
+/**
+ * One attempt at {@link removeUnsettledCopies}, with one request to the host
+ * for each {@link MAX_SESSIONS_PER_REQUEST} sessions, each made whether or not
+ * the one before it failed. Never throws.
+ */
 async function removeCopiesOnce(location: LocationProvider): Promise<void> {
   const sessions = unsettledCopies.get(location.locationId);
   if (!sessions?.size) return;
   const sessionIds = [...sessions.keys()];
+  for (let start = 0; start < sessionIds.length; start += MAX_SESSIONS_PER_REQUEST)
+    await removeSomeCopies(
+      location,
+      sessions,
+      sessionIds.slice(start, start + MAX_SESSIONS_PER_REQUEST)
+    );
+  if (sessions.size === 0 && unsettledCopies.get(location.locationId) === sessions)
+    unsettledCopies.delete(location.locationId);
+}
+
+/**
+ * One request of {@link removeCopiesOnce}: removes these sessions' copies and
+ * forgets each session whose copy was found, or was looked for long enough. A
+ * request that fails forgets none of them. Never throws.
+ */
+async function removeSomeCopies(
+  location: LocationProvider,
+  sessions: Map<string, number>,
+  sessionIds: string[]
+): Promise<void> {
   let deleted: Record<string, number>;
   try {
     deleted = await deleteCopies(location, sessionIds);
@@ -207,11 +232,13 @@ async function removeCopiesOnce(location: LocationProvider): Promise<void> {
       );
     }
   }
-  if (sessions.size === 0 && unsettledCopies.get(location.locationId) === sessions)
-    unsettledCopies.delete(location.locationId);
 }
 
-/** Removes the copies tagged as these sessions', in one request, and says how many each had. */
+/**
+ * Removes the copies tagged as these sessions', at most
+ * {@link MAX_SESSIONS_PER_REQUEST} of them, in one request, and says how many
+ * each had.
+ */
 async function deleteCopies(
   location: LocationProvider,
   sessionIds: string[]
