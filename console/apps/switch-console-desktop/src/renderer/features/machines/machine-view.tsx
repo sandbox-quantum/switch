@@ -10,6 +10,7 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { MachineDetails } from './machine-details';
+import { RefreshFailed } from './refresh-failed';
 import { useMachineDetails } from './use-machines';
 
 type MachineParams = { serverId: string; machineId: string; name: string };
@@ -43,7 +44,7 @@ const MachinePanel = observer(function MachinePanel() {
     <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-background">
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         <div className="mx-auto w-full max-w-[1080px] px-6 pt-10 pb-10">
-          {machines.error ? (
+          {machines.error && !machines.data ? (
             // A frozen workspace's banner already says why the server cannot answer.
             server && isFrozenServer(server) ? (
               <ServerTableEmpty>
@@ -65,7 +66,12 @@ const MachinePanel = observer(function MachinePanel() {
               {params.name} is no longer one of your devices on {server?.name ?? 'this server'}.
             </ServerTableEmpty>
           ) : (
-            <MachineDetails serverId={params.serverId} machine={machine} managed={managed} />
+            <div className="flex flex-col gap-4">
+              {machines.error && (
+                <RefreshFailed error={machines.error} frozen={!!server && isFrozenServer(server)} />
+              )}
+              <MachineDetails serverId={params.serverId} machine={machine} managed={managed} />
+            </div>
           )}
         </div>
       </div>

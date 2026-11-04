@@ -31,6 +31,7 @@ import {
   machineConnection,
 } from './machine-state';
 import { type PlacedAgents, placedAgents } from './machine-state';
+import { RefreshFailed } from './refresh-failed';
 import { useDeviceActions } from './use-device-actions';
 import { useMachineDetails } from './use-machines';
 
@@ -105,7 +106,7 @@ function DevicesBody({
   const [showRemoved, setShowRemoved] = useState(false);
 
   // A frozen workspace's banner already says why the server cannot answer.
-  if (machines.error)
+  if (machines.error && !machines.data)
     return frozen ? (
       <p className="pt-4 text-sm text-foreground-muted">
         Your devices show here once the server answers again.
@@ -132,11 +133,14 @@ function DevicesBody({
 
   return (
     <div className="flex flex-col gap-6 pt-4 pb-10">
+      {machines.error && <RefreshFailed error={machines.error} frozen={frozen} />}
       {live.length === 0 ? (
         <p className="text-sm text-foreground-muted">
           {machines.data.length === 0
             ? 'No devices yet. This computer joins when you run a managed agent on it, and so does an SSH host; a standalone machine joins once it is enrolled.'
-            : `No ${filter === 'all' ? '' : `${MACHINE_CATEGORY_LABELS[filter as MachineCategory].toLowerCase()} `}devices.`}
+            : filter === 'all'
+              ? 'No devices.'
+              : `Nothing under ${MACHINE_CATEGORY_LABELS[filter as MachineCategory]}.`}
         </p>
       ) : (
         <div className="grid grid-cols-2 gap-3">

@@ -54,7 +54,7 @@ export function useDeviceActions(serverId: string, machine: MachineDetail, place
         placed.kind === 'unreadable'
           ? `${machine.name} stops running agents for you and cannot reconnect. Your agents could not be listed, so this cannot say which are on it: any placed on it stay there and do not run until you move them.`
           : placed.kind === 'known' && placed.count > 0
-            ? `${machine.name} stops running agents for you and cannot reconnect. The ${placed.count === 1 ? 'agent' : `${placed.count} agents`} on it stay placed on it and do not run until you move them.`
+            ? `${machine.name} stops running agents for you and cannot reconnect. ${placed.count === 1 ? 'The agent on it stays placed on it and does not run until you move it.' : `The ${placed.count} agents on it stay placed on it and do not run until you move them.`}`
             : `${machine.name} stops running agents for you and cannot reconnect. To use it again, enroll it again.`,
       confirmLabel: 'Remove',
       onSuccess: () => {

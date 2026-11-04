@@ -52,4 +52,16 @@ describe('machineEnrollment', () => {
       fallback: true,
     });
   });
+
+  it('treats an empty address from the server as none named', async () => {
+    mocks.issueMachineEnrollment.mockResolvedValue({
+      code: 'c',
+      expiresAt: '2026-11-04T10:10:00Z',
+      serverUrl: '',
+    });
+    expect(await managedAgentsController.machineEnrollment('server-1')).toMatchObject({
+      serverUrl: 'https://switch.internal.example',
+      fallback: true,
+    });
+  });
 });

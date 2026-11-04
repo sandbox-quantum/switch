@@ -237,13 +237,15 @@ export const managedAgentsController = createRPCController({
   machineEnrollment: (serverId: string): Promise<MachineEnrollment> =>
     withReachableServerWorkspaceSession(serverId, async (server) => {
       const issued = await issueMachineEnrollment(server);
-      const serverUrl = issued.serverUrl ?? server.url;
+      // A server with GATEWAY_PUBLIC_URL set but empty names "" rather than null.
+      const named = issued.serverUrl?.trim() || null;
+      const serverUrl = named ?? server.url;
       return {
         code: issued.code,
         expiresAt: issued.expiresAt,
         serverUrl,
         loopback: isLoopbackUrl(serverUrl),
-        fallback: issued.serverUrl === null,
+        fallback: named === null,
       };
     }),
 
