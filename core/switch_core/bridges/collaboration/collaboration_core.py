@@ -32,6 +32,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -54,6 +55,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
@@ -61,6 +63,12 @@ from switch_core.db.stores.room_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
+from switch_core.messages.edits import (
+    MESSAGE_EDIT_EVENT_TYPE,
+    MessageEdit,
+    edit_content,
+    edit_source,
+)
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
     BRIDGE_ERRORS,
@@ -123,6 +131,7 @@ _InboundEventT = TypeVar(
     InboundInteraction,
     InboundMessage,
     InboundCommand,
+    InboundEdit,
     InboundAgentJoin,
     InboundUserJoin,
     InboundAppJoin,
@@ -199,6 +208,15 @@ def _no_agents_notice(slash_hint: str | None) -> str:
         "Once an agent is in the room, @-mention it here and it'll pick up the "
         "conversation."
     )
+
+
+@dataclass(frozen=True)
+class _EditTarget:
+    """The room message a platform post became, as an edit of it needs it."""
+
+    event_id: str
+    sender_id: str
+    room_id: str
 
 
 def _post_source(bridge_id: str, channel_id: str, message_ref: str) -> str:
@@ -526,6 +544,7 @@ class CollaborationCore:
             self._adapter.set_activity_resolver(
                 self._activity_publisher.activity_shown_at
             )
+        self._adapter.set_edit_handler(self._traced("edit", self._handle_inbound_edit))
         await self._adapter.start(
             on_message=self._traced("message", self._handle_inbound_message),
             on_command=self._traced("command", self._handle_inbound_command),
@@ -1418,8 +1437,108 @@ class CollaborationCore:
                 external_post_id=msg.message_ref,
             )
 
+    async def _handle_inbound_edit(self, edit: InboundEdit) -> None:
+        """A person edited a post of theirs: write the edit as a row of its own.
+
+        Only the message's author, in the room the message is in, and only for
+        a post that became a room message; anything else is dropped here, and
+        again by the router (`MessageRouter._decide_edit`). Provisions nobody
+        and joins nobody, since whoever wrote the message has done both, and
+        the new words go through Switch Trust exactly as the first ones did,
+        or an edit would be the way around it.
+        """
+        room_ids = self._channel_to_room.get(edit.channel_id)
+        client_id = self._human_actors.get(edit.sender_id)
+        target = await self._find_edit_target(edit)
+        human_actor = (
+            self._client_lifecycle.get(client_id) if client_id is not None else None
+        )
+        if (
+            room_ids is None
+            or human_actor is None
+            or target is None
+            or target.room_id != room_ids[0]
+            or target.sender_id != human_actor.transport_user_id
+        ):
+            logger.debug(
+                "[BRIDGE-IN] ignoring edit of %s by %s in channel %s",
+                edit.message_ref,
+                edit.sender_id,
+                edit.channel_id,
+            )
+            return
+        room_id, transport_room_id = room_ids
+        content = self._adapter.translate_inbound(edit.content)
+        check = await check_message(
+            self._trust_client, role="user", content=content, room_id=room_id
+        )
+        if check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        ):
+            logger.warning(
+                "[BRIDGE-IN] edit by %s not relayed — Switch Trust outcome=%s "
+                "(policy=%s) — room %s",
+                edit.sender_id,
+                check.outcome,
+                check.policy_id,
+                transport_room_id,
+            )
+            await self._post_trust_notice(
+                edit,
+                "🚫 Your edit was blocked by Switch Trust. Agents still have your "
+                "message as it was.",
+                AdminMessageType.TRUST_BLOCKED,
+            )
+            return
+        if check.redacted_content is not None:
+            content = check.redacted_content
+        annotation = trust_annotation(check)
+        if annotation is not None:
+            content = f"{content}\n\n{annotation}"
+        with writes_derived_from(
+            human_actor.client_id, edit_source(target.event_id, edit.revision)
+        ):
+            await human_actor.send_event(
+                transport_room_id,
+                MESSAGE_EDIT_EVENT_TYPE,
+                edit_content(
+                    MessageEdit(
+                        original_event_id=target.event_id,
+                        new_body=content,
+                        revision=edit.revision,
+                        author=human_actor.transport_user_id,
+                        room=room_id,
+                        timestamp=edit.timestamp,
+                    )
+                ),
+            )
+
+    async def _find_edit_target(self, edit: InboundEdit) -> _EditTarget | None:
+        """The room message `edit`'s post became on this bridge, in the same
+        channel. None for a post Switch never relayed, and for a command, whose
+        effect cannot be taken back by rewording it."""
+        async with self._session_factory() as session:
+            mapping = await self._bridge_message_map_store.get_by_external_post_id(
+                session, self._bridge_id, edit.message_ref
+            )
+            if mapping is None or mapping.external_channel_id != edit.channel_id:
+                return None
+            original = await MessageStore().get_by_transport_event_id(
+                session, mapping.transport_event_id
+            )
+        if original is None or original.event_type != "m.room.message":
+            return None
+        return _EditTarget(
+            event_id=original.transport_event_id,
+            sender_id=original.sender_id,
+            room_id=original.room_id,
+        )
+
     async def _post_trust_notice(
-        self, msg: InboundMessage, body: str, message_type: AdminMessageType
+        self,
+        msg: InboundMessage | InboundEdit,
+        body: str,
+        message_type: AdminMessageType,
     ) -> None:
         """Tell the sender, and only the sender, what Switch Trust did with
         their message: blocked, redacted, flagged, or not fully checked.
@@ -1498,7 +1617,8 @@ class CollaborationCore:
             await self._adapter.admin_message(
                 msg.channel_id,
                 body,
-                msg.root_id or msg.message_ref,
+                (msg.root_id if isinstance(msg, InboundMessage) else None)
+                or msg.message_ref,
                 message_type=message_type.value,
             )
         except Exception:

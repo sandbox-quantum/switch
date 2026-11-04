@@ -44,6 +44,23 @@ TURN_STATE = {
     "error": "Turn ended with an error.",
 }
 
+# What a host writes in a user message's title when the message is edited
+# (`ITEM_PROMPT_UPDATED` and `ITEM_EDITED_AFTER_START` in the host's
+# `session-host.ts`). A user message has no title of its own, and no renderer
+# draws one.
+ITEM_PROMPT_UPDATED = "prompt-updated"
+ITEM_EDITED_AFTER_START = "edited-after-start"
+_QUEUED_PROMPT_UPDATED = "Queued (prompt updated). Waiting for the agent to start…"
+_EDITED_AFTER_START = "Edited after start. Turn unchanged."
+
+
+def edit_mark(items: list[Item]) -> str:
+    """What the turn's user message says about an edit to it; empty for nothing."""
+    return next(
+        (item.title for item in items if item.kind == "user-message" and item.title),
+        "",
+    )
+
 
 def turn_state(
     items: list[Item],
@@ -80,8 +97,26 @@ def turn_state(
     reporting — the duration stays, because that is the turn's own. What a
     turn left unfinished is not covered by it: that is an outcome, and it is
     reported wherever the turn is.
+
+    An edit is told in plain words: that the prompt changed while the turn
+    waited, or, for good, that one came too late to change the turn. Neither
+    shows the words themselves.
     """
+    state = _turn_progress(items, turn, tool_detail, elapsed_seconds)
+    if edit_mark(items) == ITEM_EDITED_AFTER_START:
+        return f"{state} {_EDITED_AFTER_START}"
+    return state
+
+
+def _turn_progress(
+    items: list[Item],
+    turn: TurnUpsert,
+    tool_detail: bool,
+    elapsed_seconds: float | None,
+) -> str:
     state = TURN_STATE[turn.status]
+    if turn.status == "queued" and edit_mark(items) == ITEM_PROMPT_UPDATED:
+        state = _QUEUED_PROMPT_UPDATED
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
             return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"

@@ -150,6 +150,26 @@ class InboundMessage(BaseModel):
     sender_is_app: bool = False
 
 
+class InboundEdit(BaseModel):
+    """A person editing a post of theirs, as every platform reports it.
+
+    An adapter drops what the bridge edited itself and anything else that is
+    not someone changing the words they wrote. Whether the post is one Switch
+    knows, and whether this person wrote it, is the bridge's to check.
+    """
+
+    channel_id: str
+    sender_id: str
+    # The edited post, as `InboundMessage.message_ref` named it when it arrived.
+    message_ref: str
+    content: str
+    # Which edit this is on the platform's own clock: a later edit has a higher
+    # revision whatever order the two are delivered in.
+    revision: int
+    # When it was made, in epoch milliseconds.
+    timestamp: int
+
+
 class InboundCommand(BaseModel):
     channel_id: str
     channel_type: ChannelType

@@ -50,6 +50,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -3494,10 +3495,16 @@ class SlackAdapter(PlatformAdapter):
     # Message subtypes we still treat as real posts. file_share carries uploaded
     # attachments; thread_broadcast is a thread reply also sent to the channel;
     # bot_message is a post from a third-party Slack app (e.g. Datadog alerts).
-    # Everything else (edits, deletes, channel-join system messages, …) is skipped.
+    # An edit has its own path (`_handle_message_changed`). Everything else
+    # (deletes, channel-join system messages, …) is skipped.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
 
     async def _handle_message_event(self, event: dict[str, object]) -> None:
+        # The envelope of an edit names nobody: who wrote what is on the
+        # message inside it, which is read and judged on its own.
+        if event.get("subtype") == "message_changed":
+            await self._handle_message_changed(event)
+            return
         # Skip only our own posts (loop prevention). Messages from third-party
         # apps/bots carry a bot_id too, but we still bridge those — only the
         # bridge's own bot (matched on user id or bot_id) is dropped.
@@ -3532,6 +3539,50 @@ class SlackAdapter(PlatformAdapter):
             # (`collaboration_core._post_source`).
             self._seen_ts.pop(message_ts, None)
             raise
+
+    async def _handle_message_changed(self, event: dict[str, object]) -> None:
+        """Report a `message_changed` that is a person rewording their message.
+
+        Most of them are not. Slack sends one when it unfolds a link preview or
+        counts a thread's replies, carrying the message as it stands, with its
+        last `edited` mark if it ever had one: those change no words. It sends
+        one for every card this bridge redraws, and for what another app rewrites
+        in its own posts, which are not requests anybody is correcting.
+        """
+        message = event.get("message")
+        channel_id = str(event.get("channel", ""))
+        if self._on_edit is None or not isinstance(message, dict) or not channel_id:
+            return
+        edited = message.get("edited")
+        author = str(message.get("user", ""))
+        message_ts = str(message.get("ts", ""))
+        if (
+            not isinstance(edited, dict)
+            or not author
+            or not message_ts
+            or author == self._bot_user_id
+            or message.get("bot_id")
+            or edited.get("user") != author
+        ):
+            return
+        text = str(message.get("text", ""))
+        previous = event.get("previous_message")
+        if isinstance(previous, dict) and previous.get("text") == text:
+            return
+        seconds, _, fraction = str(edited.get("ts", "")).partition(".")
+        if not seconds.isdigit():
+            return
+        micros = int(fraction.ljust(6, "0")[:6]) if fraction.isdigit() else 0
+        await self._on_edit(
+            InboundEdit(
+                channel_id=channel_id,
+                sender_id=author,
+                message_ref=f"{channel_id}:{message_ts}",
+                content=text,
+                revision=int(seconds) * 1_000_000 + micros,
+                timestamp=int(seconds) * 1000 + micros // 1000,
+            )
+        )
 
     async def _deliver_message_event(
         self, event: dict[str, object], channel_id: str, message_ts: str

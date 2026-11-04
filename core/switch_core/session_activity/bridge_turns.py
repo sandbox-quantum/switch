@@ -16,7 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from switch_core.bridges.collaboration.session.renderers import RUNNING_CLOCK_SECONDS
+from switch_core.bridges.collaboration.session.renderers import (
+    RUNNING_CLOCK_SECONDS,
+    edit_mark,
+)
 from switch_core.db.models import AgentSessionActivityItem
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
@@ -106,7 +109,8 @@ def status_state(
     and with the edit that ends the turn. The turn a stop control names
     counts, so a queued turn's message stops offering to stop a turn that
     has ended. So does the platform having closed the message on its own,
-    since closing it changed what it shows.
+    since closing it changed what it shows, and an edit to the turn's message,
+    which the state line reports.
     """
     clock = (
         str(int(elapsed_seconds // RUNNING_CLOCK_SECONDS))
@@ -119,4 +123,8 @@ def status_state(
         if item.kind == "tool-activity"
     )
     closed = ":closed" if closed_by_platform else ""
-    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"
+    mark = edit_mark(view.items)
+    edited = f":{mark}" if mark else ""
+    return (
+        f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}{edited}"
+    )
