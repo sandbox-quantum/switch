@@ -42,6 +42,7 @@ async def _set(
             connections=AgentConnectionRegistry(),
         ),
         user,
+        False,
     )
 
 

@@ -84,6 +84,10 @@ async def create_linked_room(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> LinkedRoomDetail:
     await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    # The reply names the target, so the caller must be able to read it.
+    await require_room_access(
+        session, room_store, req.target_room_id, user, "read", is_admin
+    )
     try:
         row = await resource_service.attach_linked_room(
             session,

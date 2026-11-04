@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import ColumnElement, true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -39,8 +40,18 @@ async def _rooms(session_factory: async_sessionmaker[AsyncSession]) -> list[str]
         return [room.id for room in rooms]
 
 
+async def _every_room(_session: AsyncSession, _agent_id: str) -> ColumnElement[bool]:
+    return true()
+
+
 def _list(session_factory: async_sessionmaker[AsyncSession], **kwargs: object):
-    protocol = SimpleNamespace(session_factory=session_factory, room_store=RoomStore())
+    # Which rooms an agent may be told of is `test_linked_rooms_access`'s
+    # concern; here it may be told of every one, so paging alone is tested.
+    protocol = SimpleNamespace(
+        session_factory=session_factory,
+        room_store=RoomStore(),
+        _rooms_visible_to=_every_room,
+    )
     defaults: dict[str, object] = {
         "include_archived": False,
         "name_contains": None,

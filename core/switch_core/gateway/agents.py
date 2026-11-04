@@ -34,7 +34,7 @@ from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
 from switch_core.db.models import User, require_tenant_id
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import RoomStore, readable_by
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.chats import get_chat_service
@@ -729,6 +729,7 @@ async def update_addressing_policy(
     return await assemble_agent_detail(
         session,
         agent=agent,
+        visible=readable_by(user.id, is_admin=is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
@@ -748,6 +749,7 @@ async def update_can_manage_agents(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentDetail:
     """Turn the agent's "can manage agents" capability on or off.
 
@@ -780,6 +782,7 @@ async def update_can_manage_agents(
     return await assemble_agent_detail(
         session,
         agent=agent,
+        visible=readable_by(user.id, is_admin=is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
@@ -799,7 +802,8 @@ async def get_agent_detail(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentDetail:
     agent = await agent_store.get(session, agent_id)
     if agent is None:
@@ -808,6 +812,7 @@ async def get_agent_detail(
     return await assemble_agent_detail(
         session,
         agent=agent,
+        visible=readable_by(user.id, is_admin=is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,

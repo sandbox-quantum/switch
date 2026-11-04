@@ -10,7 +10,7 @@ from switch_core.db.models import (
     room_packages,
     room_references,
 )
-from switch_core.db.stores.room_store import readable_by
+from switch_core.db.stores.room_store import AttachedRooms, readable_by
 
 
 class PackageStore:
@@ -131,22 +131,28 @@ class PackageStore:
         *,
         reader_id: str | None,
         reader_is_admin: bool,
-    ) -> dict[str, int]:
-        """How many rooms each is attached to, of those the reader may read."""
+    ) -> dict[str, AttachedRooms]:
+        """How many rooms each is attached to: every one, and those the reader
+        may read."""
         if not package_ids:
             return {}
         result = await session.execute(
             select(
                 room_packages.c.package_id,
                 func.count(room_packages.c.room_id),
+                func.count(room_packages.c.room_id).filter(
+                    readable_by(reader_id, is_admin=reader_is_admin)
+                ),
             )
             .join(Room, Room.id == room_packages.c.room_id)
             .where(room_packages.c.package_id.in_(package_ids))
-            .where(readable_by(reader_id, is_admin=reader_is_admin))
             .group_by(room_packages.c.package_id)
         )
-        counts = {rid: int(c) for rid, c in result.all()}
-        return {rid: counts.get(rid, 0) for rid in package_ids}
+        counts = {
+            rid: AttachedRooms(every=int(every), readable=int(readable))
+            for rid, every, readable in result.all()
+        }
+        return {rid: counts.get(rid, AttachedRooms(0, 0)) for rid in package_ids}
 
     async def get_reference_counts(
         self, session: AsyncSession, package_ids: list[str]

@@ -13,14 +13,14 @@ vi.mock("../../data/hooks", () => ({
   useRoomDocument: vi.fn(),
 }));
 
-function showDocument(canRemove: boolean) {
+function showDocument(canRemove: boolean, scope: "room" | "global" = "room") {
   vi.mocked(hooks.useRoomDocument).mockReturnValue({
     data: {
       id: "d1",
       name: "Notes",
       description: "",
       content: "hello",
-      scope: "room",
+      scope,
       can_remove: canRemove,
     } as RoomDocumentDetail,
     loading: false,
@@ -35,7 +35,7 @@ describe("RoomScopedDocumentView", () => {
     vi.clearAllMocks();
   });
 
-  it("offers deleting the document to someone who may write to the room", () => {
+  it("offers deleting a room document to someone who may delete it", () => {
     showDocument(true);
     render(<RoomScopedDocumentView />);
 
@@ -47,6 +47,14 @@ describe("RoomScopedDocumentView", () => {
     render(<RoomScopedDocumentView />);
 
     screen.getByText("hello");
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+
+  it("offers unlinking, not deleting, a document only attached to the room", () => {
+    showDocument(true, "global");
+    render(<RoomScopedDocumentView />);
+
+    screen.getByRole("button", { name: "Unlink from room" });
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
   });
 });

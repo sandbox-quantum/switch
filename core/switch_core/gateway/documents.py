@@ -29,7 +29,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
-from switch_core.gateway.resource_rooms import CountRooms, room_counts
+from switch_core.gateway.resource_rooms import resource_rooms, room_counts
 from switch_core.gateway.schemas import (
     DocumentCreateRequest,
     DocumentDeleteResponse,
@@ -49,7 +49,7 @@ def _to_detail(
     *,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
-    hidden_rooms_count: int = 0,
+    hidden_rooms_count: int,
     packages: list[str] | None = None,
     created_by_agent_name: str | None = None,
 ) -> DocumentDetail:
@@ -79,7 +79,7 @@ def _to_summary(
     *,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
-    hidden_rooms_count: int = 0,
+    hidden_rooms_count: int,
     packages: list[str] | None = None,
     created_by_agent_name: str | None = None,
 ) -> DocumentSummary:
@@ -115,19 +115,6 @@ def _can_remove(
     return can_unlink_from_room(principal, takes_part=takes_part)
 
 
-def _count_document_rooms(
-    session: AsyncSession, resource_service: ResourceService
-) -> CountRooms:
-    async def count(
-        ids: list[str], reader_id: str | None, reader_is_admin: bool
-    ) -> dict[str, int]:
-        return await resource_service.get_document_attached_counts(
-            session, ids, reader_id=reader_id, reader_is_admin=reader_is_admin
-        )
-
-    return count
-
-
 async def _enrich_summaries(
     session: AsyncSession,
     docs: list[Document],
@@ -139,7 +126,7 @@ async def _enrich_summaries(
     if not docs:
         return []
     counts = await room_counts(
-        docs, reader, _count_document_rooms(session, resource_service)
+        session, docs, reader, resource_service.get_document_attached_counts
     )
     pkg_map = await resource_service.get_packages_for_documents(
         session, [d.id for d in docs]
@@ -182,7 +169,7 @@ async def _enrich_detail(
     reader: Principal,
 ) -> DocumentDetail:
     counts = await room_counts(
-        [doc], reader, _count_document_rooms(session, resource_service)
+        session, [doc], reader, resource_service.get_document_attached_counts
     )
     pkg_map = await resource_service.get_packages_for_documents(session, [doc.id])
     owner = await user_store.get(session, doc.owner_id) if doc.owner_id else None
@@ -372,18 +359,9 @@ async def list_rooms_for_document(
     rooms = await resource_service.list_rooms_for_document(
         session, document_id, reader_id=user.id, reader_is_admin=is_admin
     )
-    taking_part = await room_store.involved_room_ids(
-        session, user.id, [rid for rid, _ in rooms]
+    return await resource_rooms(
+        session, room_store, rooms, Principal(user.id, is_admin)
     )
-    principal = Principal(user.id, is_admin)
-    return [
-        ResourceRoom(
-            room_id=rid,
-            room_name=name,
-            can_unlink=can_unlink_from_room(principal, takes_part=rid in taking_part),
-        )
-        for rid, name in rooms
-    ]
 
 
 @router.get("/rooms/{room_id}/documents")

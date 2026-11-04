@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, or_, select
 
 from switch_core.addressing import (
     AddressingPolicy,
@@ -113,6 +113,7 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_store import has_agent, readable_by
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
@@ -3190,6 +3191,25 @@ class AgentCore:
             )
         return agent, agent.owner_id, owner_is_admin
 
+    async def _rooms_visible_to(
+        self, session: AsyncSession, agent_id: str
+    ) -> ColumnElement[bool]:
+        """The rooms an agent may be told of: those its owner may read, and
+        those it is in. Its owner counts as an admin only by their role in the
+        workspace; the operator flag is left out, so a read records no
+        platform access."""
+        agent = await self.agent_store.get(session, agent_id)
+        if agent is None:
+            raise ValueError(f"Unknown agent: {agent_id}")
+        owner_is_admin = agent.owner_id is not None and (
+            await self.user_store.administers_by_role(
+                session, require_tenant_id(), agent.owner_id
+            )
+        )
+        return or_(
+            readable_by(agent.owner_id, is_admin=owner_is_admin), has_agent(agent_id)
+        )
+
     async def _require_room_action(
         self, session: AsyncSession, agent_id: str, room_id: str, action: Action
     ) -> Room:
@@ -3698,10 +3718,18 @@ class AgentCore:
     ) -> dict[str, Any]:
         """Create a directed link from source_room_id → target_room_id.
 
-        Requires write access to the source room.
+        Requires write access to the source room, and a target the agent may
+        be told of (`_rooms_visible_to`): the reply names it.
         """
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, source_room_id, "write")
+            visible = await self._rooms_visible_to(session, agent_id)
+            if not await self.room_store.visible_room_ids(
+                session, [target_room_id], visible
+            ):
+                raise PermissionError(
+                    f"Not authorized to link to room {target_room_id}"
+                )
             result = await self.resource_service.attach_linked_room(
                 session,
                 source_room_id=source_room_id,
@@ -3744,14 +3772,15 @@ class AgentCore:
         limit: int,
         cursor: str | None,
     ) -> tuple[list[Room], str | None]:
-        """One page of every room, oldest first, and the cursor for the next
-        page (None on the last). Archived rooms are excluded unless
-        `include_archived` is set."""
+        """One page of the rooms the agent may be told of (`_rooms_visible_to`),
+        oldest first, and the cursor for the next page (None on the last).
+        Archived rooms are excluded unless `include_archived` is set."""
         if not 1 <= limit <= LIST_ALL_ROOMS_MAX:
             raise ValueError(f"limit must be between 1 and {LIST_ALL_ROOMS_MAX}")
         async with self.session_factory() as session:
             rooms = await self.room_store.page_all(
                 session,
+                visible=await self._rooms_visible_to(session, agent_id),
                 include_archived=include_archived,
                 name_contains=name_contains,
                 limit=limit + 1,
@@ -3942,6 +3971,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=agent,
+                visible=await self._rooms_visible_to(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4015,6 +4045,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,
+                visible=await self._rooms_visible_to(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4316,16 +4347,15 @@ class AgentCore:
         room. Used by ``connect_to_room`` and the ``list_references`` MCP tool.
         Caller is responsible for verifying agent membership first.
 
-        Its linked rooms are those the agent's owner may read: an agent holds
-        no more than its owner does, so a link does not name a private room
-        its owner cannot open. A room the agent is in always qualifies, since
-        its owner takes part in it through the agent."""
+        Its linked rooms are those the agent may be told of
+        (`_rooms_visible_to`): an agent holds no more than its owner does, so
+        a link does not name a private room its owner cannot open, and a room
+        the agent is in always qualifies."""
         async with self.session_factory() as session:
-            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
-                session, agent_id
-            )
             return await self.resource_service.list_room_resources(
-                session, room_id, reader_id=owner_id, reader_is_admin=owner_is_admin
+                session,
+                room_id,
+                linked_visible=await self._rooms_visible_to(session, agent_id),
             )
 
     async def request_document_load(

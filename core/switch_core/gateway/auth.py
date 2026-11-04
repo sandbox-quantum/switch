@@ -1247,10 +1247,11 @@ async def ensure_may_unlink(
     session: AsyncSession, room_store: RoomStore, room: Room, principal: Principal
 ) -> None:
     """Raise HTTP 403 unless `principal` may unlink from `room`."""
+    # An admin may whether or not they take part, so is spared the query.
     takes_part = not principal.is_admin and await takes_part_in_room(
         session, room_store, room.id, principal.id
     )
-    if not can_unlink_from_room(principal, takes_part=principal.is_admin or takes_part):
+    if not can_unlink_from_room(principal, takes_part=takes_part):
         raise HTTPException(
             status_code=403,
             detail="Only those taking part in the room and admins can unlink from it",

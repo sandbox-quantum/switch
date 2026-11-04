@@ -1736,8 +1736,12 @@ class PackageDeleteResponse(BaseModel):
 class PackageMemberRemoveResponse(BaseModel):
     package_id: str
     member_id: str
+    # The rooms that lost sight of the member, of those the caller may read.
     affected_room_ids: list[str]
     affected_room_names: list[str]
+    # How many more lost sight of it among rooms the caller may not read,
+    # which are never named to them.
+    hidden_affected_rooms_count: int
 
 
 # ── Templates ─────────────────────────────────────────────────────────────────

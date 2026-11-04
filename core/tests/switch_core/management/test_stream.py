@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 import pytest
+from sqlalchemy import true
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -675,6 +676,7 @@ class TestTheConnection:
                     detail = await assemble_agent_detail(
                         session,
                         agent=agent,
+                        visible=true(),
                         agent_store=AgentStore(),
                         room_store=RoomStore(),
                         user_store=UserStore(),

@@ -47,14 +47,17 @@ version of their own to them without also giving them a release of their own.
 #### Security
 - **Private rooms are no longer named to people who cannot open them.** The
   room graph gave everyone in a workspace the name and description of every
-  room in it. A room's linked rooms named private rooms it links to, or that
-  link to it, and so did the linked rooms an agent is handed on connecting. A
-  reference, document or package's "Attached to" list, and its attached-rooms
-  count, took in every room it was attached to. Each now takes in only rooms
-  the viewer may read; an agent's, only rooms its owner may read. Workspace
-  admins still see every room. A resource's owner is still told how many
-  private rooms they cannot open it is in, without their names, and deleting
-  it warns about those rooms too.
+  room in it, and so did an agent's `list_all_rooms`. A room's linked rooms
+  named private rooms on either end, as did the linked rooms an agent is
+  handed on connecting, and linking to a private room replied with its name.
+  An agent's detail named every room it is in. A reference, document or
+  package's "Attached to" list and attached-rooms count took in every room it
+  was attached to, and removing an item from a package named every room that
+  lost it. Each now names only rooms the viewer may read; for an agent, rooms
+  its owner may read and rooms it is in. Linking now needs read access to the
+  target. Workspace admins still see every room. Where a change reaches rooms
+  the viewer cannot open, they are counted without names: a resource's owner
+  sees how many private rooms it is in, and deleting it warns about them.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when

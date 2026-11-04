@@ -20,13 +20,16 @@ The route coroutines are called directly against real Postgres, as in
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Document, Room, User, room_agents
+from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
@@ -36,8 +39,10 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
+from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.agents import get_agent_detail
 from switch_core.gateway.documents import (
     detach_document_from_room,
     get_room_document,
@@ -45,18 +50,23 @@ from switch_core.gateway.documents import (
     list_room_documents,
     list_rooms_for_document,
 )
-from switch_core.gateway.packages import detach_package_from_room
+from switch_core.gateway.packages import (
+    detach_package_from_room,
+    remove_reference_from_package,
+)
 from switch_core.gateway.references import (
     detach_reference_from_room,
     list_references,
     list_rooms_for_reference,
 )
 from switch_core.gateway.room_links import (
+    create_linked_room,
     get_room_link_graph,
     list_inbound_linked_rooms,
     list_linked_rooms,
 )
 from switch_core.gateway.rooms import list_rooms
+from switch_core.gateway.schemas import LinkedRoomCreateRequest
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 _ROOM_STORE = RoomStore()
@@ -484,3 +494,108 @@ async def test_a_resource_owner_is_told_how_many_private_rooms_use_it(
         assert await counts(world.stranger, False) == (0, 0)
         # An admin reads every room, so none is hidden from them.
         assert await counts(world.stranger, True) == (1, 0)
+
+
+async def test_a_link_reply_names_only_a_room_its_maker_may_read(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _svc(session_factory)
+    async with session_factory() as session:
+        world = await _world(session)
+        await session.commit()
+
+        async def link(target: Room) -> str:
+            created = await create_linked_room(
+                world.public.id,
+                LinkedRoomCreateRequest(target_room_id=target.id, label="see"),
+                session,
+                svc,
+                _ROOM_STORE,
+                world.member,
+                False,
+            )
+            return created.target_room_name
+
+        # `member` may write to `public`, but not read `hidden`.
+        with pytest.raises(HTTPException) as refused:
+            await link(world.hidden)
+        assert refused.value.status_code == 403
+        assert await link(world.theirs) == "theirs"
+
+
+async def test_an_agents_detail_names_only_rooms_its_viewer_may_read(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    protocol = SimpleNamespace(
+        agent_session_store=AgentSessionStore(),
+        room_role_store=RoomRoleStore(),
+        connections=AgentConnectionRegistry(),
+    )
+    async with session_factory() as session:
+        world = await _world(session)
+        await session.execute(
+            room_agents.insert().values(
+                room_id=world.public.id, agent_id=world.member_agent_id
+            )
+        )
+        await session.commit()
+
+        async def rooms_seen_by(user: User, admin: bool) -> set[str]:
+            detail = await get_agent_detail(
+                world.member_agent_id,
+                session,
+                _AGENT_STORE,
+                _ROOM_STORE,
+                _USER_STORE,
+                protocol,  # type: ignore[arg-type]
+                user,
+                admin,
+            )
+            return {room.room_name for room in detail.rooms}
+
+        assert await rooms_seen_by(world.member, False) == {"public", "theirs"}
+        assert await rooms_seen_by(world.stranger, False) == {"public"}
+        assert await rooms_seen_by(world.stranger, True) == {"public", "theirs"}
+
+
+async def test_removing_from_a_package_names_only_readable_rooms(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _svc(session_factory)
+    async with session_factory() as session:
+        world = await _world(session)
+        ref = await svc.create_reference(
+            session,
+            owner_id=world.owner.id,
+            is_admin=False,
+            read_visibility="public",
+            write_visibility="public",
+            type="github",
+            name="repo",
+            description="",
+            instructions="",
+            value={"urls": ["https://github.com/example/repo"]},
+        )
+        pkg = await svc.create_package(
+            session,
+            owner_id=world.owner.id,
+            read_visibility="public",
+            write_visibility="public",
+            name="kit",
+            description="",
+            instructions="",
+        )
+        await svc.add_reference_to_package(
+            session, pkg.id, ref.id, user_id=world.owner.id, is_admin=False
+        )
+        for room in (world.public, world.hidden):
+            await svc.attach_package_to_room(
+                session, room.id, pkg.id, user_id=world.owner.id
+            )
+        await session.commit()
+
+        removed = await remove_reference_from_package(
+            pkg.id, ref.id, session, svc, _ROOM_STORE, world.stranger, False
+        )
+        assert removed.affected_room_names == ["public"]
+        assert removed.hidden_affected_rooms_count == 1

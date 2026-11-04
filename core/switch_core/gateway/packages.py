@@ -5,11 +5,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal, can_unlink_from_room
+from switch_core.authz import Principal
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Package, User
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import RoomStore, readable_by
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     get_current_user,
@@ -26,7 +26,7 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.documents import _enrich_summaries as enrich_doc_summaries
 from switch_core.gateway.references import _enrich as enrich_refs
-from switch_core.gateway.resource_rooms import room_counts
+from switch_core.gateway.resource_rooms import resource_rooms, room_counts
 from switch_core.gateway.schemas import (
     DocumentSummary,
     PackageCreateRequest,
@@ -48,7 +48,7 @@ def _to_detail(
     references_count: int = 0,
     documents_count: int = 0,
     attached_rooms_count: int = 0,
-    hidden_rooms_count: int = 0,
+    hidden_rooms_count: int,
 ) -> PackageDetail:
     return PackageDetail(
         id=pkg.id,
@@ -78,13 +78,7 @@ async def _enrich(
         return []
     ids = [p.id for p in pkgs]
     rooms = await room_counts(
-        pkgs,
-        reader,
-        lambda ids, reader_id, reader_is_admin: (
-            resource_service.get_package_attached_counts(
-                session, ids, reader_id=reader_id, reader_is_admin=reader_is_admin
-            )
-        ),
+        session, pkgs, reader, resource_service.get_package_attached_counts
     )
     ref_counts = await resource_service.get_package_reference_counts(session, ids)
     doc_counts = await resource_service.get_package_document_counts(session, ids)
@@ -262,18 +256,9 @@ async def list_rooms_for_package(
     rooms = await resource_service.list_rooms_for_package(
         session, package_id, reader_id=user.id, reader_is_admin=is_admin
     )
-    taking_part = await room_store.involved_room_ids(
-        session, user.id, [rid for rid, _ in rooms]
+    return await resource_rooms(
+        session, room_store, rooms, Principal(user.id, is_admin)
     )
-    principal = Principal(user.id, is_admin)
-    return [
-        ResourceRoom(
-            room_id=rid,
-            room_name=name,
-            can_unlink=can_unlink_from_room(principal, takes_part=rid in taking_part),
-        )
-        for rid, name in rooms
-    ]
 
 
 # ── Membership ────────────────────────────────────────────────────────────
@@ -335,6 +320,7 @@ async def remove_reference_from_package(
     reference_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageMemberRemoveResponse:
@@ -351,11 +337,8 @@ async def remove_reference_from_package(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     await session.commit()
-    return PackageMemberRemoveResponse(
-        package_id=package_id,
-        member_id=reference_id,
-        affected_room_ids=[rid for rid, _ in affected],
-        affected_room_names=[name for _, name in affected],
+    return await _member_removed(
+        session, room_store, package_id, reference_id, affected, user, is_admin
     )
 
 
@@ -421,6 +404,7 @@ async def remove_document_from_package(
     document_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageMemberRemoveResponse:
@@ -437,11 +421,8 @@ async def remove_document_from_package(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     await session.commit()
-    return PackageMemberRemoveResponse(
-        package_id=package_id,
-        member_id=document_id,
-        affected_room_ids=[rid for rid, _ in affected],
-        affected_room_names=[name for _, name in affected],
+    return await _member_removed(
+        session, room_store, package_id, document_id, affected, user, is_admin
     )
 
 
@@ -514,3 +495,28 @@ async def detach_package_from_room(
     await require_room_unlink(session, room_store, room_id, user, is_admin)
     await resource_service.detach_package_from_room(session, room_id, package_id)
     await session.commit()
+
+
+async def _member_removed(
+    session: AsyncSession,
+    room_store: RoomStore,
+    package_id: str,
+    member_id: str,
+    affected: list[tuple[str, str]],
+    user: User,
+    is_admin: bool,
+) -> PackageMemberRemoveResponse:
+    """Name the affected rooms the caller may read, and count the rest."""
+    readable = await room_store.visible_room_ids(
+        session,
+        [rid for rid, _ in affected],
+        readable_by(user.id, is_admin=is_admin),
+    )
+    shown = [(rid, name) for rid, name in affected if rid in readable]
+    return PackageMemberRemoveResponse(
+        package_id=package_id,
+        member_id=member_id,
+        affected_room_ids=[rid for rid, _ in shown],
+        affected_room_names=[name for _, name in shown],
+        hidden_affected_rooms_count=len(affected) - len(shown),
+    )

@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import (
@@ -35,7 +35,7 @@ from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
-from switch_core.db.stores.room_store import readable_by
+from switch_core.db.stores.room_store import AttachedRooms, readable_by
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
 
@@ -433,11 +433,11 @@ class ResourceService:
         session: AsyncSession,
         room_id: str,
         *,
-        reader_id: str | None,
-        reader_is_admin: bool,
+        linked_visible: ColumnElement[bool],
     ) -> dict[str, Any]:
         """A room's resources and linked rooms, for an agent in it. Linked
-        rooms are those `reader_id` (the agent's owner) may read."""
+        rooms are those `linked_visible` holds for (the agent's
+        `_rooms_visible_to`)."""
         refs = await self._references.list_for_room(session, room_id)
         docs = await self._documents.list_for_room(session, room_id)
         packages = await self._packages.list_for_room(session, room_id)
@@ -470,7 +470,7 @@ class ResourceService:
             )
 
         linked_rows = await self._room_links.list_outbound(
-            session, room_id, visible=readable_by(reader_id, is_admin=reader_is_admin)
+            session, room_id, visible=linked_visible
         )
         linked_rooms = [
             {
@@ -719,7 +719,7 @@ class ResourceService:
         *,
         reader_id: str | None,
         reader_is_admin: bool,
-    ) -> dict[str, int]:
+    ) -> dict[str, AttachedRooms]:
         return await self._references.get_attached_counts(
             session, reference_ids, reader_id=reader_id, reader_is_admin=reader_is_admin
         )
@@ -773,21 +773,18 @@ class ResourceService:
         returned under `groups` so the frontend can colour rooms by their
         top-level ancestor group.
         """
+        visible = readable_by(reader_id, is_admin=reader_is_admin)
         result = await session.execute(
-            select(Room.id, Room.name, Room.description, Room.group_id).where(
-                readable_by(reader_id, is_admin=reader_is_admin)
-            )
+            select(Room.id, Room.name, Room.description, Room.group_id).where(visible)
         )
         rooms = [
             {"id": rid, "name": name, "description": desc, "group_id": gid}
             for rid, name, desc, gid in result.all()
         ]
-        shown = {room["id"] for room in rooms}
-        link_rows = await self._room_links.list_all(session)
+        link_rows = await self._room_links.list_between(session, visible=visible)
         links = [
             {"source_room_id": s, "target_room_id": t, "label": lbl}
             for s, t, lbl in link_rows
-            if s in shown and t in shown
         ]
         group_result = await session.execute(
             select(
@@ -1023,7 +1020,7 @@ class ResourceService:
         *,
         reader_id: str | None,
         reader_is_admin: bool,
-    ) -> dict[str, int]:
+    ) -> dict[str, AttachedRooms]:
         return await self._documents.get_attached_counts(
             session, document_ids, reader_id=reader_id, reader_is_admin=reader_is_admin
         )
@@ -1404,7 +1401,7 @@ class ResourceService:
         *,
         reader_id: str | None,
         reader_is_admin: bool,
-    ) -> dict[str, int]:
+    ) -> dict[str, AttachedRooms]:
         return await self._packages.get_attached_counts(
             session, package_ids, reader_id=reader_id, reader_is_admin=reader_is_admin
         )

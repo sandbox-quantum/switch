@@ -83,12 +83,17 @@ class RoomLinkStore:
         )
         return [(rid, name, desc, label) for rid, name, desc, label in result.all()]
 
-    async def list_all(self, session: AsyncSession) -> list[tuple[str, str, str]]:
-        """Return every link as ``(source_room_id, target_room_id, label)``."""
+    async def list_between(
+        self, session: AsyncSession, *, visible: ColumnElement[bool]
+    ) -> list[tuple[str, str, str]]:
+        """Return every link between two rooms `visible` holds for, as
+        ``(source_room_id, target_room_id, label)``."""
+        shown = select(Room.id).where(visible)
         result = await session.execute(
-            select(
-                RoomLink.source_room_id, RoomLink.target_room_id, RoomLink.label
-            ).order_by(RoomLink.created_at)
+            select(RoomLink.source_room_id, RoomLink.target_room_id, RoomLink.label)
+            .where(RoomLink.source_room_id.in_(shown))
+            .where(RoomLink.target_room_id.in_(shown))
+            .order_by(RoomLink.created_at)
         )
         return [(s, t, lbl) for s, t, lbl in result.all()]
 

@@ -1960,8 +1960,11 @@ export interface PackageUpdateInput {
 export interface PackageMemberRemoveResult {
   package_id: string;
   member_id: string;
+  // The rooms that lost sight of the member, of those the viewer may read.
   affected_room_ids: string[];
   affected_room_names: string[];
+  // How many more did among rooms the viewer may not read, never named.
+  hidden_affected_rooms_count: number;
 }
 
 export async function fetchPackages(): Promise<PackageDetail[] | null> {

@@ -1473,9 +1473,11 @@ async def list_all_rooms(
     limit: int = 100,
     cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List every room on this Switch instance (not just rooms this agent
-    is a member of), a page at a time, oldest first. Use `list_rooms` instead
-    to see only the rooms this agent is assigned to.
+    """List the rooms on this Switch instance (not just rooms this agent
+    is a member of), a page at a time, oldest first: every room its owner may
+    read, and every room it is in. A private room its owner cannot read is
+    left out. Use `list_rooms` instead to see only the rooms this agent is
+    assigned to.
 
     Args:
         include_archived: When false (default), archived rooms are omitted.
@@ -2213,6 +2215,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
+    A room your owner cannot read is not named in it.
 
     Args:
         agent_id: The target agent's id (from `list_participants` or

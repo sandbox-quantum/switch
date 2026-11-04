@@ -1,6 +1,7 @@
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import NamedTuple
 
 from sqlalchemy import (
     ColumnElement,
@@ -267,10 +268,12 @@ class RoomStore:
         name_contains: str | None,
         limit: int,
         after: tuple[datetime, str] | None,
+        visible: ColumnElement[bool],
     ) -> list[Room]:
         """Up to `limit` rooms after the `(created_at, id)` position `after`,
-        oldest first, whose name contains `name_contains` (any case)."""
-        stmt = select(Room)
+        oldest first, whose name contains `name_contains` (any case), of those
+        `visible` holds for."""
+        stmt = select(Room).where(visible)
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         if name_contains:
@@ -299,6 +302,20 @@ class RoomStore:
             stmt = stmt.where(Room.archived_at.is_(None))
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    async def visible_room_ids(
+        self,
+        session: AsyncSession,
+        room_ids: Collection[str],
+        visible: ColumnElement[bool],
+    ) -> set[str]:
+        """Of `room_ids`, the rooms `visible` holds for."""
+        if not room_ids:
+            return set()
+        result = await session.execute(
+            select(Room.id).where(Room.id.in_(room_ids), visible)
+        )
+        return set(result.scalars().all())
 
     async def involved_room_ids(
         self, session: AsyncSession, user_id: str, room_ids: Collection[str]
@@ -921,6 +938,15 @@ class RoomStore:
         return result.rowcount or 0  # type: ignore[attr-defined]
 
 
+class AttachedRooms(NamedTuple):
+    """How many rooms a reference, document or package is in: every one, and
+    those a given reader may read (`readable_by`). Counted in one query, so
+    the two agree."""
+
+    every: int
+    readable: int
+
+
 def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
     """True for a `Room` row the user may read: publicly readable, or one they
     take part in (`involves`). Every room, for a tenant admin; only public ones
@@ -930,6 +956,13 @@ def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
     if user_id is None:
         return Room.read_visibility == "public"
     return or_(Room.read_visibility == "public", involves(user_id))
+
+
+def has_agent(agent_id: str) -> ColumnElement[bool]:
+    """True for a `Room` row the agent is in."""
+    return exists().where(
+        room_agents.c.room_id == Room.id, room_agents.c.agent_id == agent_id
+    )
 
 
 def involves(user_id: str) -> ColumnElement[bool]:
