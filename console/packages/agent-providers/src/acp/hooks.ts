@@ -125,6 +125,11 @@ export interface AcpProviderHooks {
    * advertises in `initialize` is always honoured as well.
    */
   promptCapabilities?: AcpPromptCapabilities;
+  /**
+   * MCP transports a verified CLI accepts but omits from initialize. An
+   * explicit capability returned by the agent always takes precedence.
+   */
+  mcpCapabilities?: { http?: boolean };
   /** The ACP mode to put a new session in for Switch's runtime mode. Omit to leave the agent's default. */
   sessionMode?(runtimeMode: RuntimeMode): string;
   /**
