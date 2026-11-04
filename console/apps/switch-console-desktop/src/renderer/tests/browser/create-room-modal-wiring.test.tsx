@@ -68,7 +68,16 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
 // The dialog's frame needs an open dialog around it; its contents are the subject here.
 vi.mock('@renderer/lib/ui/dialog', () => {
   const pass = ({ children }: { children?: React.ReactNode }) => <>{children}</>;
-  return { DialogContentArea: pass, DialogFooter: pass, DialogHeader: pass, DialogTitle: pass };
+  return {
+    Dialog: pass,
+    DialogClose: pass,
+    DialogContent: pass,
+    DialogContentArea: pass,
+    DialogDescription: pass,
+    DialogFooter: pass,
+    DialogHeader: pass,
+    DialogTitle: pass,
+  };
 });
 // The app pill is a menu; a plain select stands in for it, as the choice is what matters here.
 vi.mock('@renderer/features/switch-servers/messaging-app-selector', () => ({
