@@ -50,6 +50,7 @@ async def test_creating_a_room_with_an_agent_one_may_not_invite_is_403() -> None
             external_user_store=None,  # type: ignore[arg-type]
             protocol=None,  # type: ignore[arg-type]
             user=_USER,  # type: ignore[arg-type]
+            is_admin=False,
         )
     assert caught.value.status_code == 403
     assert caught.value.detail == _REFUSAL
