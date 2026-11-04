@@ -13,7 +13,6 @@ from switch_core.connections.loader import (
 PLACEHOLDERS = {
     "asana",
     "gitlab",
-    "bitbucket",
     "microsoft-365",
     "new-relic",
     "notion",
@@ -32,10 +31,12 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "bitbucket",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "bitbucket",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +46,36 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["bitbucket"].skill_files
+
+
+def test_bitbucket_uses_its_own_server_and_only_bitbucket_product_scopes():
+    definition = CATALOG["bitbucket"].definition
+    assert definition.adapter == "oauth"
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (oauth.registration, oauth.redirect) == ("dynamic", ["loopback"])
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.atlassian.com/me"
+    assert definition.token is not None
+    assert definition.token.max_lifetime == 28800
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("bitbucket", "https://mcp.atlassian.com/v2/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    identity = {"read:me", "read:account", "email", "offline_access"}
+    assert set(definition.access.read.scopes or []) == identity | {
+        "read:bitbucket:agent-interface"
+    }
+    assert set(definition.access.write.scopes or []) == identity | {
+        "read:bitbucket:agent-interface",
+        "write:bitbucket:agent-interface",
+    }
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
