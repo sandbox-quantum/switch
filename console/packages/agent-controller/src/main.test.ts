@@ -431,4 +431,12 @@ describe('command output', () => {
     expect(out.join('')).not.toContain('\u001b[');
     expect(formatUsage({ color: true })).toMatch(/^\u001b\[1mUsage:\u001b\[22m/);
   });
+
+  it('keeps --version one bare line, even on a terminal, since scripts read it', async () => {
+    const out = captureStdout();
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    expect(await main(['--version'])).toBe(0);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatch(/^\S+\n$/);
+  });
 });
