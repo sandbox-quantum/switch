@@ -165,6 +165,8 @@ export class UpdateStore {
     });
 
     events.on(updateCheckingEvent, () => {
+      // Keep the failure and its "Download manually" button while a check runs.
+      if (this.state.status === 'install-failed') return;
       runInAction(() => {
         this.state = { status: 'checking' };
       });
@@ -402,7 +404,7 @@ export class UpdateStore {
       classNames: UPDATE_TOAST_CLASS_NAMES,
       action: {
         label: createUpdateToastActionLabel('Details'),
-        onClick: () => appState.navigation.navigate('settings', { tab: 'general' }),
+        onClick: () => appState.navigation.navigate('settings', { tab: 'status' }),
       },
     });
   }

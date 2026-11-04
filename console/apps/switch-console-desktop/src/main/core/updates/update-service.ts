@@ -299,8 +299,11 @@ class UpdateService implements IInitializable, IDisposable {
    */
   private readonly signals: UpdateSignals = {
     checking: () => {
-      this.updateState.status = 'checking';
       this.updateState.lastCheck = new Date();
+      // A failed install stays on screen while the check runs. The result
+      // shows it again, or replaces it with a newer version or "up to date".
+      if (this.installFailure) return;
+      this.updateState.status = 'checking';
       events.emit(updateCheckingEvent, undefined);
     },
 

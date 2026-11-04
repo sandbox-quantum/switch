@@ -615,6 +615,29 @@ describe('a failure that is still on screen', () => {
     h.checkForUpdatesAndNotify.mockReset();
   });
 
+  it('stays on screen while a check runs', async () => {
+    vi.resetModules();
+    h.pending.target = '1.3.0';
+    h.pending.from = '1.2.3';
+    const { updateService: restarted } = await import('./update-service');
+    const { events: restartedEvents } = await import('@main/lib/events');
+    const { updateCheckingEvent: checkingEvent } = await import('@shared/events/updateEvents');
+    await restarted.initialize();
+    restarted.dispose();
+    let duringCheck: string | undefined;
+    h.checkForUpdatesAndNotify.mockImplementationOnce(async () => {
+      h.handlers.get('checking-for-update')?.();
+      duringCheck = restarted.getState().status;
+      return { isUpdateAvailable: false };
+    });
+
+    await restarted.checkForUpdates('user');
+    restarted.dispose();
+
+    expect(duringCheck).toBe('install-failed');
+    expect(restartedEvents.emit).not.toHaveBeenCalledWith(checkingEvent, undefined);
+  });
+
   it('is not replaced by a check that fails', async () => {
     const restarted = await launchAfterSilentFailure();
 

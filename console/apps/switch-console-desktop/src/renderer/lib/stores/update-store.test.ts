@@ -151,7 +151,7 @@ describe('an update that did not install', () => {
     ];
     expect(options.action.label).toBe('Details');
     options.action.onClick();
-    expect(appState.navigation.navigate).toHaveBeenCalledWith('settings', { tab: 'general' });
+    expect(appState.navigation.navigate).toHaveBeenCalledWith('settings', { tab: 'status' });
     expect(rpcUpdate.openLatest).not.toHaveBeenCalled();
   });
 
@@ -215,6 +215,23 @@ describe('a check that the user starts', () => {
 
     expect(rpcUpdate.check).toHaveBeenCalled();
     expect(store.state).toEqual({ status: 'install-failed', message });
+  });
+
+  it('keeps showing install-failed while the check runs', async () => {
+    // The card and its "Download manually" button must not go away while the
+    // check is pending, not only after it ends.
+    const store = await startedStore();
+    emit(updateInstallFailedEvent, failed);
+    let duringCheck: unknown;
+    rpcUpdate.check.mockImplementation(async () => {
+      emit(updateCheckingEvent);
+      duringCheck = { ...store.state };
+      return { success: true, result: { version: '2.0.0' } };
+    });
+
+    await store.check();
+
+    expect(duringCheck).toEqual({ status: 'install-failed', message });
   });
 
   it('keeps install-failed when main sends it again during the check', async () => {
