@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppRoutes } from "./App";
 import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
@@ -172,5 +172,51 @@ describe("AppRoutes", () => {
       await screen.findByText(/Could not load your session: database unavailable/),
     ).toBeTruthy();
     expect(screen.queryByText("Switch Gateway")).toBeNull();
+  });
+});
+
+describe("a page restored by back or forward", () => {
+  const originalLocation = window.location;
+  const reload = vi.fn();
+
+  beforeEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, reload },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    reload.mockClear();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
+  });
+
+  async function restoreAfter(serverSession: Session) {
+    mockFetch({
+      "/auth/session": [200, session({ state: "ready", tenant: acme, tenants: [acme, beta] })],
+    });
+    renderAt("/workspace");
+    expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
+    mockFetch({ "/auth/session": [200, serverSession] });
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+  }
+
+  it("reloads when the session has moved to another workspace", async () => {
+    await restoreAfter(session({ state: "ready", tenant: beta, tenants: [acme, beta] }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it("stays as it is in the same workspace", async () => {
+    await restoreAfter(session({ state: "ready", tenant: acme, tenants: [acme, beta] }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reload).not.toHaveBeenCalled();
   });
 });

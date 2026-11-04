@@ -17,10 +17,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
+    BUDDY_SLACK_HANDOFF,
     FOLLOW_THE_CONVERSATION,
     GROUP_CHATS,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
+    ORGANIZATION_CONNECTOR_APPS,
     SERVICE_CONNECTIONS,
 )
 from switch_core.keys import Keyring
@@ -1325,6 +1327,10 @@ class SwitchConfig(BaseSettings):
         return self.feature_flags[SERVICE_CONNECTIONS]
 
     @property
+    def organization_connector_apps_enabled(self) -> bool:
+        return self.feature_flags[ORGANIZATION_CONNECTOR_APPS]
+
+    @property
     def follow_the_conversation_enabled(self) -> bool:
         return self.feature_flags[FOLLOW_THE_CONVERSATION]
 
@@ -1335,6 +1341,10 @@ class SwitchConfig(BaseSettings):
     @property
     def group_chats_enabled(self) -> bool:
         return self.feature_flags[GROUP_CHATS]
+
+    @property
+    def buddy_slack_handoff_enabled(self) -> bool:
+        return self.feature_flags[BUDDY_SLACK_HANDOFF]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

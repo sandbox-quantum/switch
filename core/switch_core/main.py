@@ -108,6 +108,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
+from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
@@ -154,6 +155,9 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.organization_app_credential_store import (
+    OrganizationAppCredentialStore,
+)
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
@@ -1199,6 +1203,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         media_max_bytes=config.agent_media_max_bytes,
         agent_chats_enabled=config.agent_chats_enabled,
         group_chats_enabled=config.group_chats_enabled,
+        buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
     )
     # Changes to people's chats made in another process wake the Console
@@ -1363,6 +1368,16 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # A service is issued only where this server is set up for it, as its
     # catalog entry's adapter says (`connections/registry.py`). Without any,
     # the broker's upkeep still revokes and prunes whatever records exist.
+    # With `organization_connector_apps` on, a workspace whose organization
+    # saved its own app goes through that one (`connections/organization_apps.py`).
+    organization_apps = (
+        OrganizationApps(
+            apps=connector_apps,
+            store=OrganizationAppCredentialStore(config.keyring),
+        )
+        if config.organization_connector_apps_enabled
+        else None
+    )
     service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=config.keyring,
@@ -1374,6 +1389,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             http=service_http,
             registration=service_registration,
         ),
+        organization_apps=organization_apps,
         disabled=config.disabled_services,
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=config.service_token_retention_days),
@@ -1383,9 +1399,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    gateway_app.state.organization_apps = organization_apps
     # A connector app the operator saves or removes, put to work in every process.
     ConnectorAppSignals(
         apps=connector_apps,
+        organization_apps=organization_apps,
         broker=service_broker,
         state=gateway_app.state,
         bus=signal_bus,
