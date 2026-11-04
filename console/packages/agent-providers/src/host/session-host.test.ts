@@ -2446,3 +2446,48 @@ it('tells conversations apart by room thread, with direct chat as one conversati
     conversationOf(roomOrigin('root', 'reply'))
   );
 });
+
+it('lets only the turn’s starter or the agent’s owner steer it; anyone else in the thread queues', async () => {
+  const { host, adapter, emit } = await start('codex', { steering: true });
+  await host.command({ ...message('ada-turn'), origin: { ...roomOrigin(null, 'root') } });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  // Someone else in the same thread cannot redirect Ada's turn.
+  await host.command(steer('bob', { ...roomOrigin('root', 'bob-reply'), actorId: 'bob' }));
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'bob')?.status).toBe('queued');
+  expect(userItem(host, 'bob')?.turnId).toBe('bob');
+  expect(adapter.sendTurn).toHaveBeenCalledOnce();
+  // The agent's owner can, as Switch vouched for them.
+  const fromOwner = steer('owner', { ...roomOrigin('root', 'owner-reply'), actorId: 'olga' });
+  await host.command(fromOwner, true);
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(userItem(host, 'owner')?.turnId).toBe('ada-turn');
+  // And so can Ada herself.
+  await host.command(steer('ada', roomOrigin('root', 'ada-reply')));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+  expect(userItem(host, 'ada')?.turnId).toBe('ada-turn');
+  emit({ type: 'turn.completed', turnId: 'ada-turn', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(4));
+  expect(vi.mocked(adapter.sendTurn).mock.calls[3]?.[0]).toMatchObject({ turnId: 'bob' });
+});
+
+it('runs a retried room message as a turn of its own, never steering it into the running turn', async () => {
+  const { host, adapter, emit } = await start('codex', { steering: true });
+  await host.command(steer('first', roomOrigin(null, 'm1')));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  emit({ type: 'turn.completed', turnId: 'first', outcome: 'error', message: 'x', usage: [] });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+  // The same person carries on in the same thread, and that turn is running…
+  await host.command(steer('second', roomOrigin('m1', 'm2')));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  // …when someone presses retry on the failed message.
+  await host.command({
+    ...message('again'),
+    origin: { surface: 'slack', actorId: 'user', roomId: 'room', threadId: null, messageId: null },
+    body: { type: 'message.retry', messageId: 'm1' },
+  });
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'again')?.status).toBe('queued');
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+  emit({ type: 'turn.completed', turnId: 'second', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(adapter.sendTurn).mock.calls[2]?.[0]).toMatchObject({ turnId: 'again' });
+});

@@ -470,7 +470,7 @@ export async function buildSharedHostConfig(
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: inputCapability(capabilities),
+        input: agent.steerMessages ? inputCapability(capabilities) : 'queue',
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,

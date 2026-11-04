@@ -231,6 +231,18 @@ the running one ends.
   direct chat into a room's turn, queues, so a different request is never folded
   into unrelated work. The first message, an initial prompt and the follow-up
   after a reset or compaction always queue.
+- **Who can steer.** Within that conversation, only the person who started the
+  running turn, or the agent's owner, steers it. Anyone else's message in the
+  same thread queues, so in a shared room one person cannot redirect another's
+  turn. Switch reads whether a room message's sender is the agent's owner as
+  the message arrives and sends it as `sender_is_owner`; a host never takes
+  that from the message's text.
+- **The per-agent setting.** **Steer messages sent while working**, under an
+  agent's General settings, is on by default. Off, the agent's sessions
+  advertise `queue` whatever the provider can do, and every message waits for a
+  turn of its own. A session reads the setting as it starts, so a change applies
+  from the agent's next session. Agents run by the headless agents controller
+  always steer where the provider can.
 - **What the activity shows.** A steered message is drawn in the running turn
   instead of a turn of its own, and that turn records a `MESSAGE_STEERED` notice,
   which the room's activity card shows. In Console the message is labelled

@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   ready: vi.fn(),
   sidecarEnsure: vi.fn(),
   watchers: vi.fn(),
+  capabilities: { approvals: true, userInput: true, steering: false },
 }));
 
 // Console runs every agent here; none was moved to a managed machine.
@@ -90,7 +91,7 @@ vi.mock('@main/core/switch-rooms/switch-room-service', () => ({
 vi.mock('@main/core/agent-runtime/impl/provider-adapter-registry', () => ({
   providerAdapterRegistry: {
     supports: () => true,
-    get: () => ({ capabilities: { approvals: true, userInput: true } }),
+    get: () => ({ capabilities: mocks.capabilities }),
   },
 }));
 vi.mock('@main/core/agents/agent-launch-config', () => ({
@@ -131,6 +132,7 @@ beforeEach(() => {
   mocks.specialization.mockResolvedValue({});
   mocks.definition.mockResolvedValue(undefined);
   mocks.behavior = {};
+  mocks.capabilities = { approvals: true, userInput: true, steering: false };
   mocks.agent.mockResolvedValue({
     id: 'agent-1',
     name: 'scout',
@@ -494,6 +496,30 @@ it('resumes the copy a CLI conversation was continued from, starting its transcr
   );
   expect(ordinary.importHistory).toBeUndefined();
 });
+
+it.each([
+  { steering: true, steerMessages: true, input: 'steer' },
+  { steering: true, steerMessages: false, input: 'queue' },
+  { steering: false, steerMessages: true, input: 'queue' },
+])(
+  'offers $input when the provider steers ($steering) and the agent lets it ($steerMessages)',
+  async ({ steering, steerMessages, input }) => {
+    mocks.capabilities = { approvals: true, userInput: true, steering };
+    mocks.agent.mockResolvedValue({
+      id: 'agent-1',
+      name: 'scout',
+      switchAgentId: 'remote-agent',
+      workspaceId: 'workspace-1',
+      steerMessages,
+    });
+    const config = await buildSharedHostConfig(
+      session,
+      { sessionPath: '/work', sessionEnvVars: {} },
+      { kind: 'local' } as LocationTransport
+    );
+    expect(config.session.capabilities.input).toBe(input);
+  }
+);
 
 it('runs a session as the agent definition built from its config file', async () => {
   mocks.definition.mockResolvedValue({ description: 'Reviews diffs', prompt: 'Be careful.' });

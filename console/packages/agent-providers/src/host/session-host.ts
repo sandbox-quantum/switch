@@ -873,9 +873,14 @@ export class HostedSession {
     return true;
   }
 
-  command(input: Command): Promise<Snapshot['commandStatuses'][number]> {
+  /**
+   * Takes a command. `sentByOwner` says Switch vouched that the person who
+   * sent a message is the agent's owner: such a message may steer into a turn
+   * someone else started in the same thread.
+   */
+  command(input: Command, sentByOwner = false): Promise<Snapshot['commandStatuses'][number]> {
     const command = commandSchema.parse(input);
-    const result = this.serial.then(() => this.accept(command));
+    const result = this.serial.then(() => this.accept(command, sentByOwner));
     this.serial = result.catch(() => {});
     return result;
   }
@@ -891,7 +896,8 @@ export class HostedSession {
    * A retry as the room message it repeats: the message's turn run again, under
    * the retry's own id and tied to the same message, so nothing is posted twice
    * and the new turn shows where the failed one did. Only a turn that ended
-   * without an answer is run again.
+   * without an answer is run again. It always queues: it runs the whole turn
+   * again, and must not be folded into whatever turn runs now.
    */
   private retried(command: Command): Command {
     if (command.body.type !== 'message.retry') return command;
@@ -909,10 +915,13 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    return { ...command, origin: original.origin, body: { ...original.body, delivery: 'queue' } };
   }
 
-  private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
+  private async accept(
+    command: Command,
+    sentByOwner: boolean
+  ): Promise<Snapshot['commandStatuses'][number]> {
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
@@ -1020,7 +1029,7 @@ export class HostedSession {
           commandId: command.commandId,
           origin: command.origin,
         });
-        steerInto = this.steerTarget(command);
+        steerInto = this.steerTarget(command, sentByOwner);
         // A steered message joins the running turn rather than starting one:
         // it is drawn in that turn and ends when that turn does.
         if (steerInto === null)
@@ -1249,9 +1258,11 @@ export class HostedSession {
    * Only a turn already handed to the provider can be steered, and only by a
    * message from the same conversation as the one that started it — the same
    * room thread, or the session's own chat — so a different request is never
-   * folded into unrelated work.
+   * folded into unrelated work. Within that conversation, only the person who
+   * started the turn or the agent's owner steers: in a shared room one person
+   * cannot redirect another's turn, and anyone else's message queues.
    */
-  private steerTarget(command: Command): string | null {
+  private steerTarget(command: Command, sentByOwner: boolean): string | null {
     if (command.body.type !== 'message.send' || command.body.delivery !== 'steer') return null;
     if (!this.steeringOffered()) return null;
     const target = this.activeTurn;
@@ -1261,6 +1272,7 @@ export class HostedSession {
     if (this.providerQueue.length) return null;
     const started = this.commands.get(target)?.origin;
     if (!started || conversationOf(started) !== conversationOf(command.origin)) return null;
+    if (started.actorId !== command.origin.actorId && !sentByOwner) return null;
     return target;
   }
 

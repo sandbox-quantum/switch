@@ -33,6 +33,11 @@ export const roomMessageSchema = z.object({
       .default([]),
     opening_message: z.string().nullish(),
     sender_role: z.enum(['owner', 'admin', 'member']).nullish(),
+    /**
+     * Whether Switch read the sender as the agent's owner. Only the owner, or
+     * whoever started the running turn, steers a message into it.
+     */
+    sender_is_owner: z.boolean().nullish(),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
   }),

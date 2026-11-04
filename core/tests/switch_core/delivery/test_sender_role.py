@@ -155,3 +155,60 @@ async def test_an_organization_admin_without_a_membership_is_an_admin(
             == "admin"
         )
         await session.rollback()
+
+
+def _owned_by(
+    principal: SenderPrincipal | None, owner_id: str | None
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        _addressing=_Addressing(principal), agent=SimpleNamespace(owner_id=owner_id)
+    )
+
+
+async def test_a_message_says_whether_the_agents_owner_sent_it() -> None:
+    olga = SenderPrincipal("user", "client-1", ["user-olga", "user-olga-2"], None)
+    bob = SenderPrincipal("user", "client-2", ["user-bob"], None)
+
+    async def is_owner(
+        principal: SenderPrincipal | None, owner_id: str | None
+    ) -> bool:
+        return await AgentRecipient._sender_is_owner(
+            _owned_by(principal, owner_id),  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+            "@someone:test",
+            {},
+        )
+
+    assert await is_owner(olga, "user-olga-2") is True
+    assert await is_owner(bob, "user-olga") is False
+    # An agent, the platform or an unclaimed person is never the owner, and an
+    # agent nobody owns has none.
+    assert await is_owner(None, "user-olga") is False
+    assert (
+        await is_owner(SenderPrincipal("agent", "a-1", [], "user-olga"), "user-olga")
+        is False
+    )
+    assert await is_owner(olga, None) is False
+
+
+def test_whether_the_owner_sent_it_rides_on_the_message() -> None:
+    event = message_event(
+        room_id="room-1",
+        bridge_id=None,
+        channel_type="direct",
+        event=InboundMessage(
+            room_id="room-1",
+            event_id="$1",
+            sender="@olga:test",
+            timestamp=1,
+            body="no, use the other file",
+            sender_name="olga",
+        ),
+        addressed=True,
+        sender_name="olga",
+        body="no, use the other file",
+        thread_id=None,
+        sender_is_owner=True,
+    )
+
+    assert event.payload.sender_is_owner is True  # type: ignore[union-attr]

@@ -123,11 +123,12 @@ does, and there is no polling tool to call.
 
   A message can reach you while you are still working on an earlier one from
   the same thread (Claude Code, Codex and OpenCode): it joins the work under
-  way rather than waiting for it to finish. It is usually a correction or a
+  way rather than waiting for it to finish. Only the person who asked for that
+  work, or your owner, can send one this way. It is usually a correction or a
   stop ("no, use the other file") — take it into account at once, change
   course if it asks you to, and answer both in the thread rather than
-  finishing the old plan first. Messages from another thread or room still
-  wait for their own turn.
+  finishing the old plan first. Messages from anyone else, or from another
+  thread or room, still wait for their own turn.
 
   The first message you get from a room that has instructions of its own is
   preceded by them, between `BEGIN ROOM INSTRUCTIONS` / `END ROOM
