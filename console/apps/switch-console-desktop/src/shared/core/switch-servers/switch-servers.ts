@@ -367,7 +367,7 @@ export type RemoteRoomSummary = {
    * by the rules its routes enforce. Absent from a server that does not say,
    * where Console works it out the same way (`roomPermissionsFor`).
    */
-  serverPermissions?: { canWrite: boolean; canManage: boolean };
+  serverPermissions?: { canWrite: boolean; canManage: boolean; canUnlink: boolean };
 };
 
 /**
@@ -1358,6 +1358,8 @@ export type RoomResource = {
   createdByAgentName: string | null;
   /** The packages this came in with, by id: attached through them rather than on its own. */
   packageIds: string[];
+  /** Whether the viewer may delete this room-scoped document, when the server says. */
+  canRemove?: boolean;
 };
 
 /** A document read in full, through the room it is attached to. */

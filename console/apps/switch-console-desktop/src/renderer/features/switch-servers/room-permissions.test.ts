@@ -4,10 +4,11 @@ import { roomPermissionsFor } from './room-permissions';
 const ME = { userId: 'u-1', isAdmin: false };
 
 describe('roomPermissionsFor', () => {
-  it('lets the owner manage and write', () => {
+  it('lets the owner manage, write and detach', () => {
     expect(roomPermissionsFor({ ownerId: 'u-1', writeVisibility: 'private' }, ME)).toEqual({
       canWrite: true,
       canManage: true,
+      canUnlink: true,
     });
   });
 
@@ -17,13 +18,14 @@ describe('roomPermissionsFor', () => {
         { ownerId: 'u-2', writeVisibility: 'private' },
         { userId: 'u-1', isAdmin: true }
       )
-    ).toEqual({ canWrite: true, canManage: true });
+    ).toEqual({ canWrite: true, canManage: true, canUnlink: true });
   });
 
   it('lets anyone write to a publicly writable room, but not manage it', () => {
     expect(roomPermissionsFor({ ownerId: 'u-2', writeVisibility: 'public' }, ME)).toEqual({
       canWrite: true,
       canManage: false,
+      canUnlink: true,
     });
   });
 
@@ -31,6 +33,7 @@ describe('roomPermissionsFor', () => {
     expect(roomPermissionsFor({ ownerId: 'u-2', writeVisibility: 'private' }, ME)).toEqual({
       canWrite: false,
       canManage: false,
+      canUnlink: false,
     });
   });
 
@@ -40,21 +43,23 @@ describe('roomPermissionsFor', () => {
     );
   });
 
-  it('reads an unknown write access as public, as rooms were before the setting', () => {
-    expect(roomPermissionsFor({ ownerId: 'u-2' }, ME).canWrite).toBe(true);
+  it('offers no writing on a room whose write access is not known, so nothing it shows is refused', () => {
+    expect(roomPermissionsFor({ ownerId: 'u-2' }, ME)).toEqual({
+      canWrite: false,
+      canManage: false,
+      canUnlink: false,
+    });
+    expect(roomPermissionsFor({ ownerId: 'u-1' }, ME).canWrite).toBe(true);
   });
 
   it('takes the server’s answer over its own working when the server gives one', () => {
+    const answer = { canWrite: true, canManage: false, canUnlink: false };
     expect(
       roomPermissionsFor(
-        {
-          ownerId: 'u-1',
-          writeVisibility: 'public',
-          serverPermissions: { canWrite: false, canManage: false },
-        },
+        { ownerId: 'u-1', writeVisibility: 'public', serverPermissions: answer },
         ME
       )
-    ).toEqual({ canWrite: false, canManage: false });
+    ).toEqual(answer);
   });
 
   it('gives an unknown viewer nothing', () => {
@@ -63,6 +68,6 @@ describe('roomPermissionsFor', () => {
         { ownerId: 'u-1', writeVisibility: 'public' },
         { userId: null, isAdmin: true }
       )
-    ).toEqual({ canWrite: false, canManage: false });
+    ).toEqual({ canWrite: false, canManage: false, canUnlink: false });
   });
 });

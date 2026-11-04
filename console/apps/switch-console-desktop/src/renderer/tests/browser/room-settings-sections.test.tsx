@@ -225,7 +225,7 @@ describe('room settings for someone who may write to the room', () => {
 
   it('archives the room', async () => {
     const el = await renderPanel();
-    await click(button(el, /^Archive$/)!);
+    await click(button(el, /^Archive for everyone$/)!);
     expect(setRoomArchived).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
       roomId: 'room-1',
@@ -244,7 +244,7 @@ describe('room settings for someone who may only read the room', () => {
     );
     expect(el.querySelector('[aria-label="Who can see and change it"]')).toBeNull();
     expect(button(el, /^Add agent$/)).toBeUndefined();
-    expect(button(el, /^Archive$/)).toBeUndefined();
+    expect(button(el, /^Archive for everyone$/)).toBeUndefined();
     expect(el.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.disabled).toBe(true);
   });
 

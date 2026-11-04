@@ -3306,6 +3306,7 @@ type RoomSummaryJson = {
   /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
   can_write?: boolean;
   can_manage?: boolean;
+  can_unlink?: boolean;
 };
 
 function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
@@ -3327,7 +3328,14 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
       ? { writeVisibility: visibilityOf(r.write_visibility) }
       : {}),
     ...(r.can_write !== undefined && r.can_manage !== undefined
-      ? { serverPermissions: { canWrite: r.can_write, canManage: r.can_manage } }
+      ? {
+          serverPermissions: {
+            canWrite: r.can_write,
+            canManage: r.can_manage,
+            // Detaching took write access until the server said otherwise.
+            canUnlink: r.can_unlink ?? r.can_write,
+          },
+        }
       : {}),
   };
 }
@@ -5102,6 +5110,7 @@ type ResourceJson = {
   packages?: string[];
   scope?: 'global' | 'room';
   created_by_agent_name?: string | null;
+  can_remove?: boolean;
 };
 
 function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
@@ -5118,6 +5127,7 @@ function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
     roomScoped: r.scope === 'room',
     createdByAgentName: r.created_by_agent_name ?? null,
     packageIds: r.packages ?? [],
+    ...(r.can_remove !== undefined ? { canRemove: r.can_remove } : {}),
   };
 }
 

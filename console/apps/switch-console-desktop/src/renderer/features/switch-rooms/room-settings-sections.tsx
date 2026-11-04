@@ -558,7 +558,8 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
             : 'Archiving…'
           : room.archived
             ? 'Unarchive'
-            : 'Archive'}
+            : // The room is hidden for everyone, not just you.
+              'Archive for everyone'}
       </Button>
     </div>
   );

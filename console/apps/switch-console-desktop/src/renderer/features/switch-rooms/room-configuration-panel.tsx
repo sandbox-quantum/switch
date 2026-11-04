@@ -76,7 +76,11 @@ const ChatConfiguration = observer(function ChatConfiguration({
             <RolesSection
               workspaceId={workspaceId}
               room={detail.data}
-              permissions={{ canWrite: chat.canManage, canManage: chat.canManage }}
+              permissions={{
+                canWrite: chat.canManage,
+                canManage: chat.canManage,
+                canUnlink: chat.canManage,
+              }}
             />
             <RoomInfoSection room={detail.data} />
           </>

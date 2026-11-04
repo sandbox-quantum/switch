@@ -11,7 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const listRoomResources = vi.hoisted(() => vi.fn());
 const setRoomResourceAttached = vi.hoisted(() => vi.fn());
 const listLinkedRooms = vi.hoisted(() => vi.fn());
-const permissions = vi.hoisted(() => ({ value: { canWrite: true, canManage: false } }));
+const permissions = vi.hoisted(() => ({
+  value: { canWrite: true, canManage: false, canUnlink: true },
+}));
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -92,7 +94,7 @@ beforeEach(() => {
   listLinkedRooms.mockResolvedValue([
     { roomId: 'room-2', name: 'support', description: '', label: 'escalate to' },
   ]);
-  permissions.value = { canWrite: true, canManage: false };
+  permissions.value = { canWrite: true, canManage: false, canUnlink: true };
 });
 
 afterEach(async () => {
@@ -149,8 +151,40 @@ describe('the Resources tab', () => {
     });
   });
 
+  it('asks before deleting a document an agent wrote, since it goes for everyone', async () => {
+    const el = await renderPanel();
+    await act(async () =>
+      el.querySelector<HTMLButtonElement>('[aria-label="Delete Standup notes"]')!.click()
+    );
+    expect(setRoomResourceAttached).not.toHaveBeenCalled();
+    expect(el.textContent).toContain('Delete for everyone?');
+    const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Delete')!;
+    await act(async () => confirm.click());
+    expect(setRoomResourceAttached).toHaveBeenCalledWith(
+      expect.objectContaining({ resourceId: 'd-2', attached: false })
+    );
+  });
+
+  it('lets someone attach without detaching, as the server keeps detaching for those taking part', async () => {
+    permissions.value = { canWrite: true, canManage: false, canUnlink: false };
+    const el = await renderPanel();
+    expect(el.textContent).toContain('Attach reference');
+    expect(el.querySelector('[aria-label^="Detach"]')).toBeNull();
+  });
+
+  it('follows the server on who may delete each document', async () => {
+    listRoomResources.mockImplementation(async ({ kind }: { kind: keyof typeof RESOURCES }) =>
+      kind === 'documents'
+        ? RESOURCES.documents.map((doc) => ({ ...doc, canRemove: false }))
+        : RESOURCES[kind]
+    );
+    const el = await renderPanel();
+    expect(el.querySelector('[aria-label="Delete Standup notes"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Detach Guide"]')).not.toBeNull();
+  });
+
   it('only lists for someone who may not change the room', async () => {
-    permissions.value = { canWrite: false, canManage: false };
+    permissions.value = { canWrite: false, canManage: false, canUnlink: false };
     const el = await renderPanel();
     expect(el.textContent).toContain('Repo');
     expect(el.textContent).not.toContain('Attach reference');

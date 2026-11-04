@@ -65,10 +65,14 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
   }
   const room = detail.data ?? null;
   // A Console chat's members may read it but only its managers change it.
-  const canWrite =
+  const permissions =
     opensAsConsoleChat(roomId) && chat
-      ? chat.canManage
-      : room !== null && switchRoomsStore.roomPermissions(workspaceId, room).canWrite;
+      ? { canWrite: chat.canManage, canManage: chat.canManage, canUnlink: chat.canManage }
+      : room !== null
+        ? switchRoomsStore.roomPermissions(workspaceId, room)
+        : { canWrite: false, canManage: false, canUnlink: false };
+  const canWrite = permissions.canWrite;
+  const canUnlink = permissions.canUnlink;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -78,18 +82,21 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
           roomId={roomId}
           kind="references"
           canWrite={canWrite}
+          canUnlink={canUnlink}
         />
         <ResourceSection
           workspaceId={workspaceId}
           roomId={roomId}
           kind="documents"
           canWrite={canWrite}
+          canUnlink={canUnlink}
         />
         <ResourceSection
           workspaceId={workspaceId}
           roomId={roomId}
           kind="packages"
           canWrite={canWrite}
+          canUnlink={canUnlink}
         />
         <LinkedRoomsSection workspaceId={workspaceId} roomId={roomId} canWrite={canWrite} />
       </div>
@@ -102,11 +109,15 @@ const ResourceSection = observer(function ResourceSection({
   roomId,
   kind,
   canWrite,
+  canUnlink,
 }: {
   workspaceId: string;
   roomId: string;
   kind: RoomResourceKind;
+  /** Attaching. */
   canWrite: boolean;
+  /** Detaching, which the server keeps for those taking part and admins. */
+  canUnlink: boolean;
 }) {
   const queryClient = useQueryClient();
   const key = roomResourcesKey(workspaceId, roomId, kind);
@@ -189,7 +200,7 @@ const ResourceSection = observer(function ResourceSection({
                         ? () => setReading(resource)
                         : null
                   }
-                  removeLabel={canWrite ? `Detach ${resource.name}` : null}
+                  removeLabel={canUnlink ? `Detach ${resource.name}` : null}
                   busy={busy === resource.id}
                   onRemove={() => void detach(resource)}
                 />
@@ -206,8 +217,14 @@ const ResourceSection = observer(function ResourceSection({
                     resource={resource}
                     via={[]}
                     onOpen={() => setReading(resource)}
-                    removeLabel={canWrite ? `Delete ${resource.name}` : null}
+                    // Deleting an agent's document is for its author, the room's owner
+                    // and admins: the server says per document, else detaching's rule.
+                    removeLabel={
+                      (resource.canRemove ?? canUnlink) ? `Delete ${resource.name}` : null
+                    }
                     busy={busy === resource.id}
+                    // It is deleted for everyone, with no undo, so it asks first.
+                    confirm
                     onRemove={() => void detach(resource)}
                   />
                 ))}
@@ -245,6 +262,7 @@ function ResourceRow({
   onOpen,
   removeLabel,
   busy,
+  confirm = false,
   onRemove,
 }: {
   resource: RoomResource;
@@ -254,8 +272,11 @@ function ResourceRow({
   /** The remove button's label, or null for someone who may not remove it. */
   removeLabel: string | null;
   busy: boolean;
+  /** Ask before removing: the first click arms it, the second removes. */
+  confirm?: boolean;
   onRemove: () => void;
 }) {
+  const [armed, setArmed] = useState(false);
   const Icon =
     resource.kind === 'packages' ? Package : resource.kind === 'documents' ? FileText : Link2;
   const meta = [
@@ -292,14 +313,25 @@ function ResourceRow({
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
       )}
-      {removeLabel && (
+      {removeLabel && confirm && armed && (
+        <span className="flex shrink-0 items-center gap-1">
+          <span className="text-xs text-foreground-muted">Delete for everyone?</span>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setArmed(false)}>
+            No
+          </Button>
+          <Button size="sm" variant="destructive" disabled={busy} onClick={onRemove}>
+            {busy ? <Loader2 className="animate-spin" /> : 'Delete'}
+          </Button>
+        </span>
+      )}
+      {removeLabel && !(confirm && armed) && (
         <Button
           variant="ghost"
           size="icon-xs"
           aria-label={removeLabel}
           title={removeLabel}
           disabled={busy}
-          onClick={onRemove}
+          onClick={confirm ? () => setArmed(true) : onRemove}
         >
           {busy ? <Loader2 className="animate-spin" /> : <X />}
         </Button>

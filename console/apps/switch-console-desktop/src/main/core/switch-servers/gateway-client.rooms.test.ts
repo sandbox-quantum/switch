@@ -159,7 +159,25 @@ describe('what the server says the caller may do', () => {
       jsonResponse({ ...ROOM, can_write: true, can_manage: false })
     );
     const room = await fetchRoomDetail(SERVER, 'room-1');
-    expect(room.serverPermissions).toEqual({ canWrite: true, canManage: false });
+    // A server from before detaching had its own rule: it took write access.
+    expect(room.serverPermissions).toEqual({ canWrite: true, canManage: false, canUnlink: true });
+  });
+
+  it('carries who may detach and delete when the server says', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ ...ROOM, can_write: true, can_manage: false, can_unlink: false })
+    );
+    expect((await fetchRoomDetail(SERVER, 'room-1')).serverPermissions).toEqual({
+      canWrite: true,
+      canManage: false,
+      canUnlink: false,
+    });
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([
+        { id: 'd-1', name: 'Notes', description: '', scope: 'room', can_remove: false },
+      ])
+    );
+    expect((await fetchRoomResources(SERVER, 'room-1', 'documents'))[0]!.canRemove).toBe(false);
   });
 
   it('leaves it out for a server that does not say, so Console works it out', async () => {
