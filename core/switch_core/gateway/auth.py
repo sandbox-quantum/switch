@@ -21,6 +21,7 @@ from switch_core.authz import (
     Principal,
     can_unlink_from_room,
     require,
+    require_group_filing,
 )
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -1297,3 +1298,11 @@ async def readable_room_ids(
         session, user.id, is_admin=is_admin, include_archived=True
     )
     return {r.id for r in rooms}
+
+
+def require_group_filing_or_403(is_admin: bool) -> None:
+    """`authz.require_group_filing` as HTTP 403, for gateway routes."""
+    try:
+        require_group_filing(is_admin)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e

@@ -19,7 +19,7 @@ from typing import Any
 from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import plan_template
-from switch_core.authz import Principal
+from switch_core.authz import Principal, require_group_filing
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
@@ -1635,7 +1635,9 @@ async def create_room_from_yaml(
     Args:
         yaml: The template text. A top-level ``room:`` makes one room; a
             ``group:`` with a ``rooms:`` list (and optional ``links:``) makes
-            a room group. Either may declare ``params:`` with defaults and
+            a room group, which an agent is refused: only a workspace admin
+            puts rooms in a group, and an agent acts without its owner's
+            admin reach. Either may declare ``params:`` with defaults and
             descriptions; placeholders are filled in before provisioning.
         inputs: Values for declared params. A required param with no default
             must be supplied here, or provisioning fails naming it.
@@ -1754,6 +1756,9 @@ async def _provision_as_agent(
         user_id=owner.id, name=owner.name, email=owner.email, text=yaml, inputs=inputs
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
+    if isinstance(parsed.spec, GroupSpec):
+        # Without the owner's admin reach, which filing rooms in a group needs.
+        require_group_filing(False)
     await rooms_yaml.check_entity_params(parsed, reader=reader)
     await rooms_yaml.check_bridges(parsed)
     room_specs = (

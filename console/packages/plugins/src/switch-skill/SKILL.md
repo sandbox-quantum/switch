@@ -729,6 +729,10 @@ groups nest under a parent to form a tree.
   owner who is a workspace admin, because an agent's addressing policy can
   admit everyone in a group's rooms. Without one, create the room standalone
   and ask an admin to file it.
+- **Group templates** (a `group:` document, through `create_room_from_yaml`
+  or `run_template`) are refused for every agent, whoever its owner: a
+  template runs without your owner's admin reach. Nothing is created. Ask a
+  workspace admin to run it from the dashboard.
 
 Name a group by its **path**: the top-level group, then each child, separated
 by `/`, e.g. `Fraud/Incidents`. The `path` that `list_room_groups` returns
@@ -1118,7 +1122,7 @@ Every Switch tool you call in normal operation, one line each.
 - `list_room_groups` — the group tree rooms are organised into.
 - `get_room_group_detail` — one group's rooms and child groups.
 - `create_room_group` — provision a new room group (workspace admin agents only).
-- `create_room_from_yaml` — provision a room or group from a YAML template.
+- `create_room_from_yaml` — provision a room from a YAML template (group templates are refused).
 - `get_template_guide`: how to write a template, and the schema it is checked against.
 - `list_templates`: the saved templates you can use.
 - `get_template`: one template's document, inputs and agent slots.

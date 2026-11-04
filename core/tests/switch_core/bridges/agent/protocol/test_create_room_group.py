@@ -118,7 +118,7 @@ class TestListRoomGroups:
                 session,
                 Room(transport_room_id="!r:test", name="r", description="d"),
             )
-            await rooms.set_group(session, room.id, child.id)
+            await rooms.set_group(session, room.id, child.id, acting_is_admin=True)
             await session.commit()
 
         result = await svc.list_room_groups("agent-x")
@@ -158,4 +158,27 @@ class TestFilingNeedsAnAdminOwner:
                 channel_type=None,
                 bridge_id=None,
                 group_name="Eng",
+            )
+
+    async def test_the_refusal_comes_before_the_group_lookup(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _bare_service()
+        svc.session_factory = session_factory  # type: ignore[assignment]
+
+        async def acting_as_member(session: AsyncSession, agent_id: str) -> Any:
+            return SimpleNamespace(id=agent_id, owner_id="owner"), "owner", False
+
+        svc._resolve_acting_identity = acting_as_member  # type: ignore[method-assign]
+
+        with pytest.raises(PermissionError, match="workspace admin"):
+            await svc.create_moderation_room(
+                "agent-1",
+                name="r",
+                description="d",
+                agent_names=[],
+                user_names=None,
+                channel_type=None,
+                bridge_id=None,
+                group_name="No/Such/Group",
             )

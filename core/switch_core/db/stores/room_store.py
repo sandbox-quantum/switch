@@ -18,6 +18,7 @@ from sqlalchemy import tuple_ as sa_tuple
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import require_group_filing
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.db.id_lists import any_of
 from switch_core.db.models import (
@@ -933,12 +934,24 @@ class RoomStore:
         await session.flush()
 
     async def set_group(
-        self, session: AsyncSession, room_id: str, group_id: str | None
+        self,
+        session: AsyncSession,
+        room_id: str,
+        group_id: str | None,
+        *,
+        acting_is_admin: bool,
     ) -> None:
-        """Assign the room to a group, or make it standalone (`group_id=None`)."""
+        """Assign the room to a group, or make it standalone (`group_id=None`).
+
+        Putting the room in a group it is not already in needs a workspace
+        admin (`require_group_filing`, raising ``PermissionError``); making
+        it standalone, or leaving it where it is, does not. Authorizing the
+        room itself is the caller's job."""
         room = await session.get(Room, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
+        if group_id is not None and group_id != room.group_id:
+            require_group_filing(acting_is_admin)
         if group_id is not None:
             group = await session.get(RoomGroup, group_id)
             if group is None:
@@ -947,13 +960,21 @@ class RoomStore:
         await session.flush()
 
     async def set_group_bulk(
-        self, session: AsyncSession, room_ids: list[str], group_id: str | None
+        self,
+        session: AsyncSession,
+        room_ids: list[str],
+        group_id: str | None,
+        *,
+        acting_is_admin: bool,
     ) -> int:
         """Assign many rooms to a group (or `None` for standalone) in one UPDATE.
 
-        The caller is responsible for validating the group and authorizing the
-        rooms. Returns the number of rows updated.
+        Putting rooms in a group needs a workspace admin
+        (`require_group_filing`). The caller is responsible for validating the
+        group and authorizing the rooms. Returns the number of rows updated.
         """
+        if group_id is not None:
+            require_group_filing(acting_is_admin)
         if not room_ids:
             return 0
         result = await session.execute(

@@ -182,6 +182,53 @@ class TestFilingRooms:
             assert bulk.value.status_code == single.value.status_code == 403
             assert (await _ROOMS.get(session, room.id)).group_id is None  # type: ignore[union-attr]
 
+    async def test_a_member_is_refused_before_the_group_lookup(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            member, _admin, room, _group_id = await self._setup(session)
+
+            with pytest.raises(HTTPException) as bulk:
+                await assign_rooms_to_group(
+                    "no-such-group",
+                    RoomGroupAssignRequest(room_ids=[room.id]),
+                    session,
+                    _GROUPS,
+                    _ROOMS,
+                    member,
+                    await _is_admin(session, member),
+                )
+
+            assert bulk.value.status_code == 403
+
+    async def test_a_member_may_put_the_room_back_in_its_current_group(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def detail(_session: AsyncSession, room: Room, *_rest: object) -> Room:
+            return room
+
+        monkeypatch.setattr(rooms_routes, "_build_room_detail", detail)
+        async with session_factory() as session:
+            member, _admin, room, group_id = await self._setup(session)
+            await _ROOMS.set_group(session, room.id, group_id, acting_is_admin=True)
+            await session.commit()
+
+            await put_room_group(
+                room.id,
+                RoomSetGroupRequest(group_id=group_id),
+                session,
+                _ROOMS,
+                None,  # type: ignore[arg-type]
+                None,  # type: ignore[arg-type]
+                None,  # type: ignore[arg-type]
+                member,
+                await _is_admin(session, member),
+            )
+            refreshed = await _ROOMS.get(session, room.id)
+            assert refreshed is not None and refreshed.group_id == group_id
+
     async def test_a_member_cannot_create_a_room_in_a_group(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -267,7 +314,7 @@ class TestRoomCounts:
                 session, name="priv", owner_id=other.id, read_visibility="private"
             )
             for room in (public, private):
-                await _ROOMS.set_group(session, room.id, group.id)
+                await _ROOMS.set_group(session, room.id, group.id, acting_is_admin=True)
             await session.commit()
 
             async def count_for(user: User) -> int:

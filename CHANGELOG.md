@@ -118,8 +118,10 @@ version of their own to them without also giving them a release of their own.
   write into a group could address that group's agents. Putting a room in a
   group, whether when creating it, from the room's page, from the groups
   page or through an agent's `create_room`, now needs a workspace admin (for
-  an agent, its owner). Taking a room out of its group still only needs
-  write access to the room.
+  an agent, its owner). Running a template that makes a room group now
+  needs a workspace admin too, and an agent cannot run one, since it runs
+  templates without its owner's admin reach. Taking a room out of its group
+  still only needs write access to the room.
 
 #### Added
 - **The gateway says what the caller may change in a room.** Rooms, in the

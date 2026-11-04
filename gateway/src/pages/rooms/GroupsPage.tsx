@@ -465,7 +465,8 @@ function MembershipPanel({
 export default function GroupsPage() {
   const navigate = useNavigate();
   // Groups are shared by the workspace, so only an admin creates, edits or
-  // deletes them; anyone may file rooms they can write into one.
+  // deletes them, or puts rooms in one; anyone who can write to a room may
+  // take it out.
   const { canAdminTenant: canManageGroups } = useAuth();
   const { data: groups, loading, refetch } = useRoomGroups();
   const { data: rooms, refetch: refetchRooms } = useRooms();

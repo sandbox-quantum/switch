@@ -2940,9 +2940,11 @@ class AgentCore:
             agent, _owner_id, owner_is_admin = await self._resolve_acting_identity(
                 session, agent_id
             )
-            group_id = await self._resolve_group_name(session, group_name)
-            if group_id is not None:
+            # Before resolving the name: the lookup's errors would map the
+            # group tree for an agent that may not file into any of it.
+            if group_name is not None:
                 require_group_filing(owner_is_admin)
+            group_id = await self._resolve_group_name(session, group_name)
             owner = await session.get(User, agent.owner_id) if agent.owner_id else None
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
