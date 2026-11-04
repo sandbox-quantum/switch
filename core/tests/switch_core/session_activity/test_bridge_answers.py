@@ -148,6 +148,33 @@ async def test_someone_who_may_not_address_the_agent_is_refused(
     assert (await _state(session_factory))[0] == "open"
 
 
+async def test_a_refusal_names_the_thread_a_threaded_card_is_in(
+    service, session_factory, bridged, card, people
+):
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(ApprovalRequestPost).values(thread_ref="1700000000.0001")
+        )
+        await db.execute(
+            update(Agent)
+            .where(Agent.id == AGENT)
+            .values(addressing_policy=owner_only_policy([]).model_dump())
+        )
+    answers = _answers(service, session_factory, bridged, people.stranger)
+    outcome = await answers.for_text(_typed(bridged, "A1 1"))
+    assert isinstance(outcome, Refused)
+    assert outcome.card_ref == "1700000000.0001"
+
+
+async def test_a_refusal_names_a_top_level_card_as_its_own_thread(
+    service, session_factory, bridged, card, people
+):
+    answers = _answers(service, session_factory, bridged, None)
+    outcome = await answers.for_text(_typed(bridged, "A1 1"))
+    assert isinstance(outcome, Refused)
+    assert outcome.card_ref == CARD_POST
+
+
 async def test_a_press_on_another_message_is_refused(
     service, session_factory, bridged, card, people
 ):

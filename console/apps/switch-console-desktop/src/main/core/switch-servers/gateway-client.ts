@@ -7,12 +7,17 @@ import {
   managedServerStoppedPhase,
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
+import {
+  type ControllerProviderReport,
+  providerReport,
+} from '@main/core/switch-servers/controller-provider-report';
 import { rememberBridgePlatforms } from '@main/core/telemetry/bridge-platform';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
 import type {
   AdvancedConfigField,
+  ManagedAgentTemplate,
   ManagedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -76,9 +81,11 @@ import {
   type ChatClaim,
   type ConnectedChat,
   type DeleteBridgeResult,
+  type LinkCode,
   type LinkedIdentity,
   type MessagingAppInstall,
   type MessagingApps,
+  type PendingIdentity,
   type RemoteAgentRoom,
   type RemoteAgentSummary,
   type RemoteBridge,
@@ -97,6 +104,7 @@ import {
   type TeamsTeam,
   type TeamsTeamsResult,
   type TrustSettings,
+  type UnconfirmedLink,
   type UpdateTrustSettingsParams,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
@@ -106,7 +114,7 @@ import type {
   PendingInvitations,
   WorkspaceJoinDomains,
 } from '@shared/core/workspaces/invitations';
-import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
+import type { OrganizationRole, WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
 import { NoManagementApiError } from './server-address';
@@ -607,11 +615,40 @@ export type RemoteTenant = {
   slug: string;
   name: string;
   role: WorkspaceRole;
+  /** Null on a server from before organizations, which reports none. */
+  organizationId: string | null;
+  organizationRole: OrganizationRole | null;
+};
+
+type TenantJson = {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+  organization_id?: string | null;
+  organization_role?: string | null;
 };
 
 function mapRole(raw: unknown): WorkspaceRole {
   if (raw === 'owner' || raw === 'admin' || raw === 'member') return raw;
   throw new GatewayError('http', `Switch server reported an unknown workspace role: ${raw}`);
+}
+
+function mapOrganizationRole(raw: unknown): OrganizationRole | null {
+  if (raw === undefined || raw === null) return null;
+  if (raw === 'org_admin' || raw === 'member') return raw;
+  throw new GatewayError('http', `Switch server reported an unknown organization role: ${raw}`);
+}
+
+function mapTenant(json: TenantJson): RemoteTenant {
+  return {
+    id: json.id,
+    slug: json.slug,
+    name: json.name,
+    role: mapRole(json.role),
+    organizationId: json.organization_id ?? null,
+    organizationRole: mapOrganizationRole(json.organization_role),
+  };
 }
 
 /**
@@ -621,30 +658,72 @@ function mapRole(raw: unknown): WorkspaceRole {
  */
 export async function fetchTenants(server: SwitchServer): Promise<RemoteTenant[]> {
   const res = await gatewayFetch(server, '/tenants', { authenticated: true });
-  const json = (await res.json()) as Array<{
-    id: string;
-    slug: string;
-    name: string;
-    role: string;
-  }>;
-  return json.map((t) => ({ id: t.id, slug: t.slug, name: t.name, role: mapRole(t.role) }));
+  return ((await res.json()) as TenantJson[]).map(mapTenant);
 }
 
 /**
- * Create a workspace on this server, owned by the signed-in user.
+ * The names of the organizations the signed-in user belongs to, by id. Like
+ * `GET /tenants` it needs no tenant selected.
+ */
+export async function fetchOrganizationNames(server: SwitchServer): Promise<Map<string, string>> {
+  const res = await gatewayFetch(server, '/organizations', { authenticated: true });
+  const json = (await res.json()) as Array<{ id: string; name: string }>;
+  return new Map(json.map((o) => [o.id, o.name]));
+}
+
+/**
+ * Create an organization on this server, with a first workspace of the same
+ * name, owned by the signed-in user. Answers with that workspace.
+ *
+ * A server from before organizations has no `POST /organizations`, and is
+ * asked for a workspace through `POST /tenants` instead, as it always was.
  *
  * The gateway derives the slug from the name and refuses a name whose slug is
  * already taken, so the caller shows that refusal rather than retrying under a
  * name the user did not choose.
  */
-export async function createTenant(server: SwitchServer, name: string): Promise<RemoteTenant> {
-  const res = await gatewayFetch(server, '/tenants', {
+export async function createOrganization(
+  server: SwitchServer,
+  name: string
+): Promise<RemoteTenant> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/organizations', {
+      authenticated: true,
+      method: 'POST',
+      body: { name },
+    });
+  } catch (cause) {
+    if (!(cause instanceof GatewayError && cause.status === 404)) throw cause;
+    const legacy = await gatewayFetch(server, '/tenants', {
+      authenticated: true,
+      method: 'POST',
+      body: { name },
+    });
+    return mapTenant((await legacy.json()) as TenantJson);
+  }
+  const json = (await res.json()) as { workspace: TenantJson };
+  return mapTenant(json.workspace);
+}
+
+/**
+ * Add a workspace to the organization of the workspace the session selects,
+ * owned by the signed-in user. The gateway allows it to an `org_admin` only,
+ * and leaves the session's selection where it was.
+ *
+ * Call it through the session seam scoped to a workspace of that organization:
+ * the organization is read from the selection, not named in the call.
+ */
+export async function createOrganizationWorkspace(
+  server: SwitchServer,
+  name: string
+): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/organizations/current/workspaces', {
     authenticated: true,
     method: 'POST',
     body: { name },
   });
-  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
-  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+  return mapTenant((await res.json()) as TenantJson);
 }
 
 /**
@@ -752,7 +831,7 @@ export async function fetchPendingInvitations(server: SwitchServer): Promise<Pen
 }
 
 async function joinedTenant(server: SwitchServer, res: Response): Promise<RemoteTenant> {
-  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
+  const json = (await res.json()) as TenantJson;
   const cookie = extractAuthCookie(res.headers.getSetCookie());
   if (!cookie) {
     throw new GatewayError(
@@ -761,7 +840,7 @@ async function joinedTenant(server: SwitchServer, res: Response): Promise<Remote
     );
   }
   await setSessionCookie(server.id, cookie);
-  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+  return mapTenant(json);
 }
 
 type InvitationJson = {
@@ -992,30 +1071,68 @@ export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boo
 }
 
 /**
- * Whether the signed-in account may create a workspace on this server: the
- * server's own answer, which covers its sign-up mode, the per-person cap, and
- * a deployment that keeps to one workspace because it is not isolating them.
+ * What the signed-in account may create on this server, as the server answers
+ * it for the workspace the session selects.
  *
- * True on a server older than the answer (no session route, or no field): it
- * refused nothing up front either.
+ * - `canCreate`: a new organization with its first workspace — or, on a server
+ *   from before organizations, a workspace. The answer covers the server's
+ *   sign-up mode, the per-person cap, and a deployment that keeps to one
+ *   workspace because it is not isolating them.
+ * - `canAddWorkspace`: another workspace in the selected workspace's
+ *   organization, which only its `org_admin` may do.
+ * - `organizations`: whether the server has organizations at all, which is
+ *   what `canCreate` creates.
  */
-export async function fetchCanCreateWorkspace(server: SwitchServer): Promise<boolean> {
+export type WorkspaceCreation = {
+  canCreate: boolean;
+  canAddWorkspace: boolean;
+  organizations: boolean;
+};
+
+/**
+ * {@link WorkspaceCreation} for the session's workspace.
+ *
+ * On a server older than either answer (no session route, or no field) creating
+ * is allowed, since it refused nothing up front either, and adding to an
+ * organization is not, since there are none.
+ */
+export async function fetchWorkspaceCreation(server: SwitchServer): Promise<WorkspaceCreation> {
   let res: Response;
   try {
     res = await gatewayFetch(server, '/auth/session', { authenticated: true });
   } catch (cause) {
-    if (cause instanceof GatewayError && cause.status === 404) return true;
+    if (cause instanceof GatewayError && cause.status === 404) {
+      return { canCreate: true, canAddWorkspace: false, organizations: false };
+    }
     throw cause;
   }
-  const json = (await res.json()) as { can_create_workspace?: unknown };
-  if (json.can_create_workspace === undefined) return true;
-  if (typeof json.can_create_workspace !== 'boolean') {
+  const json = (await res.json()) as {
+    can_create_workspace?: unknown;
+    can_add_workspace?: unknown;
+  };
+  return {
+    canCreate: optionalFlag(server, json, 'can_create_workspace', true),
+    canAddWorkspace: optionalFlag(server, json, 'can_add_workspace', false),
+    // Answered by the same release that added organizations.
+    organizations: json.can_add_workspace !== undefined,
+  };
+}
+
+function optionalFlag(
+  server: SwitchServer,
+  json: Record<string, unknown>,
+  field: string,
+  absent: boolean
+): boolean {
+  const value = json[field];
+  if (value === undefined) return absent;
+  if (typeof value !== 'boolean') {
     throw new GatewayError(
       'http',
-      `${server.name} reported an unreadable can_create_workspace: ${String(json.can_create_workspace)}`
+      `${server.name} reported an unreadable ${field}: ${String(value)}`
     );
   }
-  return json.can_create_workspace;
+  return value;
 }
 
 /** Options for `registerKnownAgent`, matching the gateway's
@@ -2095,20 +2212,43 @@ export async function deleteMessagingAppInstall(
   });
 }
 
-/** The gateway `IdentityClaimant` wire shape. */
+/** The gateway `IdentityClaimant` wire shape. `verified` is absent from a
+ * server that predates confirming links, where every link counts the same. */
 type IdentityClaimantJson = {
   user_id: string;
   user_name: string;
+  verified?: boolean;
 };
 
-/** The gateway `ExternalUserSummary` wire shape. */
+/** The gateway `LinkCode` wire shape. */
+type LinkCodeJson = {
+  code: string;
+  expires_at: string;
+  /** Absent from a server that predates it. */
+  expires_in_seconds?: number;
+  instructions: string;
+};
+
+/** The gateway `ExternalUserSummary` wire shape. `link_request` is set when a
+ * claim is waiting for the account to confirm it, and absent from a server that
+ * predates confirming, which links straight away. */
 type ExternalUserSummaryJson = {
   id: string;
   bridge_id: string;
   external_user_id: string;
   external_username: string;
   claimed_by?: IdentityClaimantJson[];
+  link_request?: { user_id: string; code: LinkCodeJson | null } | null;
 };
+
+export function mapLinkCode(json: LinkCodeJson): LinkCode {
+  return {
+    code: json.code,
+    expiresAt: json.expires_at,
+    expiresInSeconds: json.expires_in_seconds ?? null,
+    instructions: json.instructions,
+  };
+}
 
 /**
  * Union of external (bridged human) users across every bridge on the server
@@ -2172,7 +2312,11 @@ export async function searchBridgeDirectory(
       displayName: u.display_name,
       email: u.email ?? null,
       knownExternalUserId: u.known_external_user_id ?? null,
-      claimedBy: (u.claimed_by ?? []).map((c) => ({ userId: c.user_id, userName: c.user_name })),
+      claimedBy: (u.claimed_by ?? []).map((c) => ({
+        userId: c.user_id,
+        userName: c.user_name,
+        verified: c.verified ?? true,
+      })),
     })),
   };
 }
@@ -2186,6 +2330,11 @@ export async function searchBridgeDirectory(
  * claimed is claimed normally; a 409 means only that the bridge is stopped and
  * an unseen account cannot be provisioned, and surfaces as a `GatewayError`
  * with that status.
+ *
+ * A current server answers with the link still pending and a code to post from
+ * the account (`link_request`); see {@link issueIdentityLinkCode}. It refuses a
+ * claim that does not say it can show that code (`expects_confirmation`), since
+ * a client that cannot would leave the link pending with no way to finish it.
  */
 export async function claimBridgeIdentity(
   server: SwitchServer,
@@ -2198,15 +2347,120 @@ export async function claimBridgeIdentity(
     {
       authenticated: true,
       method: 'POST',
-      body: { external_user_id: params.externalUserId, username: params.username },
+      body: {
+        external_user_id: params.externalUserId,
+        username: params.username,
+        expects_confirmation: true,
+      },
     }
   );
   return (await res.json()) as ExternalUserSummaryJson;
 }
 
 /**
- * Drop one claim on a platform account
- * (`DELETE /collaborations/{id}/identities/{rowId}`). `externalUserRowId` is
+ * A fresh code confirming the signed-in user's link to a platform account
+ * (`POST /collaborations/{id}/identities/{rowId}/code`), for a link still
+ * pending or one made before links had to be confirmed. It replaces any code
+ * issued before; the server keeps none, so this is also how a lost code is
+ * "shown again". 409 means the link is already confirmed (or the account cannot
+ * be linked at all), 404 that there is nothing to confirm.
+ */
+export async function issueIdentityLinkCode(
+  server: SwitchServer,
+  bridgeId: string,
+  externalUserRowId: string
+): Promise<LinkCode> {
+  const res = await gatewayFetch(
+    server,
+    `/collaborations/${encodeURIComponent(bridgeId)}/identities/${encodeURIComponent(externalUserRowId)}/code`,
+    { authenticated: true, method: 'POST' }
+  );
+  return mapLinkCode((await res.json()) as LinkCodeJson);
+}
+
+/**
+ * Withdraw the signed-in user's confirmation waiting on a code
+ * (`DELETE /collaborations/{id}/identities/{rowId}/request`). Only the request
+ * goes: a link that already works — one made before links had to be confirmed
+ * — stays, which is what makes this the safe Cancel where
+ * {@link releaseBridgeIdentity} is not. 404 means nothing is waiting.
+ */
+export async function cancelIdentityLinkRequest(
+  server: SwitchServer,
+  bridgeId: string,
+  externalUserRowId: string
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/collaborations/${encodeURIComponent(bridgeId)}/identities/${encodeURIComponent(externalUserRowId)}/request`,
+    { authenticated: true, method: 'DELETE' }
+  );
+}
+
+/**
+ * The links on a messaging app made before links had to be confirmed
+ * (`GET /collaborations/{id}/identities/unconfirmed`), which still count. Admin
+ * only. A server that predates confirming links has no such route and no such
+ * links, so its 404 reads as none — as does a bridge removed meanwhile.
+ */
+export async function fetchUnconfirmedLinks(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<UnconfirmedLink[]> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(
+      server,
+      `/collaborations/${encodeURIComponent(bridgeId)}/identities/unconfirmed`,
+      { authenticated: true }
+    );
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return [];
+    throw cause;
+  }
+  const json = (await res.json()) as Array<{
+    id: string;
+    external_user_id: string;
+    external_username: string;
+    user_id: string;
+    user_name: string;
+  }>;
+  return json.map((l) => ({
+    id: l.id,
+    externalUserId: l.external_user_id,
+    externalUsername: l.external_username,
+    userId: l.user_id,
+    userName: l.user_name,
+  }));
+}
+
+/**
+ * Stop trusting these older links on a messaging app until each owner confirms
+ * theirs (`POST /collaborations/{id}/identities/require-confirmation`). Admin
+ * only. Only the links named move — the ones the admin was shown, not any that
+ * appeared since — and each becomes a link waiting for its code, counting for
+ * nothing at once. Returns how many moved.
+ */
+export async function requireLinkConfirmation(
+  server: SwitchServer,
+  bridgeId: string,
+  links: readonly Pick<UnconfirmedLink, 'id' | 'userId'>[]
+): Promise<number> {
+  const res = await gatewayFetch(
+    server,
+    `/collaborations/${encodeURIComponent(bridgeId)}/identities/require-confirmation`,
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { links: links.map((link) => ({ id: link.id, user_id: link.userId })) },
+    }
+  );
+  return ((await res.json()) as { moved: number }).moved;
+}
+
+/**
+ * Drop one claim on a platform account, along with any confirmation waiting on
+ * it (`DELETE /collaborations/{id}/identities/{rowId}`). `externalUserRowId` is
  * the `ExternalUser` row id, not the platform's id.
  *
  * Several users can hold a claim on the same account, so `userId` says whose
@@ -2230,10 +2484,11 @@ export async function releaseBridgeIdentity(
 }
 
 /**
- * The messaging accounts the signed-in user has claimed
+ * The messaging accounts linked to the signed-in user
  * (`GET /auth/me/identities`). An agent whose policy names its owner is
  * unreachable by that owner on any bridge missing from this list, so this is
  * what the addressing UI checks before letting a policy seal an agent off.
+ * Only links that count are listed: one still waiting for its code is not.
  */
 export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIdentity[]> {
   const res = await gatewayFetch(server, '/auth/me/identities', { authenticated: true });
@@ -2244,6 +2499,7 @@ export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIde
     bridge_type: string;
     external_user_id: string;
     external_username: string;
+    verified?: boolean;
   }>;
   return json.map((i) => ({
     id: i.id,
@@ -2252,6 +2508,42 @@ export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIde
     bridgeType: i.bridge_type,
     externalUserId: i.external_user_id,
     externalUsername: i.external_username,
+    verified: i.verified ?? true,
+  }));
+}
+
+/**
+ * The messaging accounts waiting to confirm a link to the signed-in user
+ * (`GET /auth/me/identities/pending`). A server that predates confirming links
+ * has no such route and no such links, so its 404 reads as none.
+ */
+export async function fetchMyPendingIdentities(server: SwitchServer): Promise<PendingIdentity[]> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/me/identities/pending', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return [];
+    throw cause;
+  }
+  const json = (await res.json()) as Array<{
+    id: string;
+    bridge_id: string;
+    bridge_display_name: string;
+    bridge_type: string;
+    external_user_id: string;
+    external_username: string;
+    requested_by_name: string | null;
+    code_expires_at: string | null;
+  }>;
+  return json.map((i) => ({
+    id: i.id,
+    bridgeId: i.bridge_id,
+    bridgeDisplayName: i.bridge_display_name,
+    bridgeType: i.bridge_type,
+    externalUserId: i.external_user_id,
+    externalUsername: i.external_username,
+    requestedByName: i.requested_by_name,
+    codeExpiresAt: i.code_expires_at,
   }));
 }
 
@@ -2489,6 +2781,12 @@ export async function runTemplateDocument(
     /** Existing agents standing in for slots that allow it, by resource key. */
     filled: Record<string, string>;
     templateName: string;
+    /**
+     * The template the document is, when it is one: the server records the run
+     * as that template's, to update its agents from, only when the document is
+     * exactly the template's.
+     */
+    templateId: string | null;
   }
 ): Promise<TemplateRunResult> {
   return postTemplateRun(server, '/rooms/from-template-document', {
@@ -2496,6 +2794,7 @@ export async function runTemplateDocument(
     inputs: body.inputs,
     filled: body.filled,
     template_name: body.templateName,
+    ...(body.templateId !== null ? { template_id: body.templateId } : {}),
   });
 }
 
@@ -2893,6 +3192,8 @@ type RoomSummaryJson = {
   bridge_type?: string | null;
   external_channel_url?: string | null;
   owner_id?: string | null;
+  viewer_is_member?: boolean;
+  is_console_chat?: boolean;
   archived: boolean;
   created_at: string;
 };
@@ -2908,6 +3209,8 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     bridgeType: r.bridge_type ?? null,
     externalChannelUrl: r.external_channel_url ?? null,
     ownerId: r.owner_id ?? null,
+    viewerIsMember: r.viewer_is_member ?? false,
+    isConsoleChat: r.is_console_chat ?? false,
     archived: r.archived,
     createdAt: r.created_at,
   };
@@ -2928,6 +3231,7 @@ type RoomDetailJson = RoomSummaryJson & {
   /** Absent from a server that predates it; kept absent rather than read as
    * "no channel", so the delete dialog can say it does not know. */
   channel_on_delete?: ChannelRetirement | null;
+  linked_channel_name?: string | null;
 };
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
@@ -2937,7 +3241,24 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
     channelOnDelete: r.channel_on_delete,
+    linkedChannelName: r.linked_channel_name ?? null,
   };
+}
+
+/**
+ * Name a room after the channel it is linked to (`POST /rooms/{id}/sync-name`),
+ * so it follows the channel's renames from then on. The room's owner or an
+ * admin only; refused while Switch has not seen the channel's name.
+ */
+export async function syncRoomName(
+  server: SwitchServer,
+  roomId: string
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/sync-name`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
 }
 
 /** One room in full (`GET /rooms/{id}`) — what its configuration page reads. */
@@ -2972,7 +3293,7 @@ export async function fetchRoomAgentIds(server: SwitchServer, roomId: string): P
 export async function updateRoom(
   server: SwitchServer,
   roomId: string,
-  changes: { description?: string; instructions?: string }
+  changes: { name?: string; description?: string; instructions?: string }
 ): Promise<RemoteRoomDetail> {
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,
@@ -3711,16 +4032,6 @@ export type ManagementController = {
   sealingKey: { key: string; keyId: string } | null;
 };
 
-/** A provider as a controller reports it: installed, and whether its login works. */
-export type ControllerProviderReport = {
-  /** The Switch definition provider id (`claude`, `codex`, …). */
-  provider: string;
-  installed: boolean;
-  auth: 'ok' | 'expired' | 'missing' | 'unknown';
-  /** Why its login does not work, in the controller's words; null when it said nothing. */
-  problem: string | null;
-};
-
 /** A managed agent as the owner's list shows it. */
 export type ManagedAgent = {
   agentId: string;
@@ -3737,6 +4048,12 @@ export type ManagedAgent = {
   machine?: ManagedMachine | null;
   desiredState: 'running' | 'stopped';
   revision: number;
+  /**
+   * The template that created it, as the server's record of that run has it:
+   * null for an agent no template run the server vouches for created, and
+   * undefined from a server too old to say.
+   */
+  template?: ManagedAgentTemplate | null;
   provider: string;
   model: string | null;
   /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
@@ -3788,6 +4105,8 @@ type ManagedAgentJson = {
   desired_state: 'running' | 'stopped';
   description?: string;
   revision?: number;
+  /** Absent from servers older than template installs. */
+  template?: { id: string; key: string; revision: number } | null;
   definition: {
     provider?: unknown;
     model?: unknown;
@@ -3924,13 +4243,6 @@ export async function fetchMachineOperation(
   return { state: found.state, error: found.result?.error ?? null };
 }
 
-const PROVIDER_AUTH_STATES: readonly ControllerProviderReport['auth'][] = [
-  'ok',
-  'expired',
-  'missing',
-  'unknown',
-];
-
 /**
  * The providers in a controller's last status report. An entry that does not
  * say which provider it is, or whether it is installed, is left out; a login
@@ -3940,19 +4252,9 @@ function providerReports(status: unknown): ControllerProviderReport[] {
   if (!status || typeof status !== 'object') return [];
   const providers = (status as { providers?: unknown }).providers;
   if (!Array.isArray(providers)) return [];
-  return providers.flatMap((entry: unknown): ControllerProviderReport[] => {
-    if (!entry || typeof entry !== 'object') return [];
-    const { provider, installed, auth, auth_problem } = entry as Record<string, unknown>;
-    if (typeof provider !== 'string' || typeof installed !== 'boolean') return [];
-    const known = PROVIDER_AUTH_STATES.find((state) => state === auth);
-    return [
-      {
-        provider,
-        installed,
-        auth: known ?? 'unknown',
-        problem: typeof auth_problem === 'string' && auth_problem ? auth_problem : null,
-      },
-    ];
+  return providers.flatMap((entry: unknown) => {
+    const report = providerReport(entry);
+    return report ? [report] : [];
   });
 }
 
@@ -4001,6 +4303,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
     machine: machineOf(json),
     desiredState: json.desired_state,
     revision: json.revision ?? 0,
+    ...(json.template !== undefined ? { template: json.template } : {}),
     provider: typeof json.definition?.provider === 'string' ? json.definition.provider : 'unknown',
     model: typeof json.definition?.model === 'string' ? json.definition.model : null,
     advancedConfig: advancedConfigOf(json.agent_id, json.definition?.advanced_config),
@@ -4117,21 +4420,19 @@ export async function fetchAdvancedConfigSchema(
   return Object.fromEntries(
     Object.entries(providers).map(([provider, { fields }]) => [
       provider,
-      fields.map(
-        (field): AdvancedConfigField => ({
-          key: field.key,
-          label: field.label,
-          type: field.type,
-          ...(field.help !== null ? { help: field.help } : {}),
-          ...(field.placeholder !== null ? { placeholder: field.placeholder } : {}),
-          ...(field.options !== null ? { options: field.options } : {}),
-          ...(field.catalogue === null
-            ? {}
-            : field.catalogue.kind === 'model'
-              ? { catalogue: { kind: 'model' } }
-              : { catalogue: { kind: 'model-variant', modelField: field.catalogue.model_field } }),
-        })
-      ),
+      fields.map((field): AdvancedConfigField => ({
+        key: field.key,
+        label: field.label,
+        type: field.type,
+        ...(field.help !== null ? { help: field.help } : {}),
+        ...(field.placeholder !== null ? { placeholder: field.placeholder } : {}),
+        ...(field.options !== null ? { options: field.options } : {}),
+        ...(field.catalogue === null
+          ? {}
+          : field.catalogue.kind === 'model'
+            ? { catalogue: { kind: 'model' } }
+            : { catalogue: { kind: 'model-variant', modelField: field.catalogue.model_field } }),
+      })),
     ])
   );
 }

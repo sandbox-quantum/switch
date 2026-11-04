@@ -81,25 +81,23 @@ describe('CodexAdapter', () => {
     expect(servers[0].received.some((m) => m.method === 'thread/start')).toBe(false);
   });
 
-  it('explains that an isolated session cannot use a keyring login, and the file workaround', async () => {
+  it('asks for a sign-in, and reads no keyring, when the session had an auth.json to copy', async () => {
     account = null;
     const exited = vi.fn();
     const failed = start();
     servers.at(-1)?.on('exit', exited);
     const error = await failed.catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(Error);
-    const message = (error as Error).message;
-    expect(message).toContain(CODEX_SIGN_IN_REQUIRED);
-    expect(message).toContain('OS keyring');
-    expect(message).toContain('cli_auth_credentials_store = "file"');
-    expect(message).toContain('start a new session');
-    expect(message).toContain('plaintext');
+    expect((error as Error).message.endsWith(`Error: ${CODEX_SIGN_IN_REQUIRED}`)).toBe(true);
     expect(servers).toHaveLength(1);
     expect(servers[0].received.map((m) => m.method)).toEqual([
       'initialize',
       'initialized',
       'account/read',
     ]);
+    expect((servers[0] as unknown as { spawnArgs: string[] }).spawnArgs.join(' ')).not.toContain(
+      'cli_auth_credentials_store'
+    );
     expect(exited).toHaveBeenCalled();
   });
 
@@ -176,6 +174,88 @@ describe('CodexAdapter', () => {
         approvalPolicy: 'never',
       });
       await adapter.stopAll();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the account’s default when the configuration names a model this sign-in cannot use', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'codex-home-'));
+    try {
+      await writeFile(join(home, 'config.toml'), 'model = "gpt-6.1-sol"\n');
+      const adapter = createCodexAdapter();
+      const events: ProviderRuntimeEvent[] = [];
+      adapter.subscribe((event) => events.push(event));
+      const pending = adapter.startSession({
+        sessionId: 'inherits',
+        cwd: '/work',
+        runtimeMode: 'full-access',
+        env: { PATH: '/usr/bin', CODEX_HOME: home },
+        mcpServers: {},
+        connectorMcpServers: [],
+      });
+      const server = servers.at(-1)!;
+      server.replyAlways('model/list', () => ({
+        data: [
+          { model: 'gpt-6-astra', isDefault: true },
+          { model: 'gpt-6-sol', isDefault: false },
+        ],
+        nextCursor: null,
+      }));
+      await pending;
+      const opened = server.received.find((message) => message.method === 'thread/start');
+      expect(opened?.params).toMatchObject({ model: 'gpt-6-astra' });
+      expect(eventsOf(events, 'runtime.warning').map((event) => event.message)).toEqual([
+        expect.stringContaining('cannot use gpt-6.1-sol'),
+      ]);
+      // Said again once the first turn runs, where the chat shows it, and only then.
+      for (const [turnId, native] of [
+        ['first', 'native-1'],
+        ['second', 'native-2'],
+      ] as const) {
+        server.reply('turn/start', { turn: { id: native, status: 'inProgress' } });
+        await adapter.sendTurn({ sessionId: 'inherits', turnId, text: 'hi' });
+        server.notify('turn/started', turnNotification(native, 'inProgress'));
+        server.notify('turn/completed', turnNotification(native, 'completed'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const kinds = events
+        .filter((event) => event.type === 'turn.started' || event.type === 'runtime.warning')
+        .map((event) => event.type);
+      expect(kinds.slice(1)).toEqual(['turn.started', 'runtime.warning', 'turn.started']);
+      await adapter.stopAll();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a configured model this sign-in can use, and a chosen model, alone', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'codex-home-'));
+    try {
+      await writeFile(join(home, 'config.toml'), 'model = "gpt-6-sol"\n');
+      for (const model of [undefined, { id: 'gpt-6-luna', options: {} }]) {
+        const adapter = createCodexAdapter();
+        const pending = adapter.startSession({
+          sessionId: 'configured',
+          cwd: '/work',
+          runtimeMode: 'full-access',
+          env: { PATH: '/usr/bin', CODEX_HOME: home },
+          mcpServers: {},
+          connectorMcpServers: [],
+          ...(model ? { model } : {}),
+        });
+        const server = servers.at(-1)!;
+        server.replyAlways('model/list', () => ({
+          data: [{ model: 'gpt-6-sol', isDefault: false }],
+          nextCursor: null,
+        }));
+        await pending;
+        const opened = server.received.find((message) => message.method === 'thread/start');
+        if (model) expect(opened?.params).toMatchObject({ model: 'gpt-6-luna' });
+        else expect(opened?.params).not.toHaveProperty('model');
+        if (model) expect(server.received.some((m) => m.method === 'model/list')).toBe(false);
+        await adapter.stopAll();
+      }
     } finally {
       await rm(home, { recursive: true, force: true });
     }

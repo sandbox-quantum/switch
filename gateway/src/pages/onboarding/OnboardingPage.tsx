@@ -30,7 +30,7 @@ export default function OnboardingPage() {
       title="Welcome to Switch"
       subtitle={
         canCreate
-          ? "Create a workspace for your team, or join one you've been invited to."
+          ? "Create an organization for your team, or join a workspace you've been invited to."
           : "You're not in a workspace yet. Ask a workspace admin for an invite link."
       }
     >

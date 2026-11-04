@@ -627,6 +627,18 @@ class CollaborationBridgeLifecycleService:
             return True
         return adapter_cls.supports_directory_search
 
+    def link_code_instructions(
+        self, bridge_type: str, connection_config: Mapping[str, object], code: str
+    ) -> str:
+        """How to post a link code on this platform. See
+        `PlatformAdapter.link_code_instructions`."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            raise ValueError(
+                f"No adapter is registered for bridge type {bridge_type!r}"
+            )
+        return adapter_cls.link_code_instructions(code, connection_config)
+
     def renders_custom_url_schemes(self, bridge_type: str) -> bool:
         """Whether this platform makes a `switchdash://` link clickable.
 
@@ -676,13 +688,19 @@ class CollaborationBridgeLifecycleService:
         An edit can change what registration checked — which workspace the
         bridge claims, or the credentials proving it — so it is checked the
         same way before it is stored: valid for the type, no claim another
-        bridge holds, and credentials the platform accepts. Raises
-        `ValidationError`, `BridgeClaimConflict` or `BridgeCredentialError`.
+        bridge holds, a URL Switch may reach, and credentials the platform
+        accepts. The URL is checked first because checking the credentials
+        sends them to it. Raises `ValidationError`, `BridgeClaimConflict`,
+        `BridgeStartRefused` or `BridgeCredentialError`.
         """
         self.validate_connection_config(bridge_type, connection_config)
         await self.reject_claim_conflict(
             bridge_type, connection_config, exclude_bridge_id=bridge_id
         )
+        try:
+            await self.check_outbound_urls(bridge_type, connection_config)
+        except OutboundURLRefused as exc:
+            raise BridgeStartRefused(f"Bridge {bridge_id}: {exc}") from exc
         adapter_cls = self._adapter_registry.get(bridge_type)
         if adapter_cls is not None:
             await adapter_cls.verify_connection(
@@ -1888,12 +1906,15 @@ class CollaborationBridgeLifecycleService:
                     exc_info=True,
                 )
 
-    def agents_changed(self, tenant_id: str) -> None:
-        """Agents were registered or deleted in `tenant_id`, maybe by another
-        process: every bridge of the tenant running here provisions their
-        platform identities again."""
+    def agents_changed(
+        self, tenant_id: str, client_ids: frozenset[str] | None = None
+    ) -> None:
+        """Agents were registered, renamed or deleted in `tenant_id`, maybe by
+        another process: every bridge of the tenant running here provisions
+        the platform identities of the agents of `client_ids` again, or of
+        every agent when None."""
         for bridge in self.bridges_for_tenant(tenant_id):
-            bridge.agents_changed()
+            bridge.agents_changed(client_ids)
 
     async def remove(self, bridge_id: str) -> None:
         """Disconnect a messaging app and take its identities with it.

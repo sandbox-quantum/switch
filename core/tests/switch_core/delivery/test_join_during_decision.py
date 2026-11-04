@@ -45,11 +45,11 @@ async def test_a_mention_numbered_after_the_agents_arrival_reaches_it(
     joined = asyncio.Event()
     create = MessageStore.create
 
-    async def create_after_the_join(self, session, message, attachments):  # type: ignore[no-untyped-def]
+    async def create_after_the_join(self, session, message, attachments, **kwargs):  # type: ignore[no-untyped-def]
         if message.body == BODY:
             decided.set()
             await joined.wait()
-        return await create(self, session, message, attachments)
+        return await create(self, session, message, attachments, **kwargs)
 
     monkeypatch.setattr(MessageStore, "create", create_after_the_join)
 
@@ -112,7 +112,7 @@ async def test_a_join_that_began_first_but_committed_during_the_decision(
     joined = asyncio.Event()
     create = MessageStore.create
 
-    async def interleave(self, session, message, attachments):  # type: ignore[no-untyped-def]
+    async def interleave(self, session, message, attachments, **kwargs):  # type: ignore[no-untyped-def]
         if (
             message.event_type == "m.room.member"
             and message.sender_client_id == client.id
@@ -124,7 +124,7 @@ async def test_a_join_that_began_first_but_committed_during_the_decision(
         elif message.body == BODY2:
             mention_decided.set()
             await joined.wait()
-        return await create(self, session, message, attachments)
+        return await create(self, session, message, attachments, **kwargs)
 
     monkeypatch.setattr(MessageStore, "create", interleave)
 

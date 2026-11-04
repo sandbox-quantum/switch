@@ -1,6 +1,6 @@
 from typing import Annotated, Literal, Self
 
-from pydantic import AfterValidator, BaseModel
+from pydantic import AfterValidator, BaseModel, ConfigDict
 
 from switch_core.sessions.attachments import normalise_mime_type
 
@@ -235,7 +235,9 @@ FailureReason = Literal[
 
 
 class BridgeConnectionConfig(BaseModel):
-    pass
+    # Validation errors reach the operator as the HTTP error, and a field's
+    # input is often a token.
+    model_config = ConfigDict(hide_input_in_errors=True)
 
 
 class BridgeCredentialError(Exception):

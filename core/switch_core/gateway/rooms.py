@@ -19,17 +19,21 @@ from switch_core.bridges.collaboration.models import (
     ChannelType,
     RetireOutcome,
 )
+from switch_core.config import SwitchConfig
 from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_bridge_store,
     get_collab_lifecycle,
+    get_config,
     get_external_user_store,
     get_protocol,
     get_room_group_store,
@@ -37,6 +41,7 @@ from switch_core.gateway.dependencies import (
     get_room_store,
     get_room_yaml_service,
     get_session,
+    get_template_store,
     get_user_store,
 )
 from switch_core.gateway.schemas import (
@@ -59,15 +64,18 @@ from switch_core.gateway.schemas import (
     RoomUpdateRequest,
     RoomUsersRequest,
 )
+from switch_core.gateway.templates import readable_template
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
 from switch_core.rooms_yaml import (
     GroupProvisionResult,
     GroupSpec,
     ProvisionResult,
+    RoomReader,
     RoomYamlService,
     template_json_schema,
 )
 from switch_core.telemetry import emit_safely
+from switch_core.template_installs import record_install, vouched_source
 from switch_core.template_runs import (
     LISTEN_TIMEOUT_SECONDS,
     AgentsNotCreated,
@@ -104,7 +112,11 @@ async def _require_room(
             room,
         )
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
+        # Whoever takes part in a room may read it, as its listing shows them.
+        if action != "read" or not await room_store.involved_room_ids(
+            session, user.id, [room.id]
+        ):
+            raise HTTPException(status_code=403, detail=str(e)) from e
     return room
 
 
@@ -239,6 +251,11 @@ async def _build_room_detail(
         join_event_listeners=join_event_listeners,
         archived_at=str(room.archived_at) if room.archived_at else None,
         channel_on_delete=_channel_on_delete(room, bridge_type),
+        linked_channel_name=(
+            (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY)
+            if room.external_channel_id
+            else None
+        ),
     )
 
 
@@ -340,6 +357,7 @@ async def list_rooms(
     room_ids = [room.id for room in rooms]
     agent_ids_by_room = await room_store.agent_ids_by_room(session, room_ids)
     client_ids_by_room = await room_store.client_ids_by_room(session, room_ids)
+    involved = await room_store.involved_room_ids(session, user.id, room_ids)
     # Not held across the deeplinks, which can ask the platform on a cache miss.
     await session.commit()
 
@@ -377,6 +395,8 @@ async def list_rooms(
                 write_visibility=room.write_visibility,
                 created_at=str(room.created_at),
                 archived=room.archived_at is not None,
+                viewer_is_member=room.id in involved,
+                is_console_chat="chat_operation_id" in (room.metadata_ or {}),
             )
         )
 
@@ -474,12 +494,13 @@ async def create_room_from_yaml(
             text = (await request.body()).decode("utf-8")
             inputs = None
             template_name = None
-        inputs = await rooms_yaml.resolve_defaults(text, inputs)
+        reader = RoomReader(Principal(user.id, is_admin))
+        inputs = await rooms_yaml.resolve_defaults(text, inputs, reader=reader)
         builtins = await rooms_yaml.builtins_for(
             user_id=user.id, name=user.name, email=user.email, text=text, inputs=inputs
         )
         parsed = rooms_yaml.parse_template(text, inputs=inputs, builtins=builtins)
-        await rooms_yaml.check_entity_params(parsed)
+        await rooms_yaml.check_entity_params(parsed, reader=reader)
         if isinstance(parsed.spec, GroupSpec):
             return await rooms_yaml.provision_group(
                 parsed.spec,
@@ -626,6 +647,11 @@ class TemplateDocumentRunBody(BaseModel):
     # Existing agents standing in for slots that allow it: {slot: agent name}.
     filled: dict[str, str] = Field(default_factory=dict)
     template_name: str
+    # The template the document is, by id, when it is one. The run is
+    # recorded as that template's install only when the document is exactly
+    # the template's; a Switch Console that does not send it still has a run
+    # of an official template recognised by its document.
+    template_id: str | None = None
 
 
 @router.post("/from-template-document", status_code=201, response_model=None)
@@ -633,6 +659,9 @@ async def run_template_document(
     body: TemplateDocumentRunBody,
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, Any] | JSONResponse:
@@ -641,11 +670,34 @@ async def run_template_document(
     the caller's machines), checks everything, creates the agents, then the
     rooms. For a ``version: 2`` document, whose conditions and references
     only the server resolves. Answers as ``from-template``.
+
+    The agents a run of a known template creates are recorded as its
+    install (``template_installs``), so a later revision can update them.
     """
+    loaded = (
+        await readable_template(
+            body.template_id, session, template_store, user, is_admin, config
+        )
+        if body.template_id is not None
+        else None
+    )
+    source = vouched_source(
+        body.template,
+        loaded,
+        agent_management=config.feature_flags[AGENT_MANAGEMENT],
+        switch_buddy=config.feature_flags[SWITCH_BUDDY],
+    )
     inputs = body.inputs or {}
     try:
         if is_v2_text(body.template):
-            inputs = await rooms_yaml.resolve_defaults(body.template, inputs) or {}
+            inputs = (
+                await rooms_yaml.resolve_defaults(
+                    body.template,
+                    inputs,
+                    reader=RoomReader(Principal(user.id, is_admin)),
+                )
+                or {}
+            )
         builtins = await rooms_yaml.builtins_for(
             user_id=user.id,
             name=user.name,
@@ -666,7 +718,7 @@ async def run_template_document(
         return _refused_run(error)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return await _run_as_person(
+    result = await _run_as_person(
         rooms_yaml,
         protocol,
         user,
@@ -677,6 +729,19 @@ async def run_template_document(
         template_name=body.template_name,
         room_addressing=plan.room_addressing,
     )
+    if source is not None and isinstance(result, dict):
+        await record_install(
+            protocol.session_factory,
+            require_tenant_id(),
+            owner_id=user.id,
+            source=source,
+            document=body.template,
+            inputs=inputs,
+            builtins=builtins,
+            plans=plan.new_agents,
+            created=result["created_agents"],
+        )
+    return result
 
 
 async def _run_as_person(
@@ -704,7 +769,8 @@ async def _run_as_person(
         parsed = None
         builtins: dict[str, str] = {}
         if document is not None:
-            inputs = await rooms_yaml.resolve_defaults(document, inputs)
+            reader = RoomReader(Principal(user.id, is_admin))
+            inputs = await rooms_yaml.resolve_defaults(document, inputs, reader=reader)
             builtins = await rooms_yaml.builtins_for(
                 user_id=user.id,
                 name=user.name,
@@ -715,7 +781,7 @@ async def _run_as_person(
             parsed = rooms_yaml.parse_template(
                 document, inputs=inputs, builtins=builtins
             )
-            await rooms_yaml.check_entity_params(parsed)
+            await rooms_yaml.check_entity_params(parsed, reader=reader)
             await rooms_yaml.check_bridges(parsed)
         checked = await creator.check(tenant_id, user.id, plans)
         created = await creator.create(tenant_id, user.id, checked)
@@ -872,6 +938,9 @@ async def patch_room(
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
+    # The update was written on another session; this one still holds the row
+    # as it was read for the access check.
+    await session.refresh(room)
     return await _build_room_detail(
         session, room, room_store, bridge_store, external_user_store, protocol
     )
@@ -1179,6 +1248,40 @@ async def _set_archived(
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
+    return await _build_room_detail(
+        session, room, room_store, bridge_store, external_user_store, protocol
+    )
+
+
+@router.post("/{room_id}/sync-name")
+async def sync_room_name(
+    room_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomDetail:
+    """Name the room after its linked channel (`linked_channel_name`), as the
+    bridge names its own rooms, so it follows the channel's renames from now
+    on. The room's owner or an admin only."""
+    room = await _require_room(session, room_store, room_id, user, "delete", is_admin)
+    channel_name = (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY)
+    bridge = await bridge_store.get(session, room.bridge_id) if room.bridge_id else None
+    if not room.external_channel_id or bridge is None or not channel_name:
+        raise HTTPException(
+            status_code=409,
+            detail="Switch has not seen the name of a channel linked to this room.",
+        )
+    # `take_platform_name` opens a session of its own (`_require_room_released`).
+    await session.commit()
+    await room_service.take_platform_name(
+        room.id, f"{bridge.display_name}: {channel_name}", channel_name
+    )
+    await session.refresh(room)
     return await _build_room_detail(
         session, room, room_store, bridge_store, external_user_store, protocol
     )

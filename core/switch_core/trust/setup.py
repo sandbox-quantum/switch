@@ -13,13 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.db.stores.trust_settings_store import TrustSettingsStore
-from switch_core.trust.client import DynamicTrustClient, TrustClient
+from switch_core.trust.client import DynamicTrustClient
 
 
 def build_trust_client(
     session_factory: async_sessionmaker[AsyncSession],
     config: SwitchConfig,
-) -> tuple[TrustClient, httpx.AsyncClient]:
+) -> tuple[DynamicTrustClient, httpx.AsyncClient]:
     """The trust client, and its HTTP client so `main` can close it."""
     http_client = httpx.AsyncClient()
     client = DynamicTrustClient(

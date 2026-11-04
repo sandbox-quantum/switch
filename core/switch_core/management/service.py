@@ -68,6 +68,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.gateway.cloud_controllers import (
     enroll_revoked_again,
     record_controller_status,
@@ -103,6 +104,7 @@ from switch_core.process_lease import ProcessLeases, read_leases
 from switch_core.providers.registry import provider_ids
 from switch_core.user_changes import MACHINE, MANAGED_AGENT, UserChangePublisher
 
+_INSTALLS = TemplateInstallStore()
 logger = logging.getLogger(__name__)
 
 OPERATION_LEASE = timedelta(minutes=5)
@@ -962,6 +964,7 @@ class ManagementService:
                     controller_id=target,
                     desired_state=row.desired_state,
                     definition=row.definition,
+                    expected_revision=None,
                 )
             )
         return moved
@@ -1131,7 +1134,11 @@ class ManagementService:
         agent: Agent,
         controllers: dict[str, AgentController],
         leases: ProcessLeases,
+        templates: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        """The managed agent as the API shows it. `templates` is what
+        `templates_of_agents` read for a list of agents at once; without it,
+        this agent's is read."""
         controller = None
         if row.controller_id is not None:
             controller = controllers.get(row.controller_id)
@@ -1141,11 +1148,14 @@ class ManagementService:
                 )
                 if controller is not None:
                     controllers[controller.id] = controller
+        if templates is None:
+            templates = await _INSTALLS.templates_of_agents(session, [agent.id])
         return managed_agent_view(
             row,
             agent,
             controller,
             self.state_of(controller, leases) if controller is not None else None,
+            templates.get(agent.id),
         )
 
     async def list_managed_agents(
@@ -1158,11 +1168,15 @@ class ManagementService:
             )
         }
         leases = await self.leases(session)
+        owned = await self.definitions.list_for_owner(session, tenant_id, owner_id)
+        templates = await _INSTALLS.templates_of_agents(
+            session, [agent.id for _, agent in owned]
+        )
         return [
-            await self._view(session, tenant_id, row, agent, controllers, leases)
-            for row, agent in await self.definitions.list_for_owner(
-                session, tenant_id, owner_id
+            await self._view(
+                session, tenant_id, row, agent, controllers, leases, templates
             )
+            for row, agent in owned
         ]
 
     async def _owned_agent(
@@ -1364,7 +1378,14 @@ class ManagementService:
         agent = await self._owned_agent(session, owner_id, agent_id)
         existing = await self.definitions.get_for_agent(session, tenant_id, agent_id)
         return await self._apply(
-            session, tenant_id, owner_id, agent, existing, target, protocol
+            session,
+            tenant_id,
+            owner_id,
+            agent,
+            existing,
+            target,
+            protocol,
+            expected_revision=None,
         )
 
     async def patch_managed_agent(
@@ -1379,6 +1400,7 @@ class ManagementService:
         controller_id: str | None,
         controller_id_given: bool,
         protocol: AgentCore,
+        expected_revision: int | None,
     ) -> dict[str, Any]:
         existing, agent = await self._owned_definition(
             session, tenant_id, owner_id, agent_id
@@ -1395,7 +1417,14 @@ class ManagementService:
             ),
         )
         return await self._apply(
-            session, tenant_id, owner_id, agent, existing, target, protocol
+            session,
+            tenant_id,
+            owner_id,
+            agent,
+            existing,
+            target,
+            protocol,
+            expected_revision=expected_revision,
         )
 
     async def _apply(
@@ -1407,7 +1436,11 @@ class ManagementService:
         existing: AgentDefinitionRow | None,
         target: _Placement,
         protocol: AgentCore,
+        expected_revision: int | None,
     ) -> dict[str, Any]:
+        """Write `target` over `existing`. With `expected_revision`, only
+        while the definition is still at that revision (`DefinitionChanged`
+        otherwise), for a change worked out from what it was."""
         definition = DefinitionV1.model_validate(target.definition)
         moved = existing is None or existing.controller_id != target.controller_id
         to_running = target.desired_state == "running" and (
@@ -1482,6 +1515,7 @@ class ManagementService:
                 controller_id=target.controller_id,
                 desired_state=target.desired_state,
                 definition=target.definition,
+                expected_revision=expected_revision,
             )
             affected = {previous_controller_id, target.controller_id}
             if previous_controller_id is not None and moved:
@@ -1550,6 +1584,7 @@ class ManagementService:
             controller_id=row.controller_id,
             desired_state=row.desired_state,
             definition=definition,
+            expected_revision=None,
         )
         revisions = await self._bump_and_collect(
             session, tenant_id, {row.controller_id}

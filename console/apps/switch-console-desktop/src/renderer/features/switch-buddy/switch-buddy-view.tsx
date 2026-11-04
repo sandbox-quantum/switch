@@ -6,14 +6,14 @@ import { AgentProfile } from '@renderer/features/managed-agents/agent-profile';
 import { agentSections } from '@renderer/features/managed-agents/agent-sections';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { SidebarMenuRow } from '@renderer/features/sidebar/sidebar-primitives';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
-import { expectedBuddyName, firstNameOf, isBuddy } from './buddy-identity';
+import { expectedBuddyName, findBuddy, firstNameOf } from './buddy-identity';
+import { buddyPerson } from './buddy-person';
 import { reportBuddyStep } from './buddy-telemetry';
 import { BuddyWelcome } from './buddy-welcome';
 import { BUDDY_CHAT_NAME, openBuddyChat } from './open-buddy';
@@ -55,9 +55,9 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
   const { params } = useParams('switchBuddy');
   const { serverId } = params;
   const managed = useManagedAgents(serverId);
-  const buddy = managed.data?.find(isBuddy) ?? null;
+  const buddy = findBuddy(managed.data);
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const user = switchServersStore.statusFor(serverId)?.user ?? null;
+  const person = buddyPerson(serverId);
   const serviceConnections = useFeatureFlags(serverId).service_connections;
 
   useEffect(() => {
@@ -78,7 +78,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
         <AgentProfile
-          name={expectedBuddyName(user)}
+          name={expectedBuddyName(person)}
           iconUrl={BUDDY_ICON_URL}
           serverId={serverId}
           machine={{
@@ -105,7 +105,10 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
       <div className="flex min-w-0 flex-1 flex-col bg-background text-foreground">
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto w-full max-w-[860px] px-5 py-6">
-            <BuddyWelcome firstName={firstNameOf(user?.name)} agentName={expectedBuddyName(user)} />
+            <BuddyWelcome
+              firstName={firstNameOf(person.name)}
+              agentName={expectedBuddyName(person)}
+            />
           </div>
         </div>
         <div className="mx-auto w-full max-w-[860px] px-5 pb-5">
@@ -115,7 +118,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
             disabled={workspaceId === null}
             className="w-full rounded-full border border-border bg-background px-5 py-3 text-left text-sm text-foreground shadow-sm hover:bg-[var(--sel-soft)] disabled:opacity-60"
           >
-            Connect an AI provider to chat with {expectedBuddyName(user)}
+            Connect an AI provider to chat with {expectedBuddyName(person)}
           </button>
           {workspaceId === null && (
             <p className="mt-2 text-xs text-foreground-muted">

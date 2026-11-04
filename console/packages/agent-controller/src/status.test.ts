@@ -230,6 +230,26 @@ describe('providerStatusFrom', () => {
     models: [],
   });
 
+  it('says when signing in would not fix the login, and only then', () => {
+    const pinned = {
+      status: 'unauthenticated' as const,
+      message: 'An administrator pins where Codex keeps logins.',
+      models: [],
+      loginHelps: false,
+    };
+    expect(providerStatusFrom('codex', located, pinned, at)).toMatchObject({
+      auth: 'missing',
+      auth_problem: 'An administrator pins where Codex keeps logins.',
+      login_helps: false,
+    });
+    expect(
+      providerStatusFrom('codex', located, readiness('unauthenticated'), at)
+    ).not.toHaveProperty('login_helps');
+    expect(
+      providerStatusFrom('codex', located, { ...pinned, status: 'unknown' as const }, at)
+    ).toMatchObject({ auth: 'unknown', login_helps: false });
+  });
+
   it('maps a missing CLI and each readiness answer', () => {
     expect(providerStatusFrom('claude', null, null, at)).toMatchObject({
       installed: false,
@@ -529,6 +549,42 @@ describe('ProviderStatuses with logins given to the machine', () => {
       message: expect.stringContaining('Only Claude signs in through Vertex AI.'),
     });
     expect(runtime.loginProbes).toEqual([]);
+  });
+
+  it('keeps "signing in would not help" only beside the message it was said of', async () => {
+    const pinned = {
+      status: 'unauthenticated' as const,
+      message: 'An administrator pins where Codex keeps logins.',
+      models: [],
+      loginHelps: false,
+    };
+    const signsIn = new FakeRuntime();
+    signsIn.readiness = pinned;
+    answer = sealedAnswer('sk-given', 1, 'setup-token', 'codex');
+    const given = await build(signsIn).check('codex');
+    expect(given).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(given).not.toHaveProperty('login_helps');
+    // The machine's own login is not the one agents use now.
+    expect(given).not.toHaveProperty('auth_problem');
+
+    const refused = new FakeRuntime();
+    refused.readiness = pinned;
+    refused.loginReadiness = { status: 'unauthenticated', message: 'Expired.', models: [] };
+    expect(await build(refused).check('codex')).not.toHaveProperty('login_helps');
+
+    // The machine's own login is still the one in use, and signing in still would not fix it.
+    const unopened = new FakeRuntime();
+    unopened.readiness = pinned;
+    answer = sealedAnswer(vertexCredentialFixture(), 1, 'vertex', 'codex');
+    const status = await build(unopened).check('codex');
+    expect(status.auth_problem).toContain('Only Claude signs in through Vertex AI.');
+    expect(status).toMatchObject({ auth: 'missing', login_helps: false });
+
+    const none = new FakeRuntime();
+    none.readiness = pinned;
+    answer = null;
+    reachable = false;
+    expect(await build(none).check('codex')).toMatchObject({ login_helps: false });
   });
 
   it('says why a given login is not used', async () => {
