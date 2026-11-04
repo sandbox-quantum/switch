@@ -16,12 +16,14 @@ from typing import TYPE_CHECKING
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
+    MessageEditPayload,
     MessagePayload,
     RoomJoinPayload,
 )
 from switch_core.clients.admin_messages import PLATFORM_MARKER, platform_on_behalf_of
 
 if TYPE_CHECKING:
+    from switch_core.messages.edits import Edit
     from switch_core.transport.types import InboundMedia, InboundMessage
 
 
@@ -87,6 +89,33 @@ def message_event(
             opening_message=opening_message,
             sender_role=sender_role,
             switch_notice=switch_notice,
+        ),
+    )
+
+
+def message_edit_event(
+    *,
+    room_id: str,
+    bridge_id: str | None,
+    channel_type: str | None,
+    event: InboundMessage,
+    edit: Edit,
+    message_id: str,
+) -> AgentEvent:
+    """Build the `message_edit` event for an edit row (`event`), sent to an
+    agent that was sent the message it edits as `message_id`."""
+    return AgentEvent(
+        type="message_edit",
+        room_id=room_id,
+        bridge_id=bridge_id,
+        channel_type=channel_type,
+        payload=MessageEditPayload(
+            message_id=message_id,
+            edit_id=event.event_id,
+            sender=event.sender,
+            sender_name=event.sender_name or event.sender,
+            body=edit.body,
+            edited_at=edit.edited_at,
         ),
     )
 

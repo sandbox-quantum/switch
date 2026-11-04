@@ -71,7 +71,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
-from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
+from switch_core.bridges.agent.protocol.event_buffer import (
+    OwnEventToStore,
+    message_key,
+)
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
@@ -84,6 +87,7 @@ from switch_core.db.agent_event_notify_ddl import (
 from switch_core.db.models import (
     Agent,
     AgentConnectionRecord,
+    AgentEventRow,
     Client,
     ClientRoom,
     CollaborationBridge,
@@ -115,6 +119,7 @@ from switch_core.delivery.recipient import (
     file_index,
 )
 from switch_core.logging_context import log_context
+from switch_core.messages.edits import Edit, edit_of
 from switch_core.observability.catalogue import ROUTING_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL
@@ -1126,6 +1131,9 @@ class MessageRouter:
         if isinstance(event, InboundCustomEvent):
             return await self._decide_custom(recipients, event)
         assert isinstance(event, InboundMessage)
+        edit = edit_of(event.content)
+        if edit is not None:
+            return await self._decide_edit(session, reads, recipients, event, edit)
         return await self._decide_message(session, reads, recipients, event)
 
     async def _decide_message(
@@ -1155,6 +1163,62 @@ class MessageRouter:
                 session, reads, recipients, event
             )
         return _Plan(deliveries=deliveries)
+
+    async def _decide_edit(
+        self,
+        session: AsyncSession,
+        reads: RoomReads,
+        recipients: list[AgentRecipient],
+        event: InboundMessage,
+        edit: Edit,
+    ) -> _Plan:
+        """An edit goes to the agents the message it edits went to, and to no
+        one else. It is never decided as a message of its own, so an edit that
+        changes a mention addresses nobody new. Only the message's own sender
+        can edit it."""
+        original = await session.scalar(
+            select(Message).where(
+                Message.room_id == reads.room_id,
+                Message.transport_event_id == edit.original_event_id,
+            )
+        )
+        if original is None or original.sender_id != event.sender:
+            logger.warning(
+                "Edit %s in room %s names message %s, which %s did not send "
+                "there; it reaches no agent",
+                event.event_id,
+                reads.room_id,
+                edit.original_event_id,
+                event.sender,
+            )
+            return _Plan()
+        # Each agent the message went to, with the id it was sent under.
+        # Several files posted as one are one message, found by their group
+        # (`message_key`) rather than by the file the edit names.
+        sent_as: dict[str, str] = {}
+        for agent_id, message_id in (
+            await session.execute(
+                select(
+                    AgentEventRow.agent_id,
+                    AgentEventRow.payload["payload"]["message_id"].astext,
+                )
+                .where(
+                    AgentEventRow.agent_id.in_([r.agent.id for r in recipients]),
+                    AgentEventRow.message_key == message_key(original),
+                    AgentEventRow.room_id == reads.room_id,
+                    AgentEventRow.type == "message",
+                )
+                .order_by(AgentEventRow.room_seq)
+            )
+        ).all():
+            sent_as.setdefault(agent_id, message_id)
+        return _Plan(
+            deliveries=[
+                (recipient, recipient.decide_edit(edit, sent_as[recipient.agent.id]))
+                for recipient in recipients
+                if recipient.agent.id in sent_as
+            ]
+        )
 
     async def _follow_the_conversation(
         self,
@@ -1758,6 +1822,10 @@ class MessageRouter:
         if self._admin_for is None or not isinstance(row, InboundMessage):
             return None
         if ADMIN_MARKER in row.content or "@" not in (row.body or ""):
+            return None
+        # An edit addresses nobody, so a heads-up about the names in it would
+        # suggest that fixing them reaches somebody.
+        if edit_of(row.content) is not None:
             return None
         names = [member.agent.name for member in reads.members]
         names += [member.alias for member in reads.members if member.alias]

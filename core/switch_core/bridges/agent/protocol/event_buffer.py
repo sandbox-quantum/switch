@@ -249,14 +249,17 @@ class CursorExpiredError(Exception):
 def is_notifiable(event: AgentEvent) -> bool:
     """Whether an event is addressed at the agent rather than ambient context.
 
-    Addressed messages and the room_join events the agent is configured to
-    listen for. Excludes conversation and admin command events.
+    Addressed messages, edits of the messages the agent was sent, and the
+    room_join events the agent is configured to listen for. Excludes
+    conversation and admin command events.
     This is the `addressed` delivery filter: a supervising connection watching
     every room wants only these, while a session in a single room wants
     everything.
     """
     if event.type == "message":
         return getattr(event.payload, "addressed", False)
+    if event.type == "message_edit":
+        return True
     if event.type == "room_join":
         return getattr(event.payload, "listening", False)
     return False
@@ -403,7 +406,7 @@ _UNREAD_IN_ROOM_SQL = text(
           SELECT 1 FROM agent_events e
           WHERE e.agent_id = :agent_id
             AND e.room_id = :room_id
-            AND e.type = 'message'
+            AND e.type IN ('message', 'message_edit')
             AND e.message_key = {_MESSAGE_KEY_SQL}
             AND e.room_seq >= m.seq
         )
