@@ -142,6 +142,8 @@ export interface Controller {
   revoked_at: string | null;
 }
 
+export type MidTurnMessages = "steer" | "queue";
+
 export interface Definition {
   provider: Provider;
   model: string | null;
@@ -150,6 +152,12 @@ export interface Definition {
   auto_mode: boolean;
   /** Bypass: every permission check skipped. Wins over `auto_mode`. */
   auto_approve: boolean;
+  /**
+   * What a message sent while a turn runs does: `steer` joins the running turn
+   * (from the person who started it, or the agent's owner, on a provider that
+   * can), `queue` always waits for a turn of its own. Steers by default.
+   */
+  mid_turn_messages: MidTurnMessages;
   directory: string | null;
   isolation: Isolation;
   /** The provider's advanced configuration, as Switch Console edits it; unset fields are absent. */

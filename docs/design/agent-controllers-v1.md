@@ -206,7 +206,8 @@ Any change that affects a controller bumps its `assignment_revision` and nudges 
 ```json
 {"provider": "claude|codex|opencode|antigravity|cursor",
  "model": null, "advanced_config": {}, "instructions": "", "auto_mode": true,
- "auto_approve": false, "directory": null, "isolation": "shared"}
+ "auto_approve": false, "mid_turn_messages": "steer", "directory": null,
+ "isolation": "shared"}
 ```
 
 `auto_mode` (default `true` on create) asks the provider for its own automatic review:
@@ -215,6 +216,16 @@ check skipped, and wins over `auto_mode`. A definition stored before `auto_mode`
 no such key and reads as `false` (`schemas.stored_definition`): the managed-agent view, the
 assignment entry and an agent's update all fill it in that way, so an existing agent keeps
 its behaviour until someone turns auto mode on.
+
+`mid_turn_messages` (default `steer`) says what a message sent while a turn is running does.
+`steer` delivers it into the running turn, on a provider that can steer (Claude Code, Codex,
+OpenCode), when it is in that turn's conversation and from whoever started the turn or from
+the agent's owner; anyone else's waits for a turn of its own. `queue` always runs it as a turn of
+its own once the running one ends. A definition stored before the setting existed reads as
+`steer`. A client that leaves the key out of a `PUT` or `PATCH` keeps the stored value
+(`schemas.sent_definition`, `schemas.kept_settings`), so saving the agent from a client that
+predates the setting does not reset it. A controller older than the setting ignores it and
+queues, as before.
 
 ### Advanced configuration
 `advanced_config` carries the provider's "Advanced configuration", the per-provider settings

@@ -95,6 +95,10 @@ class ActivityReport(BaseModel):
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
     )
+    # On a user message sent while another turn ran: whether it was steered
+    # into that turn or queued behind it. Absent everywhere else, and from
+    # hosts that predate it.
+    delivery: Literal["steered", "queued"] | None = None
 
 
 class OptionIn(BaseModel):
@@ -214,6 +218,7 @@ async def report_activity(
         thread_id=body.thread_id,
         message_id=body.message_id,
         occurred_at=body.occurred_at,
+        delivery=body.delivery,
         usage=[
             TokenSpend(
                 model=u.model,

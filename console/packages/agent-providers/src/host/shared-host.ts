@@ -474,14 +474,22 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
-      console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
-      );
+    // A server that predates a row's newer fields refuses the row whole: a
+    // turn's usage, or how a message sent mid-turn was delivered. The row is
+    // what platforms draw, so it goes again without them: the spend is not
+    // counted, and the message is shown without saying it was steered or queued.
+    const sentWithoutNewerFields = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (item.kind !== 'activity' || error.status !== 422) return false;
+      const { usage, delivery, ...row } = item.row;
+      if (!usage && !delivery) return false;
+      if (usage)
+        console.warn(
+          `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+        );
+      if (delivery)
+        console.warn(
+          `Switch refused how message ${row.item_id} was delivered, so platforms do not say it was ${delivery}: ${error.message}`
+        );
       await send({ kind: 'activity', row });
       return true;
     };
@@ -504,7 +512,7 @@ export async function runSharedHost(
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
+            if (await sentWithoutNewerFields(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -848,6 +856,7 @@ export async function runSharedHost(
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
+          delivery: host!.snapshot().session.capabilities.input,
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once

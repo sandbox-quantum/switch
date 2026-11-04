@@ -1,5 +1,7 @@
 """A delivered message says the sending person's role in the workspace, read
-as the message arrives, so an agent need not trust what it was told earlier."""
+as the message arrives, so an agent need not trust what it was told earlier,
+and whether that person owns the agent, which lets them steer a turn someone
+else started."""
 
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.delivery.addressing import SenderPrincipal
-from switch_core.delivery.recipient import AgentRecipient
+from switch_core.delivery.recipient import AgentRecipient, SenderFacts
 from switch_core.transport.types import InboundMessage
 
 
@@ -31,8 +33,14 @@ class _Addressing:
         return self._principal
 
 
-def _recipient(principal: SenderPrincipal | None) -> SimpleNamespace:
-    return SimpleNamespace(_addressing=_Addressing(principal), tenant_id=TENANT_ZERO_ID)
+def _recipient(
+    principal: SenderPrincipal | None, owner_id: str | None = None
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        _addressing=_Addressing(principal),
+        tenant_id=TENANT_ZERO_ID,
+        agent=SimpleNamespace(owner_id=owner_id),
+    )
 
 
 async def _member(session: AsyncSession, name: str, role: str) -> User:
@@ -155,3 +163,90 @@ async def test_an_organization_admin_without_a_membership_is_an_admin(
             == "admin"
         )
         await session.rollback()
+
+
+async def test_the_agents_owner_is_told_apart_from_everyone_else(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        olivia = await _member(session, "olivia", "member")
+        person = SenderPrincipal("user", "client-1", [olivia.id], None)
+
+        owner = await AgentRecipient._sender(
+            _recipient(person, owner_id=olivia.id),  # type: ignore[arg-type]
+            session,
+            "@olivia:test",
+            {},
+        )
+        someone = await AgentRecipient._sender(
+            _recipient(person, owner_id="another-user"),  # type: ignore[arg-type]
+            session,
+            "@olivia:test",
+            {},
+        )
+
+        assert owner == SenderFacts(role="member", is_owner=True)
+        assert someone == SenderFacts(role="member", is_owner=False)
+
+
+async def test_an_agent_the_platform_or_an_unclaimed_person_is_never_the_owner(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Not even an agent the owner owns, or a platform message carrying the
+    owner's authority: steering a turn is the owner's own say."""
+    async with session_factory() as session:
+        for principal in (
+            None,
+            SenderPrincipal("agent", "agent-1", [], "owner-1"),
+            SenderPrincipal("platform", "platform", [], None, "owner-1"),
+            SenderPrincipal("user", "client-2", [], None),
+        ):
+            facts = await AgentRecipient._sender(
+                _recipient(principal, owner_id="owner-1"),  # type: ignore[arg-type]
+                session,
+                "@someone:test",
+                {},
+            )
+            assert facts.is_owner is False
+
+
+async def test_an_agent_without_an_owner_has_none_to_recognise(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        olivia = await _member(session, "olivia", "member")
+        person = SenderPrincipal("user", "client-1", [olivia.id], None)
+        facts = await AgentRecipient._sender(
+            _recipient(person, owner_id=None),  # type: ignore[arg-type]
+            session,
+            "@olivia:test",
+            {},
+        )
+        assert facts.is_owner is False
+
+
+def test_ownership_rides_on_the_message_and_is_off_unless_said() -> None:
+    inbound = InboundMessage(
+        room_id="room-1",
+        event_id="$1",
+        sender="@olivia:test",
+        timestamp=1,
+        body="use the staging data",
+        sender_name="olivia",
+    )
+
+    def built(**extra: bool) -> object:
+        return message_event(
+            room_id="room-1",
+            bridge_id=None,
+            channel_type="direct",
+            event=inbound,
+            addressed=True,
+            sender_name="olivia",
+            body="use the staging data",
+            thread_id=None,
+            **extra,
+        ).payload
+
+    assert built(sender_is_owner=True).sender_is_owner is True  # type: ignore[attr-defined]
+    assert built().sender_is_owner is False  # type: ignore[attr-defined]

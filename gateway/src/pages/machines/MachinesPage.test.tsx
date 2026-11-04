@@ -87,6 +87,7 @@ const pmAgent: ManagedAgent = {
     instructions: "",
     auto_mode: false,
     auto_approve: false,
+    mid_turn_messages: "queue",
     directory: null,
     isolation: "shared",
     advanced_config: {},
@@ -406,6 +407,47 @@ describe("MachinesPage", () => {
     await waitFor(() =>
       expect(calls.find((c) => c.method === "PATCH")?.body).toMatchObject({
         definition: { auto_mode: false, auto_approve: true },
+      }),
+    );
+  });
+
+  it("steers with mid-turn messages by default for a new agent", async () => {
+    const calls = mockManagement({
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, []],
+      "GET /operations": [200, []],
+      "POST /agents": [201, pmAgent],
+    });
+    render(<MachinesPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "New managed agent" }));
+    const steer = (await screen.findByLabelText(/^Steer with mid-turn messages/)) as HTMLInputElement;
+    expect(steer.checked).toBe(true);
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "pm-agent" } });
+    fireEvent.change(screen.getByLabelText(/^Description/), { target: { value: "Writes PRDs" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({
+        definition: { mid_turn_messages: "steer" },
+      }),
+    );
+  });
+
+  it("keeps an agent that queues mid-turn messages queueing, and lets it steer", async () => {
+    const calls = mockManagement({
+      "GET /controllers": [200, [laptop]],
+      "GET /agents": [200, [pmAgent]],
+      "GET /operations": [200, []],
+      "PATCH /agents/a1": [200, pmAgent],
+    });
+    render(<MachinesPage />);
+    fireEvent.click(await screen.findByLabelText("Edit pm-agent"));
+    const steer = (await screen.findByLabelText(/^Steer with mid-turn messages/)) as HTMLInputElement;
+    expect(steer.checked).toBe(false);
+    fireEvent.click(steer);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "PATCH")?.body).toMatchObject({
+        definition: { mid_turn_messages: "steer" },
       }),
     );
   });

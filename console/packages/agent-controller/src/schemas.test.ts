@@ -164,6 +164,25 @@ describe('received messages', () => {
     expect(on.agents[0]!.definition.auto_mode).toBe(true);
   });
 
+  it('reads mid_turn_messages as sent, absent from an older server, and unknown when new', () => {
+    const read = (extra: Record<string, unknown>) =>
+      assignmentSchema.parse({
+        revision: 1,
+        agents: [
+          {
+            agent_id: 'a',
+            revision: 1,
+            desired_state: 'running',
+            definition: { ...definition, ...extra },
+          },
+        ],
+      }).agents[0]!.definition.mid_turn_messages;
+    expect(read({})).toBeUndefined();
+    expect(read({ mid_turn_messages: 'steer' })).toBe('steer');
+    expect(read({ mid_turn_messages: 'queue' })).toBe('queue');
+    expect(read({ mid_turn_messages: 'interrupt' })).toBe('unknown');
+  });
+
   it('reads an enum value it does not know as unknown', () => {
     const parsed = assignmentSchema.parse({
       revision: 1,

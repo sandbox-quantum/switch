@@ -36,6 +36,12 @@ export type ActivityRow = {
    * there is nothing to say, so a server that predates it takes the row.
    */
   usage?: UsageRow[];
+  /**
+   * On a user message sent while another turn ran: whether it was steered
+   * into that turn or queued behind it. Left out otherwise, so a server that
+   * predates it takes every other row.
+   */
+  delivery?: 'steered' | 'queued';
 };
 
 export type UsageRow = {
@@ -167,6 +173,7 @@ export class ActivityReporter {
               command_id: null,
               ...place(item.turnId),
               occurred_at: event.occurredAt,
+              ...(item.kind === 'user-message' && item.delivery ? { delivery: item.delivery } : {}),
             },
           },
         ];

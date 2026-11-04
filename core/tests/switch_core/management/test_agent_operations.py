@@ -729,6 +729,7 @@ class TestListManagedAgents:
             "advanced_config": {},
             "auto_mode": True,
             "auto_approve": False,
+            "mid_turn_messages": "steer",
             "directory": f"{WORKSPACES_DIR}/builder",
             "machine": {
                 "id": controller.controller_id,
@@ -916,6 +917,53 @@ class TestUpdateAgentDetail:
         assert on["auto_mode"] is True
         assert assigned_on["auto_mode"] is True
         assert on["revision"] > off["revision"]
+
+    async def test_an_agent_from_before_mid_turn_messages_steers(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        """The default, for an agent stored before the setting existed too,
+        and kept through an edit that does not touch it."""
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+        async with harness.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(AgentDefinition).where(AgentDefinition.agent_id == new_id)
+                )
+            ).scalar_one()
+            older = {
+                k: v for k, v in row.definition.items() if k != "mid_turn_messages"
+            }
+            await session.execute(
+                update(AgentDefinition)
+                .where(AgentDefinition.agent_id == new_id)
+                .values(definition=older)
+            )
+            await session.commit()
+
+        [listed] = (
+            await _call(client, helper_id, "list_managed_agents", bearer(key))
+        ).json()["result"]
+        assigned = (await _assigned(client, controller))[new_id]["definition"]
+        edited = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "model": "opus"},
+        )
+        after = (await _assigned(client, controller))[new_id]["definition"]
+
+        assert listed["mid_turn_messages"] == "steer"
+        assert assigned["mid_turn_messages"] == "steer"
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["result"]["managed"]["mid_turn_messages"] == "steer"
+        assert after["mid_turn_messages"] == "steer"
 
     async def test_an_agent_from_before_auto_mode_keeps_it_off(
         self, harness: Harness, client: httpx.AsyncClient

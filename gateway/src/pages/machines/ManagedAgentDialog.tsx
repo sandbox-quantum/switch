@@ -37,6 +37,8 @@ interface Form {
   directory: string;
   autoMode: boolean;
   autoApprove: boolean;
+  /** Messages sent mid-turn steer the running turn; off, they always queue. */
+  steer: boolean;
   isolation: Isolation;
   /** Not edited here; kept as it is so saving does not clear it. */
   advancedConfig: Definition["advanced_config"];
@@ -59,6 +61,7 @@ function initialForm(
       directory: agent.definition.directory ?? "",
       autoMode: agent.definition.auto_mode,
       autoApprove: agent.definition.auto_approve,
+      steer: agent.definition.mid_turn_messages === "steer",
       isolation: agent.definition.isolation,
       advancedConfig: agent.definition.advanced_config,
       running: agent.desired_state === "running",
@@ -74,6 +77,7 @@ function initialForm(
     directory: "",
     autoMode: true,
     autoApprove: false,
+    steer: true,
     isolation: "shared",
     advancedConfig: {},
     running: true,
@@ -87,6 +91,7 @@ function definitionFrom(form: Form): Definition {
     instructions: form.instructions,
     auto_mode: form.autoMode,
     auto_approve: form.autoApprove,
+    mid_turn_messages: form.steer ? "steer" : "queue",
     directory: form.directory.trim() || null,
     isolation: form.isolation,
     advanced_config: form.advancedConfig,
@@ -280,6 +285,12 @@ export default function ManagedAgentDialog({
               />
             }
             label="Bypass permissions (unsafe: runs every action without asking; overrides auto mode)"
+          />
+          <FormControlLabel
+            control={
+              <Switch checked={form.steer} onChange={(e) => set("steer", e.target.checked)} />
+            }
+            label="Steer with mid-turn messages (a message from whoever started the turn, or from you, joins the running turn; off, every message waits for its own turn)"
           />
           <FormControlLabel
             control={

@@ -59,6 +59,7 @@
           "attachments": [],
           "opening_message": null,
           "sender_role": null,
+          "sender_is_owner": false,
           "switch_notice": null
         },
         "sequence": 1,

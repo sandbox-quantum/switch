@@ -122,8 +122,41 @@ native conversation is resumed under the new model and
 instructions; every provider takes both on resume (Cursor and Antigravity send
 the instructions with the first message after the restart).
 
-Shared commands currently support queued text and request answers. SSH deployment
-and production session routing remain outside this experimental path.
+Shared commands currently support text, steered or queued, and request answers.
+SSH deployment and production session routing remain outside this experimental
+path.
+
+## Messages sent while a turn is running
+
+A room message that arrives while the session is running a turn is either
+steered into that turn or queued behind it. The session's `capabilities.input`
+says which it may do: `steer` only where the agent's setting allows it and the
+provider can (`ProviderCapabilities.steering`: Claude Code, Codex and OpenCode),
+`queue` everywhere else (`sessionInputFor`). The setting is per agent and steers
+by default: `mid_turn_messages` in a managed agent's definition, and the agent's
+"Steer with mid-turn messages" setting in Switch Console.
+
+The host asks to steer every room message on a session that steers
+(`roomCommand`), and `HostedSession` decides for each one. It steers only when
+a turn has already reached the provider, and the message is in the same
+conversation as the message that started that turn (`sameConversation`: the
+same room, and a reply in that message's thread or, like it, outside any
+thread), and it comes from the person who started the turn or from the agent's
+owner. Switch says whether the sender owns the agent (`sender_is_owner` on the
+message, `Origin.actorIsAgentOwner` on the command), never the message itself.
+Anyone else's message waits for a turn of its own, so in a shared room one
+person cannot redirect work another person asked for. A message asked to steer
+on a session that does not is queued, never refused.
+
+A steered message joins the running turn: its user item is published in that
+turn, marked `delivery: 'steered'`, and it finishes when that turn does. When
+the provider runs it as a turn of its own instead (Codex refusing
+`turn/steer`, or the running turn ending just as the message arrived), that
+turn runs next, ahead of the queue. A message queued while another turn ran is
+marked `delivery: 'queued'`. The mark rides on the user message's activity row,
+so every platform's card and Switch Console's chat say "1 message steered into
+this turn" or that a turn is queued behind the running one. A server that
+predates the mark refuses such a row, and the host sends it again without it.
 
 ## Compatibility paths and when they can go
 

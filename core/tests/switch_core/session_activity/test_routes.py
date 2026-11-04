@@ -101,6 +101,8 @@ async def test_a_status_that_is_not_the_kinds_is_a_422_with_its_code(client):
         {"title": "x" * 501},
         {"text": "x" * 8001},
         {"unexpected": 1},
+        {"kind": "user-message", "status": "completed", "delivery": "sideways"},
+        {"delivery": "steered"},
     ],
 )
 async def test_malformed_activity_is_a_422(client, overrides):
@@ -108,6 +110,32 @@ async def test_malformed_activity_is_a_422(client, overrides):
         f"/agent-sessions/{SESSION}/activity", json=_activity(**overrides)
     )
     assert response.status_code == 422
+
+
+async def test_a_user_message_row_says_how_it_was_delivered(client, service):
+    url = f"/agent-sessions/{SESSION}/activity"
+    for item_id, delivery in [("user-2", "steered"), ("user-3", "queued")]:
+        response = await client.post(
+            url,
+            json=_activity(
+                item_id=item_id,
+                kind="user-message",
+                status="completed",
+                delivery=delivery,
+            ),
+        )
+        assert response.status_code == 200, response.text
+    # A host that predates the field sends no key at all.
+    plain = await client.post(
+        url, json=_activity(item_id="user-1", kind="user-message", status="completed")
+    )
+    assert plain.status_code == 200, plain.text
+    steps = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert {step.item_id: step.delivery for step in steps} == {
+        "user-1": None,
+        "user-2": "steered",
+        "user-3": "queued",
+    }
 
 
 _USAGE = {

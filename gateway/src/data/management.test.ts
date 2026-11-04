@@ -91,6 +91,7 @@ describe("createManagedAgent", () => {
           instructions: "",
           auto_mode: true,
           auto_approve: false,
+          mid_turn_messages: "steer",
           directory: null,
           isolation: "shared",
           advanced_config: {},

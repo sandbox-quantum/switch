@@ -193,3 +193,44 @@ def test_host_publication_claims_are_rejected() -> None:
     payload["body"]["request"]["audience"] = {"kind": "room", "roomId": "room-demo"}
     with pytest.raises(ValueError):
         parse_host_event(payload)
+
+
+def _user_message(**extra: Any) -> dict[str, Any]:
+    return {
+        "itemId": "user-steer",
+        "turnId": "turn-demo",
+        "revision": 1,
+        "kind": "user-message",
+        "status": "completed",
+        "title": "",
+        "text": "In blue, please",
+        "attachments": [],
+        "origin": {
+            "surface": "switch-web",
+            "actorId": "@owner:test",
+            "roomId": "room",
+            "threadId": None,
+            "messageId": "m2",
+            "actorIsAgentOwner": True,
+        },
+        **extra,
+    }
+
+
+def test_reads_how_a_message_sent_mid_turn_was_delivered_and_who_sent_it() -> None:
+    """Matches the TypeScript case of the same name: both are optional, so a
+    host that predates them is read as before."""
+    steered = Item.model_validate(_user_message(delivery="steered"))
+    assert steered.delivery == "steered"
+    assert steered.origin is not None and steered.origin.actor_is_agent_owner
+
+    plain = _user_message()
+    plain["origin"] = {
+        k: v for k, v in plain["origin"].items() if k != "actorIsAgentOwner"
+    }
+    older = Item.model_validate(plain)
+    assert older.delivery is None
+    assert older.origin is not None and older.origin.actor_is_agent_owner is False
+
+    with pytest.raises(ValueError):
+        Item.model_validate(_user_message(delivery="interrupted"))

@@ -78,6 +78,7 @@ from switch_core.delivery.addressing import (
     AddressingDecision,
     AddressingResolver,
     IncomingMessage,
+    SenderPrincipal,
 )
 from switch_core.events import (
     CommandEvent,
@@ -627,14 +628,14 @@ class AgentRecipient:
                 addressed = gate.addressed
                 refusal = gate.refusal
 
-        sender_role = (
-            await self._sender_role(session, event.sender, event.content)
+        sender = (
+            await self._sender(session, event.sender, event.content)
             if addressed
-            else None
+            else NO_SENDER
         )
         notice = await self._switch_notice(session) if addressed else None
         own_event = _message_own_event(
-            meta, event, thread_id, self.agent.id, sender_role, notice
+            meta, event, thread_id, self.agent.id, sender, notice
         )
 
         async def after(row: InboundEvent) -> None:
@@ -680,11 +681,11 @@ class AgentRecipient:
             assert isinstance(row, InboundMessage)
             await self._after_follow_up(row, has_attachment=False)
 
-        sender_role = await self._sender_role(session, event.sender, event.content)
+        sender = await self._sender(session, event.sender, event.content)
         notice = await self._switch_notice(session)
         return Delivery(
             own_event=_message_own_event(
-                meta, event, event.thread_root_id, self.agent.id, sender_role, notice
+                meta, event, event.thread_root_id, self.agent.id, sender, notice
             ),
             after=after,
         )
@@ -905,10 +906,10 @@ class AgentRecipient:
 
         # Read now: the event is built after the row commits, from the rows alone.
         opening = opening_message_for(meta, self.agent.id)
-        sender_role = (
-            await self._sender_role(session, anchor.sender, anchor.content)
+        sender = (
+            await self._sender(session, anchor.sender, anchor.content)
             if delivered
-            else None
+            else NO_SENDER
         )
         switch_notice = await self._switch_notice(session) if delivered else None
 
@@ -936,7 +937,8 @@ class AgentRecipient:
                     attachment_ref(part) for part in sorted(parts, key=file_index)
                 ],
                 opening_message=opening,
-                sender_role=sender_role,
+                sender_role=sender.role,
+                sender_is_owner=sender.is_owner,
                 switch_notice=switch_notice,
             )
             if logger.isEnabledFor(logging.DEBUG):
@@ -1811,8 +1813,27 @@ class AgentRecipient:
         agent reads how it differs (`get_template_status`)."""
         return await self._notices.switch_notice(session, self.agent.id)
 
+    async def _sender(
+        self, session: AsyncSession, sender: str, content: Mapping[str, object]
+    ) -> SenderFacts:
+        """What Switch tells the agent about who sent a message: their role
+        in this workspace and whether they own the agent. The sender is
+        resolved once for both."""
+        principal = await self._addressing.resolve_sender(session, sender, content)
+        return SenderFacts(
+            role=await AgentRecipient._principal_role(self, session, principal),
+            is_owner=_owns(principal, self.agent.owner_id),
+        )
+
     async def _sender_role(
         self, session: AsyncSession, sender: str, content: Mapping[str, object]
+    ) -> str | None:
+        """The sending person's role in this workspace (`_principal_role`)."""
+        principal = await self._addressing.resolve_sender(session, sender, content)
+        return await AgentRecipient._principal_role(self, session, principal)
+
+    async def _principal_role(
+        self, session: AsyncSession, principal: SenderPrincipal | None
     ) -> str | None:
         """The sending person's role in this workspace, read as the message
         arrives: "admin" or "member". None for an agent, the
@@ -1821,7 +1842,6 @@ class AgentRecipient:
         Read fresh for every message, so an agent can rely on it over what it
         was told earlier: a role can change between two messages.
         """
-        principal = await self._addressing.resolve_sender(session, sender, content)
         if principal is None or principal.kind != "user" or not principal.user_ids:
             return None
         tenant_id = self.tenant_id
@@ -1886,12 +1906,33 @@ def opening_message_for(meta: RoomMeta, agent_id: str) -> str | None:
     return written.get("body")
 
 
+@dataclass(frozen=True)
+class SenderFacts:
+    """Who sent a message, as the agent is told: the sending person's role
+    in the workspace, and whether they own the receiving agent."""
+
+    role: str | None
+    is_owner: bool
+
+
+# A message nobody is told about the sender of: it does not reach the agent.
+NO_SENDER = SenderFacts(role=None, is_owner=False)
+
+
+def _owns(principal: SenderPrincipal | None, owner_id: str | None) -> bool:
+    """Whether the sender is a person who owns the agent. The owner's own
+    agents and the platform are not the owner, whatever they act for."""
+    if principal is None or principal.kind != "user" or owner_id is None:
+        return False
+    return owner_id in principal.user_ids
+
+
 def _message_own_event(
     meta: RoomMeta,
     event: InboundMessage,
     thread_id: str | None,
     agent_id: str,
-    sender_role: str | None,
+    sender: SenderFacts,
     switch_notice: str | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
@@ -1916,7 +1957,8 @@ def _message_own_event(
             body=row.body,
             thread_id=thread_id,
             opening_message=opening_message_for(meta, agent_id),
-            sender_role=sender_role,
+            sender_role=sender.role,
+            sender_is_owner=sender.is_owner,
             switch_notice=switch_notice,
         )
         # Serialising runs once per agent per message, so only when it will

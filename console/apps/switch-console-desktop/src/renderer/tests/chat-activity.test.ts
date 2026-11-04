@@ -6,6 +6,8 @@ import {
   isThinking,
   placeRequests,
   placeTurns,
+  queuedLabel,
+  steeredLabel,
   toolState,
   type TurnActivity,
   turnTools,
@@ -1052,5 +1054,39 @@ describe('AgentActivities', () => {
     await activity.readReasoning(turns);
     expect(activity.reasoningError).toBeNull();
     activities.release(activity);
+  });
+});
+
+describe('how a message sent mid-turn was delivered', () => {
+  const user = (turnId: string, itemId: string, delivery: 'steered' | 'queued' | null) =>
+    row(turnId, itemId, { kind: 'user-message', delivery });
+
+  it('says how many messages were steered into the turn, and nothing when none were', () => {
+    const [turn] = groupTurns(
+      [
+        row('t1', 'turn'),
+        user('t1', 'user-t1', null),
+        user('t1', 'user-x', 'steered'),
+        user('t1', 'user-y', 'steered'),
+      ],
+      []
+    );
+    expect(steeredLabel(turn!)).toBe('2 messages steered into this turn');
+    const [alone] = groupTurns([row('t2', 'turn'), user('t2', 'user-t2', null)], []);
+    expect(steeredLabel(alone!)).toBeNull();
+  });
+
+  it('says a queued turn waits behind the running one only when its message did', () => {
+    const [behind] = groupTurns(
+      [row('t1', 'turn', { status: 'queued' }), user('t1', 'user-t1', 'queued')],
+      []
+    );
+    expect(queuedLabel(behind!)).toBe('Queued behind the running turn…');
+    // A turn is reported queued for a moment before it starts, with nothing ahead of it.
+    const [starting] = groupTurns(
+      [row('t2', 'turn', { status: 'queued' }), user('t2', 'user-t2', null)],
+      []
+    );
+    expect(queuedLabel(starting!)).toBe('Queued…');
   });
 });
