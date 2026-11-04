@@ -26,6 +26,9 @@ class _FakeAdapter:
     def set_channel_type_handler(self, handler: Any) -> None:
         pass
 
+    def set_channel_rename_handler(self, handler: Any) -> None:
+        pass
+
     def set_agent_presentation_resolver(self, resolver: Any) -> None:
         pass
 
@@ -46,6 +49,9 @@ def _core(provision: Any) -> tuple[CollaborationCore, _FakeAdapter]:
     core._bridge_type = "slack"  # type: ignore[attr-defined]
     core._adapter = adapter  # type: ignore[attr-defined]
     core._identity_task = None  # type: ignore[attr-defined]
+    core._identities_stale = True  # type: ignore[attr-defined]
+    core._identities_owed = set()  # type: ignore[attr-defined]
+    core._agent_view = None  # type: ignore[attr-defined]
     core._channel_type_refresh_task = None  # type: ignore[attr-defined]
 
     async def _noop() -> None:

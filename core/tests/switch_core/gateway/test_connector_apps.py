@@ -232,6 +232,7 @@ class World:
                 http=http,
                 registration=registration,
             ),
+            organization_apps=None,
             disabled={},
             store=ServiceConnectionStore(),
             token_retention=timedelta(days=30),

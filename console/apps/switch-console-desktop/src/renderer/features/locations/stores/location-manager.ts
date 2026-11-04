@@ -70,8 +70,9 @@ export class LocationManagerStore {
   }
 
   private async _doLoad(): Promise<void> {
-    // Only surface locations that still have at least one agent — a location
-    // with no agents lingers in the DB (kept for reuse) but has no sidebar row.
+    // Only surface locations that still have at least one agent. Removing a
+    // location's last agent deletes its row; this also hides any row left
+    // agentless by an older version.
     const [rawLocations, agents] = await Promise.all([
       rpc.locations.getLocations(),
       rpc.agents.getAgents(),
@@ -289,8 +290,8 @@ export class LocationManagerStore {
 
   /**
    * Remove every agent at a location (the sidebar's "Remove Agent" action). The
-   * location row is kept in the DB for reuse; it simply drops out of the sidebar
-   * once it has no agents.
+   * main process deletes the location row with its last agent; files on disk
+   * stay.
    */
   async removeLocation(locationId: string): Promise<void> {
     const snapshot = this.locations.get(locationId);

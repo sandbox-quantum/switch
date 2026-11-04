@@ -119,8 +119,19 @@ export type ServiceSkill = { name: string; content: string };
 export type ServiceEndpoint = { endpoint: string; token: string; agentId: string };
 
 /**
- * The agent's grants. A Switch from before service connections answers the
- * route with 404, which is the truth: it grants nothing.
+ * How long a Switch that answered the grants route with 404 is taken at its
+ * word before it is asked again. Its refusals are counted: asked on every
+ * check (every 30 s, and each session start) it soon answers 429 instead,
+ * which reads as Switch refusing the grants rather than having none.
+ */
+export const NO_GRANTS_ROUTE_MS = 10 * 60_000;
+
+/** Where the grants route answered 404, by endpoint and agent, until when that is believed. */
+const noGrantsRoute = new Map<string, number>();
+
+/**
+ * The agent's grants. A Switch from before service connections, or one with
+ * them off, answers the route with 404, which is the truth: it grants nothing.
  */
 export async function readServiceGrants(
   switchEndpoint: ServiceEndpoint,
@@ -129,6 +140,7 @@ export async function readServiceGrants(
   const url =
     switchEndpoint.endpoint.replace(/\/$/, '') +
     `/agents/${encodeURIComponent(switchEndpoint.agentId)}/service-grants`;
+  if ((noGrantsRoute.get(url) ?? 0) > Date.now()) return [];
   let response: Response;
   try {
     response = await fetchImpl(url, {
@@ -143,8 +155,10 @@ export async function readServiceGrants(
   }
   if (response.status === 404) {
     await response.body?.cancel();
+    noGrantsRoute.set(url, Date.now() + NO_GRANTS_ROUTE_MS);
     return [];
   }
+  noGrantsRoute.delete(url);
   if (!response.ok) {
     await response.body?.cancel();
     throw new Error(`Switch refused this agent's service grants (HTTP ${response.status}).`);

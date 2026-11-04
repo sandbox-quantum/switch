@@ -29,7 +29,7 @@
               "title": "Run pytest"
             }
           ],
-          "title": "Working… 5s · Running: Run pytest",
+          "title": "Working… · Running: Run pytest",
           "type": "plan"
         },
         {
@@ -57,7 +57,7 @@
         },
         "event_type": "switch_publication"
       },
-      "text": "Working… 5s · Running: Run pytest",
+      "text": "Working… · Running: Run pytest",
       "thread_ts": null,
       "unfurl_links": false,
       "unfurl_media": false,

@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from switch_core import announcer as announcer_module
 from switch_core import signals as signals_module
 from switch_core.signals import SIGNAL_CHANNEL, SignalBus
 
@@ -204,7 +205,7 @@ class TestNothingIsLost:
         make_bus: Callable[[], SignalBus],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr(signals_module, "RETRY_SECONDS", 0.05)
+        monkeypatch.setattr(announcer_module, "RETRY_SECONDS", 0.05)
         sender = SignalBus(
             _FailingOnce(session_factory),  # type: ignore[arg-type]
             lambda: create_async_engine(postgres_url, poolclass=NullPool),

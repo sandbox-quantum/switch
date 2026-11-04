@@ -6,7 +6,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar, Literal, NamedTuple
@@ -487,6 +487,16 @@ class TelegramConnectionConfig(BridgeConnectionConfig):
                 "bot_username; the distributed app's bot is deployment config."
             )
         return self
+
+
+# Accounts Telegram posts as on behalf of someone it does not name, so many
+# people share each one. Linking one to a Switch user would recognise every
+# anonymous admin, or every channel, as that user (CHOO-3881).
+_STAND_IN_ACCOUNTS: dict[str, str] = {
+    "1087968824": "This is Telegram's stand-in for anonymous group admins, which any of them posts as.",
+    "136817688": "This is Telegram's stand-in for posts made as a channel.",
+    "777000": "This is Telegram's own service account.",
+}
 
 
 class TelegramAdapter(PlatformAdapter):
@@ -1320,6 +1330,18 @@ class TelegramAdapter(PlatformAdapter):
             "`/invite_agent @agent-name` — the Telegram slash command, as the "
             "menu offers it (`/invite-agent` works too)"
         )
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Commands reach the bot even in a group where it is not an admin,
+        # which is where plain messages do not.
+        return f"Send `/link_account {code}` from that account in a group the Switch bot is in."
+
+    @classmethod
+    def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
+        return _STAND_IN_ACCOUNTS.get(external_user_id)
 
     async def admin_message(
         self,

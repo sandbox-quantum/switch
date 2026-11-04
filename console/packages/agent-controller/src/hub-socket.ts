@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import type { SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
 import {
   type AgentEventStream,
+  type AgentStreamDeps,
   HUB_CLOSE,
   HUB_PROTOCOL,
   type HubClientMessage,
@@ -109,7 +109,7 @@ export class HubSocket {
           'another agent host for this agent connected to the hub'
         );
       this.served.set(agentId, entry);
-      const streamDeps: SwitchEventStreamDeps = {
+      const streamDeps: AgentStreamDeps = {
         creds: { agentId, apiEndpoint: '', token: '' },
         connectionId: randomUUID(),
         scope: 'all',
@@ -123,6 +123,8 @@ export class HubSocket {
         onSessionCommand: (command) => request((id) => ({ type: 'session_command', id, command })),
         onApprovalOutcome: (outcome) =>
           request((id) => ({ type: 'approval_outcome', id, outcome })),
+        onRoomGone: ({ roomId, sessionId }) =>
+          request((id) => ({ type: 'room_gone', id, roomId, sessionId })),
         onConnected: () => send({ type: 'connected' }),
         onDisconnected: ({ error }) => send({ type: 'disconnected', error }),
         onEvicted: () => {},
@@ -172,7 +174,7 @@ export class HubSocket {
         return;
       }
       entry.stream.replacePlacements(message.placements).then(
-        () => send({ type: 'result', id: message.id }),
+        ({ refusedRooms }) => send({ type: 'result', id: message.id, refusedRooms }),
         (error: unknown) => send({ type: 'result', id: message.id, error: errorMessage(error) })
       );
     };
