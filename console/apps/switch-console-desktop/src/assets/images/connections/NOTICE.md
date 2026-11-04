@@ -22,6 +22,7 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14.
 | `asana.svg` | Asana | Simple Icons 16.33.0, `asana` | CC0-1.0; guidelines https://asana.com/brand | `#F06A6A` |
 | `gitlab.svg` | GitLab | Simple Icons 16.33.0, `gitlab` | CC0-1.0; guidelines https://about.gitlab.com/press/press-kit/ | `#FC6D26` |
 | `google-workspace.svg` | Google | Simple Icons 16.33.0, `google` | CC0-1.0; guidelines https://about.google/brand-resource-center/brand-elements/ | `#4285F4` |
+| `bigquery.svg` | Google Cloud BigQuery | Google's official [Google Cloud product icons](https://cloud.google.com/icons), core product icon `BigQuery-512-color.svg`, fetched 2026-11-01; reduced to viewBox and paths with fills retained | Google Cloud product icon; Google LLC trademark; terms are those linked from Google's product icon library | full colour |
 | `datadog.svg` | Datadog | Simple Icons 16.33.0, `datadog` | CC0-1.0; guidelines https://www.datadoghq.com/about/resources/ | `#632CA6`, white in dark theme |
 | `new-relic.svg` | New Relic | Simple Icons 16.33.0, `newrelic` | CC0-1.0; guidelines https://newrelic.com/about/media-assets | black in light theme, `#1CE783` in dark theme |
 | `notion.svg` | Notion | Simple Icons 16.33.0, `notion` | CC0-1.0 | theme foreground |
@@ -36,12 +37,12 @@ trademark rights, which remain with the owners.
 
 ## Vendor-supplied logos
 
-These two are the owners' own files rather than Simple Icons drawings (Simple
-Icons no longer carries either mark). Both are full colour and unmodified apart
-from the hygiene above: `microsoft-365.svg` had its gradient ids renamed and its
-`viewBox` cropped from `0 0 48 48` to the artwork (`4 2 40 44`) so it sits at
-the same size as the other logos; `salesforce.svg` had its `<style>` classes
-written out as the equivalent `fill` attributes and its ids removed.
+These are vendor-supplied files rather than Simple Icons drawings. Each is full
+colour; processing notes follow. `microsoft-365.svg` had its gradient ids
+renamed and its `viewBox` cropped from `0 0 48 48` to the artwork
+(`4 2 40 44`) so it sits at the same size as the other logos. `salesforce.svg`
+had its `<style>` classes written out as the equivalent `fill` attributes and
+its ids removed.
 
 - **Microsoft 365** (`microsoft-365.svg`): the Microsoft 365 app icon,
   `m365_48x1.svg` from Microsoft's Fluent UI brand-icon CDN,
@@ -58,3 +59,8 @@ written out as the equivalent `fill` attributes and its ids removed.
   Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
+- **Google Cloud BigQuery** (`bigquery.svg`): the official BigQuery product
+  icon from Google's [Google Cloud product icons](https://cloud.google.com/icons),
+  `core-products-icons.zip`, `Unique Icons/BigQuery/SVG/BigQuery-512-color.svg`,
+  fetched 2026-11-01. The SVG was reduced to its `viewBox` and drawing paths;
+  original path geometry and fills are retained. Google LLC trademark.

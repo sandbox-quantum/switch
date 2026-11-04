@@ -85,6 +85,11 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **BigQuery is a service connection.** A person connects a Google account,
+  then can grant agents read-only dataset inspection and queries by default,
+  or add the write-capable SQL tool explicitly. Switch filters the vendor's
+  tools by grant level; the BigQuery OAuth scope alone cannot make the grant
+  read-only (#841).
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the

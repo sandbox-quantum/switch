@@ -41,6 +41,7 @@ from tests.switch_core.connections.standing import connectable, sign_in
 
 PUBLIC_URL = "https://switch.example.test"
 GOOGLE_VARIABLE = "GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH"
+BIGQUERY_VARIABLE = "BIGQUERY_CLIENT_CONFIG_PATH"
 
 
 def _pem(key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey) -> str:
@@ -144,9 +145,11 @@ class TestSpecs:
         assert {slug: spec.kind for slug, spec in specs.items()} == {
             "github": "github_app",
             "google-workspace": "oauth_client",
+            "bigquery": "oauth_client",
             "airtable": "oauth_client",
         }
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
+        assert specs["bigquery"].variables == (BIGQUERY_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
         assert specs["github"].secret_names == {"client_secret", "private_key"}
 
@@ -193,6 +196,19 @@ class TestPrecedence:
         assert apps.oauth_clients()["google-workspace"].client_id == (
             "configured-client-id"
         )
+
+    async def test_bigquery_uses_its_separate_static_client(
+        self, session_factory, tmp_path: Path
+    ) -> None:
+        apps = _apps(
+            session_factory,
+            environ={BIGQUERY_VARIABLE: _google_file(tmp_path)},
+        )
+        await apps.load()
+        effective = apps.effective("bigquery")
+        assert effective.source == "configuration"
+        assert effective.configuration_variables == (BIGQUERY_VARIABLE,)
+        assert apps.oauth_clients()["bigquery"].client_id == "configured-client-id"
 
     async def test_configuration_set_but_unusable_stops_the_server(
         self, session_factory, tmp_path: Path
