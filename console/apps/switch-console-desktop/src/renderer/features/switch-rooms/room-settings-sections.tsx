@@ -26,6 +26,7 @@ import {
   roomAccessOf,
   visibilityForAccess,
 } from '@shared/core/switch-servers/switch-servers';
+import { useArchiveRoomConfirm } from './archive-room-confirm';
 
 /** The query key the room page reads one room under; shared with `room-configuration-panel`. */
 function detailKey(workspaceId: string, roomId: string) {
@@ -504,6 +505,7 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const confirmArchive = useArchiveRoomConfirm();
   if (!permissions.canWrite) return null;
 
   async function toggle() {
@@ -549,7 +551,9 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
         size="sm"
         className="shrink-0"
         disabled={busy}
-        onClick={() => void toggle()}
+        onClick={() =>
+          room.archived ? void toggle() : confirmArchive.request(room.name, () => void toggle())
+        }
       >
         {room.archived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
         {busy
@@ -558,9 +562,9 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
             : 'Archiving…'
           : room.archived
             ? 'Unarchive'
-            : // The room is hidden for everyone, not just you.
-              'Archive for everyone'}
+            : 'Archive'}
       </Button>
+      {confirmArchive.dialog}
     </div>
   );
 });

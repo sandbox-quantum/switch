@@ -223,9 +223,17 @@ describe('room settings for someone who may write to the room', () => {
     expect(el.textContent).toContain('Nobody holds it right now');
   });
 
-  it('archives the room', async () => {
+  it('archives the room once you confirm', async () => {
     const el = await renderPanel();
-    await click(button(el, /^Archive for everyone$/)!);
+    await click(button(el, /^Archive$/)!);
+    // Nothing yet: it asks first, since the room leaves everyone's lists.
+    expect(setRoomArchived).not.toHaveBeenCalled();
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('everyone else’s');
+    const confirm = [...dialog.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Archive'
+    )!;
+    await click(confirm);
     expect(setRoomArchived).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
       roomId: 'room-1',
@@ -244,7 +252,7 @@ describe('room settings for someone who may only read the room', () => {
     );
     expect(el.querySelector('[aria-label="Who can see and change it"]')).toBeNull();
     expect(button(el, /^Add agent$/)).toBeUndefined();
-    expect(button(el, /^Archive for everyone$/)).toBeUndefined();
+    expect(button(el, /^Archive$/)).toBeUndefined();
     expect(el.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.disabled).toBe(true);
   });
 
