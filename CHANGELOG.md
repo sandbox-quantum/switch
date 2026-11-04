@@ -176,6 +176,23 @@ version of their own to them without also giving them a release of their own.
   one of its admins. With the flag off, nothing changes: the routes aren't
   mounted and no workspace consults its organization. The migration adds
   two empty tables either way.
+- **Google Workspace without Google's yearly security assessment.** A server
+  can set `SERVICE_ACCESS_PROFILES='{"google-workspace": "drive-file"}'` so
+  sign-ins ask for neither `drive` nor `drive.readonly`. Google counts those
+  two as restricted: an External app needs its strictest review before anyone
+  outside the organization can grant them, with a security assessment renewed
+  every year. With `drive-file`, agents still read and change any Doc, Sheet
+  or Slides deck the person can open, by its link, and Calendar as before; in
+  Drive they reach only the files and folders they create, so they cannot
+  search the person's Drive or read their PDFs and other uploads. Agents are
+  given a skill that says so. The setting covers every Google sign-in on the
+  server, an organization's own Google client included, so an organization
+  with its own Internal client also loses Drive search. Changing the setting
+  makes everyone connected before the change reconnect: until they do, their
+  connection shows as needing reconnection and their agents get no Google
+  Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
+  `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
+  nothing changes.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -554,6 +571,15 @@ version of their own to them without also giving them a release of their own.
   packages and linked rooms were refused to anyone but its owner and admins.
 - **Deleting a room document from the room page asks first.** It cannot be
   undone, and its own page already asked.
+- **Reconnecting Google Workspace no longer ends the new connection.** On a
+  reconnect, Switch revoked the sign-in it replaced. Google ends every
+  sign-in of the account through the client when one is revoked, so the new
+  connection also stopped working, and the next token refresh asked the
+  person to reconnect again. A reconnect to the same Google account through
+  the same client no longer revokes the old sign-in. A reconnect to another
+  account still revokes it, and so does a disconnect. A sign-in that Switch
+  does not keep, because the workspace switched Google Workspace off during
+  it, no longer ends the existing connection either.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
