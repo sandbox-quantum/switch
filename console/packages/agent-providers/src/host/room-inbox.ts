@@ -4,8 +4,47 @@ import { join } from 'node:path';
 import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
+import { type RoomEdit, roomEditSchema } from './room-prompt';
+
+const ROOM_EDIT_PREFIX = 'message-edit:';
+
+/** Whether a handoff's id is an edit's rather than something that starts a turn. */
+export function isRoomEditId(id: string): boolean {
+  return id.startsWith(ROOM_EDIT_PREFIX);
+}
+
+/**
+ * The edits held alongside a message that has not been admitted yet: all those
+ * from its author, and the latest of them, whose words the command is built
+ * with so that no turn ever starts on the replaced text.
+ */
+export function heldEditsOf<T extends { event?: unknown }>(
+  held: T[],
+  message: { message_id: string; sender: string }
+): { latest: RoomEdit | null; handled: T[] } {
+  let latest: RoomEdit | null = null;
+  const handled: T[] = [];
+  for (const entry of held) {
+    const edit = roomEditSchema.safeParse(entry.event);
+    if (
+      !edit.success ||
+      edit.data.payload.message_id !== message.message_id ||
+      edit.data.payload.sender !== message.sender
+    )
+      continue;
+    handled.push(entry);
+    if (!latest || edit.data.payload.revision > latest.payload.revision) latest = edit.data;
+  }
+  return { latest, handled };
+}
 
 export function roomInputId(event: AgentBridgeEvent): string | null {
+  if (event.type === 'message_edit') {
+    const edit = roomEditSchema.safeParse(event);
+    return edit.success
+      ? `${ROOM_EDIT_PREFIX}${edit.data.payload.message_id}:${edit.data.payload.revision}`
+      : null;
+  }
   if (event.type === 'message')
     return 'addressed' in event.payload &&
       event.payload.addressed === true &&

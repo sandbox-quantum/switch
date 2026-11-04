@@ -1,8 +1,9 @@
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
-import { SharedRoomInbox } from './room-inbox';
+import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
+import { afterEach, describe, expect, it } from 'vitest';
+import { heldEditsOf, isRoomEditId, roomInputId, SharedRoomInbox } from './room-inbox';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -134,4 +135,47 @@ it('replays a release written before the delivery was acknowledged', async () =>
   expect(inbox.pending()).toEqual([
     { type: 'received', sequence: 4, roomId: 'room', messageId: 'message-1' },
   ]);
+});
+
+describe('an edit event', () => {
+  const edit = (messageId: string, revision: number, sender = 'alice') => ({
+    type: 'message_edit',
+    room_id: 'room',
+    payload: {
+      message_id: messageId,
+      edit_event_id: `e-${revision}`,
+      new_body: `body ${revision}`,
+      revision,
+      sender,
+      sender_name: 'a',
+      timestamp: 1,
+    },
+  });
+
+  it('has an identity of its own for each revision', () => {
+    expect(roomInputId(edit('m', 1) as AgentBridgeEvent)).toBe('message-edit:m:1');
+    expect(roomInputId(edit('m', 2) as AgentBridgeEvent)).toBe('message-edit:m:2');
+  });
+
+  it('is told apart from what starts a turn', () => {
+    expect(isRoomEditId('message-edit:m:1')).toBe(true);
+    expect(isRoomEditId('m')).toBe(false);
+  });
+
+  it('finds the latest held edit of a message, by revision and from its author', () => {
+    const held = [
+      { messageId: 'm', event: { type: 'message' } },
+      { messageId: 'message-edit:m:3', event: edit('m', 3) },
+      { messageId: 'message-edit:m:2', event: edit('m', 2) },
+      { messageId: 'message-edit:m:9', event: edit('m', 9, 'mallory') },
+      { messageId: 'message-edit:other:7', event: edit('other', 7) },
+    ];
+    const found = heldEditsOf(held, { message_id: 'm', sender: 'alice' });
+    expect(found.latest?.payload.revision).toBe(3);
+    expect(found.handled.map((each) => each.messageId)).toEqual([
+      'message-edit:m:3',
+      'message-edit:m:2',
+    ]);
+    expect(heldEditsOf(held, { message_id: 'none', sender: 'alice' }).latest).toBeNull();
+  });
 });

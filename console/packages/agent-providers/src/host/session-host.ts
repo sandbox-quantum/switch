@@ -36,7 +36,59 @@ import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
+import { replaceRoomMessageBody } from './room-prompt';
 import { ToolDetailBuffer } from './tool-detail-buffer';
+
+/**
+ * What a user-message item's title says about an edit, read by the card
+ * (`switch_core.bridges.collaboration.session.renderers`). A user message has
+ * no title of its own, so this adds nothing to the item's shape that a host or
+ * server of another release would refuse.
+ */
+export const ITEM_PROMPT_UPDATED = 'prompt-updated';
+export const ITEM_EDITED_AFTER_START = 'edited-after-start';
+
+/**
+ * What became of one edit to a command's message. Kept in a journal of its own,
+ * apart from the command it amends: the accepted command is what idempotency
+ * compares a repeat against and stays exactly as it was accepted, and an older
+ * host reopening this session is not handed a record its inbox cannot read.
+ *
+ * `text` is what the message reads with this edit in, whether or not any turn
+ * ran it: a retry later on must not bring back the words that were replaced.
+ */
+const amendmentSchema = z.object({
+  type: z.literal('amendment'),
+  commandId: z.string(),
+  revision: z.number().int().nonnegative(),
+  editEventId: z.string(),
+  authorId: z.string(),
+  outcome: z.enum(['applied', 'after-start', 'finished']),
+  text: z.string(),
+});
+type Amendment = z.infer<typeof amendmentSchema>;
+
+/** One edit to the room message a command came from. */
+export type MessageEditInput = {
+  /** The command the message runs under (`roomCommandId`). */
+  commandId: string;
+  roomId: string;
+  authorId: string;
+  editEventId: string;
+  revision: number;
+  /** The sender's new words, not the whole prompt. */
+  body: string;
+  /**
+   * The command was accepted with these words in it already, because the edit
+   * had arrived before the message was admitted. Marks a turn still queued as
+   * updated; a turn past the queue has nothing to be told.
+   */
+  alreadyInCommand?: boolean;
+};
+export type MessageEditOutcome = {
+  outcome: Amendment['outcome'] | 'ignored';
+  reason: string | null;
+};
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -101,7 +153,11 @@ export type HostSessionStart = {
   connectorApproval?: (connector: string) => void;
 };
 /** What the host posts for a turn a room message started that ended without the agent posting. */
-export type RoomReply = { roomId: string; threadId: string | null; body: string };
+export type RoomReply = {
+  roomId: string;
+  threadId: string | null;
+  body: string;
+};
 type PendingQuestion = { request: Request; options: Map<string, string> };
 /**
  * What Switch recorded for a request: for an approval, `answer` is the chosen
@@ -139,6 +195,10 @@ export class HostedSession {
   /** Recent tool input and output, in memory only, under the same rules as reasoning. */
   private readonly toolDetails = new ToolDetailBuffer();
   private activeTurn: string | null = null;
+  /** The latest edit recorded for each command, whatever became of it. */
+  private readonly latestEdits = new Map<string, Amendment>();
+  /** Edits being recorded right now. Nothing leaves the queue meanwhile. */
+  private amending = 0;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
   private publishing: Promise<unknown> = Promise.resolve();
@@ -158,7 +218,8 @@ export class HostedSession {
     readonly config: HostSessionStart,
     private readonly adapter: ProviderAdapter,
     private readonly events: Journal<ServerEvent>,
-    private readonly inbox: Journal<RecordEntry>
+    private readonly inbox: Journal<RecordEntry>,
+    private readonly amendments: Journal<Amendment>
   ) {
     // Every host from this one on runs `message.retry`; one built before says nothing, meaning no.
     config.session.capabilities.retry = true;
@@ -212,6 +273,8 @@ export class HostedSession {
       if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
       if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
     }
+    for (const amendment of amendments.records)
+      this.latestEdits.set(amendment.commandId, amendment);
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
@@ -249,7 +312,10 @@ export class HostedSession {
     const inbox = await Journal.load(join(root, 'inbox.jsonl'), (input) =>
       hostInboxRecordSchema.parse(input)
     );
-    const host = new HostedSession(config, adapter, events, inbox);
+    const amendments = await Journal.load(join(root, 'amendments.jsonl'), (input) =>
+      amendmentSchema.parse(input)
+    );
+    const host = new HostedSession(config, adapter, events, inbox, amendments);
     try {
       if (config.resumeOperationId && !host.resumeOperations.has(config.resumeOperationId)) {
         await inbox.append({ type: 'resumed', operationId: config.resumeOperationId });
@@ -258,6 +324,7 @@ export class HostedSession {
       }
       const recovered = events.records.length > 0;
       if (recovered) {
+        await host.finishJournaledAmendments();
         const snapshot = host.replica.snapshot();
         for (const request of snapshot.requests)
           if (request.state === 'open' || request.state === 'submitting')
@@ -893,7 +960,14 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    // The words as they now read: an edit too late for the failed turn is not
+    // too late for this one.
+    const text = this.latestEdits.get(original.commandId)?.text ?? original.body.text;
+    return {
+      ...command,
+      origin: original.origin,
+      body: { ...original.body, text },
+    };
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
@@ -1211,8 +1285,118 @@ export class HostedSession {
     return status;
   }
 
+  /**
+   * Someone edited the room message `edit.commandId` came from. Serialised
+   * with commands, and with the dequeue in `runNext`: an edit is either
+   * recorded and in the prompt before the turn leaves the queue, or it finds
+   * the turn gone and changes nothing about it. Never starts a turn.
+   */
+  editMessage(edit: MessageEditInput): Promise<MessageEditOutcome> {
+    const result = this.serial.then(() => this.applyEdit(edit));
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
+  private async applyEdit(edit: MessageEditInput): Promise<MessageEditOutcome> {
+    if (this.shuttingDown) throw new Error('HOST_STOPPING');
+    const ignored = (reason: string): MessageEditOutcome => ({
+      outcome: 'ignored',
+      reason,
+    });
+    const command = this.commands.get(edit.commandId);
+    if (!command || command.body.type !== 'message.send')
+      return ignored('This session has no such message.');
+    const { roomId, actorId, messageId } = command.origin;
+    if (roomId !== edit.roomId) return ignored('The edit was made in another room.');
+    if (actorId !== edit.authorId) return ignored('Only its author can edit a message.');
+    const latest = this.latestEdits.get(command.commandId);
+    if (latest && latest.revision >= edit.revision)
+      return ignored('A later or identical edit is already recorded.');
+    const position = this.queue.findIndex(
+      (each) => each.origin.messageId === messageId && each.origin.roomId === roomId
+    );
+    const queued = this.queue[position];
+    const running = this.activeTurn ? this.commands.get(this.activeTurn) : null;
+    // A turn stays active for a moment after it is recorded as ended, while
+    // what it owes the room is settled.
+    const runningStatus = this.snapshot().turns.find(
+      (turn) => turn.turnId === running?.commandId
+    )?.status;
+    const ended =
+      runningStatus === 'completed' || runningStatus === 'interrupted' || runningStatus === 'error';
+    const started =
+      !ended && running?.origin.messageId === messageId && running.origin.roomId === roomId
+        ? running
+        : null;
+    const before =
+      queued?.body.type === 'message.send' ? queued.body.text : (latest?.text ?? command.body.text);
+    const text = replaceRoomMessageBody(before, edit.body);
+    if (text === null) return ignored('The message has no room text to replace.');
+    const outcome: Amendment['outcome'] = queued ? 'applied' : started ? 'after-start' : 'finished';
+    const amendment: Amendment = {
+      type: 'amendment',
+      commandId: command.commandId,
+      revision: edit.revision,
+      editEventId: edit.editEventId,
+      authorId: edit.authorId,
+      outcome,
+      text,
+    };
+    // Taken in the same tick as the queue was read above: `runNext` looks at
+    // this before it shifts, so the turn found queued is still queued, and
+    // still in the same place, when the journal write comes back.
+    this.amending++;
+    try {
+      await this.amendments.append(amendment);
+      this.latestEdits.set(command.commandId, amendment);
+      if (queued?.body.type === 'message.send') {
+        this.queue[position] = { ...queued, body: { ...queued.body, text } };
+        await this.reviseUserItem(queued.commandId, ITEM_PROMPT_UPDATED, text);
+      } else if (started && !edit.alreadyInCommand)
+        await this.reviseUserItem(started.commandId, ITEM_EDITED_AFTER_START, null);
+    } finally {
+      this.amending--;
+      void this.runNext().catch((error: unknown) => this.fail(error));
+    }
+    return { outcome, reason: null };
+  }
+
+  /** Redraws a turn's user message at its next revision. */
+  private async reviseUserItem(
+    commandId: string,
+    title: string,
+    text: string | null
+  ): Promise<void> {
+    const item = this.snapshot().items.find((each) => each.itemId === `user-${commandId}`);
+    if (!item) return;
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        ...item,
+        revision: item.revision + 1,
+        title,
+        text: text ?? item.text,
+      },
+    });
+  }
+
+  /**
+   * An amendment reaches the journal before its turn's item is redrawn, so a
+   * crash between the two leaves the transcript and the card behind the record.
+   */
+  private async finishJournaledAmendments(): Promise<void> {
+    for (const amendment of this.latestEdits.values()) {
+      if (amendment.outcome !== 'applied') continue;
+      const item = this.snapshot().items.find(
+        (each) => each.itemId === `user-${amendment.commandId}`
+      );
+      if (item && item.text !== amendment.text)
+        await this.reviseUserItem(amendment.commandId, ITEM_PROMPT_UPDATED, amendment.text);
+    }
+  }
+
   private async runNext(): Promise<void> {
-    if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
+    if (this.activeTurn || this.amending || this.shuttingDown || this.stopped || this.fault) return;
     const command = this.queue.shift();
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
