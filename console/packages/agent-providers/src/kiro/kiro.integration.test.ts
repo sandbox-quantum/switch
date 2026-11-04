@@ -15,6 +15,10 @@ describeConformance('kiro', {
   // Kiro hands longer tasks to sub-agents, which run a whole nested
   // conversation each.
   timeoutMs: 300_000,
+  skip: {
+    'user-input':
+      "kiro-cli 3.0.0 offers its user_input tool only in its spec workflows, not in the default agent or vibe mode, on either engine: asked to use it, the agent asks in prose and ends the turn (2026-11-04).",
+  },
   mcpServers: { echo: echoMcpServerSpec() },
   // The harness hands the CLI a minimal environment, so a key in the shell
   // would not reach it and Kiro would refuse to start signed out.
