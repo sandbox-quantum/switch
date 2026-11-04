@@ -85,6 +85,17 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **The Azure DevOps connection.** A person connects Azure DevOps from Switch
+  Console with their Microsoft Entra account, and a granted agent reads and
+  updates work items, repositories, pull requests and pipeline runs, as that
+  person, through Microsoft's remote Azure DevOps MCP server. Each call names
+  its organization, so one connection reaches every organization the person
+  can. Each server's operator registers a multi-tenant Entra app with the
+  Azure DevOps MCP permissions, admin-consented, and saves it under Connector
+  apps or names it in `AZURE_DEVOPS_CLIENT_CONFIG_PATH`; it needs
+  `GATEWAY_PUBLIC_URL`. Entra's consent cannot be narrowed, so every
+  connection can write. Entra cannot revoke a sign-in for Switch, so
+  disconnecting says how to have it revoked.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the

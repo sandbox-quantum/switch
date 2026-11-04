@@ -145,6 +145,7 @@ class TestSpecs:
             "github": "github_app",
             "google-workspace": "oauth_client",
             "airtable": "oauth_client",
+            "azure-devops": "oauth_client",
         }
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
