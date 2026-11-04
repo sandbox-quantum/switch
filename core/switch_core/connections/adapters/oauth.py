@@ -560,7 +560,9 @@ class OAuthAdapter:
             for path in (paths if isinstance(paths, list) else [paths])
         ]
         if any(
-            type(value) not in (str, int) or not str(value).strip() for value in values
+            type(value) not in (str, int)
+            or not (str(value).strip() if isinstance(paths, list) else str(value))
+            for value in values
         ):
             raise ServiceAdapterError(f"{self._name} did not name the account's id.")
         account_id = (
