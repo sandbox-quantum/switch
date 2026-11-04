@@ -16,6 +16,7 @@ from switch_core.accounts.deletion import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.chats.member_names import rename_member_clients
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
@@ -45,6 +46,7 @@ from switch_core.gateway.auth import (
     operator_entered_workspace,
     require_admin,
     set_session_cookie,
+    tenants_bindable_by,
     verify_password_off_loop,
 )
 from switch_core.gateway.dependencies import (
@@ -84,6 +86,7 @@ from switch_core.gateway.schemas import (
     SignupMachine,
     SignupRequest,
     SignupResponse,
+    UpdateMeRequest,
     UserResponse,
 )
 from switch_core.providers.hosted import HostedControllerSettings
@@ -116,6 +119,7 @@ def _session_response(user: User) -> SessionUserResponse:
         email=user.email,
         role=user.role,
         created_at=str(user.created_at),
+        has_password=user.password_hash is not None,
         server=_gateway_declaration(),
     )
 
@@ -526,6 +530,34 @@ async def delete_my_account(
         raise HTTPException(status_code=409, detail=str(refused)) from None
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
+
+
+@router.patch("/auth/me")
+async def update_me(
+    req: UpdateMeRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user: Annotated[User, Depends(get_current_user)],
+) -> SessionUserResponse:
+    """Change the signed-in person's display name.
+
+    Like the password change, this writes the `User` that `get_current_user`
+    handed over and commits the session `get_session` handed over, which are
+    the same object within a request.
+    """
+    user.name = req.name
+    await session.commit()
+    # The name other members see beside what this person writes in a
+    # Console chat is their member client's, copied when it was made.
+    await rename_member_clients(
+        session_factory,
+        await tenants_bindable_by(session_factory, user.id),
+        user.id,
+        req.name,
+    )
+    return _session_response(user)
 
 
 @router.put("/auth/me/password")

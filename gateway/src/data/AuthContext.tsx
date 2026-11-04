@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type Session,
@@ -44,6 +44,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refresh().finally(() => setLoading(false));
   }, [refresh]);
+
+  // Back or forward can restore this page from the browser's cache, as it was
+  // left. Switching workspace leaves it by a full load (see `switchTo`), so a
+  // restored page may hold another workspace's session and data, and every
+  // request it makes would name that workspace. Reload it when the session it
+  // holds is no longer the server's.
+  const heldSession = useRef<Session | null>(null);
+  useEffect(() => {
+    heldSession.current = session;
+  }, [session]);
+  useEffect(() => {
+    const onPageShow = async (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      let current: Session | null;
+      try {
+        current = await fetchSession();
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : "Could not load your session");
+        return;
+      }
+      const held = heldSession.current;
+      if (current?.user.id !== held?.user.id || current?.tenant?.id !== held?.tenant?.id) {
+        window.location.reload();
+      }
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
 
   const login = useCallback(
     async (email: string, password: string) => {
