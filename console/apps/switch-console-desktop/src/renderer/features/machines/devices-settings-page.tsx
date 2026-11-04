@@ -7,6 +7,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
@@ -21,12 +22,14 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
 import { cn } from '@renderer/utils/utils';
 import type { MachineDetail } from '@shared/core/managed-agents/managed-agents';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { MachineIcon, TONE_DOT } from './machine-marks';
 import {
   arrangeMachines,
   controllerRelease,
   MACHINE_CATEGORY_LABELS,
   type MachineCategory,
+  emptyCategoryText,
   machineCategory,
   machineConnection,
 } from './machine-state';
@@ -47,6 +50,12 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
   const serverId = workspacesStore.activeServerId;
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const [filter, setFilter] = useState<Filter>('all');
+  // The Cloud filter is shown only where the server runs Switch cloud machines.
+  const cloudOffered = useFeatureFlags(serverId)['hosted_agents'] ?? false;
+  const categories = (Object.keys(MACHINE_CATEGORY_LABELS) as MachineCategory[]).filter(
+    (category) => category !== 'cloud' || cloudOffered
+  );
+  const shownFilter: Filter = filter === 'cloud' && !cloudOffered ? 'all' : filter;
   const showAddMachineModal = useShowModal('addMachineModal');
 
   return (
@@ -59,13 +68,13 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
         <div className="flex items-center justify-between gap-2">
           <ToggleGroup
             multiple={false}
-            value={[filter]}
+            value={[shownFilter]}
             onValueChange={([value]) => {
               if (value) setFilter(value as Filter);
             }}
           >
             <ToggleGroupItem value="all">All</ToggleGroupItem>
-            {(Object.keys(MACHINE_CATEGORY_LABELS) as MachineCategory[]).map((category) => (
+            {categories.map((category) => (
               <ToggleGroupItem key={category} value={category}>
                 {MACHINE_CATEGORY_LABELS[category]}
               </ToggleGroupItem>
@@ -79,13 +88,14 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
           )}
         </div>
       </PageHeader>
-      {serverId === null ? (
+      {serverId === null || !server ? (
         <p className="pt-4 text-sm text-foreground-muted">Pick a workspace to see its devices.</p>
       ) : (
         <DevicesBody
           serverId={serverId}
-          filter={filter}
-          frozen={!!server && isFrozenServer(server)}
+          server={server}
+          filter={shownFilter}
+          frozen={isFrozenServer(server)}
         />
       )}
     </>
@@ -94,10 +104,12 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
 
 function DevicesBody({
   serverId,
+  server,
   filter,
   frozen,
 }: {
   serverId: string;
+  server: SwitchServer;
   filter: Filter;
   frozen: boolean;
 }) {
@@ -140,7 +152,7 @@ function DevicesBody({
             ? 'No devices yet. This computer joins when you run a managed agent on it, and so does an SSH host; a standalone machine joins once it is enrolled.'
             : filter === 'all'
               ? 'No devices.'
-              : `Nothing under ${MACHINE_CATEGORY_LABELS[filter as MachineCategory]}.`}
+              : emptyCategoryText(filter, server)}
         </p>
       ) : (
         <div className="grid grid-cols-2 gap-3">

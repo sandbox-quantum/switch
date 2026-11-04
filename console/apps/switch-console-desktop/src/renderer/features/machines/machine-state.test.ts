@@ -7,6 +7,7 @@ import type {
 import {
   arrangeMachines,
   controllerRelease,
+  emptyCategoryText,
   lastContact,
   machineCategory,
   machineConnection,
@@ -311,5 +312,42 @@ describe('placedAgents', () => {
   it('says when the list is not read yet, or could not be', () => {
     expect(placedAgents({ data: undefined, isError: false }, 'm1')).toEqual({ kind: 'loading' });
     expect(placedAgents({ data: undefined, isError: true }, 'm1')).toEqual({ kind: 'unreadable' });
+  });
+});
+
+describe('emptyCategoryText', () => {
+  const external = {
+    name: 'Acme',
+    url: 'https://switch.example.com',
+    managed: false,
+    managementKind: null,
+    sshHost: null,
+  };
+
+  it('says an SSH host joins when an agent is created on it, on a server it can reach', () => {
+    expect(emptyCategoryText('ssh-host', external)).toMatch(/joins when you create an agent/);
+  });
+
+  it('says no SSH host can run agents for a server only this computer reaches', () => {
+    for (const server of [
+      { ...external, managed: true, managementKind: 'local' as const },
+      { ...external, url: 'http://localhost:8001' },
+    ])
+      expect(emptyCategoryText('ssh-host', server)).toMatch(/an SSH host cannot run its agents/);
+  });
+
+  it('names the one host that can run agents for a server Console runs on it', () => {
+    expect(
+      emptyCategoryText('ssh-host', {
+        ...external,
+        managed: true,
+        managementKind: 'remote',
+        sshHost: 'build-box',
+      })
+    ).toMatch(/only that host/);
+  });
+
+  it('says how a cloud device appears', () => {
+    expect(emptyCategoryText('cloud', external)).toMatch(/Switch cloud as its run location/);
   });
 });

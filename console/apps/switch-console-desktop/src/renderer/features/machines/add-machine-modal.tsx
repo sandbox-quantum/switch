@@ -108,10 +108,12 @@ export function AddMachineModal({ serverId, onClose }: Props) {
             </FieldGroup>
 
             {issued.loopback ? (
-              <p className="rounded-md border border-border bg-background-1 px-3 py-2 text-xs text-foreground-muted">
-                This server is at {issued.serverUrl}, which only this computer can reach. Another
-                device needs an address it can reach Switch at: change <code>--server</code> to
-                that.
+              <p
+                role="status"
+                className="rounded-md border border-border-warning bg-background-warning px-3 py-2 text-xs text-foreground-warning"
+              >
+                These commands use {issued.serverUrl}, which only this computer can reach. On
+                another device, change <code>--server</code> to an address it reaches Switch at.
               </p>
             ) : (
               issued.fallback && (
@@ -162,10 +164,11 @@ export function AddMachineModal({ serverId, onClose }: Props) {
               </Button>
             </p>
             <p className="text-xs text-foreground-muted">
-              The device shows up in Settings → Your devices once its controller reports; if it does
-              not, run <code>switch-agent-controller doctor</code> on it. A computer you reach over
-              SSH can also join without this: create an agent on it, and Switch Console sets its
-              controller up.
+              Nothing is saved until the device enrolls: closing this discards the code, and the
+              device shows up in Your devices only once its controller reports. If it does not, run{' '}
+              <code>switch-agent-controller doctor</code> on it. A computer you reach over SSH can
+              also join without this: create an agent on it, and Switch Console sets its controller
+              up.
             </p>
           </>
         )}

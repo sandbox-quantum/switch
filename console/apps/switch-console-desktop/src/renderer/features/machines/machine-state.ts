@@ -4,6 +4,8 @@ import type {
   OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { isLoopbackUrl } from '@shared/core/switch-servers/loopback';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 export type MachineTone = 'ok' | 'warning' | 'problem' | 'idle';
 
@@ -320,6 +322,30 @@ export function machineCategory(machine: Pick<MachineDetail, 'local' | 'cloud'>)
   if (machine.cloud) return 'cloud';
   if (machine.local?.kind === 'ssh-host') return 'ssh-host';
   return 'computer';
+}
+
+/**
+ * What an empty filter says: how a device of that kind joins, or why none can.
+ * New agent offers an SSH host only where the server is reachable from it: a
+ * server Console runs on this computer, or any server at a loopback address,
+ * from no SSH host; one Console runs on a host, from that host only.
+ */
+export function emptyCategoryText(
+  category: MachineCategory,
+  server: Pick<SwitchServer, 'name' | 'url' | 'managed' | 'managementKind' | 'sshHost'>
+): string {
+  switch (category) {
+    case 'cloud':
+      return 'Your Switch cloud device shows here once you create an agent with Switch cloud as its run location.';
+    case 'computer':
+      return 'This computer joins when you run a managed agent on it, and another computer once it is enrolled with Add device.';
+    case 'ssh-host':
+      if (server.managed && server.managementKind === 'remote')
+        return `${server.name} runs on ${server.sshHost}, so only that host can run its agents over SSH. It joins when you create an agent on it.`;
+      if (server.managed || isLoopbackUrl(server.url))
+        return `${server.name} runs on this computer and only this computer can reach it, so an SSH host cannot run its agents. To run agents on another computer, use a server it can reach.`;
+      return 'An SSH host joins when you create an agent with it as the run location, and Switch Console sets its controller up.';
+  }
 }
 
 /**
