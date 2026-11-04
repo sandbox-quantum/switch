@@ -4,6 +4,7 @@ import type {
 } from '@switch-console/core/agents/plugins';
 import z from 'zod';
 import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
+import { midTurnMessagesSchema } from '@shared/core/sessions/session-config';
 import { defineVersionedSchema } from '@shared/lib/versioned-schema/versioned-schema';
 
 /**
@@ -37,6 +38,7 @@ const agentProviderConfigV2 = z.object({
    * key it does not know is ignored either way.
    */
   providerId: z.string(),
+  midTurnMessages: midTurnMessagesSchema.optional(),
   /** Setting key → value: the model, the instructions and that provider's `launchProfileSettings()`. */
   values: z.record(z.string(), z.string()),
 });

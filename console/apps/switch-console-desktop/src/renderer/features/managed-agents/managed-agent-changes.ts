@@ -50,6 +50,7 @@ export type Draft = {
   iconUrl: string | null;
   instructions: string;
   autoMode: boolean;
+  midTurnMessages?: 'steer' | 'queue';
   autoApprove: boolean;
   /** Where it runs on its machine; empty for wherever the machine chooses. */
   directory: string;
@@ -82,6 +83,7 @@ export function draftOf(
     iconUrl: agent.iconUrl,
     instructions: agent.definition.instructions,
     autoMode: agent.definition.autoMode,
+    midTurnMessages: agent.definition.midTurnMessages,
     autoApprove: agent.definition.autoApprove,
     directory: shownDirectory(agent, machine),
     ownProcess: agent.definition.isolation === 'isolated',
@@ -132,6 +134,8 @@ export function editOf(
     definition.advancedConfig = { ...Object.fromEntries(unknown), ...advancedConfig };
   }
   if (after.autoMode !== before.autoMode) definition.autoMode = after.autoMode;
+  if ((after.midTurnMessages ?? 'steer') !== (before.midTurnMessages ?? 'steer'))
+    definition.midTurnMessages = after.midTurnMessages ?? 'steer';
   if (after.autoApprove !== before.autoApprove) definition.autoApprove = after.autoApprove;
   if (after.instructions !== before.instructions) definition.instructions = after.instructions;
 

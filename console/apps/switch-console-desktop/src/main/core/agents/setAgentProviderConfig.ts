@@ -42,7 +42,18 @@ export async function setAgentProviderConfig(params: AgentProviderConfigParams):
   if (!existing) throw new Error(`No agent with id ${params.agentId}`);
   const location = params.config === null ? await getAgentLocation(existing) : null;
 
-  const agent = await updateAgent({ agentId: params.agentId, providerConfig: params.config });
+  const mode = existing.providerConfig?.midTurnMessages;
+  const providerConfig = mode
+    ? {
+        ...(params.config ?? {
+          version: '2' as const,
+          providerId: existing.providerId,
+          values: {},
+        }),
+        midTurnMessages: mode,
+      }
+    : params.config;
+  const agent = await updateAgent({ agentId: params.agentId, providerConfig });
   if (!agent) throw new Error(`No agent with id ${params.agentId}`);
 
   if (location) {

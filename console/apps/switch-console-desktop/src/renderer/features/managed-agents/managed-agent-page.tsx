@@ -339,6 +339,26 @@ function ManagedAgentPageContent({
                   />
                 }
               />
+              <SettingRow
+                title="Messages sent while working"
+                info={null}
+                description="Steer eligible messages into the running turn or always queue them."
+                control={
+                  <select
+                    aria-label="Messages sent while working"
+                    value={draft.midTurnMessages ?? 'steer'}
+                    onChange={(event) =>
+                      setValue(
+                        'midTurnMessages',
+                        event.target.value === 'queue' ? 'queue' : 'steer'
+                      )
+                    }
+                  >
+                    <option value="steer">Steer</option>
+                    <option value="queue">Always queue</option>
+                  </select>
+                }
+              />
               <CanManageAgentsRow
                 workspaceId={agent.workspaceId}
                 agentId={agent.agentId}

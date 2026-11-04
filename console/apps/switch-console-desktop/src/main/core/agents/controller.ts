@@ -35,6 +35,7 @@ import { removeLoadableAgentConfig } from './remove-loadable-agent-config';
 import { renameLocalAgent } from './renameAgent';
 import { resetRemoteAgent } from './reset-remote-agent';
 import { setAgentPermission, type AgentPermissionParams } from './setAgentPermission';
+import { setMidTurnMessages } from './setMidTurnMessages';
 
 export const agentsController = createRPCController({
   addAgent: (params: AddAgentParams) => addAgent(params),
@@ -100,5 +101,6 @@ export const agentsController = createRPCController({
   resetRemoteAgent: (params: { agentId: string }) => resetRemoteAgent(params.agentId),
   assignServer: (params: { agentId: string; serverId: string }): Promise<AgentVerifyResult> =>
     assignAgentServer(params),
+  setMidTurnMessages,
   setAgentPermission: (params: AgentPermissionParams): Promise<void> => setAgentPermission(params),
 });

@@ -89,6 +89,7 @@ class DefinitionV1(_GatewayBody):
     # ask. A stored definition without the key predates it and reads as off
     # (`stored_definition`).
     auto_mode: bool = True
+    mid_turn_messages: Literal["steer", "queue"] = "steer"
     # Bypass: every permission check skipped. Wins over `auto_mode`.
     auto_approve: bool = False
     directory: str | None = None
@@ -467,6 +468,11 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "advanced_config": definition.get("advanced_config", {}),
             "instructions": definition.get("instructions", ""),
             "auto_mode": definition.get("auto_mode", False),
+            **(
+                {"mid_turn_messages": definition["mid_turn_messages"]}
+                if "mid_turn_messages" in definition
+                else {}
+            ),
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),
             "isolation": definition.get("isolation", "shared"),
