@@ -117,6 +117,7 @@ def status_state(
         f"{item.item_id}:{item.revision}"
         for item in view.items
         if item.kind == "tool-activity"
+        or (item.kind == "user-message" and item.title in ("Steered", "Queued"))
     )
     closed = ":closed" if closed_by_platform else ""
     return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"

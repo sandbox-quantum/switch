@@ -4112,6 +4112,7 @@ type ManagedAgentJson = {
     instructions?: unknown;
     directory?: unknown;
     auto_mode?: unknown;
+    mid_turn_messages?: unknown;
     auto_approve?: unknown;
     isolation?: unknown;
   } | null;
@@ -4310,6 +4311,9 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
     isolation: json.definition?.isolation === 'isolated' ? 'isolated' : 'shared',
     directory: typeof json.definition?.directory === 'string' ? json.definition.directory : null,
     autoMode: json.definition?.auto_mode === true,
+    ...(json.definition?.mid_turn_messages === 'queue'
+      ? { midTurnMessages: 'queue' as const }
+      : {}),
     autoApprove: json.definition?.auto_approve === true,
     status: json.status
       ? {

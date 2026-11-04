@@ -330,6 +330,8 @@ export function withDefinitionOf(
   if (model) next.start.input.model = structuredClone(model);
   else delete next.start.input.model;
   next.start.input.runtimeMode = template.start.input.runtimeMode;
+  if (template.midTurnMessages) next.midTurnMessages = template.midTurnMessages;
+  else delete next.midTurnMessages;
   // The environment carries the provider login the agent signs in with: a
   // session created before a login was given, changed or withdrawn takes the
   // current one. Only the session's own id stays its own.

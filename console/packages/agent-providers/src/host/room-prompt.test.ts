@@ -4,9 +4,19 @@ import { REPLY_REMINDER, roomCommand, roomCommandId, roomMessageSchema } from '.
 describe('a room command', () => {
   const event = {
     type: 'message',
-    payload: { sender: '@owner:example.test', sender_name: 'Owner', message_id: '$m', body: 'hi' },
+    payload: {
+      sender: '@owner:example.test',
+      sender_name: 'Owner',
+      steering_actor_id: 'starter',
+      message_id: '$m',
+      body: 'hi',
+    },
   };
-  const command = (message: unknown, firstOfConversation = false) =>
+  const command = (
+    message: unknown,
+    firstOfConversation = false,
+    steering?: Parameters<typeof roomCommand>[0]['steering']
+  ) =>
     roomCommand({
       agentId: 'agent',
       sessionId: 'session',
@@ -17,12 +27,74 @@ describe('a room command', () => {
       attachments: [],
       preface: null,
       firstOfConversation,
+      steering,
     });
   const text = (message: unknown, first = false) => {
     const body = command(message, first).body;
     if (body.type !== 'message.send') throw new Error('not a message');
     return body.text;
   };
+
+  it.each([
+    { name: 'starter in the same thread', expected: 'steer' },
+    {
+      name: 'starter using another account in the same thread',
+      sender: '@linked:example.test',
+      identity: 'starter',
+      expected: 'steer',
+    },
+    {
+      name: 'owner in the same thread on someone else’s turn',
+      sender: '@another:example.test',
+      owner: true,
+      expected: 'steer',
+    },
+    { name: 'third person in the same thread', sender: '@another:example.test', expected: 'queue' },
+    { name: 'starter in a different thread', thread: '$other', expected: 'queue' },
+    { name: 'agent set to Always queue', mode: 'queue' as const, expected: 'queue' },
+    { name: 'provider that cannot steer', supported: false, expected: 'queue' },
+    { name: 'idle', idle: true, expected: 'queue' },
+    { name: 'missing identity', legacy: true, expected: 'queue' },
+  ])(
+    'routes a room message for $name',
+    ({ sender, owner, thread, mode, supported, idle, legacy, identity, expected }) => {
+      const first = command({ ...event, payload: { ...event.payload, thread_id: '$thread' } });
+      const second = command(
+        {
+          ...event,
+          payload: {
+            ...event.payload,
+            sender: sender ?? event.payload.sender,
+            thread_id: thread ?? '$thread',
+            sender_owns_agent: owner,
+            steering_actor_id: legacy
+              ? undefined
+              : (identity ?? sender ?? event.payload.steering_actor_id),
+          },
+        },
+        false,
+        {
+          running: idle ? null : { origin: first.origin, steeringActorId: 'starter' },
+          mode,
+          supported: supported ?? true,
+        }
+      );
+      expect(second.origin.actorId).toBe(sender ?? event.payload.sender);
+      expect(second.body).toMatchObject({ type: 'message.send', delivery: expected });
+    }
+  );
+
+  it('matches replies to the root message of the running turn', () => {
+    const first = command(event);
+    const steering = {
+      supported: true,
+      running: { origin: first.origin, steeringActorId: 'starter' },
+    };
+    const root = { ...event, payload: { ...event.payload, message_id: '$second' } };
+    const reply = { ...root, payload: { ...root.payload, thread_id: '$m' } };
+    expect(command(root, false, steering).body).toMatchObject({ delivery: 'queue' });
+    expect(command(reply, false, steering).body).toMatchObject({ delivery: 'steer' });
+  });
 
   it('is named by the room message it answers', () => {
     expect(command(event).commandId).toBe(roomCommandId('agent', '!room:example.test', '$m'));

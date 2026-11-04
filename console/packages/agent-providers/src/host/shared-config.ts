@@ -27,6 +27,7 @@ import {
 
 export const sharedConfigSchema = z.strictObject({
   session: sessionSchema,
+  midTurnMessages: z.enum(['steer', 'queue']).optional(),
   resumeOperationId: z.string().uuid().optional(),
   start: startSchema,
   roomConnection: roomConnectionSchema.optional(),

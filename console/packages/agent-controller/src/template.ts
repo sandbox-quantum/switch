@@ -91,7 +91,13 @@ export function buildWatcherTemplate(input: {
   provider: Provider;
   definition: Pick<
     AgentDefinition,
-    'name' | 'model' | 'advanced_config' | 'instructions' | 'auto_approve' | 'auto_mode'
+    | 'name'
+    | 'model'
+    | 'advanced_config'
+    | 'instructions'
+    | 'auto_approve'
+    | 'auto_mode'
+    | 'mid_turn_messages'
   >;
   cwd: string;
   credentialsPath: string;
@@ -106,6 +112,7 @@ export function buildWatcherTemplate(input: {
     autoMode: input.definition.auto_mode,
   });
   return sharedConfigSchema.parse({
+    midTurnMessages: input.definition.mid_turn_messages,
     session: {
       sessionId,
       agentId: input.agentId,
@@ -116,7 +123,7 @@ export function buildWatcherTemplate(input: {
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: capabilities.steering ? 'steer' : 'queue',
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,

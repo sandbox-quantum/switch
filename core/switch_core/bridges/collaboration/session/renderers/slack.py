@@ -1674,6 +1674,12 @@ def _plan_task(item: Item) -> dict[str, Any]:
             "status": "complete",
             "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
+    if item.kind == "user-message":
+        return {
+            "task_id": _task_id(item.item_id),
+            "title": f"{item.title} message",
+            "status": "complete",
+        }
     title = plain_text(item.title) if item.title else ""
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()

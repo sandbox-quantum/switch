@@ -273,6 +273,7 @@ function definitionBody(changes: ManagedAgentChanges['definition']): Record<stri
   if (changes.advancedConfig !== undefined) body.advanced_config = changes.advancedConfig;
   if (changes.instructions !== undefined) body.instructions = changes.instructions;
   if (changes.autoMode !== undefined) body.auto_mode = changes.autoMode;
+  if (changes.midTurnMessages !== undefined) body.mid_turn_messages = changes.midTurnMessages;
   if (changes.autoApprove !== undefined) body.auto_approve = changes.autoApprove;
   if (changes.directory !== undefined) body.directory = changes.directory;
   if (changes.isolation !== undefined) body.isolation = changes.isolation;

@@ -34,6 +34,7 @@ import {
   type OpencodeEvent,
   type OpencodeMessage,
   type OpencodePermissionReply,
+  OpencodePromptRefused,
   type OpencodeSessionTransport,
   type OpencodeTransport,
 } from './transport';
@@ -244,6 +245,10 @@ export class OpencodeAdapter implements ProviderAdapter {
     const model = input.model ? parseModelId(input.model.id) : record.model;
     const variant = input.model ? input.model.options?.variant : record.variant;
     const steeredInto = record.activeTurnId;
+    if (typeof input.expectedTurnId === 'string' && steeredInto !== input.expectedTurnId)
+      return { turnId: input.turnId, steerRefused: true };
+    if (input.expectedTurnId === null && steeredInto !== undefined)
+      throw new Error('The provider already has an active turn.');
     const turnId = steeredInto ?? input.turnId;
     const previousAwaitingBusy = record.awaitingBusy;
 
@@ -278,6 +283,8 @@ export class OpencodeAdapter implements ProviderAdapter {
         this.completeTurn(record, turnId, 'error', errorMessage(error));
       } else {
         record.awaitingBusy = previousAwaitingBusy;
+        if (typeof input.expectedTurnId === 'string' && error instanceof OpencodePromptRefused)
+          return { turnId: input.turnId, steerRefused: true };
       }
       throw new ProviderSessionError('opencode', input.sessionId, 'prompt was rejected', {
         cause: error,

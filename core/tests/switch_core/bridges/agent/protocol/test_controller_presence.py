@@ -625,10 +625,10 @@ def _addressing_client(
     ns._fresh_agent = _fresh_agent
     ns._gate_addressed = _gate_addressed
 
-    async def _sender_role(*_args: Any) -> str | None:
-        return None
+    async def _sender_details(*_args: Any) -> tuple[str | None, bool, str | None]:
+        return None, False, None
 
-    ns._sender_role = _sender_role
+    ns._sender_details = _sender_details
 
     async def _no_notice(*_args: Any) -> None:
         return None

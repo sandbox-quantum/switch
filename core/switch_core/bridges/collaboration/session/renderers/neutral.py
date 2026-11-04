@@ -386,6 +386,8 @@ def in_activity_log(item: Item) -> bool:
     """
     if item.kind == "tool-activity":
         return True
+    if item.kind == "user-message":
+        return item.title in ("Steered", "Queued")
     return item.kind == "assistant-message" and bool(item.text)
 
 
@@ -396,6 +398,8 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     its own paragraph breaks removed: a sentence spread over four lines is
     indistinguishable from four things having happened.
     """
+    if item.kind == "user-message":
+        return f"{item.title} message"
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"

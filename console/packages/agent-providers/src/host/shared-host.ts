@@ -21,6 +21,7 @@ import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
   roomCommand,
+  roomCommandId,
   roomFreshStartCommandId,
   roomMessageSchema,
   type RoomAttachmentSource,
@@ -95,6 +96,7 @@ export type SharedHostOptions = {
   agentApiUrl: string;
   token: string;
   session: Session;
+  midTurnMessages?: 'steer' | 'queue';
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
   grant?: { roomId: string; messageId: string };
@@ -408,6 +410,7 @@ export async function runSharedHost(
             }
           : {}),
         session: options.session,
+        midTurnMessages: options.midTurnMessages,
         input: options.input,
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
@@ -720,7 +723,9 @@ export async function runSharedHost(
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
-      requesterName: string | null
+      requesterName: string | null,
+      roomSteerTarget?: string,
+      steeringActorId?: string
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -746,7 +751,7 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.some((entry) => entry.commandId === command.commandId);
       try {
-        await host!.command(command);
+        await host!.command(command, roomSteerTarget, steeringActorId);
       } catch (error) {
         await host!.reject(command, error);
       }
@@ -814,6 +819,11 @@ export async function runSharedHost(
           await inbox.acknowledge(event);
           continue;
         }
+        const commandId = roomCommandId(agentId, event.roomId, message.data.payload.message_id);
+        if (host!.snapshot().commandStatuses.some((status) => status.commandId === commandId)) {
+          await inbox.acknowledge(event);
+          continue;
+        }
         const attachments = planAttachments({
           roomId: event.roomId,
           message: message.data,
@@ -833,6 +843,7 @@ export async function runSharedHost(
         }
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
+        const running = host!.runningMessage();
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
@@ -840,6 +851,11 @@ export async function runSharedHost(
           roomId: event.roomId,
           message: message.data,
           surface: 'switch-web',
+          steering: {
+            supported: adapter.capabilities.steering,
+            mode: options.midTurnMessages,
+            running,
+          },
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: host!.snapshot().turns.length === 0,
@@ -847,7 +863,12 @@ export async function runSharedHost(
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null);
+        const outcome = await run(
+          command,
+          null,
+          running?.turnId,
+          message.data.payload.steering_actor_id ?? undefined
+        );
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
@@ -1186,6 +1207,7 @@ export async function hostSessionProcess(input: {
         resumeOperationId: config.resumeOperationId,
         ...(authenticate ? { authenticate: () => authenticate(prepared.input) } : {}),
         input: prepared.input,
+        midTurnMessages: config.midTurnMessages,
         roomConnection: config.roomConnection,
         grant: config.grant,
         parent,

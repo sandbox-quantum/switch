@@ -263,6 +263,22 @@ requires a POSIX host. Use a POSIX SSH execution host.
 Codex and Cursor do not advertise interactive questions until their native execution
 mode can support that interaction. Approvals remain separate capabilities.
 
+### Messages sent while working
+
+The per-agent **Messages sent while working** setting defaults to **Steer**.
+On a provider that supports steering, a room message joins a running turn
+when it is in the same room and thread and comes from the turn starter or
+the agent owner. Other messages join the normal queue. Choose **Always queue**
+to queue every room message. The setting takes effect when the session host
+picks up the updated agent configuration. Managed agent definitions use
+`mid_turn_messages: steer | queue`.
+
+The transcript labels messages as **Steered** or **Queued**. If the provider
+definitively refuses a steer or the turn ends first, Switch queues the message
+and shows a notice. If delivery was attempted and the outcome is uncertain
+after a crash, Switch reports the unknown outcome and preserves the command
+identity.
+
 ### Permission settings
 
 Each agent has two permission settings, applied to every session it starts,

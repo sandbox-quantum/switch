@@ -91,6 +91,20 @@ export function PermissionSettingsSection({
       >
         {perAgent('autoApprove')}
       </AutoApproveRow>
+      <SettingRow
+        title="Messages sent while working"
+        info={null}
+        description="Steer eligible messages into the running turn or always queue them."
+        control={single && <MidTurnMessages agent={single} locationId={locationId} />}
+      >
+        {!single &&
+          list.map((agent) => (
+            <div key={agent.id} className="flex items-center justify-between gap-3 py-1.5">
+              <span className="truncate text-sm">{agent.name}</span>
+              <MidTurnMessages agent={agent} locationId={locationId} />
+            </div>
+          ))}
+      </SettingRow>
     </>
   );
 }
@@ -180,5 +194,27 @@ function PermissionSwitch({
       disabled={mutation.isPending}
       onCheckedChange={(checked) => mutation.mutate(checked)}
     />
+  );
+}
+
+function MidTurnMessages({ agent, locationId }: { agent: Agent; locationId: string }) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (mode: 'steer' | 'queue') => rpc.agents.setMidTurnMessages(agent.id, mode),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['location-agents', locationId] }),
+  });
+  return (
+    <div>
+      <select
+        aria-label={`Messages sent while ${agent.name} is working`}
+        value={agent.providerConfig?.midTurnMessages ?? 'steer'}
+        disabled={mutation.isPending}
+        onChange={(event) => mutation.mutate(event.target.value === 'queue' ? 'queue' : 'steer')}
+      >
+        <option value="steer">Steer</option>
+        <option value="queue">Always queue</option>
+      </select>
+      {mutation.error && <p role="alert">{mutation.error.message}</p>}
+    </div>
   );
 }

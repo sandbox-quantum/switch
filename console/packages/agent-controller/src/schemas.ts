@@ -163,6 +163,7 @@ export const agentDefinitionSchema = z.object({
   auto_approve: z.boolean(),
   /** The provider's own automatic review. Absent from servers older than the setting. */
   auto_mode: z.boolean().default(false),
+  mid_turn_messages: z.enum(['steer', 'queue']).optional(),
   directory: z.string().nullable(),
   /** `shared`: the agent host runs in this controller's process; `isolated`: in a process of its own. */
   isolation: receivedEnum(['shared', 'isolated']),

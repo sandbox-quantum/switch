@@ -143,6 +143,10 @@ does, and there is no polling tool to call.
   for you, but if it is clearly people talking to each other, stay quiet
   rather than reply. People control this from the room: `!assign-agent @name`
   sends every message to one agent and `!unassign-agent` stops it;
+  A message from the turn starter or the agent owner can arrive during work
+  in that same thread when steering is enabled. Other messages wait for the
+  running turn to finish.
+
   `!follow-ups off` turns the two follow-ups off and `!follow-ups on` turns
   them back on. Each command on its own says what is set now.
 - **`room_join`** — `[Switch] <name> joined room <room>`, but only in rooms

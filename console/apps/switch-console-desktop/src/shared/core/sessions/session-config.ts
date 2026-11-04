@@ -20,6 +20,8 @@ const initialPromptDeliverySchema = z.object({
 
 export type InitialPromptDelivery = z.infer<typeof initialPromptDeliverySchema>;
 
+export const midTurnMessagesSchema = z.enum(['steer', 'queue']);
+
 const sessionConfigV0Schema = z.object({
   autoApprove: z.boolean().optional(),
   autoMode: z.boolean().optional(),

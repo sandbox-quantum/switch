@@ -439,6 +439,7 @@ export async function buildSharedHostConfig(
   });
   const persistedRoom = await getPersistedRoomConnection(session.id);
   const config: SharedHostConfig = {
+    midTurnMessages: agent.providerConfig?.midTurnMessages,
     session: {
       sessionId: session.id,
       agentId: agent.switchAgentId,
@@ -449,7 +450,7 @@ export async function buildSharedHostConfig(
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: capabilities.steering ? 'steer' : 'queue',
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,

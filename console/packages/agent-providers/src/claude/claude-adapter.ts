@@ -600,6 +600,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     };
 
     const steeredInto = session.turn?.turnId;
+    if (typeof input.expectedTurnId === 'string' && steeredInto !== input.expectedTurnId)
+      return { turnId: input.turnId, steerRefused: true };
+    if (input.expectedTurnId === null && session.turn)
+      throw new Error('The provider already has an active turn.');
     if (session.turn) {
       session.turn.outstanding.add(uuid);
     } else {

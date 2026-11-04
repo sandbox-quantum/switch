@@ -34,6 +34,7 @@ export type ManagedAgentView = {
     instructions: string;
     /** The provider's own automatic review: safe actions run, risky ones ask. */
     autoMode: boolean;
+    midTurnMessages?: 'steer' | 'queue';
     /** Bypass: every permission check skipped. Wins over `autoMode`. */
     autoApprove: boolean;
     /**
