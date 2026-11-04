@@ -11,6 +11,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.auth import (
     get_current_user,
     get_tenant_is_admin,
+    readable_room_ids,
     require_room_access,
 )
 from switch_core.gateway.dependencies import (
@@ -54,7 +55,10 @@ async def list_linked_rooms(
 ) -> list[LinkedRoomDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     rows = await resource_service.list_linked_rooms_for_room(session, room_id)
-    return [LinkedRoomDetail(**row) for row in rows]
+    readable = await readable_room_ids(session, room_store, user, is_admin)
+    return [
+        LinkedRoomDetail(**row) for row in rows if row["target_room_id"] in readable
+    ]
 
 
 @router.get("/rooms/{room_id}/linked-rooms/inbound")
@@ -68,7 +72,12 @@ async def list_inbound_linked_rooms(
 ) -> list[InboundLinkedRoomDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     rows = await resource_service.list_inbound_linked_rooms(session, room_id)
-    return [InboundLinkedRoomDetail(**row) for row in rows]
+    readable = await readable_room_ids(session, room_store, user, is_admin)
+    return [
+        InboundLinkedRoomDetail(**row)
+        for row in rows
+        if row["source_room_id"] in readable
+    ]
 
 
 @router.post("/rooms/{room_id}/linked-rooms", status_code=201)

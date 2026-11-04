@@ -31,7 +31,11 @@ from switch_core.gateway.documents import (
 )
 from switch_core.gateway.packages import detach_package_from_room
 from switch_core.gateway.references import detach_reference_from_room
-from switch_core.gateway.room_links import get_room_link_graph
+from switch_core.gateway.room_links import (
+    get_room_link_graph,
+    list_inbound_linked_rooms,
+    list_linked_rooms,
+)
 
 _ROOM_STORE = RoomStore()
 _USER_STORE = UserStore()
@@ -264,6 +268,45 @@ class TestRoomListingsHidePrivateRooms:
 
             assert await graph_for(other) == ({public.id}, 0)
             assert await graph_for(owner) == ({public.id, private.id}, 1)
+
+    async def test_a_rooms_links_leave_out_unreadable_rooms_on_either_end(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            other = await _add_user(session, name="other")
+            public = await _add_room(
+                session, name="pub", owner_id=owner.id, read_visibility="public"
+            )
+            private = await _add_room(
+                session, name="priv", owner_id=owner.id, read_visibility="private"
+            )
+            svc = _svc(session_factory)
+            await svc.attach_linked_room(
+                session,
+                source_room_id=public.id,
+                target_room_id=private.id,
+                label="out",
+            )
+            await svc.attach_linked_room(
+                session, source_room_id=private.id, target_room_id=public.id, label="in"
+            )
+
+            async def links_for(user: User) -> tuple[set[str], set[str]]:
+                is_admin = await _is_admin(session, user)
+                outbound = await list_linked_rooms(
+                    public.id, session, svc, _ROOM_STORE, user, is_admin
+                )
+                inbound = await list_inbound_linked_rooms(
+                    public.id, session, svc, _ROOM_STORE, user, is_admin
+                )
+                return (
+                    {r.target_room_id for r in outbound},
+                    {r.source_room_id for r in inbound},
+                )
+
+            assert await links_for(other) == (set(), set())
+            assert await links_for(owner) == ({private.id}, {private.id})
 
     async def test_rooms_for_document_leaves_out_unreadable_rooms(
         self, session_factory: async_sessionmaker[AsyncSession]

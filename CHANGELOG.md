@@ -93,8 +93,10 @@ version of their own to them without also giving them a release of their own.
   The room link graph, the rooms a document, package or reference is attached
   to, and an agent's `list_all_rooms` now show only rooms the caller may read
   (an agent also sees the rooms it is in). Linking a room to another now
-  needs read access to the target, whose name the link shows. An agent can
-  list a room's participants only from inside the room.
+  needs read access to the target, whose name the link shows, including
+  links an agent's `create_room` makes. A room's links, outbound and inbound,
+  leave out rooms the caller cannot read, for people and agents alike. An
+  agent can list a room's participants only from inside the room.
 - **Only a workspace admin manages room groups.** Groups are shared by the
   whole workspace and have no owner, so any member could rename, move or
   delete one. Creating, changing and deleting a group, from the dashboard,

@@ -445,14 +445,25 @@ async def _decorate_linked_rooms(
     ``"member"`` if the calling agent is assigned to the target room,
     ``"not_member"`` otherwise. For ``not_member`` rows, also include a
     human-readable ``access_note`` warning that ``connect_to_room`` will
-    fail until the agent is added by an operator."""
+    fail until the agent is added by an operator.
+
+    A link whose target the agent may not see (see `list_all_rooms`) is left
+    out: it would show a private room's name and description."""
     if not linked_rooms:
         return []
     async with protocol.session_factory() as session:
         agent_rooms = await protocol.room_store.get_rooms_for_agent(session, agent_id)
+        visible_ids = {
+            r.id
+            for r in await protocol.rooms_visible_to(
+                session, agent_id, include_archived=True
+            )
+        }
     member_ids = {r.id for r in agent_rooms}
     out: list[dict[str, Any]] = []
     for entry in linked_rooms:
+        if entry["target_room_id"] not in visible_ids:
+            continue
         is_member = entry["target_room_id"] in member_ids
         decorated = {
             **entry,

@@ -3773,7 +3773,7 @@ class AgentCore:
         last = rooms[-1]
         return rooms, _encode_room_cursor(last.created_at, last.id)
 
-    async def _rooms_visible_to(
+    async def rooms_visible_to(
         self, session: AsyncSession, agent_id: str, *, include_archived: bool
     ) -> list[Room]:
         """The rooms the agent's owner may read, plus those the agent is in."""
@@ -3799,7 +3799,7 @@ class AgentCore:
         async with self.session_factory() as session:
             result = await session.execute(select(RoomGroup))
             groups = list(result.scalars().all())
-            visible = await self._rooms_visible_to(
+            visible = await self.rooms_visible_to(
                 session, agent_id, include_archived=True
             )
         counts = Counter(r.group_id for r in visible if r.group_id is not None)
@@ -3910,7 +3910,7 @@ class AgentCore:
 
             member_rooms = [
                 {"id": r.id, "name": r.name}
-                for r in await self._rooms_visible_to(
+                for r in await self.rooms_visible_to(
                     session, agent_id, include_archived=True
                 )
                 if r.group_id == group_id

@@ -352,6 +352,13 @@ class RoomService:
                 target = await self._room_store.get(session, link.target_room_id)
                 if target is None:
                     raise ValueError(f"Linked room not found: {link.target_room_id}")
+                # A link shows its target's name and description in the new
+                # room, so linking needs read access to the target.
+                if not can(principal, "read", target):
+                    raise PermissionError(
+                        f"User {config.acting_user_id} cannot link to room "
+                        f"{link.target_room_id}"
+                    )
                 if not link.label.strip():
                     raise ValueError("Linked room label must not be empty")
 

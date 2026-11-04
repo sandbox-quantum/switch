@@ -409,7 +409,8 @@ them. Each entry carries `target_room_id` (pass it to `connect_to_room`),
 rooms are related, and an `access` field — `"member"` means you may connect,
 `"not_member"` means the call will fail and you should ask the room's operator
 (the human user, typically) to add you rather than trying; such an entry also
-carries an `access_note` saying so.
+carries an `access_note` saying so. A link to a room you may not see (one
+your owner cannot read and you are not in) is left out.
 
 They are metadata, not access. Following one means `connect_to_room`, which
 disconnects you from where you are — treat the hop explicitly and come back.
@@ -689,7 +690,8 @@ Surface that error rather than retrying.
 
 `create_room` accepts `reference_ids`, `package_ids` and `linked_rooms` to
 seed a room at creation time. Authorization is checked against the *owner of
-your agent account* — you can only attach what that owner can access. Bad ids
+your agent account* — you can only attach what that owner can access, and
+link only to rooms that owner can read. Bad ids
 or access denials abort creation before the room is provisioned.
 
 Race-time attachment failures (rare) do not abort the room; they come back in
