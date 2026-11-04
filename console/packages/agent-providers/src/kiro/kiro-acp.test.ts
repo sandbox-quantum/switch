@@ -115,10 +115,49 @@ describe('Kiro ACP Hooks', () => {
       expect(kiroAcp.defaultBinary).toBe('kiro-cli');
       expect(kiroAcp.loginCommand).toBe(KIRO_LOGIN);
       expect(kiroAcp.noLegacySetModel).toBe(true);
+      expect(kiroAcp.promptCapabilities).toEqual({ image: true });
     });
   });
 
   describe('whoami output parser & fixtures', () => {
+    it('reads a signed-out JSON answer as unauthenticated', () => {
+      const result = parseKiroWhoami('{"account":null}');
+      expect(result.status).toBe('unauthenticated');
+      expect(result.message).toContain('kiro-cli login');
+    });
+
+    it('reads a JSON account as authenticated', () => {
+      const result = parseKiroWhoami('{"account":{"email":"dev@example.com","type":"social"}}');
+      expect(result.status).toBe('authenticated');
+      expect(result.message).toContain('dev@example.com');
+    });
+
+    it('reads the real signed-in JSON shape (email, no account key) as authenticated', () => {
+      // The exact shape kiro-cli prints when signed in via Builder ID
+      const result = parseKiroWhoami(
+        '{"accountType":"BuilderId","startUrl":null,"region":"us-east-1","email":"dev@example.com"}'
+      );
+      expect(result.status).toBe('authenticated');
+      expect(result.message).toContain('dev@example.com');
+    });
+
+    it('reads the plain Builder ID answer as authenticated', () => {
+      const result = parseKiroWhoami('Logged in with Builder ID\n\nProfile:\n\nbuilder-user\n');
+      expect(result.status).toBe('authenticated');
+    });
+
+    it('names the account when the plain answer carries an email', () => {
+      const result = parseKiroWhoami('Logged in with Social\nEmail: dev@example.com\n');
+      expect(result.status).toBe('authenticated');
+      expect(result.message).toContain('dev@example.com');
+    });
+
+    it('reads a plain signed-out answer as unauthenticated', () => {
+      const result = parseKiroWhoami('Error: Not logged in. Run kiro-cli login to sign in.');
+      expect(result.status).toBe('unauthenticated');
+      expect(result.message).toContain('kiro-cli login');
+    });
+
     it('parses valid builder-id authenticated JSON output', () => {
       const fixture = JSON.stringify({
         user: 'developer@example.com',
@@ -160,8 +199,9 @@ describe('Kiro ACP Hooks', () => {
       expect(parseKiroWhoami('Session expired. Please log in').status).toBe('unauthenticated');
     });
 
-    it('handles malformed JSON and empty outputs as unknown', () => {
+    it('handles malformed JSON and unrecognized outputs as unknown', () => {
       expect(parseKiroWhoami('{ invalid json').status).toBe('unknown');
+      expect(parseKiroWhoami('kiro-cli 2.15.1').status).toBe('unknown');
       expect(parseKiroWhoami('').status).toBe('unknown');
       expect(parseKiroWhoami('   \n  ').status).toBe('unknown');
     });
@@ -410,7 +450,50 @@ describe('Kiro ACP Hooks', () => {
   });
 
   describe('mcpServerOf & itemType', () => {
-    it('identifies MCP server from tool call _meta or rawInput', () => {
+    it('reads the server from a permission request meta (real CLI shape)', () => {
+      const server = kiroAcp.mcpServerOf?.({
+        toolCallId: 'tooluse_1',
+        title: '@echo/switch_echo',
+        _meta: { kiro: { mcpTool: { identity: { serverName: 'echo', toolName: 'switch_echo' } } } },
+      });
+      expect(server).toBe('echo');
+    });
+
+    it('reads the server from a tool call update meta', () => {
+      const server = kiroAcp.mcpServerOf?.({
+        toolCallId: 'tooluse_2',
+        title: '@echo/switch_echo',
+        _meta: { kiro: { serverName: 'echo', toolOrigin: 'default' } },
+      });
+      expect(server).toBe('echo');
+    });
+
+    it('falls back to the namespaced tool_id, then the @server title', () => {
+      expect(
+        kiroAcp.mcpServerOf?.({
+          toolCallId: 'tooluse_3',
+          rawInput: { tool_id: 'echo::switch_echo' },
+        })
+      ).toBe('echo');
+      expect(
+        kiroAcp.mcpServerOf?.({
+          toolCallId: 'tooluse_4',
+          title: '@echo/switch_echo',
+        })
+      ).toBe('echo');
+    });
+
+    it('returns undefined for a built-in tool call', () => {
+      expect(
+        kiroAcp.mcpServerOf?.({
+          toolCallId: 'tooluse_5',
+          title: 'Run command',
+          rawInput: { tool_id: 'shell' },
+        })
+      ).toBeUndefined();
+    });
+
+    it('identifies MCP server from tool call _meta or rawInput fallbacks', () => {
       expect(
         kiroAcp.mcpServerOf?.({
           toolCallId: '1',
@@ -433,20 +516,62 @@ describe('Kiro ACP Hooks', () => {
       ).toBe('slack-mcp');
     });
 
-    it('identifies subagent tasks correctly', () => {
+    it('maps delegation call to subagent item type (real CLI shape)', () => {
       expect(
         kiroAcp.itemType?.({
-          toolCallId: '1',
-          kind: 'subagent',
+          toolCallId: 'invoke_subagent_tooluse_abc',
+          title: 'Sub-agent: general-task-execution',
+          rawInput: {
+            name: 'general-task-execution',
+            prompt: 'Read README.md.',
+            explanation: 'Delegating.',
+          },
+          _meta: { kiro: { kind: 'agent-subtask', agentSubtaskId: 'subtask-1' } },
+        })
+      ).toBe('subagent');
+    });
+
+    it('maps delegation tools named in tool_id or title', () => {
+      expect(
+        kiroAcp.itemType?.({
+          toolCallId: 'tooluse_6',
+          rawInput: { tool_id: 'agents::subagent' },
         })
       ).toBe('subagent');
 
       expect(
         kiroAcp.itemType?.({
-          toolCallId: '2',
-          title: 'Task: Explore repository',
+          toolCallId: 'tooluse_7',
+          rawInput: { _toolName: 'task' },
         })
       ).toBe('subagent');
+
+      expect(
+        kiroAcp.itemType?.({
+          toolCallId: 'tooluse_8',
+          title: 'Subagent: read README.md',
+        })
+      ).toBe('subagent');
+    });
+
+    it('leaves the subagent internal tool calls untyped', () => {
+      expect(
+        kiroAcp.itemType?.({
+          toolCallId: 'tooluse_11',
+          title: 'Read File',
+          _meta: { kiro: { agentSubtaskId: 'subtask-1', toolOrigin: 'default' } },
+        })
+      ).toBeUndefined();
+    });
+
+    it('leaves ordinary tool calls untyped', () => {
+      expect(
+        kiroAcp.itemType?.({
+          toolCallId: 'tooluse_9',
+          title: 'Run command',
+          rawInput: { tool_id: 'shell' },
+        })
+      ).toBeUndefined();
     });
   });
 });

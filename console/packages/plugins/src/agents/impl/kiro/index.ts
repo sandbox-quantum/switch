@@ -7,7 +7,7 @@ export const plugin = definePlugin(
     name: 'Kiro',
     description:
       'Kiro CLI agent provider with native authentication, approvals and persistent conversations.',
-    websiteUrl: 'https://kiro.dev/docs/cli/overview/',
+    websiteUrl: 'https://kiro.dev/docs/cli/',
     cliLabel: 'Kiro CLI',
   },
   {
@@ -19,24 +19,24 @@ export const plugin = definePlugin(
     },
     hostDependency: {
       id: 'kiro',
-      binaryNames: ['kiro-cli', 'kiro'],
+      binaryNames: ['kiro-cli'],
       installCommands: {
         macos: [
           {
             method: 'curl',
-            command: 'curl -fsSL https://kiro.dev/install.sh | bash',
+            command: 'curl -fsSL https://cli.kiro.dev/install | bash',
           },
         ],
         linux: [
           {
             method: 'curl',
-            command: 'curl -fsSL https://kiro.dev/install.sh | bash',
+            command: 'curl -fsSL https://cli.kiro.dev/install | bash',
           },
         ],
         windows: [
           {
             method: 'powershell',
-            command: 'irm https://kiro.dev/install.ps1 | iex',
+            command: 'irm https://cli.kiro.dev/install.ps1 | iex',
           },
         ],
       },
