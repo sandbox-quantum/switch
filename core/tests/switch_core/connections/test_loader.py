@@ -1,13 +1,18 @@
+import re
 import shutil
 
 import pytest
+from pydantic import ValidationError
 
 from switch_core.connections.loader import (
     CATALOG,
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
+    ApiKeyField,
     CatalogError,
+    ConnectionDefinition,
     load_catalog,
+    url_placements,
 )
 
 PLACEHOLDERS = {
@@ -32,6 +37,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "zendesk",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -1046,3 +1052,260 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)
+
+
+# ── A key field checked by a pattern ──────────────────────────────────────────
+
+SUBDOMAIN = {
+    "name": "subdomain",
+    "label": "Subdomain",
+    "secret": False,
+    "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+}
+
+
+def test_a_field_may_be_typed_and_held_to_a_pattern():
+    field = ApiKeyField.model_validate(SUBDOMAIN)
+    assert field.pattern == "^[a-z0-9][a-z0-9-]{0,62}$"
+    assert field.choices is None
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"secret": True}, "one of the two"),
+        ({"choices": ["a.example.test"]}, "not both"),
+        ({"pattern": "[a-z]+"}, "anchored at both ends"),
+        ({"pattern": "^[a-z]+"}, "anchored at both ends"),
+        ({"pattern": "^[a-z+$"}, "not a regular expression"),
+    ],
+)
+def test_a_pattern_field_is_refused_when_it_is_not_one(change, message):
+    with pytest.raises(ValidationError, match=message):
+        ApiKeyField.model_validate({**SUBDOMAIN, **change})
+
+
+@pytest.mark.parametrize(
+    ("url", "placements"),
+    [
+        (
+            "https://{subdomain}.example.com/api/v2/users/me.json",
+            {"subdomain": {"host_label"}},
+        ),
+        ("https://api.{subdomain}.example.com/v1", {"subdomain": {"host_label"}}),
+        (
+            "https://api.example.test/v1/{subdomain}/mcp",
+            {"subdomain": {"path_segment"}},
+        ),
+        ("https://api.example.test/v1/{subdomain}", {"subdomain": {"path_segment"}}),
+        ("https://api.example.test/v1/{region}?q=1", {}),
+    ],
+)
+def test_a_pattern_field_may_be_a_whole_host_label_or_path_segment(url, placements):
+    assert url_placements(url, {"subdomain"}) == placements
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("https://{subdomain}x.example.com/", "part of a host label"),
+        ("https://x-{subdomain}.example.com/", "part of a host label"),
+        ("https://{subdomain}.com/", "domain after it is not fixed"),
+        ("https://example.{subdomain}/", "domain after it is not fixed"),
+        ("https://{subdomain}.{region}.example.com/", "domain after it is not fixed"),
+        ("https://{subdomain}/", "domain after it is not fixed"),
+        ("https://api.example.test/v1/x-{subdomain}", "part of a path segment"),
+        ("https://api.example.test/v1?account={subdomain}", "query or fragment"),
+        ("https://api.example.test/v1#{subdomain}", "query or fragment"),
+        ("https://{subdomain}@example.com/", "beside a user or a port"),
+        ("https://example.com:{subdomain}/", "beside a user or a port"),
+    ],
+)
+def test_a_pattern_field_that_could_change_the_host_is_refused(url, message):
+    with pytest.raises(ValueError, match=message):
+        url_placements(url, {"subdomain"})
+
+
+def _key_entry(identity_url: str, field: dict[str, object]) -> dict[str, object]:
+    return {
+        "slug": "example",
+        "name": "Example",
+        "category": "Support",
+        "description": "Read Example tickets.",
+        "enabled": False,
+        "adapter": "api_key",
+        "auth": {
+            "type": "api_key",
+            "refresh": "none",
+            "api_key": {
+                "fields": [
+                    {"name": "api_key", "label": "API key", "secret": True},
+                    field,
+                ],
+                "identity": {
+                    "method": "GET",
+                    "url": identity_url,
+                    "headers": {"X-Key": "{api_key}"},
+                },
+            },
+        },
+        "token": {"kind": "pass_through", "max_lifetime": None},
+        "tools": {"mode": "pass_through"},
+    }
+
+
+def test_an_entry_puts_a_pattern_field_in_its_host():
+    definition = ConnectionDefinition.model_validate(
+        _key_entry("https://{subdomain}.example.com/api/me", SUBDOMAIN)
+    )
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.pattern_names() == {"subdomain"}
+    assert sign_in.choice_names() == set()
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("https://example.com/api?s={subdomain}", "query or fragment"),
+        ("https://{subdomain}.com/api", "domain after it is not fixed"),
+        ("https://example.com/{api_key}", "may name only a choice field"),
+    ],
+)
+def test_an_entry_that_misplaces_a_typed_field_is_refused(url, message):
+    with pytest.raises(ValidationError, match=message):
+        ConnectionDefinition.model_validate(_key_entry(url, SUBDOMAIN))
+
+
+# ── Basic credentials on the identity call ────────────────────────────────────
+
+
+def _basic_entry(identity: dict[str, object]) -> dict[str, object]:
+    entry = _key_entry("https://{subdomain}.example.com/api/me", SUBDOMAIN)
+    sign_in = entry["auth"]["api_key"]  # type: ignore[index]
+    sign_in["fields"].append(  # type: ignore[index]
+        {
+            "name": "email",
+            "label": "Email",
+            "secret": False,
+            "pattern": r"^[^@\s]+@[^@\s]+$",
+        }
+    )
+    sign_in["identity"] = {  # type: ignore[index]
+        "method": "GET",
+        "url": "https://{subdomain}.example.com/api/me",
+        **identity,
+    }
+    return entry
+
+
+def test_an_identity_call_may_send_the_key_as_basic_credentials():
+    definition = ConnectionDefinition.model_validate(
+        _basic_entry({"basic": {"username": "{email}/token", "password": "{api_key}"}})
+    )
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.identity.headers == {}
+    assert sign_in.identity.basic is not None
+    assert sign_in.identity.basic.username == "{email}/token"
+
+
+@pytest.mark.parametrize(
+    ("identity", "message"),
+    [
+        ({}, "in headers or as basic"),
+        (
+            {
+                "basic": {"username": "{email}/token", "password": "{api_key}"},
+                "headers": {"Authorization": "Bearer {api_key}"},
+            },
+            "names no other",
+        ),
+        (
+            {"basic": {"username": "{email}/token", "password": "{secret}"}},
+            "unknown field",
+        ),
+    ],
+)
+def test_basic_credentials_are_refused_when_inconsistent(identity, message):
+    with pytest.raises(ValidationError, match=message):
+        ConnectionDefinition.model_validate(_basic_entry(identity))
+
+
+# ── The shipped Zendesk entry ─────────────────────────────────────────────────
+
+
+def test_the_shipped_zendesk_entry_is_off_until_a_transport_exists():
+    entry = CATALOG["zendesk"]
+    definition = entry.definition
+    assert definition.enabled is False
+    assert definition.adapter == "api_key"
+    # Nothing a session could call yet, so nothing to grant and no skill.
+    assert definition.mcp is None
+    assert definition.cli is None
+    assert entry.skill_files == {}
+    # A token does not expire, so it is never handed to an agent.
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+    assert definition.access is None
+
+
+def test_the_shipped_zendesk_entry_checks_the_token_as_basic_credentials():
+    sign_in = CATALOG["zendesk"].definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("subdomain", False),
+        ("email", False),
+        ("api_token", True),
+    ]
+    assert sign_in.pattern_names() == {"subdomain", "email"}
+    identity = sign_in.identity
+    assert identity.method == "GET"
+    assert identity.url == "https://{subdomain}.zendesk.com/api/v2/users/me.json"
+    assert identity.headers == {}
+    assert identity.basic is not None
+    assert (identity.basic.username, identity.basic.password) == (
+        "{email}/token",
+        "{api_token}",
+    )
+    # An anonymous answer has no user id, and is refused for naming no account.
+    assert (identity.account_id, identity.label) == ("user.id", "user.email")
+    assert url_placements(identity.url, sign_in.pattern_names()) == {
+        "subdomain": {"host_label"}
+    }
+
+
+@pytest.mark.parametrize("value", ["acme", "acme-support", "a1"])
+def test_the_zendesk_subdomain_takes_one_label(value):
+    (field,) = [
+        f
+        for f in CATALOG["zendesk"].definition.auth.api_key.fields  # type: ignore[union-attr]
+        if f.name == "subdomain"
+    ]
+    assert field.pattern is not None
+    assert re.fullmatch(field.pattern, value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "acme.evil.test",
+        "evil.test/x",
+        "acme@evil.test",
+        "acme:443",
+        "-acme",
+        "ACME",
+        "acmé",
+        "",
+        "a" * 64,
+    ],
+)
+def test_the_zendesk_subdomain_refuses_anything_that_could_change_the_host(value):
+    (field,) = [
+        f
+        for f in CATALOG["zendesk"].definition.auth.api_key.fields  # type: ignore[union-attr]
+        if f.name == "subdomain"
+    ]
+    assert field.pattern is not None
+    assert not re.fullmatch(field.pattern, value)

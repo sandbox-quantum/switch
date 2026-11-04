@@ -89,6 +89,8 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     assert result.pop("atlassian") == "not_connected"
     assert result.pop("google-workspace") == "not_connected"
     assert result.pop("datadog") == "not_connected"
+    # Zendesk ships its sign-in but stays off until it has a transport.
+    assert result.pop("zendesk") == "coming_soon"
     assert len(result) == 11
     assert set(result.values()) == {"coming_soon"}
     github = next(

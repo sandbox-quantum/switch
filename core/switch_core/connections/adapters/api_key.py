@@ -17,6 +17,7 @@ and the broker refuses before it gets here.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -35,10 +36,14 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import (
+    PLACED_VALUE_PATTERNS,
     TEMPLATE_FIELD_RE,
     AccessLevel,
     ApiKeySignIn,
+    BasicCredentials,
     ConnectionDefinition,
+    Placement,
+    url_placements,
 )
 
 # A key may carry any printable character but a space, which keeps it a
@@ -90,6 +95,13 @@ class ApiKeyAdapter:
         self._name = definition.name
         self._sign_in = sign_in
         self._http = http
+        urls = [sign_in.identity.url]
+        if definition.mcp is not None:
+            urls += [server.url for server in definition.mcp.servers]
+        self._placements: dict[str, set[Placement]] = {}
+        for url in urls:
+            for name, where in url_placements(url, sign_in.pattern_names()).items():
+                self._placements.setdefault(name, set()).update(where)
 
     def current_client_id(self) -> str | None:
         return None
@@ -112,6 +124,20 @@ class ApiKeyAdapter:
                     raise InvalidKeyError(
                         f"{field.label} must be one of {', '.join(field.choices)}."
                     )
+            elif field.pattern is not None:
+                # The entry's pattern, and whatever is safe where the value
+                # goes in a URL, even if the pattern were written too loosely.
+                if (
+                    not FIELD_VALUE_RE.fullmatch(value)
+                    or not re.fullmatch(field.pattern, value)
+                    or not all(
+                        re.fullmatch(PLACED_VALUE_PATTERNS[where], value)
+                        for where in self._placements.get(name, ())
+                    )
+                ):
+                    raise InvalidKeyError(
+                        f"{field.label} is not in the form {self._name} uses."
+                    )
             elif not FIELD_VALUE_RE.fullmatch(value):
                 raise InvalidKeyError(
                     f"{field.label} must be one line of printable characters, "
@@ -127,16 +153,15 @@ class ApiKeyAdapter:
         the person's to fix, so it says which fields to check.
         """
         identity = self._sign_in.identity
+        headers = {
+            name: render(value, values) for name, value in identity.headers.items()
+        }
+        if identity.basic is not None:
+            headers["Authorization"] = self._basic(identity.basic, values)
         request = self._http.build_request(
             identity.method,
             render(identity.url, values),
-            headers={
-                **{
-                    name: render(value, values)
-                    for name, value in identity.headers.items()
-                },
-                "Accept": "application/json",
-            },
+            headers={**headers, "Accept": "application/json"},
             json=identity.body,
         )
         try:
@@ -162,6 +187,16 @@ class ApiKeyAdapter:
             )
         account_id, label = self._read_identity(response, values)
         return KeyIdentity(account_id, label)
+
+    def _basic(self, basic: BasicCredentials, values: dict[str, str]) -> str:
+        username = render(basic.username, values)
+        if ":" in username:
+            # RFC 7617: the user-id ends at the first colon.
+            raise InvalidKeyError(
+                f"{self._name} takes no colon in what names the key's user."
+            )
+        pair = f"{username}:{render(basic.password, values)}".encode()
+        return f"Basic {base64.b64encode(pair).decode()}"
 
     def _read_identity(
         self, response: httpx.Response, values: dict[str, str]
