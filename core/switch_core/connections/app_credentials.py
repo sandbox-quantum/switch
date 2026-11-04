@@ -548,7 +548,6 @@ class ConnectorApps:
                 spec.name,
             )
             return self._none(spec, load_error=UNREADABLE, unreadable=True)
-
         except AppLoadError as error:
             logger.error(
                 "The app saved for %s cannot be used, so it is not set up: %s",

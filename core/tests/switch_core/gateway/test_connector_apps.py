@@ -67,6 +67,14 @@ APPS = "/gateway/connector-apps"
 GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
+SALESFORCE = "salesforce"
+SALESFORCE_CALLBACK = (
+    f"{PUBLIC}/gateway/service-connections/{SALESFORCE}/flows/callback"
+)
+SALESFORCE_LOOPBACKS = [
+    f"http://localhost:{port}/switch-services/callback"
+    for port in (39251, 39252, 39253, 39254, 39255)
+]
 AIRTABLE_SECRET = "example-airtable-secret-0000"
 GITHUB_CLIENT_ID = "example-github-client-id"
 GITHUB_SECRET = "example-github-secret-0000"
@@ -365,7 +373,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, SALESFORCE}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -389,6 +397,14 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
+        # Salesforce matches the callback's port exactly, so Console's ports
+        # are pinned, and its hosted MCP servers take a single API scope.
+        assert apps[SALESFORCE]["redirect_uris"] == SALESFORCE_LOOPBACKS + [
+            SALESFORCE_CALLBACK
+        ]
+        assert apps[SALESFORCE]["redirect_uri"] == SALESFORCE_LOOPBACKS[0]
+        assert apps[SALESFORCE]["needs_public_url"] is True
+        assert apps[SALESFORCE]["scopes"] == ["mcp_api", "refresh_token", "openid"]
         assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
     async def test_an_unknown_service_is_not_found(

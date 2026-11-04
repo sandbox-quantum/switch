@@ -18,7 +18,6 @@ PLACEHOLDERS = {
     "new-relic",
     "notion",
     "linear",
-    "salesforce",
     "box",
     "canva",
     "vercel",
@@ -32,6 +31,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "salesforce",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +39,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "salesforce",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["salesforce"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1066,3 +1068,19 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)
+
+
+def test_salesforce_uses_one_write_level_and_passes_vendor_tools_through():
+    definition = CATALOG["salesforce"].definition
+    assert definition.access.read is None
+    assert definition.access.write.scopes == ["mcp_api", "refresh_token", "openid"]
+    assert definition.tools.mode == "pass_through"
+    assert definition.tools.read is None and definition.tools.write is None
+    assert definition.auth.oauth.public_client is True
+    assert definition.auth.oauth.loopback_host == "localhost"
+    assert definition.auth.identity.account_id == "user_id"
+    assert (
+        definition.auth.identity.url
+        == "https://login.salesforce.com/services/oauth2/userinfo"
+    )
+    assert definition.token.max_lifetime == 7200
