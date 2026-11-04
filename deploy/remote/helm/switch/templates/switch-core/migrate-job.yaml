@@ -7,7 +7,7 @@
 {{- if and .Values.postgresql.caBundle.contents (not .Values.postgresql.caBundle.existingConfigMap) }}
 {{- $caOverride = printf "%s-db-ca-migrate" (include "switch.fullname" .) }}
 {{- end }}
-{{- $ctx := merge (dict "secretNameOverride" $secretOverride "dbCaConfigMapOverride" $caOverride) . }}
+{{- $ctx := merge (dict "secretNameOverride" $secretOverride "dbCaConfigMapOverride" $caOverride "omitTeamsApp" true) . }}
 # Migrates before an upgrade rolls the new switch-core pods, so a failed
 # migration blocks the release instead of crash-looping the new pods.
 # pre-upgrade only: on a fresh install the managed Postgres does not exist yet
@@ -19,6 +19,11 @@
 # it and a still-running old replica restarting could apply DDL at the same
 # time — and reissues the runtime role's grants, without which a table this
 # migration created is unreadable by the pods that follow it.
+#
+# It runs as the namespace's default account, not switch-core's: a pre-upgrade
+# hook runs before the release's own objects are applied, so on the upgrade
+# that introduces switch-core's account the Job could not be created. It needs
+# no identity of its own, and mounts no token anything outside trusts.
 apiVersion: batch/v1
 kind: Job
 metadata:

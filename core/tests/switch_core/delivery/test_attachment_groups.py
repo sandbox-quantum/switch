@@ -105,9 +105,11 @@ async def scene(session_factory: async_sessionmaker[AsyncSession]) -> _Scene:
 
 
 @pytest.fixture
-def short_wait(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Posts wait a hundredth of a second for their missing files."""
-    monkeypatch.setattr(router_module, "ATTACHMENT_GROUP_TIMEOUT_SECONDS", 0.01)
+def long_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Posts wait a minute for their missing files, so no file a test sends
+    arrives after its post's deadline however busy the machine is. The wait
+    ends when the test says so, in `_after_the_wait`."""
+    monkeypatch.setattr(router_module, "ATTACHMENT_GROUP_TIMEOUT_SECONDS", 60.0)
 
 
 async def _events(
@@ -134,7 +136,23 @@ async def _pending(session_factory: async_sessionmaker[AsyncSession]) -> list[An
 
 
 async def _after_the_wait(scene: _Scene) -> None:
-    await asyncio.sleep(0.15)
+    """Every waiting post's deadline passes, and the sweep every process runs
+    decides them.
+
+    The deadline is moved rather than waited on, as a timer short enough to
+    wait on can fire before a test has sent the files it means to arrive in
+    time. That the timer itself decides a post is
+    `test_the_timer_decides_a_post_whose_wait_is_over`'s to show.
+    """
+    session_factory = scene.process.session_factory
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        await session.execute(
+            update(PendingAttachmentGroup).values(
+                deadline=PendingAttachmentGroup.deadline - timedelta(minutes=10)
+            )
+        )
+        await session.commit()
+    await scene.process.router.flush_due_groups(TENANT_ZERO_ID)
     await scene.process.idle()
 
 
@@ -242,7 +260,7 @@ async def test_ungrouped_media_emits_immediately(
 async def test_incomplete_group_flushes_with_disclosed_notice(
     session_factory: async_sessionmaker[AsyncSession],
     scene: _Scene,
-    short_wait: None,
+    long_wait: None,
 ) -> None:
     for index, name in [(0, "cat.png"), (1, "notes.md")]:
         await scene.part(
@@ -269,7 +287,7 @@ async def test_incomplete_group_flushes_with_disclosed_notice(
 async def test_an_agent_that_joins_while_a_post_waits_is_not_given_it(
     session_factory: async_sessionmaker[AsyncSession],
     scene: _Scene,
-    short_wait: None,
+    long_wait: None,
 ) -> None:
     """A member counts from when it joined: one that arrives after a post's
     first file was written was never handed that file, so the post decided
@@ -311,7 +329,7 @@ async def test_group_is_anchored_on_part_zero_not_the_completing_part(
 async def test_incomplete_group_is_anchored_on_part_zero(
     session_factory: async_sessionmaker[AsyncSession],
     scene: _Scene,
-    short_wait: None,
+    long_wait: None,
 ) -> None:
     first = await scene.part(0, 3, "grp-anchor-2", "a.png", caption="@agent-a anchored")
     await scene.part(2, 3, "grp-anchor-2", "c.csv")
@@ -373,6 +391,27 @@ async def test_group_timeout_bounds_the_group_not_the_gap_between_parts(
     assert len(events) == 1
     assert "incomplete attachment group: 3 of 4" in _payload(events[0]).body
     assert await _pending(session_factory) == []
+
+
+async def test_the_timer_decides_a_post_whose_wait_is_over(
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+    scene: _Scene,
+) -> None:
+    """The timer the first file arms decides the post on its own, with no
+    sweep run for it. One file only, so there is no later file for a short
+    timer to race; the wait for it is polled, with room for a busy machine."""
+    monkeypatch.setattr(router_module, "ATTACHMENT_GROUP_TIMEOUT_SECONDS", 0.01)
+    await scene.part(0, 2, "grp-timer", "one.png", caption="@agent-a one of two")
+
+    async with asyncio.timeout(10):
+        while await _pending(session_factory):
+            await asyncio.sleep(0.01)
+    await scene.process.idle()
+
+    events = await _events(session_factory, scene)
+    assert len(events) == 1
+    assert "incomplete attachment group: 1 of 2" in _payload(events[0]).body
 
 
 class TestAddressingSurvivesCoalescing:
@@ -441,7 +480,7 @@ class TestAddressingSurvivesCoalescing:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         scene: _Scene,
-        short_wait: None,
+        long_wait: None,
     ) -> None:
         # A batch that never completes is decided by the safety net, and
         # losing a file is no reason to also lose who it was for.
@@ -500,7 +539,7 @@ async def test_a_grouped_post_addressed_to_the_agent_is_reported_once(
 async def test_a_post_split_by_the_timeout_is_reported_once(
     late_index: int,
     session_factory: async_sessionmaker[AsyncSession],
-    short_wait: None,
+    long_wait: None,
 ) -> None:
     """A group that times out incomplete is delivered again when the rest
     arrives. In a direct room both pieces address the agent, but it is one

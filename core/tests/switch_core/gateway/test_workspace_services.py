@@ -181,10 +181,9 @@ class TestWhoMayCall:
             ("admin", "user", 200),
             ("owner", "user", 200),
             ("member", "admin", 200),
-            # The gateway binds only a workspace the caller belongs to, the
-            # operator included: the operator bit lifts a member, it does not
-            # reach into a workspace from outside.
-            (None, "admin", 403),
+            # The operator may enter any workspace, on `platform_access`,
+            # which the workspace's audit log records.
+            (None, "admin", 200),
         ],
         ids=["member", "admin", "owner", "operator-as-member", "operator-not-a-member"],
     )
@@ -252,7 +251,9 @@ class TestResults:
             "slug": "datadog",
             "name": "Datadog",
             "enabled": on_by_default,
+            "organization_locked": False,
             "updated_by_name": None,
+            "workspace_set": False,
             "updated_at": None,
             "connected_members": 0,
             "granted_agents": 0,
@@ -343,6 +344,10 @@ class TestSwitchingOff:
                 _issuance(None, ada.id, "github", "ghs_elsewhere", tenant_id=TENANT_A)
             )
             await session.commit()
+        # On here, so its token is live: switching GitHub off must leave it.
+        assert (
+            await _put(harness, admin, "atlassian", {"enabled": True})
+        ).status_code == 200
 
         response = await _put(harness, admin, "github", {"enabled": False})
 

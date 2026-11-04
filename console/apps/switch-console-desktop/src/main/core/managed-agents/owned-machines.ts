@@ -1,7 +1,5 @@
-import type {
-  ControllerProviderReport,
-  ManagementController,
-} from '@main/core/switch-servers/gateway-client';
+import type { ControllerProviderReport } from '@main/core/switch-servers/controller-provider-report';
+import type { ManagementController } from '@main/core/switch-servers/gateway-client';
 import {
   isCloudMachine,
   type MachineProvider,
@@ -33,6 +31,7 @@ export function machineProvider(report: ControllerProviderReport): MachineProvid
     ready: problem === null,
     problem,
     detail: problem === null ? null : report.problem,
+    loginHelps: report.loginHelps,
   };
 }
 

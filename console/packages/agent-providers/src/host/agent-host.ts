@@ -136,6 +136,10 @@ function isReset(command: Record<string, unknown>): boolean {
   return z.object({ type: z.literal('session.reset') }).safeParse(command.body).success;
 }
 
+function isRetry(command: Record<string, unknown>): boolean {
+  return z.object({ type: z.literal('message.retry') }).safeParse(command.body).success;
+}
+
 function isAssignment(record: WatchRecord): record is Assignment {
   return 'sequence' in record;
 }
@@ -644,12 +648,36 @@ export class AgentHostAssignments {
 export type AgentEventStream = {
   /** The agent host, not Switch, tells a room when it starts a session for it. */
   readonly announcesSessionStarts: boolean;
+  /**
+   * The room of a session's tool call is the one this stream was last told
+   * the session is placed in, not one Switch recorded when the session called
+   * `connect_to_room`. True for an agent controller, whose relay names the
+   * room on every call from these placements, so a placement it did not take
+   * leaves the session calling from no room. False for the agent's own
+   * connection, where Switch places the session itself.
+   */
+  readonly placementsNameCallRooms: boolean;
   start(): void;
   setSpawnCapable(capable: boolean): void;
-  replacePlacements(placements: Record<string, string>): Promise<void>;
+  /**
+   * State every session's room. The rooms named back in `refusedRooms` are
+   * ones the agent is not in (deleted, or the agent taken out): their sessions
+   * were left out, and the rest placed.
+   */
+  replacePlacements(placements: Record<string, string>): Promise<{ refusedRooms: string[] }>;
 };
 
-export type OpenAgentStream = (deps: SwitchEventStreamDeps) => AgentEventStream;
+/**
+ * What the agent host is told on its stream. Beside the runtime's own, an
+ * agent controller's hub says when a room a session is placed in is no longer
+ * the agent's (deleted, or the agent taken out): Switch said so, so the
+ * placement goes.
+ */
+export type AgentStreamDeps = SwitchEventStreamDeps & {
+  onRoomGone?: (info: { roomId: string; sessionId: string }) => Promise<void> | void;
+};
+
+export type OpenAgentStream = (deps: AgentStreamDeps) => AgentEventStream;
 
 /** The watcher's own connection to Switch, with the agent's credentials. */
 export const openSwitchStream: OpenAgentStream = (deps) => new SwitchEventStream(deps);
@@ -776,7 +804,17 @@ export async function runAgentHost(
      */
     const publish = (): Promise<void> => {
       const run = async () => {
-        await stream?.replacePlacements(placements.snapshot());
+        const answer = await stream?.replacePlacements(placements.snapshot());
+        // Switch or the controller said the agent is not in the room (it is gone,
+        // or the agent was taken out): a refusal naming the room, never a failure
+        // to answer. The session no longer attends it, so it is not stated again.
+        for (const roomId of answer?.refusedRooms ?? []) {
+          const lost = await placements.roomLost(roomId);
+          if (lost)
+            console.warn(
+              `Session ${lost} was placed in room ${roomId}, which this agent is no longer in; it no longer attends it.`
+            );
+        }
       };
       publishing = publishing.then(run, run);
       return publishing;
@@ -815,7 +853,15 @@ export async function runAgentHost(
           identity,
           connectionId,
           placements,
-          publish,
+          // Nothing is stated before the stream exists, so a move made then
+          // has not been taken by anyone: said rather than reported done.
+          publish: async () => {
+            if (!stream) throw new Error("this agent's stream to Switch is not open yet");
+            await publish();
+          },
+          // Without a stream there is no connection for Switch to have placed
+          // the session on either, so the move counts as not taken.
+          placementsNameCallRooms: () => stream?.placementsNameCallRooms ?? true,
           redactions: links.redactions,
         })
       )
@@ -1000,6 +1046,19 @@ export async function runAgentHost(
      * that runs into it is answered once, however often the host is retried.
      */
     const announced = new Set<string>();
+    /**
+     * States the placements before a notice posted as the session, so Switch
+     * answers it from the room it is in. A statement that is not taken is
+     * said and the notice still tried: it is posted once, and a room left
+     * with no word of its session is worse than a notice that fails too.
+     */
+    const publishBeforeNotice = async (what: string) => {
+      await publish().catch((error: unknown) =>
+        console.warn(
+          `Could not state the session placements before ${what}: ${error instanceof Error ? error.message : String(error)}`
+        )
+      );
+    };
     /** Says in the room that a session is starting for its message, once per message. */
     const startingNoticed = new Set<string>();
     const tellStarting = async (config: SharedHostConfig, event: Handoff) => {
@@ -1007,7 +1066,7 @@ export async function runAgentHost(
       if (startingNoticed.has(key)) return;
       startingNoticed.add(key);
       try {
-        await publish();
+        await publishBeforeNotice(`telling room ${event.roomId} a session is starting`);
         await announceSessionStart({
           identity,
           connectionId,
@@ -1031,7 +1090,9 @@ export async function runAgentHost(
       announced.add(key);
       try {
         // Switch answers the call from where it holds the session placed.
-        await publish();
+        await publishBeforeNotice(
+          `telling room ${event.roomId} session ${sessionId} failed to start`
+        );
         await announceStartFailure({
           identity,
           connectionId,
@@ -1258,6 +1319,20 @@ export async function runAgentHost(
           throw error;
         });
       },
+      onRoomGone: async ({ roomId, sessionId }) => {
+        pending = pending.then(async () => {
+          if (placements.roomOf(sessionId) !== roomId) return;
+          await placements.roomLost(roomId);
+          console.warn(
+            `Room ${roomId} is no longer this agent's (deleted, or the agent taken out); session ${sessionId} no longer attends it.`
+          );
+          publishQuietly();
+        });
+        return pending.catch((error: Error) => {
+          fail(error);
+          throw error;
+        });
+      },
       onApprovalOutcome: async (outcome) => {
         await askSession(outcome.session_id, { type: 'approvals' }, 'an approval answer', 0);
       },
@@ -1284,6 +1359,17 @@ export async function runAgentHost(
             );
             return false;
           }));
+        // A retry is for a turn that failed, and a failure can take the session's
+        // host down with it (a provider error faults it): started again, as a
+        // room message would start it, rather than dropped for not running.
+        const relaunched =
+          isRetry(command) && !links.ready(sharedSessionRoot(sessionId))
+            ? await sessionConfig(sessionId).then(async (config) => {
+                if (!config) return false;
+                await launch(config);
+                return true;
+              })
+            : false;
         const taken = await askSession(
           sessionId,
           {
@@ -1292,7 +1378,7 @@ export async function runAgentHost(
             requesterName: typeof requesterName === 'string' ? requesterName : null,
           },
           `command ${command.commandId}`,
-          restarted ? HOST_START_MS : 0
+          restarted || relaunched ? HOST_START_MS : 0
         );
         if (!taken)
           console.warn(

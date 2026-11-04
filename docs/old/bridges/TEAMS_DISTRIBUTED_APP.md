@@ -94,7 +94,12 @@ environment's app itself, to test against.
      cluster's service-account issuer, subject
      `system:serviceaccount:<namespace>:<service account>`, audience
      `api://AzureADTokenExchange`. No secret exists. In the chart,
-     `switchCore.teamsApp.credential: federated` mounts the projected token.
+     `switchCore.teamsApp.credential: federated` mounts the projected token,
+     and the service account is switch-core's own, `<release>-switch-core`
+     (`switchCore.serviceAccount`). Never trust `default`: every pod in the
+     namespace that names no account runs as it. An app accepts several
+     federated credentials, so to change the account, add the new subject
+     before deploying and remove the old one after.
    - **Certificate:** upload the public certificate; give Switch the
      certificate and its key (`TEAMS_APP_CERTIFICATE`,
      `TEAMS_APP_CERTIFICATE_PRIVATE_KEY`).

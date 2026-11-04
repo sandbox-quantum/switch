@@ -4,10 +4,18 @@ import {
   HostUnreachableError,
 } from '@shared/core/remote-hosts/reachability';
 import { HostReachabilityService, probeDelayFor } from './host-reachability-service';
+import {
+  deletePersistedReachability,
+  listPersistedReachability,
+  listSshHostsInUse,
+  savePersistedReachability,
+} from './reachability-store';
 
 vi.mock('./reachability-store', () => ({
   listPersistedReachability: vi.fn(async () => []),
+  listSshHostsInUse: vi.fn(async () => new Set<string>()),
   savePersistedReachability: vi.fn(async () => {}),
+  deletePersistedReachability: vi.fn(async () => {}),
   hydrate: (record: unknown) => ({
     ...(record as object),
     nextProbeAt: null,
@@ -191,5 +199,95 @@ describe('HostReachabilityService', () => {
     await settle();
 
     expect(probe).toHaveBeenCalledWith('vm');
+  });
+
+  it('prunes saved records for hosts nothing uses and never probes them', async () => {
+    const record = {
+      status: 'unreachable' as const,
+      lastError: 'Connection lost before handshake',
+      lastCheckedAt: null,
+      lastReachableAt: null,
+      consecutiveFailures: 6,
+    };
+    vi.mocked(listPersistedReachability).mockResolvedValueOnce([
+      { ...record, sshHost: 'example-gone' },
+      { ...record, sshHost: 'example-used' },
+    ]);
+    vi.mocked(listSshHostsInUse).mockResolvedValueOnce(new Set(['example-used']));
+    const { service: svc, timers } = makeService(async () => {});
+
+    await svc.initialize();
+
+    expect(deletePersistedReachability).toHaveBeenCalledExactlyOnceWith('example-gone');
+    expect(svc.getAll().map((r) => r.sshHost)).toEqual(['example-used']);
+    expect(timers).toHaveLength(1);
+  });
+
+  it('forgets a host so an in-flight probe neither re-saves nor reschedules it', async () => {
+    let fail!: (error: Error) => void;
+    const { service: svc, timers } = makeService(
+      () => new Promise<void>((_resolve, reject) => (fail = reject))
+    );
+
+    const probing = svc.checkNow('example-gone');
+    await svc.forget('example-gone');
+    fail(new Error('Connection lost before handshake'));
+    await probing;
+    await settle();
+
+    expect(deletePersistedReachability).toHaveBeenCalledWith('example-gone');
+    expect(savePersistedReachability).not.toHaveBeenCalled();
+    expect(timers).toHaveLength(0);
+    expect(svc.getAll()).toEqual([]);
+  });
+
+  it('lets a save already in flight land before forget deletes the row', async () => {
+    const order: string[] = [];
+    let land!: () => void;
+    vi.mocked(savePersistedReachability).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (land = () => (order.push('save'), resolve())))
+    );
+    vi.mocked(deletePersistedReachability).mockImplementationOnce(async () => {
+      order.push('delete');
+    });
+    const { service: svc } = makeService(async () => {});
+
+    svc.reportFailure('example-gone', new Error('Connection lost before handshake'));
+    const forgetting = svc.forget('example-gone');
+    await settle();
+    land();
+    await forgetting;
+
+    expect(order).toEqual(['save', 'delete']);
+  });
+
+  it('does not resurrect a forgotten host on a later failure or read', async () => {
+    const { service: svc, timers } = makeService(async () => {});
+
+    await svc.forget('example-gone');
+    expect(svc.isBlocked('example-gone')).toBe(false);
+    svc.reportFailure('example-gone', new Error('Connection lost before handshake'));
+    await settle();
+
+    expect(savePersistedReachability).not.toHaveBeenCalled();
+    expect(timers).toHaveLength(0);
+    expect(svc.getAll()).toEqual([]);
+
+    await svc.checkNow('example-gone');
+    expect(svc.getAll().map((r) => r.sshHost)).toEqual(['example-gone']);
+  });
+
+  it('resets a suspended host to unknown and deletes its saved record', async () => {
+    const { service: svc, published } = makeService(async () => {
+      throw new AuthError('All configured authentication methods failed');
+    });
+    await svc.checkNow('example-host');
+    expect(svc.get('example-host').status).toBe('suspended');
+
+    await svc.reset('example-host');
+
+    expect(deletePersistedReachability).toHaveBeenCalledWith('example-host');
+    expect(svc.get('example-host').status).toBe('unknown');
+    expect(published.at(-1)?.status).toBe('unknown');
   });
 });

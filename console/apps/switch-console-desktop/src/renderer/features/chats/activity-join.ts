@@ -4,6 +4,7 @@ import {
   TURN_ITEM_ID,
 } from '@shared/core/chats/activity';
 import { type ChatMessage, isSessionStartingNotice, turnEndNotice } from '@shared/core/chats/chats';
+import { isControlAck } from './stop-rows';
 
 /**
  * Joining an agent's turns, as Switch's activity feed stores them, to the
@@ -71,6 +72,52 @@ export function bindTurns(
 }
 
 /**
+ * The turns a host notice in the room says ended, though the activity feed
+ * still has them going: the feed lost the turn's last update (the machine was
+ * reconnecting), and nothing would otherwise ever end it. Each failed or
+ * stopped notice from the agent ends its latest turn still going that started
+ * at a message before it.
+ */
+export function settleTurnsByNotices(
+  turns: readonly TurnActivity[],
+  messages: readonly ChatMessage[],
+  agentId: string,
+  roomId: string
+): TurnActivity[] {
+  const going = (turn: TurnActivity) => turn.status === 'running' || turn.status === 'queued';
+  if (!turns.some(going)) return [...turns];
+  const bound = bindTurns(turns, roomId);
+  const settled = new Map<TurnActivity, TurnStatus>();
+  messages.forEach((message, at) => {
+    const notice = message.sender.agentId === agentId ? turnEndNotice(message) : null;
+    if (!notice || notice.outcome === 'completed') return;
+    const turn = messages
+      .slice(0, at)
+      .map((each) => bound.get(each.messageId))
+      .findLast((each) => each !== undefined && going(each) && !settled.has(each));
+    if (turn) settled.set(turn, notice.outcome === 'failed' ? 'error' : 'interrupted');
+  });
+  if (settled.size === 0) return [...turns];
+  return turns.map((turn) => {
+    const status = settled.get(turn);
+    return status ? { ...turn, status } : turn;
+  });
+}
+
+/**
+ * When a turn's first step happened, or null before it has one. Switch stores
+ * a step when the host reports it, which can be well after the step. The host
+ * stamps a step with its own clock, at its latest revision, so that time can
+ * be late too. The earliest of both holds up against either.
+ */
+function firstStepAt(turn: TurnActivity): number | null {
+  if (turn.items.length === 0) return null;
+  return Math.min(
+    ...turn.items.flatMap((item) => [Date.parse(item.occurredAt), Date.parse(item.createdAt)])
+  );
+}
+
+/**
  * Where one agent's turns show, by the message each shows under, in message
  * order. A turn shows under the message that started it, unless that message
  * was sent while the agent's previous turn still ran: the turn then runs after
@@ -91,7 +138,8 @@ export function placeTurns(
     each.sender.kind === 'agent' &&
     each.sender.agentId === agentId &&
     !isSessionStartingNotice(each) &&
-    !turnEndNotice(each);
+    !turnEndNotice(each) &&
+    !isControlAck(each);
   messages.forEach((message, at) => {
     const turn = bound.get(message.messageId);
     if (!turn) return;
@@ -101,7 +149,7 @@ export function placeTurns(
       const reply = messages.findIndex((each, index) => index > after && shown(each));
       anchor = Math.max(at, reply === -1 ? previous : reply);
     }
-    const firstStep = turn.items[0] ? Date.parse(turn.items[0].createdAt) : null;
+    const firstStep = firstStepAt(turn);
     for (let next = anchor + 1; firstStep !== null && next < messages.length; next++) {
       const each = messages[next];
       if (bound.has(each.messageId) || Date.parse(each.sentAt) >= firstStep) break;
@@ -135,7 +183,14 @@ export function foldTurnEndNotices(
     const turn = messages
       .slice(0, at)
       .map((each) => bound.get(each.messageId))
-      .findLast((each) => each?.status === status && !claimed.has(each.turnId));
+      .findLast(
+        (each) =>
+          each?.status === status &&
+          !claimed.has(each.turnId) &&
+          // A notice from before the turn started is about an earlier run of its
+          // message (the one a retry ran again), not this one.
+          !((firstStepAt(each) ?? -Infinity) > Date.parse(message.sentAt))
+      );
     if (!turn) return;
     claimed.add(turn.turnId);
     folded.set(message.messageId, turn.turnId);

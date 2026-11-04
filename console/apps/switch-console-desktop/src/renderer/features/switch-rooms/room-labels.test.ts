@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { membershipSummary, roomTitle } from './room-labels';
+import { addableAgents, addablePeople, membershipSummary, roomTitle } from './room-labels';
 
 describe('roomTitle', () => {
   it('marks a bridged room as the channel it is', () => {
@@ -27,5 +27,24 @@ describe('membershipSummary', () => {
 
   it('says an empty room has no agents rather than saying nothing', () => {
     expect(membershipSummary(0, 0)).toBe('0 agents');
+  });
+});
+
+describe('addablePeople', () => {
+  it('skips a service account by its flag and anyone already in, not by name', () => {
+    const roster = [
+      { userId: 'u1', name: 'Agent Bootstrap', serviceAccount: true },
+      { userId: 'u2', name: 'Agent Bootstrap', serviceAccount: false },
+      { userId: 'u3', name: 'alice', serviceAccount: false },
+    ];
+    expect(addablePeople(roster, new Set(['u3'])).map((person) => person.userId)).toEqual(['u2']);
+  });
+});
+
+describe('addableAgents', () => {
+  it('offers only the agents the server names as candidates', () => {
+    expect(addableAgents([{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }], ['a2', 'gone'])).toEqual([
+      { id: 'a2' },
+    ]);
   });
 });

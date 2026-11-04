@@ -30,10 +30,28 @@ describe('buddyProviders', () => {
     const states = buddyProviders(
       PROVIDERS,
       machine([
-        { provider: 'claude', ready: true, problem: null, detail: null },
-        { provider: 'codex', ready: false, problem: 'not logged in', detail: null },
-        { provider: 'opencode', ready: false, problem: 'not installed', detail: null },
-        { provider: 'cursor', ready: false, problem: 'login not checked yet', detail: null },
+        { provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true },
+        {
+          provider: 'codex',
+          ready: false,
+          problem: 'not logged in',
+          detail: null,
+          loginHelps: true,
+        },
+        {
+          provider: 'opencode',
+          ready: false,
+          problem: 'not installed',
+          detail: null,
+          loginHelps: true,
+        },
+        {
+          provider: 'cursor',
+          ready: false,
+          problem: 'login not checked yet',
+          detail: null,
+          loginHelps: true,
+        },
       ])
     );
     expect(states.map((p) => [p.id, p.state])).toEqual([
@@ -54,10 +72,27 @@ describe('buddyProviders', () => {
           ready: false,
           problem: 'login could not be checked',
           detail: 'It may be too old.',
+          loginHelps: true,
         },
       ])
     );
     expect(claude).toMatchObject({ id: 'claude', state: 'sign-in', detail: 'It may be too old.' });
+  });
+
+  it('passes on that signing in would not make a provider ready', () => {
+    const [, codex] = buddyProviders(
+      PROVIDERS,
+      machine([
+        {
+          provider: 'codex',
+          ready: false,
+          problem: 'not logged in',
+          detail: 'An administrator pins where Codex keeps logins.',
+          loginHelps: false,
+        },
+      ])
+    );
+    expect(codex).toMatchObject({ id: 'codex', state: 'sign-in', loginHelps: false });
   });
 
   it('is still checking everything before this computer reports', () => {
@@ -71,6 +106,7 @@ describe('startButtons', () => {
       ...provider,
       state: entries[provider.id] ?? 'checking',
       detail: null,
+      loginHelps: true,
     }));
   const ids = (buttons: BuddyProvider[] | null) => buttons?.map((provider) => provider.id) ?? null;
 

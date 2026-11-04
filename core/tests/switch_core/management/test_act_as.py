@@ -485,6 +485,10 @@ class TestOperationsTakeTheRoomFromTheHeader:
         assert unknown.status_code == 404
         assert missing.status_code == 400
         assert "Not connected to a room" in missing.json()["detail"]
+        assert (
+            "agent controller running this agent named no room"
+            in (missing.json()["detail"])
+        )
 
     async def test_connect_to_room_checks_membership_and_claims_nothing(
         self, harness: Harness
@@ -519,7 +523,13 @@ class TestOperationsTakeTheRoomFromTheHeader:
         context = CallContext(
             agent_id=agent_id,
             session_key=holder,
-            session=CallerSession(id=holder, host_id="", epoch="", room_id=None),
+            session=CallerSession(
+                id=holder,
+                host_id="",
+                epoch="",
+                room_id=None,
+                placed_by_controller=True,
+            ),
         )
         previous = op_context._protocol
         op_context.init_operations_protocol(protocol)

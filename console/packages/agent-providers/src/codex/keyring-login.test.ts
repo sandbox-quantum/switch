@@ -290,6 +290,14 @@ describe('a Codex session with no login of its own', () => {
     expect(methods(sessionServer())).not.toContain('account/login/start');
   });
 
+  it('recognises a missing getAuthStatus as Codex reports it', async () => {
+    source.authStatus = {
+      error: { code: -32600, message: 'Invalid request: unknown variant `getAuthStatus`' },
+    };
+    const result = await start();
+    expect(result.error?.message).toContain('no longer answers getAuthStatus');
+  });
+
   it('passes on what Codex said when it fails to report its login', async () => {
     source.crash = 'fixture: keyring backend unavailable';
     const result = await start();
