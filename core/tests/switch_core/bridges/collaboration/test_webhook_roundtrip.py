@@ -135,6 +135,28 @@ async def test_example_and_core_room_exchange_threaded_messages_without_a_model(
                 )
             assert len(messages) == 1
             assert messages[0].content["m.relates_to"]["event_id"] == outgoing_id
+            sent = await receiver.post(
+                "/send",
+                headers={"authorization": f"Bearer {ADMIN}"},
+                json={"text": "!help", "thread_id": root, "attachments": []},
+            )
+            assert sent.status_code == 200
+            await demo.flush_once(switch)
+            async with session_factory() as db:
+                commands = list(
+                    (
+                        await db.scalars(
+                            select(Message).where(
+                                Message.room_id == bridge.room_id,
+                                Message.event_type == "com.switch.command",
+                            )
+                        )
+                    ).all()
+                )
+            assert len(commands) == 1
+            assert commands[0].content["command"] == "help"
+            assert commands[0].content["args"] == ""
+            assert commands[0].content["m.relates_to"]["event_id"] == outgoing_id
             assert all(
                 row["state"] == "delivered" for row in (await state(receiver))["outbox"]
             )

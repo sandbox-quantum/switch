@@ -228,10 +228,11 @@ async def test_message_thread_identity_and_attachments_reach_the_callbacks(fixtu
     assert message.attachments[0].data == b"notes"
 
 
-async def test_commands_joins_and_echo_suppression(fixture):
+@pytest.mark.parametrize("event_type", ["command", "message"])
+async def test_commands_joins_and_echo_suppression(fixture, event_type):
     adapter, _, _, callbacks, _ = fixture
     for payload in [
-        event(type="command", text="!invite-agent @worker", thread_id="root"),
+        event(type=event_type, text="!invite-agent @worker", thread_id="root"),
         event(type="channel.join"),
         event(sender={"id": "agent", "name": "worker", "kind": "switch"}),
     ]:
@@ -248,6 +249,44 @@ async def test_commands_joins_and_echo_suppression(fixture):
     )
     callbacks[4].assert_awaited_once()
     callbacks[0].assert_not_awaited()
+
+
+@pytest.mark.parametrize("text", [" !help ", "\n!invite-agent\t@worker\n"])
+async def test_typed_commands_ignore_surrounding_whitespace(fixture, text):
+    adapter, _, _, callbacks, _ = fixture
+    await adapter.dispatch_event(envelope_type="event", payload=event(text=text))
+    command = callbacks[1].call_args.args[0]
+    assert command.command in {"help", "invite-agent"}
+    callbacks[0].assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "text", ["!", "!!help", "!123", "!" + "a" * 65, "Example: !help"]
+)
+async def test_non_commands_remain_messages(fixture, text):
+    adapter, _, _, callbacks, _ = fixture
+    await adapter.dispatch_event(envelope_type="event", payload=event(text=text))
+    assert callbacks[0].call_args.args[0].content == text
+    callbacks[1].assert_not_awaited()
+
+
+async def test_command_like_message_with_an_attachment_keeps_its_file(fixture):
+    adapter, _, _, callbacks, _ = fixture
+    await adapter.dispatch_event(
+        envelope_type="event",
+        payload=event(
+            text="!help",
+            attachments=[
+                {
+                    "name": "note.txt",
+                    "mime_type": "text/plain",
+                    "data_base64": "bm90ZXM=",
+                }
+            ],
+        ),
+    )
+    assert callbacks[0].call_args.args[0].attachments[0].data == b"notes"
+    callbacks[1].assert_not_awaited()
 
 
 async def test_lost_ack_retries_the_identical_event_and_restart_uses_the_same_source_id(

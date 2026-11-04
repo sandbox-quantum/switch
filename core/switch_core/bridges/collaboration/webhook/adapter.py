@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 import time
 import uuid
@@ -319,10 +320,16 @@ class WebhookAdapter(PlatformAdapter):
                 )
             )
             return
-        if event.type == "command":
+        text = event.text.strip()
+        typed_command = (
+            event.type == "message"
+            and not event.attachments
+            and re.match(r"^![A-Za-z][A-Za-z0-9_-]{0,63}(?:\s|$)", text) is not None
+        )
+        if event.type == "command" or typed_command:
             if self._on_command is None:
                 raise BridgeOperationError("The webhook connection is not ready")
-            words = event.text[1:].split(maxsplit=1)
+            words = text[1:].split(maxsplit=1)
             command, args = words[0], words[1] if len(words) > 1 else ""
             await self._on_command(
                 InboundCommand(
