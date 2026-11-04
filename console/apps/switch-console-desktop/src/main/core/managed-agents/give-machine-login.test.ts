@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@main/core/agent-migration/agent-migration', () => ({ agentMigrationService: {} }));
+// Hosted agents v2 off, as on any v1 server: giving a login is upstream's path.
+vi.mock('@main/core/shared-cloud/hosted-v2', () => ({ hostedV2On: async () => false }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock('@main/core/embedded-controller/embedded-controllers', () => ({
   embeddedControllerService: {},

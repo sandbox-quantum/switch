@@ -51,6 +51,8 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import router as controller_router
 from switch_core.gateway.hosted_machines import router as machines_router
+from switch_core.hosted_v2 import _config as hosted_v2_config
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.management.placement import placement_refusal
 from switch_core.process_lease import ProcessLeases
 from switch_core.providers.hosted import HostedControllerSettings
@@ -105,6 +107,8 @@ def _hosted_app(
         hosted_launch_capacity=1,
         hosted_agents_enabled=True,
         third_party_avatars_enabled=True,
+        # The v1/v2 switch as the test runs it, for the v2-only routes' gate.
+        hosted_box_provisioning=process_hosted_v2(),
     )
 
     async def session():
@@ -117,6 +121,7 @@ def _hosted_app(
     app.dependency_overrides[get_session] = session
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_config] = lambda: config
+    app.dependency_overrides[hosted_v2_config] = lambda: config
     app.dependency_overrides[get_current_user] = current_user
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.test"

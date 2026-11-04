@@ -24,8 +24,13 @@ import {
 const WIDTH = 1120;
 
 /** The Admin menu's entries for the signed-in account on `serverId`. */
-export function adminGroupsInScope(serverId: string, serviceConnections: boolean): AdminGroup[] {
+export function adminGroupsInScope(
+  serverId: string,
+  serviceConnections: boolean,
+  sharedCloud = false
+): AdminGroup[] {
   return adminGroups({
+    sharedCloud,
     administers: administersWorkspaceInScope(serverId),
     operator: operatesServer(serverId),
     serviceConnections,

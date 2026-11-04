@@ -3,6 +3,7 @@ import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import ApartmentOutlined from "@mui/icons-material/ApartmentOutlined";
 import DnsOutlined from "@mui/icons-material/DnsOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
+import CloudOutlined from "@mui/icons-material/CloudOutlined";
 import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
 import PowerOutlined from "@mui/icons-material/PowerOutlined";
@@ -32,7 +33,7 @@ import { memo, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router";
 import type { ComponentType, MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
-import { useCurrentTenant } from "../data/hooks";
+import { useCurrentTenant, useHostedV2 } from "../data/hooks";
 import { fetchManagementAvailable } from "../data/management";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
 import ChangePasswordDialog from "./ChangePasswordDialog";
@@ -72,6 +73,12 @@ const ADMIN_ITEMS: NavItem[] = [
   { label: "All workspaces", path: "/operator/workspaces", icon: DnsOutlined },
   { label: "Users", path: "/users", icon: PeopleOutlined },
   { label: "Connectors", path: "/connectors", icon: PowerOutlined },
+];
+
+// People on Core's Switch operator list (`hosted_operator`), not the server
+// admin flag. The page itself asks Core.
+const HOSTED_ITEMS: NavItem[] = [
+  { label: "Hosted", path: "/hosted", icon: CloudOutlined },
 ];
 
 // The rail follows the window's height: at a laptop's it is sized so an
@@ -135,7 +142,7 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
 
 export default memo(function NavRail() {
   const location = useLocation();
-  const { user, session, isOperator, logout, switchTo } = useAuth();
+  const { user, session, isOperator, isHostedOperator, logout, switchTo } = useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -151,6 +158,8 @@ export default memo(function NavRail() {
   };
 
   const { data: tenant } = useCurrentTenant();
+  // The Hosted menu item is hosted agents v2's: shown only when Core says v2 is on.
+  const hostedV2 = useHostedV2() === true;
   const [managementAvailable, setManagementAvailable] = useState(false);
 
   useEffect(() => {
@@ -173,6 +182,7 @@ export default memo(function NavRail() {
     ...(managementAvailable ? MANAGEMENT_ITEMS : []),
     ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
     ...(isOperator ? ADMIN_ITEMS : []),
+    ...(isHostedOperator && hostedV2 ? HOSTED_ITEMS : []),
   ];
   const current = session?.tenant ?? null;
   const others = (session?.tenants ?? []).filter((t) => t.id !== current?.id);

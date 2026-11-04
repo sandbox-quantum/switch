@@ -1,59 +1,91 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
+import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
+import {
+  boxBackends,
+  hasSharedCloudBox,
+} from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
+import { events, rpc } from '@renderer/lib/ipc';
+import type { ServerFeatureFlags } from '@shared/core/feature-flags/feature-flags';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import { featureFlagsChangedChannel } from '@shared/events/featureFlagEvents';
+import {
+  FLAGS_NOT_SIGNED_IN,
+  flagsAnswered,
+  openingSetup,
+  setUpThisComputer,
+  type ThisComputerSetup,
+} from './this-computer-setup';
 
 /**
  * This computer as a machine of the workspace, for the buddy to run on.
  *
+ * `needs-permission`: not a machine of the workspace, and not made one until
+ * the person says so (B38).
  * `starting`: being enrolled, or enrolled and not yet reported to Switch.
  * `failed`: it could not be set up; `error` says why, and nothing pretends
  * the providers are known.
  */
 export type ThisComputer =
+  | { kind: 'needs-permission' }
   | { kind: 'starting' }
   | { kind: 'ready'; machine: OwnedMachine }
   | { kind: 'failed'; error: string };
 
 /**
- * One setup per server at a time: the buddy pages each ask, and a second
+ * One enrolment per server at a time: the buddy pages each ask, and a second
  * enrolment started while the first runs would be refused as a duplicate.
  */
-const settingUp = new Map<string, Promise<void>>();
+const enrolling = new Map<string, Promise<ThisComputerSetup>>();
 
-function ensureRunsAgents(serverId: string, workspaceId: string): Promise<void> {
-  const running = settingUp.get(serverId);
+function setUp(serverId: string, workspaceId: string, allowEnrol: boolean) {
+  const running = enrolling.get(serverId);
   if (running) return running;
-  const attempt = (async () => {
-    const overview = await rpc.embeddedController.getOverview({ serverId, workspaceId });
-    if (overview.unsupportedReason) throw new Error(overview.unsupportedReason);
-    if (overview.enrollment === null)
-      await rpc.embeddedController.enable({ serverId, workspaceId });
-  })().finally(() => settingUp.delete(serverId));
-  settingUp.set(serverId, attempt);
-  return attempt;
+  const attempt = setUpThisComputer(rpc.embeddedController, serverId, workspaceId, allowEnrol);
+  if (!allowEnrol) return attempt;
+  enrolling.set(serverId, attempt);
+  return attempt.finally(() => enrolling.delete(serverId));
 }
 
 /**
- * Makes sure this computer runs managed agents for the workspace, enrolling
- * it when it does not yet, and follows what it reports.
+ * Whether this computer runs managed agents for the workspace, and what it
+ * reports once it does.
  *
  * The buddy always runs on the person's own computer, whatever server they
- * chose, so this happens on every path, in the background, as soon as the
- * workspace is known.
+ * chose. With hosted agents v2 on (`hosted_v2`), opening a page only reads: a
+ * computer that is not yet a machine of the workspace is made one by `allow`,
+ * when the person chooses to (B38). With it off, it is enrolled as soon as the
+ * workspace is known, exactly as upstream does. Nothing happens until the
+ * server's flags are known, so a v2 server never enrols on a first guess.
  */
 export function useThisComputer(serverId: string, workspaceId: string) {
+  // One answer for both the opening and the shared-cloud wording, so neither
+  // lags the other: enrolled by itself only after a good read with v2 off.
+  const answer = useAnsweredFlags(serverId);
+  const hostedV2 = answer.hostedV2 === true;
+  const cloudMachines = useCloudMachines(hostedV2 ? serverId : null);
   const queryClient = useQueryClient();
   const [setupError, setSetupError] = useState<string | null>(null);
+  /** Null until the first read comes back. */
+  const [setup, setSetup] = useState<ThisComputerSetup | null>(null);
 
   useEffect(() => {
+    // B38 (ask first) only with hosted agents v2 on; off, enrol straight away, as upstream.
+    const opening = openingSetup(answer.answered, answer.readOk, answer.hostedV2);
+    if (opening === 'wait') return;
     let cancelled = false;
     void (async () => {
       try {
-        await ensureRunsAgents(serverId, workspaceId);
-        await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
+        const found = await setUp(serverId, workspaceId, opening === 'enrol');
+        if (cancelled) return;
+        setSetup(found);
+        if (found === 'enrolled' && opening === 'enrol')
+          await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
+        // Not enrolled: Console's own look at the providers, so the page can
+        // say what is signed in without enrolling anything.
+        if (found === 'needs-permission') void rpc.embeddedController.precheckProviders();
       } catch (cause) {
         if (!cancelled)
           setSetupError(failureText(cause, 'Could not set this computer up to run agents.'));
@@ -62,6 +94,16 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     return () => {
       cancelled = true;
     };
+  }, [serverId, workspaceId, answer.answered, answer.readOk, answer.hostedV2, queryClient]);
+
+  /**
+   * The person's yes: makes this computer a machine of the workspace. When it
+   * fails it throws, and the computer stays as it was, still to be asked: the
+   * page says why and offers it again (or Not now).
+   */
+  const allow = useCallback(async (): Promise<void> => {
+    setSetup(await setUp(serverId, workspaceId, true));
+    await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
   }, [serverId, workspaceId, queryClient]);
 
   const machines = useQuery({
@@ -97,9 +139,16 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     enabled: !reported,
     refetchInterval: 1_000,
   });
-  const state = thisComputerState(setupError, machines.data);
+  // Asked, not yet allowed, comes first after a failure; otherwise upstream's
+  // `thisComputerState` decides (failed, ready or starting).
+  const state: ThisComputer =
+    !setupError && setup === 'needs-permission'
+      ? { kind: 'needs-permission' }
+      : thisComputerState(setupError, machines.data);
   const earlyProviders = !reported && early.data && early.data.length > 0 ? early.data : null;
-  return { state, recheck, earlyProviders };
+  /** The person's agents run on a shared-cloud box: what the ask says about the rest. */
+  const sharedCloud = hasSharedCloudBox(machines.data, hostedV2, boxBackends(cloudMachines.data));
+  return { state, recheck, earlyProviders, allow, sharedCloud };
 }
 
 /**
@@ -134,3 +183,52 @@ function readyOn(machines: OwnedMachine[] | null | undefined): number {
 export function thisComputerIn(machines: OwnedMachine[] | null | undefined): OwnedMachine | null {
   return machines?.find((m) => m.local?.kind === 'this-computer') ?? null;
 }
+
+/**
+ * The server's flags once they have answered (`flagsAnswered`), kept current:
+ * a read refused before sign-in waits for the read after it, so the buddy
+ * never enrols a v2 server's computer on that first refusal (B38). With `readOk` (the flags were actually read: no error) and `hostedV2` taken
+ * from that same answer, never from an older read. `hostedV2` is null until
+ * answered; a failed read answers with `readOk` false and every flag off.
+ */
+export function useAnsweredFlags(serverId: string | null): {
+  answered: boolean;
+  readOk: boolean;
+  hostedV2: boolean | null;
+} {
+  const [answer, setAnswer] = useState<{
+    answered: boolean;
+    readOk: boolean;
+    hostedV2: boolean | null;
+  }>(NO_ANSWER);
+  useEffect(() => {
+    setAnswer(NO_ANSWER);
+    if (!serverId) return;
+    let current = true;
+    const answerOf = (state: ServerFeatureFlags) =>
+      flagsAnswered(state)
+        ? {
+            answered: true,
+            readOk: state.fetchedAt !== null && state.error === null,
+            hostedV2: state.flags.hosted_v2 === true,
+          }
+        : NO_ANSWER;
+    const off = events.on(featureFlagsChangedChannel, (state) => {
+      if (state.serverId === serverId) setAnswer(answerOf(state));
+    });
+    void rpc.featureFlags.get(serverId).then((res) => {
+      if (!current || !res?.success) return;
+      setAnswer((now) => (now.answered ? now : answerOf(res.data)));
+      // Last read refused for want of a sign-in: read again now that this page is open
+      // (signed in), rather than wait for the next poll. The change event answers.
+      if (res.data.error === FLAGS_NOT_SIGNED_IN) void rpc.featureFlags.refresh();
+    });
+    return () => {
+      current = false;
+      off();
+    };
+  }, [serverId]);
+  return answer;
+}
+
+const NO_ANSWER = { answered: false, readOk: false, hostedV2: null } as const;

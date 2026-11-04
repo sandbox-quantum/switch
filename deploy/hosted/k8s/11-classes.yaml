@@ -1,0 +1,39 @@
+---
+apiVersion: scheduling.k8s.io/v1
+description: 'Placeholders: hold room for one box each, give it up at once.'
+kind: PriorityClass
+metadata:
+  name: switch-placeholder
+preemptionPolicy: Never
+value: -10
+---
+apiVersion: scheduling.k8s.io/v1
+description: Shared per-node services (egress proxy, stand-in AI). Ranked above agent
+  boxes for eviction.
+kind: PriorityClass
+metadata:
+  labels:
+    switch.dev/generation: v3
+  name: switch-shared-services
+preemptionPolicy: PreemptLowerPriority
+value: 900000
+---
+apiVersion: node.k8s.io/v1
+handler: runsc
+kind: RuntimeClass
+metadata:
+  name: gvisor
+scheduling:
+  nodeSelector:
+    switch.dev/pool: agents
+---
+apiVersion: node.k8s.io/v1
+handler: runsc-tuned
+kind: RuntimeClass
+metadata:
+  labels:
+    switch.dev/generation: v3
+  name: gvisor-tuned
+scheduling:
+  nodeSelector:
+    switch.dev/pool: agents

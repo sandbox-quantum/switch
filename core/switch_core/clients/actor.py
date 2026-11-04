@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, Unpack
+from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, Unpack, cast
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -230,6 +230,7 @@ class Actor[ConfigT: ClientConfig]:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        client_txn_id: str | None = None,
     ) -> str | None:
         try:
             result = await self._transport.send_message(
@@ -241,11 +242,25 @@ class Actor[ConfigT: ClientConfig]:
                 mentions=mentions,
                 thread_root_id=thread_root_id,
                 extra_content=extra_content,
+                # Only when keyed, so a transport that predates keys is unchanged.
+                **(
+                    {"client_txn_id": client_txn_id}
+                    if client_txn_id is not None
+                    else {}
+                ),
             )
         except TransportError as exc:
             logger.error("Failed to send message to %s: %s", room_id, exc)
             return None
         return result.event_id
+
+    async def sent_under(self, room_id: str, client_txn_id: str) -> str | None:
+        """The event id this client already sent under `client_txn_id`, if
+        any. None from a transport that predates keys."""
+        lookup = getattr(self._transport, "sent_under", None)
+        if lookup is None:
+            return None
+        return cast("str | None", await lookup(room_id, client_txn_id))
 
     async def send_event(
         self, room_id: str, event_type: str, content: dict[str, object]

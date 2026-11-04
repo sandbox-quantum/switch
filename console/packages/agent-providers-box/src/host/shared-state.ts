@@ -1,0 +1,161 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
+import { z } from 'zod';
+import { Journal } from './journal';
+import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { fenceDeadOwner, ownProcessGroup, ownStartTime } from './process-fence';
+import type { SharedHostOptions } from './shared-host';
+
+export const sharedStateRecordSchema = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('identity'),
+    session: sessionSchema,
+    /**
+     * The Switch API the host first ran against. Not part of the identity:
+     * the server's address can change (a new port, a new relay) while the
+     * agent, session and conversation stay the same.
+     */
+    apiUrl: z.string(),
+    cwd: z.string(),
+    operationId: z.string(),
+  }),
+  z.strictObject({
+    type: z.literal('lease'),
+    snapshot: snapshotSchema,
+    sourceBase: z.number().int().nonnegative(),
+  }),
+  z.strictObject({ type: z.literal('running') }),
+  z.strictObject({ type: z.literal('quiesced') }),
+  /** The host stopped itself after sitting idle; it is started again when needed. */
+  z.strictObject({ type: z.literal('parked') }),
+  /** A room reset or compaction whose follow-up message is owed once it applies. */
+  z.strictObject({
+    type: z.literal('followup'),
+    commandId: z.string(),
+    action: z.enum(['reset', 'compact']),
+    roomId: z.string(),
+    threadId: z.string().nullable(),
+    actorId: z.string(),
+    requesterName: z.string().nullable(),
+    surface: z.string(),
+  }),
+  z.strictObject({
+    type: z.literal('recover'),
+    operationId: z.string(),
+    epoch: z.string(),
+    sourceBase: z.number().int().nonnegative(),
+    throughHostSequence: z.number().int().nonnegative(),
+  }),
+]);
+type Record = z.infer<typeof sharedStateRecordSchema>;
+
+/**
+ * Whether the host at `root` last stopped by parking itself, rather than
+ * stopping, failing or never having run. Read by whatever would otherwise
+ * start every known session at once.
+ */
+export async function hostParked(root: string): Promise<boolean> {
+  let text: string;
+  try {
+    text = await readFile(join(root, 'shared-state.jsonl'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  const last = text
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => sharedStateRecordSchema.parse(JSON.parse(line)).type)
+    .filter((type) => type === 'running' || type === 'parked')
+    .at(-1);
+  return last === 'parked';
+}
+
+export class SharedState {
+  private constructor(
+    readonly journal: Journal<Record>,
+    private readonly lock: string,
+    private readonly root: string,
+    private readonly owner: { pid: number; group: number | null; token: string; started?: number }
+  ) {}
+
+  static async open(options: SharedHostOptions): Promise<SharedState> {
+    await mkdir(options.root, { recursive: true, mode: 0o700 });
+    const lock = join(options.root, 'shared-owner.lock');
+    const started = ownStartTime();
+    const owner = {
+      pid: process.pid,
+      group: await ownProcessGroup(),
+      token: randomUUID(),
+      ...(started === null ? {} : { started }),
+    };
+    await withOwnershipLock(options.root, async () => {
+      try {
+        const owner = z
+          .strictObject({
+            token: z.string().optional(),
+            pid: z.number().int().positive(),
+            group: z.number().int().positive().nullable(),
+            started: z.number().int().positive().optional(),
+          })
+          .parse(JSON.parse(await readFile(lock, 'utf8')));
+        await fenceDeadOwner(owner.pid, owner.group, owner.started ?? null, lock);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      await replaceOwner(lock, owner);
+    });
+    try {
+      const journal = await Journal.load(join(options.root, 'shared-state.jsonl'), (value) =>
+        sharedStateRecordSchema.parse(value)
+      );
+      const first = journal.records[0];
+      const apiUrl = new URL(options.agentApiUrl).href;
+      const cwd = resolve(options.input.cwd);
+      if (first) {
+        if (
+          first.type !== 'identity' ||
+          first.cwd !== cwd ||
+          first.session.sessionId !== options.session.sessionId ||
+          first.session.agentId !== options.session.agentId ||
+          first.session.hostId !== options.session.hostId ||
+          first.session.provider !== options.session.provider
+        )
+          throw new Error('Shared host saved identity does not match the configuration.');
+        if (first.apiUrl !== apiUrl)
+          console.warn(
+            `Session ${options.session.sessionId} first ran against the Switch API at ${first.apiUrl}; it now uses ${apiUrl}.`
+          );
+      } else
+        await journal.append({
+          type: 'identity',
+          session: options.session,
+          apiUrl,
+          cwd,
+          operationId: randomUUID(),
+        });
+      return new SharedState(journal, lock, options.root, owner);
+    } catch (error) {
+      await releaseOwner(options.root, lock, owner);
+      throw error;
+    }
+  }
+
+  get identity(): Extract<Record, { type: 'identity' }> {
+    const first = this.journal.records[0];
+    if (first.type !== 'identity') throw new Error('Missing shared host identity.');
+    return first;
+  }
+
+  latest<T extends Record['type']>(type: T): Extract<Record, { type: T }> | undefined {
+    return [...this.journal.records].reverse().find((record) => record.type === type) as
+      | Extract<Record, { type: T }>
+      | undefined;
+  }
+
+  async unlock(): Promise<void> {
+    await releaseOwner(this.root, this.lock, this.owner);
+  }
+}

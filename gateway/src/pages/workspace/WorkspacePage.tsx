@@ -15,7 +15,7 @@ export default function WorkspacePage() {
       <Stack spacing={0.5} mb={3}>
         <Typography variant="h5">{tenant.name}</Typography>
         <Typography variant="body2" sx={{ color: "text.secondary" }}>
-          You are {tenant.role === "admin" ? "an admin" : `a ${tenant.role}`} of this workspace.
+          You are {/^[aeiou]/i.test(tenant.role) ? "an" : "a"} {tenant.role} of this workspace.
         </Typography>
       </Stack>
       <Stack spacing={4}>

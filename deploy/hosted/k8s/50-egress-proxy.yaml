@@ -1,0 +1,304 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: squid
+  namespace: egress-proxy
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: squid
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations: {}
+      labels:
+        app: squid
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - sh
+        - "/etc/squid/reload/run.sh"
+        image: public.ecr.aws/ubuntu/squid@sha256:c9f5212b147a766529c7b026e2bebed37b998d33d0066b658596af5eba7cc65c
+        imagePullPolicy: IfNotPresent
+        name: squid
+        ports:
+        - containerPort: 3128
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 13
+          runAsNonRoot: true
+          runAsUser: 13
+        terminationMessagePath: "/dev/termination-log"
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: "/etc/squid/conf.d"
+          name: conf
+        - mountPath: "/var/log/squid"
+          name: logs
+        - mountPath: "/var/spool/squid"
+          name: spool
+        - mountPath: "/run"
+          name: run
+        - mountPath: "/tmp"
+          name: tmp
+        - mountPath: "/etc/squid/boxes"
+          name: boxes
+          readOnly: true
+        - mountPath: "/etc/squid/passwd"
+          name: passwd
+          readOnly: true
+        - mountPath: "/etc/squid/reload"
+          name: reload
+          readOnly: true
+      - args:
+        - sh
+        - "-c"
+        - until [ -f /var/log/squid/access.log ]; do sleep 1; done; exec tail -F /var/log/squid/access.log
+        image: public.ecr.aws/docker/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+        imagePullPolicy: IfNotPresent
+        name: access-log
+        resources:
+          limits:
+            cpu: 50m
+            memory: 64Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 13
+          runAsNonRoot: true
+          runAsUser: 13
+        terminationMessagePath: "/dev/termination-log"
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: "/var/log/squid"
+          name: logs
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      priorityClassName: switch-shared-services
+      restartPolicy: Always
+      runtimeClassName: gvisor
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 13
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: squid-conf
+        name: conf
+      - emptyDir: {}
+        name: logs
+      - emptyDir: {}
+        name: spool
+      - emptyDir: {}
+        name: run
+      - emptyDir: {}
+        name: tmp
+      - configMap:
+          defaultMode: 420
+          name: squid-boxes
+        name: boxes
+      - name: passwd
+        secret:
+          defaultMode: 288
+          secretName: squid-passwd
+      - configMap:
+          defaultMode: 365
+          name: squid-reload
+        name: reload
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-cluster-report-services
+  namespace: egress-proxy
+rules:
+- apiGroups:
+  - apps
+  resourceNames:
+  - squid
+  resources:
+  - deployments
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-egress-lists
+  namespace: egress-proxy
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - squid-boxes
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - patch
+- apiGroups:
+  - ''
+  resourceNames:
+  - squid-passwd
+  resources:
+  - secrets
+  verbs:
+  - get
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-cluster-report-services
+  namespace: egress-proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-cluster-report-services
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-controller
+  namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-egress-lists
+  namespace: egress-proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-egress-lists
+subjects:
+- kind: ServiceAccount
+  name: egress-lists
+  namespace: egress-lists
+---
+apiVersion: v1
+data:
+  squid.conf: |
+    http_port 3128
+    max_filedescriptors 4096   # default 65536 sizes tables for 64k sockets; we need a few hundred
+    acl SSL_ports port 443
+    acl CONNECT method CONNECT
+    # Allow-list: GitHub and npm, plus the AI provider hosts below.
+    # -n: match names only; never look up the name behind a bare IP (a request by IP must not match an allowed name)
+    acl allowed dstdomain -n github.com api.github.com codeload.github.com objects.githubusercontent.com raw.githubusercontent.com
+    acl allowed dstdomain -n registry.npmjs.org
+    # Vertex AI: the global endpoint and token refresh. Exact host names only (no leading dot, so no subdomains):
+    #   aiplatform.googleapis.com  the global Vertex endpoint (Claude calls)
+    #   oauth2.googleapis.com      refreshing the credential into a short-lived access token
+    # Any other host a CLI asks for shows as TCP_DENIED in the proxy log; each extra host is a reviewed change.
+    # Telemetry stays refused (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1).
+    acl allowed dstdomain -n aiplatform.googleapis.com oauth2.googleapis.com
+    # Only with an Anthropic API key instead of Vertex:
+    # acl allowed dstdomain -n api.anthropic.com
+    # Codex, only if it's used (separate line so it can be removed on its own):
+    # acl allowed dstdomain -n api.openai.com auth.openai.com chatgpt.com   (off unless Codex is used)
+    acl agents src __AGENTS_SUBNET__
+    # never forward to private ranges or metadata, even for an allowed name
+    acl private_dst dst 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10
+    # Per-box logins: the generator's hashes; a login means only that box's own list.
+    auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwd/passwd
+    auth_param basic realm switch-egress
+    auth_param basic children 5 startup=1 idle=1
+    auth_param basic credentialsttl 5 minutes
+    acl has_login req_header Proxy-Authorization .
+    http_access deny private_dst
+    http_access deny !CONNECT
+    http_access deny CONNECT !SSL_ports
+    include /etc/squid/boxes/*.conf
+    http_access deny all
+    cache deny all
+    strip_query_terms on   # never log query strings (CONNECT tunnels only log host:port anyway)
+    logfile_rotate 0
+    access_log stdio:/var/log/squid/access.log
+    cache_log /var/log/squid/cache.log
+    pinger_enable off   # the ICMP pinger needs NET_RAW, which this pod rightly lacks
+    pid_filename none
+    coredump_dir /tmp
+kind: ConfigMap
+metadata:
+  name: squid-conf
+  namespace: egress-proxy
+---
+apiVersion: v1
+data:
+  run.sh: |
+    #!/bin/sh
+    # squid's reload wrapper: reload on changed box files or hashes, only after a clean parse.
+    # It checksums the files; it never prints their content.
+    conf=/etc/squid/conf.d/squid.conf
+    sig() { find -L /etc/squid/boxes /etc/squid/passwd -type f ! -path '*/..*' 2>/dev/null | sort | xargs cat 2>/dev/null | cksum; }
+    squid -N -f "$conf" &
+    pid=$!
+    echo "squid-reload: squid started (pid $pid); watching the box files every 30 s"
+    trap 'kill -TERM "$pid" 2>/dev/null; wait "$pid"; exit 0' TERM INT
+    last=$(sig)
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 30 & wait $!
+      now=$(sig)
+      [ "$now" = "$last" ] && continue
+      if squid -k parse -f "$conf" >/dev/null 2>&1; then
+        kill -HUP "$pid" && echo "squid-reload: files changed, parse ok, reloaded"
+      else
+        echo "squid-reload: ERROR files changed but squid -k parse failed; kept the running config"
+      fi
+      last=$now
+    done
+    wait "$pid"; exit $?
+kind: ConfigMap
+metadata:
+  labels:
+    app: squid
+  name: squid-reload
+  namespace: egress-proxy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: squid
+  namespace: egress-proxy
+spec:
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - port: 3128
+    protocol: TCP
+    targetPort: 3128
+  selector:
+    app: squid
+  sessionAffinity: None
+  type: ClusterIP

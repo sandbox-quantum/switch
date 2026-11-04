@@ -1,6 +1,7 @@
 import { Alert, Box, Button, CircularProgress } from "@mui/material";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
+import { useHostedV2 } from "./data/hooks";
 import { appView, readPendingInvite } from "./data/sessionState";
 import PageShell from "./layout/PageShell";
 import AgentDetailPage from "./pages/agents/AgentDetailPage";
@@ -9,6 +10,7 @@ import LoginPage from "./pages/auth/LoginPage";
 import CollaborationsPage from "./pages/collaborations/CollaborationsPage";
 import ConnectorAppsPage from "./pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "./pages/ecosystem/EcosystemGraphPage";
+import HostedPage from "./pages/hosted/HostedPage";
 import MachinesPage from "./pages/machines/MachinesPage";
 import RegistrationKeysPage from "./pages/registration-keys/RegistrationKeysPage";
 import DocumentDetailPage from "./pages/resources/DocumentDetailPage";
@@ -148,11 +150,20 @@ export function AppRoutes() {
         <Route path="workspace" element={<WorkspacePage />} />
         <Route path="organization" element={<OrganizationPage />} />
         <Route path="operator/workspaces" element={<OperatorWorkspacesPage />} />
+        <Route path="hosted/*" element={<HostedRoute />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />
       <Route path="/login" element={<Navigate to="/" replace />} />
     </Routes>
   );
+}
+
+/** The Hosted pages are hosted agents v2's: with v2 off, or Core's flag
+ * unreadable, `/hosted/*` goes home rather than showing them. */
+function HostedRoute() {
+  const hostedV2 = useHostedV2();
+  if (hostedV2 === null) return <CircularProgress />;
+  return hostedV2 ? <HostedPage /> : <Navigate to="/" replace />;
 }
 
 export default function App() {

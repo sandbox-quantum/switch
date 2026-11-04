@@ -18,6 +18,8 @@ interface AuthState {
   // signed out, so the app can say so instead of showing the login page.
   loadError: string | null;
   isOperator: boolean;
+  // A hint for the nav only: the Hosted page checks access with Core itself.
+  isHostedOperator: boolean;
   canAdminTenant: boolean;
   refresh: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
@@ -102,6 +104,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     loadError,
     isOperator: session?.user.is_operator ?? false,
+    isHostedOperator: session?.user.hosted_operator === true,
     canAdminTenant: sessionCanAdminTenant(session),
     refresh,
     login,

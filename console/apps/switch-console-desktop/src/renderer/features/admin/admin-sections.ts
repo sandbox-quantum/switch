@@ -1,4 +1,4 @@
-export type AdminSection = 'connectors' | 'apps';
+export type AdminSection = 'connectors' | 'apps' | 'cloud';
 
 /**
  * An entry in the Admin page's side menu: one of the page's own sections, or
@@ -12,6 +12,7 @@ export type AdminScope = 'workspace' | 'server';
 export const ADMIN_MENU_LABELS = {
   connectors: 'Connectors',
   apps: 'Connector apps',
+  cloud: 'Shared machines',
   status: 'Status',
 } as const satisfies Record<AdminMenuItem, string>;
 
@@ -33,6 +34,12 @@ export function adminGroups(person: {
   operator: boolean;
   serviceConnections: boolean;
   managed: boolean;
+  /**
+   * Whether the server shows this person the shared machines underneath the
+   * cloud agents. It answers that only for a Switch operator, so it sits
+   * under Server, beside the other operator entries.
+   */
+  sharedCloud?: boolean;
 }): AdminGroup[] {
   const { serviceConnections } = person;
   const groups: AdminGroup[] = [
@@ -44,6 +51,7 @@ export function adminGroups(person: {
       scope: 'server',
       items: [
         ...(person.managed ? (['status'] as const) : []),
+        ...(person.sharedCloud ? (['cloud'] as const) : []),
         ...(serviceConnections && person.operator ? (['apps'] as const) : []),
       ],
     },

@@ -31,7 +31,8 @@ const propagateServerApiUrl = vi.hoisted(() => vi.fn());
 const followServerApiUrl = vi.hoisted(() => vi.fn());
 const listCloudMachines = vi.hoisted(() => vi.fn());
 const ensureCloudMachine = vi.hoisted(() => vi.fn());
-const serverFlags = vi.hoisted(() => ({ hosted_agents: true }));
+const serverFlags = vi.hoisted((): Record<string, boolean> => ({ hosted_agents: true }));
+const gatewayFetch = vi.hoisted(() => vi.fn());
 
 // Stub the modules the controller imports that would otherwise pull electron /
 // ssh / agent side effects at load.
@@ -92,8 +93,12 @@ vi.mock('@main/core/workspaces/workspace-session', async (importOriginal) => ({
   },
   workspaceServer: async () => ({ id: 'srv', name: 'S' }),
 }));
+// The dev-only shared-cloud mock stays off, as in any release build.
+vi.mock('@main/core/shared-cloud/mock-mode', () => ({ sharedCloudMock: () => null }));
 vi.mock('./gateway-client', () => ({
   fetchMe,
+  gatewayFetch,
+  fetchManagedAgents: vi.fn(),
   listCloudMachines,
   ensureCloudMachine,
   agentExistsOnServer: vi.fn(),
@@ -946,5 +951,36 @@ describe('cloud machines', () => {
       'does not have cloud machines turned on'
     );
     expect(ensureCloudMachine).not.toHaveBeenCalled();
+  });
+});
+
+// The v1/v2 switch: with Core's hosted_v2 off, the shared-cloud RPCs reach
+// nothing, even when the renderer calls them directly.
+describe('the shared-cloud RPCs and hosted_v2', () => {
+  beforeEach(() => {
+    gatewayFetch.mockReset();
+    delete serverFlags.hosted_v2;
+  });
+
+  it('send no request to /shared-cloud/* with hosted_v2 off, or missing from an older Core', async () => {
+    expect(await switchServersController.sharedCloudAgents('server-1')).toBeNull();
+    expect(await switchServersController.sharedCloudOverview('server-1')).toBeNull();
+    serverFlags.hosted_v2 = false;
+    expect(await switchServersController.sharedCloudAgents('server-1')).toBeNull();
+    expect(await switchServersController.sharedCloudOverview('server-1')).toBeNull();
+    expect(gatewayFetch).not.toHaveBeenCalled();
+  });
+
+  it('ask Core with hosted_v2 on', async () => {
+    serverFlags.hosted_v2 = true;
+    gatewayFetch.mockResolvedValue({ json: async () => ({ available: true, agents: [] }) });
+    expect(await switchServersController.sharedCloudAgents('server-1')).toEqual([]);
+    expect(gatewayFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'server-1' }),
+      '/shared-cloud/agents',
+      {
+        authenticated: true,
+      }
+    );
   });
 });

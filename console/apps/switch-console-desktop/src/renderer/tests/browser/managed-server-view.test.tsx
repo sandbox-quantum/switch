@@ -68,6 +68,8 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
     get servers() {
       return [state.server];
     },
+    // Read by the shared-cloud queries to key them per signed-in user.
+    statusFor: () => null,
   },
 }));
 vi.mock('@renderer/features/switch-servers/local-server-store', () => ({

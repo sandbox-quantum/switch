@@ -126,6 +126,10 @@ def test_the_page_list_is_exactly_the_dashboards_routes() -> None:
         "/agents",
         "/agents/4b1d",
         "/workspace",
+        "/hosted",
+        "/hosted/",
+        "/hosted/boxes",
+        "/hosted/audit/ev-42",
     ],
 )
 def test_a_dashboard_path_is_a_page(path: str) -> None:
@@ -144,10 +148,39 @@ def test_a_dashboard_path_is_a_page(path: str) -> None:
         "/v1/management/controllers",
         "/version",
         "",
+        "/hostedx",
+        "/gateway/hosted/boxes",
     ],
 )
 def test_any_other_path_is_not_a_page(path: str) -> None:
     assert not is_page(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/hosted/../secret.txt",
+        "/hosted/../../etc/passwd",
+        "/hosted/%2e%2e/secret.txt",
+        "/hosted/%2e%2e/%2e%2e/etc/passwd",
+        "/hosted/..%2fsecret.txt",
+        "/hosted/boxes/../../secret.txt",
+    ],
+)
+def test_the_hosted_splat_never_serves_a_file_off_the_build(
+    dist: Path, path: str
+) -> None:
+    """Security: anything under `/hosted/` is a page, so it only
+    ever gets `index.html`, never a file the rest of the path names, inside
+    the build or beside it. A client that folds the dots first sends a path
+    outside `/hosted`, which reaches the app and is refused there (401)."""
+    (dist.parent / "secret.txt").write_text("zz-secret-beside-the-build")
+    response = _client(dist).get(path)
+    assert response.status_code in (200, 401, 404)
+    assert "zz-secret" not in response.text
+    assert "root:" not in response.text
+    if response.status_code == 200:
+        assert response.text == _INDEX
 
 
 def _agent_bridge_app(gateway_ui: GatewayUi | None) -> FastAPI:
@@ -373,3 +406,17 @@ def test_every_page_load_is_counted_under_one_label(
     }
     # A label per page would be a series per room id.
     assert counts == {GATEWAY_UI_ROUTE: 4.0}
+
+
+# ── Frame and script headers (W.8, the Origin check piece) ──────────────────
+
+
+def test_a_page_carries_the_csp_and_refuses_framing(dist: Path) -> None:
+    for path in ("/", "/rooms", "/assets/index-3f9a1c.js"):
+        response = _client(dist).get(path)
+        assert response.status_code == 200
+        assert response.headers["content-security-policy"] == (
+            "frame-ancestors 'none'; script-src 'self'; object-src 'none'; "
+            "base-uri 'self'; form-action 'self'"
+        )
+        assert response.headers["x-frame-options"] == "DENY"

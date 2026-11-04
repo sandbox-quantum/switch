@@ -23,8 +23,9 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
@@ -50,12 +51,16 @@ from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings
 from switch_core.management.connection_ledger import ControllerConnectionLedger
 from switch_core.management.controller_routes import router as controller_router
-from switch_core.management.dependencies import init_management_dependencies
+from switch_core.management.dependencies import (
+    init_management_dependencies,
+    require_management_workspace,
+)
 from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
 from switch_core.management.service import ManagementService, ManagementSettings
 from switch_core.management.signals import ControllerSignals
 from switch_core.process_lease import ProcessLease
+from switch_core.providers.hosted import load_hosted_settings, tenant_allowed
 from switch_core.signals import SignalBus
 from switch_core.user_changes import UserChangePublisher
 
@@ -93,7 +98,11 @@ class Management:
         mount_gateway_routes(gateway_app)
         protocol.set_agent_removal_listener(self.agent_removed)
         protocol.set_agent_rename_listener(self.agent_renamed)
-        enable_agent_management(self.agent_operations)
+        enable_agent_management(
+            self.agent_operations,
+            self.authenticator.workspace_allowed,
+            self.authenticator.workspace_restricted,
+        )
 
     async def agent_removed(self, tenant_id: str, agent_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -136,12 +145,15 @@ def build_management(
     third_party_avatars: bool,
     controller_release: ControllerRelease | None,
     session_factory: async_sessionmaker[AsyncSession],
+    wait_limit_seconds: int = 600,
     presence: ControllerPresence,
     auth_cache: ControllerAuthCache,
     clock: Callable[[], datetime],
     signal_bus: SignalBus,
     lease: ProcessLease,
     user_changes: UserChangePublisher,
+    workspace_allowed: Callable[[str], bool] = lambda _tenant_id: True,
+    workspace_restricted: bool = False,
 ) -> Management:
     process_id = lease.process_id
     if signal_bus.process_id != process_id:
@@ -183,6 +195,7 @@ def build_management(
             server_url=server_url,
             third_party_avatars=third_party_avatars,
             controller_release=controller_release,
+            wait_limit_seconds=wait_limit_seconds,
         ),
         signals=signals,
         user_changes=user_changes,
@@ -203,6 +216,8 @@ def build_management(
         token_secret=token_secret,
         presence=presence,
         auth_cache=auth_cache,
+        workspace_allowed=workspace_allowed,
+        workspace_restricted=workspace_restricted,
     )
     return Management(
         service=service,
@@ -221,9 +236,19 @@ def mount_gateway_routes(gateway_app: FastAPI) -> None:
 
     The one place they are mounted: `Management.install` calls it, and so does
     the end-to-end surface snapshot (`scripts/e2e_surface.py`), which is how a
-    route added here reaches the coverage gate.
+    route added here reaches the coverage gate. Each answers only in a workspace
+    agent management serves (`require_management_workspace`).
     """
-    gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
+    gateway_app.include_router(
+        gateway_router,
+        prefix=GATEWAY_PREFIX,
+        dependencies=[Depends(require_management_workspace)],
+    )
+
+
+def _management_tenant_ids(path: str | None) -> list[str] | None:
+    settings = load_hosted_settings(path)
+    return None if settings is None else settings.management_tenant_ids
 
 
 def create_management(
@@ -241,6 +266,7 @@ def create_management(
             "The agent_management feature flag is on without CONTROLLER_TOKEN_SECRET; the "
             "config validator should have refused this"
         )
+    tenant_ids = _management_tenant_ids(config.hosted_controller_config_path)
     return build_management(
         token_secret=config.controller_token_secret,
         status_interval_seconds=config.controller_status_interval_seconds,
@@ -248,6 +274,7 @@ def create_management(
         third_party_avatars=config.third_party_avatars_enabled,
         controller_release=config.controller_release,
         session_factory=session_factory,
+        wait_limit_seconds=config.hosted_wait_limit_minutes * 60,
         presence=presence,
         # The agent API-key cache's bound: the longest a controller revoked
         # by any path that does not go through `ControllerPresence` could go
@@ -261,4 +288,6 @@ def create_management(
         signal_bus=signal_bus,
         lease=lease,
         user_changes=user_changes,
+        workspace_allowed=partial(tenant_allowed, tenant_ids),
+        workspace_restricted=tenant_ids is not None,
     )

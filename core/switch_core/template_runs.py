@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from switch_core.addressing import AddressingRule, owner_only_policy
 from switch_core.agent_refusals import AgentRefused
 from switch_core.authz import Principal, can
+from switch_core.bridges.agent.operations.agent_management import management_off_reason
 from switch_core.bridges.agent.protocol.agent_core import VALID_AGENT_NAME_RE
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.bridges.agent.protocol.agent_management import (
@@ -234,14 +235,10 @@ class TemplateAgents:
         if not plans:
             return []
         if self._management is None:
+            off_reason = management_off_reason()
             raise AgentsNotCreated(
                 [
-                    Problem(
-                        plan.slot,
-                        "agent_management_off",
-                        "agent management is not enabled on this Switch server, "
-                        "so it cannot create agents on a machine.",
-                    )
+                    Problem(plan.slot, "agent_management_off", off_reason)
                     for plan in plans
                 ]
             )

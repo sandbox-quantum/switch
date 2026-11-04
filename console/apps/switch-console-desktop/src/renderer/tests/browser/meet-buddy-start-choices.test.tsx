@@ -82,4 +82,37 @@ describe('Meet switch-buddy start choices', () => {
     expect(buttons()).toEqual([]);
     expect(container!.textContent).toContain('Checking AI providers…');
   });
+
+  // B38 follow-up: a failed provider check must still offer the ask and Not now.
+  it('says the providers could not be checked, and still asks and offers Not now', async () => {
+    const on = handlers();
+    await render({
+      checking: false,
+      checkFailed: true,
+      ready: [],
+      starting: null,
+      ask: { adding: false, sharedCloud: false },
+      ...on,
+    });
+    const text = container!.textContent ?? '';
+    expect(text).not.toContain('Checking AI providers…');
+    expect(text).toContain('Nothing is added until you choose.');
+    expect(text).toContain(
+      'Couldn’t check this computer’s AI providers. You can still choose Not now.'
+    );
+    expect(buttons()).toEqual(['Not now', 'Set up AI provider']);
+    await act(async () => container!.querySelectorAll('button')[0]!.click());
+    expect(on.onSkip).toHaveBeenCalled();
+  });
+
+  it('shows no such line when the check worked', async () => {
+    await render({
+      checking: false,
+      ready: [],
+      starting: null,
+      ask: { adding: false, sharedCloud: false },
+      ...handlers(),
+    });
+    expect(container!.textContent).not.toContain('Couldn’t check');
+  });
 });

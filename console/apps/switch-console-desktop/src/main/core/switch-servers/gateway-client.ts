@@ -22,6 +22,7 @@ import type {
 } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import { parseStopReason, type StopReason } from '@shared/core/stop-reasons/stop-reasons';
 import {
   type ConnectionAgent,
   type ConnectionCatalogEntry,
@@ -4014,6 +4015,9 @@ export type ManagementController = {
   state: 'online' | 'offline' | 'unknown' | 'revoked';
   lastSeenAt: string | null;
   revokedAt: string | null;
+  /** When Core created this controller (V3b: a repair compares it with the revoked one's `revokedAt`);
+   * null or absent from a server that predates it. */
+  createdAt?: string | null;
   /** Each provider as the controller last reported it; empty before it has reported. */
   providers: ControllerProviderReport[];
   /**
@@ -4023,6 +4027,8 @@ export type ManagementController = {
   workspacesDir: string | null;
   /** Its operating system as it enrolled (`macos`, `linux`, `windows`); null when not known. */
   os: string | null;
+  /** The version of that system as it enrolled (a kernel release on Linux); null when not known. */
+  osVersion?: string | null;
   /**
    * The key provider logins given to this machine are sealed to; null when
    * its controller has none (it keeps no key, or predates sealed logins).
@@ -4073,7 +4079,20 @@ export type ManagedAgent = {
     detail: string | null;
     /** The absolute working directory it runs in; null until the machine resolved one. */
     directory: string | null;
+    /**
+     * Where its conversation is, as the controller reports it on the shared
+     * cloud: loaded (`active`), resuming after a message (`waking`), or saved
+     * and unloaded to save memory (`parked`). Absent where it isn't reported.
+     */
+    session?: 'active' | 'waking' | 'parked' | null;
+    /**
+     * Conversations waiting for room in a full shared-cloud box, as its
+     * controller reports them; absent when nothing waits.
+     */
+    waitingForRoom?: { count: number; oldestSince: string | null } | null;
   } | null;
+  /** Why it stopped or can't take work, decided by the server (visibility V2); null when nothing stands in the way. */
+  stopReason?: StopReason | null;
 };
 
 type ManagementControllerJson = {
@@ -4084,9 +4103,10 @@ type ManagementControllerJson = {
   state: 'online' | 'offline' | 'unknown' | 'revoked';
   last_seen_at: string | null;
   revoked_at: string | null;
+  created_at?: string | null;
   status?: unknown;
   workspaces_dir?: string | null;
-  platform?: { os: string } | null;
+  platform?: { os: string; os_version?: string } | null;
   public_key?: { alg: string; key: string; key_id: string } | null;
 };
 
@@ -4121,7 +4141,11 @@ type ManagedAgentJson = {
     reason?: string | null;
     detail?: string | null;
     directory?: string | null;
+    session?: unknown;
+    waiting_for_room?: unknown;
   } | null;
+  /** Visibility V2: a fixed code and times; absent from older servers. */
+  stop_reason?: unknown;
 };
 
 /**
@@ -4168,9 +4192,11 @@ export async function fetchManagementControllers(
     state: json.state,
     lastSeenAt: json.last_seen_at,
     revokedAt: json.revoked_at,
+    createdAt: json.created_at ?? null,
     providers: providerReports(json.status),
     workspacesDir: json.workspaces_dir ?? null,
     os: json.platform?.os ?? null,
+    osVersion: json.platform?.os_version ?? null,
     sealingKey:
       json.public_key?.alg === 'X25519'
         ? { key: json.public_key.key, keyId: json.public_key.key_id }
@@ -4201,6 +4227,22 @@ export async function giveMachineLogin(
   );
   const body = (await res.json()) as { login: { revision: number }; operation: { id: string } };
   return { operationId: body.operation.id, revision: body.login.revision };
+}
+
+/**
+ * V3b: the owner repairs their cloud box whose controller can't sign in
+ * (`POST /gateway/management/controllers/{id}/repair`). Core revokes it with
+ * `reenrol_same_box`, and the box enrols again as the same box. Refused unless
+ * the server is HTTPS or loopback, the same rule as giving a login, since the
+ * re-seal that follows trusts the new key this server hands over.
+ */
+export async function repairController(server: SwitchServer, controllerId: string): Promise<void> {
+  if (!isHttpsOrLoopback(new URL(server.url)))
+    throw new Error('Repairing a cloud box requires HTTPS.');
+  await managementFetch(server, `/controllers/${encodeURIComponent(controllerId)}/repair`, {
+    method: 'POST',
+    authenticated: true,
+  });
 }
 
 /** Takes back the provider login given to a machine. */
@@ -4290,6 +4332,19 @@ function machineOf(json: ManagedAgentJson): ManagedMachine | null | undefined {
   };
 }
 
+/** Conversations waiting for room, or null unless the report names at least one. */
+function waitingForRoom(value: unknown): { count: number; oldestSince: string | null } | null {
+  if (!value || typeof value !== 'object') return null;
+  const { count, oldest_since } = value as { count?: unknown; oldest_since?: unknown };
+  if (typeof count !== 'number' || !Number.isInteger(count) || count <= 0) return null;
+  return { count, oldestSince: typeof oldest_since === 'string' ? oldest_since : null };
+}
+
+/** The session state the server reports, or null for anything it doesn't name. */
+function sessionState(value: unknown): 'active' | 'waking' | 'parked' | null {
+  return value === 'active' || value === 'waking' || value === 'parked' ? value : null;
+}
+
 function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
   return {
     agentId: json.agent_id,
@@ -4311,6 +4366,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
     directory: typeof json.definition?.directory === 'string' ? json.definition.directory : null,
     autoMode: json.definition?.auto_mode === true,
     autoApprove: json.definition?.auto_approve === true,
+    stopReason: parseStopReason(json.stop_reason),
     status: json.status
       ? {
           process: json.status.process,
@@ -4318,6 +4374,13 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
           reason: json.status.reason ?? null,
           detail: json.status.detail ?? null,
           directory: json.status.directory ?? null,
+          // Only where the server reports it, so older servers' agents read as before.
+          ...(sessionState(json.status.session)
+            ? { session: sessionState(json.status.session) }
+            : {}),
+          ...(waitingForRoom(json.status.waiting_for_room)
+            ? { waitingForRoom: waitingForRoom(json.status.waiting_for_room) }
+            : {}),
         }
       : null,
   };

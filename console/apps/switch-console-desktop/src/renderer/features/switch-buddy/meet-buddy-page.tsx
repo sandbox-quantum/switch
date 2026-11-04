@@ -14,6 +14,7 @@ import { buddyProviders, startButtons } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
 import { MeetBuddyIntro } from './meet-buddy-intro';
 import { ProviderSetup } from './provider-setup';
+import { CHECK_FAILED_LINE, ThisComputerAsk } from './this-computer-ask';
 import { useStartBuddy } from './use-start-buddy';
 import { useThisComputer } from './use-this-computer';
 
@@ -34,8 +35,11 @@ const CHECK_PATIENCE_MS = 45_000;
  * there. Someone who already has a buddy (replaying these pages) is offered
  * to open it instead.
  *
- * This computer starts running agents for the workspace as the page opens, so
- * what its providers are ready for is known by the time it has been read.
+ * Opening the page changes nothing (B38). A computer already running agents
+ * for the workspace carries on; one that is not is shown what starting does,
+ * and becomes a machine of the workspace only when a Start is pressed, with
+ * Not now always there to decline. What its providers are ready for comes
+ * from Console's own check until then.
  */
 export const MeetBuddyPage = observer(function MeetBuddyPage({
   serverId,
@@ -54,7 +58,8 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   const exit = useWizardExit();
   const [settingUp, setSettingUp] = useState(false);
   const thisComputer = useThisComputer(serverId, workspaceId);
-  const { state: computer, earlyProviders } = thisComputer;
+  const { state: computer, earlyProviders, allow, sharedCloud } = thisComputer;
+  const askFirst = computer.kind === 'needs-permission';
   // What this computer's controller reports, or until it does, what Console
   // found checking the providers as onboarding opened.
   const reported = useMemo(
@@ -88,10 +93,12 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     [firstDecided, providers]
   );
   const existing = findBuddy(useManagedAgents(serverId).data);
-  const { starting, error, start } = useStartBuddy({
+  // A Start on a computer not yet added (B38) adds it first, then starts once it reports.
+  const { starting, error, start, adding } = useStartBuddy({
     serverId,
     workspaceId,
     computer,
+    allow,
     entryPoint: 'onboarding',
     onCreated,
   });
@@ -165,6 +172,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
             checking={computer.kind !== 'failed' && !checked}
             ready={ready}
             starting={starting}
+            ask={askFirst ? { adding, sharedCloud } : null}
             onStart={start}
             onSetUp={openSetup}
             onSkip={skip}
@@ -198,11 +206,17 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
  * provider already signed in, those are the way, beside another provider; no
  * Skip, though the flow's own way out stays at the top. With none, set one up
  * or skip.
+ *
+ * `ask`: this computer is not a machine of the workspace yet (B38). What
+ * starting does is said above the choices, a Start adds it ("Adding this
+ * computer…" while it does), and Not now is always offered.
  */
 export function StartChoices({
   checking,
   ready,
   starting,
+  ask = null,
+  checkFailed = false,
   onStart,
   onSetUp,
   onSkip,
@@ -210,6 +224,9 @@ export function StartChoices({
   checking: boolean;
   ready: { id: string; name: string }[];
   starting: string | null;
+  ask?: { adding: boolean; sharedCloud: boolean } | null;
+  /** The providers couldn't be checked: said plainly, with the ask and Not now still offered. */
+  checkFailed?: boolean;
   onStart: (providerId: string) => void;
   onSetUp: () => void;
   onSkip: () => void;
@@ -231,6 +248,7 @@ export function StartChoices({
         </span>
       ) : shown === 'signed-in' ? (
         <>
+          {ask && <ThisComputerAsk sharedCloud={ask.sharedCloud} action="start" />}
           <p className="text-sm text-foreground-muted">How’d you like to power switch-buddy?</p>
           <div className="flex flex-wrap items-center justify-center gap-2">
             <span className="text-sm text-foreground-muted">Already signed in:</span>
@@ -246,7 +264,7 @@ export function StartChoices({
                 ) : (
                   <AgentIcon id={provider.id} size={16} />
                 )}
-                {provider.name}
+                {starting === provider.id && ask?.adding ? 'Adding this computer…' : provider.name}
               </Button>
             ))}
             <span className="text-sm text-foreground-muted">or</span>
@@ -254,14 +272,27 @@ export function StartChoices({
               Use other AI providers
             </Button>
           </div>
+          {ask && (
+            <Button variant="ghost" onClick={onSkip} disabled={busy}>
+              Not now
+            </Button>
+          )}
         </>
       ) : (
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={onSkip}>
-            Skip
-          </Button>
-          <Button onClick={onSetUp}>Set up AI provider</Button>
-        </div>
+        <>
+          {ask && <ThisComputerAsk sharedCloud={ask.sharedCloud} action="start" />}
+          {checkFailed && (
+            <p role="status" className="max-w-md text-center text-sm text-foreground-muted">
+              {CHECK_FAILED_LINE}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onSkip}>
+              {ask ? 'Not now' : 'Skip'}
+            </Button>
+            <Button onClick={onSetUp}>Set up AI provider</Button>
+          </div>
+        </>
       )}
     </motion.div>
   );

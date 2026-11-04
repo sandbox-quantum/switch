@@ -66,7 +66,8 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { servers: [{ id: 'server', name: 'Dev Server' }] },
+  // `statusFor` is read by the shared-cloud queries to key them per signed-in user.
+  switchServersStore: { servers: [{ id: 'server', name: 'Dev Server' }], statusFor: () => null },
 }));
 
 vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({

@@ -11,6 +11,12 @@ import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 const switchServers = vi.hoisted(() => ({
   cloudMachines: vi.fn(),
   cloudMachineLifecycle: vi.fn(),
+  sharedCloudAgents: vi.fn(),
+}));
+const flags = vi.hoisted(() => ({
+  service_connections: true,
+  hosted_agents: false,
+  hosted_v2: false,
 }));
 const navigate = vi.hoisted(() => vi.fn());
 
@@ -18,8 +24,9 @@ vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
   rpc: {
     switchServers,
+    userChanges: { watch: async () => false, unwatch: async () => {} },
     featureFlags: {
-      get: async () => ({ success: true, data: { flags: { service_connections: true } } }),
+      get: async () => ({ success: true, data: { flags: { ...flags } } }),
     },
   },
 }));
@@ -73,6 +80,9 @@ function sleepingMachine(): CloudMachine {
     memory: { total_bytes: 17179869184, available_bytes: 12884901888 },
     agents: ['00000000-0000-4000-8000-000000000001'],
     controller_id: null,
+    room: null,
+    awake: null,
+    ai_calls_today: null,
   };
 }
 
@@ -84,6 +94,10 @@ beforeEach(() => {
   navigate.mockReset();
   switchServers.cloudMachines.mockReset();
   switchServers.cloudMachineLifecycle.mockReset();
+  switchServers.sharedCloudAgents.mockReset();
+  switchServers.sharedCloudAgents.mockResolvedValue(null);
+  flags.hosted_agents = false;
+  flags.hosted_v2 = false;
 });
 
 afterEach(async () => {
@@ -161,4 +175,129 @@ it('stops a ready machine once confirmed', async () => {
     'stop',
     5
   );
+});
+
+it("shows a shared-cloud user's own box as Your cloud, with Repair and no machine controls", async () => {
+  // A real v2 server: Core says hosted_v2, the box's backend is `box`, and the shared-cloud list answers.
+  flags.hosted_agents = true;
+  flags.hosted_v2 = true;
+  switchServers.sharedCloudAgents.mockResolvedValue([]);
+  const box = {
+    ...sleepingMachine(),
+    state: 'ready',
+    desired_state: 'running',
+    stop_reason: null,
+    sleeping: false,
+    instance_type: null,
+    controller_id: 'c-box',
+    room: { used_bytes: 2 * 1024 ** 3, total_bytes: 8 * 1024 ** 3 },
+    awake: { running: 1, max: 4 },
+    repair_available: true,
+    backend: 'box',
+  } satisfies CloudMachine;
+  switchServers.cloudMachines.mockResolvedValue([box]);
+  const el = await render();
+  await settle();
+
+  expect(switchServers.sharedCloudAgents).toHaveBeenCalled();
+  expect(el.textContent).toMatch(/Your cloud/);
+  expect(el.textContent).not.toMatch(/Cloud machine/);
+  expect(el.textContent).toMatch(/Room to work: Plenty of room/);
+  expect(el.textContent).toMatch(/1 of 4 awake/);
+  expect(button(el, /Repair my cloud/)).toBeDefined();
+  expect(button(el, /start machine/i)).toBeUndefined();
+  expect(button(el, /stop machine/i)).toBeUndefined();
+});
+
+it('says a paused box is paused by Switch, and offers no start', async () => {
+  flags.hosted_agents = true;
+  flags.hosted_v2 = true;
+  const paused = {
+    ...sleepingMachine(),
+    stop_reason: 'paused',
+    sleeping: false,
+    backend: 'box',
+  } satisfies CloudMachine;
+  switchServers.cloudMachineLifecycle.mockResolvedValue(paused);
+  switchServers.cloudMachines.mockResolvedValue([paused]);
+  const el = await render();
+
+  expect(el.textContent).toMatch(/Paused by Switch · Contact your admin/);
+  expect(el.textContent).not.toMatch(/Your cloud: Ready/);
+  expect(button(el, /start machine/i)).toBeUndefined();
+});
+
+// The v1/v2 switch: the v2 card shows only with Core's hosted_v2 on and a box backend.
+function v2Box(): CloudMachine {
+  return {
+    ...sleepingMachine(),
+    state: 'ready',
+    desired_state: 'running',
+    stop_reason: null,
+    sleeping: false,
+    instance_type: null,
+    controller_id: 'c-box',
+    room: { used_bytes: 2 * 1024 ** 3, total_bytes: 8 * 1024 ** 3 },
+    awake: { running: 1, max: 4 },
+    repair_available: true,
+    backend: 'box',
+  };
+}
+
+it('with hosted_v2 off, shows every cloud machine as upstream: no Your cloud, figures or Repair', async () => {
+  flags.hosted_agents = true;
+  flags.hosted_v2 = false;
+  switchServers.sharedCloudAgents.mockResolvedValue([]);
+  switchServers.cloudMachines.mockResolvedValue([v2Box()]);
+  const el = await render();
+  await settle();
+
+  // Off: the shared-cloud service isn't even asked.
+  expect(switchServers.sharedCloudAgents).not.toHaveBeenCalled();
+  expect(el.textContent).toMatch(/Cloud machine/);
+  expect(el.textContent).not.toMatch(/Your cloud/);
+  expect(el.textContent).not.toMatch(/Room to work/);
+  expect(el.textContent).not.toMatch(/awake/);
+  expect(button(el, /Repair my cloud/)).toBeUndefined();
+  expect(button(el, /stop machine/i)).toBeDefined();
+});
+
+it('with hosted_v2 off, a sleeping or paused machine shows no v2 wording', async () => {
+  flags.hosted_agents = true;
+  switchServers.cloudMachines.mockResolvedValue([
+    { ...sleepingMachine(), stop_reason: 'paused', sleeping: false, backend: 'box' },
+  ]);
+  const el = await render();
+
+  expect(el.textContent).not.toMatch(/Paused by Switch/);
+  expect(el.textContent).not.toMatch(/Resting/);
+  expect(el.textContent).toMatch(/Cloud machine/);
+});
+
+it("with hosted_v2 on, a v1 machine (Core's backend vm) stays a cloud machine", async () => {
+  flags.hosted_agents = true;
+  flags.hosted_v2 = true;
+  switchServers.sharedCloudAgents.mockResolvedValue([]);
+  switchServers.cloudMachines.mockResolvedValue([{ ...v2Box(), backend: 'vm' }]);
+  const el = await render();
+  await settle();
+
+  expect(el.textContent).toMatch(/Cloud machine/);
+  expect(el.textContent).not.toMatch(/Your cloud/);
+  expect(button(el, /Repair my cloud/)).toBeUndefined();
+});
+
+it('with hosted_v2 on but no backend from Core, shows the v1 card: no fallback to a guess', async () => {
+  flags.hosted_agents = true;
+  flags.hosted_v2 = true;
+  switchServers.sharedCloudAgents.mockResolvedValue([]);
+  const { backend: _omit, ...noBackend } = v2Box();
+  switchServers.cloudMachines.mockResolvedValue([noBackend]);
+  const el = await render();
+  await settle();
+
+  expect(el.textContent).toMatch(/Cloud machine/);
+  expect(el.textContent).not.toMatch(/Your cloud/);
+  expect(el.textContent).not.toMatch(/Room to work/);
+  expect(button(el, /Repair my cloud/)).toBeUndefined();
 });

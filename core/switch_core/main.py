@@ -6,10 +6,11 @@ import hashlib
 import logging
 import os
 import signal
+import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -17,6 +18,7 @@ import telegram
 import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
@@ -26,6 +28,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+from uvicorn.main import STARTUP_FAILURE
 
 from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
@@ -91,6 +94,7 @@ from switch_core.bridges.collaboration.webhooks import (
     create_bridge_webhook_router,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.budgets import enforce_awake_budgets
 from switch_core.chats.service import ChatService
 from switch_core.chats.signals import ChatSignals
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
@@ -184,6 +188,8 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
+from switch_core.hosted_v2 import hosted_v2_on
+from switch_core.keys import Keyring
 from switch_core.logging_config import configure_logging
 from switch_core.management.template_updates import TemplateUpdates
 from switch_core.management.wiring import Management, create_management
@@ -212,6 +218,7 @@ from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     own_maintenance as own_session_activity_maintenance,
 )
+from switch_core.session_activity.maintenance import own_restart_sweep
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.signals import SignalBus
@@ -229,6 +236,7 @@ from switch_core.trust.setup import build_trust_client
 from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
+from switch_core.visibility.operators import OperatorList, warn_if_operators_hold_admin
 
 logger = logging.getLogger(__name__)
 
@@ -639,7 +647,10 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     return True
 
 
-async def run(config: SwitchConfig, process_id: str) -> None:
+async def run(config: SwitchConfig, process_id: str) -> bool:
+    """Serve until shutdown. Returns whether the server started: False when the
+    app's startup failed, which uvicorn logs and then returns from `serve()`
+    normally rather than raising."""
     # ── Database ─────────────────────────────────────────────────────────────
     # The migration and the runtime role's grant re-issue already ran, under
     # Switch's boot-time advisory lock, before this coroutine was ever started
@@ -756,6 +767,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     budget_store = BudgetStore()
     media_store = MediaStore()
     template_store = TemplateStore()
+    # Awake-time budgets stay unenforced until every hosted box is split.
+    # The v1/v2 switch: with hosted agents v2 off, none of v2's background
+    # work runs (awake budgets, alerts, sweeps), exactly as before v2.
+    v2 = hosted_v2_on(config)
+    enforce_awake_budgets(config.hosted_awake_budgets_enabled and v2)
 
     # ── Seed admin user + agent-registration bootstrap key ──────────────────
     # A second acquisition of the boot lock, distinct from the one around the
@@ -773,6 +789,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         )
         async with engine.begin() as connection:
             event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
+    # Security: nobody should be both a Switch operator and a deployment admin.
+    if v2:
+        await warn_if_operators_hold_admin(
+            session_factory, OperatorList(config.visibility_operators_path)
+        )
 
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer(
@@ -1329,6 +1350,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         )
         # What deleting an account needs of it: revoking the person's machines.
         gateway_app.state.controller_revoker = management.service
+        # Visibility L1b: a budget route that changes the daily AI cap nudges the
+        # workspace's hosted controllers, without importing management itself.
+        gateway_app.state.assignment_nudge = (
+            management.service.signals.assignment_changed
+        )
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()
@@ -1432,6 +1458,19 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 process_id=process_id,
                 db_server_engine=lambda: create_unpooled_engine(config),
             )
+            # `gateway_app`, not the lifespan's `app` (the outer agent bridge
+            # app): the keyed-id key is loaded onto the gateway's state, and
+            # with the wrong app both workers stayed off (boot smoke test).
+            alerts_task = (
+                _start_hosted_alerts(config, gateway_app, session_factory)
+                if v2
+                else None
+            )
+            bulk_alerts_task = (
+                _start_bulk_alert_sweep(config, gateway_app, session_factory)
+                if v2
+                else None
+            )
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             retention_task = asyncio.create_task(
                 _agent_event_retention_loop(session_factory, event_buffer)
@@ -1469,6 +1508,19 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if management is not None
                 else None
             )
+            # Turns of a box that never came back: only where agents run on
+            # controllers at all (Level 2, 3b).
+            # Owned work, as upstream's sweeps: one process runs it (point 8).
+            if management is not None and v2:
+                own_restart_sweep(ownership, session_factory, router.post_as_agent)
+            # A pause or resume Core stopped part-way through is recorded
+            # failed at the step it reached (visibility V3). Once, at start.
+            if management is not None and v2:
+                asyncio.create_task(
+                    _sweep_hosted_actions(
+                        gateway_app, session_factory, management, config.keyring
+                    )
+                )
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
@@ -1484,6 +1536,10 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             try:
                 yield
             finally:
+                if alerts_task is not None:
+                    alerts_task.cancel()
+                if bulk_alerts_task is not None:
+                    bulk_alerts_task.cancel()
                 sweep_task.cancel()
                 retention_task.cancel()
                 attachment_group_task.cancel()
@@ -1666,6 +1722,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # uvicorn returns once its own part is done, while `_shutdown` is still
     # stopping the rest; returning here would end the loop under it.
     await _begin_shutdown.finish()
+    return server.started
 
 
 def _freeze_boot_objects() -> None:
@@ -2331,6 +2388,41 @@ async def _check_schema_at_head(config: SwitchConfig) -> None:
     logger.info("Database schema is servable; migrations were applied before boot")
 
 
+async def _sweep_hosted_actions(
+    gateway_app: FastAPI,
+    session_factory: async_sessionmaker[AsyncSession],
+    management: Management,
+    keyring: Keyring,
+) -> None:
+    from switch_core.visibility.alerts import action_alert
+    from switch_core.visibility.hosted_access import HostedAccess
+
+    try:
+        access = HostedAccess(
+            session_factory=session_factory,
+            revoker=management.service,
+            key=gateway_app.state.keyed_id_key,
+            keyring=keyring,
+            alert=action_alert(session_factory),
+        )
+        gateway_app.state.hosted_access = access
+        swept = await access.sweep_unfinished()
+        if swept:
+            logger.warning(
+                "Recorded %d unfinished hosted pause actions as failed", swept
+            )
+        # Operator actions (L2 restart) past their expiry are recorded as such.
+        from switch_core.visibility.operator_actions import OperatorActions
+
+        actions = OperatorActions(
+            session_factory=session_factory, key=gateway_app.state.keyed_id_key
+        )
+        gateway_app.state.operator_actions = actions
+        await actions.expire_due()
+    except Exception:
+        logger.exception("Sweeping unfinished hosted pause actions failed")
+
+
 def _alembic_config() -> AlembicConfig:
     return AlembicConfig(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
 
@@ -2392,7 +2484,82 @@ def main() -> None:
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    asyncio.run(run(config, process_id), loop_factory=_event_loop_factory())
+    if not asyncio.run(run(config, process_id), loop_factory=_event_loop_factory()):
+        # The startup error is already logged (uvicorn: "Application startup
+        # failed"). Exiting 0 here would read as a clean stop to anything
+        # watching the exit status (`restart: on-failure`, Kubernetes, a
+        # process supervisor), so a Core that never served would stay down
+        # unnoticed. `STARTUP_FAILURE` (3) is what `uvicorn.run` exits with.
+        logger.error("switch-core did not start; exiting %d", STARTUP_FAILURE)
+        sys.exit(STARTUP_FAILURE)
+
+
+def _start_hosted_alerts(
+    config: SwitchConfig, app: object, session_factory: async_sessionmaker
+) -> asyncio.Task[None] | None:
+    """The hosted alerts evaluator (visibility V5): on with `hosted_agents`
+    and a keyed-id key, since a box alert names its box only by keyed id.
+    Without the key it stays off and says so once."""
+    if not config.hosted_agents_enabled:
+        return None
+    from switch_core.observability.metrics import metrics
+    from switch_core.visibility.alerts import AlertEvaluator
+    from switch_core.visibility.cluster_report import latest_cluster_report
+    from switch_core.visibility.keyed_id import KeyedIdKey
+
+    key = getattr(getattr(app, "state", None), "keyed_id_key", None)
+    if not isinstance(key, KeyedIdKey):
+        logger.warning(
+            "Hosted alerts are off: no keyed-id key is set "
+            "(VISIBILITY_KEYED_ID_KEY_PATH), and box alerts name boxes only by it."
+        )
+        return None
+    evaluator = AlertEvaluator(
+        lambda: create_unpooled_engine(config),
+        session_factory,
+        key,
+        latest_cluster_report,
+    )
+    metrics().register_observer(evaluator.readings)
+    return asyncio.create_task(evaluator.run_forever(), name="hosted-alerts")
+
+
+# How often the bulk-action alert (A11) is checked for operators gone quiet.
+BULK_ALERT_SWEEP_S = 60
+
+
+def _start_bulk_alert_sweep(
+    config: SwitchConfig, app: object, session_factory: async_sessionmaker
+) -> asyncio.Task[None] | None:
+    """Clears A11 once an operator has gone quiet (`operator_limits`). The
+    rate-limit code raises it on an action; without this, an operator who
+    stopped would keep it raised until their next action. Runs where the
+    alerts do, with `hosted_agents` and a keyed-id key."""
+    if not config.hosted_agents_enabled:
+        return None
+    from switch_core.visibility.keyed_id import KeyedIdKey
+    from switch_core.visibility.operator_limits import Limits, clear_quiet_bulk_alerts
+
+    key = getattr(getattr(app, "state", None), "keyed_id_key", None)
+    if not isinstance(key, KeyedIdKey):
+        # Without the sweep a raised A11 never clears, so say so (QA's low).
+        logger.warning(
+            "The bulk operator alert sweep isn't running: there's no keyed-id key"
+        )
+        return None
+    limits = Limits.from_config(config)
+
+    async def sweep() -> None:
+        while True:
+            try:
+                await clear_quiet_bulk_alerts(
+                    session_factory, key, limits, datetime.now(UTC)
+                )
+            except Exception:
+                logger.exception("Clearing quiet bulk operator alerts failed")
+            await asyncio.sleep(BULK_ALERT_SWEEP_S)
+
+    return asyncio.create_task(sweep(), name="operator-bulk-alerts")
 
 
 if __name__ == "__main__":

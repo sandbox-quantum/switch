@@ -5,6 +5,7 @@ import { AppRoutes } from "./App";
 import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
 import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
+import { HEADING as HOSTED_HEADING } from "./pages/hosted/HostedPage";
 
 const acme: TenantMembership = {
   id: "t1",
@@ -122,6 +123,38 @@ describe("AppRoutes", () => {
     expect(screen.getByRole("link", { name: /Workspace/ })).toBeTruthy();
     expect(screen.queryByRole("link", { name: /Users/ })).toBeNull();
     expect(screen.queryByRole("link", { name: /Connectors/ })).toBeNull();
+  });
+
+  describe("the hosted agents v2 switch", () => {
+    const operator = session({
+      state: "ready",
+      tenant: acme,
+      tenants: [acme],
+      user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: false, hosted_operator: true },
+    } as Partial<Session>);
+    const flags = (on: boolean) => [200, { flags: [{ key: "hosted_v2", enabled: on }] }] as [number, unknown];
+
+    it("sends /hosted home when Core says v2 is off", async () => {
+      mockFetch({ "/auth/session": [200, operator], "/feature-flags": flags(false) });
+      renderAt("/hosted/overview");
+      expect(await screen.findByRole("heading", { name: "Rooms" })).toBeTruthy();
+      expect(screen.queryByRole("heading", { name: HOSTED_HEADING })).toBeNull();
+      expect(screen.queryByRole("link", { name: /Hosted/ })).toBeNull();
+    });
+
+    it("sends /hosted home when Core's flags can't be read", async () => {
+      mockFetch({ "/auth/session": [200, operator] });
+      renderAt("/hosted/overview");
+      expect(await screen.findByRole("heading", { name: "Rooms" })).toBeTruthy();
+      expect(screen.queryByRole("heading", { name: HOSTED_HEADING })).toBeNull();
+    });
+
+    it("opens the Hosted pages when Core says v2 is on", async () => {
+      mockFetch({ "/auth/session": [200, operator], "/feature-flags": flags(true) });
+      renderAt("/hosted/overview");
+      expect(await screen.findByRole("heading", { name: HOSTED_HEADING })).toBeTruthy();
+      expect(screen.getByRole("link", { name: /Hosted/ })).toBeTruthy();
+    });
   });
 
   it("gives the server's operator Connectors beside Users", async () => {

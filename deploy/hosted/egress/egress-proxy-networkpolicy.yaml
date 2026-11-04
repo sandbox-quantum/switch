@@ -1,0 +1,48 @@
+# The shared squid's NetworkPolicy, as it runs on the test cluster, with server-set fields (uid, resourceVersion,
+# timestamps, finalizers, last-applied) removed. A change to the live policy shows up here as a diff.
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "squid"
+  namespace: "egress-proxy"
+spec:
+  egress:
+    - ports:
+        - port: 53
+          protocol: "UDP"
+        - port: 53
+          protocol: "TCP"
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "kube-system"
+          podSelector:
+            matchLabels:
+              k8s-app: "kube-dns"
+    - ports:
+        - port: 443
+          protocol: "TCP"
+      to:
+        - ipBlock:
+            cidr: "0.0.0.0/0"
+            except:
+              - "10.0.0.0/8"
+              - "172.16.0.0/12"
+              - "192.168.0.0/16"
+              - "169.254.0.0/16"
+              - "100.64.0.0/10"
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: "switch.dev/user"
+                operator: "Exists"
+      ports:
+        - port: 3128
+          protocol: "TCP"
+  podSelector:
+    matchLabels:
+      app: "squid"
+  policyTypes:
+    - "Ingress"
+    - "Egress"

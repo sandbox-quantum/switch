@@ -37,6 +37,7 @@ import {
   shownAgentRoom,
   shownAgentSection,
 } from './agent-sections';
+import { AgentStatus } from './agent-status';
 import { shouldAutoStartChat } from './auto-start-chat';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
@@ -236,6 +237,8 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           selected={section}
           onSelect={(chosen) => setParams({ section: chosen })}
         />
+        {/* Why it stopped (visibility V2): hosted agents v2 only, on a v2 box, as the cards are. */}
+        <AgentStatus agent={agent} />
         <Section title="Direct chats" addLabel="New chat" onAdd={newChat} addChoices={null}>
           {ownServer && chatsStore.listError && (
             <div

@@ -1,0 +1,981 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-operator-cordon-only
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-drain'
+    name: is-the-drain-worker
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - UPDATE
+      resources:
+      - nodes
+      - nodes/status
+      scope: "*"
+  validations:
+  - expression: request.subResource == ''
+    message: the operator may not change a node's status
+  - expression: oldObject.metadata.?labels[?'switch.dev/pool'].orValue('') == 'agents'
+    message: the operator may only cordon agents machines (switch.dev/pool=agents)
+  - expression: "!oldObject.spec.?unschedulable.orValue(false) && object.spec.?unschedulable.orValue(false)"
+    message: the operator may only cordon (unschedulable false to true); uncordon
+      is a person's job
+  - expression: object.spec.?taints.orValue([]) == oldObject.spec.?taints.orValue([])
+      && object.spec.?podCIDR.orValue('') == oldObject.spec.?podCIDR.orValue('') &&
+      object.spec.?podCIDRs.orValue([]) == oldObject.spec.?podCIDRs.orValue([]) &&
+      object.spec.?providerID.orValue('') == oldObject.spec.?providerID.orValue('')
+      && object.spec.?externalID.orValue('') == oldObject.spec.?externalID.orValue('')
+      && has(object.spec.configSource) == has(oldObject.spec.configSource)
+    message: the operator may not change a node's spec beyond cordoning it
+  - expression: object.metadata.?labels.orValue({}) == oldObject.metadata.?labels.orValue({})
+      && object.metadata.?annotations.orValue({}) == oldObject.metadata.?annotations.orValue({})
+      && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([])
+      && object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([])
+    message: the operator may not change a node's labels, annotations, owners or finalizers
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-operator-evict-boxes-only
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-drain'
+    name: is-the-drain-worker
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      resources:
+      - pods/eviction
+      scope: "*"
+  validations:
+  - expression: request.namespace.matches('^agents-user-[a-z0-9]([a-z0-9-]*[a-z0-9])?$')
+      && request.name == 'box-0'
+    message: the operator may only evict box-0 in an agents-user-* namespace
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-operator-placeholder-shape
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-drain'
+    name: is-the-drain-worker
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - pods
+      scope: "*"
+  validations:
+  - expression: request.namespace == 'switch-drain-room' && request.operation == 'CREATE'
+    message: the operator may only create placeholder pods, and only in switch-drain-room
+  - expression: object.metadata.name.matches('^drain-room-[a-z0-9]{1,20}$')
+    message: a placeholder is named drain-room-<id>
+  - expression: object.spec.containers.size() == 1 && !has(object.spec.initContainers)
+      && !has(object.spec.ephemeralContainers) && object.spec.containers[0].image
+      == '__PAUSE_IMAGE__' && !has(object.spec.containers[0].command) && !has(object.spec.containers[0].args)
+      && !has(object.spec.containers[0].env) && !has(object.spec.containers[0].envFrom)
+      && !has(object.spec.containers[0].volumeMounts)
+    message: a placeholder is one pause container (the pinned image), with no command,
+      env or mounts
+  - expression: 'object.spec.containers[0].resources.requests == {''cpu'': ''250m'',
+      ''memory'': ''1Gi''} && object.spec.containers[0].resources.limits == {''cpu'':
+      ''250m'', ''memory'': ''1Gi''}'
+    message: a placeholder is exactly one box in size (250m CPU, 1Gi memory)
+  - expression: |-
+      object.spec.all(k, k in ['containers', 'restartPolicy', 'terminationGracePeriodSeconds', 'dnsPolicy', 'securityContext',
+        'schedulerName', 'tolerations', 'priority', 'priorityClassName', 'preemptionPolicy', 'enableServiceLinks',
+        'serviceAccountName', 'serviceAccount', 'nodeSelector', 'automountServiceAccountToken'])
+    message: a placeholder's spec may only carry the listed keys (no affinity, runtimeClassName,
+      volumes, host settings or overrides)
+  - expression: |-
+      object.spec.containers[0].all(k, k in ['name', 'image', 'resources', 'securityContext', 'terminationMessagePath',
+        'terminationMessagePolicy', 'imagePullPolicy'])
+    message: a placeholder's container may only carry the listed keys (no ports, probes,
+      command, env or mounts)
+  - expression: |-
+      object.spec.?securityContext.orValue({}).all(k, k in ['runAsNonRoot', 'runAsUser', 'runAsGroup', 'seccompProfile']) && object.spec.containers[0].?securityContext.orValue({}).all(k, k in ['allowPrivilegeEscalation', 'readOnlyRootFilesystem',
+        'capabilities', 'runAsNonRoot', 'runAsUser', 'runAsGroup', 'seccompProfile']) &&
+      object.spec.containers[0].?securityContext.?capabilities.?add.orValue([]).size() == 0
+    message: a placeholder's security settings may only carry the listed keys, and
+      may not add capabilities
+  - expression: object.spec.?priority.orValue(0) <= 0 && object.spec.?priorityClassName.orValue('switch-placeholder')
+      == 'switch-placeholder'
+    message: a placeholder has priority 0 or below, and no class but the placer's
+      own low one, so it can never push a box off
+  - expression: object.spec.?schedulerName.orValue('default-scheduler') == 'default-scheduler'
+      && object.spec.?serviceAccountName.orValue('default') == 'default' && object.spec.?serviceAccount.orValue('default')
+      == 'default'
+    message: a placeholder uses the default scheduler and the default service account
+  - expression: |-
+      object.spec.?tolerations.orValue([]).all(t,
+        t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] &&
+        t.?operator.orValue('') == 'Exists' && t.?effect.orValue('') == 'NoExecute')
+    message: a placeholder tolerates only the two default not-ready and unreachable
+      taints (never gate1 or any other)
+  - expression: object.spec.?automountServiceAccountToken.orValue(true) == false &&
+      !has(object.spec.volumes) && !object.spec.?hostNetwork.orValue(false) && !object.spec.?hostPID.orValue(false)
+      && !object.spec.?hostIPC.orValue(false)
+    message: a placeholder has no token, no volumes and no host access
+  - expression: object.spec.?nodeSelector.orValue({}).size() == 2 && object.spec.nodeSelector[?'switch.dev/pool'].orValue('')
+      == 'agents' && object.spec.nodeSelector[?'topology.kubernetes.io/zone'].orValue('').matches('^eu-west-3[abc]$')
+      && !has(object.spec.nodeName)
+    message: a placeholder asks only for an agents machine in one zone, and never
+      names a node
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p1-namespaces
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - namespaces
+      scope: "*"
+  validations:
+  - expression: request.operation == 'CREATE'
+    message: the provisioner may only create namespaces
+  - expression: request.operation == 'CREATE' && object.metadata.name.matches('^agents-user-k1-[0-9a-f]{16}$')
+    message: a box namespace is agents-user-k1-<16 hex>
+  - expression: request.operation == 'CREATE' && variables.want.all(k, k in variables.labels
+      && variables.labels[k] == variables.want[k])
+    message: the five template labels, with switch.dev/user = the name minus agents-
+  - expression: request.operation == 'CREATE' && variables.labels.all(k, k in variables.want
+      || (k == 'kubernetes.io/metadata.name' && variables.labels[k] == object.metadata.name))
+    message: no labels beyond the template's
+  - expression: request.operation == 'CREATE' && object.metadata.?annotations.orValue({}).size()
+      == 1 && object.metadata.?annotations[?'switch.dev/machine-id'].orValue('').matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+    message: exactly one annotation, switch.dev/machine-id, a UUID
+  - expression: request.operation == 'CREATE' && !has(object.metadata.ownerReferences)
+      && !has(object.metadata.finalizers)
+    message: no owners or finalizers
+  variables:
+  - expression: object.metadata.?labels.orValue({})
+    name: labels
+  - expression: |-
+      {'app.kubernetes.io/part-of': 'hosted-agents-test', 'app.kubernetes.io/managed-by': 'switch-hosted',
+       'switch.dev/user': object.metadata.name.startsWith('agents-') ? object.metadata.name.substring(7) : '!',
+       'pod-security.kubernetes.io/enforce': 'restricted', 'pod-security.kubernetes.io/warn': 'restricted'}
+    name: want
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p2-box-objects
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  - expression: request.?namespace.orValue('') != 'switch-hosted'
+    name: not-the-box-map
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - resourcequotas
+      - serviceaccounts
+      - configmaps
+      - secrets
+      - persistentvolumeclaims
+      scope: "*"
+    - apiGroups:
+      - networking.k8s.io
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - networkpolicies
+      scope: "*"
+    - apiGroups:
+      - apps
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - statefulsets
+      scope: "*"
+    - apiGroups:
+      - rbac.authorization.k8s.io
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - rolebindings
+      scope: "*"
+  validations:
+  - expression: request.operation == 'CREATE'
+    message: the provisioner only creates; it never updates or deletes
+  - expression: request.?namespace.orValue('').matches('^agents-user-k1-[0-9a-f]{16}$')
+      && namespaceObject.metadata.?labels[?'app.kubernetes.io/managed-by'].orValue('')
+      == 'switch-hosted'
+    message: only in a labelled box namespace
+  - expression: |-
+      request.operation == 'CREATE' && (request.resource.resource + '/' + object.metadata.name) in ['resourcequotas/no-shared-services-priority', 'serviceaccounts/box', 'configmaps/switch-ca',
+       'configmaps/claude-managed-settings', 'secrets/switch-enrol', 'secrets/switch-proxy-login',
+       'persistentvolumeclaims/data-controller', 'persistentvolumeclaims/data-agents',
+       'networkpolicies/default-deny', 'networkpolicies/agent-egress', 'statefulsets/box',
+       'rolebindings/switch-box-watch', 'rolebindings/switch-operator-restart']
+    message: only the template's objects, by kind and name
+  - expression: request.operation == 'CREATE' && !has(object.metadata.ownerReferences)
+      && object.metadata.?finalizers.orValue([]).all(f, request.resource.resource
+      == 'persistentvolumeclaims' && f == 'kubernetes.io/pvc-protection')
+    message: no owners, and no finalizers except the API's own pvc-protection on a
+      disk claim
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p3-configmaps
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      resources:
+      - configmaps
+      scope: "*"
+  validations:
+  - expression: object.?data.orValue({}).size() == 1 && variables.key in object.?data.orValue({})
+      && size(object.?data.orValue({})[?variables.key].orValue('')) <= 65536
+    message: switch-ca holds ca.crt only, claude-managed-settings holds managed-settings.json
+      only (64 KiB at most)
+  - expression: "!has(object.binaryData)"
+    message: no binary data
+  variables:
+  - expression: 'object.metadata.name == ''switch-ca'' ? ''ca.crt'' : ''managed-settings.json'''
+    name: key
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p3-networkpolicies
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - networking.k8s.io
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      resources:
+      - networkpolicies
+      scope: "*"
+  validations:
+  - expression: variables.emptySelector && !object.?spec.?ingress.hasValue()
+    message: both policies select every pod and allow nothing in
+  - expression: object.metadata.name != 'default-deny' || (variables.types == ['Ingress',
+      'Egress'] && !object.?spec.?egress.hasValue())
+    message: default-deny must deny everything, in and out
+  - expression: |-
+      object.metadata.name != 'agent-egress' || (
+        variables.types == ['Egress'] && variables.e.size() == 3 &&
+        variables.e[?0].?to.orValue([]).size() == 1 &&
+        variables.e[?0].?to[?0].?namespaceSelector.?matchLabels.orValue({}) == {'kubernetes.io/metadata.name': 'kube-system'} &&
+        !variables.e[?0].?to[?0].?namespaceSelector.?matchExpressions.hasValue() &&
+        variables.e[?0].?to[?0].?podSelector.?matchLabels.orValue({}) == {'k8s-app': 'kube-dns'} &&
+        !variables.e[?0].?to[?0].?podSelector.?matchExpressions.hasValue() && !variables.e[?0].?to[?0].?ipBlock.hasValue() &&
+        variables.e[?0].?ports.orValue([]).size() == 2 &&
+        variables.e[?0].?ports.orValue([]).all(p, p.?port.orValue(0) == 53 && p.?protocol.orValue('') in ['UDP', 'TCP'] && !has(p.endPort)) &&
+        variables.e[?0].?ports[?0].?protocol.orValue('') != variables.e[?0].?ports[?1].?protocol.orValue('') &&
+        variables.e[?1].?to.orValue([]).size() == 1 &&
+        variables.e[?1].?to[?0].?ipBlock.?cidr.orValue('') == '__SERVER_IP__/32' && !variables.e[?1].?to[?0].?ipBlock.?except.hasValue() &&
+        !variables.e[?1].?to[?0].?namespaceSelector.hasValue() && !variables.e[?1].?to[?0].?podSelector.hasValue() &&
+        variables.e[?1].?ports.orValue([]).size() == 1 && variables.e[?1].?ports[?0].?protocol.orValue('') == 'TCP' &&
+        variables.e[?1].?ports[?0].?port.orValue(0) == 443 && !variables.e[?1].?ports[?0].?endPort.hasValue() &&
+        variables.e[?2].?to.orValue([]).size() == 1 &&
+        variables.e[?2].?to[?0].?namespaceSelector.?matchLabels.orValue({}) == {'kubernetes.io/metadata.name': 'egress-proxy'} &&
+        !variables.e[?2].?to[?0].?namespaceSelector.?matchExpressions.hasValue() &&
+        variables.e[?2].?to[?0].?podSelector.?matchLabels.orValue({}) == {'app': 'squid'} &&
+        !variables.e[?2].?to[?0].?podSelector.?matchExpressions.hasValue() && !variables.e[?2].?to[?0].?ipBlock.hasValue() &&
+        variables.e[?2].?ports.orValue([]).size() == 1 && variables.e[?2].?ports[?0].?protocol.orValue('') == 'TCP' &&
+        variables.e[?2].?ports[?0].?port.orValue(0) == 3128 && !variables.e[?2].?ports[?0].?endPort.hasValue())
+    message: 'agent-egress must be exactly the template''s: DNS, the test server on
+      443, the proxy on 3128'
+  variables:
+  - expression: "!object.?spec.?podSelector.?matchLabels.hasValue() && !object.?spec.?podSelector.?matchExpressions.hasValue()"
+    name: emptySelector
+  - expression: object.?spec.?policyTypes.orValue([])
+    name: types
+  - expression: object.?spec.?egress.orValue([])
+    name: e
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p3-quota-disks-account
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      resources:
+      - resourcequotas
+      - persistentvolumeclaims
+      - serviceaccounts
+      scope: "*"
+  validations:
+  - expression: |-
+      request.resource.resource != 'resourcequotas' || (
+        variables.hard.size() == 1 && 'pods' in variables.hard && string(variables.hard[?'pods'].orValue('x')) == '0' &&
+        !object.?spec.?scopes.hasValue() && variables.sel.size() == 1 &&
+        variables.sel[?0].?scopeName.orValue('') == 'PriorityClass' &&
+        variables.sel[?0].?operator.orValue('') == 'In' &&
+        variables.sel[?0].?values.orValue([]) == ['switch-shared-services'])
+    message: 'the quota is the template''s: no pod may use the shared-services priority
+      class'
+  - expression: |-
+      request.resource.resource != 'persistentvolumeclaims' || (
+        object.?spec.?storageClassName.orValue('') == 'gp3' && object.?spec.?accessModes.orValue([]) == ['ReadWriteOnce'] &&
+        object.?spec.?volumeMode.orValue('Filesystem') == 'Filesystem' &&
+        !object.?spec.?selector.hasValue() && !object.?spec.?dataSource.hasValue() && !object.?spec.?dataSourceRef.hasValue() &&
+        !object.?spec.?volumeName.hasValue() && !object.?spec.?resources.?limits.hasValue() &&
+        object.?spec.?resources.?requests.orValue({}).size() == 1 &&
+        (object.metadata.name == 'data-controller'
+          ? string(object.?spec.?resources.?requests.orValue({})[?'storage'].orValue('')) == '2Gi'
+          : string(object.?spec.?resources.?requests.orValue({})[?'storage'].orValue('')) in ['15Gi']))
+    message: a disk is gp3, ReadWriteOnce, new (no source or volume), and of an allowed
+      size
+  - expression: |-
+      request.resource.resource != 'serviceaccounts' || (
+        object.?automountServiceAccountToken.orValue(true) == false &&
+        !has(object.secrets) && !has(object.imagePullSecrets))
+    message: the box's account mounts no token and holds no secrets
+  variables:
+  - expression: object.?spec.?hard.orValue({})
+    name: hard
+  - expression: object.?spec.?scopeSelector.?matchExpressions.orValue([])
+    name: sel
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p3-secrets
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  - expression: request.?namespace.orValue('') != 'switch-hosted'
+    name: not-the-box-map
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      resources:
+      - secrets
+      scope: "*"
+  validations:
+  - expression: object.?type.orValue('') == 'Opaque'
+    message: Opaque Secrets only
+  - expression: object.?data.orValue({}).size() == 0
+    message: switch-enrol and switch-proxy-login are made empty
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p4-box-pod
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - apps
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      resources:
+      - statefulsets
+      scope: "*"
+  validations:
+  - expression: object.metadata.name == 'box' && object.spec.?replicas.orValue(-1)
+      == 0
+    message: the box is made stopped (replicas 0); the scaler starts it
+  - expression: 'object.spec.?serviceName.orValue('''') == ''box'' && object.spec.selector.?matchLabels.orValue({})
+      == {''app'': ''switch-box''} && !has(object.spec.selector.matchExpressions)
+      && !has(object.spec.volumeClaimTemplates) && object.spec.template.?metadata.?labels.orValue({})
+      == {''app'': ''switch-box'', ''switch.dev/user'': request.?namespace.orValue('''').startsWith(''agents-'')
+      ? request.?namespace.orValue('''').substring(7) : ''!''}'
+    message: the template's selector and labels, and no claim templates (the two disks
+      are made separately)
+  - expression: variables.t.?runtimeClassName.orValue('') == 'gvisor' && variables.t.?serviceAccountName.orValue('')
+      == 'box' && variables.t.?automountServiceAccountToken.orValue(true) == false
+      && variables.t.?enableServiceLinks.orValue(true) == false
+    message: gVisor, the box account, no token, no service links
+  - expression: "!variables.t.?hostNetwork.orValue(false) && !variables.t.?hostPID.orValue(false)
+      && !variables.t.?hostIPC.orValue(false) && !variables.t.?shareProcessNamespace.orValue(false)
+      && !has(variables.t.nodeName) && !has(variables.t.initContainers) && !has(variables.t.ephemeralContainers)
+      && !has(variables.t.hostAliases) && !has(variables.t.tolerations) && !has(variables.t.priorityClassName)
+      && !has(variables.t.overhead) && !has(variables.t.resourceClaims)"
+    message: no host access, no shared process namespace, no extra containers, tolerations
+      or priority
+  - expression: variables.t.?nodeSelector.orValue({}).size() == 2 && variables.t.?nodeSelector.orValue({})[?'switch.dev/pool'].orValue('')
+      == 'agents' && variables.t.?nodeSelector.orValue({})[?'topology.kubernetes.io/zone'].orValue('')
+      in ['__ZONE__']
+    message: agents machines in an allowed zone only
+  - expression: variables.t.?securityContext.?runAsNonRoot.orValue(false) == true
+      && variables.t.?securityContext.?seccompProfile.?type.orValue('') == 'RuntimeDefault'
+      && !variables.t.?securityContext.?sysctls.hasValue() && !variables.t.?securityContext.?runAsUser.hasValue()
+    message: non-root, the default seccomp profile, no sysctls
+  - expression: variables.c.size() == 2 && variables.c[?0].?name.orValue('') == 'controller'
+      && variables.c[?1].?name.orValue('') == 'agents'
+    message: exactly two containers, controller and agents
+  - expression: variables.c.all(x, x.?image.orValue('') in ['__BOX_IMAGE__', '__PREVIOUS_BOX_IMAGE_1__',
+      '__PREVIOUS_BOX_IMAGE_2__'] && x.?image.orValue('').matches('@sha256:[0-9a-f]{64}$'))
+    message: allowed images only, pinned by digest
+  - expression: |-
+      variables.c.all(x, x.?securityContext.?allowPrivilegeEscalation.orValue(true) == false &&
+        x.?securityContext.?readOnlyRootFilesystem.orValue(false) == true && x.?securityContext.?capabilities.?drop.orValue([]) == ['ALL'] &&
+        !x.?securityContext.?capabilities.?add.hasValue() && !x.?securityContext.?privileged.orValue(false) &&
+        !x.?securityContext.?procMount.hasValue() && x.?securityContext.?runAsGroup.orValue(-1) == 2000) &&
+      variables.c[?0].?securityContext.?runAsUser.orValue(-1) == 2001 && variables.c[?1].?securityContext.?runAsUser.orValue(-1) == 2000
+    message: fixed users (2001 controller, 2000 agents), no privilege, all capabilities
+      dropped, read-only root
+  - expression: "!variables.c[?0].?command.hasValue() && variables.c[?0].?args.orValue([])
+      == ['--launcher-address', '127.0.0.1:7420', '--agents-data-dir', '/data/agents',
+      '--agents-workspaces', '/data/agents/workspaces'] && variables.c[?1].?command.orValue([])
+      == ['/usr/bin/tini', '-g', '--', 'switch-agent-controller', 'launcher', '--data-dir',
+      '/data/agents', '--workspaces', '/data/agents/workspaces', '--controller-address',
+      '127.0.0.1:7420'] && !variables.c[?1].?args.hasValue()"
+    message: the template's commands only
+  - expression: |-
+      variables.c.all(x, !has(x.envFrom) && !has(x.ports) && !has(x.lifecycle) && !has(x.volumeDevices)) && variables.c[?0].?env.orValue([]).all(e, !e.?valueFrom.hasValue() || (e.?valueFrom.?secretKeyRef.hasValue() &&
+        !e.?valueFrom.?configMapKeyRef.hasValue() && !e.?valueFrom.?fieldRef.hasValue() && !e.?valueFrom.?resourceFieldRef.hasValue() &&
+        e.?valueFrom.?secretKeyRef.?name.orValue('') == 'switch-proxy-login' && e.?valueFrom.?secretKeyRef.?key.orValue('') == 'ctl_https_proxy')) &&
+      variables.c[?1].?env.orValue([]).all(e, !e.?valueFrom.hasValue() || (e.?valueFrom.?secretKeyRef.hasValue() &&
+        !e.?valueFrom.?configMapKeyRef.hasValue() && !e.?valueFrom.?fieldRef.hasValue() && !e.?valueFrom.?resourceFieldRef.hasValue() &&
+        e.?valueFrom.?secretKeyRef.?name.orValue('') == 'switch-proxy-login' && e.?valueFrom.?secretKeyRef.?key.orValue('') == 'https_proxy'))
+    message: 'Secrets reach the containers only as the box''s proxy login: ctl_https_proxy
+      to the controller, https_proxy to the agents'
+  - expression: |-
+      variables.c[?0].?volumeMounts.orValue([]).all(m, m.name in ['data-controller', 'tmp-controller', 'ca', 'enrol']) && variables.c[?1].?volumeMounts.orValue([]).all(m, m.name in ['data-agents', 'tmp-agents', 'ca', 'claude-managed']) && variables.c.all(x, x.?volumeMounts.orValue([]).all(m, !has(m.mountPropagation) &&
+        (!(m.name in ['ca', 'enrol', 'claude-managed']) || m.?readOnly.orValue(false) == true)))
+    message: the controller's disk only in controller, the agents' disk only in agents;
+      shared files read-only
+  - expression: |-
+      variables.t.?volumes.orValue([]).size() == 7 && variables.t.?volumes.orValue([]).all(v,
+        v.name == 'data-controller' ? (v.?persistentVolumeClaim.?claimName.orValue('') == 'data-controller') :
+        v.name == 'data-agents' ? (v.?persistentVolumeClaim.?claimName.orValue('') == 'data-agents') :
+        v.name in ['tmp-controller', 'tmp-agents'] ? has(v.emptyDir) :
+        v.name == 'ca' ? (v.?configMap.?name.orValue('') == 'switch-ca') :
+        v.name == 'enrol' ? (v.?secret.?secretName.orValue('') == 'switch-enrol') :
+        v.name == 'claude-managed' ? (v.?configMap.?name.orValue('') == 'claude-managed-settings') :
+        false)
+    message: only the template's seven volumes (no host paths, no other Secret or
+      claim)
+  variables:
+  - expression: object.spec.template.spec
+    name: t
+  - expression: object.spec.template.spec.containers
+    name: c
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p5-box-map
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  - expression: request.?namespace.orValue('') == 'switch-hosted'
+    name: in-switch-hosted
+  - expression: request.?name.orValue('') == 'box-map'
+    name: is-the-box-map
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - secrets
+      scope: "*"
+  validations:
+  - expression: request.operation == 'UPDATE' && object.metadata.name == 'box-map'
+      && object.?type.orValue('') == 'Opaque'
+    message: the provisioner may only update the box map
+  - expression: request.operation == 'UPDATE' && variables.old.all(k, k in variables.new
+      && variables.new[k] == variables.old[k])
+    message: an existing box map entry may never change or go
+  - expression: |-
+      request.operation == 'UPDATE' && variables.new.all(k, k in variables.old || (
+        k.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') &&
+        string(variables.new[k]).matches('^YWdlbnRzLXVzZXItazEt(?:[MNY]2[EIMQUY][012345wxyz]|[MNY]2[FJNRVZ][hijklm]|[MNOZ]D[AEIMQUYcgk][012345wxyz]|[MNOZ]D[BFJNRVZdhl][hijklm]|[MNOZ]G[EIMQUY][012345wxyz]|[MNOZ]G[FJNRVZ][hijklm]|[MNOYZ]T[AEIMQUYcgk][012345wxyz]|[MNOYZ]T[BFJNRVZdhl][hijklm]|[MNOYZ]W[EIMQUY][012345wxyz]|[MNOYZ]W[FJNRVZ][hijklm]|[MNYZ]j[AEIMQUYcgk][012345wxyz]|[MNYZ]j[BFJNRVZdhl][hijklm]|[MNYZ]m[EIMQUY][012345wxyz]|[MNYZ]m[FJNRVZ][hijklm]|[MNY]z[AEIMQUYcgk][012345wxyz]|[MNY]z[BFJNRVZdhl][hijklm]){5}(?:MA|MQ|Mg|Mw|NA|NQ|Ng|Nw|OA|OQ|YQ|Yg|Yw|ZA|ZQ|Zg)==$')))
+    message: a new entry is a machine id (UUID) to a box namespace
+  - expression: request.operation == 'UPDATE' && object.metadata.?labels.orValue({})
+      == oldObject.metadata.?labels.orValue({}) && object.metadata.?annotations.orValue({})
+      == oldObject.metadata.?annotations.orValue({}) && object.?immutable.orValue(false)
+      == oldObject.?immutable.orValue(false)
+    message: the box map's labels, annotations and mutability stay as they are
+  variables:
+  - expression: oldObject.?data.orValue({})
+    name: old
+  - expression: object.?data.orValue({})
+    name: new
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p5b-box-templates
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  - expression: request.?namespace.orValue('') == 'switch-hosted'
+    name: in-switch-hosted
+  - expression: request.?name.orValue('') == 'box-templates'
+    name: is-the-template-record
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - secrets
+      scope: "*"
+  validations:
+  - expression: request.operation == 'UPDATE' && object.metadata.name == 'box-templates'
+      && object.?type.orValue('') == 'Opaque'
+    message: the provisioner may only update the template record
+  - expression: request.operation == 'UPDATE' && variables.old.all(k, k in variables.new
+      && string(variables.new[k]) == string(variables.old[k]))
+    message: an existing template entry may never change or go
+  - expression: |-
+      request.operation == 'UPDATE' && variables.new.all(k, k in variables.old || (
+        k.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') &&
+        string(variables.new[k]) == variables.current))
+    message: a new entry is a machine id (UUID) to the current template hash
+  - expression: request.operation == 'UPDATE' && object.metadata.?labels.orValue({})
+      == oldObject.metadata.?labels.orValue({}) && object.metadata.?annotations.orValue({})
+      == oldObject.metadata.?annotations.orValue({}) && object.?immutable.orValue(false)
+      == oldObject.?immutable.orValue(false)
+    message: the template record's labels, annotations and mutability stay as they
+      are
+  variables:
+  - expression: oldObject.?data.orValue({})
+    name: old
+  - expression: object.?data.orValue({})
+    name: new
+  - expression: "'OTNjOTNmNzgwNzJlMjc5MjBkNGFkZDY1MzI0YmE0M2UzNjFlMWYzYzI2ODcyNTgwYjEzYTU5M2RhY2E2ZGU0MA=='"
+    name: current
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p6-provisioner-catch-all
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - "*"
+      apiVersions:
+      - "*"
+      operations:
+      - "*"
+      resources:
+      - "*/*"
+      scope: "*"
+  validations:
+  - expression: |-
+      request.?subResource.orValue('') == '' && (
+        (request.operation == 'CREATE' && request.resource.group == '' && request.resource.resource == 'namespaces') ||
+        (request.operation == 'CREATE' && request.?namespace.orValue('').matches('^agents-user-k1-[0-9a-f]{16}$') && (
+          (request.resource.group == '' && request.resource.resource in
+            ['resourcequotas', 'serviceaccounts', 'configmaps', 'secrets', 'persistentvolumeclaims']) ||
+          (request.resource.group == 'networking.k8s.io' && request.resource.resource == 'networkpolicies') ||
+          (request.resource.group == 'apps' && request.resource.resource == 'statefulsets') ||
+          (request.resource.group == 'rbac.authorization.k8s.io' && request.resource.resource == 'rolebindings'))) ||
+        (request.operation == 'UPDATE' && request.?namespace.orValue('') == 'switch-hosted' && request.resource.group == '' &&
+          request.resource.resource == 'secrets' && request.?name.orValue('') in ['box-map', 'box-templates']))
+    message: the provisioner may only create a box's objects (one RoleBinding among
+      them) and add to the box map and the template record
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p7-box-writes
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: |-
+      request.userInfo.username in ['system:serviceaccount:switch-hosted:switch-hosted-controller',
+                                    'system:serviceaccount:egress-lists:egress-lists']
+    name: is-the-controller-or-the-generator
+  - expression: "!(request.?namespace.orValue('') in ['switch-hosted', 'egress-proxy',
+      'egress-lists'])"
+    name: not-their-own-namespaces
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - apps
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - statefulsets
+      - statefulsets/scale
+      scope: "*"
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - secrets
+      - pods
+      - events
+      scope: "*"
+  validations:
+  - expression: |-
+      variables.generator ? (request.operation == 'UPDATE' && request.resource.resource == 'secrets' && request.?subResource.orValue('') == '' &&
+         request.?name.orValue('') == 'switch-proxy-login' && (variables.boxns || request.?namespace.orValue('') == 'switch-node-gate'))
+      : (variables.boxns && (
+          (request.operation == 'UPDATE' && request.resource.resource == 'statefulsets' && request.?subResource.orValue('') == 'scale' &&
+            request.?name.orValue('') == 'box') ||
+          (request.operation == 'UPDATE' && request.resource.resource == 'secrets' && request.?subResource.orValue('') == '' &&
+            request.?name.orValue('') == 'switch-enrol') ||
+          (request.operation == 'DELETE' && request.resource.resource == 'pods' && request.?subResource.orValue('') == '' &&
+            request.?name.orValue('') == 'box-0') ||
+          (request.operation == 'CREATE' && request.resource.resource == 'events' &&
+            object.?involvedObject.?namespace.orValue('') == request.?namespace.orValue('') && object.?involvedObject.?name.orValue('') in ['box', 'box-0'])))
+    message: writes only to the box's fixed objects, in a labelled box namespace
+  - expression: |-
+      request.resource.resource != 'secrets' || request.operation != 'UPDATE' || (
+        object.?type.orValue('') == 'Opaque' && oldObject.?type.orValue('') == 'Opaque' &&
+        object.?data.orValue({}).all(k, k in (request.?name.orValue('') == 'switch-enrol' ? ['code'] : ['https_proxy', 'ctl_https_proxy'])) &&
+        object.metadata.?labels.orValue({}) == oldObject.metadata.?labels.orValue({}) &&
+        object.metadata.?annotations.orValue({}) == oldObject.metadata.?annotations.orValue({}))
+    message: switch-enrol holds only code; switch-proxy-login only https_proxy and
+      ctl_https_proxy; nothing else changes
+  variables:
+  - expression: request.?namespace.orValue('').startsWith('agents-user-') && namespaceObject.metadata.?labels[?'app.kubernetes.io/managed-by'].orValue('')
+      == 'switch-hosted'
+    name: boxns
+  - expression: request.userInfo.username == 'system:serviceaccount:egress-lists:egress-lists'
+    name: generator
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-v0-p8-box-watch-binding
+spec:
+  failurePolicy: Fail
+  matchConditions:
+  - expression: request.userInfo.username == 'system:serviceaccount:switch-hosted:switch-hosted-provisioner'
+    name: is-the-provisioner
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - rbac.authorization.k8s.io
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      resources:
+      - rolebindings
+      scope: "*"
+  validations:
+  - expression: request.operation == 'CREATE'
+    message: the provisioner may only create the RoleBinding, never change or remove
+      one
+  - expression: request.?namespace.orValue('').matches('^agents-user-k1-[0-9a-f]{16}$')
+      && namespaceObject.metadata.?labels[?'app.kubernetes.io/managed-by'].orValue('')
+      == 'switch-hosted'
+    message: only in a labelled box namespace
+  - expression: request.operation == 'CREATE' && object.metadata.name in ['switch-box-watch',
+      'switch-operator-restart']
+    message: the RoleBinding is named switch-box-watch or switch-operator-restart
+  - expression: request.operation == 'CREATE' && object.?roleRef.?apiGroup.orValue('')
+      == 'rbac.authorization.k8s.io' && object.?roleRef.?kind.orValue('') == 'ClusterRole'
+      && object.?roleRef.?name.orValue('') == object.metadata.name
+    message: each binds only the ClusterRole of its own name
+  - expression: request.operation == 'CREATE' && object.?subjects.orValue([]).size()
+      == 1 && object.?subjects[?0].?kind.orValue('') == 'ServiceAccount' && object.?subjects[?0].?name.orValue('')
+      == 'switch-hosted-controller' && object.?subjects[?0].?namespace.orValue('')
+      == 'switch-hosted' && !object.?subjects[?0].?apiGroup.hasValue()
+    message: its one subject is the hosted controller's account
+  - expression: request.operation == 'CREATE' && !has(object.metadata.ownerReferences)
+      && !has(object.metadata.finalizers)
+    message: no owners or finalizers
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-operator-cordon-only
+spec:
+  policyName: switch-operator-cordon-only
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-operator-evict-boxes-only
+spec:
+  policyName: switch-operator-evict-boxes-only
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-operator-placeholder-shape
+spec:
+  policyName: switch-operator-placeholder-shape
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p1-namespaces
+spec:
+  policyName: switch-v0-p1-namespaces
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p2-box-objects
+spec:
+  policyName: switch-v0-p2-box-objects
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p3-configmaps
+spec:
+  policyName: switch-v0-p3-configmaps
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p3-networkpolicies
+spec:
+  policyName: switch-v0-p3-networkpolicies
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p3-quota-disks-account
+spec:
+  policyName: switch-v0-p3-quota-disks-account
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p3-secrets
+spec:
+  policyName: switch-v0-p3-secrets
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p4-box-pod
+spec:
+  policyName: switch-v0-p4-box-pod
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p5-box-map
+spec:
+  policyName: switch-v0-p5-box-map
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p5b-box-templates
+spec:
+  policyName: switch-v0-p5b-box-templates
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p6-provisioner-catch-all
+spec:
+  policyName: switch-v0-p6-provisioner-catch-all
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p7-box-writes
+spec:
+  policyName: switch-v0-p7-box-writes
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-v0-p8-box-watch-binding
+spec:
+  policyName: switch-v0-p8-box-watch-binding
+  validationActions:
+  - Deny

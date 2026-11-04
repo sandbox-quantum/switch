@@ -33,6 +33,7 @@ function authState(canAdminTenant: boolean) {
     loading: false,
     loadError: null,
     isOperator: false,
+    isHostedOperator: false,
     canAdminTenant,
     refresh: vi.fn(async () => {}),
     login: vi.fn(async () => {}),

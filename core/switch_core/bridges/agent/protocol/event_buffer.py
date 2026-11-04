@@ -2457,6 +2457,36 @@ class EventBuffer:
             agent_id, after_seq, oldest, tuple(sorted(rooms)), resume_after
         )
 
+    async def replay_start(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        *,
+        after_seq: int | None,
+        since: datetime,
+        limit: int,
+    ) -> tuple[int, bool] | None:
+        """Where a reader that kept no cursor resumes so it gets the agent's
+        own events numbered after `after_seq` (any, when None) and created
+        after `since`: the number just before the oldest of them, and whether
+        `limit` cut older ones off, keeping the newest `limit`. None when
+        there are none, so the reader starts at its head as before."""
+        query = select(AgentEventRow.seq).where(
+            AgentEventRow.agent_id == agent_id, AgentEventRow.created_at > since
+        )
+        if after_seq is not None:
+            query = query.where(AgentEventRow.seq > after_seq)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            seqs = (
+                await session.scalars(
+                    query.order_by(AgentEventRow.seq.desc()).limit(limit + 1)
+                )
+            ).all()
+        if not seqs:
+            return None
+        kept = seqs[:limit]
+        return kept[-1] - 1, len(seqs) > limit
+
     async def before_retained(self, tenant_id: str, agent_id: str) -> int:
         """The own-events number just before the agent's oldest one still kept,
         and past every number `expire` deleted.
