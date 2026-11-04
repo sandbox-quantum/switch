@@ -324,6 +324,7 @@ describe('starting a shared stack', () => {
     expect(await startStack(startOptions(host))).toEqual({
       kind: 'error',
       message: 'The server did not become healthy in time.',
+      failure: 'health_timeout',
     });
     expect(ensureManagedServerMock).not.toHaveBeenCalled();
   });
@@ -475,6 +476,7 @@ describe('starting a shared stack', () => {
     expect(await startStack(startOptions(host))).toEqual({
       kind: 'error',
       message: 'unshared vm-1 /home/alice/.switchdash/switch-server',
+      failure: 'start_refused',
     });
     expect(writeFile).not.toHaveBeenCalled();
     expect(publishEnvMock).not.toHaveBeenCalled();

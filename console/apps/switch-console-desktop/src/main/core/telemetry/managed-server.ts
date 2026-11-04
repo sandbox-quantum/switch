@@ -21,7 +21,9 @@ function startFailureReason(result: StartLocalServerResult): TelemetryManagedSer
     case 'matrix-migration-failed':
       return 'matrix_migration_failed';
     case 'error':
-      return 'error';
+      // `unexpected` is something that threw: `error`, as a start that threw
+      // past the result is reported.
+      return result.failure === 'unexpected' ? 'error' : result.failure;
   }
 }
 

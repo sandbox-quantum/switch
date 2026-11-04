@@ -31,6 +31,7 @@ import { AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
 import { useAgents, useBridges, useBridgeUsers, useRoomGroups } from "../../data/hooks";
 import { flattenTree } from "./groupTree";
+import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
 
 type ChannelSource = "existing" | "new";
 
@@ -249,7 +250,13 @@ export default function RoomCreateFormBody() {
         helperText="Surfaced to agents on connect. Use this to set the room's purpose, rules, or expected outputs."
       />
 
-      <AccessSelect value={access} onChange={setAccess} disabled={submitting} />
+      <AccessSelect
+        value={access}
+        onChange={setAccess}
+        disabled={submitting}
+        helpers={ROOM_ACCESS_HELPERS}
+        optionLabels={ROOM_ACCESS_OPTION_LABELS}
+      />
 
       {(groups ?? []).length > 0 && (
         <TextField

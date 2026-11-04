@@ -128,6 +128,15 @@ describe('the delivery a room message is sent with', () => {
       })
     ).toBe('running');
   });
+  it('steers the current turn when the conversation has imported history', () => {
+    expect(
+      roomMessageSteerTarget({
+        ...input,
+        turns: [{ turnId: 'imported', status: 'completed' }, ...input.turns],
+        items: [{ turnId: 'imported', kind: 'user-message', origin: null }, ...input.items],
+      })
+    ).toBe('running');
+  });
   it('queues another sender, thread, room, unknown sender, or agent', () => {
     expect(roomMessageSteerTarget({ ...input, message: message('other') })).toBeUndefined();
     expect(

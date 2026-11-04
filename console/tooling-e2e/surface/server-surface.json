@@ -941,6 +941,11 @@
       "flags": []
     },
     {
+      "route": "PATCH /gateway/auth/me",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PATCH /gateway/collaborations/{bridge_id}",
       "auth": "session",
       "flags": []

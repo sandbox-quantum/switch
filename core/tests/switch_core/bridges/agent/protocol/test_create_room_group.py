@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -7,6 +10,10 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import Room
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
+
+
+async def _acting_as_admin(session: AsyncSession, agent_id: str) -> Any:
+    return SimpleNamespace(id=agent_id, owner_id="owner"), "owner", True
 
 
 def _bare_service() -> AgentCore:
@@ -92,6 +99,8 @@ class TestListRoomGroups:
     ) -> None:
         svc = _bare_service()
         svc.session_factory = session_factory  # type: ignore[attr-defined]
+        svc.room_store = RoomStore()  # type: ignore[attr-defined]
+        svc._resolve_acting_identity = _acting_as_admin  # type: ignore[method-assign]
         store = RoomGroupStore()
         rooms = RoomStore()
         async with session_factory() as session:

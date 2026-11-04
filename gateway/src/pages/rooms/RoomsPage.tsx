@@ -176,25 +176,27 @@ export default function RoomsPage() {
         width: 116,
         sortable: false,
         filterable: false,
-        renderCell: ({ row }) => (
-          <Button
-            size="small"
-            color="inherit"
-            startIcon={
-              row.archived ? (
-                <UnarchiveOutlined fontSize="small" />
-              ) : (
-                <ArchiveOutlined fontSize="small" />
-              )
-            }
-            onClick={(e) => {
-              e.stopPropagation();
-              handleToggleArchive(row.id, row.archived);
-            }}
-          >
-            {row.archived ? "Unarchive" : "Archive"}
-          </Button>
-        ),
+        // Archiving takes write access to the room.
+        renderCell: ({ row }) =>
+          row.can_write ? (
+            <Button
+              size="small"
+              color="inherit"
+              startIcon={
+                row.archived ? (
+                  <UnarchiveOutlined fontSize="small" />
+                ) : (
+                  <ArchiveOutlined fontSize="small" />
+                )
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleArchive(row.id, row.archived);
+              }}
+            >
+              {row.archived ? "Unarchive" : "Archive"}
+            </Button>
+          ) : null,
       },
     ],
     [handleToggleArchive, byId],
@@ -251,6 +253,7 @@ export default function RoomsPage() {
           columns={columns}
           fillHeight
           checkboxSelection
+          isRowSelectable={(room) => room.can_write}
           onRowSelectionModelChange={setSelected}
           onRowClick={(params) => navigate(`/rooms/${params.id}`)}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}

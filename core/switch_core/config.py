@@ -24,9 +24,12 @@ from switch_core.feature_flags import (
     KNOWN_FEATURE_FLAGS,
     ORGANIZATION_CONNECTOR_APPS,
     SERVICE_CONNECTIONS,
+    SWITCH_CLOUD,
 )
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
+
+DeploymentKind = Literal["switch_cloud", "managed_by_console", "self_hosted"]
 
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
 _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
@@ -1313,6 +1316,16 @@ class SwitchConfig(BaseSettings):
         """Every known flag and whether this deployment turned it on."""
         enabled = self._enabled_feature_flags()
         return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
+
+    @property
+    def deployment_kind(self) -> DeploymentKind:
+        """Who runs this server: Switch Cloud (its feature flag), Switch Console
+        for the person using it (`managed_by_console`), or anyone else."""
+        if self.feature_flags[SWITCH_CLOUD]:
+            return "switch_cloud"
+        if self.managed_by_console:
+            return "managed_by_console"
+        return "self_hosted"
 
     @property
     def agent_management_enabled(self) -> bool:
