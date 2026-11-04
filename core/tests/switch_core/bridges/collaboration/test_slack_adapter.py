@@ -1233,3 +1233,47 @@ def test_backtick_wrapped_command_from_bot_is_not_run() -> None:
 
     # An agent posting a `!command` reference must never trigger it.
     assert commands == []
+
+
+@pytest.mark.asyncio
+async def test_message_edit_uses_original_ref_and_does_not_execute_edited_command() -> (
+    None
+):
+    adapter = _adapter()
+    messages = _capture_messages(adapter)
+    commands = _capture_commands(adapter)
+    adapter._user_cache["U1"] = SlackUser(name="alice", display_name="Alice")
+    adapter._channel_type_cache["C123"] = "channel"
+    event = {
+        "subtype": "message_changed",
+        "channel": "C123",
+        "message": {
+            "user": "U1",
+            "ts": "1700000000.000001",
+            "text": "!reset @agent",
+            "edited": {"ts": "1700000010.123456", "user": "U1"},
+        },
+    }
+    await adapter._handle_message_event(event)
+    assert len(messages) == 1
+    assert messages[0].message_ref == "C123:1700000000.000001"
+    assert messages[0].edit_revision == 1700000010123456
+    assert messages[0].content == "!reset @agent"
+    assert commands == []
+    adapter._bot_user_id = "U1"
+    await adapter._handle_message_event(event)
+    assert len(messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_message_changed_without_edit_timestamp_is_not_a_prompt() -> None:
+    adapter = _adapter()
+    messages = _capture_messages(adapter)
+    await adapter._handle_message_event(
+        {
+            "subtype": "message_changed",
+            "channel": "C123",
+            "message": {"user": "U1", "ts": "1700000000.0", "text": "new"},
+        }
+    )
+    assert messages == []

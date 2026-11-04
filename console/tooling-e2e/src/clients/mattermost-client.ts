@@ -275,6 +275,10 @@ export class MattermostClient {
     });
   }
 
+  async editPost(postId: string, message: string): Promise<MattermostPost> {
+    return this.request<MattermostPost>('PUT', `/posts/${postId}`, { id: postId, message });
+  }
+
   /**
    * `GET /api/v4/channels/{id}/posts?since=<ms>` — posts created or updated at
    * or after `sinceMs`, returned oldest-first here (Mattermost hands back an

@@ -36,11 +36,19 @@ import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
+import { frameRoomMessage } from './room-prompt';
 import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
   z.object({ type: z.literal('dispatched'), commandId: z.string() }),
+  z.object({
+    type: z.literal('amended'),
+    turnId: z.string(),
+    text: z.string(),
+    revision: z.number().int().positive(),
+    itemRevision: z.number().int().positive(),
+  }),
   z.object({
     type: z.literal('finished'),
     commandId: z.string(),
@@ -132,6 +140,10 @@ export class HostedSession {
   private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
+  private readonly promptEdits = new Map<
+    string,
+    { text: string; revision: number; itemRevision: number }
+  >();
   private readonly questions = new Map<string, PendingQuestion>();
   private readonly listeners = new Set<(event: ServerEvent) => void>();
   /** Recent reasoning, in memory only: never published, journaled or replayed. */
@@ -194,6 +206,7 @@ export class HostedSession {
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
       if (record.type === 'dispatched') this.dispatched.add(record.commandId);
+      if (record.type === 'amended') this.promptEdits.set(record.turnId, record);
       if (record.type === 'finished') {
         this.finished.add(record.commandId);
         if (record.usage) this.usage.set(record.commandId, record.usage);
@@ -258,6 +271,19 @@ export class HostedSession {
       }
       const recovered = events.records.length > 0;
       if (recovered) {
+        for (const [turnId, amendment] of host.promptEdits) {
+          const item = host.snapshot().items.find((entry) => entry.itemId === `user-${turnId}`);
+          if (item && item.revision < amendment.itemRevision)
+            await host.publish({
+              type: 'item.upsert',
+              item: {
+                ...item,
+                text: amendment.text,
+                revision: amendment.itemRevision,
+                title: 'Prompt updated',
+              },
+            });
+        }
         const snapshot = host.replica.snapshot();
         for (const request of snapshot.requests)
           if (request.state === 'open' || request.state === 'submitting')
@@ -893,7 +919,8 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    const text = this.promptEdits.get(original.commandId)?.text ?? original.body.text;
+    return { ...command, origin: original.origin, body: { ...original.body, text } };
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
@@ -935,6 +962,7 @@ export class HostedSession {
       if (session.status !== 'ready' && session.status !== 'running')
         throw new Error('Session is not ready.');
     } else if (
+      body.type !== 'message.edit' &&
       body.type !== 'turn.interrupt' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
@@ -982,6 +1010,8 @@ export class HostedSession {
       )
         throw new Error('UNSUPPORTED_MODEL: choose an offered model and options.');
     }
+    if (body.type === 'message.edit' && eventBytes(command) > 60 * 1024)
+      throw new Error('PAYLOAD_TOO_LARGE: edit exceeds the local host limit.');
     if (body.type === 'request.answer') this.validateAnswer(command);
     await this.inbox.append({ type: 'accepted', command });
     this.commands.set(command.commandId, command);
@@ -993,7 +1023,9 @@ export class HostedSession {
       message: null,
     });
     try {
-      if (body.type === 'message.send') {
+      if (body.type === 'message.edit') {
+        await this.applyMessageEdit(command);
+      } else if (body.type === 'message.send') {
         const turnId = command.commandId;
         this.projector.bindTurn(turnId, {
           commandId: command.commandId,
@@ -1019,7 +1051,7 @@ export class HostedSession {
             origin: command.origin,
           },
         });
-        this.queue.push(command);
+        this.queue.push(structuredClone(command));
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -1211,11 +1243,60 @@ export class HostedSession {
     return status;
   }
 
+  private async applyMessageEdit(command: Command): Promise<void> {
+    const body = command.body;
+    if (body.type !== 'message.edit') return;
+    const queued = this.queue.find((entry) => entry.commandId === body.turnId);
+    if (!queued || queued.body.type !== 'message.send' || !queued.body.roomMessage) {
+      await this.notice(
+        'Message edited after pickup or without a queued turn; the existing turn was left unchanged.'
+      );
+      return;
+    }
+    if (
+      queued.origin.actorId !== command.origin.actorId ||
+      queued.origin.roomId !== command.origin.roomId ||
+      queued.origin.messageId !== command.origin.messageId
+    )
+      throw new Error(
+        'EDIT_NOT_PERMITTED: an edit must name its original author, room and message.'
+      );
+    if ((this.promptEdits.get(body.turnId)?.revision ?? 0) >= body.revision) return;
+    const { prefixLength, suffixLength } = queued.body.roomMessage;
+    if (prefixLength + suffixLength > queued.body.text.length)
+      throw new Error('The queued room message has invalid framing bounds.');
+    const text = frameRoomMessage(
+      {
+        prefix: queued.body.text.slice(0, prefixLength),
+        suffix: suffixLength ? queued.body.text.slice(-suffixLength) : '',
+      },
+      body.text
+    );
+    if (eventBytes({ ...queued, body: { ...queued.body, text } }) > 60 * 1024)
+      throw new Error('PAYLOAD_TOO_LARGE: revised prompt exceeds the local host limit.');
+    const item = this.snapshot().items.find((entry) => entry.itemId === `user-${body.turnId}`);
+    if (!item) throw new Error('The queued message has no transcript item.');
+    const amendment = { text, revision: body.revision, itemRevision: item.revision + 1 };
+    await this.inbox.append({ type: 'amended', turnId: body.turnId, ...amendment });
+    this.promptEdits.set(body.turnId, amendment);
+    await this.publish({
+      type: 'item.upsert',
+      item: { ...item, text, title: 'Prompt updated', revision: item.revision + 1 },
+    });
+    queued.body.text = text;
+  }
+
   private async runNext(): Promise<void> {
-    if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
-    const command = this.queue.shift();
+    const claim = this.serial.then(() => {
+      if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return null;
+      const next = this.queue.shift();
+      if (!next || next.body.type !== 'message.send') return null;
+      this.activeTurn = next.commandId;
+      return next;
+    });
+    this.serial = claim.catch(() => {});
+    const command = await claim;
     if (!command || command.body.type !== 'message.send') return;
-    this.activeTurn = command.commandId;
     try {
       const attachments = command.body.attachments.length
         ? await this.config.stageAttachments!(command.body.attachments)

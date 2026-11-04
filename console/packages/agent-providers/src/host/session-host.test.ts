@@ -12,6 +12,7 @@ import {
 import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
+import { frameRoomMessage } from './room-prompt';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
 import { HostedSession, recentTurns, type RoomReply, unpostedReply } from './session-host';
 
@@ -2185,4 +2186,224 @@ describe('retrying a room message', () => {
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
+});
+
+function editableMessage(id: string): Command {
+  const command = message(id);
+  command.origin = {
+    actorId: 'author',
+    surface: 'switch-web',
+    roomId: 'room',
+    threadId: 'thread',
+    messageId: id,
+  };
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  const frame = { prefix: 'Trusted room instructions\n', suffix: 'Trusted reply reminder' };
+  command.body.roomMessage = {
+    prefixLength: frame.prefix.length,
+    suffixLength: frame.suffix.length,
+  };
+  command.body.text = frameRoomMessage(frame, 'Original request');
+  return command;
+}
+function editMessage(original: Command, id: string, revision: number, text: string): Command {
+  return {
+    ...original,
+    commandId: id,
+    body: { type: 'message.edit', turnId: original.commandId, revision, text },
+  };
+}
+
+it('amends queued text once, keeps the accepted command immutable and ignores stale revisions', async () => {
+  const { host, adapter, emit, root } = await start('claude');
+  await host.command(message('busy'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+  const original = editableMessage('queued');
+  const originalText = original.body.type === 'message.send' ? original.body.text : '';
+  await host.command(original);
+  const newest = editMessage(original, 'edit-new', 30, 'Corrected request');
+  await host.command(newest);
+  await host.command(structuredClone(newest));
+  await host.command(editMessage(original, 'edit-old', 20, 'Stale request'));
+  expect((await host.command(structuredClone(original))).status).toBe('applied');
+  const item = host.snapshot().items.find((item) => item.itemId === 'user-queued')!;
+  expect(item).toMatchObject({ revision: 2, title: 'Prompt updated', origin: original.origin });
+  expect(item.text).toContain('Corrected request');
+  expect(item.text).toContain('Trusted room instructions');
+  expect(item.text).toContain('Trusted reply reminder');
+  expect(item.text).not.toContain('Stale request');
+  expect(original.body.type === 'message.send' && original.body.text).toBe(originalText);
+  const records = (await readFile(join(root, 'inbox.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  expect(records.find((record) => record.command?.commandId === 'queued').command.body.text).toBe(
+    originalText
+  );
+  expect(records.filter((record) => record.command?.commandId === 'edit-new')).toHaveLength(1);
+  emit({ type: 'turn.completed', turnId: 'busy', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(adapter.sendTurn).mock.calls[1]![0]).toMatchObject({
+    turnId: 'queued',
+    text: item.text,
+  });
+  expect(host.snapshot().turns).toHaveLength(2);
+});
+
+it('leaves claimed and unknown turns unchanged without creating another turn', async () => {
+  const { host, adapter } = await start('claude');
+  const original = editableMessage('claimed');
+  await host.command(original);
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+  await host.command(editMessage(original, 'late', 10, 'Too late'));
+  await host.command(editMessage(editableMessage('missing'), 'unknown', 10, 'Unknown'));
+  expect(vi.mocked(adapter.sendTurn).mock.calls[0]![0].text).toContain('Original request');
+  expect(host.snapshot().turns).toHaveLength(1);
+  expect(host.snapshot().items.find((item) => item.itemId === 'user-claimed')?.revision).toBe(1);
+  expect(host.snapshot().notices.some((notice) => notice.message.includes('left unchanged'))).toBe(
+    true
+  );
+});
+
+it('refuses amendments from another author, room or message', async () => {
+  const { host } = await start('claude');
+  await host.command(message('busy'));
+  const original = editableMessage('queued');
+  await host.command(original);
+  for (const [index, origin] of [
+    { ...original.origin, actorId: 'other' },
+    { ...original.origin, roomId: 'other-room' },
+    { ...original.origin, messageId: 'other-message' },
+  ].entries()) {
+    expect(
+      await host.command({ ...editMessage(original, `bad-${index}`, 10, 'Forged'), origin })
+    ).toMatchObject({ status: 'rejected', message: expect.stringContaining('EDIT_NOT_PERMITTED') });
+  }
+  expect(host.snapshot().items.find((item) => item.itemId === 'user-queued')?.revision).toBe(1);
+});
+
+it('preserves attachments, thread and prompt framing across a queued edit', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.config.session.capabilities.attachmentMimeTypes = ['image/png'];
+  const staged = [{ path: '/tmp/example.png', mimeType: 'image/png', name: 'example.png' }];
+  const config = { ...fixture.config, stageAttachments: vi.fn(async () => staged) };
+  const host = await startHost(root, config, fixture.adapter);
+  hosts.push(host);
+  await host.command(message('busy'));
+  await until(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledTimes(1));
+  const original = editableMessage('queued');
+  if (original.body.type !== 'message.send') throw new Error('Expected message');
+  original.body.attachments = [
+    { attachmentId: 'image', name: 'example.png', mimeType: 'image/png', bytes: 10, sha256: null },
+  ];
+  await host.command(original);
+  await host.command(editMessage(original, 'edit', 10, 'Revised caption'));
+  const user = host.snapshot().items.find((item) => item.itemId === 'user-queued')!;
+  expect(user.origin).toEqual(original.origin);
+  expect(user.attachments).toEqual(original.body.attachments);
+  fixture.emit({ type: 'turn.completed', turnId: 'busy', outcome: 'completed', usage: [] });
+  await until(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(config.stageAttachments).toHaveBeenCalledWith(original.body.attachments);
+  expect(vi.mocked(fixture.adapter.sendTurn).mock.calls[1]![0]).toMatchObject({
+    text: expect.stringContaining('Revised caption'),
+    attachments: staged,
+  });
+});
+
+it('uses claim as the cutoff even while attachment staging is still pending', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  fixture.config.session.capabilities.attachmentMimeTypes = ['image/png'];
+  let release!: () => void;
+  let staging = false;
+  const config = {
+    ...fixture.config,
+    stageAttachments: async () => {
+      staging = true;
+      changed();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return [];
+    },
+  };
+  const host = await startHost(root, config, fixture.adapter);
+  hosts.push(host);
+  const original = editableMessage('claimed');
+  if (original.body.type !== 'message.send') throw new Error('Expected message');
+  original.body.attachments = [
+    { attachmentId: 'image', name: 'example.png', mimeType: 'image/png', bytes: 10, sha256: null },
+  ];
+  await host.command(original);
+  await until(() => expect(staging).toBe(true));
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+  await host.command(editMessage(original, 'late', 10, 'After claim'));
+  release();
+  await until(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(fixture.adapter.sendTurn).mock.calls[0]![0].text).toContain('Original request');
+});
+
+it('recovers the revised transcript without resending queued work after restart', async () => {
+  const { root, host } = await start('claude');
+  await host.command(message('busy'));
+  const original = editableMessage('queued');
+  await host.command(original);
+  await host.command(editMessage(original, 'edit', 10, 'Survives restart'));
+  await host.shutdown();
+  const fixture = setup('claude');
+  const recovered = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(recovered);
+  expect(recovered.snapshot().items.find((item) => item.itemId === 'user-queued')?.text).toContain(
+    'Survives restart'
+  );
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+  expect((await recovered.command(original)).status).toBe('applied');
+});
+
+it('retries an interrupted edited turn using its last effective prompt after recovery', async () => {
+  const { root, host } = await start('claude');
+  await host.command(message('busy'));
+  const original = editableMessage('queued');
+  await host.command(original);
+  await host.command(editMessage(original, 'edit', 10, 'Latest request'));
+  await host.shutdown();
+  const fixture = setup('claude');
+  const recovered = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(recovered);
+  const result = await recovered.command({
+    ...message('retry-edited'),
+    epoch: recovered.snapshot().session.epoch,
+    body: { type: 'message.retry', messageId: 'queued' },
+  });
+  expect(result.status).toBe('applied');
+  await until(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(fixture.adapter.sendTurn).mock.calls[0]![0].text).toContain('Latest request');
+  expect(vi.mocked(fixture.adapter.sendTurn).mock.calls[0]![0].text).not.toContain(
+    'Original request'
+  );
+});
+
+it('replays a durable amendment if its transcript publication was interrupted', async () => {
+  const { root, host } = await start('claude');
+  await host.command(message('busy'));
+  const original = editableMessage('queued');
+  await host.command(original);
+  const beforeEdit = await readFile(join(root, 'events.jsonl'), 'utf8');
+  await host.command(editMessage(original, 'edit', 10, 'Durably amended'));
+  await host.shutdown();
+  // The inbox amendment reached disk, but the process did not publish its event.
+  await writeFile(join(root, 'events.jsonl'), beforeEdit);
+  const fixture = setup('claude');
+  const recovered = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(recovered);
+  const item = recovered.snapshot().items.find((entry) => entry.itemId === 'user-queued');
+  expect(item).toMatchObject({
+    revision: 2,
+    title: 'Prompt updated',
+    text: expect.stringContaining('Durably amended'),
+  });
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
 });

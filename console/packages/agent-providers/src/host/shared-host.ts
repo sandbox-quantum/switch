@@ -23,6 +23,8 @@ import {
   roomCommand,
   roomFreshStartCommandId,
   roomMessageSchema,
+  roomEditSchema,
+  roomEditCommand,
   type RoomAttachmentSource,
 } from './room-prompt';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
@@ -808,9 +810,30 @@ export async function runSharedHost(
       }
       return status ?? 'The host did not record the command.';
     };
+    let admittingRooms: Promise<void> = Promise.resolve();
+    const admitRoomMessages = (inbox: SharedRoomInbox): Promise<void> => {
+      const admission = admittingRooms.then(() => admitPendingRoomMessages(inbox));
+      admittingRooms = admission.catch(() => {});
+      return admission;
+    };
     /** Turn each room message handed over into the command it amounts to, in order. */
-    const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
+    const admitPendingRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
       for (const event of inbox.pending()) {
+        const edit = roomEditSchema.safeParse(event.event);
+        if (edit.success) {
+          await run(
+            roomEditCommand({
+              agentId,
+              sessionId: options.session.sessionId,
+              epoch: host!.snapshot().session.epoch,
+              roomId: event.roomId,
+              edit: edit.data,
+            }),
+            null
+          );
+          await inbox.acknowledge(event);
+          continue;
+        }
         const message = roomMessageSchema.safeParse(event.event);
         if (!message.success) {
           await host!.notice(
@@ -912,6 +935,8 @@ export async function runSharedHost(
       room: async ({ handoff }) => {
         if (!rooms) throw new Error('This session serves no rooms.');
         await rooms.accept(handoff);
+        if (['ready', 'running'].includes(host!.snapshot().session.status))
+          await admitRoomMessages(rooms);
         active();
         announceBusy();
         waker.nudge();

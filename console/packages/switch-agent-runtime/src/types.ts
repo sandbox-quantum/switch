@@ -41,6 +41,14 @@ export interface MessagePayload {
   sender_role?: 'owner' | 'admin' | 'member' | null;
 }
 
+export interface MessageEditPayload {
+  message_id: string;
+  edit_id: string;
+  sender: string;
+  body: string;
+  revision: number;
+}
+
 export interface CommandPayload {
   command: string;
   // Command arguments. For `reset`/`compact` this carries the role name the
@@ -64,7 +72,7 @@ export interface RoomJoinPayload {
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload;
+  payload: MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload;
   /**
    * The event's number in the agent's own events (`s`). It is present on the push
    * transport and absent on the legacy poll. It is also absent on a message

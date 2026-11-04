@@ -2580,6 +2580,11 @@ class AgentCore:
                 for attachment in attachments
             ],
         }
+        relation = message.content.get("m.relates_to")
+        if isinstance(relation, dict) and relation.get("rel_type") == "m.replace":
+            entry["kind"] = "message_edit"
+            entry["replaces"] = relation.get("event_id")
+            entry["revision"] = message.content.get("com.switch.edit_revision")
         if sender_kind is not None:
             entry["sender_kind"] = sender_kind
         person = platform_on_behalf_of(message.content or {})

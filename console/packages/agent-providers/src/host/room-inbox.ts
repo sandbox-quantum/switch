@@ -6,6 +6,8 @@ import { z } from 'zod';
 import { Journal } from './journal';
 
 export function roomInputId(event: AgentBridgeEvent): string | null {
+  if (event.type === 'message_edit' && 'edit_id' in event.payload)
+    return `edit:${String(event.payload.edit_id)}`;
   if (event.type === 'message')
     return 'addressed' in event.payload &&
       event.payload.addressed === true &&

@@ -231,6 +231,12 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
     z.strictObject({
       type: z.literal('message.send'),
       text: z.string(),
+      roomMessage: z
+        .strictObject({
+          prefixLength: z.number().int().nonnegative(),
+          suffixLength: z.number().int().nonnegative(),
+        })
+        .optional(),
       attachments: z.array(attachmentSchema),
       delivery: z.enum(['queue', 'steer']),
     }),
@@ -240,6 +246,7 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
       expectedRevision: revision,
       answer: result,
     }),
+    z.strictObject({ type: z.literal('message.edit'), turnId: id, text: z.string(), revision }),
     z.strictObject({ type: z.literal('turn.interrupt'), turnId: id }),
     z.strictObject({ type: z.literal('session.stop') }),
     z.strictObject({ type: z.literal('session.reset') }),

@@ -196,6 +196,7 @@ class RoomDetailDescriptor(BaseModel):
 
 EventType = Literal[
     "message",
+    "message_edit",
     "command",
     "room_join",
 ]
@@ -245,6 +246,14 @@ class MessagePayload(BaseModel):
     switch_notice: str | None = None
 
 
+class MessageEditPayload(BaseModel):
+    message_id: str
+    edit_id: str
+    sender: str
+    body: str
+    revision: int
+
+
 class CommandPayload(BaseModel):
     command: str
     args: str = ""
@@ -269,10 +278,11 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-Payload = MessagePayload | CommandPayload | RoomJoinPayload
+Payload = MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
+    "message_edit": MessageEditPayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
 }

@@ -117,6 +117,8 @@ class InboundMessage(BaseModel):
     sender_name: str
     content: str
     message_ref: str
+    # Platform edit time in microseconds; the ref still names the original post.
+    edit_revision: int | None = None
     # External platform's thread root id (Mattermost root_id), set when this
     # message is a reply inside a thread. None for top-level messages.
     root_id: str | None = None

@@ -3471,6 +3471,9 @@ class SlackAdapter(PlatformAdapter):
         ):
             return
         subtype = event.get("subtype")
+        if subtype == "message_changed":
+            await self._handle_message_edit(event)
+            return
         if subtype and subtype not in self._ALLOWED_SUBTYPES:
             return
 
@@ -3497,6 +3500,51 @@ class SlackAdapter(PlatformAdapter):
             # (`collaboration_core._post_source`).
             self._seen_ts.pop(message_ts, None)
             raise
+
+    async def _handle_message_edit(self, event: dict[str, object]) -> None:
+        message = event.get("message")
+        if not isinstance(message, dict) or not self._on_message:
+            return
+        edited = message.get("edited")
+        if not isinstance(edited, dict):
+            return
+        timestamp = str(edited.get("ts", ""))
+        seconds, separator, fraction = timestamp.partition(".")
+        if (
+            not separator
+            or not seconds.isdecimal()
+            or not fraction.isdecimal()
+            or len(fraction) > 6
+        ):
+            return
+        revision = int(seconds) * 1_000_000 + int(fraction.ljust(6, "0"))
+        user_id = str(message.get("user", ""))
+        channel_id = str(event.get("channel", ""))
+        message_ts = str(message.get("ts", ""))
+        if (
+            not user_id
+            or not channel_id
+            or not message_ts
+            or user_id == self._bot_user_id
+            or message.get("bot_id")
+        ):
+            return
+        user = await self._resolve_user_name(user_id)
+        await self._on_message(
+            InboundMessage(
+                channel_id=channel_id,
+                channel_type=(
+                    self._to_channel_type(self._channel_type_cache[channel_id])
+                    if channel_id in self._channel_type_cache
+                    else await self.get_channel_type(channel_id)
+                ),
+                sender_id=user_id,
+                sender_name=user.name,
+                content=str(message.get("text", "")),
+                message_ref=f"{channel_id}:{message_ts}",
+                edit_revision=revision,
+            )
+        )
 
     async def _deliver_message_event(
         self, event: dict[str, object], channel_id: str, message_ts: str

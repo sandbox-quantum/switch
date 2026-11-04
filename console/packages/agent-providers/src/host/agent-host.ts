@@ -1410,6 +1410,11 @@ export async function runAgentHost(
           // Asked again here as well as on the timer: the answer a held room is
           // waiting for is written by a session that is doing other work, and
           // an event arriving is the cheapest evidence that time has passed.
+          if (event.type === 'message_edit') {
+            if (held.has(assignment.roomId)) return hold(assignment, false, false);
+            if (placements.sessionIn(assignment.roomId)) await admit(assignment, false, false);
+            return;
+          }
           if (held.size) await resolveHeld();
           if (held.has(assignment.roomId)) return hold(assignment, spawning, false);
           if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning, false);

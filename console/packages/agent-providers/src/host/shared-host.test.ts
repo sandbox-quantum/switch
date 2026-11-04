@@ -1577,3 +1577,41 @@ it('tells the room once when every post of a turn was refused, and not when one 
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+it('delivers a room edit through the inbox to the same queued turn, not a new prompt', async () => {
+  const host = await start({ rooms: true });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Keep busy') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'Original queued request') });
+    const edit = {
+      sequence: 3,
+      roomId: 'room',
+      messageId: 'edit:edit-1',
+      event: {
+        type: 'message_edit',
+        payload: {
+          message_id: 'message-2',
+          edit_id: 'edit-1',
+          sender: '@person:test',
+          body: 'Corrected queued request',
+          revision: 30,
+        },
+      },
+    };
+    expect(await host.parent.ask({ type: 'room', handoff: edit })).toMatchObject({ ok: true });
+    expect(await host.parent.ask({ type: 'room', handoff: edit })).toMatchObject({ ok: true });
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'completed',
+      usage: [],
+    });
+    await until(() => expect(host.turns).toHaveLength(2));
+    expect(host.turns[1]!.text).toContain('Corrected queued request');
+    expect(host.turns[1]!.text).not.toContain('Original queued request');
+    expect(host.turns[1]!.text).toContain('message_id message-2');
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});

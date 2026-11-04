@@ -53,6 +53,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
@@ -1080,6 +1081,9 @@ class CollaborationCore:
         )
 
     async def _handle_inbound_message(self, msg: InboundMessage) -> None:
+        if msg.edit_revision is not None:
+            await self._handle_inbound_edit(msg)
+            return
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
             msg.channel_id,
@@ -1848,6 +1852,70 @@ class CollaborationCore:
             )
             return None
         return human_actor
+
+    async def _handle_inbound_edit(self, msg: InboundMessage) -> None:
+        revision = msg.edit_revision
+        if revision is None or revision <= 0 or msg.sender_is_app:
+            return
+        room_ids = self._channel_to_room.get(msg.channel_id)
+        client_id = self._human_actors.get(msg.sender_id)
+        if room_ids is None or client_id is None:
+            return
+        room_id, transport_room_id = room_ids
+        async with self._session_factory() as session:
+            mapping = await self._bridge_message_map_store.get_by_external_post_id(
+                session, self._bridge_id, msg.message_ref
+            )
+            if mapping is None or mapping.external_channel_id != msg.channel_id:
+                return
+            original = await MessageStore().get_by_transport_event_id(
+                session, mapping.transport_event_id
+            )
+            if (
+                original is None
+                or original.room_id != room_id
+                or original.sender_client_id != client_id
+            ):
+                return
+            original_id = original.transport_event_id
+        actor = self._client_lifecycle.get(client_id)
+        if actor is None:
+            raise RuntimeError("The author of an edited post has no running actor")
+        content = self._adapter.translate_inbound(msg.content)
+        check = await check_message(
+            self._trust_client, role="user", content=content, room_id=room_id
+        )
+        if check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        ):
+            await self._post_trust_notice(
+                msg,
+                "🚫 Your edit was blocked by Switch Trust and was not delivered to the room.",
+                AdminMessageType.TRUST_BLOCKED,
+            )
+            return
+        if check.redacted_content is not None:
+            content = check.redacted_content
+        annotation = trust_annotation(check)
+        if annotation is not None:
+            content = f"{content}\n\n{annotation}"
+        with writes_derived_from(
+            client_id,
+            _post_source(
+                self._bridge_id, msg.channel_id, f"{msg.message_ref}:edit:{revision}"
+            ),
+        ):
+            await actor.send_event(
+                transport_room_id,
+                "m.room.message",
+                {
+                    "msgtype": "m.text",
+                    "body": content,
+                    "m.relates_to": {"rel_type": "m.replace", "event_id": original_id},
+                    "m.new_content": {"msgtype": "m.text", "body": content},
+                    "com.switch.edit_revision": revision,
+                },
+            )
 
     async def _handle_inbound_interaction(
         self, interaction: InboundInteraction

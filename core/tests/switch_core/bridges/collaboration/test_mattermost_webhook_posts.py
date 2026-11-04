@@ -151,3 +151,29 @@ def test_a_post_mattermost_marks_from_a_bot_is_an_apps() -> None:
     [message] = received
     assert isinstance(message, InboundMessage)
     assert message.sender_is_app is True
+
+
+def test_post_edited_preserves_identity_and_is_not_an_edited_command() -> None:
+    adapter, received = _adapter()
+    loop = asyncio.new_event_loop()
+    dispatched: list[Any] = []
+    adapter._main_loop = loop
+    adapter._dispatch = lambda coro, _loop: dispatched.append(coro)  # type: ignore[method-assign]
+    post = _post("!reset @agent")
+    post.update({"id": "original-post", "edit_at": 1700000010123})
+    event = {
+        "event": "post_edited",
+        "data": {"post": json.dumps(post), "channel_type": "O"},
+    }
+    try:
+        loop.run_until_complete(adapter._ws_handler(json.dumps(event), "agent"))
+        for coro in dispatched:
+            loop.run_until_complete(coro)
+        loop.run_until_complete(adapter._ws_handler(json.dumps(event), "agent"))
+    finally:
+        loop.close()
+    assert len(received) == 1
+    assert isinstance(received[0], InboundMessage)
+    assert received[0].message_ref == "original-post"
+    assert received[0].edit_revision == 1700000010123000
+    assert received[0].content == "!reset @agent"

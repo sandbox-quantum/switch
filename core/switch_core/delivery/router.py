@@ -72,6 +72,7 @@ from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
+from switch_core.bridges.agent.protocol.types import AgentEvent, MessageEditPayload
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
@@ -84,6 +85,7 @@ from switch_core.db.agent_event_notify_ddl import (
 from switch_core.db.models import (
     Agent,
     AgentConnectionRecord,
+    AgentEventRow,
     Client,
     ClientRoom,
     CollaborationBridge,
@@ -109,6 +111,7 @@ from switch_core.delivery.recipient import (
     NOTHING,
     AgentRecipient,
     Delivery,
+    OwnEvent,
     RecipientServices,
     RoomMember,
     command_event,
@@ -1111,6 +1114,9 @@ class MessageRouter:
         *,
         sender_client_id: str | None,
     ) -> _Plan:
+        relation = event.content.get("m.relates_to")
+        if isinstance(relation, dict) and relation.get("rel_type") == "m.replace":
+            return await self._decide_edit(session, reads, event, sender_client_id)
         # Nobody's own event is the row they wrote themselves.
         recipients = [
             self._recipient(reads, member)
@@ -1127,6 +1133,81 @@ class MessageRouter:
             return await self._decide_custom(recipients, event)
         assert isinstance(event, InboundMessage)
         return await self._decide_message(session, reads, recipients, event)
+
+    async def _decide_edit(
+        self,
+        session: AsyncSession,
+        reads: RoomReads,
+        event: InboundEvent,
+        sender_client_id: str | None,
+    ) -> _Plan:
+        relation = event.content["m.relates_to"]
+        replacement = event.content.get("m.new_content")
+        revision = event.content.get("com.switch.edit_revision")
+        if not isinstance(relation, dict) or not isinstance(replacement, dict):
+            raise ValueError("A message edit needs an original and replacement content")
+        original_id = relation.get("event_id")
+        body = replacement.get("body")
+        if (
+            not isinstance(original_id, str)
+            or not isinstance(body, str)
+            or type(revision) is not int
+            or revision <= 0
+        ):
+            raise ValueError(
+                "A message edit needs text and a positive platform revision"
+            )
+        original = await self._messages.get_by_transport_event_id(session, original_id)
+        if (
+            original is None
+            or original.room_id != reads.room_id
+            or sender_client_id is None
+            or original.sender_client_id != sender_client_id
+            or original.event_type != "m.room.message"
+            or isinstance(original.content.get("m.relates_to"), dict)
+            and original.content["m.relates_to"].get("rel_type") == "m.replace"
+        ):
+            raise ValueError("Only the original author may edit a message in this room")
+        group = parse_attachment_group(original.content)
+        original_key = group[0] if group is not None else original_id
+        original_recipients = set(
+            (
+                await session.scalars(
+                    select(AgentEventRow.agent_id).where(
+                        AgentEventRow.room_id == reads.room_id,
+                        AgentEventRow.message_key == original_key,
+                        AgentEventRow.type == "message",
+                    )
+                )
+            ).all()
+        )
+        deliveries = []
+        for member in reads.members:
+            if member.agent.id not in original_recipients:
+                continue
+            recipient = self._recipient(reads, member)
+
+            def own(row: InboundEvent) -> OwnEvent:
+                return OwnEvent(
+                    AgentEvent(
+                        type="message_edit",
+                        room_id=reads.room_id,
+                        bridge_id=reads.meta.bridge_id,
+                        channel_type=reads.meta.channel_type,
+                        payload=MessageEditPayload(
+                            message_id=original_id,
+                            edit_id=row.event_id,
+                            sender=row.sender,
+                            body=body,
+                            revision=revision,
+                        ),
+                    ),
+                    row.seq,
+                    row.event_id,
+                )
+
+            deliveries.append((recipient, Delivery(own_event=own, after=None)))
+        return _Plan(deliveries=deliveries)
 
     async def _decide_message(
         self,

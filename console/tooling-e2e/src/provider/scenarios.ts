@@ -103,7 +103,7 @@ const RUNTIME_STATUS_MARKERS = [
 export type TurnState = 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
 
 const TURN_STATE_HEADINGS: readonly [TurnState, string][] = [
-  ['queued', 'Queued.'],
+  ['queued', 'Queued'],
   ['running', 'Working…'],
   ['completed', 'Turn complete.'],
   // A completed turn whose duration is known says how long it ran instead.
@@ -722,6 +722,76 @@ export const templateAgent: Scenario = (harness, names) =>
     }
   });
 
+export const queuedMessageEdit: Scenario = (harness) =>
+  scenario('queued-message-edit', async (record) => {
+    const { mattermost, channel, bot, agent } = harness;
+    const since = await ask(
+      harness,
+      'Run the shell command `sleep 90` before replying. This deliberately keeps the turn busy for a queued-message edit test.'
+    );
+    // Activity cards change in place, so re-read them rather than deduplicating post IDs.
+    const runningDeadline = Date.now() + 30_000;
+    let running = false;
+    while (Date.now() < runningDeadline) {
+      const posts = await mattermost.postsSince(channel.id, since);
+      record(posts);
+      if (posts.some((post) => post.user_id === bot.id && turnStateOf(post) === 'running')) {
+        running = true;
+        break;
+      }
+      await sleep(500);
+    }
+    if (!running) throw new Error('No running activity card appeared for the first turn');
+    const oldMarker = `STALE_${harness.runId}`;
+    const newMarker = `CORRECTED_${harness.runId}`;
+    const queued = await mattermost.post({
+      channelId: channel.id,
+      message: `@${agent.name} Reply in this room with exactly ${oldMarker}.`,
+    });
+    const waitForQueued = async (updated: boolean) => {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const posts = await mattermost.postsSince(channel.id, queued.create_at);
+        record(posts);
+        const card = posts.find(
+          (post) =>
+            post.user_id === bot.id &&
+            turnStateOf(post) === 'queued' &&
+            (!updated || post.message.includes('prompt updated'))
+        );
+        if (card) return card;
+        await sleep(500);
+      }
+      throw new Error(
+        updated ? 'The queued card never reflected the edit' : 'The second message never queued'
+      );
+    };
+    await waitForQueued(false);
+    await mattermost.editPost(
+      queued.id,
+      `@${agent.name} Reply in this room with exactly ${newMarker}.`
+    );
+    const revisedCard = await waitForQueued(true);
+    await mattermost.post({ channelId: channel.id, message: `!interrupt @${agent.name}` });
+    const answer = await expectBotPost(mattermost, {
+      where: sharedRoom(harness),
+      since: queued.create_at,
+      record,
+      predicate: (post) => !isRuntimeStatusPost(post) && post.message.includes(newMarker),
+      describe: 'the real agent replying to the revised queued request',
+    });
+    const replies = await mattermost.postsSince(channel.id, since);
+    record(replies);
+    if (
+      replies.some(
+        (post) =>
+          post.user_id === bot.id && !isRuntimeStatusPost(post) && post.message.includes(oldMarker)
+      )
+    )
+      throw new Error('The agent acted on the stale request');
+    return `edited post ${queued.id}; card ${revisedCard.id}; corrected reply ${answer.id}`;
+  });
+
 /**
  * A provider-lane scenario: its header, and the function that drives it. All of
  * them share one agent and one channel, set up once per run.
@@ -755,6 +825,10 @@ function providerHeader(
 }
 
 export const SCENARIOS: readonly ProviderScenario[] = [
+  {
+    header: providerHeader('queued-message-edit', ['connect_to_room', 'post_message'], []),
+    run: queuedMessageEdit,
+  },
   { header: providerHeader('greet', ['connect_to_room', 'post_message'], []), run: greet },
   { header: providerHeader('question', ['connect_to_room', 'post_message'], []), run: question },
   { header: providerHeader('approval', ['connect_to_room', 'post_message'], []), run: approval },

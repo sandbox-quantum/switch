@@ -2763,7 +2763,7 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
-        if event_type != "posted":
+        if event_type not in ("posted", "post_edited"):
             return
 
         data = event.get("data", {})
@@ -2785,10 +2785,15 @@ class MattermostAdapter(PlatformAdapter):
             return
 
         post_id = post.get("id", "")
+        editing = event_type == "post_edited"
+        revision = post.get("edit_at")
+        if editing and (type(revision) is not int or revision <= 0):
+            return
+        seen_id = f"{post_id}:edit:{revision}" if editing else post_id
         with self._seen_lock:
-            if post_id in self._seen_post_ids:
+            if seen_id in self._seen_post_ids:
                 return
-            self._seen_post_ids[post_id] = None
+            self._seen_post_ids[seen_id] = None
             if len(self._seen_post_ids) > self._seen_post_ids_max:
                 self._seen_post_ids.popitem(last=False)
 
@@ -2836,6 +2841,25 @@ class MattermostAdapter(PlatformAdapter):
             username = f"{username}'s webhook"
 
         channel_type = self._to_channel_type(mm_channel_type)
+        if editing:
+            if self._on_message and not sender_is_app:
+                self._dispatch(
+                    self._on_message(
+                        InboundMessage(
+                            channel_id=channel_id,
+                            channel_type=channel_type,
+                            sender_id=user_id,
+                            sender_name=username,
+                            content=message,
+                            message_ref=post_id,
+                            edit_revision=revision * 1000,
+                            root_id=root_id,
+                            agent_name=agent_name,
+                        )
+                    ),
+                    loop,
+                )
+            return
         stripped = message.strip()
 
         logger.debug(

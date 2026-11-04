@@ -16,13 +16,14 @@ from typing import TYPE_CHECKING
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
+    MessageEditPayload,
     MessagePayload,
     RoomJoinPayload,
 )
 from switch_core.clients.admin_messages import PLATFORM_MARKER, platform_on_behalf_of
 
 if TYPE_CHECKING:
-    from switch_core.transport.types import InboundMedia, InboundMessage
+    from switch_core.transport.types import InboundEvent, InboundMedia, InboundMessage
 
 
 def attachment_ref(event: InboundMedia) -> AttachmentRef:
@@ -116,5 +117,35 @@ def room_join_event(
             member_name=member_name,
             timestamp=timestamp,
             listening=listening,
+        ),
+    )
+
+
+def message_edit_event(
+    *,
+    room_id: str,
+    bridge_id: str | None,
+    channel_type: str | None,
+    event: InboundEvent,
+) -> AgentEvent | None:
+    relation = event.content.get("m.relates_to")
+    if not isinstance(relation, dict) or relation.get("rel_type") != "m.replace":
+        return None
+    replacement = event.content.get("m.new_content")
+    if not isinstance(replacement, dict):
+        raise ValueError("A message edit has no replacement content")
+    return AgentEvent(
+        type="message_edit",
+        room_id=room_id,
+        bridge_id=bridge_id,
+        channel_type=channel_type,
+        payload=MessageEditPayload.model_validate(
+            {
+                "message_id": relation.get("event_id"),
+                "edit_id": event.event_id,
+                "sender": event.sender,
+                "body": replacement.get("body"),
+                "revision": event.content.get("com.switch.edit_revision"),
+            }
         ),
     )

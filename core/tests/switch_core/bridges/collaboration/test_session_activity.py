@@ -205,6 +205,14 @@ async def test_the_last_line_says_whether_the_turn_is_still_moving() -> None:
     assert _state(items, _turn("queued")) == "Queued. Waiting for the agent to start…"
 
 
+def test_an_edited_queued_prompt_is_visible_until_the_turn_starts() -> None:
+    items = [_item(kind="user-message", revision=2, text="Corrected request")]
+    assert _state(items, _turn("queued")).strip("_") == (
+        "Queued (prompt updated). Waiting for the agent to start…"
+    )
+    assert _state(items, _turn("running")).strip("_") == "Working…"
+
+
 async def test_a_turn_with_nothing_done_in_it_still_says_where_it_got_to() -> None:
     """No tool calls is no plan, and the header is part of the plan."""
     items = [_item(itemId="i1", kind="assistant-message", title="", text="Hello")]

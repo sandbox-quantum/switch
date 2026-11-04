@@ -80,6 +80,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
+    message_edit_event,
     message_event,
     room_join_event,
 )
@@ -255,6 +256,8 @@ def is_notifiable(event: AgentEvent) -> bool:
     every room wants only these, while a session in a single room wants
     everything.
     """
+    if event.type == "message_edit":
+        return True
     if event.type == "message":
         return getattr(event.payload, "addressed", False)
     if event.type == "room_join":
@@ -1600,6 +1603,19 @@ class EventBuffer:
                     thread_id=inbound.thread_root_id,
                     attachments=[attachment_ref(inbound)],
                 )
+            elif (
+                isinstance(inbound, InboundMessage)
+                and (
+                    edit := message_edit_event(
+                        room_id=room.id,
+                        bridge_id=room.bridge_id,
+                        channel_type=room.channel_type,
+                        event=inbound,
+                    )
+                )
+                is not None
+            ):
+                event = edit
             elif isinstance(inbound, InboundMessage):
                 event = message_event(
                     room_id=room.id,

@@ -25,6 +25,9 @@ describe('turn status cards', () => {
     expect(turnStateOf(post('**Working… 12s** · [Console](https://example.invalid)'))).toBe(
       'running'
     );
+    expect(turnStateOf(post('**Queued (prompt updated). Waiting for the agent to start…**'))).toBe(
+      'queued'
+    );
     expect(turnStateOf(post('**Turn complete.**'))).toBe('completed');
     expect(turnStateOf(post('**Worked for 1m 4s. 3 tool calls.**'))).toBe('completed');
     expect(turnStateOf(post('**Turn interrupted. Worked for 9s.**'))).toBe('interrupted');

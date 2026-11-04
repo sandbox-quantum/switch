@@ -352,11 +352,26 @@ class ServerEvent(_Model):
 # ── Commands ─────────────────────────────────────────────────────────────────
 
 
+class RoomMessageFrame(_Model):
+    prefix_length: Counter
+    suffix_length: Counter
+
+
+class MessageEdit(_Model):
+    type: Literal["message.edit"]
+    turn_id: Id
+    text: str
+    revision: Counter
+
+
 class MessageSend(_Model):
     type: Literal["message.send"]
     text: str
     attachments: list[Attachment]
     delivery: Literal["queue", "steer"]
+    room_message: RoomMessageFrame | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class RequestAnswer(_Model):
@@ -398,6 +413,7 @@ class SessionModelSet(_Model):
 
 CommandBody = Annotated[
     MessageSend
+    | MessageEdit
     | RequestAnswer
     | TurnInterrupt
     | SessionStop

@@ -134,6 +134,7 @@ export type CommandBody =
   | {
       type: 'message.send';
       text: string;
+      roomMessage?: { prefixLength: number; suffixLength: number };
       attachments: Attachment[];
       delivery: 'queue' | 'steer';
     }
@@ -143,6 +144,7 @@ export type CommandBody =
       expectedRevision: number;
       answer: { kind: 'approval'; optionId: Id } | { kind: 'questions'; answers: Answer[] };
     }
+  | { type: 'message.edit'; turnId: Id; text: string; revision: number }
   | { type: 'turn.interrupt'; turnId: Id }
   | { type: 'session.stop' }
   | { type: 'session.reset' }
