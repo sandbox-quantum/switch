@@ -242,6 +242,7 @@ class TestResults:
         services = _by_slug(await _get(harness, admin))
         assert set(services) == {
             "airtable",
+            "asana",
             "atlassian",
             "datadog",
             "github",
