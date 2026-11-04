@@ -135,7 +135,7 @@ export function RoomCard({
                 </Button>
               }
             />
-            <DropdownMenuContent align="end" className="min-w-48">
+            <DropdownMenuContent align="end" className="w-max whitespace-nowrap">
               <DropdownMenuItem onClick={onArchive}>
                 {card.archived ? (
                   <ArchiveRestore className="size-4" />
