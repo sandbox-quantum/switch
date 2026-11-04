@@ -1413,6 +1413,10 @@ class ReferenceDetail(BaseModel):
     instructions: str
     value: dict[str, Any]
     attached_rooms_count: int = 0
+    # Of `attached_rooms_count`, rooms the caller may not read, which are
+    # never named to them. Counted only for whoever may manage the resource
+    # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
+    hidden_rooms_count: int = 0
     packages: list[str] = []
     created_at: str
     # Resolved server-side, unfiltered by the type's visibility: the caller can
@@ -1611,6 +1615,10 @@ class DocumentDetail(BaseModel):
     instructions: str
     content: str
     attached_rooms_count: int = 0
+    # Of `attached_rooms_count`, rooms the caller may not read, which are
+    # never named to them. Counted only for whoever may manage the resource
+    # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
+    hidden_rooms_count: int = 0
     packages: list[str] = []
     scope: str = "global"  # "global" | "room"
     room_id: str | None = None
@@ -1640,6 +1648,10 @@ class DocumentSummary(BaseModel):
     description: str
     instructions: str
     attached_rooms_count: int = 0
+    # Of `attached_rooms_count`, rooms the caller may not read, which are
+    # never named to them. Counted only for whoever may manage the resource
+    # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
+    hidden_rooms_count: int = 0
     packages: list[str] = []
     scope: str = "global"
     room_id: str | None = None
@@ -1693,6 +1705,10 @@ class PackageDetail(BaseModel):
     references_count: int = 0
     documents_count: int = 0
     attached_rooms_count: int = 0
+    # Of `attached_rooms_count`, rooms the caller may not read, which are
+    # never named to them. Counted only for whoever may manage the resource
+    # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
+    hidden_rooms_count: int = 0
     created_at: str
 
 

@@ -409,7 +409,9 @@ them. Each entry carries `target_room_id` (pass it to `connect_to_room`),
 rooms are related, and an `access` field — `"member"` means you may connect,
 `"not_member"` means the call will fail and you should ask the room's operator
 (the human user, typically) to add you rather than trying; such an entry also
-carries an `access_note` saying so.
+carries an `access_note` saying so. A link to a private room your owner cannot
+read is left out, as it is for them in the dashboard, so a room may link to
+more than you are shown.
 
 They are metadata, not access. Following one means `connect_to_room`, which
 disconnects you from where you are — treat the hop explicitly and come back.

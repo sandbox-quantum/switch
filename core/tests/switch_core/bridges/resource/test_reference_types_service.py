@@ -352,7 +352,9 @@ class TestUnresolvableSlugs:
             room_id = room.id
 
         async with session_factory() as session:
-            payload = await service.list_room_resources(session, room_id)
+            payload = await service.list_room_resources(
+                session, room_id, reader_id=users["alice"], reader_is_admin=False
+            )
         assert payload["reference_types"]["never_registered"]["missing"] is True
 
 
@@ -401,7 +403,9 @@ class TestPrivateTypeStillReachesAgents:
             room_id = room.id
 
         async with session_factory() as session:
-            payload = await service.list_room_resources(session, room_id)
+            payload = await service.list_room_resources(
+                session, room_id, reader_id=users["alice"], reader_is_admin=False
+            )
 
         entry = payload["reference_types"]["alice_private"]
         assert entry["display_name"] == "Alice Private Type"

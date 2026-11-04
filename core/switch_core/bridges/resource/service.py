@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import select, true
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import (
@@ -429,8 +429,15 @@ class ResourceService:
     # ── On-connect / list helpers ─────────────────────────────────────────
 
     async def list_room_resources(
-        self, session: AsyncSession, room_id: str
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> dict[str, Any]:
+        """A room's resources and linked rooms, for an agent in it. Linked
+        rooms are those `reader_id` (the agent's owner) may read."""
         refs = await self._references.list_for_room(session, room_id)
         docs = await self._documents.list_for_room(session, room_id)
         packages = await self._packages.list_for_room(session, room_id)
@@ -462,10 +469,8 @@ class ResourceService:
                 }
             )
 
-        # An agent is shown every room its room points at, each marked with
-        # whether it may connect there, so the targets are not filtered.
         linked_rows = await self._room_links.list_outbound(
-            session, room_id, visible=true()
+            session, room_id, visible=readable_by(reader_id, is_admin=reader_is_admin)
         )
         linked_rooms = [
             {

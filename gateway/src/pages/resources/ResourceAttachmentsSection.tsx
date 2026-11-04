@@ -24,13 +24,20 @@ import {
   useReferenceRooms,
   useRooms,
 } from "../../data/hooks";
+import { privateRoomsLabel } from "./privateRooms";
 
 interface Props {
   kind: "reference" | "document" | "package";
   resourceId: string;
+  // Rooms it is in that the viewer may not read, which are never named.
+  hiddenRoomsCount: number;
 }
 
-export default function ResourceAttachmentsSection({ kind, resourceId }: Props) {
+export default function ResourceAttachmentsSection({
+  kind,
+  resourceId,
+  hiddenRoomsCount,
+}: Props) {
   const refRooms = useReferenceRooms(kind === "reference" ? resourceId : undefined);
   const docRooms = useDocumentRooms(kind === "document" ? resourceId : undefined);
   const pkgRooms = usePackageRooms(kind === "package" ? resourceId : undefined);
@@ -93,7 +100,7 @@ export default function ResourceAttachmentsSection({ kind, resourceId }: Props) 
       {error_ && <Alert severity="error">{error_}</Alert>}
       {loading ? (
         <CircularProgress size={20} />
-      ) : (attached ?? []).length === 0 ? (
+      ) : (attached ?? []).length === 0 && hiddenRoomsCount === 0 ? (
         <Typography variant="body2" color="text.secondary">
           Not attached to any rooms yet.
         </Typography>
@@ -127,6 +134,12 @@ export default function ResourceAttachmentsSection({ kind, resourceId }: Props) 
               )}
             </Stack>
           ))}
+          {hiddenRoomsCount > 0 && (
+            <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 0.5 }}>
+              {(attached ?? []).length > 0 ? "Also in" : "In"}{" "}
+              {privateRoomsLabel(hiddenRoomsCount)}.
+            </Typography>
+          )}
         </Stack>
       )}
       <Button

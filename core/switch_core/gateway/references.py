@@ -28,6 +28,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
+from switch_core.gateway.resource_rooms import room_counts
 from switch_core.gateway.schemas import (
     ReferenceCreateRequest,
     ReferenceDeleteResponse,
@@ -50,6 +51,7 @@ def _to_detail(
     owner_name: str | None = None,
     type_display_name: str | None = None,
     attached_rooms_count: int = 0,
+    hidden_rooms_count: int = 0,
     packages: list[str] | None = None,
 ) -> ReferenceDetail:
     return ReferenceDetail(
@@ -64,6 +66,7 @@ def _to_detail(
         instructions=ref.instructions,
         value=ref.value,
         attached_rooms_count=attached_rooms_count,
+        hidden_rooms_count=hidden_rooms_count,
         packages=packages or [],
         created_at=str(ref.created_at),
         type_display_name=type_display_name,
@@ -79,11 +82,14 @@ async def _enrich(
 ) -> list[ReferenceDetail]:
     if not refs:
         return []
-    counts = await resource_service.get_reference_attached_counts(
-        session,
-        [r.id for r in refs],
-        reader_id=reader.id,
-        reader_is_admin=reader.is_admin,
+    counts = await room_counts(
+        refs,
+        reader,
+        lambda ids, reader_id, reader_is_admin: (
+            resource_service.get_reference_attached_counts(
+                session, ids, reader_id=reader_id, reader_is_admin=reader_is_admin
+            )
+        ),
     )
     pkg_map = await resource_service.get_packages_for_references(
         session, [r.id for r in refs]
@@ -102,7 +108,8 @@ async def _enrich(
             r,
             owner_name=owners.get(r.owner_id),
             type_display_name=type_names.get(r.type),
-            attached_rooms_count=counts.get(r.id, 0),
+            attached_rooms_count=counts[r.id].attached,
+            hidden_rooms_count=counts[r.id].hidden,
             packages=pkg_map.get(r.id, []),
         )
         for r in refs

@@ -4311,12 +4311,22 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         return {"verdict": POST_INVOCATION_OK}
 
-    async def list_room_resources(self, room_id: str) -> dict[str, Any]:
+    async def list_room_resources(self, agent_id: str, room_id: str) -> dict[str, Any]:
         """Return the {reference_types, references, documents} payload for a
         room. Used by ``connect_to_room`` and the ``list_references`` MCP tool.
-        Caller is responsible for verifying agent membership first."""
+        Caller is responsible for verifying agent membership first.
+
+        Its linked rooms are those the agent's owner may read: an agent holds
+        no more than its owner does, so a link does not name a private room
+        its owner cannot open. A room the agent is in always qualifies, since
+        its owner takes part in it through the agent."""
         async with self.session_factory() as session:
-            return await self.resource_service.list_room_resources(session, room_id)
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            return await self.resource_service.list_room_resources(
+                session, room_id, reader_id=owner_id, reader_is_admin=owner_is_admin
+            )
 
     async def request_document_load(
         self,

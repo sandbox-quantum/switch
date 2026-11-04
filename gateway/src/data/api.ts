@@ -1540,6 +1540,9 @@ export interface ReferenceDetail {
   instructions: string;
   value: Record<string, unknown>;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   packages: string[];
   created_at: string;
   // Resolved server-side and unfiltered by the type's visibility. Null when
@@ -1576,6 +1579,9 @@ export interface DocumentSummary {
   description: string;
   instructions: string;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   packages: string[];
   scope: "global" | "room";
   room_id: string | null;
@@ -1929,6 +1935,9 @@ export interface PackageDetail {
   references_count: number;
   documents_count: number;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   created_at: string;
 }
 

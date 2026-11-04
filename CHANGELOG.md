@@ -48,9 +48,13 @@ version of their own to them without also giving them a release of their own.
 - **Private rooms are no longer named to people who cannot open them.** The
   room graph gave everyone in a workspace the name and description of every
   room in it. A room's linked rooms named private rooms it links to, or that
-  link to it. A reference, document or package's "Attached to" list, and its
-  attached-rooms count, took in every room it was attached to. Each now takes
-  in only rooms the viewer may read. Workspace admins still see every room.
+  link to it, and so did the linked rooms an agent is handed on connecting. A
+  reference, document or package's "Attached to" list, and its attached-rooms
+  count, took in every room it was attached to. Each now takes in only rooms
+  the viewer may read; an agent's, only rooms its owner may read. Workspace
+  admins still see every room. A resource's owner is still told how many
+  private rooms they cannot open it is in, without their names, and deleting
+  it warns about those rooms too.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when
@@ -95,7 +99,9 @@ version of their own to them without also giving them a release of their own.
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
   is attached to carries `can_unlink`, and a room's documents, listed or
-  fetched one at a time, carry `can_remove`. All are decided by the same
+  fetched one at a time, carry `can_remove`. A reference, document or
+  package carries `hidden_rooms_count`: for whoever may manage it, how many
+  of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
 - **An agent controller can send its agents' operations on its socket.**

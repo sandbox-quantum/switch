@@ -29,6 +29,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
+from switch_core.gateway.resource_rooms import CountRooms, room_counts
 from switch_core.gateway.schemas import (
     DocumentCreateRequest,
     DocumentDeleteResponse,
@@ -48,6 +49,7 @@ def _to_detail(
     *,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
+    hidden_rooms_count: int = 0,
     packages: list[str] | None = None,
     created_by_agent_name: str | None = None,
 ) -> DocumentDetail:
@@ -62,6 +64,7 @@ def _to_detail(
         instructions=doc.instructions,
         content=doc.content,
         attached_rooms_count=attached_rooms_count,
+        hidden_rooms_count=hidden_rooms_count,
         packages=packages or [],
         scope="room" if doc.room_id is not None else "global",
         room_id=doc.room_id,
@@ -76,6 +79,7 @@ def _to_summary(
     *,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
+    hidden_rooms_count: int = 0,
     packages: list[str] | None = None,
     created_by_agent_name: str | None = None,
 ) -> DocumentSummary:
@@ -89,6 +93,7 @@ def _to_summary(
         description=doc.description,
         instructions=doc.instructions,
         attached_rooms_count=attached_rooms_count,
+        hidden_rooms_count=hidden_rooms_count,
         packages=packages or [],
         scope="room" if doc.room_id is not None else "global",
         room_id=doc.room_id,
@@ -110,6 +115,19 @@ def _can_remove(
     return can_unlink_from_room(principal, takes_part=takes_part)
 
 
+def _count_document_rooms(
+    session: AsyncSession, resource_service: ResourceService
+) -> CountRooms:
+    async def count(
+        ids: list[str], reader_id: str | None, reader_is_admin: bool
+    ) -> dict[str, int]:
+        return await resource_service.get_document_attached_counts(
+            session, ids, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
+
+    return count
+
+
 async def _enrich_summaries(
     session: AsyncSession,
     docs: list[Document],
@@ -120,11 +138,8 @@ async def _enrich_summaries(
 ) -> list[DocumentSummary]:
     if not docs:
         return []
-    counts = await resource_service.get_document_attached_counts(
-        session,
-        [d.id for d in docs],
-        reader_id=reader.id,
-        reader_is_admin=reader.is_admin,
+    counts = await room_counts(
+        docs, reader, _count_document_rooms(session, resource_service)
     )
     pkg_map = await resource_service.get_packages_for_documents(
         session, [d.id for d in docs]
@@ -145,7 +160,8 @@ async def _enrich_summaries(
         _to_summary(
             d,
             owner_name=owners.get(d.owner_id) if d.owner_id else None,
-            attached_rooms_count=counts.get(d.id, 0),
+            attached_rooms_count=counts[d.id].attached,
+            hidden_rooms_count=counts[d.id].hidden,
             packages=pkg_map.get(d.id, []),
             created_by_agent_name=(
                 agent_names.get(d.created_by_agent_id)
@@ -165,8 +181,8 @@ async def _enrich_detail(
     agent_store: AgentStore,
     reader: Principal,
 ) -> DocumentDetail:
-    counts = await resource_service.get_document_attached_counts(
-        session, [doc.id], reader_id=reader.id, reader_is_admin=reader.is_admin
+    counts = await room_counts(
+        [doc], reader, _count_document_rooms(session, resource_service)
     )
     pkg_map = await resource_service.get_packages_for_documents(session, [doc.id])
     owner = await user_store.get(session, doc.owner_id) if doc.owner_id else None
@@ -178,7 +194,8 @@ async def _enrich_detail(
     return _to_detail(
         doc,
         owner_name=owner.name if owner else None,
-        attached_rooms_count=counts.get(doc.id, 0),
+        attached_rooms_count=counts[doc.id].attached,
+        hidden_rooms_count=counts[doc.id].hidden,
         packages=pkg_map.get(doc.id, []),
         created_by_agent_name=agent.name if agent else None,
     )

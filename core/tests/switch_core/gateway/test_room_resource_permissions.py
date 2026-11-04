@@ -3,7 +3,8 @@ room's own documents.
 
 - A resource's rooms, and its attached-rooms count, take in only rooms the
   caller may read. So do a room's links and the room graph. A tenant admin
-  sees every one.
+  sees every one. Whoever may manage a resource is still told how many rooms
+  they cannot read it is in, though never their names.
 - Unlinking a reference, document or package from a room is for those taking
   part in the room and tenant admins. Write access is not enough: on a
   publicly writable room it is everyone's.
@@ -445,3 +446,41 @@ async def test_links_and_the_room_graph_name_only_rooms_the_viewer_may_read(
             "hidden",
         }
         assert len(admin_graph.links) == 3
+
+
+async def test_a_resource_owner_is_told_how_many_private_rooms_use_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _svc(session_factory)
+    async with session_factory() as session:
+        world = await _world(session)
+        # `member` owns the document; `owner` puts it in a room only they read.
+        doc = await svc.create_document(
+            session,
+            owner_id=world.member.id,
+            read_visibility="public",
+            write_visibility="private",
+            name="theirs-to-share",
+            description="",
+            instructions="",
+            content="",
+        )
+        await svc.attach_document_to_room(
+            session, world.hidden.id, doc.id, user_id=world.owner.id
+        )
+        await session.commit()
+
+        async def counts(user: User, admin: bool) -> tuple[int, int]:
+            docs = await list_documents(
+                session, svc, _USER_STORE, _AGENT_STORE, user, admin
+            )
+            listed = next(d for d in docs if d.id == doc.id)
+            return listed.attached_rooms_count, listed.hidden_rooms_count
+
+        # The room stays unnamed to its owner, but they know it is there.
+        assert await _rooms_of(session, svc, doc, world.member, False) == {}
+        assert await counts(world.member, False) == (1, 1)
+        # Anyone else who may not read the room is not told of it at all.
+        assert await counts(world.stranger, False) == (0, 0)
+        # An admin reads every room, so none is hidden from them.
+        assert await counts(world.stranger, True) == (1, 0)

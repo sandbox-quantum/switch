@@ -321,7 +321,7 @@ async def connect_to_room(
         bridge,
         include_general=include_general_instructions,
     )
-    resources = await protocol.list_room_resources(room.id)
+    resources = await protocol.list_room_resources(agent_id, room.id)
     linked_rooms = await _decorate_linked_rooms(
         protocol, agent_id, resources["linked_rooms"]
     )
@@ -495,7 +495,7 @@ async def list_references() -> dict[str, Any]:
     room_id = await require_connected_room()
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
-    return await protocol.list_room_resources(room_id)
+    return await protocol.list_room_resources(agent_id, room_id)
 
 
 @operation
@@ -520,7 +520,7 @@ async def list_linked_rooms() -> list[dict[str, Any]]:
     room_id = await require_connected_room()
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
-    resources = await protocol.list_room_resources(room_id)
+    resources = await protocol.list_room_resources(agent_id, room_id)
     return await _decorate_linked_rooms(protocol, agent_id, resources["linked_rooms"])
 
 

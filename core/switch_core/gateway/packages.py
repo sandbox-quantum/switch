@@ -26,6 +26,7 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.documents import _enrich_summaries as enrich_doc_summaries
 from switch_core.gateway.references import _enrich as enrich_refs
+from switch_core.gateway.resource_rooms import room_counts
 from switch_core.gateway.schemas import (
     DocumentSummary,
     PackageCreateRequest,
@@ -47,6 +48,7 @@ def _to_detail(
     references_count: int = 0,
     documents_count: int = 0,
     attached_rooms_count: int = 0,
+    hidden_rooms_count: int = 0,
 ) -> PackageDetail:
     return PackageDetail(
         id=pkg.id,
@@ -60,6 +62,7 @@ def _to_detail(
         references_count=references_count,
         documents_count=documents_count,
         attached_rooms_count=attached_rooms_count,
+        hidden_rooms_count=hidden_rooms_count,
         created_at=str(pkg.created_at),
     )
 
@@ -74,8 +77,14 @@ async def _enrich(
     if not pkgs:
         return []
     ids = [p.id for p in pkgs]
-    room_counts = await resource_service.get_package_attached_counts(
-        session, ids, reader_id=reader.id, reader_is_admin=reader.is_admin
+    rooms = await room_counts(
+        pkgs,
+        reader,
+        lambda ids, reader_id, reader_is_admin: (
+            resource_service.get_package_attached_counts(
+                session, ids, reader_id=reader_id, reader_is_admin=reader_is_admin
+            )
+        ),
     )
     ref_counts = await resource_service.get_package_reference_counts(session, ids)
     doc_counts = await resource_service.get_package_document_counts(session, ids)
@@ -91,7 +100,8 @@ async def _enrich(
             owner_name=owners.get(p.owner_id),
             references_count=ref_counts.get(p.id, 0),
             documents_count=doc_counts.get(p.id, 0),
-            attached_rooms_count=room_counts.get(p.id, 0),
+            attached_rooms_count=rooms[p.id].attached,
+            hidden_rooms_count=rooms[p.id].hidden,
         )
         for p in pkgs
     ]

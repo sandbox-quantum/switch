@@ -45,7 +45,7 @@ describe("ResourceAttachmentsSection", () => {
   });
 
   it("offers unlinking only from rooms the viewer takes part in", () => {
-    render(<ResourceAttachmentsSection kind="document" resourceId="d1" />);
+    render(<ResourceAttachmentsSection kind="document" resourceId="d1" hiddenRoomsCount={0} />);
 
     screen.getByText("leadership");
     screen.getByRole("button", { name: "Unlink from planning" });
@@ -53,7 +53,7 @@ describe("ResourceAttachmentsSection", () => {
   });
 
   it("offers attaching only to rooms the viewer may write to, loading them on open", async () => {
-    render(<ResourceAttachmentsSection kind="document" resourceId="d1" />);
+    render(<ResourceAttachmentsSection kind="document" resourceId="d1" hiddenRoomsCount={0} />);
     expect(hooks.useRooms).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Attach to room" }));
@@ -62,5 +62,19 @@ describe("ResourceAttachmentsSection", () => {
     expect(screen.queryByText("announcements")).toBeNull();
     // Already attached, so not offered again.
     expect(screen.getAllByText("planning")).toHaveLength(1);
+  });
+
+  it("tells whoever manages it how many rooms it is in that they cannot open", () => {
+    render(<ResourceAttachmentsSection kind="document" resourceId="d1" hiddenRoomsCount={2} />);
+
+    screen.getByText("Also in 2 private rooms you can't open.");
+  });
+
+  it("does not claim it is in no rooms when every room it is in is private", () => {
+    vi.mocked(hooks.useDocumentRooms).mockReturnValue(returns([]));
+    render(<ResourceAttachmentsSection kind="document" resourceId="d1" hiddenRoomsCount={1} />);
+
+    screen.getByText("In 1 private room you can't open.");
+    expect(screen.queryByText("Not attached to any rooms yet.")).toBeNull();
   });
 });

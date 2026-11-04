@@ -504,7 +504,7 @@ class TestOperationsTakeTheRoomFromTheHeader:
         async def _nothing(*_args: Any, **_kwargs: Any) -> Any:
             return []
 
-        async def _no_resources(_room_id: str) -> dict[str, Any]:
+        async def _no_resources(_agent_id: str, _room_id: str) -> dict[str, Any]:
             return {
                 "linked_rooms": [],
                 "reference_types": [],
