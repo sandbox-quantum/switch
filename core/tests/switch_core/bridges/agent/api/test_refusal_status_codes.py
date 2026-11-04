@@ -25,6 +25,7 @@ from switch_core.bridges.agent.app import log_http_exceptions, log_validation_er
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.invite_policy import InviteRefused
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
     _make_public_room,
     _make_user,
@@ -92,6 +93,33 @@ async def test_a_refused_invite_is_403(
 
     assert resp.status_code == 403
     assert resp.json() == {"detail": "Not authorized to change this room's membership"}
+
+
+async def test_an_invite_the_agent_s_policy_refuses_is_403_with_the_reason(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # A member may change the room, but the invited agent's addressing policy
+    # still decides (#805). RoomService makes that call (tested against
+    # Postgres in test_invite_policy); this pins what the agent API answers.
+    r = await _room_with_an_outsider(session_factory)
+    reason = "You can't invite `outsider-agent`: its owner limits who can talk to it."
+
+    class _RefusingRoomService:
+        async def add_agents_to_room(self, *_: object, **__: object) -> list[str]:
+            raise InviteRefused(["outsider-agent"], reason)
+
+    r.svc.room_service = _RefusingRoomService()  # type: ignore[assignment]
+
+    resp = await _request(
+        r.svc,
+        r.member_id,
+        "POST",
+        f"/agents/{r.member_id}/ops/invite_agent_to_room",
+        json={"room_id": r.room_id, "agent_name": "outsider-agent"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.json() == {"detail": reason}
 
 
 async def test_a_non_member_looking_up_a_room_is_403(
