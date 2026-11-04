@@ -1,7 +1,7 @@
 /**
- * The New room dialog's More options for a room on a messaging app: shut at
- * first, each choice starting where the server would leave it, and binding an
- * existing channel only where the app allows it.
+ * The New room dialog for a room on a messaging app: the channel choice, always
+ * shown as cards, and More options for what is easy to change later — shut at
+ * first, its row saying what each is set to.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, useState } from 'react';
@@ -22,13 +22,21 @@ vi.mock('@renderer/lib/ipc', () => ({
   rpc: { workspaces: { listRoomGroups: vi.fn(async () => [{ id: 'g1', name: 'Design' }]) } },
 }));
 
-import { CreateRoomOptions } from '@renderer/features/switch-servers/create-room-options';
+import {
+  CreateRoomOptions,
+  RoomChannelField,
+} from '@renderer/features/switch-servers/create-room-options';
 import {
   DEFAULT_ROOM_OPTIONS,
   type RoomCreateOptions,
 } from '@renderer/features/switch-servers/room-create-request';
 
-const BRIDGE = { id: 'b1', displayName: 'Acme Slack', channelIdsRefused: null } as RemoteBridge;
+const BRIDGE = {
+  id: 'b1',
+  type: 'slack',
+  displayName: 'Acme Slack',
+  channelIdsRefused: null,
+} as RemoteBridge;
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -44,16 +52,15 @@ afterEach(async () => {
 
 function Harness({ bridge }: { bridge: RemoteBridge }) {
   const [value, setValue] = useState<RoomCreateOptions>(DEFAULT_ROOM_OPTIONS);
+  const onChange = (next: RoomCreateOptions) => {
+    latest = next;
+    setValue(next);
+  };
   return (
-    <CreateRoomOptions
-      workspaceId="ws-1"
-      bridge={bridge}
-      value={value}
-      onChange={(next) => {
-        latest = next;
-        setValue(next);
-      }}
-    />
+    <>
+      <RoomChannelField bridge={bridge} value={value} onChange={onChange} />
+      <CreateRoomOptions workspaceId="ws-1" value={value} onChange={onChange} />
+    </>
   );
 }
 
@@ -72,47 +79,56 @@ async function render(bridge: RemoteBridge = BRIDGE): Promise<HTMLDivElement> {
   return container;
 }
 
-function button(el: HTMLElement, text: string): HTMLButtonElement | undefined {
-  return [...el.querySelectorAll<HTMLButtonElement>('button')].find(
-    (b) => b.textContent?.trim() === text
-  );
-}
-
 async function click(target: HTMLElement) {
   await act(async () => target.click());
   for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
 }
 
-describe('More options when creating a room on a messaging app', () => {
-  it('starts shut, and opens on a new public channel open to the workspace', async () => {
+function radio(el: HTMLElement, title: string): HTMLButtonElement | undefined {
+  return [...el.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) =>
+    b.textContent?.startsWith(title)
+  );
+}
+
+describe('creating a room on a messaging app', () => {
+  it('shows the channel choice as cards, a new public channel picked', async () => {
     const el = await render();
-    expect(el.textContent).not.toContain('Channel in Acme Slack');
-    await click(button(el, 'More options')!);
-    expect(el.textContent).toContain('Channel in Acme Slack');
-    expect(el.textContent).toContain('A public channel in Acme Slack');
-    expect(el.textContent).toContain('Everyone in the workspace can see and change it');
+    expect(radio(el, 'New public channel')!.getAttribute('aria-checked')).toBe('true');
+    expect(el.textContent).toContain('Anyone in the Slack workspace can find and join it.');
+    expect(el.textContent).toContain('Console can’t move a room to another channel later.');
   });
 
-  it('asks for a private channel without changing who can see the room in Switch', async () => {
+  it('says what More options holds while shut: no group, open to the workspace', async () => {
     const el = await render();
-    await click(button(el, 'More options')!);
-    await click(button(el, 'New private')!);
+    expect(el.textContent).toContain(
+      'Group: none · Everyone in the workspace can see and change it'
+    );
+    expect(el.querySelector('[aria-label="Group"]')).toBeNull();
+  });
+
+  it('picks a private channel without changing who can see the room in Switch', async () => {
+    const el = await render();
+    await click(radio(el, 'New private channel')!);
     expect(latest.channel).toEqual({ kind: 'new', private: true });
     expect(latest.access).toBeNull();
-    expect(el.textContent).toContain('only people added to it can see it');
   });
 
   it('takes an existing channel by its id', async () => {
     const el = await render();
-    await click(button(el, 'More options')!);
-    await click(button(el, 'Existing')!);
+    await click(radio(el, 'Existing channel')!);
     expect(el.querySelector('input[aria-label="Channel id"]')).not.toBeNull();
     expect(latest.channel).toEqual({ kind: 'existing', externalChannelId: '' });
   });
 
   it('offers no existing channel where the app cannot be pointed at one by id', async () => {
     const el = await render({ ...BRIDGE, channelIdsRefused: 'Add the app to the channel.' });
-    await click(button(el, 'More options')!);
-    expect(button(el, 'Existing')).toBeUndefined();
+    expect(radio(el, 'Existing channel')).toBeUndefined();
+  });
+
+  it('opens More options on the group and access', async () => {
+    const el = await render();
+    await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
+    expect(el.querySelector('[aria-label="Group"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Who can see and change it"]')).not.toBeNull();
   });
 });

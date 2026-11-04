@@ -6,7 +6,6 @@ import { rpc } from '@renderer/lib/ipc';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import {
   Select,
   SelectContent,
@@ -14,10 +13,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/lib/ui/select';
+import { cn } from '@renderer/utils/utils';
 import type { RemoteBridge, RoomAccess } from '@shared/core/switch-servers/switch-servers';
+import { type ChannelChoice, channelChoiceCards } from './room-channel-choices';
 import type { RoomCreateOptions } from './room-create-request';
-
-type ChannelChoice = 'public' | 'private' | 'existing';
 
 const NO_GROUP = '__none__';
 const ACCESS_ORDER: RoomAccess[] = ['public', 'read_only', 'private'];
@@ -29,23 +28,89 @@ function channelChoiceOf(options: RoomCreateOptions): ChannelChoice {
 }
 
 /**
- * What a room on a messaging app can be made with beyond its name: its
- * channel, its group and who may see and change it. Shut until opened, so the
- * plain path stays short; each choice starts where the server would leave it
- * — a new public channel, no group, open to the workspace.
- *
- * Channel type and access stay separate: one is the platform's, the other
- * Switch's, and choosing a private channel does not change who may see the
- * room in Switch.
+ * Where a room on a messaging app lives: a new public channel (the default),
+ * a new private one, or a channel already there. Always shown, as cards each
+ * saying what the choice means on this platform, because Console cannot move
+ * a room to another channel afterwards.
  */
-export function CreateRoomOptions({
-  workspaceId,
+export function RoomChannelField({
   bridge,
   value,
   onChange,
 }: {
-  workspaceId: string | null;
   bridge: RemoteBridge;
+  value: RoomCreateOptions;
+  onChange: (next: RoomCreateOptions) => void;
+}) {
+  const cards = channelChoiceCards(bridge);
+  const choice = channelChoiceOf(value);
+  return (
+    <Field>
+      <FieldLabel>Channel in {bridge.displayName}</FieldLabel>
+      <div
+        role="radiogroup"
+        aria-label={`Channel in ${bridge.displayName}`}
+        className={cn('grid gap-2', cards.length === 3 ? 'grid-cols-3' : 'grid-cols-2')}
+      >
+        {cards.map((card) => (
+          <button
+            key={card.value}
+            type="button"
+            role="radio"
+            aria-checked={choice === card.value}
+            onClick={() =>
+              onChange({
+                ...value,
+                channel:
+                  card.value === 'existing'
+                    ? { kind: 'existing', externalChannelId: '' }
+                    : { kind: 'new', private: card.value === 'private' },
+              })
+            }
+            className={cn(
+              'space-y-0.5 rounded-md border p-2.5 text-left',
+              choice === card.value
+                ? 'border-primary bg-background-tertiary-2'
+                : 'border-border hover:bg-background-tertiary-2'
+            )}
+          >
+            <span className="block text-sm font-medium text-foreground">{card.title}</span>
+            <span className="block text-xs text-foreground-muted">{card.detail}</span>
+          </button>
+        ))}
+      </div>
+      {value.channel.kind === 'existing' && (
+        <Input
+          aria-label="Channel id"
+          placeholder="The channel’s id"
+          value={value.channel.externalChannelId}
+          onChange={(event) =>
+            onChange({
+              ...value,
+              channel: { kind: 'existing', externalChannelId: event.target.value },
+            })
+          }
+        />
+      )}
+      <span className="text-xs text-foreground-muted">
+        Console can’t move a room to another channel later.
+      </span>
+    </Field>
+  );
+}
+
+/**
+ * What a room can be made with that is easy to change afterwards, in its
+ * Configuration tab: its group and who may see and change it. Shut until
+ * opened, its row saying what each is set to so the defaults are never a
+ * surprise — no group, open to the workspace.
+ */
+export function CreateRoomOptions({
+  workspaceId,
+  value,
+  onChange,
+}: {
+  workspaceId: string | null;
   value: RoomCreateOptions;
   onChange: (next: RoomCreateOptions) => void;
 }) {
@@ -53,67 +118,21 @@ export function CreateRoomOptions({
   const groups = useQuery({
     queryKey: ['room-groups', workspaceId],
     queryFn: () => rpc.workspaces.listRoomGroups(workspaceId as string),
-    enabled: workspaceId !== null && open,
+    enabled: workspaceId !== null,
   });
-  // A connection shared between organisations cannot be pointed at a channel
-  // by its id: the app says how to add one instead.
-  const existingOffered = bridge.channelIdsRefused === null;
-  const choice = channelChoiceOf(value);
   const groupName = (groups.data ?? []).find((group) => group.id === value.groupId)?.name;
-
-  const channelOptions = [
-    { value: 'public' as const, label: 'New public' },
-    { value: 'private' as const, label: 'New private' },
-    ...(existingOffered ? [{ value: 'existing' as const, label: 'Existing' }] : []),
-  ];
+  const access = value.access ?? 'public';
 
   return (
     <div className="flex flex-col gap-4">
-      <DisclosureRow open={open} title="More options" onToggle={() => setOpen(!open)} />
+      <DisclosureRow
+        open={open}
+        title="More options"
+        summary={`Group: ${groupName ?? 'none'} · ${ACCESS_LABELS[access]}`}
+        onToggle={() => setOpen(!open)}
+      />
       {open && (
         <>
-          <Field>
-            <FieldLabel>Channel in {bridge.displayName}</FieldLabel>
-            <SegmentedControl
-              ariaLabel={`Channel in ${bridge.displayName}`}
-              value={choice}
-              options={channelOptions}
-              onChange={(next) =>
-                onChange({
-                  ...value,
-                  channel:
-                    next === 'existing'
-                      ? { kind: 'existing', externalChannelId: '' }
-                      : { kind: 'new', private: next === 'private' },
-                })
-              }
-            />
-            {value.channel.kind === 'existing' ? (
-              <>
-                <Input
-                  aria-label="Channel id"
-                  placeholder="The channel’s id"
-                  value={value.channel.externalChannelId}
-                  onChange={(event) =>
-                    onChange({
-                      ...value,
-                      channel: { kind: 'existing', externalChannelId: event.target.value },
-                    })
-                  }
-                />
-                <span className="text-xs text-foreground-muted">
-                  The room uses this channel instead of making a new one.
-                </span>
-              </>
-            ) : (
-              <span className="text-xs text-foreground-muted">
-                {choice === 'private'
-                  ? `A private channel in ${bridge.displayName}: only people added to it can see it.`
-                  : `A public channel in ${bridge.displayName}: anyone there can find and join it.`}
-              </span>
-            )}
-          </Field>
-
           <Field>
             <FieldLabel>Group</FieldLabel>
             <Select
@@ -144,23 +163,24 @@ export function CreateRoomOptions({
           <Field>
             <FieldLabel>Who can see and change it</FieldLabel>
             <Select
-              value={value.access ?? 'public'}
+              value={access}
               onValueChange={(next) => onChange({ ...value, access: next as RoomAccess })}
             >
               <SelectTrigger className="w-full" aria-label="Who can see and change it">
-                <SelectValue>{ACCESS_LABELS[value.access ?? 'public']}</SelectValue>
+                <SelectValue>{ACCESS_LABELS[access]}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {ACCESS_ORDER.map((access) => (
-                  <SelectItem key={access} value={access}>
-                    {ACCESS_LABELS[access]}
+                {ACCESS_ORDER.map((each) => (
+                  <SelectItem key={each} value={each}>
+                    {ACCESS_LABELS[each]}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <span className="text-xs text-foreground-muted">
               Who can see the room in Switch and change its settings, members and resources. It does
-              not decide who can read or post in the channel.
+              not decide who can read or post in the channel. Both can be changed later in the
+              room’s Configuration.
             </span>
           </Field>
         </>

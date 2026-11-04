@@ -34,8 +34,9 @@ import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
-import { CreateRoomOptions } from './create-room-options';
+import { CreateRoomOptions, RoomChannelField } from './create-room-options';
 import { MessagingAppSelector, SWITCH_CONSOLE } from './messaging-app-selector';
+import { optionsForBridge } from './room-channel-choices';
 import {
   CreateRequestIds,
   canCreate,
@@ -167,6 +168,9 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     if (dropsStartingAgent(startChip, next)) setStartDropped(true);
     setPicked(next);
   };
+  // A choice the chosen app does not offer (a private channel on Teams, say)
+  // falls back to a new public channel rather than being sent and refused.
+  const roomOptions = optionsForBridge(options, selectedBridge);
   const agentIds = shownPicked.filter((each) => each.kind === 'agent').map((each) => each.id);
   const memberUserIds = shownPicked.filter((each) => each.kind === 'person').map((each) => each.id);
 
@@ -189,7 +193,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     startingAgentState !== 'pending' &&
     !nowhere &&
     canCreate({ name }) &&
-    (selectedBridge === null || roomOptionsReady(options)) &&
+    (selectedBridge === null || roomOptionsReady(roomOptions)) &&
     !isSubmitting;
 
   async function handleSubmit() {
@@ -210,7 +214,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         agentIds,
         memberUserIds,
         requestId: requestIds.for({ bridgeId, name, agentIds, memberUserIds }),
-        options,
+        options: roomOptions,
       });
       if (request.kind === 'chat') {
         const chat = await rpc.chats.create(request.params);
@@ -286,9 +290,9 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             />
             {/* What the name becomes, where it becomes it: a bridged room is a
                 channel of the same name in its app. */}
-            {trimmedName !== '' && selectedBridge && options.channel.kind === 'new' && (
+            {trimmedName !== '' && selectedBridge && roomOptions.channel.kind === 'new' && (
               <span className="text-xs text-foreground-muted">
-                {`Created as ${options.channel.private ? 'private ' : ''}#${trimmedName} in ${selectedBridge.displayName}.`}
+                {`Created as ${roomOptions.channel.private ? 'private ' : ''}#${trimmedName} in ${selectedBridge.displayName}.`}
               </span>
             )}
           </Field>
@@ -325,6 +329,18 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             )}
           </Field>
 
+          {/* Where a bridged room lives is decided now: Console cannot move it later. */}
+          {selectedBridge && (
+            <RoomChannelField
+              bridge={selectedBridge}
+              value={roomOptions}
+              onChange={(next) => {
+                setOptions(next);
+                setError(null);
+              }}
+            />
+          )}
+
           {/* A bridged room's own settings; a Switch Console room has none to start with. */}
           {selectedBridge && (
             <>
@@ -352,8 +368,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               </Field>
               <CreateRoomOptions
                 workspaceId={workspaceId}
-                bridge={selectedBridge}
-                value={options}
+                value={roomOptions}
                 onChange={(next) => {
                   setOptions(next);
                   setError(null);
