@@ -67,6 +67,17 @@ beforeEach(() => {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('what the interface is allowed to report', () => {
+  it('accepts Copilot as a catalogued buddy provider', () => {
+    trackFromRenderer({
+      name: 'buddy_step',
+      properties: { action: 'start', provider: 'copilot' },
+    });
+    expect(trackEvent).toHaveBeenCalledWith('buddy_step', {
+      action: 'start',
+      provider: 'copilot',
+    });
+  });
+
   it('passes a catalogued event with permitted values through to the emitter', () => {
     trackFromRenderer({ name: 'view_opened', properties: { view_id: 'settings' } });
 
