@@ -170,7 +170,7 @@ def _drawn(
 
 def _defuse_at(text: str) -> str:
     """What every adapter's escape does to an `@`: a zero-width space after it."""
-    return text.replace("@", "@​")
+    return text.replace("@", "@\u200b")
 
 
 @pytest.mark.parametrize(
@@ -229,11 +229,11 @@ def _copied(line: str, mark: str) -> str:
 
 
 @pytest.mark.parametrize(
-    ("markup", "hint", "mark"), _COMMAND_CARDS, ids=["markdown", "telegram", "teams"]
+    ("markup", "hint"),
+    [(markup, hint) for markup, hint, _ in _COMMAND_CARDS],
+    ids=["markdown", "telegram", "teams"],
 )
-def test_a_queued_turn_offers_one_command_to_copy(
-    markup: Markup, hint: str, mark: str
-) -> None:
+def test_a_queued_turn_offers_one_command_to_copy(markup: Markup, hint: str) -> None:
     """The command is one literal, the agent's mention and the id's first eight
     characters in it, marked the way the platform marks code. The escape every
     adapter applies is passed here and does not reach the literal: it would put
@@ -241,14 +241,16 @@ def test_a_queued_turn_offers_one_command_to_copy(
     lines = _drawn(_turn_with_id("queued", QUEUED_ID), markup, escape=_defuse_at)
 
     assert lines == [markup.bold("Queued. Waiting for the agent to start…"), hint]
-    assert "​" not in hint
+    assert "\u200b" not in hint
 
 
 @pytest.mark.parametrize(
-    ("markup", "hint", "mark"), _COMMAND_CARDS, ids=["markdown", "telegram", "teams"]
+    ("markup", "mark"),
+    [(markup, mark) for markup, _, mark in _COMMAND_CARDS],
+    ids=["markdown", "telegram", "teams"],
 )
 def test_the_copied_command_names_the_turn_and_the_agent(
-    markup: Markup, hint: str, mark: str
+    markup: Markup, mark: str
 ) -> None:
     """Sent as it was copied, the literal is split the way every platform splits
     a `!` command, and what `!cancel` reads from its args is the turn's start

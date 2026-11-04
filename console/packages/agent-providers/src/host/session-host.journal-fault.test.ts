@@ -186,7 +186,7 @@ it('stops the queue when the cancellation it took a message out for cannot be re
   await expect(host.command(roomMessage('d'))).rejects.toThrow('ENOSPC');
 
   // The turn before ends; the host records it, then a later provider event,
-  // in order. Once that later one is on disk, a C the host had sent would be too.
+  // in order. Once that later one is on disk, a `c` the host had sent would be too.
   emit({ type: 'turn.completed', turnId: 'a', outcome: 'completed', usage: [] });
   emit({ type: 'session.started', nativeSessionId: 'after-completion' });
   await poll(async () =>

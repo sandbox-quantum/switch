@@ -90,7 +90,7 @@ async def test_teams_names_the_agent_it_posts_as() -> None:
 
     lines = _card_text(dict(connector.sends[0]["activity"])).splitlines()
     assert f"**!cancel @my-agent 3f2b8c1e**{_SENTENCE}" in lines
-    assert not any("​" in line for line in lines if "!cancel" in line)
+    assert not any("\u200b" in line for line in lines if "!cancel" in line)
 
 
 async def test_teams_names_the_pieces_for_a_name_its_markdown_could_eat() -> None:

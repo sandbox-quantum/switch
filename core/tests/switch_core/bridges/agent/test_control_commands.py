@@ -514,7 +514,8 @@ async def test_a_controller_backed_agent_is_relayed_a_retry_of_the_message(
 
 
 def test_other_controls_keep_their_command_ids() -> None:
-    # Adding `cancel` must not move the key a relayed control is deduplicated by.
+    # A relayed control is deduplicated by its agent, room, command message and
+    # action, and the other controls keep that key.
     for action, body in (
         ("reset", {"type": "session.reset"}),
         ("compact", {"type": "session.compact"}),
@@ -670,7 +671,7 @@ def test_cancel_args_take_the_start_of_a_turn_id(args: str, prefix: str) -> None
         # Taking the wrapping off does not make a non-ID one.
         "@cc `current`",
         "@cc <current>",
-        "@cc `zły`",
+        "@cc `ünïd`",
         f"@cc `{TURN}x`",
         f"@cc `{TURN} {TURN}`",
     ],
@@ -951,7 +952,7 @@ async def test_a_cancel_is_relayed_with_its_origin_and_a_neutral_ack(
     }
     assert frame["requesterName"] == "louisa"
     # The session answers with the outcome only on some paths, so the ack
-    # promises none (U-06).
+    # promises none.
     assert reply.bodies == ["Asked my session to cancel that message."]
     assert "confirm" not in reply.bodies[0]
     assert enqueue == []
