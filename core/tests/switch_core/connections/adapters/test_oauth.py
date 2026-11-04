@@ -213,6 +213,55 @@ class TestSignIn:
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
 
+    async def test_reads_the_account_with_a_get_and_no_body(self, vendor) -> None:
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        assert vendor.identity_bodies == [b""]
+
+    async def test_reads_the_account_with_a_post_that_sends_no_body(
+        self, vendor
+    ) -> None:
+        vendor.identity_method = "POST"
+        adapter, _ = _adapter(vendor, STATIC.replace("method: GET", "method: POST"))
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        assert vendor.identity_bodies == [b""]
+
+    async def test_reads_the_account_with_a_post_that_sends_its_body(
+        self, vendor
+    ) -> None:
+        vendor.identity_method = "POST"
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    method: GET\n", "    method: POST\n    body: { fields: [id] }\n"
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        assert [json.loads(body) for body in vendor.identity_bodies] == [
+            {"fields": ["id"]}
+        ]
+
+    async def test_sends_the_offline_parameter_the_entry_names(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    redirect: [loopback, core]\n",
+                "    redirect: [loopback, core]\n"
+                "    authorization_params:\n      token_access_type: offline\n",
+            ),
+        )
+        url = await adapter.authorization_url(
+            redirect_uri=REDIRECT,
+            state="s",
+            code_challenge=s256("verifier"),
+            scopes=["read:items"],
+        )
+        assert parse_qs(urlsplit(url).query)["token_access_type"] == ["offline"]
+
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
         adapter, _ = _adapter(vendor)
