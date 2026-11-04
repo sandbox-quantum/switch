@@ -208,6 +208,18 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         label="Mistral Vibe",
         sign_in_command="vibe-acp --setup",
     ),
+    AgentProvider(
+        id="goose",
+        label="Goose",
+        sign_in_command="goose configure",
+        connector_type="Goose CLI",
+        tools=(
+            ToolSpec(name="shell", description="Executes shell commands"),
+            ToolSpec(name="write", description="Writes files"),
+            ToolSpec(name="edit", description="Edits existing files"),
+            ToolSpec(name="delegate", description="Delegates to a subagent"),
+        ),
+    ),
 )
 
 
