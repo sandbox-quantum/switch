@@ -48,6 +48,7 @@ HERE = Path(__file__).parent
 RUNS = HERE / "runs"
 sys.path.insert(0, str(HERE))
 
+from kube import guard_target  # noqa: E402
 from run import broken as window_broken  # noqa: E402
 
 # A worker's log lines that say where it is.
@@ -158,6 +159,9 @@ class Config:
         return cfg
 
     def check(self) -> None:
+        # The run's workers refuse the pilot themselves, but `up` and `down`
+        # scale whatever these name before any of them starts.
+        guard_target(self.namespace, self.api_url)
         if self.agents % self.workers or self.controllers % self.workers:
             raise SystemExit(
                 "LOADTEST_AGENTS and _CONTROLLERS must split evenly over the workers"
@@ -993,17 +997,24 @@ def cmd_up(cfg: Config) -> int:
     return 0 if s["ready"] == cfg.night_pods else 1
 
 
-def day_sizes(cfg: Config) -> None:
-    """switch-core first, so its pods leave the nodes before they go."""
-    for step in (
-        lambda: scale_core(cfg, cfg.day_pods),
-        lambda: size_nodegroup(cfg, cfg.core_nodegroup, cfg.day_nodes),
-        lambda: size_nodegroup(cfg, cfg.harness_nodegroup, 0),
+def day_sizes(cfg: Config) -> list[str]:
+    """switch-core first, so its pods leave the nodes before they go. Every
+    step is tried whatever the others do; returns the ones that failed."""
+    failed = []
+    for name, step in (
+        ("switch-core", lambda: scale_core(cfg, cfg.day_pods)),
+        (
+            "switch-core's nodes",
+            lambda: size_nodegroup(cfg, cfg.core_nodegroup, cfg.day_nodes),
+        ),
+        ("the harness's node", lambda: size_nodegroup(cfg, cfg.harness_nodegroup, 0)),
     ):
         try:
             step()
         except Exception as exc:  # noqa: BLE001 - try the rest regardless
-            print(f"day sizes: {exc}", flush=True)
+            failed.append(f"{name}: {type(exc).__name__}: {exc}"[:200])
+            print(f"day sizes: {failed[-1]}", flush=True)
+    return failed
 
 
 class Interrupted(Exception):
@@ -1176,8 +1187,9 @@ def cmd_run(cfg: Config) -> int:
         finish(night.workers)
     result = night.result()
     report(cfg, result, night.workers, out)
-    day_sizes(cfg)
-    return 0 if result["verdict"]["ok"] else 1
+    # A failure here fails the job too; `down` tries again and reports it.
+    left = day_sizes(cfg)
+    return 0 if result["verdict"]["ok"] and not left else 1
 
 
 def report(cfg: Config, result: dict, workers: list[Worker], out: Path) -> None:
@@ -1257,23 +1269,32 @@ def cmd_down(cfg: Config) -> int:
         print(f"could not read tonight's result: {exc}", flush=True)
         found = None
     kept = _keep_run_log(cfg, night) if found is None else None
-    day_sizes(cfg)
-    if found is not None:
+    left = day_sizes(cfg)
+    if found is not None and not left:
         return 0
-    text = (
-        f"❌ Switch nightly load test on {cfg.environment}: no result for {night}; "
-        + (
-            f"the run pod's log is in {kept}"
-            if kept
-            else "the run pod left no log (it may never have started: is the harness's node up?)"
+    lines = []
+    if found is None:
+        lines.append(
+            f"❌ Switch nightly load test on {cfg.environment}: no result for {night}; "
+            + (
+                f"the run pod's log is in {kept}"
+                if kept
+                else "the run pod left no log (it may never have started: is the harness's node up?)"
+            )
         )
-    )
+    if left:
+        lines.append(
+            f"⚠️ {cfg.environment} may still be at its night size: putting it back "
+            "failed for " + "; ".join(left)
+        )
+    text = "\n".join(lines)
     print(text, flush=True)
-    result = {"build": "unknown", "pods": 0, "rows": [], "verdict": {"ok": False}}
-    for action in (
-        lambda: post_webhook(cfg.webhook_url, text),
-        lambda: send_datadog(result, cfg, text),
-    ):
+    actions = [lambda: post_webhook(cfg.webhook_url, text)]
+    # A night that left a result has sent Datadog its numbers already.
+    if found is None:
+        result = {"build": "unknown", "pods": 0, "rows": [], "verdict": {"ok": False}}
+        actions.append(lambda: send_datadog(result, cfg, text))
+    for action in actions:
         try:
             action()
         except Exception as exc:  # noqa: BLE001

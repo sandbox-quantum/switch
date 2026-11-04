@@ -8,7 +8,7 @@ It never restarts, scales or edits anything in Kubernetes. It only runs `kubectl
 
 ## Running it
 
-From the repo root, on a Mac that is on the tailnet, with `kubectl` pointed at the cluster (context `switch-eu` by default):
+From the repo root, on a Mac that is on the tailnet, with `kubectl` pointed at the cluster (its current context, or name one with `--kube-context`):
 
 ```sh
 uv run --project core python loadtest/run.py --namespace switch-staging \
@@ -55,7 +55,7 @@ Every request the harness makes carries `X-Request-Id: load-<run_id>-<n>`, so a 
 
 `harness lag max` in the summary is how far the harness fell behind its own schedule. If it climbs above a few hundred milliseconds, the client machine is the limit, not the server, and the run should be split across machines or slowed down.
 
-RDS numbers come from CloudWatch at one-minute resolution and need `AWS_PROFILE` (default `qsg-nonprod-write`) with an SSO session. CloudWatch lands its data a minute or two late, so the last minute of a run can read low.
+RDS numbers come from CloudWatch at one-minute resolution and need AWS credentials that can read it, such as an `AWS_PROFILE` (or `--aws-profile`) with an SSO session. CloudWatch lands its data a minute or two late, so the last minute of a run can read low.
 
 ## Every night on staging
 

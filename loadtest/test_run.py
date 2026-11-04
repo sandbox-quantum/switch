@@ -226,6 +226,57 @@ def test_urls_of_another_environment_are_refused() -> None:
         resolve_urls(a, _Release())  # type: ignore[arg-type]
 
 
+class _ReleaseWithoutUrls(_Release):
+    """A release that takes its URLs from a Secret, so `Kube` reads none."""
+
+    def public_urls(self) -> tuple[None, None]:  # type: ignore[override]
+        return None, None
+
+
+def test_without_the_release_s_urls_a_given_url_must_still_be_its_own() -> None:
+    gw = ["--gateway-url", "https://dev-gateway.tail.ts.net"]
+    a = parse_args(
+        ["--namespace", "switch-dev", *gw, "--api-url", "https://dev-api.tail.ts.net"]
+    )
+    resolve_urls(a, _ReleaseWithoutUrls())  # type: ignore[arg-type]
+    assert a.api_url == "https://dev-api.tail.ts.net"
+
+    a = parse_args(
+        [
+            "--namespace",
+            "switch-dev",
+            *gw,
+            "--api-url",
+            "https://staging-api.tail.ts.net",
+        ]
+    )
+    with pytest.raises(Refused, match="the release names none"):
+        resolve_urls(a, _ReleaseWithoutUrls())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("flags", "why"),
+    [
+        (["--steps", "300", "--rates", "10,10,20"], "--rates must be increasing"),
+        (["--steps", "100,100"], "--steps must be increasing"),
+        (["--steps", "10", "--run-id", "../outside"], "--run-id takes"),
+        (["--steps", "10", "--run-id", ".hidden"], "--run-id takes"),
+        (["--steps", "10", "--controllers", "2", "--reuse", "a/b"], "--reuse takes"),
+        (["--cleanup", "../x"], "--cleanup takes"),
+    ],
+)
+def test_repeated_steps_and_run_ids_outside_runs_are_refused(flags, why, capsys):
+    with pytest.raises(SystemExit):
+        parse_args(["--namespace", "switch-dev", *flags])
+    assert why in capsys.readouterr().err
+
+
+def test_run_ids_as_the_nightly_makes_them_are_taken():
+    a = parse_args(["--namespace", "switch-dev", "--run-id", "n20261104t0942w1"])
+    assert a.run_id == "n20261104t0942w1"
+    assert parse_args(["--namespace", "switch-dev", "--cleanup", "*"]).cleanup == "*"
+
+
 def test_seed_only_keeps_what_it_makes_and_reuses_nothing() -> None:
     base = ["--namespace", "switch-dev", "--controllers", "2"]
     with pytest.raises(SystemExit):

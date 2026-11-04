@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -61,6 +62,8 @@ from workload import (  # noqa: E402
 )
 
 RUNS = Path(__file__).parent / "runs"
+# A run id names a directory under RUNS and prefixes what the run makes.
+RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -75,9 +78,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     t.add_argument(
         "--kube-context",
-        default="switch-eu",
-        help="'' from a pod inside the cluster: kubectl then uses the pod's "
-        "service account",
+        default="",
+        help="default: kubectl's current context, or from a pod inside the "
+        "cluster the pod's service account",
     )
     t.add_argument(
         "--api-url", help="agent API URL; default: the release's GATEWAY_PUBLIC_URL"
@@ -214,8 +217,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     o.add_argument(
         "--aws-profile",
-        default=os.environ.get("AWS_PROFILE", "qsg-nonprod-write"),
-        help="'' to use the credentials already in the environment, such as a "
+        default=os.environ.get("AWS_PROFILE", ""),
+        help="default: the credentials already in the environment, such as a "
         "pod's service account role",
     )
     o.add_argument("--aws-region", default="eu-west-3")
@@ -259,7 +262,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             ap.error(f"unknown scenario {s}")
     a.steps = [int(x) for x in a.steps.split(",")] if a.steps else [a.agents]
     a.rates = [float(x) for x in a.rates.split(",")] if a.rates else []
-    if a.rates != sorted(a.rates) or any(r <= 0 for r in a.rates):
+    if not _increasing(a.rates) or any(r <= 0 for r in a.rates):
         ap.error("--rates must be increasing and above 0")
     durations = [float(x) for x in str(a.rate_duration).split(",")]
     if len(durations) == 1:
@@ -267,7 +270,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if len(durations) != max(1, len(a.rates)) or any(d <= 0 for d in durations):
         ap.error("--rate-duration takes one number, or one per rate in --rates")
     a.rate_durations = durations
-    if a.steps != sorted(a.steps) or min(a.steps) < 2:
+    if not _increasing(a.steps) or min(a.steps) < 2:
         ap.error("--steps must be increasing and at least 2")
     a.rooms = a.rooms or max(1, max(a.steps) // 2)
     if a.controllers < 0 or a.controllers > max(a.steps):
@@ -279,7 +282,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("--seed-only needs --keep, and makes agents rather than reusing them")
     if a.concurrency < 1:
         ap.error("--concurrency must be at least 1")
+    for flag, value in (("--run-id", a.run_id), ("--reuse", a.reuse)):
+        if value is not None and not RUN_ID.fullmatch(value):
+            ap.error(f"{flag} takes letters, digits, - and _ only")
+    if a.cleanup not in (None, "*") and not RUN_ID.fullmatch(a.cleanup):
+        ap.error("--cleanup takes a run id or '*'")
     return a
+
+
+def _increasing(xs: list) -> bool:
+    """Each one above the last: a repeated rate or step would share a window."""
+    return all(x < y for x, y in zip(xs, xs[1:]))
 
 
 def kept_record(
@@ -394,15 +407,15 @@ def resolve_urls(a: argparse.Namespace, kube: Kube) -> None:
         ("--gateway-url", a.gateway_url, gw),
         ("--api-url", a.api_url, api),
     ):
-        if not given or not deployed or given.rstrip("/") == deployed.rstrip("/"):
+        if not given or (deployed and given.rstrip("/") == deployed.rstrip("/")):
             continue
         if hosts is None:
             hosts = kube.ingress_hosts() | kube.service_hosts()
         if urlparse(given).hostname not in hosts:
             raise Refused(
-                f"{flag} {given} is neither this namespace's ({deployed}) nor on "
-                "one of its Ingresses or Services; refusing to load one env and "
-                "sample another"
+                f"{flag} {given} is neither this namespace's "
+                f"({deployed or 'the release names none'}) nor on one of its "
+                "Ingresses or Services; refusing to load one env and sample another"
             )
     a.gateway_url = (a.gateway_url or gw or "").rstrip("/")
     a.api_url = (a.api_url or api or "").rstrip("/")
@@ -473,9 +486,8 @@ async def cleanup(a: argparse.Namespace, kube: Kube) -> int:
         if pf:
             pf.close()
     print(json.dumps(done))
-    return (
-        0 if not (done["left_agents"] or done["left_rooms"] or done["left_keys"]) else 1
-    )
+    left = ("left_agents", "left_rooms", "left_keys", "left_controllers")
+    return 1 if any(done.get(k) for k in left) else 0
 
 
 async def run(a: argparse.Namespace, kube: Kube) -> int:
@@ -642,10 +654,11 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
             room_ids = kept["rooms"]
             names_from = kept["names_from"]
             meta["names_from"] = names_from
+            # From here on a run that fails still keeps them, under --keep.
+            taken_over = True
             made = await create_controllers(
                 admin, run_id, a.controllers, state, asyncio.Semaphore(a.concurrency)
             )
-            taken_over = True
             print(
                 f"reusing {len(seeded)} agents and {len(room_ids)} rooms kept by "
                 f"{a.reuse}; {len(made)} new controllers in "

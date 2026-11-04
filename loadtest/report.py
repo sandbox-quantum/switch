@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections import defaultdict
 
@@ -11,7 +12,9 @@ def pct(xs: list[float], p: float) -> float | None:
     if not xs:
         return None
     xs = sorted(xs)
-    return round(xs[min(len(xs) - 1, int(p * len(xs)))] * 1000, 1)
+    # The ceil(p * n)-th value, rounded first: 0.07 * 100 is 7.000000000000001.
+    rank = math.ceil(round(p * len(xs), 9))
+    return round(xs[min(len(xs), max(rank, 1)) - 1] * 1000, 1)
 
 
 def _avg(xs: list[float]) -> float | None:

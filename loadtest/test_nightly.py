@@ -107,6 +107,8 @@ def test_the_harness_takes_the_nightly_rates_and_durations():
         ({"AGENTS": "10001"}, "split evenly"),
         ({"RAMP": "50,100"}, "less than the first ramp step"),
         ({"DAY_PODS": "13"}, "day sizes"),
+        ({"NAMESPACE": "switch"}, "the pilot"),
+        ({"API_URL": "http://switch-switch-core.switch.svc:8000"}, "the pilot"),
     ],
 )
 def test_settings_that_cannot_run_are_refused(env, why):
@@ -270,3 +272,36 @@ def test_a_night_that_could_not_read_the_cluster_still_reports(monkeypatch, tmp_
     assert any("could not read switch-core" in n for n in result["notes"])
     text = report_text(result, cfg, [])
     assert text.startswith("❌") and "no numbers tonight" in text
+
+
+def test_day_sizes_try_every_step_and_say_which_failed(monkeypatch):
+    def unreachable(cfg, replicas):
+        raise RuntimeError("the server is unreachable")
+
+    sized = []
+    monkeypatch.setattr(nightly, "scale_core", unreachable)
+    monkeypatch.setattr(
+        nightly, "size_nodegroup", lambda cfg, prefix, n: sized.append((prefix, n))
+    )
+    left = nightly.day_sizes(_cfg())
+    assert sized == [("staging-", 1), ("loadtest-harness-", 0)]
+    assert left == ["switch-core: RuntimeError: the server is unreachable"]
+
+
+def test_down_says_so_when_staging_stays_at_its_night_size(monkeypatch):
+    sent = []
+    monkeypatch.setattr(nightly, "s3_get", lambda cfg, key: {"night": "2026-11-04"})
+    monkeypatch.setattr(nightly, "post_webhook", lambda url, text: sent.append(text))
+    monkeypatch.setattr(nightly, "send_datadog", lambda *a: sent.append("datadog"))
+    monkeypatch.setattr(nightly, "day_sizes", lambda cfg: [])
+    assert nightly.cmd_down(_cfg()) == 0 and sent == []
+
+    monkeypatch.setattr(
+        nightly, "day_sizes", lambda cfg: ["switch-core's nodes: AccessDenied"]
+    )
+    assert nightly.cmd_down(_cfg()) == 1
+    # Tonight's numbers are in Datadog already: only the warning goes out.
+    assert sent == [
+        "⚠️ staging may still be at its night size: putting it back failed for "
+        "switch-core's nodes: AccessDenied"
+    ]
