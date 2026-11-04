@@ -728,25 +728,33 @@ class ResourceService:
             for rid, name, desc, label in rows
         ]
 
-    async def get_room_link_graph(self, session: AsyncSession) -> dict[str, Any]:
-        """Return every room + every directed link in a single payload, for
-        the full-graph view in the frontend.
+    async def get_room_link_graph(
+        self, session: AsyncSession, readable_rooms: list[Room]
+    ) -> dict[str, Any]:
+        """Return `readable_rooms` and the directed links between them in a
+        single payload, for the full-graph view in the frontend. A link with
+        either end outside `readable_rooms` is left out, so the graph says
+        nothing about rooms the caller cannot read.
 
         Each room carries its `group_id`, and the flattened group tree is
         returned under `groups` so the frontend can colour rooms by their
         top-level ancestor group.
         """
-        result = await session.execute(
-            select(Room.id, Room.name, Room.description, Room.group_id)
-        )
         rooms = [
-            {"id": rid, "name": name, "description": desc, "group_id": gid}
-            for rid, name, desc, gid in result.all()
+            {
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "group_id": r.group_id,
+            }
+            for r in readable_rooms
         ]
+        readable_ids = {r.id for r in readable_rooms}
         link_rows = await self._room_links.list_all(session)
         links = [
             {"source_room_id": s, "target_room_id": t, "label": lbl}
             for s, t, lbl in link_rows
+            if s in readable_ids and t in readable_ids
         ]
         group_result = await session.execute(
             select(
