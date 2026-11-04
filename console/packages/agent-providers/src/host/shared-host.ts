@@ -22,6 +22,7 @@ import {
   planAttachments,
   roomCommand,
   roomFreshStartCommandId,
+  roomMessageDelivery,
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
@@ -833,16 +834,21 @@ export async function runSharedHost(
         }
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
+        const snapshot = host!.snapshot();
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
-          epoch: host!.snapshot().session.epoch,
+          epoch: snapshot.session.epoch,
           roomId: event.roomId,
           message: message.data,
           surface: 'switch-web',
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
-          firstOfConversation: host!.snapshot().turns.length === 0,
+          firstOfConversation: snapshot.turns.length === 0,
+          delivery: roomMessageDelivery({
+            canSteer: snapshot.session.capabilities.input === 'steer',
+            turns: snapshot.turns,
+          }),
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once

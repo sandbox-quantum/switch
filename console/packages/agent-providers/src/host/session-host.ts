@@ -20,7 +20,12 @@ import type {
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { ProviderConversationUnavailableError } from '../adapter';
-import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
+import type {
+  ProviderAdapter,
+  ProviderSessionStartInput,
+  ProviderTurnStartResult,
+  TurnAttachment,
+} from '../adapter';
 import type { TokenUsage, TurnOutcome, UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector } from '../session-v1/chat-projector';
@@ -749,8 +754,14 @@ export class HostedSession {
       );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');
-      if (body.delivery !== 'queue')
-        throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
+      // A steered message is one the provider takes into its running turn;
+      // a provider that cannot take one is sent queued messages only, and a
+      // steer asked of it is refused rather than silently queued, so the
+      // sender learns its session record is wrong.
+      if (body.delivery === 'steer' && !this.adapter.capabilities.steering)
+        throw new Error(
+          'UNSUPPORTED_CAPABILITY: the selected provider cannot steer a running turn.'
+        );
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
       if (body.attachments.length && !this.config.stageAttachments)
@@ -825,32 +836,18 @@ export class HostedSession {
     });
     try {
       if (body.type === 'message.send') {
-        const turnId = command.commandId;
-        this.projector.bindTurn(turnId, {
+        this.projector.bindTurn(command.commandId, {
           commandId: command.commandId,
           origin: command.origin,
         });
-        await this.publish({
-          type: 'turn.upsert',
-          turnId,
-          commandId: command.commandId,
-          status: 'queued',
-        });
-        await this.publish({
-          type: 'item.upsert',
-          item: {
-            itemId: `user-${command.commandId}`,
-            turnId,
-            revision: 1,
-            kind: 'user-message',
-            status: 'completed',
-            title: '',
-            text: body.text,
-            attachments: body.attachments,
-            origin: command.origin,
-          },
-        });
-        this.queue.push(command);
+        // A steered message the provider took needs no turn of its own. One
+        // it refused is queued like any other, so a message is never lost
+        // to a steering failure.
+        const taken =
+          body.delivery === 'steer' &&
+          this.activeTurn !== null &&
+          (await this.steerMessage(command));
+        if (!taken) await this.queueMessage(command);
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -1040,6 +1037,117 @@ export class HostedSession {
     const status = this.snapshot().commandStatuses.find((value) => value.commandId === commandId);
     if (!status) throw new Error('NOT_FOUND: command not found.');
     return status;
+  }
+
+  /** Publishes a message as a turn of its own, queued to run after any turn in flight. */
+  private async queueMessage(command: Command): Promise<void> {
+    if (command.body.type !== 'message.send') return;
+    const turnId = command.commandId;
+    await this.publish({
+      type: 'turn.upsert',
+      turnId,
+      commandId: command.commandId,
+      status: 'queued',
+    });
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId: `user-${command.commandId}`,
+        turnId,
+        revision: 1,
+        kind: 'user-message',
+        status: 'completed',
+        title: '',
+        text: command.body.text,
+        attachments: command.body.attachments,
+        origin: command.origin,
+      },
+    });
+    this.queue.push(command);
+  }
+
+  /**
+   * Hands a message to the provider while a turn is running, so it reaches
+   * that turn instead of waiting for it to finish. Returns true when the
+   * provider took the message: steered into the running turn, or — a
+   * provider that answers a steer by starting the message as a turn of its
+   * own behind the running one (Codex, when its `turn/steer` is refused) —
+   * adopted as that turn. Returns false when the provider refused the
+   * message outright, so the caller queues it instead: a provider that took
+   * a message says so in its result, and one that threw did not take it, so
+   * queueing it delivers it exactly once.
+   */
+  private async steerMessage(command: Command): Promise<boolean> {
+    if (command.body.type !== 'message.send') return false;
+    const body = command.body;
+    const attachments = body.attachments.length
+      ? await this.config.stageAttachments!(body.attachments)
+      : [];
+    if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
+    await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+    this.dispatched.add(command.commandId);
+    let result: ProviderTurnStartResult;
+    try {
+      result = await this.adapter.sendTurn({
+        sessionId: this.config.session.sessionId,
+        turnId: command.commandId,
+        text: body.text,
+        attachments,
+      });
+    } catch (error) {
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'STEERING_FALLBACK',
+        message: `The message could not be steered into the running turn (${String(error)}); it was queued behind it instead.`,
+      });
+      return false;
+    }
+    if (result.steeredInto) {
+      // The message belongs to the running turn now, and its completion is
+      // that turn's: this command is finished here, and is never resent.
+      await this.inbox.append({ type: 'finished', commandId: command.commandId });
+      this.finished.add(command.commandId);
+      await this.publish({
+        type: 'item.upsert',
+        item: {
+          itemId: `user-${command.commandId}`,
+          turnId: result.steeredInto,
+          revision: 1,
+          kind: 'user-message',
+          status: 'completed',
+          title: 'Steered into the running turn',
+          text: body.text,
+          attachments: body.attachments,
+          origin: command.origin,
+        },
+      });
+      return true;
+    }
+    // Adopted: the provider started the message as a turn of its own, behind
+    // the running one. It is shown as a queued turn; the provider's events
+    // run it, and its completion finishes the command.
+    await this.publish({
+      type: 'turn.upsert',
+      turnId: command.commandId,
+      commandId: command.commandId,
+      status: 'queued',
+    });
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId: `user-${command.commandId}`,
+        turnId: command.commandId,
+        revision: 1,
+        kind: 'user-message',
+        status: 'completed',
+        title: '',
+        text: body.text,
+        attachments: body.attachments,
+        origin: command.origin,
+      },
+    });
+    return true;
   }
 
   private async runNext(): Promise<void> {

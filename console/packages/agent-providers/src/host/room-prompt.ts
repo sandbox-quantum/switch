@@ -162,6 +162,11 @@ export function roomCommand(input: {
    * opening words (`opening_message`), if any, are told.
    */
   firstOfConversation: boolean;
+  /**
+   * How the message is delivered: steered into a running turn, or queued
+   * behind it. `roomMessageDelivery` decides; absent means queued.
+   */
+  delivery?: 'queue' | 'steer';
 }): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
@@ -214,6 +219,29 @@ export function roomCommand(input: {
       threadId: payload.thread_id ?? null,
       messageId: payload.message_id,
     },
-    body: { type: 'message.send', text, attachments, delivery: 'queue' },
+    body: { type: 'message.send', text, attachments, delivery: input.delivery ?? 'queue' },
   };
+}
+
+/**
+ * How a room message is delivered to its session. When the provider takes
+ * mid-turn messages and a turn is in flight, the message steers that turn,
+ * so a correction lands while it can still change what the agent does;
+ * otherwise it queues behind the turn, as every message did before
+ * steering. The host resolves the request against the turn it actually has
+ * running when the message arrives, so a turn that finished in between
+ * costs nothing: the message simply starts the next one. Who may address
+ * the agent at all is decided before a message reaches the host, and
+ * delivery never widens it — steering changes when a message arrives,
+ * never whose messages arrive.
+ */
+export function roomMessageDelivery(input: {
+  /** Whether the session advertises mid-turn delivery (its provider steers). */
+  canSteer: boolean;
+  turns: readonly { status: 'queued' | 'running' | 'completed' | 'interrupted' | 'error' }[];
+}): 'queue' | 'steer' {
+  if (!input.canSteer) return 'queue';
+  return input.turns.some((turn) => turn.status === 'running' || turn.status === 'queued')
+    ? 'steer'
+    : 'queue';
 }

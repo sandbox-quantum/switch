@@ -33,6 +33,18 @@ provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;
 its initial prompt is not automatically sent again.
 
+A message sent while a turn is running is steered into that turn when the
+provider takes mid-turn messages — Claude Code, Codex and OpenCode do — so a
+correction reaches the agent while it can still change what the turn does.
+The message shows in the transcript under the running turn, marked as
+steered. On a provider that cannot steer, and whenever no turn is running,
+a message queues and runs as the next turn, as every message did before.
+There is no setting for this: steering is the default wherever the provider
+supports it, and the session's advertised input capability says which of the
+two a session does. A steer the provider refuses at the last moment falls
+back to queueing, with a notice in the transcript, so the message is never
+lost to a steering failure.
+
 ## Server isolation
 
 SDK sessions, transcript events, commands and attachments are scoped to the

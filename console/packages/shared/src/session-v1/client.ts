@@ -145,6 +145,17 @@ export class SessionChatClient {
         !isDeepEqual(this.pending.body.attachments, attachments))
     )
       throw new Error('Resolve the previous message before sending another.');
+    // A message sent while a turn is in flight steers that turn when the
+    // session's provider takes mid-turn messages, so a correction lands
+    // while it can still change the turn; any other message queues behind
+    // the turn, as every message did before steering. The host resolves
+    // the request against the turn it actually has running when the
+    // message arrives, so a turn that finished in between costs nothing.
+    const delivery =
+      snapshot.session.capabilities.input === 'steer' &&
+      snapshot.turns.some((turn) => turn.status === 'running' || turn.status === 'queued')
+        ? 'steer'
+        : 'queue';
     const command: ClientCommand = this.pending ?? {
       contractVersion: 1,
       commandId,
@@ -154,7 +165,7 @@ export class SessionChatClient {
         type: 'message.send',
         text,
         attachments,
-        delivery: 'queue',
+        delivery,
       },
     };
     if (command.epoch !== snapshot.session.epoch)

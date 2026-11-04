@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { REPLY_REMINDER, roomCommand, roomCommandId, roomMessageSchema } from './room-prompt';
+import {
+  REPLY_REMINDER,
+  roomCommand,
+  roomCommandId,
+  roomMessageDelivery,
+  roomMessageSchema,
+} from './room-prompt';
 
 describe('a room command', () => {
   const event = {
@@ -65,5 +71,45 @@ describe('a room command', () => {
     const fromMember = { ...event, payload: { ...event.payload, sender_role: 'member' } };
     expect(text(fromMember)).toContain('[Switch] Owner (workspace member) addressed you');
     expect(text(event)).toContain('[Switch] Owner addressed you');
+  });
+
+  it('queues the message unless the caller asks for steering', () => {
+    expect(command(event).body).toMatchObject({ delivery: 'queue' });
+    const steered = roomCommand({
+      agentId: 'agent',
+      sessionId: 'session',
+      epoch: 'epoch',
+      roomId: '!room:example.test',
+      message: roomMessageSchema.parse(event),
+      surface: 'switch-web',
+      attachments: [],
+      preface: null,
+      firstOfConversation: false,
+      delivery: 'steer',
+    });
+    expect(steered.body).toMatchObject({ delivery: 'steer' });
+  });
+});
+
+describe('the delivery a room message is sent with', () => {
+  const turn = (status: 'queued' | 'running' | 'completed' | 'interrupted' | 'error') => ({
+    status,
+  });
+
+  it('steers when the provider can and a turn is running', () => {
+    expect(roomMessageDelivery({ canSteer: true, turns: [turn('running')] })).toBe('steer');
+  });
+
+  it('steers when a turn is queued, which will be running by the time it lands', () => {
+    expect(roomMessageDelivery({ canSteer: true, turns: [turn('queued')] })).toBe('steer');
+  });
+
+  it('queues when no turn is in flight', () => {
+    expect(roomMessageDelivery({ canSteer: true, turns: [] })).toBe('queue');
+    expect(roomMessageDelivery({ canSteer: true, turns: [turn('completed')] })).toBe('queue');
+  });
+
+  it('queues whatever the turns when the provider cannot steer', () => {
+    expect(roomMessageDelivery({ canSteer: false, turns: [turn('running')] })).toBe('queue');
   });
 });
