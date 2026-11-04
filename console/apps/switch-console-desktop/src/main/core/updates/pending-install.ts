@@ -28,6 +28,9 @@ export interface PendingHandover {
   fromVersion: string | null;
 }
 
+/** This run's answer, once anything has asked. */
+let taken: Promise<PendingHandover | null> | null = null;
+
 export const pendingInstall = {
   /**
    * Record a handover. Throws when the write fails, because a handover with no
@@ -45,16 +48,23 @@ export const pendingInstall = {
    * is only ever counted once. Cleared before the caller reports, so a report
    * that fails to send loses one event rather than repeating it on every launch
    * from here on.
+   *
+   * The same answer for every caller in this run: the update service reports
+   * the handover and the launch report says which kind of install it was, and
+   * whichever asks first must not leave the other reading a cleared record.
    */
-  async take(): Promise<PendingHandover | null> {
-    const target = await store.get('target');
-    const from = await store.get('from');
-    const legacy = await store.get('handover');
-    if (typeof target !== 'string' && legacy !== true) return null;
-    await pendingInstall.clear();
-    return {
-      targetVersion: typeof target === 'string' ? target : null,
-      fromVersion: typeof from === 'string' ? from : null,
-    };
+  take(): Promise<PendingHandover | null> {
+    taken ??= (async () => {
+      const target = await store.get('target');
+      const from = await store.get('from');
+      const legacy = await store.get('handover');
+      if (typeof target !== 'string' && legacy !== true) return null;
+      await pendingInstall.clear();
+      return {
+        targetVersion: typeof target === 'string' ? target : null,
+        fromVersion: typeof from === 'string' ? from : null,
+      };
+    })();
+    return taken;
   },
 };

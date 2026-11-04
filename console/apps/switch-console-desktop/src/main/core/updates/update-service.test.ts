@@ -198,7 +198,40 @@ describe('what a check reports', () => {
   });
 });
 
-describe('what one install attempt reports', async () => {
+describe('what a download reports', () => {
+  beforeEach(() => {
+    h.handlers.get('update-available')?.({ version: '1.3.0' });
+    h.trackEvent.mockClear();
+  });
+
+  it('reports the press, then how the download ended', async () => {
+    h.downloadUpdate.mockResolvedValueOnce(undefined);
+
+    await updateService.downloadUpdate();
+
+    expect(
+      h.trackEvent.mock.calls.filter(([name]) => String(name).startsWith('update_download'))
+    ).toEqual([
+      ['update_download_started', {}],
+      ['update_downloaded', { outcome: 'success' }],
+    ]);
+  });
+
+  it('reports the press even when the download then fails', async () => {
+    h.downloadUpdate.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(updateService.downloadUpdate()).rejects.toThrow('connection reset');
+
+    expect(
+      h.trackEvent.mock.calls.filter(([name]) => String(name).startsWith('update_download'))
+    ).toEqual([
+      ['update_download_started', {}],
+      ['update_downloaded', { outcome: 'failure' }],
+    ]);
+  });
+});
+
+describe('what one install attempt reports', () => {
   beforeEach(async () => {
     await downloadVersion('1.3.0');
     h.quitAndInstall.mockReset();

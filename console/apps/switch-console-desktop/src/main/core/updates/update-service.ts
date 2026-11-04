@@ -521,6 +521,7 @@ class UpdateService implements IInitializable, IDisposable {
 
     this.updateState.status = 'downloading';
     events.emit(updateDownloadingEvent, { version });
+    trackEvent('update_download_started', {});
 
     try {
       if (this.fake) await this.fake.download();

@@ -14,14 +14,24 @@ vi.mock('@main/db/client', () => ({
   },
 }));
 
-const { pendingInstall } = await import('./pending-install');
+/**
+ * The marker as one run of the app sees it. `take()` keeps its answer for the
+ * whole run, so each launch is a fresh copy of the module.
+ */
+async function launch() {
+  vi.resetModules();
+  return (await import('./pending-install')).pendingInstall;
+}
 
 describe('the pending-install marker', () => {
   let fixture: Awaited<ReturnType<typeof openFixture>>;
 
+  let pendingInstall: Awaited<ReturnType<typeof launch>>;
+
   beforeEach(async () => {
     fixture = await openFixture('empty');
     mocks.db = fixture.db;
+    pendingInstall = await launch();
   });
 
   afterEach(() => {
@@ -40,7 +50,19 @@ describe('the pending-install marker', () => {
       targetVersion: '1.3.0',
       fromVersion: '1.2.3',
     });
-    await expect(pendingInstall.take()).resolves.toBeNull();
+    // The next launch finds nothing.
+    await expect((await launch()).take()).resolves.toBeNull();
+  });
+
+  it('gives every caller in a run the same answer', async () => {
+    // The update service and the launch report both ask. Whichever is second
+    // must not read the record that the first one cleared.
+    await pendingInstall.set('1.3.0', '1.2.3');
+
+    const [first, second] = await Promise.all([pendingInstall.take(), pendingInstall.take()]);
+
+    expect(first).toEqual({ targetVersion: '1.3.0', fromVersion: '1.2.3' });
+    expect(second).toEqual(first);
   });
 
   it('is gone after an attempt is abandoned', async () => {
@@ -61,7 +83,7 @@ describe('the pending-install marker', () => {
       targetVersion: null,
       fromVersion: null,
     });
-    await expect(pendingInstall.take()).resolves.toBeNull();
+    await expect((await launch()).take()).resolves.toBeNull();
   });
 
   it('reports the latest version when a second attempt overwrites the first', async () => {
@@ -84,7 +106,7 @@ describe('the pending-install marker', () => {
       targetVersion: '1.3.0',
       fromVersion: '1.2.3',
     });
-    await expect(pendingInstall.take()).resolves.toBeNull();
+    await expect((await launch()).take()).resolves.toBeNull();
   });
 
   it('clears the legacy marker too when an attempt is abandoned', async () => {
