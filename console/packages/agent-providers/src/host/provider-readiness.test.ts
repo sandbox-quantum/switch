@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CLAUDE_TOO_OLD, parseClaudeAuthStatus, parseClaudeTestReply } from '../claude/sign-in';
 import { parseCursorAbout } from '../cursor/cursor-adapter';
+import { parseGooseInfo } from '../goose/goose-adapter';
 import { checkProviderReadiness } from './provider-readiness';
 
 describe('a Cursor API key', () => {
@@ -17,6 +18,39 @@ describe('a Cursor API key', () => {
       message: 'Signs in with the Cursor API key it was given.',
       models: [],
     });
+  });
+});
+
+describe('Goose provider readiness', () => {
+  it('takes GOOSE_PROVIDER and GOOSE_MODEL in the environment as given', async () => {
+    expect(
+      await checkProviderReadiness({
+        provider: 'goose',
+        binaryPath: '/nonexistent/goose',
+        cwd: '/',
+        env: { GOOSE_PROVIDER: 'openai', GOOSE_MODEL: 'gpt-4o' },
+      })
+    ).toEqual({
+      status: 'authenticated',
+      message: 'Signed in with configured Goose provider and model.',
+      models: [],
+    });
+  });
+
+  it('recognizes configured Goose from info output', () => {
+    expect(parseGooseInfo('Provider: databricks\nModel: meta-llama-3')).toEqual({
+      status: 'authenticated',
+      message: 'Signed in.',
+      models: [],
+    });
+  });
+
+  it('recognizes unconfigured Goose from info output', () => {
+    expect(parseGooseInfo('Provider: not set\nModel: not set').status).toBe('unauthenticated');
+  });
+
+  it('recognizes pressly/goose database migration tool on PATH as unknown', () => {
+    expect(parseGooseInfo('Usage: goose [OPTIONS] DRIVER DBSTRING COMMAND').status).toBe('unknown');
   });
 });
 
