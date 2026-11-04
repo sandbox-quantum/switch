@@ -152,9 +152,14 @@ class AppSpec:
     name: str
     kind: AppKind
     variables: tuple[str, ...]
+    # A public OAuth client (the catalog entry's public_client) needs no
+    # secret at all: PKCE proves it at sign-in.
+    public: bool = False
 
     @property
     def secret_names(self) -> frozenset[str]:
+        if self.public:
+            return frozenset()
         return SECRET_NAMES[self.kind]
 
 
@@ -174,7 +179,13 @@ def app_specs(catalog: Mapping[str, Connection]) -> dict[str, AppSpec]:
             variables = (
                 client_settings_variable(definition.auth.oauth.client_settings),
             )
-        specs[slug] = AppSpec(slug, definition.name, kind, variables)
+        specs[slug] = AppSpec(
+            slug,
+            definition.name,
+            kind,
+            variables,
+            public=(kind == "oauth_client" and definition.auth.oauth.public_client),
+        )
     if sum(spec.kind == "github_app" for spec in specs.values()) > 1:
         raise ValueError("The catalog names more than one GitHub App service.")
     return specs
@@ -286,12 +297,14 @@ def load_saved_app(
     values = AppValues(client_id, dict(settings), opened)
     if spec.kind == "github_app":
         return LoadedApp(values, github_app_from_values(values, public_url), None)
-    if "client_secret" not in opened:
+    if "client_secret" not in opened and not spec.public:
         raise AppLoadError("The saved client has no client secret.")
     return LoadedApp(
         values,
         None,
-        OAuthClientCredentials(client_id, opened["client_secret"], authentication=None),
+        OAuthClientCredentials(
+            client_id, opened.get("client_secret"), authentication=None
+        ),
     )
 
 
@@ -462,16 +475,21 @@ class ConnectorApps:
         if spec.kind == "oauth_client":
             oauth = self._catalog[spec.service].definition.auth.oauth
             assert oauth is not None and oauth.client_settings is not None
-            settings = load_client_settings(oauth.client_settings, self._environ)
+            settings = load_client_settings(
+                oauth.client_settings, self._environ, public=oauth.public_client
+            )
             if settings is None:
                 return None
             client = OAuthClientCredentials(
                 settings.client_id, settings.client_secret, authentication=None
             )
+            secrets = (
+                {"client_secret": settings.client_secret}
+                if settings.client_secret is not None
+                else {}
+            )
             return _Configured(
-                values=AppValues(
-                    settings.client_id, {}, {"client_secret": settings.client_secret}
-                ),
+                values=AppValues(settings.client_id, {}, secrets),
                 github_app=None,
                 oauth_client=client,
                 variables=spec.variables,
@@ -530,6 +548,7 @@ class ConnectorApps:
                 spec.name,
             )
             return self._none(spec, load_error=UNREADABLE, unreadable=True)
+
         except AppLoadError as error:
             logger.error(
                 "The app saved for %s cannot be used, so it is not set up: %s",

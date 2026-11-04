@@ -8,6 +8,11 @@ import { focusMainWindow } from '@main/app/window';
  * state it was opened with, brings Console to the front so the next step is
  * in view, and hands the code to Core through `complete`. Neither it nor the
  * browser ever sees a token: Core exchanges the code.
+ *
+ * A vendor registers the return under either loopback name: 127.0.0.1, or
+ * localhost where it registers nothing else (Salesforce). Both are this
+ * computer, so both are taken; any other name in the Host header still fails,
+ * which keeps a DNS-rebinding page from handing in a code.
  */
 export type SignInListener = {
   port: number;
@@ -44,9 +49,10 @@ export async function listenForSignIn({
       });
       response.end(page(name, message));
     };
+    const host = request.headers.host ?? '';
     let url: URL;
     try {
-      url = new URL(request.url ?? '/', `http://127.0.0.1:${port}`);
+      url = new URL(request.url ?? '/', `http://${host}`);
     } catch {
       reply(400, 'Invalid sign-in response.');
       return;
@@ -55,8 +61,8 @@ export async function listenForSignIn({
     if (
       received ||
       request.method !== 'GET' ||
-      url.origin !== `http://127.0.0.1:${port}` ||
-      request.headers.host !== `127.0.0.1:${port}` ||
+      (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) ||
+      url.origin !== `http://${host}` ||
       url.pathname !== path ||
       url.searchParams.get('state') !== state ||
       !code ||

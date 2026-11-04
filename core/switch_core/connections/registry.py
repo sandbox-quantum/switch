@@ -49,7 +49,9 @@ class OAuthClientSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     client_id: str = Field(min_length=1)
-    client_secret: str = Field(min_length=1, repr=False)
+    # None for a public client, one PKCE proves and the vendor needs no
+    # secret from; the connector's catalog entry says when that is allowed.
+    client_secret: str | None = Field(default=None, min_length=1, repr=False)
 
 
 def client_settings_variable(prefix: str) -> str:
@@ -57,9 +59,14 @@ def client_settings_variable(prefix: str) -> str:
 
 
 def load_client_settings(
-    prefix: str, environ: Mapping[str, str]
+    prefix: str, environ: Mapping[str, str], *, public: bool = False
 ) -> OAuthClientSettings | None:
-    """The client named by `<prefix>_CLIENT_CONFIG_PATH`, or None when unset."""
+    """The client named by `<prefix>_CLIENT_CONFIG_PATH`, or None when unset.
+
+    `public` says the connector's catalog entry allows a public client: the
+    file may then hold only a client_id. Without it a missing client_secret
+    stops the server, so an operator's half-written confidential client is
+    never mistaken for a deliberate public one."""
     variable = client_settings_variable(prefix)
     raw_path = environ.get(variable, "")
     if not raw_path:
@@ -68,7 +75,9 @@ def load_client_settings(
     if not path.is_absolute():
         raise ServiceSetupError(f"{variable} must be an absolute path.")
     try:
-        return OAuthClientSettings.model_validate(json.loads(path.read_text("utf-8")))
+        settings = OAuthClientSettings.model_validate(
+            json.loads(path.read_text("utf-8"))
+        )
     except OSError as error:
         raise ServiceSetupError(
             f"{variable} names a file that cannot be read: {error.strerror}."
@@ -78,6 +87,12 @@ def load_client_settings(
             f"{variable} must name a JSON file holding a non-empty client_id and "
             "client_secret, and nothing else."
         ) from None
+    if settings.client_secret is None and not public:
+        raise ServiceSetupError(
+            f"{variable} must name a JSON file holding a non-empty client_id and "
+            "client_secret, and nothing else."
+        )
+    return settings
 
 
 @dataclass(frozen=True)
@@ -125,7 +140,11 @@ def build_adapter(
         assert oauth is not None
         if oauth.registration == "dynamic":
             uris = redirect_uris(
-                slug, oauth.redirect, registration.public_url, oauth.loopback_ports
+                slug,
+                oauth.redirect,
+                registration.public_url,
+                oauth.loopback_ports,
+                oauth.loopback_host,
             )
             if not uris:
                 raise ServiceSetupError(

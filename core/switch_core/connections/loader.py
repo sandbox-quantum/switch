@@ -84,7 +84,8 @@ class OAuthClient(BaseModel):
 
     `loopback_ports`: the only ports Switch Console's listener may use, for a
     vendor that matches a loopback redirect exactly, port included; without
-    them any port is used. `prompt` is sent with every authorization, for a
+    them any port is used. `loopback_host` is the name the redirect uses,
+    `127.0.0.1` unless the vendor registers only the `localhost` name. `prompt` is sent with every authorization, for a
     vendor that needs it (`consent`, to consent to a narrower set of scopes;
     `select_account`, to let the person choose the account), one value or
     several separated by spaces, as OAuth writes it.
@@ -96,10 +97,16 @@ class OAuthClient(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     registration: Literal["dynamic", "static"]
     client_settings: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,62}$")
+    # A public static client: PKCE proves it at sign-in, so the operator's
+    # settings file holds only a client_id. Only a connector whose vendor
+    # supports public clients says so here; every other static client still
+    # needs a client_secret in its file.
+    public_client: bool = False
     redirect: list[RedirectMode] = Field(min_length=1)
     loopback_ports: list[Annotated[int, Field(ge=1024, le=65535)]] | None = Field(
         default=None, min_length=1, max_length=10
     )
+    loopback_host: Literal["127.0.0.1", "localhost"] = "127.0.0.1"
     prompt: str | None = Field(
         default=None,
         pattern=r"^(consent|login|select_account)( (consent|login|select_account)){0,2}$",
@@ -124,6 +131,8 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "client_settings names a static client's settings, and only one's"
             )
+        if self.public_client and self.registration != "static":
+            raise ValueError("public_client names a static client, and only one's")
         if len(set(self.redirect)) != len(self.redirect):
             raise ValueError("a redirect mode is listed twice")
         if (self.authorization_url is None) != (self.token_url is None):
@@ -141,6 +150,8 @@ class OAuthClient(BaseModel):
                 raise ValueError("loopback_ports are for a loopback redirect")
             if len(set(self.loopback_ports)) != len(self.loopback_ports):
                 raise ValueError("a loopback port is listed twice")
+        if self.loopback_host != "127.0.0.1" and "loopback" not in self.redirect:
+            raise ValueError("loopback_host names a loopback redirect")
         if self.revocation_discovered and (
             self.revocation_url is not None or self.authorization_url is not None
         ):

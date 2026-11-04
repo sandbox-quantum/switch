@@ -560,6 +560,16 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    registration: dynamic\n    client_settings: EXAMPLE\n",
             "client_settings",
         ),
+        (
+            "    registration: dynamic\n",
+            "    registration: dynamic\n    public_client: true\n",
+            "public_client names a static client",
+        ),
+        (
+            "    registration: dynamic\n",
+            "    registration: dynamic\n    public_client: often\n",
+            "public_client",
+        ),
         ("redirect: [loopback, core]", "redirect: [core, core]", "listed twice"),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),
@@ -613,6 +623,16 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    loopback_ports: [43123, 43123]\n",
             "listed twice",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [core]\n    loopback_host: localhost\n",
+            "loopback_host names a loopback redirect",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_host: example.com\n",
+            "loopback_host",
         ),
         (
             "    redirect: [loopback, core]\n",

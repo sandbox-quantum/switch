@@ -78,14 +78,16 @@ def _world(
     workspace_gate: bool = False,
     organization_apps: object = None,
     write_only: bool = False,
+    loopback_host: str | None = None,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
+    host = f"\n    loopback_host: {loopback_host}" if loopback_host else ""
     _write_example(
         root,
         OAUTH_ENTRY.replace(
-            "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
+            "redirect: [loopback, core]", f"redirect: {redirect}{ports}{host}"
         ),
     )
     if write_only:
@@ -105,7 +107,7 @@ def _world(
         http=vendor.client(),
         client_name="Switch (switch.example.com)",
         redirect_uris=redirect_uris(
-            "example", oauth.redirect, PUBLIC, oauth.loopback_ports
+            "example", oauth.redirect, PUBLIC, oauth.loopback_ports, oauth.loopback_host
         ),
         scopes=["read:items", "write:items"],
     )
@@ -169,10 +171,10 @@ class Console:
         )
 
 
-def _listener_code(url: str, state: str) -> str:
+def _listener_code(url: str, state: str, host: str = "127.0.0.1") -> str:
     """What Console's listener takes from the redirect it receives."""
     parts = urlsplit(url)
-    assert f"{parts.scheme}://{parts.netloc}" == f"http://127.0.0.1:{PORT}"
+    assert f"{parts.scheme}://{parts.netloc}" == f"http://{host}:{PORT}"
     assert parts.path == LOOPBACK_CALLBACK_PATH
     query = parse_qs(parts.query)
     assert query["state"] == [state]
@@ -479,6 +481,41 @@ class TestLoopbackPorts:
             code = parse_qs(back.query)["code"][0]
             assert (await console.complete(code)).status_code == 200
 
+    async def test_signs_in_through_console_on_the_localhost_name(
+        self, session_factory, tmp_path
+    ) -> None:
+        # A vendor that registers only the localhost name (Salesforce) gets it
+        # in the redirect, and the exchange names it back exactly.
+        world = _world(session_factory, tmp_path / "catalog", loopback_host="localhost")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert started.json()["mode"] == "loopback"
+            url = started.json()["url"]
+            query = parse_qs(urlsplit(url).query)
+            assert query["redirect_uri"] == [
+                f"http://localhost:{PORT}{LOOPBACK_CALLBACK_PATH}"
+            ]
+            assert query["state"] == [console.state]
+
+            code = _listener_code(
+                world.vendor.authorize(url), console.state, host="localhost"
+            )
+            completed = await console.complete(code)
+            assert completed.status_code == 200, completed.text
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None and connection.account_id == "acct-1"
+        [exchange] = [
+            request
+            for request in world.vendor.token_requests
+            if request["grant_type"] == "authorization_code"
+        ]
+        assert exchange["redirect_uri"] == (
+            f"http://localhost:{PORT}{LOOPBACK_CALLBACK_PATH}"
+        )
+
     async def test_refuses_a_port_the_vendor_would_not_take(
         self, session_factory, tmp_path
     ) -> None:
@@ -632,6 +669,43 @@ class TestCoreCallback:
             if request["grant_type"] == "authorization_code"
         ]
         assert exchange["redirect_uri"] == f"{PUBLIC}{FLOWS}/callback"
+
+    async def test_returns_through_core_to_consoles_localhost_listener(
+        self, session_factory, tmp_path
+    ) -> None:
+        # Where the vendor's app is on the localhost name, Core sends the
+        # browser back to Console's listener under that name.
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[core, loopback]",
+            public_url=PUBLIC,
+            loopback_host="localhost",
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert started.json()["mode"] == "core"
+            authorize = started.json()["url"]
+            left = await client.get(authorize.removeprefix(PUBLIC))
+            assert left.status_code == 307
+            cookie = left.cookies.get(f"switch_service_{console.state}")
+            vendor_url = left.headers["location"]
+
+            back = urlsplit(world.vendor.authorize(vendor_url))
+            path = f"{back.path}?{back.query}"
+            returned = await client.get(
+                path, cookies={f"switch_service_{console.state}": cookie}
+            )
+            assert returned.status_code == 303
+            target = urlsplit(returned.headers["location"])
+            assert f"{target.scheme}://{target.netloc}" == f"http://localhost:{PORT}"
+            assert target.path == LOOPBACK_CALLBACK_PATH
+            assert _listener_code(
+                returned.headers["location"], console.state, host="localhost"
+            )
 
     async def test_the_cookie_is_secure_except_on_this_computer(
         self, session_factory, tmp_path
