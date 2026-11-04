@@ -91,15 +91,28 @@ export function optionsForBridge(
  * say, fails as it is read.
  */
 export function channelIdProblem(bridgeType: string, id: string): string | null {
-  const value = id.trim();
+  const value = normalizedChannelId(bridgeType, id);
   if (value === '') return null;
   const shape = CHANNEL_ID_SHAPE[bridgeType];
   return shape && !shape.pattern.test(value) ? shape.problem : null;
 }
 
+/**
+ * `id` as its app writes it: trimmed, and in the one case its app uses where
+ * that is known (Slack ids are upper case, Mattermost's lower), so a pasted
+ * id differing only in case or surrounding space is taken as meant.
+ */
+export function normalizedChannelId(bridgeType: string, id: string): string {
+  const value = id.trim();
+  if (bridgeType === 'slack') return value.toUpperCase();
+  if (bridgeType === 'mattermost') return value.toLowerCase();
+  return value;
+}
+
 const CHANNEL_ID_SHAPE: Record<string, { pattern: RegExp; problem: string }> = {
   slack: {
-    pattern: /^[CG][A-Z0-9]{6,}$/,
+    // Letters and digits, always some digits: so a channel's name (GENERAL) is not taken for one.
+    pattern: /^[CG](?=[A-Z0-9]*\d)[A-Z0-9]{6,}$/,
     problem:
       'A Slack channel id starts with C or G, like C0123ABCD. It is at the bottom of the channel’s details.',
   },

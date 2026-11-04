@@ -208,6 +208,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         serverId,
         workspaceId: workspaceId as string,
         bridgeId,
+        bridgeType: selectedBridge?.type,
         name,
         description,
         instructions,

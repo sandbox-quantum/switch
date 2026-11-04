@@ -179,7 +179,8 @@ describe('New room dialog', () => {
     expect(createButton(host).disabled).toBe(true);
     expect(host.textContent).toContain('starts with C or G');
 
-    await typeInto(channelIdInput(host)!, 'C0123ABCD');
+    // Pasted in lower case with space around it: taken as meant, and sent as Slack writes it.
+    await typeInto(channelIdInput(host)!, ' c0123abcd ');
     expect(createButton(host).disabled).toBe(false);
     await act(async () => createButton(host).click());
 

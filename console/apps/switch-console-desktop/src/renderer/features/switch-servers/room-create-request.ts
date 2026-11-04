@@ -1,5 +1,5 @@
 import type { NewRoomChannel, RoomAccess } from '@shared/core/switch-servers/switch-servers';
-import { channelIdProblem } from './room-channel-choices';
+import { channelIdProblem, normalizedChannelId } from './room-channel-choices';
 
 /** What the New room dialog asks the server for: a Switch Console chat when no messaging app is chosen, else a room bridged to the chosen one. */
 export type RoomCreateRequest =
@@ -51,6 +51,8 @@ export function roomCreateRequest(form: {
   workspaceId: string;
   /** Null for Switch Console. */
   bridgeId: string | null;
+  /** The chosen app's platform, so an existing channel's id is sent as it writes it. */
+  bridgeType?: string;
   name: string;
   description: string;
   instructions: string;
@@ -85,15 +87,18 @@ export function roomCreateRequest(form: {
       instructions: form.instructions.trim() || undefined,
       bridgeId: form.bridgeId,
       agentIds,
-      ...roomOptionsParams(form.options ?? DEFAULT_ROOM_OPTIONS),
+      ...roomOptionsParams(form.options ?? DEFAULT_ROOM_OPTIONS, form.bridgeType ?? ''),
     },
   };
 }
 
-function roomOptionsParams(options: RoomCreateOptions) {
+function roomOptionsParams(options: RoomCreateOptions, bridgeType: string) {
   const channel: NewRoomChannel =
     options.channel.kind === 'existing'
-      ? { kind: 'existing', externalChannelId: options.channel.externalChannelId.trim() }
+      ? {
+          kind: 'existing',
+          externalChannelId: normalizedChannelId(bridgeType, options.channel.externalChannelId),
+        }
       : options.channel;
   return {
     channel,

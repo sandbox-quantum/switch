@@ -77,12 +77,13 @@ describe('roomCreateRequest', () => {
     });
   });
 
-  it('binds an existing channel by its id, trimmed', () => {
+  it('binds an existing channel by its id, written as its app writes it', () => {
     const request = roomCreateRequest({
       ...form,
       bridgeId: 'b1',
+      bridgeType: 'slack',
       options: {
-        channel: { kind: 'existing', externalChannelId: ' C123 ' },
+        channel: { kind: 'existing', externalChannelId: ' c123 ' },
         groupId: null,
         access: null,
       },
