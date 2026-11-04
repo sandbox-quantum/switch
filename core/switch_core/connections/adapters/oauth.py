@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -452,11 +453,12 @@ class OAuthAdapter:
             "response_type": "code",
             "client_id": client.client_id,
             "redirect_uri": redirect_uri,
-            "scope": " ".join(scopes),
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if scopes:
+            query["scope"] = " ".join(scopes)
         for key, value in self._oauth.authorization_params.items():
             query[key] = value
         if self._oauth.prompt is not None:
@@ -488,16 +490,43 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
-        response = await self._send(
-            self._http.build_request(
-                "GET",
-                self._identity.url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
-                },
+        if self._identity.mcp_tool is not None:
+            if self._mcp_url is None:
+                raise ServiceAdapterError(
+                    f"{self._name} names an identity tool without an MCP server."
+                )
+            response = await self._send(
+                self._http.build_request(
+                    "POST",
+                    self._mcp_url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": self._identity.mcp_tool,
+                            "arguments": {},
+                        },
+                    },
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    },
+                )
             )
-        )
+        else:
+            assert self._identity.url is not None
+            response = await self._send(
+                self._http.build_request(
+                    "GET",
+                    self._identity.url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                    },
+                )
+            )
         if response.status_code == 401:
             raise ReauthorizationRequiredError(
                 f"{self._name} refused the new sign-in when asked whose it is."
@@ -508,12 +537,45 @@ class OAuthAdapter:
                 f"(HTTP {response.status_code})."
             )
         body = self._json(response, "account")
+        if self._identity.mcp_tool is not None:
+            if "error" in body:
+                raise ServiceAdapterError(
+                    f"{self._name} identity tool failed: {body['error'].get('message', 'unknown error')}"
+                )
+            result = body.get("result", {})
+            if (
+                "content" in result
+                and isinstance(result["content"], list)
+                and result["content"]
+            ):
+                item = result["content"][0]
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "text"
+                    and isinstance(item.get("text"), str)
+                ):
+                    try:
+                        body = json.loads(item["text"])
+                    except (json.JSONDecodeError, ValueError):
+                        body = result
+                else:
+                    body = result
+            else:
+                body = result
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
+        if isinstance(account_id, list):
+            if len(account_id) != 1:
+                raise ServiceAdapterError(
+                    f"{self._name} identity tool must resolve to exactly one account (found {len(account_id)})."
+                )
+            account_id = account_id[0]
         if type(account_id) is int:
             account_id = str(account_id)
         if not isinstance(account_id, str) or not account_id:
             raise ServiceAdapterError(f"{self._name} did not name the account's id.")
+        if isinstance(label, list):
+            label = label[0] if len(label) == 1 else None
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )

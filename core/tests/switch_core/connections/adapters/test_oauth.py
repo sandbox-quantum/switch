@@ -227,6 +227,66 @@ class TestSignIn:
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
 
+    async def test_an_unscoped_authorization_omits_the_scope_parameter(
+        self, vendor
+    ) -> None:
+        unscoped_entry = STATIC.replace(
+            "access:\n  read:\n    scopes: [read:items]\n  write:\n    scopes: [read:items, write:items]\n",
+            "access:\n  unscoped: true\n",
+        )
+        adapter, _ = _adapter(vendor, text=unscoped_entry)
+        url = await adapter.authorization_url(
+            redirect_uri=REDIRECT,
+            state="state-unscoped",
+            code_challenge=s256("verifier"),
+            scopes=[],
+        )
+        assert "scope=" not in url
+
+    async def test_an_identity_mcp_tool_calls_the_mcp_server(self, vendor) -> None:
+        original_handle = vendor.handle
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/mcp") and request.method == "POST":
+                body = json.loads(request.content)
+                if (
+                    body.get("method") == "tools/call"
+                    and body.get("params", {}).get("name") == "get_user"
+                ):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": body.get("id", 1),
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": json.dumps(
+                                            {
+                                                "data": {
+                                                    "gid": "user-99",
+                                                    "name": "Ada Lovelace",
+                                                }
+                                            }
+                                        ),
+                                    }
+                                ]
+                            },
+                        },
+                    )
+            return original_handle(request)
+
+        vendor.handle = handle
+        mcp_tool_entry = STATIC.replace(
+            "  identity:\n    url: https://api.example.test/me\n    account_id: account.id\n    label: account.email\n",
+            "  identity:\n    mcp_tool: get_user\n    account_id: data.gid\n    label: data.name\n",
+        )
+        adapter, _ = _adapter(vendor, text=mcp_tool_entry)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("user-99", "Ada Lovelace")
+
 
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:

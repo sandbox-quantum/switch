@@ -11,7 +11,6 @@ from switch_core.connections.loader import (
 )
 
 PLACEHOLDERS = {
-    "asana",
     "gitlab",
     "bitbucket",
     "microsoft-365",
@@ -29,12 +28,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
+        "asana",
         "atlassian",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
+        "asana",
         "atlassian",
         "datadog",
         "github",
@@ -43,6 +44,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
+    assert "SKILL.md" in CATALOG["asana"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
@@ -227,6 +229,63 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity.account_id == "id"
 
 
+def test_the_shipped_asana_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["asana"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "ASANA"
+    assert oauth.loopback_ports is None
+    assert oauth.authorization_url == "https://app.asana.com/-/oauth_authorize"
+    assert oauth.token_url == "https://app.asana.com/-/oauth_token"
+    assert oauth.revocation_url == "https://app.asana.com/-/oauth_revoke"
+    assert definition.auth.refresh == "reusable"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("asana", "https://mcp.asana.com/v2/mcp")
+    ]
+    assert definition.access is not None
+    assert definition.access.unscoped is True
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url is None
+    assert definition.auth.identity.mcp_tool == "get_user"
+    assert definition.auth.identity.account_id == "data.gid"
+    assert definition.auth.identity.label == "data.name"
+
+
+def test_identity_names_an_https_url_or_mcp_tool_not_both(tmp_path):
+    root = tmp_path / "catalog" / "example"
+    root.mkdir(parents=True)
+    (root / "connection.yaml").write_text(
+        "slug: example\nname: Ex\ncategory: CRM\ndescription: Ex\n"
+        "enabled: true\nadapter: oauth\nauth:\n  type: oauth\n  refresh: reusable\n"
+        "  oauth:\n    registration: static\n    client_settings: EX\n    redirect: [core]\n"
+        "    authorization_url: https://auth.example.com/oauth\n"
+        "    token_url: https://auth.example.com/token\n"
+        "  identity:\n    url: https://api.example.com/me\n    mcp_tool: get_user\n"
+        "    account_id: id\n    label: name\n"
+        "token: { kind: pass_through, max_lifetime: 3600 }\n"
+        "mcp: { servers: [{ name: ex, url: 'https://mcp.example.com/mcp' }] }\n"
+        "access: { unscoped: true }\ntools: { mode: pass_through }\n"
+    )
+    (root / "skill").mkdir()
+    (root / "skill" / "SKILL.md").write_text(
+        "---\nname: example\ndescription: Ex\n---\n# Ex\n"
+    )
+    with pytest.raises(CatalogError) as err:
+        load_catalog(tmp_path / "catalog")
+    assert "names an HTTPS url or an mcp_tool, not both" in str(err.value)
+
+
 @pytest.fixture
 def catalog_copy(tmp_path):
     root = tmp_path / "catalog"
@@ -275,7 +334,9 @@ def test_rejects_a_skill_whose_name_differs_from_the_slug(catalog_copy):
 
 
 def test_rejects_a_placeholder_that_ships_a_skill(catalog_copy):
-    shutil.copytree(catalog_copy / "github" / "skill", catalog_copy / "asana" / "skill")
+    shutil.copytree(
+        catalog_copy / "github" / "skill", catalog_copy / "gitlab" / "skill"
+    )
     with pytest.raises(CatalogError, match="must not ship a skill"):
         load_catalog(catalog_copy)
 
@@ -395,13 +456,13 @@ def test_rejects_write_without_read(catalog_copy):
 
 
 def test_a_placeholder_may_describe_its_levels(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "gitlab" / "connection.yaml"
     path.write_text(
         path.read_text()
         + "access:\n  read: { scopes: [read:jira-work] }\n"
         + "tools:\n  mode: listed\n  read: [search_issues]\n  write: []\n"
     )
-    definition = load_catalog(catalog_copy)["asana"].definition
+    definition = load_catalog(catalog_copy)["gitlab"].definition
     assert definition.level_tools("read") == ["search_issues"]
 
 

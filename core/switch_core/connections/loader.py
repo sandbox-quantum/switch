@@ -164,13 +164,20 @@ class OAuthClient(BaseModel):
 
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    token, or an identity MCP tool (`mcp_tool`) with no arguments, and the
+    dotted paths in its JSON answer to the id and to a label people recognise."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    mcp_tool: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_.-]{1,64}$")
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_target(self) -> "ConnectionIdentity":
+        if (self.url is None) == (self.mcp_tool is None):
+            raise ValueError("an identity names an HTTPS url or an mcp_tool, not both")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -510,8 +517,18 @@ class LevelAccess(BaseModel):
 
 class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    read: LevelAccess
+    unscoped: bool | None = None
+    read: LevelAccess | None = None
     write: LevelAccess | None = None
+
+    @model_validator(mode="after")
+    def _unscoped_or_levels(self) -> "ConnectionAccess":
+        if self.unscoped:
+            if self.read is not None or self.write is not None:
+                raise ValueError("an unscoped entry names no read or write levels")
+        elif self.read is None:
+            raise ValueError("an entry requires a read level or unscoped: true")
+        return self
 
 
 class ConnectionTools(BaseModel):
@@ -694,11 +711,22 @@ class ConnectionDefinition(BaseModel):
             raise ValueError("an OAuth access token expires: name its max_lifetime")
         if self.tools is not None and self.tools.mode != "pass_through":
             raise ValueError("an oauth entry's tools pass through until classified")
-        if self.access is not None and any(
-            level is not None and level.scopes is None
-            for level in (self.access.read, self.access.write)
+        if (
+            self.access is not None
+            and not self.access.unscoped
+            and any(
+                level is not None and level.scopes is None
+                for level in (self.access.read, self.access.write)
+            )
         ):
             raise ValueError("an oauth entry's levels name OAuth scopes")
+        if (
+            self.auth is not None
+            and self.auth.identity is not None
+            and self.auth.identity.mcp_tool is not None
+            and (self.mcp is None or not self.mcp.servers)
+        ):
+            raise ValueError("an identity mcp_tool requires an mcp server")
 
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while

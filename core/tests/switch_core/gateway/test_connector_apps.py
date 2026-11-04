@@ -68,6 +68,8 @@ GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
 AIRTABLE_SECRET = "example-airtable-secret-0000"
+ASANA = "asana"
+ASANA_CALLBACK = f"{PUBLIC}/gateway/service-connections/{ASANA}/flows/callback"
 GITHUB_CLIENT_ID = "example-github-client-id"
 GITHUB_SECRET = "example-github-secret-0000"
 
@@ -365,7 +367,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, ASANA}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -389,6 +391,10 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
+        assert apps[ASANA]["redirect_uris"] == [ASANA_CALLBACK]
+        assert apps[ASANA]["redirect_uri"] == ASANA_CALLBACK
+        assert apps[ASANA]["needs_public_url"] is True
+        assert apps[ASANA]["scopes"] == []
         assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
     async def test_an_unknown_service_is_not_found(
