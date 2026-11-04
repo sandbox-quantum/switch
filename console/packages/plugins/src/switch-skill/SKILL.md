@@ -121,6 +121,12 @@ does, and there is no polling tool to call.
   `BEGIN OPENING MESSAGE` / `END OPENING MESSAGE` markers. You did not write
   them, but the person sees them as yours: do not repeat them.
 
+  If a user edits their message while it is queued behind an in-progress turn
+  (before the session begins processing it), Switch amends the prompt between
+  the markers in-place, and the channel card displays `Queued (edited)`. Once
+  the session dequeues the message and starts the turn, the prompt is fixed: any
+  subsequent edit does not alter the running turn, and a notice is recorded.
+
   The first message you get from a room that has instructions of its own is
   preceded by them, between `BEGIN ROOM INSTRUCTIONS` / `END ROOM
   INSTRUCTIONS` markers (`[Switch] Room <room> has instructions of its

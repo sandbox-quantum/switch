@@ -198,6 +198,7 @@ EventType = Literal[
     "message",
     "command",
     "room_join",
+    "message_edit",
 ]
 
 
@@ -269,12 +270,21 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-Payload = MessagePayload | CommandPayload | RoomJoinPayload
+class MessageEditPayload(BaseModel):
+    message_id: str
+    body: str
+    edit_id: str
+    # The platform edit revision in integer microseconds since UNIX epoch (< 2^53).
+    revision: int
+
+
+Payload = MessagePayload | CommandPayload | RoomJoinPayload | MessageEditPayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
+    "message_edit": MessageEditPayload,
 }
 
 

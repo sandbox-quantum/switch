@@ -124,3 +124,55 @@ def test_the_stand_in_is_never_mentioned() -> None:
         assert loop.run_until_complete(adapter._mention(f"webhook:{_CREATOR}")) is None
     finally:
         loop.close()
+
+
+def test_mattermost_post_edited_relayed_with_microseconds() -> None:
+    adapter, received = _adapter()
+    post = _post("edited text")
+    post["edit_at"] = 1712345678123  # ms
+
+    loop = asyncio.new_event_loop()
+    dispatched: list[Any] = []
+    adapter._main_loop = loop
+    adapter._dispatch = lambda coro, _loop: dispatched.append(coro)  # type: ignore[method-assign]
+    event = {
+        "event": "post_edited",
+        "data": {"post": json.dumps(post), "channel_type": "O"},
+    }
+    try:
+        loop.run_until_complete(adapter._ws_handler(json.dumps(event), "some-agent"))
+        for coro in dispatched:
+            loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+    [message] = received
+    assert isinstance(message, InboundMessage)
+    assert message.content == "edited text"
+    assert message.message_ref == post["id"]
+    assert message.edit_revision == 1712345678123000
+
+
+def test_mattermost_post_edited_dropped_from_self_or_bot() -> None:
+    adapter, received = _adapter()
+    adapter._admin_user_id = "admin-bot"
+    post = _post("bot update")
+    post["user_id"] = "admin-bot"
+    post["edit_at"] = 1712345678123
+
+    loop = asyncio.new_event_loop()
+    dispatched: list[Any] = []
+    adapter._main_loop = loop
+    adapter._dispatch = lambda coro, _loop: dispatched.append(coro)  # type: ignore[method-assign]
+    event = {
+        "event": "post_edited",
+        "data": {"post": json.dumps(post), "channel_type": "O"},
+    }
+    try:
+        loop.run_until_complete(adapter._ws_handler(json.dumps(event), "some-agent"))
+        for coro in dispatched:
+            loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+    assert received == []

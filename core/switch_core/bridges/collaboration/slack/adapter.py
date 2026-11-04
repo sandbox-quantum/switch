@@ -3462,6 +3462,96 @@ class SlackAdapter(PlatformAdapter):
     # Everything else (edits, deletes, channel-join system messages, …) is skipped.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
 
+    @staticmethod
+    def _normalize_slack_timestamp_us(ts: str) -> int:
+        parts = ts.split(".", 1)
+        sec = int(parts[0])
+        frac = parts[1] if len(parts) > 1 else ""
+        usec = int(frac.ljust(6, "0")[:6])
+        return sec * 1_000_000 + usec
+
+    async def _handle_message_changed(self, event: dict[str, object]) -> None:
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        msg_user = message.get("user")
+        msg_bot = message.get("bot_id")
+        # Echo prevention: drop edits from our own bot.
+        if msg_user == self._bot_user_id or (
+            self._bot_id
+            and (msg_bot == self._bot_id or event.get("bot_id") == self._bot_id)
+        ):
+            return
+
+        # Compare message text with previous_message text to drop no-op edits
+        # (e.g. link unfurls, attachments, broadcasts).
+        prev = event.get("previous_message")
+        new_text = str(message.get("text", ""))
+        if isinstance(prev, dict):
+            prev_text = str(prev.get("text", ""))
+            if new_text == prev_text:
+                return
+
+        channel_id = str(event.get("channel", ""))
+        orig_ts = str(message.get("ts", ""))
+        if not channel_id or not orig_ts:
+            return
+
+        edited = message.get("edited")
+        raw_edited_ts = (
+            (edited.get("ts") if isinstance(edited, dict) else None)
+            or event.get("event_ts")
+            or event.get("ts")
+            or orig_ts
+        )
+        try:
+            revision = self._normalize_slack_timestamp_us(str(raw_edited_ts))
+        except (ValueError, TypeError):
+            revision = int(time.time() * 1_000_000)
+
+        dedupe_key = f"edit:{channel_id}:{orig_ts}:{revision}"
+        if dedupe_key in self._seen_ts:
+            return
+        self._seen_ts[dedupe_key] = None
+        if len(self._seen_ts) > self._seen_ts_max:
+            self._seen_ts.popitem(last=False)
+
+        user_id = str(
+            msg_user or (edited.get("user") if isinstance(edited, dict) else "") or ""
+        )
+        user = (
+            await self._resolve_user_name(user_id)
+            if user_id
+            else SlackUser(name="", display_name="")
+        )
+        channel_name = await self._resolve_channel_name(channel_id)
+        slack_channel_type = str(
+            event.get("channel_type", "")
+        ) or self._channel_type_cache.get(channel_id, "")
+        channel_type = self._to_channel_type(slack_channel_type)
+
+        thread_ts = str(message.get("thread_ts", "")) or None
+        root_id = (
+            f"{channel_id}:{thread_ts}" if thread_ts and thread_ts != orig_ts else None
+        )
+        message_ref = f"{channel_id}:{orig_ts}"
+
+        if self._on_message:
+            await self._on_message(
+                InboundMessage(
+                    channel_id=channel_id,
+                    channel_type=channel_type,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    content=new_text,
+                    message_ref=message_ref,
+                    root_id=root_id,
+                    channel_name=channel_name,
+                    sender_is_app=bool(msg_bot),
+                    edit_revision=revision,
+                )
+            )
+
     async def _handle_message_event(self, event: dict[str, object]) -> None:
         # Skip only our own posts (loop prevention). Messages from third-party
         # apps/bots carry a bot_id too, but we still bridge those — only the
@@ -3471,6 +3561,9 @@ class SlackAdapter(PlatformAdapter):
         ):
             return
         subtype = event.get("subtype")
+        if subtype == "message_changed":
+            await self._handle_message_changed(event)
+            return
         if subtype and subtype not in self._ALLOWED_SUBTYPES:
             return
 

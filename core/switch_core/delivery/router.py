@@ -72,6 +72,7 @@ from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
+from switch_core.bridges.agent.protocol.types import AgentEvent, MessageEditPayload
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
@@ -84,6 +85,7 @@ from switch_core.db.agent_event_notify_ddl import (
 from switch_core.db.models import (
     Agent,
     AgentConnectionRecord,
+    AgentEventRow,
     Client,
     ClientRoom,
     CollaborationBridge,
@@ -877,6 +879,10 @@ class MessageRouter:
         id was derived from what caused the write (`transport/derived_ids.py`),
         and an earlier run of the same cause wrote it and owed what it owed.
         """
+        if message.event_type == "com.switch.message_edit":
+            return await self._store_edit(
+                session, tenant_id, room_id, transport_room_id, message
+            )
         reads = await RoomReads.load(
             session,
             services=self.services,
@@ -957,6 +963,114 @@ class MessageRouter:
                 if announced_by_writer
                 else None
             ),
+        )
+
+    async def _store_edit(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        room_id: str,
+        transport_room_id: str,
+        message: Message,
+    ) -> Routed | None:
+        relation = message.content.get("m.relates_to")
+        event_id = relation.get("event_id") if isinstance(relation, dict) else None
+        replacement = message.content.get("m.new_content")
+        revision = message.content.get("revision")
+        if (
+            not isinstance(relation, dict)
+            or relation.get("rel_type") != "m.replace"
+            or not isinstance(event_id, str)
+            or not isinstance(replacement, dict)
+            or not isinstance(replacement.get("body"), str)
+            or not isinstance(revision, int)
+            or isinstance(revision, bool)
+            or revision <= 0
+        ):
+            raise ValueError("Invalid message replacement")
+        original = await self._messages.get_by_transport_event_id(session, event_id)
+        if (
+            original is None
+            or original.room_id != room_id
+            or original.sender_id != message.sender_id
+            or original.event_type != "m.room.message"
+        ):
+            raise ValueError(
+                "Replacement must reference the sender's message in this room"
+            )
+        if not await self._messages.create_unless_stored(session, message, []):
+            return None
+        group = parse_attachment_group(original.content)
+        original_key = group[0] if group else original.transport_event_id
+        recipients = (
+            await session.execute(
+                select(AgentEventRow, Agent.client_id)
+                .join(Agent, Agent.id == AgentEventRow.agent_id)
+                .where(
+                    AgentEventRow.room_id == room_id,
+                    AgentEventRow.message_key == original_key,
+                    AgentEventRow.type == "message",
+                )
+                .order_by(AgentEventRow.agent_id)
+            )
+        ).all()
+        events_to_store: list[OwnEventToStore] = [
+            OwnEventToStore(
+                agent_id=source.agent_id,
+                client_id=client_id,
+                event=AgentEvent(
+                    type="message_edit",
+                    room_id=room_id,
+                    payload=MessageEditPayload(
+                        message_id=original.transport_event_id,
+                        body=replacement["body"],
+                        edit_id=message.transport_event_id,
+                        revision=revision,
+                    ),
+                ),
+                room_seq=message.seq,
+                message_key=message.transport_event_id,
+            )
+            for source, client_id in recipients
+        ]
+        together = await self.services.event_buffer.store_together(
+            session,
+            tenant_id=tenant_id,
+            room_id=room_id,
+            events=events_to_store,
+        )
+        stored: list[tuple[str, int]] = []
+        if together is not None:
+            stored = [
+                (own.agent_id, together[own.agent_id])
+                for own in events_to_store
+                if own.agent_id in together
+            ]
+        else:
+            for own in events_to_store:
+                try:
+                    seq = await self.services.event_buffer.store(
+                        session,
+                        tenant_id=tenant_id,
+                        agent_id=own.agent_id,
+                        client_id=own.client_id,
+                        room_id=room_id,
+                        event=own.event,
+                        room_seq=own.room_seq,
+                        message_key=own.message_key,
+                    )
+                except Exception:
+                    continue
+                if seq is not None:
+                    stored.append((own.agent_id, seq))
+        return Routed(
+            self,
+            None,
+            _Plan(),
+            to_inbound(message, [], transport_room_id=transport_room_id),
+            seq=message.seq,
+            stored=stored,
+            deadline_in=None,
         )
 
     @staticmethod

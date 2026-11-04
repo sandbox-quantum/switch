@@ -1233,3 +1233,145 @@ def test_backtick_wrapped_command_from_bot_is_not_run() -> None:
 
     # An agent posting a `!command` reference must never trigger it.
     assert commands == []
+
+
+def test_slack_timestamp_normalization() -> None:
+    norm = SlackAdapter._normalize_slack_timestamp_us
+    assert norm("1712345678.123456") == 1712345678123456
+    assert norm("1712345678.1") == 1712345678100000
+    assert norm("1712345678") == 1712345678000000
+    assert norm("1712345678.123456789") == 1712345678123456
+
+
+def test_message_changed_relayed_with_normalized_revision() -> None:
+    adapter = _adapter()
+    messages = _capture_messages(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "type": "message",
+                "subtype": "message_changed",
+                "channel": "C123",
+                "ts": "1712345679.000200",
+                "message": {
+                    "type": "message",
+                    "user": "U1",
+                    "text": "edited text",
+                    "ts": "1712345678.000100",
+                    "edited": {"user": "U1", "ts": "1712345679.000200"},
+                },
+                "previous_message": {
+                    "type": "message",
+                    "user": "U1",
+                    "text": "original text",
+                    "ts": "1712345678.000100",
+                },
+            }
+        )
+    )
+
+    assert len(messages) == 1
+    msg = messages[0]
+    assert msg.channel_id == "C123"
+    assert msg.message_ref == "C123:1712345678.000100"
+    assert msg.content == "edited text"
+    assert msg.edit_revision == 1712345679000200
+
+
+def test_message_changed_dropped_when_from_self_bot() -> None:
+    adapter = _adapter()
+    adapter._bot_id = "BSELF"
+    messages = _capture_messages(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "type": "message",
+                "subtype": "message_changed",
+                "channel": "C123",
+                "ts": "1712345679.000200",
+                "message": {
+                    "type": "message",
+                    "user": "UBOT",
+                    "bot_id": "BSELF",
+                    "text": "bot card update",
+                    "ts": "1712345678.000100",
+                    "edited": {"user": "UBOT", "ts": "1712345679.000200"},
+                },
+                "previous_message": {
+                    "type": "message",
+                    "user": "UBOT",
+                    "text": "earlier card",
+                    "ts": "1712345678.000100",
+                },
+            }
+        )
+    )
+
+    assert messages == []
+
+
+def test_message_changed_dropped_when_text_unchanged() -> None:
+    adapter = _adapter()
+    messages = _capture_messages(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "type": "message",
+                "subtype": "message_changed",
+                "channel": "C123",
+                "ts": "1712345679.000200",
+                "message": {
+                    "type": "message",
+                    "user": "U1",
+                    "text": "same text",
+                    "ts": "1712345678.000100",
+                    "edited": {"user": "U1", "ts": "1712345679.000200"},
+                },
+                "previous_message": {
+                    "type": "message",
+                    "user": "U1",
+                    "text": "same text",
+                    "ts": "1712345678.000100",
+                },
+            }
+        )
+    )
+
+    assert messages == []
+
+
+def test_card_redraw_from_revised_queued_status_is_dropped() -> None:
+    """Card redraw triggered by user_msg_rev produces a message_changed that must be dropped."""
+    adapter = _adapter()
+    adapter._bot_user_id = "UBOT123"
+    messages = _capture_messages(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "type": "message",
+                "subtype": "message_changed",
+                "channel": "C123",
+                "ts": "1712345680.000300",
+                "message": {
+                    "type": "message",
+                    "user": "UBOT123",
+                    "text": "Queued (edited). Waiting for the agent to start…",
+                    "ts": "1712345670.000001",
+                    "edited": {"user": "UBOT123", "ts": "1712345680.000300"},
+                },
+                "previous_message": {
+                    "type": "message",
+                    "user": "UBOT123",
+                    "text": "Queued. Waiting for the agent to start…",
+                    "ts": "1712345670.000001",
+                },
+            }
+        )
+    )
+
+    assert messages == []
+
