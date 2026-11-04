@@ -78,6 +78,11 @@ class OAuthClient(BaseModel):
     themselves, and what the sign-in does until they do, said whenever Switch
     drops one it cannot revoke.
 
+    `revocation_ends_grant`: revoking any of an account's sign-ins through
+    the client ends all of them, as Google's does. A reconnect to the same
+    account through the same client then does not revoke the sign-in it
+    replaces, as that would end the new one too.
+
     `unchecked`: what a static client's operator must see to themselves,
     because asking the vendor about the client cannot show it; said with every
     check that passes.
@@ -112,6 +117,7 @@ class OAuthClient(BaseModel):
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
+    revocation_ends_grant: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
 
     @model_validator(mode="after")
@@ -147,6 +153,12 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
+            )
+        if self.revocation_ends_grant and (
+            self.revocation_url is None and not self.revocation_discovered
+        ):
+            raise ValueError(
+                "revocation_ends_grant is for a vendor Switch revokes sign-ins at"
             )
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")

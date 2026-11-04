@@ -65,6 +65,8 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
     assert oauth.authorization_params == {"access_type": "offline"}
     assert oauth.prompt == "consent select_account"
     assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
+    # Google revokes the whole grant, so a reconnect keeps the old sign-in.
+    assert oauth.revocation_ends_grant is True
     # Google refuses a made-up code before comparing the redirect URI.
     assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
     assert definition.auth.refresh == "reusable"
@@ -561,6 +563,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "client_settings",
         ),
         ("redirect: [loopback, core]", "redirect: [core, core]", "listed twice"),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_ends_grant: true\n",
+            "revocation_ends_grant",
+        ),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),
         (
