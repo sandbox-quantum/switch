@@ -2228,6 +2228,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
+    A room your owner cannot read is not named in it.
 
     Args:
         agent_id: The target agent's id (from `list_participants` or

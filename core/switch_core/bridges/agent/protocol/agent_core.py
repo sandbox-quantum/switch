@@ -3788,6 +3788,11 @@ class AgentCore:
             include_archived=include_archived,
         )
 
+    async def _visible_room_ids(self, session: AsyncSession, agent_id: str) -> set[str]:
+        """Ids of `rooms_visible_to`, archived rooms included."""
+        rooms = await self.rooms_visible_to(session, agent_id, include_archived=True)
+        return {r.id for r in rooms}
+
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.
 
@@ -3976,6 +3981,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=agent,
+                visible_room_ids=await self._visible_room_ids(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4049,6 +4055,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,
+                visible_room_ids=await self._visible_room_ids(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,

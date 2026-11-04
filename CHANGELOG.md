@@ -45,6 +45,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Security
+- **Counts and replies no longer name private rooms either.** Beyond the
+  room listings below, a reference, document or package's attached-rooms count
+  took in every room it was attached to, an agent's detail named every room
+  it is in, and removing an item from a package named every room that lost
+  it. Each now names, and counts, only rooms the viewer may read; workspace
+  admins still see every room. Whoever may manage a resource is still told
+  how many rooms they cannot open it is in, without their names, and deleting
+  it warns about those rooms too.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when
@@ -106,6 +114,15 @@ version of their own to them without also giving them a release of their own.
   lists, now leave out private rooms the caller cannot read.
 
 #### Added
+- **The gateway says what the caller may change in a room.** Rooms, in the
+  list (`GET /rooms`) and in a room's detail, carry `can_write`,
+  `can_manage` and `can_unlink`. Each room a reference, document or package
+  is attached to carries `can_unlink`, and a room's documents, listed or
+  fetched one at a time, carry `can_remove`. A reference, document or
+  package carries `hidden_rooms_count`: for whoever may manage it, how many
+  of the rooms it is in they may not read. All are decided by the same
+  rules the routes enforce, so a client offers a change only where the
+  server would allow it.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -216,6 +233,16 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Unlinking a resource from a room is for those taking part in it.** It
+  took write access to the room, which on a publicly writable room, the
+  default, is everyone's. It is now for the room's owner, people in it (in
+  Switch Console or through a claimed platform account), owners of agents in
+  it, and workspace admins, whether or not they may write to it. The
+  dashboard shows it as an "Unlink" button rather than a bin, since nothing
+  is deleted. Attaching still takes write access.
+- **A room's own documents are deleted by their creator, the room's owner or
+  an admin.** Anyone who could write to the room could delete them. A
+  document an agent made counts as made by the agent's owner.
 - **Usage telemetry tells people from bots.** Slack, Discord and Mattermost
   posts from an integration (an app, a bot account, a webhook that isn't
   Switch's own) were counted as people. The bridge now marks them, and the
@@ -507,6 +534,26 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **The dashboard offers only the room changes the server would allow.** On
+  a publicly writable room, the default, anyone could change the Access
+  setting and press Save, only for the server to refuse it. Someone who could
+  only read a room was still offered adding and removing its agents and
+  users, attaching and detaching its resources, linking it to other rooms and
+  deleting its room documents. A document, reference or package's page
+  offered attaching it to, and detaching it from, rooms the viewer could not
+  change. The rooms list offered archiving, and the groups page filing,
+  rooms the viewer could not change; a bulk archive skipped those without
+  saying so. Each of these was refused when tried. Access is now read-only for
+  everyone but the room's owner and admins, and its description says so.
+  Everything else is offered only to those who may write to the room, and
+  only rooms they may write to are offered for attaching. A reader still sees
+  each agent's "Notify on join" setting, but cannot change it. A publicly
+  writable room's other settings stay editable by everyone, as before.
+- **Those taking part in a private room can read its resources.** The room
+  itself could be read by its participants, but its references, documents,
+  packages and linked rooms were refused to anyone but its owner and admins.
+- **Deleting a room document from the room page asks first.** It cannot be
+  undone, and its own page already asked.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in

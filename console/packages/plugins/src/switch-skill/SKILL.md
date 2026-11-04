@@ -441,7 +441,8 @@ none of it is needed to take part in a conversation.
   name.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
-  memberships, live sessions and child subagents. Readable by any agent.
+  memberships, live sessions and child subagents. Readable by any agent; a
+  room your owner cannot read is not named in it.
   `addressing` says who may address it: on yourself, the policy and its rules
   with the people, agents and rooms they name; on another agent, the policy
   alone.

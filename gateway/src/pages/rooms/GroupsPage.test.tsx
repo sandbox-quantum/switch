@@ -1,7 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RoomGroupDetail } from "../../data/api";
+import type { RoomGroupDetail, RoomSummary } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
 import type { UseQueryResult } from "../../data/hooks";
@@ -45,10 +45,14 @@ const group: RoomGroupDetail = {
   created_at: "2026-01-01",
 };
 
-function renderAs(isAdmin: boolean) {
+function room(id: string, name: string, groupId: string | null, canWrite: boolean) {
+  return { id, name, group_id: groupId, group_name: null, can_write: canWrite } as unknown as RoomSummary;
+}
+
+function renderAs(isAdmin: boolean, rooms: RoomSummary[] = []) {
   vi.mocked(useAuth).mockReturnValue(authState(isAdmin));
   vi.mocked(hooks.useRoomGroups).mockReturnValue(queryResult([group]));
-  vi.mocked(hooks.useRooms).mockReturnValue(queryResult([]));
+  vi.mocked(hooks.useRooms).mockReturnValue(queryResult(rooms));
   render(
     <MemoryRouter>
       <GroupsPage />
@@ -72,5 +76,22 @@ describe("GroupsPage", () => {
     expect(screen.queryByRole("button", { name: /new group/i })).toBeNull();
     expect(screen.queryByLabelText("Edit Customers")).toBeNull();
     expect(screen.queryByLabelText("Delete Customers")).toBeNull();
+  });
+
+  it("files and unfiles only rooms the viewer may write to", async () => {
+    renderAs(false, [
+      room("r1", "planning", "g1", true),
+      room("r2", "leadership", "g1", false),
+      room("r3", "retro", null, true),
+      room("r4", "board", null, false),
+    ]);
+    fireEvent.click(screen.getByText("Customers"));
+
+    screen.getByRole("button", { name: "Remove planning from group" });
+    expect(screen.queryByRole("button", { name: "Remove leadership from group" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add rooms" }));
+    await screen.findByText("retro");
+    expect(screen.queryByText("board")).toBeNull();
   });
 });

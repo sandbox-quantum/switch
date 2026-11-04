@@ -182,6 +182,32 @@ def require_manage(principal: Principal, owner_id: str | None) -> None:
         raise PermissionError("Not authorized to manage this resource")
 
 
+def can_unlink_from_room(principal: Principal, *, takes_part: bool) -> bool:
+    """Whether `principal` may unlink a reference, document or package from a
+    room: those taking part in it and tenant admins. `takes_part` is the room
+    store's `involves`, which needs the database, so the caller works it out.
+    Write access is not enough: on a publicly writable room it is everyone's.
+    Linking still takes write access to the room. Note that whoever may write
+    to a room may also add their own agent to it, and so take part in it.
+    """
+    return principal.is_admin or takes_part
+
+
+def can_delete_room_document(
+    principal: Principal, *, room_owner_id: str | None, document_owner_id: str | None
+) -> bool:
+    """Whether `principal` may delete a room-scoped document: its creator, the
+    room's owner, or a tenant admin. An agent's document is recorded under the
+    agent's owner, so that person counts as its creator.
+    """
+    if principal.is_admin:
+        return True
+    return principal.id is not None and principal.id in (
+        room_owner_id,
+        document_owner_id,
+    )
+
+
 def validate_visibility_pair(read_visibility: str, write_visibility: str) -> None:
     """Validate a (read, write) visibility pair, raising ``ValueError`` if bad.
 

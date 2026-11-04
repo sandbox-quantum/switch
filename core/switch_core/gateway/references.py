@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import Principal
 from switch_core.bridges.resource.registry import ReferenceValue, is_builtin_type
 from switch_core.bridges.resource.service import (
     ReferenceTypeInUseError,
@@ -18,8 +19,8 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     get_current_user,
     get_tenant_is_admin,
-    readable_room_ids,
     require_room_access,
+    require_room_unlink,
 )
 from switch_core.gateway.dependencies import (
     get_resource_service,
@@ -27,6 +28,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
+from switch_core.gateway.resource_rooms import resource_rooms, room_counts
 from switch_core.gateway.schemas import (
     ReferenceCreateRequest,
     ReferenceDeleteResponse,
@@ -49,6 +51,7 @@ def _to_detail(
     owner_name: str | None = None,
     type_display_name: str | None = None,
     attached_rooms_count: int = 0,
+    hidden_rooms_count: int,
     packages: list[str] | None = None,
 ) -> ReferenceDetail:
     return ReferenceDetail(
@@ -63,6 +66,7 @@ def _to_detail(
         instructions=ref.instructions,
         value=ref.value,
         attached_rooms_count=attached_rooms_count,
+        hidden_rooms_count=hidden_rooms_count,
         packages=packages or [],
         created_at=str(ref.created_at),
         type_display_name=type_display_name,
@@ -74,11 +78,12 @@ async def _enrich(
     refs: list[Reference],
     resource_service: ResourceService,
     user_store: UserStore,
+    reader: Principal,
 ) -> list[ReferenceDetail]:
     if not refs:
         return []
-    counts = await resource_service.get_reference_attached_counts(
-        session, [r.id for r in refs]
+    counts = await room_counts(
+        session, refs, reader, resource_service.get_reference_attached_counts
     )
     pkg_map = await resource_service.get_packages_for_references(
         session, [r.id for r in refs]
@@ -97,7 +102,8 @@ async def _enrich(
             r,
             owner_name=owners.get(r.owner_id),
             type_display_name=type_names.get(r.type),
-            attached_rooms_count=counts.get(r.id, 0),
+            attached_rooms_count=counts[r.id].attached,
+            hidden_rooms_count=counts[r.id].hidden,
             packages=pkg_map.get(r.id, []),
         )
         for r in refs
@@ -109,8 +115,9 @@ async def _enrich_one(
     ref: Reference,
     resource_service: ResourceService,
     user_store: UserStore,
+    reader: Principal,
 ) -> ReferenceDetail:
-    results = await _enrich(session, [ref], resource_service, user_store)
+    results = await _enrich(session, [ref], resource_service, user_store, reader)
     return results[0]
 
 
@@ -293,9 +300,12 @@ async def list_references(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ReferenceDetail]:
     refs = await resource_service.list_references_for_user(session, user.id)
-    return await _enrich(session, refs, resource_service, user_store)
+    return await _enrich(
+        session, refs, resource_service, user_store, Principal(user.id, is_admin)
+    )
 
 
 @router.post("/references", status_code=201)
@@ -323,7 +333,9 @@ async def create_reference(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
-    return await _enrich_one(session, ref, resource_service, user_store)
+    return await _enrich_one(
+        session, ref, resource_service, user_store, Principal(user.id, is_admin)
+    )
 
 
 @router.get("/references/{reference_id}")
@@ -346,7 +358,9 @@ async def get_reference(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
-    return await _enrich_one(session, ref, resource_service, user_store)
+    return await _enrich_one(
+        session, ref, resource_service, user_store, Principal(user.id, is_admin)
+    )
 
 
 @router.patch("/references/{reference_id}")
@@ -377,7 +391,9 @@ async def patch_reference(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     await session.commit()
-    return await _enrich_one(session, ref, resource_service, user_store)
+    return await _enrich_one(
+        session, ref, resource_service, user_store, Principal(user.id, is_admin)
+    )
 
 
 @router.delete("/references/{reference_id}")
@@ -430,13 +446,12 @@ async def list_rooms_for_reference(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
-    rows = await resource_service.list_rooms_for_reference(session, reference_id)
-    readable = await readable_room_ids(session, room_store, user, is_admin)
-    return [
-        ResourceRoom(room_id=rid, room_name=name)
-        for rid, name in rows
-        if rid in readable
-    ]
+    rooms = await resource_service.list_rooms_for_reference(
+        session, reference_id, reader_id=user.id, reader_is_admin=is_admin
+    )
+    return await resource_rooms(
+        session, room_store, rooms, Principal(user.id, is_admin)
+    )
 
 
 @router.get("/rooms/{room_id}/references")
@@ -451,7 +466,9 @@ async def list_room_references(
 ) -> list[ReferenceDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     refs = await resource_service.list_room_references(session, room_id)
-    return await _enrich(session, refs, resource_service, user_store)
+    return await _enrich(
+        session, refs, resource_service, user_store, Principal(user.id, is_admin)
+    )
 
 
 @router.post("/rooms/{room_id}/references/{reference_id}", status_code=201)
@@ -482,7 +499,9 @@ async def attach_reference_to_room(
     ref = await resource_service.get_reference_for_user(
         session, reference_id, user.id, is_admin=is_admin
     )
-    return await _enrich_one(session, ref, resource_service, user_store)
+    return await _enrich_one(
+        session, ref, resource_service, user_store, Principal(user.id, is_admin)
+    )
 
 
 @router.delete("/rooms/{room_id}/references/{reference_id}", status_code=204)
@@ -495,6 +514,6 @@ async def detach_reference_from_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    await require_room_unlink(session, room_store, room_id, user, is_admin)
     await resource_service.detach_reference_from_room(session, room_id, reference_id)
     await session.commit()
