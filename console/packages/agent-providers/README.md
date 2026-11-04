@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `antigravity-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection through a `model` config option, MCP registration, approvals and questions. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `pi` | `pi --mode rpc` spawned per session, JSONL commands and events over stdio, plus a Switch extension loaded with `-e` | Pi has no permission prompts and `pi-acp` does not pass MCP servers through, so a native adapter: the extension registers the session's MCP servers (`pi.registerMcpServer`) and asks before tools run through an extension UI dialog, which becomes the approval card. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -67,7 +68,32 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| pi | 1.5.0 | not recorded | No question tool and no subagents, so `user-input` and `subagent` are skipped. A message sent mid-turn queues as its own turn. Verified end to end on 2026-11-05 against a local OpenAI-compatible endpoint: MCP tools, approvals accepted and declined, full access, interrupt with a queued turn, resume. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
+
+## Pi
+
+`src/pi/` drives `pi --mode rpc`, one process per session, started with
+`--session-id` so a conversation resumes after a restart; a resumed id Pi has
+no messages for is refused, so the host starts afresh and keeps the transcript.
+Each session gets a folder of its own holding the extension
+(`switch-extension.ts`, plain JavaScript), the system context
+(`--append-system-prompt`) and a private settings file the extension reads at
+startup and the adapter deletes once Pi answers. Nothing in the person's Pi
+configuration is touched.
+
+The extension registers the session's MCP servers with `exposure: "direct"`
+and handles `tool_call`. Reads (`read`, `grep`, `find`, `ls`) and the
+session's own MCP servers never ask; `full-access` never asks;
+`auto-accept-edits` lets `edit` and `write` through; everything else asks
+with a `select` dialog, preceded by a `setStatus` record naming the tool
+call. A refusal or a cancelled dialog blocks the call, and a handler that
+throws blocks it too. Dialogs from other extensions are answered as
+cancelled, with a warning. Turns end at `agent_settled`, not `agent_end`.
+
+The sign-in check runs `pi --list-models --offline`, which lists only models
+whose provider has a credential (saved by `/login` or in the environment), and
+offers those models.
 
 ## ACP providers
 
