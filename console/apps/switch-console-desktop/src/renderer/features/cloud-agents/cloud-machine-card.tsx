@@ -63,6 +63,30 @@ export function CloudMachineCard({
       setPending(false);
     }
   };
+  // Your cloud's Start (hosted agents v2). A put-away (retained) or resting box is
+  // woken by asking Switch for it (ensure), since lifecycle start can't wake a
+  // retained one; a box its owner stopped is started by lifecycle start, since
+  // ensure leaves an owner's stop as it is.
+  const startBox = async (how: 'ensure' | 'lifecycle') => {
+    setPending(true);
+    setActionError(null);
+    try {
+      if (how === 'lifecycle')
+        await rpc.switchServers.cloudMachineLifecycle(
+          serverId,
+          machine.machine_id,
+          'start',
+          machine.revision
+        );
+      else await rpc.switchServers.ensureCloudMachine(serverId);
+      await queryClient.invalidateQueries({ queryKey: [CLOUD_MACHINES_KEY] });
+    } catch (error) {
+      setActionError(failureText(error, 'Switch could not start your cloud.'));
+      void queryClient.invalidateQueries({ queryKey: [CLOUD_MACHINES_KEY] });
+    } finally {
+      setPending(false);
+    }
+  };
   const agentCount = machine.agents.length;
   return (
     <div className="mb-[14px] rounded-[11px] bg-[var(--surface-2)] p-[14px]">
@@ -97,6 +121,18 @@ export function CloudMachineCard({
       {!box ? null : cloud.resting ? (
         <div className="mt-2 text-xs text-foreground-muted">
           <span className="font-medium text-foreground">{cloud.heading}</span> · {cloud.line}
+          {cloud.start && !blocked && (
+            <div className="mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending}
+                onClick={() => void startBox(cloud.start!)}
+              >
+                {pending ? 'Starting…' : 'Start'}
+              </Button>
+            </div>
+          )}
         </div>
       ) : (
         (cloud.room || cloud.awake || cloud.aiCalls) && (
