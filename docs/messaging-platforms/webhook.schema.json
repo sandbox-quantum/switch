@@ -1,0 +1,369 @@
+{
+  "version": 1,
+  "inbound": {
+    "$defs": {
+      "ChannelRef": {
+        "properties": {
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "type": {
+            "default": "channel",
+            "enum": [
+              "channel",
+              "private",
+              "group",
+              "direct"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ChannelRef",
+        "type": "object"
+      },
+      "InboundFile": {
+        "properties": {
+          "filename": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "mimetype": {
+            "default": "application/octet-stream",
+            "title": "Mimetype",
+            "type": "string"
+          },
+          "data": {
+            "description": "The file's bytes, base64 encoded.",
+            "title": "Data",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename",
+          "data"
+        ],
+        "title": "InboundFile",
+        "type": "object"
+      },
+      "InboundMessage": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The app's id for this message. Defaults to the event id.",
+            "title": "Id"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thread Id"
+          },
+          "files": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/InboundFile"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "title": "InboundMessage",
+        "type": "object"
+      },
+      "Person": {
+        "properties": {
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "is_app": {
+            "default": false,
+            "title": "Is App",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "Person",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "version": {
+        "const": 1,
+        "title": "Version",
+        "type": "integer"
+      },
+      "id": {
+        "description": "Unique per event. Send the same id when you retry.",
+        "maxLength": 256,
+        "minLength": 1,
+        "title": "Id",
+        "type": "string"
+      },
+      "type": {
+        "enum": [
+          "message",
+          "channel.joined"
+        ],
+        "title": "Type",
+        "type": "string"
+      },
+      "channel": {
+        "$ref": "#/$defs/ChannelRef"
+      },
+      "sender": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Person"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "message": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/InboundMessage"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      }
+    },
+    "required": [
+      "version",
+      "id",
+      "type",
+      "channel"
+    ],
+    "title": "InboundEvent",
+    "type": "object"
+  },
+  "outbound": {
+    "$defs": {
+      "OutboundFile": {
+        "properties": {
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "mimetype": {
+            "title": "Mimetype",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "data": {
+            "description": "The file's bytes, base64 encoded.",
+            "title": "Data",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename",
+          "mimetype",
+          "size",
+          "data"
+        ],
+        "title": "OutboundFile",
+        "type": "object"
+      },
+      "SenderRef": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "icon_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Icon Url"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SenderRef",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "version": {
+        "const": 1,
+        "default": 1,
+        "title": "Version",
+        "type": "integer"
+      },
+      "type": {
+        "enum": [
+          "ping",
+          "message.created",
+          "message.updated",
+          "message.deleted",
+          "typing"
+        ],
+        "title": "Type",
+        "type": "string"
+      },
+      "sent_at": {
+        "description": "Unix time in seconds.",
+        "title": "Sent At",
+        "type": "integer"
+      },
+      "channel_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Channel Id"
+      },
+      "message_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Chosen by Switch. Use it to apply later edits and deletes.",
+        "title": "Message Id"
+      },
+      "sender": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/SenderRef"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "text": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "CommonMark.",
+        "title": "Text"
+      },
+      "thread_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Thread Id"
+      },
+      "files": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/OutboundFile"
+        },
+        "title": "Files",
+        "type": "array"
+      },
+      "is_typing": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Is Typing"
+      }
+    },
+    "required": [
+      "type",
+      "sent_at"
+    ],
+    "title": "OutboundEvent",
+    "type": "object"
+  }
+}
