@@ -288,6 +288,8 @@ class Consumer[ActorT: Actor[Any]]:
 
         entry = self._EVENT_DISPATCH.get(event.event_type)
         if entry is None:
+            if event.event_type == "com.switch.message_edit":
+                return
             if event.event_type.startswith("com.switch.observe."):
                 logger.warning(
                     "Observe event %s not yet supported in %s",

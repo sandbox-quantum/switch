@@ -257,6 +257,8 @@ def is_notifiable(event: AgentEvent) -> bool:
     """
     if event.type == "message":
         return getattr(event.payload, "addressed", False)
+    if event.type == "message_edit":
+        return True
     if event.type == "room_join":
         return getattr(event.payload, "listening", False)
     return False
