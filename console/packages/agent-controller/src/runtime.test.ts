@@ -76,9 +76,10 @@ function openStream(agentId: string): OpenAgentStream {
     opened.push({ agentId, scope: deps.scope, filter: deps.filter, signal: deps.signal });
     return {
       announcesSessionStarts: true,
+      placementsNameCallRooms: true,
       start: () => {},
       setSpawnCapable: () => {},
-      replacePlacements: async () => {},
+      replacePlacements: async () => ({ refusedRooms: [] }),
     };
   };
 }

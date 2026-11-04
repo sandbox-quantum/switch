@@ -21,9 +21,9 @@ from switch_core.db.models import (
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
-    TenantMember,
     require_tenant_id,
 )
+from switch_core.db.standing import stands_in_tenant
 
 
 class ServiceConnectionBusy(Exception):
@@ -392,12 +392,7 @@ class ServiceConnectionStore:
                 ServiceGrant.id == ServiceTokenIssuance.grant_id,
             )
         )
-        member = exists(
-            select(TenantMember.user_id).where(
-                TenantMember.tenant_id == tenant_id,
-                TenantMember.user_id == ServiceTokenIssuance.owner_id,
-            )
-        )
+        member = stands_in_tenant(tenant_id, ServiceTokenIssuance.owner_id)
         controller_live = exists(
             select(AgentController.id).where(
                 AgentController.tenant_id == tenant_id,

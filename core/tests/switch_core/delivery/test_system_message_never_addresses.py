@@ -46,7 +46,8 @@ def _meta(channel_type: str) -> RoomMeta:
 
 
 def _client(name: str = "flintai-sdk.ts") -> SimpleNamespace:
-    """A resolver with the two store-backed checks stubbed out.
+    """A resolver with the store-backed checks stubbed out, in rooms holding
+    one agent.
 
     Only the name mention is left live: alias and role routing have their own
     tests, and what these pin is that the marker beats all three.
@@ -65,8 +66,15 @@ def _client(name: str = "flintai-sdk.ts") -> SimpleNamespace:
     resolver.addressed_without_lookup = lambda **kw: (
         AddressingResolver.addressed_without_lookup(resolver, **kw)
     )
+
+    async def _one_agent_direct_room(
+        _session: object, *, room_id: str, channel_type: str | None
+    ) -> bool:
+        return channel_type == "direct"
+
     resolver.mentions_alias = _no
     resolver.mentions_role = _no
+    resolver.auto_addressed_room = _one_agent_direct_room
     return resolver
 
 

@@ -1401,3 +1401,142 @@ it('posts for a room turn that ended without the agent posting, and not for one 
     expect(await host.stop()).toBeNull();
   }
 });
+
+it('reports the turn a fault ended, and the fault, before it stops', async () => {
+  const host = await start({ rooms: true });
+  await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') });
+  await until(() => expect(host.turns).toHaveLength(1));
+  const turnId = host.turns[0]!.turnId;
+  // Switch is unreachable while the provider fails: nothing goes out until it is back.
+  host.switchCore.state.unavailable = true;
+  host.emit({
+    type: 'turn.completed',
+    turnId,
+    outcome: 'error',
+    message: 'model not supported',
+    usage: [],
+  });
+  host.emit({ type: 'session.state.changed', status: 'error' });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  host.switchCore.state.unavailable = false;
+
+  const reported = (kind: string, status: string) =>
+    host.switchCore.calls.some((c) => {
+      const row = c.body as { kind: string; status: string; turn_id: string };
+      return (
+        c.path.endsWith('/activity') &&
+        row.kind === kind &&
+        row.status === status &&
+        row.turn_id === turnId
+      );
+    });
+  await until(() => expect(reported('turn', 'error')).toBe(true));
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // The host stopped on its own, faulted, once the reports were out.
+  expect(String(await host.stop())).toContain('HOST_FAULTED');
+});
+
+it('runs a room message again on a retry asked for there, and says so when it cannot', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+    );
+  const retry = (commandId: string): Command => ({
+    ...relayed('current', commandId, { type: 'message.retry', messageId: 'message-1' }),
+    origin: {
+      actorId: '@person:test',
+      surface: 'switch-web',
+      roomId: 'room',
+      threadId: 'thread',
+      messageId: 'retry-command',
+    },
+  });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'work on it') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    // Still running: refused, and the room is told once, however often it is relayed.
+    expect(
+      await host.parent.ask({ type: 'command', command: retry('early'), requesterName: null })
+    ).toMatchObject({ ok: true, value: { status: 'rejected' } });
+    await until(() => expect(asks()).toHaveLength(1));
+    expect(asks()[0]!.ask).toMatchObject({
+      type: 'room-reply',
+      roomId: 'room',
+      threadId: 'thread',
+    });
+    await host.parent.ask({ type: 'command', command: retry('early'), requesterName: null });
+
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'error',
+      message: 'model not supported',
+      usage: [],
+    });
+    await until(() => expect(asks()).toHaveLength(2)); // the host's "the turn failed" post
+    expect(
+      await host.parent.ask({ type: 'command', command: retry('again'), requesterName: null })
+    ).toMatchObject({ ok: true, value: { status: 'applied' } });
+    await until(() => expect(host.turns).toHaveLength(2));
+    expect(host.turns[1]!.text).toBe(host.turns[0]!.text);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks()).toHaveLength(2);
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+it('tells the room once when every post of a turn was refused, and not when one landed', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+    );
+  const answer = (id: number, value: unknown) =>
+    host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });
+  const refused = {
+    isError: true,
+    content: [{ type: 'text', text: 'Not connected to a room. Call connect_to_room first.' }],
+  };
+  const turn = async (sequence: number) => {
+    const before = host.turns.length;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, 'reply please') });
+    await until(() => expect(host.turns).toHaveLength(before + 1));
+    return host.turns.at(-1)!.turnId;
+  };
+  const post = async (result: unknown) => {
+    const before = asks().length;
+    const posting = host.channel.ask({
+      type: 'tool',
+      name: 'post_message',
+      arguments: { body: 'x' },
+    });
+    await until(() => expect(asks()).toHaveLength(before + 1));
+    answer(asks().at(-1)!.id, result);
+    await posting.catch(() => {});
+  };
+  try {
+    const silent = await turn(1);
+    await post(refused);
+    await post(refused);
+    host.emit({ type: 'turn.completed', turnId: silent, outcome: 'completed', usage: [] });
+    await until(() => expect(asks().filter((m) => m.ask.type === 'room-reply')).toHaveLength(1));
+    expect(asks().find((m) => m.ask.type === 'room-reply')!.ask).toMatchObject({
+      roomId: 'room',
+      body: "I couldn't post my reply here: Not connected to a room. Call connect_to_room first.",
+    });
+    answer(asks().find((m) => m.ask.type === 'room-reply')!.id, null);
+
+    const landed = await turn(2);
+    await post(refused);
+    await post({ content: [{ type: 'text', text: '{"event_id":"e"}' }] });
+    host.emit({ type: 'turn.completed', turnId: landed, outcome: 'completed', usage: [] });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks().filter((m) => m.ask.type === 'room-reply')).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);

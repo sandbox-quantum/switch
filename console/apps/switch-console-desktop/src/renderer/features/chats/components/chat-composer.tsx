@@ -1,15 +1,48 @@
+import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useRef, useState } from 'react';
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react';
 import { reportBuddyMessage } from '@renderer/features/switch-buddy/buddy-telemetry';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { rpc } from '@renderer/lib/ipc';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Button } from '@renderer/lib/ui/button';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
-import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
+import { cn } from '@renderer/utils/utils';
+import { agentInitials } from '@shared/core/agents/agent-avatar';
+import {
+  type ChatAgent,
+  type ChatCommand,
+  type ChatMessage,
+  chatAgentLabel,
+  requestIdOfClientTxn,
+} from '@shared/core/chats/chats';
 import { snippetOf } from '../chat-threads';
+import { commandQuery, filterCommands } from '../command-query';
+import {
+  agentTargets,
+  composeMentions,
+  editMentions,
+  filterMentionAgents,
+  filterMentionPeople,
+  type MentionPerson,
+  mentionPayload,
+  mentionQuery,
+  mentionSegments,
+  type MentionToken,
+  type RememberedMention,
+  withoutGroupMentions,
+  personTargets,
+  shiftMentions,
+  tokenToRemove,
+} from '../mentions';
 import { isInterruptAck } from '../stop-rows';
 import type { AgentActivity, ControlRequest } from '../stores/chat-activity-store';
+import { type ChatDraft, chatDraftKey, readChatDraft, writeChatDraft } from '../stores/chat-drafts';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
 import { chatTitler } from '../stores/chats';
 import {
@@ -19,6 +52,7 @@ import {
   PromptInputSubmit,
   PromptInputTextarea,
 } from '../ui/prompt-input';
+import { MentionMark } from './mention-mark';
 
 async function toBase64(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -32,11 +66,45 @@ function chatFile(file: File): ChatFile {
   return { name: file.name, type: file.type, size: file.size, read: () => toBase64(file) };
 }
 
-/** Drafts by chat, so a draft outlives navigating away. */
-const drafts = new Map<string, string>();
+type Suggestion =
+  | { kind: 'agent'; id: string; agent: ChatAgent }
+  | { kind: 'person'; id: string; person: MentionPerson & { email: string | null } }
+  | { kind: 'command'; id: string; command: ChatCommand };
 
 /** Chats just created here, whose composer takes focus when it first shows. */
 const focusOnOpen = new Set<string>();
+/** A send of a draft made before a reload, which may have landed: its id, and the draft as sent. */
+type PendingResend = {
+  requestId: string;
+  text: string;
+  mentions: MentionToken[];
+  threadRootId: string | null;
+};
+
+function pendingOf(draft: ChatDraft | null): PendingResend | null {
+  return draft?.pendingRequestId
+    ? {
+        requestId: draft.pendingRequestId,
+        text: draft.text,
+        mentions: draft.mentions,
+        threadRootId: draft.pendingThreadRootId,
+      }
+    : null;
+}
+
+/** Whether the draft is still exactly what was sent before the reload (text and mentions). */
+function unchangedSince(
+  resend: PendingResend | null,
+  text: string,
+  mentions: MentionToken[]
+): resend is PendingResend {
+  return (
+    resend !== null &&
+    resend.text === text &&
+    JSON.stringify(resend.mentions) === JSON.stringify(mentions)
+  );
+}
+
 /** Composers on screen by chat; a chat's stream event can open it before its create returns. */
 const mountedFocus = new Map<string, () => void>();
 
@@ -135,6 +203,8 @@ export const ChatComposer = observer(function ChatComposer({
   serverId,
   timeline,
   agents,
+  people,
+  groupName,
   activity,
   replyTo,
   onClearReply,
@@ -143,21 +213,152 @@ export const ChatComposer = observer(function ChatComposer({
   serverId: string;
   timeline: ChatTimeline;
   agents: ChatAgent[];
+  /** The other people in the chat, who can be mentioned after its agents. */
+  people: (MentionPerson & { email: string | null })[];
+  /** The chat's name when it is a group, which is who a message goes to; null in a direct chat. */
+  groupName: string | null;
   activity: AgentActivity | null;
   replyTo: ChatMessage | null;
   onClearReply: () => void;
   disabled: string | null;
 }) {
-  const draftKey = `${serverId}\u0000${timeline.roomId}`;
-  const [draft, setDraft] = useState(() => drafts.get(draftKey) ?? '');
+  // Kept across reloads and restarts, per account, workspace and room.
+  const draftKey = chatDraftKey({
+    serverId,
+    userId: switchServersStore.statusFor(serverId)?.user?.id ?? null,
+    workspaceId: workspacesStore.idOnServerInScope(serverId),
+    roomId: timeline.roomId,
+  });
+  // A draft whose send is still in flight here (the chat was reopened, or its room
+  // just made) is that send, not text to offer again.
+  const [initial] = useState(() => {
+    const kept = readChatDraft(draftKey);
+    const inFlight = timeline.pending.some((send) => send.requestId === kept?.pendingRequestId);
+    return { kept: inFlight ? null : kept, sending: inFlight ? kept!.pendingRequestId : null };
+  });
+  const [draft, setDraft] = useState(initial.kept?.text ?? '');
+  /** The mentions picked from the list, each with who it names, kept with the draft. */
+  const [picked, setPicked] = useState<MentionToken[]>(initial.kept?.mentions ?? []);
+  /** The send that emptied the composer: its text stays kept until the server has taken it. */
+  const [sending, setSending] = useState<string | null>(initial.sending);
+  /**
+   * A send of the restored draft made before a reload, which may have landed:
+   * read from storage only, and gone once that draft is sent again or edited away.
+   */
+  const [resend, setResend] = useState<PendingResend | null>(pendingOf(initial.kept));
+  const sendState =
+    sending === null
+      ? null
+      : (timeline.pending.find((send) => send.requestId === sending)?.state ?? 'sent');
+  // Another account, workspace or room shows its own draft, or none: the one on
+  // screen is never carried over. Only typing done before this room's account and
+  // workspace were known is kept for them, when they have nothing of their own.
+  const [readFrom, setReadFrom] = useState(draftKey);
+  if (readFrom !== draftKey) {
+    const startup =
+      readFrom ===
+      chatDraftKey({ serverId, userId: null, workspaceId: null, roomId: timeline.roomId });
+    const kept = readChatDraft(draftKey);
+    setReadFrom(draftKey);
+    if (kept || !startup) {
+      setDraft(kept?.text ?? '');
+      setPicked(kept?.mentions ?? []);
+      setSending(null);
+      setResend(pendingOf(kept));
+    }
+  }
+  // The send before the reload did land: its draft is done with.
+  const landed =
+    unchangedSince(resend, draft, picked) &&
+    timeline.messages.some(
+      (message) => requestIdOfClientTxn(message.clientTxn) === resend.requestId
+    );
+  if (landed) {
+    setDraft('');
+    setPicked([]);
+    setResend(null);
+  }
   useEffect(() => {
-    drafts.set(draftKey, draft);
-  }, [draftKey, draft]);
+    if (readFrom !== draftKey) return;
+    if (draft === '' && sendState !== null && sendState !== 'sent') return;
+    writeChatDraft(draftKey, {
+      text: draft,
+      mentions: picked,
+      pendingRequestId: unchangedSince(resend, draft, picked) ? resend.requestId : null,
+      pendingThreadRootId: unchangedSince(resend, draft, picked) ? resend.threadRootId : null,
+    });
+  }, [draftKey, readFrom, draft, picked, sendState, resend]);
+  /** A pick the next edit inserts, placed once that edit has moved the others. */
+  const pendingPick = useRef<MentionToken | null>(null);
+  /** Picked mentions an edit removed, so undo and redo can bring them back with who they named. */
+  const removed = useRef<RememberedMention[]>([]);
+  const edit = (next: string, inputType: string | null) => {
+    const pick = pendingPick.current;
+    pendingPick.current = null;
+    const result = editMentions(
+      draft,
+      next,
+      picked,
+      removed.current,
+      inputType === 'historyUndo' || inputType === 'historyRedo'
+    );
+    removed.current = result.remembered;
+    setPicked([...result.mentions, ...(pick ? [pick] : [])]);
+    setDraft(next);
+  };
   const [files, setFiles] = useState<{ id: string; file: File }[]>([]);
   const [confirmReset, setConfirmReset] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const backdrop = useRef<HTMLDivElement>(null);
+  const [caret, setCaret] = useState(0);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  /** Where the `@` of a suggestion list Esc closed sits, so it stays closed for that `@`. */
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  // Text typed rather than picked reads as an agent first where a person shares its name.
+  // A server without group chats takes one agent mention and no people.
+  const groupChats = useFeatureFlags(serverId).group_chats;
+  const mentionPeople = groupChats ? people : [];
+  const targets = [...agentTargets(agents), ...personTargets(mentionPeople)];
+  const allowed = (found: MentionToken[]) => (groupChats ? found : withoutGroupMentions(found));
+  const tokens = allowed(composeMentions(draft, picked, targets));
+  const agentNamed = tokens.some((token) => token.kind === 'agent');
+  const mentionable =
+    (agents.length > 0 && (groupChats || !agentNamed)) || mentionPeople.length > 0;
+  // A `!` that starts the message offers the room's commands, as the server lists them.
+  const typingCommand = commandQuery(draft, caret);
+  const commands = useQuery({
+    queryKey: ['chat-commands', serverId, timeline.roomId],
+    queryFn: () => rpc.chats.commands(serverId, timeline.roomId),
+    enabled: typingCommand !== null,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const query = typingCommand ?? (mentionable ? mentionQuery(draft, caret) : null);
+  const suggestions: Suggestion[] = typingCommand
+    ? filterCommands(commands.data ?? [], typingCommand.query).map((command): Suggestion => ({
+        kind: 'command',
+        id: `command:${command.name}`,
+        command,
+      }))
+    : query
+      ? [
+          ...filterMentionAgents(agents, query.query).map((agent): Suggestion => ({
+            kind: 'agent',
+            id: agent.id,
+            agent,
+          })),
+          ...filterMentionPeople(mentionPeople, query.query).map((person): Suggestion => ({
+            kind: 'person',
+            id: `user:${person.userId}`,
+            person,
+          })),
+        ]
+      : [];
+  const suggesting = query !== null && query.start !== dismissedAt && suggestions.length > 0;
+  const activeIndex = Math.min(mentionIndex, suggestions.length - 1);
+  const listId = `mentions-${timeline.roomId}`;
   useEffect(() => {
     const roomId = timeline.roomId;
     const focus = () => requestAnimationFrame(() => input.current?.focus());
@@ -187,12 +388,78 @@ export const ChatComposer = observer(function ChatComposer({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, []);
   const agent = agents[0] ?? null;
+  const recipient = groupName ?? (agent ? chatAgentLabel(agent) : 'the agent');
   const stopActivity = activity?.runningTurn ? activity : null;
 
   const addFiles = (list: File[]) => {
     if (!list.length) return;
     setFiles((current) => [...current, ...list.map((file) => ({ id: crypto.randomUUID(), file }))]);
     input.current?.focus();
+  };
+
+  const pick = (choice: Suggestion) => {
+    const textarea = input.current;
+    if (!textarea || !query) return;
+    if (choice.kind === 'command') {
+      const typed = `!${choice.command.name} `;
+      textarea.focus();
+      textarea.setSelectionRange(0, caret);
+      if (!document.execCommand('insertText', false, typed)) {
+        edit(`${typed}${draft.slice(caret)}`, null);
+        setCaret(typed.length);
+      }
+      setMentionIndex(0);
+      return;
+    }
+    const name = choice.kind === 'agent' ? choice.agent.name : choice.person.name;
+    pendingPick.current = {
+      kind: choice.kind,
+      id: choice.kind === 'agent' ? choice.agent.id : choice.person.userId,
+      start: query.start,
+      end: query.start + 1 + name.length,
+    };
+    textarea.focus();
+    textarea.setSelectionRange(query.start, caret);
+    // insertText keeps the native undo stack; a controlled-value write would wipe it.
+    if (!document.execCommand('insertText', false, `@${name} `)) {
+      edit(`${draft.slice(0, query.start)}@${name} ${draft.slice(caret)}`, null);
+      setCaret(query.start + name.length + 2);
+    }
+    setMentionIndex(0);
+  };
+
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (suggesting) {
+      const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+      if (step) {
+        event.preventDefault();
+        setMentionIndex((activeIndex + step + suggestions.length) % suggestions.length);
+        return;
+      }
+      if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+        event.preventDefault();
+        pick(suggestions[activeIndex]!);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setDismissedAt(query.start);
+        return;
+      }
+    }
+    const textarea = event.currentTarget;
+    if (
+      (event.key === 'Backspace' || event.key === 'Delete') &&
+      textarea.selectionStart === textarea.selectionEnd &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey
+    ) {
+      const token = tokenToRemove(tokens, textarea.selectionStart, event.key);
+      // Select the mention and let the key delete the selection: one native, undoable edit.
+      if (token) textarea.setSelectionRange(token.start, token.end);
+    }
   };
 
   const send = () => {
@@ -203,13 +470,35 @@ export const ChatComposer = observer(function ChatComposer({
       timeline.messages.filter((message) => message.sender.kind === 'human').length +
         timeline.pending.length
     );
-    timeline.send({
+    const sent = allowed(composeMentions(body, shiftMentions(draft, body, picked), targets));
+    const threadRootId = replyTo?.messageId ?? null;
+    const requestId = timeline.send({
       body,
-      threadRootId: replyTo?.messageId ?? null,
+      threadRootId,
+      ...mentionPayload(sent, groupChats),
       files: files.map(({ file }) => chatFile(file)),
+      // The restored draft of a send made before a reload, sent again exactly as it
+      // was, goes under the same id, so it lands once; anything else is a new message.
+      requestId:
+        unchangedSince(resend, draft, picked) &&
+        files.length === 0 &&
+        resend.threadRootId === threadRootId
+          ? resend.requestId
+          : null,
     });
+    // Kept under its request id until the server takes it: a reload meanwhile
+    // finds out whether it landed rather than offering it to be sent twice.
+    writeChatDraft(draftKey, {
+      text: draft,
+      mentions: picked,
+      pendingRequestId: requestId,
+      pendingThreadRootId: threadRootId,
+    });
+    setResend(null);
+    setSending(requestId);
     void chatTitler.sent(serverId, timeline.roomId, body);
     setDraft('');
+    setPicked([]);
     setFiles([]);
     onClearReply();
   };
@@ -284,17 +573,130 @@ export const ChatComposer = observer(function ChatComposer({
                 event.target.value = '';
               }}
             />
-            <PromptInputTextarea
-              ref={input}
-              className="min-h-0 px-1 py-1.5"
-              aria-label={`Message ${agent ? chatAgentLabel(agent) : 'the agent'}`}
-              placeholder={disabled ?? `Message ${agent ? chatAgentLabel(agent) : 'the agent'}...`}
-              value={draft}
-              disabled={disabled !== null}
-              onChange={(event) => {
-                setDraft(event.target.value);
-              }}
-            />
+            <div className="relative min-w-0 flex-1">
+              {suggesting && (
+                <div
+                  id={listId}
+                  role="listbox"
+                  aria-label={typingCommand ? 'Room commands' : 'Mention an agent or person'}
+                  className="absolute bottom-full left-0 z-50 mb-3 flex max-h-60 w-72 flex-col overflow-y-auto rounded-md border bg-background-quaternary p-1 text-sm shadow-sm"
+                >
+                  {suggestions.map((each, index) => (
+                    <div
+                      key={each.id}
+                      id={`${listId}-${each.id}`}
+                      role="option"
+                      aria-selected={index === activeIndex}
+                      className={cn(
+                        'flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5',
+                        index === activeIndex && 'bg-background-2'
+                      )}
+                      onMouseEnter={() => setMentionIndex(index)}
+                      // Keep focus (and the caret) in the textarea.
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => pick(each)}
+                    >
+                      {each.kind === 'command' ? (
+                        <span className="flex min-w-0 flex-col">
+                          <span className="truncate font-medium">{each.command.usage}</span>
+                          <span className="truncate text-xs text-foreground-muted">
+                            {each.command.description}
+                          </span>
+                        </span>
+                      ) : each.kind === 'agent' ? (
+                        <>
+                          <AgentAvatar
+                            name={each.agent.name}
+                            iconUrl={each.agent.iconUrl}
+                            serverId={serverId}
+                            size={20}
+                          />
+                          <span className="truncate">{chatAgentLabel(each.agent)}</span>
+                          {each.agent.alias && (
+                            <span className="truncate text-xs text-foreground-muted">
+                              @{each.agent.alias}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <span
+                            aria-hidden
+                            className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-[9px] font-medium text-foreground"
+                          >
+                            {agentInitials(each.person.name)}
+                          </span>
+                          <span className="truncate">{each.person.name}</span>
+                          {each.person.email && (
+                            <span className="ml-auto truncate text-xs text-foreground-muted">
+                              {each.person.email}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div
+                ref={backdrop}
+                aria-hidden
+                className="pointer-events-none absolute inset-0 overflow-y-auto px-1 py-1.5 text-sm break-words whitespace-pre-wrap text-transparent"
+              >
+                {mentionSegments(draft, tokens).map((segment, index) =>
+                  segment.token ? (
+                    <MentionMark
+                      key={index}
+                      kind={segment.token.kind}
+                      // People are never tinted: their badge stays grey.
+                      agent={
+                        segment.token.kind === 'agent'
+                          ? (agents.find((each) => each.id === segment.token?.id) ?? null)
+                          : null
+                      }
+                      serverId={serverId}
+                      className="text-transparent"
+                    >
+                      {segment.text}
+                    </MentionMark>
+                  ) : (
+                    <span key={index}>{segment.text}</span>
+                  )
+                )}
+                {/* A trailing newline only takes a line once something follows it. */}
+                {'\u200b'}
+              </div>
+              <PromptInputTextarea
+                ref={input}
+                className="relative block min-h-0 px-1 py-1.5"
+                aria-label={`Message ${recipient}`}
+                placeholder={disabled ?? `Message ${recipient}...`}
+                value={draft}
+                disabled={disabled !== null}
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={suggesting}
+                aria-controls={suggesting ? listId : undefined}
+                aria-activedescendant={
+                  suggesting ? `${listId}-${suggestions[activeIndex]!.id}` : undefined
+                }
+                onKeyDown={onKeyDown}
+                onChange={(event) => {
+                  edit(event.target.value, (event.nativeEvent as InputEvent).inputType ?? null);
+                  setCaret(event.target.selectionStart);
+                  setMentionIndex(0);
+                  if (
+                    !mentionQuery(event.target.value, event.target.selectionStart) &&
+                    !commandQuery(event.target.value, event.target.selectionStart)
+                  )
+                    setDismissedAt(null);
+                }}
+                onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+                onScroll={(event) => {
+                  if (backdrop.current) backdrop.current.scrollTop = event.currentTarget.scrollTop;
+                }}
+              />
+            </div>
             <PromptInputSubmit
               status={status}
               className="h-8 min-w-8"

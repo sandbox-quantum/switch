@@ -98,8 +98,16 @@ vi.mock('@renderer/features/chats/components/chat-panel', async (importOriginal)
 }));
 
 import '@renderer/index.css';
-import { AgentChats } from '@renderer/features/managed-agents/agent-chats';
+import { runInAction } from 'mobx';
+import { directChats } from '@renderer/features/chats/start-direct-chat';
+import { chatDraftKey, unsavedChatKey } from '@renderer/features/chats/stores/chat-drafts';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { AgentChats, openAgentChat } from '@renderer/features/managed-agents/agent-chats';
 import { roomEmbedSlotStore } from '@renderer/features/switch-rooms/room-embed-slot';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { appState } from '@renderer/lib/stores/app-state';
+import type { ChatSummary } from '@shared/core/chats/chats';
 
 const AGENT: ManagedAgentView = {
   serverId: 'server-1',
@@ -309,4 +317,277 @@ it("opens a room whose platform can't be drawn here on its settings", async () =
 
   await act(async () => roomRow('agents-only').click());
   expect(embeddedRoom()?.textContent).toBe('Settings of room-2');
+});
+
+it('follows the open direct chat into its room when it becomes a group, not an older chat', async () => {
+  const navigate = vi.spyOn(appState.navigation, 'navigate').mockImplementation(() => {});
+  const agentInChat = {
+    id: 'agent-1',
+    name: 'pm-agent',
+    displayName: null,
+    iconUrl: null,
+    provider: null,
+    alias: null,
+    ownerName: null,
+    ownedByViewer: true,
+  };
+  const chat = (roomId: string, channelType: ChatSummary['channelType'], seq: number) =>
+    ({
+      roomId,
+      name: roomId,
+      channelType,
+      bridgeType: null,
+      channelName: null,
+      agents: [agentInChat],
+      canManage: true,
+      ownsAgent: true,
+      memberUserIds: [],
+      memberCount: 1,
+      unreadCount: 0,
+      lastMessage: { seq, sentAt: `2026-01-0${seq}T00:00:00Z`, preview: '', senderName: '' },
+    }) satisfies ChatSummary;
+  try {
+    runInAction(() => {
+      chatsStore.serverId = 'server-1';
+    });
+    chatsStore.upsert(chat('older', 'direct', 1));
+    chatsStore.upsert(chat('current', 'direct', 2));
+    navigation.reset({
+      serverId: 'server-1',
+      agentId: 'agent-1',
+      name: 'pm-agent',
+      roomId: 'current',
+    });
+    await act(async () => root.render(<AgentChats agent={AGENT} />));
+    expect(navigate).not.toHaveBeenCalled();
+
+    // Someone adds a person: the open chat is now a group.
+    await act(async () => chatsStore.upsert(chat('current', 'channel_private', 3)));
+    expect(navigate).toHaveBeenCalledWith('room', { roomId: 'current' });
+    expect(navigation.params().roomId).toBe('current');
+  } finally {
+    navigate.mockRestore();
+    runInAction(() => {
+      chatsStore.chats.delete('older');
+      chatsStore.chats.delete('current');
+      chatsStore.serverId = null;
+    });
+  }
+});
+
+it('opens no other chat in place of an unsaved one, so its header is not that chat’s', () => {
+  const previous = {
+    roomId: 'previous',
+    name: 'QA review',
+    channelType: 'direct',
+    bridgeType: null,
+    channelName: null,
+    agents: [
+      {
+        id: 'agent-1',
+        name: 'pm-agent',
+        displayName: null,
+        iconUrl: null,
+        provider: null,
+        alias: null,
+        ownerName: null,
+        ownedByViewer: true,
+      },
+    ],
+    canManage: true,
+    ownsAgent: true,
+    memberUserIds: [],
+    memberCount: 1,
+    unreadCount: 0,
+    lastMessage: null,
+  } satisfies ChatSummary;
+  try {
+    runInAction(() => {
+      chatsStore.serverId = 'server-1';
+    });
+    chatsStore.upsert(previous);
+    const unsaved = directChats.start('server-1', 'agent-1');
+    expect(openAgentChat(AGENT, unsaved)).toBeNull();
+    expect(openAgentChat(AGENT, undefined)?.roomId).toBe('previous');
+  } finally {
+    runInAction(() => {
+      chatsStore.chats.delete('previous');
+      chatsStore.serverId = null;
+    });
+  }
+});
+
+it('lists an unsent New chat kept from before a restart, with its draft, and reopens it', async () => {
+  const status = vi
+    .spyOn(switchServersStore, 'statusFor')
+    .mockReturnValue({ user: { id: 'user-a' } } as ReturnType<typeof switchServersStore.statusFor>);
+  const workspace = vi.spyOn(workspacesStore, 'idOnServerInScope').mockReturnValue('ws-1');
+  const scope = { serverId: 'server-1', userId: 'user-a', workspaceId: 'ws-1' };
+  // An agent no other test opened a chat with: the starter is the app's own, shared by every test.
+  const record = unsavedChatKey({ ...scope, agentId: 'agent-3' })!;
+  try {
+    localStorage.setItem(record, 'kept-request');
+    localStorage.setItem(
+      chatDraftKey({ ...scope, roomId: 'unsaved-chat:kept-request' }),
+      JSON.stringify({ text: 'half a thought', mentions: [] })
+    );
+    navigation.reset({ serverId: 'server-1', agentId: 'agent-3', name: 'pm-agent' });
+    await act(async () => root.render(<AgentChats agent={{ ...AGENT, agentId: 'agent-3' }} />));
+    const row = container.querySelector<HTMLElement>('[aria-label="Open chat New Chat"]');
+    expect(row).not.toBeNull();
+    await act(async () => row!.click());
+    expect(navigation.params().roomId).toBe('unsaved-chat:kept-request');
+
+    // Emptied before the restart: there is nothing to come back to.
+    act(() => root.unmount());
+    root = createRoot(container);
+    localStorage.removeItem(chatDraftKey({ ...scope, roomId: 'unsaved-chat:kept-request' }));
+    navigation.reset({ serverId: 'server-1', agentId: 'agent-2', name: 'pm-agent' });
+    localStorage.setItem(unsavedChatKey({ ...scope, agentId: 'agent-2' })!, 'emptied');
+    await act(async () => root.render(<AgentChats agent={{ ...AGENT, agentId: 'agent-2' }} />));
+    expect(container.querySelector('[aria-label="Open chat New Chat"]')).toBeNull();
+    expect(localStorage.getItem(unsavedChatKey({ ...scope, agentId: 'agent-2' })!)).toBeNull();
+  } finally {
+    status.mockRestore();
+    workspace.mockRestore();
+    localStorage.clear();
+  }
+});
+
+function directChat(agentId: string, roomId: string, name: string, seq: number | null) {
+  return {
+    roomId,
+    name,
+    channelType: 'direct',
+    bridgeType: null,
+    channelName: null,
+    agents: [
+      {
+        id: agentId,
+        name: 'pm-agent',
+        displayName: null,
+        iconUrl: null,
+        provider: null,
+        alias: null,
+        ownerName: null,
+        ownedByViewer: true,
+      },
+    ],
+    canManage: true,
+    ownsAgent: true,
+    memberUserIds: [],
+    memberCount: 1,
+    unreadCount: 0,
+    lastMessage:
+      seq === null
+        ? null
+        : { seq, sentAt: `2026-01-0${seq}T00:00:00Z`, preview: '', senderName: '' },
+  } satisfies ChatSummary;
+}
+
+/** The rows highlighted as open in the Direct chats list, by their text: a kept draft's ends in "Draft". */
+const activeRows = () =>
+  [...container.querySelectorAll('[data-active="true"]')].map((row) => row.textContent);
+
+it('reopens the created chat whose first send failed, open before a reload, beside a kept draft', async () => {
+  const status = vi
+    .spyOn(switchServersStore, 'statusFor')
+    .mockReturnValue({ user: { id: 'user-a' } } as ReturnType<typeof switchServersStore.statusFor>);
+  const workspace = vi.spyOn(workspacesStore, 'idOnServerInScope').mockReturnValue('ws-1');
+  const scope = { serverId: 'server-1', userId: 'user-a', workspaceId: 'ws-1' };
+  const agent = { ...AGENT, agentId: 'agent-5' };
+  try {
+    // Another New chat with this agent, unsent, kept with its draft.
+    localStorage.setItem(unsavedChatKey({ ...scope, agentId: 'agent-5' })!, 'other');
+    localStorage.setItem(
+      chatDraftKey({ ...scope, roomId: 'unsaved-chat:other' }),
+      JSON.stringify({ text: 'another thought', mentions: [] })
+    );
+    runInAction(() => {
+      chatsStore.serverId = 'server-1';
+    });
+    chatsStore.upsert(directChat('agent-5', 'made', 'New Chat', null));
+    chatsStore.upsert(directChat('agent-5', 'newest', 'Newest', 5));
+    navigation.reset({
+      serverId: 'server-1',
+      agentId: 'agent-5',
+      name: 'pm-agent',
+      roomId: 'made',
+    });
+    await act(async () => root.render(<AgentChats agent={agent} />));
+    expect(navigation.params().roomId).toBe('made');
+    expect(openAgentChat(agent, 'made')?.roomId).toBe('made');
+    expect(activeRows()).toEqual(['New Chat']);
+    expect(container.textContent).toContain('New ChatDraft');
+    expect(directChats.unsavedChat('unsaved-chat:other')).toBeUndefined();
+  } finally {
+    status.mockRestore();
+    workspace.mockRestore();
+    localStorage.clear();
+    runInAction(() => {
+      chatsStore.chats.delete('made');
+      chatsStore.chats.delete('newest');
+      chatsStore.serverId = null;
+    });
+  }
+});
+
+it('reopens the unsent New chat that was open before a reload, not the newest chat', async () => {
+  const status = vi
+    .spyOn(switchServersStore, 'statusFor')
+    .mockReturnValue({ user: { id: 'user-a' } } as ReturnType<typeof switchServersStore.statusFor>);
+  const workspace = vi.spyOn(workspacesStore, 'idOnServerInScope').mockReturnValue('ws-1');
+  const scope = { serverId: 'server-1', userId: 'user-a', workspaceId: 'ws-1' };
+  // An agent no other test opened a chat with: the starter is the app's own, shared by every test.
+  const agent = { ...AGENT, agentId: 'agent-4' };
+  const roomId = 'unsaved-chat:open-before-reload';
+  try {
+    localStorage.setItem(unsavedChatKey({ ...scope, agentId: 'agent-4' })!, 'open-before-reload');
+    localStorage.setItem(
+      chatDraftKey({ ...scope, roomId }),
+      JSON.stringify({ text: 'half a thought', mentions: [] })
+    );
+    // What navigation restored: the unsaved chat was the one open.
+    navigation.reset({ serverId: 'server-1', agentId: 'agent-4', name: 'pm-agent', roomId });
+    runInAction(() => {
+      chatsStore.serverId = 'server-1';
+    });
+    chatsStore.upsert(directChat('agent-4', 'newest', 'Newest', 5));
+    await act(async () => root.render(<AgentChats agent={agent} />));
+    expect(directChats.unsavedChat(roomId)).toBeDefined();
+    expect(navigation.params().roomId).toBe(roomId);
+    expect(openAgentChat(agent, roomId)).toBeNull();
+    // Only the open chat is highlighted.
+    expect(activeRows()).toEqual(['New ChatDraft']);
+  } finally {
+    runInAction(() => {
+      chatsStore.chats.delete('newest');
+      chatsStore.serverId = null;
+    });
+    status.mockRestore();
+    workspace.mockRestore();
+    localStorage.clear();
+  }
+});
+
+it('offers a new room or an existing one from the Rooms section, with the agent picked', async () => {
+  const { showModal } = await import('@renderer/lib/modal/modal-provider');
+  vi.mocked(showModal).mockClear();
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  const add = container.querySelector<HTMLButtonElement>('[aria-label="Add to a room"]')!;
+  await act(async () => add.click());
+  const items = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  expect(items().map((item) => item.textContent)).toEqual(['New room', 'Add to existing room']);
+  await act(async () => items()[0]!.click());
+  expect(showModal).toHaveBeenCalledWith('createRoomModal', {
+    serverId: 'server-1',
+    agentId: 'agent-1',
+  });
+  await act(async () => add.click());
+  await act(async () => items()[1]!.click());
+  expect(showModal).toHaveBeenCalledWith('addAgentToRoomModal', {
+    workspaceId: 'workspace-1',
+    switchAgentId: 'agent-1',
+    agentName: 'pm-agent',
+  });
 });

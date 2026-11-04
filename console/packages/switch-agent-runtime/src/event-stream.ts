@@ -75,6 +75,14 @@ const RESTART_WINDOW_MS = 60_000;
 const RESTART_RETRY_MIN_MS = 250;
 const RESTART_RETRY_SPREAD_MS = 500;
 /**
+ * The refusal of a server that is opening as many connections as it can take
+ * at once (core's `open_gate.py`). It names when to open again, which is this
+ * client's place in the server's queue, so that is when the next open goes,
+ * whatever the backoff or a restart would have said.
+ */
+const BUSY = 'busy';
+
+/**
  * How long an open socket has to last before it counts as a working stream.
  *
  * A successful handshake is not evidence of one. A stream that opens and is
@@ -167,6 +175,31 @@ export function refusalCode(body: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** The wait a `busy` refusal names, in milliseconds, or null. */
+export function busyRetryAfterMs(status: number, body: string): number | null {
+  if (status !== 503 || refusalCode(body) !== BUSY) return null;
+  try {
+    const detail = (JSON.parse(body) as { detail?: { retry_after_s?: unknown } }).detail;
+    const seconds = detail?.retry_after_s;
+    return typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0
+      ? Math.round(seconds * 1000)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Waits `ms`, or less if any of these signals aborts first, and leaves no timer behind. */
+function waitUnless(ms: number, ...signals: AbortSignal[]): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+    }),
+    until(...signals),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /** Resolves when any of these signals aborts, so a wait can be given up on. */
@@ -474,6 +507,12 @@ export class SwitchEventStream {
     return this.announces;
   }
 
+  /**
+   * Switch places a session itself when it calls `connect_to_room` over this
+   * connection, so a call's room never waits on the placements stated here.
+   */
+  readonly placementsNameCallRooms = false;
+
   start(): void {
     void this.streamLoop();
     void this.beatLoop();
@@ -719,7 +758,7 @@ export class SwitchEventStream {
    * up to `PLACEMENTS_WAIT_MS` for the stream to be attached, then refuses.
    * Raises on any answer but success; a takeover also stands the stream down.
    */
-  async replacePlacements(placements: Record<string, string>): Promise<void> {
+  async replacePlacements(placements: Record<string, string>): Promise<{ refusedRooms: string[] }> {
     if (!(await this.attached()))
       throw new Error('the connection to Switch is not open, so it cannot take placements');
     const generation = this.generation;
@@ -728,7 +767,9 @@ export class SwitchEventStream {
       placements,
       generation,
     });
-    if (resp.ok) return;
+    // Switch leaves out a session in a room the agent is no longer in, and
+    // names it; one from before that answers no `refused` at all.
+    if (resp.ok) return { refusedRooms: refusedRoomsOf(await resp.text()) };
     const body = await resp.text();
     if (
       resp.status === 409 &&
@@ -811,6 +852,8 @@ export class SwitchEventStream {
       if (signal.aborted || this.halt.signal.aborted) return;
       let openedAt = 0;
       let failure: unknown = null;
+      // The wait a busy server named for this open, if it was refused as busy.
+      let toldMs: number | null = null;
       try {
         const params = new URLSearchParams({
           connection_id: connectionId,
@@ -860,6 +903,7 @@ export class SwitchEventStream {
       } catch (error) {
         if (error instanceof OpenRefused) {
           const { status, body } = error;
+          toldMs = busyRetryAfterMs(status, body);
           // Reopening without the refused room is a different request from the
           // one that just failed, and the declared set strictly shrinks, so
           // this cannot spin: retry now rather than serving the backoff a
@@ -914,7 +958,8 @@ export class SwitchEventStream {
         });
       }
       this.deps.onDisconnected?.({ error });
-      await pace();
+      if (toldMs !== null) await waitUnless(toldMs, signal, this.halt.signal);
+      else await pace();
     }
   }
 
@@ -1486,5 +1531,21 @@ export class SwitchEventStream {
       }
       await pause(backoff);
     }
+  }
+}
+
+/** The rooms a placements answer says the agent is not in. */
+function refusedRoomsOf(body: string): string[] {
+  try {
+    const parsed = JSON.parse(body) as { refused?: { room_id?: unknown }[] };
+    return [
+      ...new Set(
+        (parsed.refused ?? [])
+          .map((each) => each.room_id)
+          .filter((room): room is string => typeof room === 'string')
+      ),
+    ];
+  } catch {
+    return [];
   }
 }

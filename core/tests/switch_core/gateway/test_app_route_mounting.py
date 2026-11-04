@@ -34,6 +34,7 @@ def _app(**overrides: object) -> object:
         api_key_store=MagicMock(),
         invitation_store=MagicMock(),
         join_domain_store=MagicMock(),
+        organization_store=MagicMock(),
         template_store=MagicMock(),
         usage_store=MagicMock(),
         budget_store=MagicMock(),
@@ -89,3 +90,39 @@ def test_service_connections_are_mounted_only_with_their_flag() -> None:
     assert SERVICE_ROUTES <= on
     # GitHub's own link was there before service connections, and stays.
     assert "/provider-connections/github" in off
+
+
+ORGANIZATION_APP_ROUTES = {
+    "/organizations/current/connector-apps",
+    "/organizations/current/connector-apps/{service}",
+}
+
+
+def test_organizations_connector_apps_are_mounted_only_with_both_flags() -> None:
+    def paths(flags: str) -> set[str]:
+        return {
+            route.path
+            for route in _app(feature_flags_enabled=flags).routes  # type: ignore[attr-defined]
+        }
+
+    assert not ORGANIZATION_APP_ROUTES & paths("service_connections")
+    assert not ORGANIZATION_APP_ROUTES & paths("organization_connector_apps")
+    assert ORGANIZATION_APP_ROUTES <= paths(
+        "service_connections,organization_connector_apps"
+    )
+
+
+def test_organizations_service_settings_are_mounted_only_with_both_flags() -> None:
+    def paths(flags: str) -> set[str]:
+        return {
+            route.path
+            for route in _app(feature_flags_enabled=flags).routes  # type: ignore[attr-defined]
+        }
+
+    routes = {
+        "/organizations/current/services",
+        "/organizations/current/services/{service}",
+    }
+    assert not routes & paths("service_connections")
+    assert not routes & paths("organization_connector_apps")
+    assert routes <= paths("service_connections,organization_connector_apps")
