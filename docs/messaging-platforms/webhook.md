@@ -26,6 +26,7 @@ In Switch Console, open **Connect a messaging app** and choose **Custom app
 | **Outbound URL** | Where Switch sends room messages: an HTTPS endpoint in your app. Plain `http` is accepted only for `localhost`. |
 | **Signing secret** | A secret shared with your app. Switch signs every request it sends with it, so your app can tell the requests are Switch's. At least 24 characters, for example `openssl rand -hex 32`. |
 | **Inbound token** | A token your app sends to Switch with every event. At least 24 characters, and different from the signing secret. |
+| **Longest message** | Optional. Split longer replies into parts of at most this many characters (100 or more). `0`, the default, sends every message whole. |
 
 When you connect, Switch sends your app a signed `ping`. Your app must answer
 with a `2xx`. Anything else shows up as a clear error: a rejected signature, an
@@ -171,8 +172,12 @@ export function isFromSwitch(headers, rawBody, secret) {
   `icon_url` when the agent has one. Show it however your app shows a person.
 - **Approvals and questions.** They arrive as plain-text messages, and a person
   answers by writing a message. There are no buttons.
-- **Long replies.** Switch does not split them. Your app receives the whole
-  text.
+- **Long replies.** Sent whole by default. Set **Longest message** and Switch
+  splits a longer reply at a paragraph, line, sentence or word, in that order,
+  and sends each part as its own `message.created`. A code block that spans
+  parts is closed at the end of one and reopened at the start of the next.
+  Only the first part carries files, and its `message_id` is the one a later
+  edit refers to. An edit is always sent whole, because it cannot be split.
 - **Restarts.** Switch keeps nothing about your app in memory. After a restart
   your app only needs to be reachable at the same URL, and retried events with
   the same `id` are ignored.

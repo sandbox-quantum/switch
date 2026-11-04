@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import ValidationError, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
 from switch_core.bridges.collaboration.install import (
@@ -43,12 +43,14 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.webhook import schema
+from switch_core.bridges.collaboration.webhook.chunking import split_text
 from switch_core.outbound import guarded_async_client
 
 logger = logging.getLogger(__name__)
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 _MIN_SECRET_LENGTH = 24
+_MIN_MESSAGE_LENGTH = 100
 _ATTEMPTS = 3
 _BACKOFF_SECONDS = (0.5, 1.5)
 _REQUEST_TIMEOUT = 10.0
@@ -65,6 +67,14 @@ class WebhookConnectionConfig(BridgeConnectionConfig):
     outbound_url: str
     signing_secret: str
     inbound_token: str
+    max_message_length: int = Field(
+        default=0,
+        title="Longest message (characters)",
+        description=(
+            "Split longer replies into parts of at most this many characters. "
+            "0 sends every message whole."
+        ),
+    )
 
     @field_validator("outbound_url")
     @classmethod
@@ -86,6 +96,13 @@ class WebhookConnectionConfig(BridgeConnectionConfig):
                 f"must be at least {_MIN_SECRET_LENGTH} characters, "
                 "for example the output of `openssl rand -hex 32`"
             )
+        return value
+
+    @field_validator("max_message_length")
+    @classmethod
+    def _length_is_zero_or_workable(cls, value: int) -> int:
+        if value != 0 and value < _MIN_MESSAGE_LENGTH:
+            raise ValueError(f"must be 0 or at least {_MIN_MESSAGE_LENGTH}")
         return value
 
     @model_validator(mode="after")
@@ -366,31 +383,39 @@ class WebhookAdapter(PlatformAdapter):
         thread_root_id: str | None,
         files: list[OutboundAttachment],
     ) -> str:
-        message_id = f"msg_{uuid.uuid4().hex}"
         sender = schema.SenderRef(
             name=sender_name, icon_url=await self.agent_icon_url(sender_name)
         )
-        await self._deliver(
-            schema.OutboundEvent(
-                type="message.created",
-                sent_at=int(time.time()),
-                channel_id=channel_id,
-                message_id=message_id,
-                sender=sender,
-                text=self.translate_outbound(content),
-                thread_id=thread_root_id,
-                files=[
-                    schema.OutboundFile(
-                        filename=f.filename,
-                        mimetype=f.mimetype,
-                        size=len(f.data),
-                        data=schema.encode_file(f.data),
-                    )
-                    for f in files
-                ],
-            )
+        parts = split_text(
+            self.translate_outbound(content), self.config.max_message_length
         )
-        return message_id
+        first_id: str | None = None
+        for index, part in enumerate(parts):
+            message_id = f"msg_{uuid.uuid4().hex}"
+            await self._deliver(
+                schema.OutboundEvent(
+                    type="message.created",
+                    sent_at=int(time.time()),
+                    channel_id=channel_id,
+                    message_id=message_id,
+                    sender=sender,
+                    text=part,
+                    thread_id=thread_root_id,
+                    files=[self._outbound_file(f) for f in files] if index == 0 else [],
+                )
+            )
+            first_id = first_id or message_id
+        assert first_id is not None
+        return first_id
+
+    @staticmethod
+    def _outbound_file(file: OutboundAttachment) -> schema.OutboundFile:
+        return schema.OutboundFile(
+            filename=file.filename,
+            mimetype=file.mimetype,
+            size=len(file.data),
+            data=schema.encode_file(file.data),
+        )
 
     async def _deliver(self, event: schema.OutboundEvent) -> None:
         if self._http is None:

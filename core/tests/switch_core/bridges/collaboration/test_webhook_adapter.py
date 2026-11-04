@@ -51,7 +51,7 @@ INBOUND_TOKEN = "inbound-token-" + "b" * 20
 APP_URL = "https://chat.example/switch"
 
 
-def _config(**overrides: str) -> WebhookConnectionConfig:
+def _config(**overrides: Any) -> WebhookConnectionConfig:
     values = {
         "outbound_url": APP_URL,
         "signing_secret": SIGNING_SECRET,
@@ -437,6 +437,49 @@ class TestSendingToTheApp:
         [body] = app.bodies()
         assert body["files"] == []
         assert "not sent, too large: big.bin" in body["text"]
+
+
+class TestLongMessages:
+    @staticmethod
+    def _limited(app: _App, length: int) -> WebhookAdapter:
+        adapter = WebhookAdapter(config=_config(max_message_length=length))
+        adapter._http = httpx.AsyncClient(transport=httpx.MockTransport(app))
+        return adapter
+
+    async def test_a_message_is_sent_whole_by_default(self) -> None:
+        app = _App()
+        await _running(app).send_message("c-1", "triager", "word " * 2000)
+        assert len(app.requests) == 1
+
+    async def test_a_long_message_goes_in_parts_when_a_limit_is_set(self) -> None:
+        app = _App()
+        text = "\n\n".join(f"Paragraph {i}. " + "word " * 30 for i in range(10))
+        first_id = await self._limited(app, 300).send_message(
+            "c-1", "triager", text, "m-1"
+        )
+
+        bodies = app.bodies()
+        assert len(bodies) > 1
+        assert all(len(b["text"]) <= 300 for b in bodies)
+        assert bodies[0]["message_id"] == first_id
+        assert len({b["message_id"] for b in bodies}) == len(bodies)
+        assert {b["thread_id"] for b in bodies} == {"m-1"}
+
+    async def test_files_travel_with_the_first_part_only(self) -> None:
+        app = _App()
+        files = [OutboundAttachment(filename="a.txt", mimetype="text/plain", data=b"a")]
+        await self._limited(app, 120).send_attachments(
+            "c-1", "triager", files, caption="word " * 100
+        )
+
+        bodies = app.bodies()
+        assert len(bodies[0]["files"]) == 1
+        assert all(b["files"] == [] for b in bodies[1:])
+
+    @pytest.mark.parametrize("length", [1, 99])
+    def test_a_limit_too_small_to_be_useful_is_refused(self, length: int) -> None:
+        with pytest.raises(ValueError, match="at least 100"):
+            _config(max_message_length=length)
 
 
 class TestWhenTheAppMisbehaves:
