@@ -86,9 +86,7 @@ def _bridge(
             if agent_in_room:
                 return []
             if invited_by.kind != "system":
-                require_may_invite(
-                    [agent], invited_by, room_id=room_id, group_id=None
-                )
+                require_may_invite([agent], invited_by, room_id=room_id, group_id=None)
             return agent_ids
 
         async def create_room(self, config: Any) -> SimpleNamespace:
@@ -122,7 +120,9 @@ def _bridge(
         _adapter=_Adapter(),
         _bridge_id=BRIDGE,
         _bridge_display_name="Switch",
-        _channel_to_room={CHANNEL: ("room-1", "!r:switch.local")} if room_exists else {},
+        _channel_to_room={CHANNEL: ("room-1", "!r:switch.local")}
+        if room_exists
+        else {},
         _provisioning_channels=set(),
         _resolve_agents_for_channel=resolve_agents,
         _adopt_existing_room=adopt,
