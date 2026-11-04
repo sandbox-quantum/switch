@@ -393,3 +393,34 @@ async def test_composite_identity_changes_with_account():
         payload["org"] = "second-account"
         second = await adapter.identify("example-bearer-value")
     assert first.account_id != second.account_id
+
+
+async def test_identity_uses_configured_url_not_advertised_resource(monkeypatch):
+    """An OAuth audience identifier is not a destination for bearer credentials."""
+    server = FastMCP("configured-destination")
+
+    @server.tool(annotations={"readOnlyHint": True})
+    def get_user() -> dict:
+        return {"data": {"gid": "account-example", "name": "Example"}}
+
+    destinations = []
+
+    def transport(url, **kwargs):
+        destinations.append(url)
+        return server
+
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", transport)
+    async with httpx.AsyncClient() as http:
+        adapter = _adapter(http)
+        adapter._endpoints = oauth.AuthorizationEndpoints(
+            authorization="https://auth.example.test/authorize",
+            token="https://auth.example.test/token",
+            registration=None,
+            revocation=None,
+            resource="https://advertised.example.test/different-resource",
+            client_authentication="none",
+        )
+        identity = await adapter.identify("example-bearer-value")
+    assert identity.account_id == "account-example"
+    assert destinations == [_adapter_url()]
+    assert adapter._endpoints.resource not in destinations
