@@ -603,6 +603,37 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## Asana
+
+Tasks, projects, stories and comments through Asana's official remote MCP
+server (`https://mcp.asana.com/v2/mcp`). The operator's setup is in
+[`docs/old/asana-setup.md`](../old/asana-setup.md).
+
+- **Its own client per server.** Asana offers no dynamic client registration,
+  so each server's operator registers an OAuth app in Asana's Developer
+  Console, with Core's callback
+  (`<GATEWAY_PUBLIC_URL>/gateway/service-connections/asana/flows/callback`),
+  and saves it under Connector apps or names its settings in
+  `ASANA_CLIENT_CONFIG_PATH`. Without either, Asana is listed as not set up on
+  the server.
+- **MCP-only tokens and identity.** Asana issues OAuth tokens bounded to its
+  MCP server. Standard REST API endpoints (such as `GET /api/1.0/users/me`)
+  refuse these tokens, so account identity is read through the MCP server's
+  `get_user` tool (`identity.mcp_tool: get_user`).
+- **Unscoped access.** Asana documents no granular OAuth scopes for its MCP
+  server; passing scopes in the authorization request results in an error. The
+  entry specifies `access: { unscoped: true }`, omitting the `scope=` parameter
+  and mapping connections to the Write consent level. What an agent can reach
+  is governed by the authorizing user's existing Asana workspace permissions.
+- **Tokens and refresh.** Access tokens live 1 hour (3,600 s). Refresh tokens
+  are reusable until revoked.
+- **Revocation.** Disconnecting revokes tokens at
+  `https://app.asana.com/-/oauth_revoke`.
+
+To connect: Settings, Connections in Switch Console, then Asana. To roll back:
+add `asana` to `DISABLED_SERVICES`, remove its client under Connector apps or
+unset `ASANA_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every

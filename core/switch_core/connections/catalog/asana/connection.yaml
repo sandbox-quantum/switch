@@ -1,7 +1,37 @@
 slug: asana
 name: Asana
 category: Project management
-description: Read and update Asana tasks and projects.
-enabled: false
+description: Read and update Asana tasks and projects, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Asana refresh tokens are reusable until revoked.
+  refresh: reusable
+  oauth:
+    # Each server's operator registers an Asana OAuth app and names
+    # its settings in ASANA_CLIENT_CONFIG_PATH or saves them in the
+    # dashboard under Connector apps.
+    registration: static
+    client_settings: ASANA
+    redirect: [core]
+    authorization_url: https://app.asana.com/-/oauth_authorize
+    token_url: https://app.asana.com/-/oauth_token
+    revocation_url: https://app.asana.com/-/oauth_revoke
+  identity:
+    # Asana MCP-app tokens cannot call the standard REST API (/users/me),
+    # so identity is read via the MCP server's get_user tool.
+    mcp_tool: get_user
+    account_id: data.gid
+    label: data.name
+# Asana access tokens expire in 1 hour (3600 seconds).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - name: asana
+      url: "https://mcp.asana.com/v2/mcp"
+# Asana documents no narrower OAuth scopes for MCP; all tools within the
+# authorizing user's workspace are authorized.
+access:
+  unscoped: true
+tools: { mode: pass_through }
