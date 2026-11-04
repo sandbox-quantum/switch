@@ -72,10 +72,10 @@ def _fake_self(
     ) -> str:
         return unavailable_reply
 
-    async def _sender_role(
+    async def _sender_details(
         _session: object, _sender: str, _content: object
-    ) -> str | None:
-        return None
+    ) -> tuple[str | None, bool, str | None]:
+        return None, False, None
 
     async def _no_notice(_session: object) -> None:
         return None
@@ -93,7 +93,7 @@ def _fake_self(
         _compute_addressed=_compute_addressed,
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
-        _sender_role=_sender_role,
+        _sender_details=_sender_details,
         _switch_notice=_no_notice,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
