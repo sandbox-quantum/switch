@@ -227,6 +227,44 @@ class TestSignIn:
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
 
+    async def test_reads_identity_from_single_item_list(self, vendor) -> None:
+        vendor.account = [{"id": "org-1", "name": "Org One"}]
+        custom_yaml = STATIC.replace(
+            "account_id: account.id", "account_id: 0.id"
+        ).replace("label: account.email", "label: 0.name")
+        adapter, _ = _adapter(vendor, text=custom_yaml)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("org-1", "Org One")
+
+    async def test_refuses_identity_list_with_multiple_entries(self, vendor) -> None:
+        vendor.account = [{"id": "org-1"}, {"id": "org-2"}]
+        custom_yaml = STATIC.replace("account_id: account.id", "account_id: 0.id")
+        adapter, _ = _adapter(vendor, text=custom_yaml)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(
+            ServiceAdapterError, match="has 2 entries; exactly 1 is expected"
+        ):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_refuses_identity_list_with_zero_entries(self, vendor) -> None:
+        vendor.account = []
+        custom_yaml = STATIC.replace("account_id: account.id", "account_id: 0.id")
+        adapter, _ = _adapter(vendor, text=custom_yaml)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(
+            ServiceAdapterError, match="has 0 entries; exactly 1 is expected"
+        ):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_refuses_identity_list_with_out_of_bounds_index(self, vendor) -> None:
+        vendor.account = [{"id": "org-1"}]
+        custom_yaml = STATIC.replace("account_id: account.id", "account_id: 1.id")
+        adapter, _ = _adapter(vendor, text=custom_yaml)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="list index 1 is out of range"):
+            await adapter.identify(secret.access_token or "")
+
 
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:

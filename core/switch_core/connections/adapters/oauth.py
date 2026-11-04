@@ -153,6 +153,19 @@ def _https(url: object, what: str) -> str:
 def _path_value(document: Any, path: str) -> Any:
     value = document
     for part in path.split("."):
+        if isinstance(value, list) and part.isdigit():
+            if len(value) != 1:
+                raise ServiceAdapterError(
+                    f"The vendor's identity list has {len(value)} entries; "
+                    "exactly 1 is expected."
+                )
+            idx = int(part)
+            if idx != 0:
+                raise ServiceAdapterError(
+                    f"The vendor's identity list index {idx} is out of range."
+                )
+            value = value[idx]
+            continue
         if not isinstance(value, dict):
             return None
         value = value.get(part)
@@ -207,13 +220,19 @@ class OAuthAdapter:
             )
         return response
 
-    def _json(self, response: httpx.Response, what: str) -> dict[str, Any]:
+    def _json_document(self, response: httpx.Response, what: str) -> Any:
         if len(response.content) > MAX_METADATA_BYTES:
             raise ServiceAdapterError(f"{self._name}'s {what} is too large.")
         try:
             body = response.json()
         except ValueError:
             body = None
+        if not isinstance(body, (dict, list)):
+            raise ServiceAdapterError(f"{self._name}'s {what} is not valid JSON.")
+        return body
+
+    def _json(self, response: httpx.Response, what: str) -> dict[str, Any]:
+        body = self._json_document(response, what)
         if not isinstance(body, dict):
             raise ServiceAdapterError(f"{self._name}'s {what} is not a JSON object.")
         return body
@@ -507,7 +526,7 @@ class OAuthAdapter:
                 f"{self._name} would not say whose sign-in this is "
                 f"(HTTP {response.status_code})."
             )
-        body = self._json(response, "account")
+        body = self._json_document(response, "account")
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
         if type(account_id) is int:

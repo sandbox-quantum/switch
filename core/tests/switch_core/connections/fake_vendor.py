@@ -421,7 +421,12 @@ class FakeOAuthServer:
         if where == IDENTITY_URL and request.method == "GET":
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
-            return _json(200, {"account": self.account})
+            return _json(
+                200,
+                self.account
+                if isinstance(self.account, list)
+                else {"account": self.account},
+            )
         if where == MCP_URL:
             return self._mcp(request)
         return _json(404, {"error": "not_found"})
