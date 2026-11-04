@@ -28,6 +28,8 @@ export interface ConformanceOptions {
   skip?: Partial<Record<ConformanceScenario, string>>;
   /** Extra environment for spawned processes, layered over a minimal PATH/HOME. */
   env?: Record<string, string>;
+  /** How to request an approval for providers whose native policy permits ordinary workspace writes. */
+  approvalPromptSuffix?: string;
 }
 
 export type ConformanceScenario =
@@ -76,6 +78,7 @@ const nextId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${++cou
  */
 export function describeConformance(name: string, options: ConformanceOptions): void {
   const timeoutMs = options.timeoutMs ?? 180_000;
+  const approvalSuffix = options.approvalPromptSuffix ? ` ${options.approvalPromptSuffix}` : '';
 
   describe(`${name} conformance`, () => {
     let unavailable: string | null = null;
@@ -181,7 +184,7 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       await adapter.sendTurn({
         sessionId,
         turnId,
-        text: `Run the shell command: echo ${TOKEN} > approved.txt. Then reply "done".`,
+        text: `Run the shell command: echo ${TOKEN} > approved.txt. Then reply "done".${approvalSuffix}`,
       });
       const request = await recorder.waitFor(
         'request.opened',
@@ -208,7 +211,7 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       await adapter.sendTurn({
         sessionId,
         turnId,
-        text: `Run the shell command: echo ${TOKEN} > declined.txt. If you are not allowed to, do not try any other way; just reply "declined".`,
+        text: `Run the shell command: echo ${TOKEN} > declined.txt. If you are not allowed to, do not try any other way; just reply "declined".${approvalSuffix}`,
       });
       const request = await recorder.waitFor('request.opened', () => true, timeoutMs);
       await adapter.respondToRequest(sessionId, request.requestId, 'decline');

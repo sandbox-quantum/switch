@@ -308,19 +308,19 @@ describe('ProviderStatuses', () => {
     });
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(5);
+    expect(changes).toBe(6);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(5);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(10);
+    expect(changes).toBe(6);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(7);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -425,7 +425,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(4);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 
@@ -642,6 +642,23 @@ describe('PathProviderLocator', () => {
     dir = mkdtempSync(join(tmpdir(), 'controller-path-'));
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('detects DSH without booting a profile or interactive sign-in', async () => {
+    const script = await writeNodeCli(
+      dir,
+      'dsh',
+      'if (process.argv[2] !== "--version") process.exit(1); console.log("0.2.1-rc.5");'
+    );
+    const locator = new PathProviderLocator(() => dir, join(dir, 'probe-home'));
+    expect(await locator.locate('deepseek-harness')).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
+      version: '0.2.1-rc.5',
+      versionProblem: null,
+    });
+    expect(
+      await new PathProviderLocator(() => '/nonexistent', dir).locate('deepseek-harness')
+    ).toBeNull();
+  });
 
   it('finds a CLI by the plugin’s binary names, and reads its version', async () => {
     const script = await writeNodeCli(dir, 'cursor-agent', 'console.log("2026.01.15-abc")');
