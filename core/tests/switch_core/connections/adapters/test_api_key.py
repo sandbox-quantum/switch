@@ -21,7 +21,7 @@ from switch_core.connections.adapters.api_key import (
     key_token,
     render,
 )
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
 
 ENTRY = {
     "slug": "example",
@@ -314,3 +314,80 @@ async def test_a_refused_basic_key_says_which_fields_to_check() -> None:
     adapter = _basic_adapter(lambda request: httpx.Response(401))
     with pytest.raises(InvalidKeyError, match="refused the key"):
         await adapter.identify(adapter.checked_fields(BASIC_FIELDS))
+
+
+# ── The shipped Zendesk entry, against Zendesk's documented answers ───────────
+# Zendesk no longer issues API tokens, so these stand in for a live account.
+# The bodies follow the documented GET /api/v2/users/me.json response, with
+# synthetic values.
+
+ZENDESK_FIELDS = {
+    "subdomain": "acme",
+    "email": "agent@example.test",
+    "api_token": "SYNTHETIC-TOKEN",
+}
+
+
+def _zendesk_adapter(handler) -> ApiKeyAdapter:
+    return ApiKeyAdapter(
+        CATALOG["zendesk"].definition,
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+
+async def test_zendesk_names_the_signed_in_user_as_the_account() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "user": {
+                    "id": 35436,
+                    "name": "Agent Example",
+                    "email": "agent@example.test",
+                    "role": "agent",
+                    "active": True,
+                    "verified": True,
+                }
+            },
+        )
+
+    adapter = _zendesk_adapter(handler)
+    identity = await adapter.identify(adapter.checked_fields(ZENDESK_FIELDS))
+
+    assert (identity.account_id, identity.label) == ("35436", "agent@example.test")
+    (request,) = seen
+    assert request.method == "GET"
+    assert str(request.url) == "https://acme.zendesk.com/api/v2/users/me.json"
+    assert (
+        request.headers["Authorization"]
+        == "Basic "
+        + base64.b64encode(b"agent@example.test/token:SYNTHETIC-TOKEN").decode()
+    )
+
+
+async def test_zendesks_anonymous_user_fails_the_check() -> None:
+    anonymous = {
+        "user": {
+            "id": None,
+            "url": None,
+            "name": "Anonymous user",
+            "email": "invalid@example.com",
+            "role": "end-user",
+            "verified": False,
+        }
+    }
+    adapter = _zendesk_adapter(lambda request: httpx.Response(200, json=anonymous))
+    with pytest.raises(InvalidKeyError, match="did not name"):
+        await adapter.identify(adapter.checked_fields(ZENDESK_FIELDS))
+
+
+async def test_zendesk_refusing_the_token_fails_the_check() -> None:
+    unauthorized = {
+        "error": {"title": "Unauthorized", "message": "Couldn't authenticate you"}
+    }
+    adapter = _zendesk_adapter(lambda request: httpx.Response(401, json=unauthorized))
+    with pytest.raises(InvalidKeyError, match="refused the key"):
+        await adapter.identify(adapter.checked_fields(ZENDESK_FIELDS))
