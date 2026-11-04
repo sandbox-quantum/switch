@@ -26,6 +26,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway import chats as chats_module
 from switch_core.gateway import rooms as rooms_module
 from switch_core.gateway.schemas import RoomUpdateRequest
+from switch_core.invites import Inviter
 from switch_core.room_changes import RoomChanges, people_concerned
 from switch_core.user_changes import ROOM
 from tests.switch_core.gateway.conftest import (
@@ -193,7 +194,9 @@ async def test_an_owner_grant_does_not_make_a_group(chats: _Harness) -> None:
     room_id = await _left_chat(chats, chats.alice)
     [guest] = await _agent_ids(chats, room_id)
     await chats.room_service.remove_agents_from_room(room_id, [guest])
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=Inviter.system()
+    )
 
     assert await _reads(chats, chats.alice, room_id) == 200
     assert await _channel_type(chats, room_id) == "direct"
@@ -557,12 +560,35 @@ async def test_adding_an_agent_needs_its_permission_in_this_room(
     refused = await _add_agent(chats, chats.alice.id, denied_room, scoped)
     assert refused.status_code == 403
     assert _code(refused) == "AGENT_NOT_ALLOWED"
+    # The wording every invite path uses: what was refused, why, and who to ask.
+    message = str(refused.json()["detail"]["message"])
+    assert "scoped" in message
+    assert "restricts who can address it" in message
+    assert "can invite it" in message
     assert await _agent_ids(chats, denied_room) == {helper.id}
     assert await _channel_type(chats, denied_room) == "direct"
 
     added = await _add_agent(chats, chats.alice.id, allowed_room, scoped)
     assert added.status_code == 200, added.text
     assert await _agent_ids(chats, allowed_room) == {helper.id, scoped.id}
+
+
+async def test_an_agent_already_in_a_chat_is_not_ejected_by_a_tighter_policy(
+    chats: _Harness,
+) -> None:
+    helper = await chats.agent("helper", owner=chats.alice)
+    guest = await chats.agent("guest", owner=chats.admin)
+    room_id = await chats.new_chat(chats.alice, helper, "c1")
+    assert (await _add_agent(chats, chats.alice.id, room_id, guest)).status_code == 200
+
+    # Its owner locks it down afterwards: Alice could not add it now.
+    await _set_policy(chats, guest, {"rules": [{"owner": True, "users": []}]})
+
+    # It stays, and asking for it again is success rather than a refusal —
+    # the check gates the invite, not the membership that already exists.
+    again = await _add_agent(chats, chats.alice.id, room_id, guest)
+    assert again.status_code == 200, again.text
+    assert await _agent_ids(chats, room_id) == {helper.id, guest.id}
 
 
 async def test_only_a_manager_adds_or_removes_an_agent(chats: _Harness) -> None:

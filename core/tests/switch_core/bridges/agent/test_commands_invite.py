@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_invite
+from switch_core.invites import InviteNotPermitted
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
 _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
@@ -16,12 +17,17 @@ class _Room(SimpleNamespace):
 
 
 def _build_client(
-    *, registry: dict[str, Any], room_agent_ids: list[str]
+    *,
+    registry: dict[str, Any],
+    room_agent_ids: list[str],
+    refusal: str | None = None,
 ) -> tuple[SimpleNamespace, list[str], list[tuple[str, list[str]]]]:
     """A fake admin client capturing replies and add_agents_to_room calls.
 
     `registry` maps a lowercased agent name to its agent record (mirrors the
-    case-insensitive `get_by_name_insensitive` lookup).
+    case-insensitive `get_by_name_insensitive` lookup). `refusal` makes the
+    room service answer the way it does when the invited agent's addressing
+    policy does not admit the sender.
     """
     posted: list[str] = []
     added: list[tuple[str, list[str]]] = []
@@ -43,7 +49,12 @@ def _build_client(
         return list(room_agent_ids)
 
     async def _add_agents_to_room(room_id, agent_names=None, **_kw):  # type: ignore[no-untyped-def]
+        if refusal is not None:
+            raise InviteNotPermitted(refusal)
         added.append((room_id, list(agent_names or [])))
+
+    async def _get_by_transport_user_id(_session, _transport_user_id):  # type: ignore[no-untyped-def]
+        return None
 
     client = SimpleNamespace(
         session_factory=_session_factory,
@@ -51,13 +62,21 @@ def _build_client(
         reply_command=_reply_command,
         _agent_store=SimpleNamespace(get_by_name_insensitive=_get_by_name_insensitive),
         _room_store=SimpleNamespace(get_agent_ids=_get_agent_ids),
+        _room_role_store=SimpleNamespace(),
+        client_store=SimpleNamespace(
+            get_by_transport_user_id=_get_by_transport_user_id
+        ),
+        _external_user_store=SimpleNamespace(),
+        _connections=SimpleNamespace(live_connection_ids=set),
         _room_service=SimpleNamespace(add_agents_to_room=_add_agents_to_room),
     )
     return client, posted, added
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, thread_id=None, user_id="@someone:test"
+    )
 
 
 def _agent(
@@ -98,6 +117,26 @@ class TestInviteCommand:
         )
         assert added == []
         assert "already in this room" in posted[0]
+
+    async def test_a_refused_invite_is_relayed_verbatim(self) -> None:
+        # The command adds nothing and says exactly what the shared check
+        # said — the room reads the same refusal as every other invite path.
+        refusal = (
+            "You're not permitted to invite `claude-code.alice` into this room: "
+            "its owner restricts who can address it, and that same rule decides "
+            "who can invite it. Its owner, alice, can invite it, as can anyone "
+            "they allow to address it."
+        )
+        client, posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE},
+            room_agent_ids=[],
+            refusal=refusal,
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert added == []
+        assert posted == [refusal]
 
     async def test_missing_target_shows_usage(self) -> None:
         client, posted, added = _build_client(registry={}, room_agent_ids=[])

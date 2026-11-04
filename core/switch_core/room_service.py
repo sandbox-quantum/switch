@@ -36,7 +36,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.db.models import Room, RoomGroup, RoomRole
+from switch_core.db.models import Agent, Room, RoomGroup, RoomRole
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -47,6 +47,7 @@ from switch_core.db.stores.room_store import (
     RoomStore,
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.invites import Inviter, require_can_invite
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -178,6 +179,25 @@ class RoomCreateResult(BaseModel):
     failed_attachments: list[dict[str, Any]] = []
 
 
+def _creator_inviter(config: RoomCreateConfig) -> Inviter:
+    """Who is making this room, in the terms an addressing policy is written in.
+
+    Read from the fields the config already carries rather than from one of
+    its own: `created_by_kind` and its companions are what the room is
+    stamped with and audited by, and a second field saying the same thing is
+    a second field that can disagree. A creation that names nobody resolves
+    to an unidentified person, which a restricted policy refuses.
+    """
+    if config.created_by_kind == "system":
+        return Inviter.system()
+    if config.created_by_kind == "agent":
+        if config.created_by_agent_id is None:
+            return Inviter.unknown()
+        return Inviter.agent(config.created_by_agent_id, config.created_by)
+    user_id = config.acting_user_id or config.created_by
+    return Inviter.user(user_id) if user_id is not None else Inviter.unknown()
+
+
 ROOM_NAME_MAX = 200
 
 
@@ -301,6 +321,19 @@ class RoomService:
                 seen.add(child.id)
                 result.append(child.id)
         return result
+
+    async def _agents_by_id(
+        self, session: AsyncSession, agent_ids: list[str]
+    ) -> list[Agent]:
+        """The agent rows for `agent_ids`, in order. An id with no row is
+        dropped: it is not an agent whose policy could speak, and the paths
+        that cannot proceed without it fail on it further down."""
+        found = []
+        for agent_id in agent_ids:
+            agent = await self._agent_store.get(session, agent_id)
+            if agent is not None:
+                found.append(agent)
+        return found
 
     async def _resolve_ids_to_names(self, agent_ids: list[str]) -> list[str]:
         async with self._session_factory() as session:
@@ -572,6 +605,18 @@ class RoomService:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
+        if agent_ids:
+            # Before anything is provisioned: a room whose agents are refused
+            # should not exist, and an external channel made for it would
+            # outlive the refusal.
+            async with self._session_factory() as session:
+                await require_can_invite(
+                    session,
+                    agents=await self._agents_by_id(session, agent_ids),
+                    room_id="",
+                    group_id=config.group_id,
+                    inviter=_creator_inviter(config),
+                )
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
@@ -1026,14 +1071,24 @@ class RoomService:
     async def add_agents_to_room(
         self,
         room_id: str,
+        *,
+        invited_by: Inviter,
         agent_ids: list[str] | None = None,
         agent_names: list[str] | None = None,
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
-        added_by_kind: Literal["user", "agent", "system"] = "user",
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
     ) -> None:
-        """`with_agents` runs in the transaction that records the agents, so
+        """Add agents to a room, subject to their addressing policies.
+
+        `invited_by` says who is asking, and is required: every invite path
+        goes through here, and one that could leave it out would be one that
+        skipped the check. `Inviter.system()` is how machinery says it is
+        acting for nobody. Raises `InviteNotPermitted` when a newly added
+        agent's policy does not admit the inviter; agents already in the room
+        are not re-judged and never removed.
+
+        `with_agents` runs in the transaction that records the agents, so
         what it writes commits with them or not at all."""
         by_name = agent_ids is None and agent_names is not None
         if by_name:
@@ -1058,8 +1113,18 @@ class RoomService:
                 raise ValueError(f"Room not found: {room_id}")
 
             existing = await self._room_store.get_agent_ids(session, room.id)
+            # Judged over the agents this call would newly add, so an agent
+            # already in the room stays in it whatever its policy now says.
+            new_agent_ids = [aid for aid in agent_ids if aid not in existing]
+            if new_agent_ids and invited_by.is_judged:
+                await require_can_invite(
+                    session,
+                    agents=await self._agents_by_id(session, new_agent_ids),
+                    room_id=room.id,
+                    group_id=room.group_id,
+                    inviter=invited_by,
+                )
 
-        new_agent_ids = [aid for aid in agent_ids if aid not in existing]
         if not new_agent_ids:
             logger.debug(
                 "All agents are already part of the room, existing %s, new agent ids %s, agent ids %s",
@@ -1113,7 +1178,7 @@ class RoomService:
             {
                 # Added, not requested.
                 "agent_count": len(new_agent_ids),
-                "added_by_kind": added_by_kind,
+                "added_by_kind": invited_by.actor_kind,
             },
         )
 
