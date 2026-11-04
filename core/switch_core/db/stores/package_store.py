@@ -10,6 +10,7 @@ from switch_core.db.models import (
     room_packages,
     room_references,
 )
+from switch_core.db.stores.room_store import AttachedRooms, readable_by
 
 
 class PackageStore:
@@ -124,20 +125,34 @@ class PackageStore:
         return result.scalar_one_or_none() is not None
 
     async def get_attached_counts(
-        self, session: AsyncSession, package_ids: list[str]
-    ) -> dict[str, int]:
+        self,
+        session: AsyncSession,
+        package_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
+    ) -> dict[str, AttachedRooms]:
+        """How many rooms each is attached to: every one, and those the reader
+        may read."""
         if not package_ids:
             return {}
         result = await session.execute(
             select(
                 room_packages.c.package_id,
                 func.count(room_packages.c.room_id),
+                func.count(room_packages.c.room_id).filter(
+                    readable_by(reader_id, is_admin=reader_is_admin)
+                ),
             )
+            .join(Room, Room.id == room_packages.c.room_id)
             .where(room_packages.c.package_id.in_(package_ids))
             .group_by(room_packages.c.package_id)
         )
-        counts = {pid: int(c) for pid, c in result.all()}
-        return {pid: counts.get(pid, 0) for pid in package_ids}
+        counts = {
+            rid: AttachedRooms(every=int(every), readable=int(readable))
+            for rid, every, readable in result.all()
+        }
+        return {rid: counts.get(rid, AttachedRooms(0, 0)) for rid in package_ids}
 
     async def get_reference_counts(
         self, session: AsyncSession, package_ids: list[str]
@@ -172,12 +187,19 @@ class PackageStore:
         return {pid: counts.get(pid, 0) for pid in package_ids}
 
     async def list_rooms_for_package(
-        self, session: AsyncSession, package_id: str
+        self,
+        session: AsyncSession,
+        package_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[tuple[str, str]]:
+        """The rooms it is attached to, of those the reader may read."""
         result = await session.execute(
             select(Room.id, Room.name)
             .join(room_packages, Room.id == room_packages.c.room_id)
             .where(room_packages.c.package_id == package_id)
+            .where(readable_by(reader_id, is_admin=reader_is_admin))
         )
         return [(rid, name) for rid, name in result.all()]
 

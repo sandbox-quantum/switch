@@ -104,10 +104,11 @@ from switch_core.connections.app_credentials import ConnectorApps
 from switch_core.connections.app_signals import ConnectorAppSignals
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.github_move import move_github_connections
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, with_access_profiles
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
+from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
@@ -154,6 +155,9 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.organization_app_credential_store import (
+    OrganizationAppCredentialStore,
+)
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
@@ -1199,6 +1203,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         media_max_bytes=config.agent_media_max_bytes,
         agent_chats_enabled=config.agent_chats_enabled,
         group_chats_enabled=config.group_chats_enabled,
+        buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
     )
     # Changes to people's chats made in another process wake the Console
@@ -1220,12 +1225,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         public_url=config.gateway_public_url,
         server_name=config.id_server_name,
     )
-    connector_apps = ConnectorApps(
-        catalog=CATALOG,
-        config=config,
-        environ=os.environ,
+    connector_apps = _connector_apps(
+        config,
         session_factory=session_factory,
-        store=ServiceAppCredentialStore(config.keyring),
         http=service_http,
         registration=service_registration,
     )
@@ -1360,32 +1362,31 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Lifespan ──────────────────────────────────────────────────────────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
-    # A service is issued only where this server is set up for it, as its
-    # catalog entry's adapter says (`connections/registry.py`). Without any,
-    # the broker's upkeep still revokes and prunes whatever records exist.
-    service_broker = ServiceBroker(
+    # With `organization_connector_apps` on, a workspace whose organization
+    # saved its own app goes through that one (`connections/organization_apps.py`).
+    organization_apps = (
+        OrganizationApps(
+            apps=connector_apps,
+            store=OrganizationAppCredentialStore(config.keyring),
+        )
+        if config.organization_connector_apps_enabled
+        else None
+    )
+    service_broker = _service_broker(
+        config,
+        connector_apps,
+        organization_apps,
         session_factory=session_factory,
-        keyring=config.keyring,
-        catalog=CATALOG,
-        adapters=build_adapters(
-            CATALOG,
-            github_app=connector_apps.github_app(),
-            oauth_clients=connector_apps.oauth_clients(),
-            http=service_http,
-            registration=service_registration,
-        ),
-        disabled=config.disabled_services,
-        store=ServiceConnectionStore(),
-        token_retention=timedelta(days=config.service_token_retention_days),
-        workspace_services=WorkspaceServiceStore(),
-        workspace_gate=config.service_connections_enabled,
-        public_url=config.gateway_public_url,
+        http=service_http,
+        registration=service_registration,
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    gateway_app.state.organization_apps = organization_apps
     # A connector app the operator saves or removes, put to work in every process.
     ConnectorAppSignals(
         apps=connector_apps,
+        organization_apps=organization_apps,
         broker=service_broker,
         state=gateway_app.state,
         bus=signal_bus,
@@ -1597,6 +1598,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         "Switch is running on http://%s:%d", config.server_host, config.server_port
     )
 
+    # Before the server takes a connection or a session report, either of
+    # which can report a milestone this settles.
+    await telemetry.settle_superseded_milestones()
     telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
     # The funnel's first step, and only for a deployment with an install date.
     await telemetry.emit_milestone("deployment_installed")
@@ -2129,6 +2133,64 @@ async def _bootstrap_key_tenant(
     if legacy_holders:
         return legacy_holders[0]
     return TENANT_ZERO_ID
+
+
+def _connector_apps(
+    config: SwitchConfig,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    http: httpx.AsyncClient,
+    registration: ClientRegistration,
+) -> ConnectorApps:
+    """Each connector's app, over the catalog as this server offers it: an
+    entry may reach less here (`SERVICE_ACCESS_PROFILES`). Not yet loaded."""
+    return ConnectorApps(
+        catalog=with_access_profiles(CATALOG, config.service_access_profiles),
+        config=config,
+        environ=os.environ,
+        session_factory=session_factory,
+        store=ServiceAppCredentialStore(config.keyring),
+        http=http,
+        registration=registration,
+    )
+
+
+def _service_broker(
+    config: SwitchConfig,
+    connector_apps: ConnectorApps,
+    organization_apps: OrganizationApps | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    http: httpx.AsyncClient,
+    registration: ClientRegistration,
+) -> ServiceBroker:
+    """The broker over the catalog `connector_apps` holds, so the server's
+    adapters and every organization's ask for the same scopes.
+
+    A service is issued only where this server is set up for it, as its
+    catalog entry's adapter says (`connections/registry.py`). Without any,
+    the broker's upkeep still revokes and prunes whatever records exist.
+    """
+    catalog = connector_apps.catalog
+    return ServiceBroker(
+        session_factory=session_factory,
+        keyring=config.keyring,
+        catalog=catalog,
+        adapters=build_adapters(
+            catalog,
+            github_app=connector_apps.github_app(),
+            oauth_clients=connector_apps.oauth_clients(),
+            http=http,
+            registration=registration,
+        ),
+        organization_apps=organization_apps,
+        disabled=config.disabled_services,
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=config.service_token_retention_days),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=config.service_connections_enabled,
+        public_url=config.gateway_public_url,
+    )
 
 
 def _distributed_teams_app(

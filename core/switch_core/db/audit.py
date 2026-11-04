@@ -71,6 +71,7 @@ class AuditAction(StrEnum):
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
+    WORKSPACE_SERVICE_CLEARED = "workspace_service.cleared"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -78,6 +79,10 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_CREATED = "organization.workspace_created"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
+    CONNECTOR_APP_SAVED = "organization.connector_app_saved"
+    CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
+    SERVICE_SET = "organization.service_set"
+    SERVICE_CLEARED = "organization.service_cleared"
 
 
 class ServerAuditAction(StrEnum):

@@ -198,12 +198,35 @@ export type SwitchServerDeclaration = {
   contracts: Record<string, { speaks: number; accepts: number }>;
 };
 
+/**
+ * One of the signed-in person's API keys (mirrors the gateway `ApiKeyDetail`).
+ * `type` is `registration` for a key they made to register agents with,
+ * `agent` for one of their agents' own keys, or `bootstrap` for the
+ * deployment's seeded registration key. `keyPrefix` is the start of the key's
+ * hash, which identifies it without revealing it.
+ */
+export type SwitchApiKey = {
+  id: string;
+  label: string;
+  type: string;
+  keyPrefix: string;
+  createdAt: string;
+};
+
+/** A registration key just made, with its full value. */
+export type CreatedRegistrationKey = { id: string; label: string; key: string; createdAt: string };
+
 /** The authenticated user, as returned by `GET /gateway/auth/me`. */
 export type SwitchUser = {
   id: string;
   name: string;
   email: string;
   role: string;
+  /**
+   * Whether the account has a password of its own to change: false for one
+   * made through single sign-on. Absent from a server that does not say.
+   */
+  hasPassword?: boolean;
   /**
    * What the server declared on this session response.
    *
