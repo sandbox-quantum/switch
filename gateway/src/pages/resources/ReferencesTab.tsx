@@ -1,6 +1,6 @@
 import { Alert, Box, Chip, CircularProgress } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import DataTable from "../../components/DataTable";
 import { AccessChip } from "../../components/AccessControls";
@@ -9,22 +9,13 @@ import { useReferences, useReferenceTypes } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
 import { formatDate } from "../../theme/hootFormat";
 
-interface Props {
-  refreshKey: number;
-}
-
-export default function ReferencesTab({ refreshKey }: Props) {
+export default function ReferencesTab() {
   const navigate = useNavigate();
-  const { data: refs, loading, error, refetch } = useReferences();
+  const { data: refs, loading, error } = useReferences();
   const { data: types } = useReferenceTypes();
   const [search, setSearch] = useState("");
   const [ownerId, setOwnerId] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("");
-
-  useEffect(() => {
-    refetch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
 
   const owners = useMemo(() => {
     const m = new Map<string, string>();
