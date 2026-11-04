@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity, Cursor, DeepSeek Harness and Pi. Local sessions and sessions reached through SSH run
+Antigravity, Cursor, DeepSeek Harness, Pi and Kiro CLI. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -241,7 +241,7 @@ the native thread setting. Choose an explicit effort to replace it. Claude
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
 boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
 `session.summarize` with native busy/idle completion. Console shows progress and the
-outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt. Pi compacts with its own RPC `compact` command.
+outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation, and Kiro's `_kiro/session/compact` extension is not used. None receives a substitute summarization prompt. Pi compacts with its own RPC `compact` command.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
@@ -252,6 +252,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity ad
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 | DeepSeek Harness | Yes | ACP `model` option (its `[provider, model]` routes) | Unavailable | Staged file references |
 | Pi | Yes | Models of the providers Pi has credentials for | RPC `compact` | Images as bytes; other files named by path |
+| Kiro CLI | Yes | ACP model catalog (a `model` config option on its V3 engine) | Unavailable | Images as bytes; embedded file resources where advertised |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
@@ -397,8 +398,10 @@ resumes or attaches, including ones started automatically:
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
-  uses Smart Auto, Antigravity and Pi approve edits and ask before commands, and DeepSeek
-  Harness, with no reviewer of its own, asks before every tool except those that only read or search files.
+  uses Smart Auto, Antigravity and Pi approve edits and ask before commands, DeepSeek
+  Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
+  and Kiro applies its own trust policy and safety check before anything reaches
+  Console, which asks about the rest.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 
@@ -430,7 +433,9 @@ that machine. An inconclusive check produces a warning; it is not treated as a
 missing login. Existing sessions are not stopped when a setup check fails.
 
 Claude uses its native auth status command. Codex uses app-server account status.
-Cursor uses its native account status output. Antigravity initializes an empty
+Cursor uses its native account status output. Kiro reads `kiro-cli whoami`
+and, when that cannot answer, the agent's handshake, which a signed-out Kiro
+answers with its `kiro-login` method. Antigravity initializes an empty
 session without sending a prompt, and returns its native model list. Pi lists the
 models it has credentials for (`pi --list-models`, offline). OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials

@@ -499,6 +499,11 @@ version of their own to them without also giving them a release of their own.
   server, Core now sends the `resource` that the server advertises. Core
   accepts it only if it is the server's URL, or a parent path on the same
   origin, with no query or fragment.
+- **Kiro CLI is a provider.** Definitions, the gateway's provider list and
+  known-agent registration accept `kiro`, and an offline Kiro agent tells its
+  owner to run `kiro-cli login`. A chat now names the provider of any agent
+  registered through a provider's known-agent spec, read from the provider
+  table rather than a list of its own.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -3037,6 +3042,13 @@ version of their own to them without also giving them a release of their own.
   Copilot plan or on a model provider of its own (`COPILOT_PROVIDER_BASE_URL`
   and `COPILOT_MODEL`). Its sign-in check starts nothing, and Switch answers
   its permission requests by the runtime mode.
+- **Kiro CLI is an agent provider.** Agents can run on `kiro-cli acp`:
+  created in Console with a model from Kiro's own list, talking in rooms,
+  asking for approvals from the chat, and resuming their conversation after a
+  restart. Console says whether Kiro is installed and signed in without
+  starting a sign-in, and tells you to run `kiro-cli login` (or
+  `kiro-cli login --use-device-flow` on a machine without a browser) when it
+  is not. A `KIRO_API_KEY` on the machine is passed through.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
@@ -5215,6 +5227,9 @@ tags; see RELEASING.md.
   computer passes the session's provider and how it started to Console over
   its IPC channel, for Console's usage data. A controller with no parent
   listening, on an SSH host or run as a service, sends nothing.
+- **Runs Kiro CLI agents.** `kiro-cli` on `PATH`, signed in as the user the
+  controller runs as or with `KIRO_API_KEY` in its `--env-file`, is reported
+  and run like the other providers.
 - **Waits its turn when Switch is busy opening connections.** An open or an
   attach refused as `busy` comes with when to try again, the controller's
   place in the server's queue, and the controller now waits that long
