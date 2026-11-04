@@ -974,6 +974,8 @@ async def create_room(
             Names match exactly. An ambiguous bare name errors with the path
             of each match to retry with; an unknown path errors naming the
             first segment not found. Omit to leave the room standalone.
+            Filing a room in a group needs an owner who is a workspace
+            admin; anyone else is refused.
         roles: Optional room-roles to define at creation. Each entry is
             `{"name": "...", "instructions": "...", "exclusive": bool}`.
             Roles are assumable instruction bundles agents pick up with

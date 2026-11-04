@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal, require
+from switch_core.authz import Principal, require, require_group_filing
 from switch_core.db.models import RoomGroup, User
 from switch_core.db.stores.room_group_store import (
     RoomGroupNameTaken,
@@ -154,10 +154,15 @@ async def assign_rooms_to_group(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomGroupAssignResponse:
-    """Bulk-assign rooms into a group. Requires write access to each room;
-    unknown room ids are skipped."""
+    """Bulk-assign rooms into a group. Requires a workspace admin (see
+    `require_group_filing`) and write access to each room; unknown room ids
+    are skipped."""
     if await room_group_store.get(session, group_id) is None:
         raise HTTPException(status_code=404, detail="Room group not found")
+    try:
+        require_group_filing(is_admin)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
 
     principal = Principal(user.id, is_admin)
     forbidden: list[str] = []

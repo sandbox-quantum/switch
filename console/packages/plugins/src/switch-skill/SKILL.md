@@ -719,12 +719,16 @@ groups nest under a parent to form a tree.
   (`member_rooms`), and its immediate `child_groups`.
 - **`create_room_group`** — provision a group. Only an agent whose owner is a
   workspace admin may: groups are shared by the whole workspace. Anyone else
-  is refused, so file the room under an existing group or ask an admin.
+  is refused; ask an admin.
   Required: `name`. Optional: `description`, `color`, `parent_group_name`
   (omit it for a top-level group). Creating a group does not move any rooms
   into it; file rooms under it later by passing `group_name` to
   `create_room`. Missing parents are not created for you: create each level
   first.
+- **Filing a room in a group** (`group_name` on `create_room`) also needs an
+  owner who is a workspace admin, because an agent's addressing policy can
+  admit everyone in a group's rooms. Without one, create the room standalone
+  and ask an admin to file it.
 
 Name a group by its **path**: the top-level group, then each child, separated
 by `/`, e.g. `Fraud/Incidents`. The `path` that `list_room_groups` returns

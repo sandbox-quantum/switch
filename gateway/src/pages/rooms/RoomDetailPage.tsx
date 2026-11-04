@@ -120,7 +120,12 @@ export default function RoomDetailPage() {
       <Stack spacing={4}>
         <RoomInfoSection room={room} />
         <Divider />
-        <GroupSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <GroupSection
+          room={room}
+          canWrite={canWrite}
+          canFile={canAdminTenant}
+          onChanged={refetch}
+        />
         <Divider />
         <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
@@ -232,10 +237,13 @@ function InfoChip({
 function GroupSection({
   room,
   canWrite,
+  canFile,
   onChanged,
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  /** May put the room in a group: a workspace admin. Anyone who can write may take it out. */
+  canFile: boolean;
   onChanged: () => void;
 }) {
   const { data: groups, refetch: refetchGroups } = useRoomGroups();
@@ -244,6 +252,13 @@ function GroupSection({
 
   const groupList = useMemo(() => groups ?? [], [groups]);
   const byId = useMemo(() => buildGroupIndex(groupList), [groupList]);
+  const choices = useMemo(
+    () =>
+      flattenTree(groupList).filter(
+        ({ group }) => canFile || group.id === room.group_id,
+      ),
+    [groupList, canFile, room.group_id],
+  );
 
   const handleChange = useCallback(
     async (value: string) => {
@@ -286,12 +301,16 @@ function GroupSection({
           label="Group"
           value={room.group_id ?? ""}
           onChange={(e) => handleChange(e.target.value)}
-          disabled={saving || !canWrite}
+          disabled={saving || !canWrite || (!canFile && !room.group_id)}
           sx={{ width: 320 }}
-          helperText="Groups organise rooms in the list and colour them in the graph."
+          helperText={
+            canFile
+              ? "Groups organise rooms in the list and colour them in the graph."
+              : "Only a workspace admin can put a room in a group."
+          }
         >
           <MenuItem value="">Standalone (no group)</MenuItem>
-          {flattenTree(groupList).map(({ group, depth }) => (
+          {choices.map(({ group, depth }) => (
             <MenuItem key={group.id} value={group.id}>
               {"  ".repeat(depth)}
               {group.name}
