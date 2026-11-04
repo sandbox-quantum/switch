@@ -201,6 +201,7 @@ class TestUnavailableReplyRouting:
             "opencode": "opencode auth login",
             "antigravity": "antigravity-acp --login",
             "cursor": "agent login",
+            "deepseek-harness": "dsh web",
         }
         for agent_type, command in sign_in.items():
             agent = _agent(
