@@ -55,6 +55,7 @@ export interface SecretField {
 
 const GOOGLE = 'google-workspace';
 const AIRTABLE = 'airtable';
+const GITLAB = 'gitlab';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -358,6 +359,49 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === GITLAB)
+    return [
+      {
+        text: 'In GitLab, add an application under Settings, Applications of a top-level group your organization owns, or under Access, Applications in your own profile. Whoever owns the application can delete it, and that stops every connection.',
+        copy: [],
+        link: {
+          label: 'Open your applications',
+          href: 'https://gitlab.com/-/user_settings/applications',
+        },
+        items: [],
+      },
+      {
+        text: "Name it as people should see it on GitLab's authorization page, for example Switch.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep('Set the Redirect URI to:', redirectUris(app)),
+      {
+        text: 'Keep Confidential ticked: Switch keeps the secret on the server.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'Under Scopes, tick exactly these:',
+        copy: [],
+        link: null,
+        items: app.scopes,
+      },
+      {
+        text: 'Save the application, and copy its Application ID and Secret.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'Check that the top-level groups people belong to allow access to the MCP server, under Settings, General, Permissions and group features. It is on unless an Owner turned it off; where it is off, every call after a sign-in is refused.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === GOOGLE)
     return [
       {
@@ -438,6 +482,7 @@ const HELM_VALUES: Record<string, string> = {
   github: 'switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath',
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
   [AIRTABLE]: 'switchCore.airtableClientSecret',
+  [GITLAB]: 'switchCore.gitlabClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */

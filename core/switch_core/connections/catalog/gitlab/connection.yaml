@@ -1,7 +1,50 @@
 slug: gitlab
 name: GitLab
 category: Source control
-description: Work with GitLab projects, merge requests and issues.
-enabled: false
+description: Read and update GitLab projects, issues, merge requests and pipelines, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # Dynamic registration grants only the mcp scope and the authorization_code
+    # grant (measured against gitlab.com, 2026-10-29), so the operator
+    # registers an application.
+    registration: static
+    client_settings: GITLAB
+    redirect: [core]
+    unchecked: >-
+      Switch can't check the redirect URI: GitLab compares it only when
+      someone signs in. Connect once to confirm it.
+    # Named, not discovered from the MCP server: a discovered sign-in sends
+    # resource=https://gitlab.com/api/v4/mcp, and GitLab then grants mcp alone,
+    # whatever else was asked for (measured 2026-11-03: "mcp api" requested,
+    # "mcp" granted with resource, "mcp api" without).
+    authorization_url: https://gitlab.com/oauth/authorize
+    token_url: https://gitlab.com/oauth/token
+    revocation_url: https://gitlab.com/oauth/revoke
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+# expires_in 7200, measured 2026-11-03.
+token: { kind: pass_through, max_lifetime: 7200 }
+# gitlab.com only. A top-level group the person belongs to must allow access
+# to the MCP server (Settings, General, Permissions and group features; on by
+# default), or every call is refused with 403.
+mcp:
+  servers:
+    - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
+access:
+  # GitLab approves the whole request or refuses it, so every connection is
+  # granted the write level.
+  read:
+    scopes:
+      - mcp
+      - read_api
+  write:
+    scopes:
+      - mcp
+      - api
+tools: { mode: pass_through }

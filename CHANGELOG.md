@@ -106,6 +106,20 @@ version of their own to them without also giving them a release of their own.
   lists, now leave out private rooms the caller cannot read.
 
 #### Added
+- **The GitLab connection.** A person connects their gitlab.com account from
+  Switch Console, and a granted agent reads and updates projects, issues and
+  other work items, merge requests, repository files and pipelines, as that
+  person, through GitLab's own MCP server. Each server's operator registers
+  a GitLab application and saves it under Connector apps, or names it in
+  `GITLAB_CLIENT_CONFIG_PATH` (Helm: `switchCore.gitlabClientSecret`); see
+  `docs/old/gitlab-setup.md`. GitLab's dynamic registration grants only the
+  `mcp` scope and no refresh token, so it is not used. Like Airtable and
+  Google Workspace, it needs `GATEWAY_PUBLIC_URL`: GitLab sends people back
+  to the server's own callback. GitLab's authorization page approves the
+  whole request or refuses it, so every connection is granted the write
+  level; what an agent reaches is bounded by the person's own role in each
+  project. Disconnecting revokes the sign-in at GitLab. gitlab.com only: a
+  self-managed instance has its own host, which the catalog cannot vary.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -2397,6 +2411,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Admin → Connector apps sets up GitLab.** Its dialog walks GitLab's
+  application form with the redirect URI to paste and the scopes to tick,
+  and names the group setting that allows access to the MCP server.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

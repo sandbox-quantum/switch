@@ -603,6 +603,85 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## GitLab
+
+Projects, work items (issues, tasks, epics), merge requests, repository files
+and pipelines on gitlab.com, through GitLab's own MCP server
+(`gitlab.com/api/v4/mcp`); the operator's setup is in
+[`docs/old/gitlab-setup.md`](../old/gitlab-setup.md). Built from GitLab's
+published metadata, its documentation and its registration controller's
+source, from probes of gitlab.com's endpoints, and from sign-ins through an
+application registered for the purpose (2026-11-03).
+
+- **Dynamic registration is advertised and not used.** GitLab's registration
+  controller cuts a dynamic application to one MCP scope (`mcp`, read off the
+  `resource` or the requested scope) and the `authorization_code` grant,
+  whatever the request asks for (measured against gitlab.com, 2026-10-29).
+  With no refresh grant the sign-in dies with its two-hour token, and with
+  `mcp` alone nothing can read `/api/v4/user` to name the account. So each
+  server's operator registers a GitLab application (`registration: static`,
+  `GITLAB_CLIENT_CONFIG_PATH`), confidential, with the scopes `mcp`,
+  `read_api` and `api`, and the browser comes back to Core's own callback, as
+  Airtable's does.
+- **The endpoints are named, not discovered.** Discovery works as the MCP
+  authorization spec describes: the MCP server's 401 names
+  `gitlab.com/.well-known/oauth-protected-resource/api/v4/mcp`, whose
+  authorization server is `https://gitlab.com`, and its metadata lists
+  `/oauth/authorize`, `/oauth/token` and `/oauth/revoke`, PKCE with S256 and
+  `client_secret_post`. But a sign-in through discovered endpoints carries
+  `resource=https://gitlab.com/api/v4/mcp`, and GitLab then issues the token
+  with the `mcp` scope alone, whatever the request asked for (measured
+  2026-11-03: `mcp api` requested, `mcp` granted with `resource`, `mcp api`
+  without). Such a token reaches the MCP server but no REST endpoint, so
+  `/api/v4/user` answers 403 `insufficient_scope` and the sign-in fails. The
+  entry therefore names the three endpoints itself, and the adapter sends no
+  `resource`; the MCP server accepts the wider token all the same.
+- **The check cannot see the redirect URI.** GitLab answers a made-up code
+  with `invalid_client` for a client it does not know (measured 2026-11-03),
+  and compares the redirect URI only with a real code, so the entry's
+  `unchecked` tells the operator to connect once.
+- **Scopes.** `mcp` is the one scope the MCP server requires. The REST
+  scopes say what the sign-in may do through GitLab's API and let
+  `/api/v4/user` name the account (`id`, labelled by `username`): `read_api`
+  for the read level, `api` for write. GitLab does not document whether its
+  MCP tools consult the REST scopes beyond `mcp`; each tool checks the
+  person's own role in the project or group when it runs, which bounds every
+  call either way. GitLab's authorization page approves the whole request or
+  refuses it, so every connection is granted the write level, as Airtable's
+  are; the read level stays as what a read-only sign-in would ask for, to be
+  measured when Switch can ask for one. Not asked for: `read_user` (inside
+  both REST scopes), `sudo`, `admin_mode`, the runner, registry and
+  observability scopes, `ai_features` and the OpenID scopes.
+- **Tokens** live two hours (`expires_in: 7200`, measured 2026-11-03) and
+  come with a refresh token; a refresh invalidates the previous access and
+  refresh tokens, so `refresh: rotating` and `max_lifetime: 7200`.
+- **What GitLab needs turned on.** On gitlab.com a top-level group the person
+  belongs to must allow access to the MCP server (on by default since 19.5,
+  turned on for existing groups in 19.6); otherwise every call after the
+  sign-in is refused with 403, which the skill names. gitlab.com limits MCP
+  calls per person (60 a minute and 3,600 an hour on Free, 600 and 5,000 on
+  Premium and Ultimate), shared across their clients; the skill tells agents
+  to prefer searches and filtered lists and to wait as long as a 429 says.
+- **Tools pass through.** GitLab's default toolsets (`core`,
+  `merge_requests`, `work_items`, `repository`, `ci`) are always listed: 39
+  tools on a Free account with no Duo (2026-11-03), `semantic_search` among
+  them. The Duo tools are listed only where the person's group has GitLab
+  Duo, and the wiki, security and Orbit toolsets not at all without a
+  request header Switch does not send. Tools pass through unclassified, so a grant offers merging,
+  committing and pipeline actions too, and the skill tells the agent to
+  confirm before each and never merge, close, delete or start a Duo session
+  (which spends the organization's Duo allowance) unless asked.
+- **Self-managed** is not in this entry: the host appears in the MCP URL, the
+  three OAuth endpoints and the identity call, and the catalog cannot vary it
+  per install. An instance would also need GitLab 18.6 or later with
+  the MCP server allowed by an administrator, and an application the
+  administrator registers.
+
+To connect: Settings, Connections in Switch Console, then GitLab. To roll
+back, add `gitlab` to `DISABLED_SERVICES`, remove its client under Connector
+apps or unset `GITLAB_CLIENT_CONFIG_PATH`, or set the entry's
+`enabled: false`.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
