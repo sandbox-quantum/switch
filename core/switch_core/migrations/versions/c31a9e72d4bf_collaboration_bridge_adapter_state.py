@@ -1,7 +1,7 @@
 """Persist adapter cursors independently of connection credentials.
 
 Revision ID: c31a9e72d4bf
-Revises: b7e1d4c9a2f6
+Revises: 10f6d02ac5bc
 Create Date: 2026-11-01 00:00:00.000000
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "c31a9e72d4bf"
-down_revision: str | None = "b7e1d4c9a2f6"
+down_revision: str | None = "10f6d02ac5bc"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
