@@ -77,7 +77,16 @@ describe('ProviderPrecheck', () => {
     const file = JSON.stringify({
       providers: [
         { status: { provider: 'claude', installed: true, auth: 'ok', checked_at: at(500) } },
-        { status: { provider: 'codex', installed: true, auth: 'missing', checked_at: at(600) } },
+        {
+          status: {
+            provider: 'codex',
+            installed: true,
+            auth: 'missing',
+            checked_at: at(600),
+            auth_problem: 'An administrator pins where Codex keeps logins.',
+            login_helps: false,
+          },
+        },
         {
           status: {
             provider: 'cursor',
@@ -92,8 +101,14 @@ describe('ProviderPrecheck', () => {
     expect(await service.results()).toBeNull();
     service.start();
     expect(await service.results()).toEqual([
-      { provider: 'claude', installed: true, auth: 'ok', problem: null },
-      { provider: 'codex', installed: true, auth: 'missing', problem: null },
+      { provider: 'claude', installed: true, auth: 'ok', problem: null, loginHelps: true },
+      {
+        provider: 'codex',
+        installed: true,
+        auth: 'missing',
+        problem: 'An administrator pins where Codex keeps logins.',
+        loginHelps: false,
+      },
     ]);
     advance(10 * 60 * 1000 + 1_000);
     expect(await service.results()).toEqual([]);

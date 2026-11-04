@@ -150,6 +150,12 @@ export function cardOrder(
 }
 
 export function notSetUpSentence(app: ConnectorApp): string {
+  const what = app.kind === "github_app" ? "GitHub App" : `${vendorName(app)} client`;
+  // An organization's page: its workspaces may use the server's app meanwhile.
+  if (app.server_app === true)
+    return `Your workspaces use the server's ${what}. Add your organization's own to use that instead.`;
+  if (app.server_app === false)
+    return `People in your organization can't connect ${app.name} until you add your organization's ${what}.`;
   return app.kind === "github_app"
     ? "People can't connect GitHub until you add Switch's GitHub App."
     : `People can't connect ${app.name} until you add Switch's ${vendorName(app)} client.`;
@@ -408,6 +414,13 @@ export function switchWarning(app: ConnectorApp, impact: ConnectorAppImpact): st
 
 export function removeWarning(app: ConnectorApp): string {
   const name = app.name;
+  if (app.server_app === true) {
+    const back = `Your workspaces go back to the server's ${name} app.`;
+    if (app.connected_members === 0) return back;
+    const people =
+      app.connected_members === 1 ? "The 1 person" : `The ${app.connected_members} people`;
+    return `${back} ${people} connected now must reconnect.`;
+  }
   if (app.connected_members === 0) return `Nobody will be able to connect ${name}.`;
   const people =
     app.connected_members === 1 ? "the 1 person" : `the ${app.connected_members} people`;

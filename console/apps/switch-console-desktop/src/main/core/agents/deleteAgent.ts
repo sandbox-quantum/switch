@@ -1,6 +1,8 @@
 import { eq } from 'drizzle-orm';
 import { forgetManagedAgent } from '@main/core/agent-migration/managed-agents-store';
+import { deleteLocationIfUnused } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { releaseHostIfUnused } from '@main/core/remote-hosts/production-host-reachability';
 import { discardControllerState } from '@main/core/sdk-host/agent-host';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { setControllerStopped } from '@main/core/switch-rooms/auto-session-store';
@@ -107,7 +109,21 @@ async function deleteAgentInSwitch(agent: Agent): Promise<void> {
     );
   }
 
-  await withWorkspaceSession(workspaceId, (server) => gatewayDeleteAgent(server, switchAgentId));
+  await withWorkspaceSession(workspaceId, async (server) => {
+    try {
+      await gatewayDeleteAgent(server, switchAgentId);
+    } catch (error) {
+      // Already gone on the server (an old identity, or a server since reset): the
+      // local delete still has to happen, or the agent can never be removed.
+      if (!(error instanceof GatewayError && error.kind === 'http' && error.status === 404)) {
+        throw error;
+      }
+      log.warn('deleteAgent: the Switch identity was already gone', {
+        agentId: agent.id,
+        switchAgentId,
+      });
+    }
+  });
 }
 
 /**
@@ -186,8 +202,9 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  *    processes untouched — on a shared host they may belong to another install
  *    (CHOO-2560). Sibling agents' files are never touched either way.
  *
- * The agent's location row is intentionally kept — locations are reusable
- * and other agents may still live there.
+ * The agent's location row goes with its last agent (its directory never
+ * does); a location other agents still use is kept. A remote host nothing
+ * uses any more stops being probed.
  */
 export async function deleteAgent(agentId: string, options: DeleteAgentOptions): Promise<void> {
   const agent = await getAgentById(agentId);
@@ -227,15 +244,15 @@ async function removeAgent(
   const terminate = removeFiles || options.deleteInSwitch;
   const stopController = () =>
     location?.sshHost ? stopRemoteWatcher(agentId) : autoSessionWatcher.stopForAgent(agentId);
+  // Gateway cascade first: fail loud before touching local state (the controller
+  // included) so a failure leaves the agent exactly as it was.
+  if (options.deleteInSwitch && agent) {
+    await deleteAgentInSwitch(agent);
+  }
   const stoppedUpFront = terminate && agent !== undefined;
   if (stoppedUpFront) {
     await stopController();
     await stopSharedAgentSessions(agent);
-  }
-  // Gateway cascade first: fail loud before touching local state so a failure
-  // never leaves the row deleted but the Switch identity orphaned.
-  if (options.deleteInSwitch && agent) {
-    await deleteAgentInSwitch(agent);
   }
 
   const sessionRows = await db
@@ -296,4 +313,19 @@ async function removeAgent(
   // notice it left.
   for (const row of sessionRows) sessionHooks._emit('session:deleted', row.id);
   agentEvents._emit('agent:deleted', agentId);
+
+  if (location) await releaseLocationIfUnused(location);
+}
+
+/** Housekeeping after the agent is gone: a failure here must not report the delete as failed. */
+async function releaseLocationIfUnused(location: Location): Promise<void> {
+  try {
+    await deleteLocationIfUnused(location.id);
+    if (location.sshHost) await releaseHostIfUnused(location.sshHost);
+  } catch (error) {
+    log.warn('deleteAgent: failed to release the unused location', {
+      locationId: location.id,
+      error: String(error),
+    });
+  }
 }

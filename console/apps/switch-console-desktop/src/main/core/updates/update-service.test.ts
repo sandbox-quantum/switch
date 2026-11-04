@@ -62,6 +62,7 @@ vi.mock('@main/lib/logger', () => ({
 
 import type { EventEmitter } from 'node:events';
 import { app } from 'electron';
+import type * as AppIdentity from '@shared/app-identity';
 import { updateService } from './update-service';
 
 /** The app going down for the installer, as the service observes it. */
@@ -223,6 +224,45 @@ describe('the launch after an install', () => {
     await restarted.initialize();
 
     expect(installEvents()).toEqual([]);
+  });
+});
+
+describe('a canary build', () => {
+  afterEach(() => {
+    vi.doUnmock('@shared/app-identity');
+    vi.doUnmock('./canary-feed');
+  });
+
+  it('reports a failed release lookup as an update error', async () => {
+    // The lookup runs before the updater, so the updater's error listener never
+    // hears about it — and a scheduled check has no caller to show the error.
+    vi.resetModules();
+    vi.doMock('@shared/app-identity', async (importOriginal) => ({
+      ...(await importOriginal<typeof AppIdentity>()),
+      IS_CANARY: true,
+    }));
+    vi.doMock('./canary-feed', () => ({
+      resolveCanaryFeedUrl: async () => {
+        throw new Error('GitHub API returned 403');
+      },
+    }));
+    const { events } = await import('@main/lib/events');
+    const { updateErrorEvent } = await import('@shared/events/updateEvents');
+    const { updateService: canary } = await import('./update-service');
+    await canary.initialize();
+    canary.dispose();
+    vi.mocked(events.emit).mockClear();
+    h.checkForUpdatesAndNotify.mockClear();
+
+    await expect(canary.checkForUpdates('scheduled')).rejects.toThrow('403');
+
+    expect(h.checkForUpdatesAndNotify).not.toHaveBeenCalled();
+    expect(canary.getState()).toMatchObject({ status: 'error' });
+    expect(canary.getState().error).toContain('403');
+    expect(events.emit).toHaveBeenCalledWith(updateErrorEvent, {
+      message: expect.stringContaining('403'),
+    });
+    canary.dispose();
   });
 });
 

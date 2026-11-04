@@ -98,7 +98,9 @@ BOOTSTRAP_LAST_SEEDED_HASH_META_KEY = "agent_bootstrap_key_last_hash"
 BOOTSTRAP_REVOKED_HASHES_META_KEY = "agent_bootstrap_revoked_hashes"
 
 
-def _is_genuine(owner: User) -> bool:
+def is_bootstrap_owner(owner: User) -> bool:
+    """Whether `owner` is the account bootstrap-registered agents are owned
+    by: a service account, not a person."""
     meta = owner.metadata_ or {}
     if meta.get(BOOTSTRAP_OWNER_MARKER_META_KEY):
         return True
@@ -106,7 +108,7 @@ def _is_genuine(owner: User) -> bool:
 
 
 def _raise_unless_genuine(owner: User) -> None:
-    if not _is_genuine(owner):
+    if not is_bootstrap_owner(owner):
         raise RuntimeError(
             f"An account already exists at {BOOTSTRAP_OWNER_EMAIL} but "
             "cannot be proven to have been created by agent-registration "
@@ -134,7 +136,7 @@ async def ensure_bootstrap_owner(session: AsyncSession, user_store: UserStore) -
     """Idempotently create the account bootstrap-registered agents are owned by.
 
     Raises if an account already exists at that address that cannot be
-    proven genuine (see ``_is_genuine``), or that has since been given the
+    proven genuine (see ``is_bootstrap_owner``), or that has since been given the
     admin role. A genuine row created before the marker existed is backfilled
     with one here rather than refused.
     """

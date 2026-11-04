@@ -72,6 +72,23 @@ const focusRing = {
   },
 } as const;
 
+/**
+ * Switches off the modifier MUI's Popper adds to copy popper.js's placement
+ * into React state. The Popper re-positions after every render, and that copy
+ * then queues an update even when the placement has not changed. Typing faster
+ * than the browser yields to React's scheduler (a paste-by-key tool, a
+ * scanner, fuzzed input) while a Popper is mounted, an Autocomplete's popup or
+ * a data grid's column menu, piles one up per keystroke, and the 51st trips
+ * React's "Maximum update depth exceeded" (#185). popper.js still positions
+ * the popup; only the placement a flip picks is no longer reported back.
+ *
+ * Given as `popperOptions` because the Popper appends those modifiers after
+ * the ones a component passes, as the data grid does. A Tooltip passes its own
+ * `popperOptions` and so keeps the report, which its arrow needs. A module
+ * constant because the Popper rebuilds itself whenever its options change.
+ */
+const POPPER_OPTIONS = { modifiers: [{ name: "onUpdate", enabled: false }] };
+
 export const APP_THEME = () =>
   createTheme({
     cssVariables: { colorSchemeSelector: "data-mui-color-scheme" },
@@ -281,6 +298,7 @@ export const APP_THEME = () =>
           },
         },
       },
+      MuiPopper: { defaultProps: { popperOptions: POPPER_OPTIONS } },
       MuiTextField: { defaultProps: { size: "small", fullWidth: true, variant: "outlined" } },
       MuiTooltip: {
         defaultProps: { arrow: true },
