@@ -102,6 +102,7 @@ export type RendererTelemetryEvents = {
       | 'droid'
       | 'cline'
       | 'junie'
+      | 'grok-build'
       | 'none';
   };
   /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */

@@ -100,6 +100,7 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'droid',
       'cline',
       'junie',
+      'grok-build',
       'none',
     ]),
   }),

@@ -498,6 +498,7 @@ class TestManagedAgents:
             "droid",
             "cline",
             "junie",
+            "grok-build",
         }
         assert providers["cursor"] == {"fields": []}
         assert providers["kiro"] == {"fields": []}
@@ -536,6 +537,7 @@ class TestManagedAgents:
             "droid",
             "cline",
             "junie",
+            "grok-build",
         ]
         assert providers[0]["label"] == "Claude Code"
         for entry in providers:
