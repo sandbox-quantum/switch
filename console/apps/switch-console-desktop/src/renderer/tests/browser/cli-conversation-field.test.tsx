@@ -1,14 +1,14 @@
 /**
  * The new-session dialog's Conversation field offers the Claude Code CLI
- * conversations in the agent's folder, read when its picker opens, will not
- * take one a terminal has open, and asks for confirmation where Claude Code
- * cannot say which are open.
+ * conversations in the agent's folder, read when its picker opens and again
+ * when it reopens after a listing failed, will not take one a terminal has
+ * open, and asks for confirmation where Claude Code cannot say which are open.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import type { CliConversation, CliConversationList } from '@shared/core/sessions/cli-conversations';
 
 const listCliConversations = vi.hoisted(() => vi.fn());
@@ -153,4 +153,31 @@ it('says why nothing is offered', async () => {
   await page.getByText('New conversation').click();
   await expect.element(page.getByText('Open the agent’s folder in Console first.')).toBeVisible();
   await expect.element(page.getByText('Could not list the conversations.')).toBeVisible();
+});
+
+it('lists again when the picker reopens after a listing failed, and keeps one that succeeded', async () => {
+  listCliConversations
+    .mockResolvedValueOnce({
+      success: false,
+      error: { message: 'build-box does not answer.' },
+    })
+    .mockResolvedValue({ success: true, data: { ownershipKnown: true, conversations: [CLOSED] } });
+  await mount();
+  await page.getByText('New conversation').click();
+  await expect.element(page.getByText('build-box does not answer.')).toBeVisible();
+  await userEvent.keyboard('{Escape}');
+  await expect.element(page.getByText('Could not list the conversations.')).not.toBeInTheDocument();
+
+  await page.getByText('New conversation').click();
+  await expect.element(page.getByRole('option', { name: /Fix the flaky build/ })).toBeVisible();
+  expect(listCliConversations).toHaveBeenCalledTimes(2);
+  await expect.element(page.getByText('build-box does not answer.')).not.toBeInTheDocument();
+  await userEvent.keyboard('{Escape}');
+  await expect
+    .element(page.getByRole('option', { name: /Fix the flaky build/ }))
+    .not.toBeInTheDocument();
+
+  await page.getByText('New conversation').click();
+  await expect.element(page.getByRole('option', { name: /Fix the flaky build/ })).toBeVisible();
+  expect(listCliConversations).toHaveBeenCalledTimes(2);
 });

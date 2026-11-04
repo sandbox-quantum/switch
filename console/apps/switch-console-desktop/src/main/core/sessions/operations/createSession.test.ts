@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionRow } from '@main/db/schema';
 import { cliConversationForkInFlight } from '../cli-conversation-forks';
+import { HostRefusedError } from '../cli-conversations';
 import { createSession } from './createSession';
 
 const mocks = vi.hoisted(() => ({
@@ -16,7 +17,15 @@ const mocks = vi.hoisted(() => ({
   forkCliConversation: vi.fn(),
   discardCliConversationCopies: vi.fn(),
   setProviderSessionId: vi.fn(),
+  watcherCheck: vi.fn(),
+  logError: vi.fn(),
 }));
+
+vi.mock('@main/core/sdk-host/watcher-bundle-check', () => ({
+  ensureWatcherCanContinueCliConversation: mocks.watcherCheck,
+}));
+
+vi.mock('@main/lib/logger', () => ({ log: { error: mocks.logError } }));
 
 vi.mock('./set-provider-session-id', () => ({
   setProviderSessionId: mocks.setProviderSessionId,
@@ -25,6 +34,7 @@ vi.mock('./set-provider-session-id', () => ({
 vi.mock('../cli-conversations', () => ({
   forkCliConversation: mocks.forkCliConversation,
   discardCliConversationCopies: mocks.discardCliConversationCopies,
+  HostRefusedError: class HostRefusedError extends Error {},
 }));
 
 vi.mock('@main/core/agents/getAgentById', () => ({
@@ -97,7 +107,13 @@ describe('createSession', () => {
       locationId: 'loc-1',
       providerId: 'claude',
     });
-    mocks.getLocation.mockReturnValue({ locationId: 'loc-1', dir: '/repo', ctx: {} });
+    mocks.getLocation.mockReturnValue({
+      locationId: 'loc-1',
+      dir: '/repo',
+      ctx: {},
+      transport: { kind: 'local' },
+    });
+    mocks.watcherCheck.mockResolvedValue(undefined);
     mocks.provisionSessionRuntime.mockResolvedValue({
       path: '/repo',
       locationId: 'loc-1',
@@ -192,9 +208,9 @@ describe('createSession', () => {
     expect(cliConversationForkInFlight('session-1')).toBeUndefined();
   });
 
-  it('takes the session away again when the CLI conversation cannot be copied', async () => {
+  it('takes the session away again when the host refuses to copy the CLI conversation, with no copy to remove', async () => {
     mocks.forkCliConversation.mockRejectedValue(
-      new Error(
+      new HostRefusedError(
         'This conversation is open in Claude Code (process 41). Close it there, then try again.'
       )
     );
@@ -211,11 +227,112 @@ describe('createSession', () => {
       },
     });
     expect(mocks.deleteFn).toHaveBeenCalledTimes(1);
+    expect(mocks.discardCliConversationCopies).not.toHaveBeenCalled();
+    expect(mocks.startSession).not.toHaveBeenCalled();
+  });
+
+  it('takes the session away again and removes any copy when copying gave no answer', async () => {
+    mocks.forkCliConversation.mockRejectedValue(new Error('Timed out after 120000ms'));
+    const result = await createSession({
+      ...baseParams,
+      cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build', confirmedClosed: true },
+    });
+    expect(result).toEqual({
+      success: false,
+      error: { type: 'spawn-failed', message: 'Timed out after 120000ms' },
+    });
+    expect(mocks.deleteFn).toHaveBeenCalledTimes(1);
     expect(mocks.discardCliConversationCopies).toHaveBeenCalledWith(
       expect.objectContaining({ dir: '/repo' }),
       'session-1'
     );
     expect(mocks.startSession).not.toHaveBeenCalled();
+  });
+
+  it('still says why the copy failed when the session cannot be taken away again', async () => {
+    mocks.forkCliConversation.mockRejectedValue(new Error('Timed out after 120000ms'));
+    mocks.deleteFn.mockReturnValue({
+      where: () => Promise.reject(new Error('SQLITE_BUSY: database is locked')),
+    });
+    const result = await createSession({
+      ...baseParams,
+      cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build', confirmedClosed: true },
+    });
+    expect(result).toEqual({
+      success: false,
+      error: { type: 'spawn-failed', message: 'Timed out after 120000ms' },
+    });
+    expect(mocks.discardCliConversationCopies).toHaveBeenCalledWith(
+      expect.objectContaining({ dir: '/repo' }),
+      'session-1'
+    );
+    expect(mocks.logError).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        event: 'cli_conversation.session_rollback',
+        stage: 'delete-failed',
+        sessionId: 'session-1',
+        error: 'Error: SQLITE_BUSY: database is locked',
+      })
+    );
+  });
+
+  it('asks an SSH host’s Room watcher whether it can continue a CLI conversation before anything is recorded or copied', async () => {
+    const ctx = { exec: vi.fn() };
+    mocks.getAgentById.mockResolvedValue({
+      id: 'agent-1',
+      locationId: 'loc-1',
+      providerId: 'claude',
+      switchAgentId: 'switch-agent-1',
+    });
+    mocks.getLocation.mockReturnValue({
+      locationId: 'loc-1',
+      dir: '/repo',
+      ctx,
+      transport: { kind: 'ssh', host: 'build-box', dir: '/repo', connectionId: 'conn-1' },
+    });
+    mocks.watcherCheck.mockRejectedValue(
+      new Error("The Room watcher on build-box does not run this version of Switch Console's host")
+    );
+    const result = await createSession({
+      ...baseParams,
+      cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build', confirmedClosed: true },
+    });
+    expect(result).toEqual({
+      success: false,
+      error: {
+        type: 'spawn-failed',
+        message: "The Room watcher on build-box does not run this version of Switch Console's host",
+      },
+    });
+    expect(mocks.watcherCheck).toHaveBeenCalledWith(ctx, 'build-box', 'switch-agent-1');
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.forkCliConversation).not.toHaveBeenCalled();
+    expect(mocks.setProviderSessionId).not.toHaveBeenCalled();
+
+    mocks.watcherCheck.mockResolvedValue(undefined);
+    mocks.forkCliConversation.mockResolvedValue('copy-1');
+    mocks.setProviderSessionId.mockResolvedValue(true);
+    const continued = await createSession({
+      ...baseParams,
+      cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build', confirmedClosed: true },
+    });
+    expect(continued.success).toBe(true);
+    expect(mocks.watcherCheck.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      mocks.insert.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('does not ask a Room watcher about a session that continues no CLI conversation', async () => {
+    mocks.getLocation.mockReturnValue({
+      locationId: 'loc-1',
+      dir: '/repo',
+      ctx: {},
+      transport: { kind: 'ssh', host: 'build-box', dir: '/repo', connectionId: 'conn-1' },
+    });
+    const result = await createSession(baseParams);
+    expect(result.success).toBe(true);
+    expect(mocks.watcherCheck).not.toHaveBeenCalled();
   });
 
   it('refuses to continue a CLI conversation for an agent that is not Claude Code', async () => {

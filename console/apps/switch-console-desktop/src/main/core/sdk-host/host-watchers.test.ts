@@ -175,12 +175,20 @@ describe('which bundle a watcher runs', () => {
     expect(watcherRunsBundle(status({ health: health({ bundle: 'older' }) }), bundle)).toBe(false);
   });
 
+  it('takes a watcher whose own record names no bundle to run another build', () => {
+    expect(watcherRunsBundle(status({ health: health({}) }), bundle)).toBe(false);
+  });
+
   it.each([
-    ['a watcher too old to say', status({ health: health({}) })],
-    ['a file a previous process left', status({ health: health({ bundle: 'abc123', pid: 99 }) })],
-    ['a watcher that wrote nothing', status({ health: null })],
-  ])('does not take %s to run this build', (_label, watcher) => {
-    expect(watcherRunsBundle(watcher, bundle)).toBe(false);
+    ['written nothing yet', status({ health: null })],
+    ['written a record it cannot read', status({ health: { pid: 101 } })],
+    ['only the file a previous process left', status({ health: health({ pid: 99 }) })],
+    [
+      'only the file a previous process on another build left',
+      status({ health: health({ bundle: 'older', pid: 99 }) }),
+    ],
+  ])('has no answer for a watcher process that has %s', (_label, watcher) => {
+    expect(watcherRunsBundle(watcher, bundle)).toBeNull();
   });
 
   it('asks the supervisor while the watcher process is down', () => {
@@ -189,6 +197,7 @@ describe('which bundle a watcher runs', () => {
     expect(watcherRunsBundle(status({ ...down, build: '/…/shared-host-old.mjs' }), bundle)).toBe(
       false
     );
+    expect(watcherRunsBundle(status({ ...down, build: null }), bundle)).toBeNull();
   });
 
   it('has no answer when no watcher is running', () => {

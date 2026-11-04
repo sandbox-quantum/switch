@@ -8,9 +8,10 @@
  */
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, onTestFinished, vi } from 'vitest';
 import { MAKE_LAUNCH_DIR } from './state-roots';
 
 const mocks = vi.hoisted(() => ({
@@ -23,7 +24,14 @@ const mocks = vi.hoisted(() => ({
   ensureHostBundle: vi.fn(),
   forgetHostBundle: vi.fn(),
   warn: vi.fn(),
+  rm: vi.fn(),
 }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  mocks.rm.mockImplementation(actual.rm);
+  return { ...actual, rm: mocks.rm };
+});
 
 vi.mock('@main/core/agent-runtime/impl/resolve-sidecar-bundle', () => ({
   resolveSharedHostBundlePath: () => mocks.bundlePath,
@@ -200,21 +208,105 @@ it('deploys for a launch, and on a failure that names the bundle forgets the hos
   expect(scripts(REMOVE)).toEqual([[STAGED]]);
 });
 
-it('keeps the command’s own failure when the staged request cannot be removed', async () => {
-  host(entrypoint, async () => Promise.reject(new Error('Command failed')));
+/** Makes removing what was staged on the SSH host fail, after `host()` set it up. */
+function removalFails() {
   const exec = mocks.sshExec.getMockImplementation()!;
   mocks.sshExec.mockImplementation(async (command: string, args: string[]) => {
+    if (args[0] === '-e' && args[1] === REMOVE) throw new Error('Permission denied');
+    return exec(command, args);
+  });
+}
+
+it('keeps the command’s own failure when the staged request cannot be removed', async () => {
+  host(entrypoint, async () => Promise.reject(new Error('Command failed')));
+  removalFails();
+
+  await expect(
+    runHostRequest(ssh, '--cli-conversations', REQUEST, { deploy: false, timeout: 1_000 })
+  ).rejects.toThrow('Command failed');
+  expect(mocks.warn).toHaveBeenCalledWith(
+    'Could not remove a file staged for the shared host',
+    expect.objectContaining({
+      event: 'sdk_host.staged_file_cleanup',
+      stage: 'request-finished',
+      host: 'build-box',
+      error: 'Error: Permission denied',
+    })
+  );
+});
+
+it('keeps the command’s own failure here when the staged request cannot be removed', async () => {
+  let path = '';
+  mocks.localExec.mockImplementation(async (_command: string, args: string[]) => {
+    path = args[2]!;
+    throw new Error('Command failed');
+  });
+  mocks.rm.mockRejectedValueOnce(new Error('Device busy'));
+  onTestFinished(() => rm(dirname(path), { recursive: true, force: true }));
+
+  await expect(
+    runHostRequest({ kind: 'local' }, '--cli-conversations', REQUEST, {
+      deploy: false,
+      timeout: 1_000,
+    })
+  ).rejects.toThrow('Command failed');
+  expect(mocks.warn).toHaveBeenCalledWith(
+    'Could not remove a file staged for the shared host',
+    expect.objectContaining({ event: 'sdk_host.staged_file_cleanup', stage: 'request-finished' })
+  );
+});
+
+it('keeps why staging failed when what it had made cannot be removed', async () => {
+  host(entrypoint, async () => ({ stdout: '{}', stderr: '' }));
+  const exec = mocks.sshExec.getMockImplementation()!;
+  mocks.sshExec.mockImplementation(async (command: string, args: string[]) => {
+    if (args[0] === '-e' && args[1] === CHMOD) throw new Error('Read-only file system');
     if (args[0] === '-e' && args[1] === REMOVE) throw new Error('Permission denied');
     return exec(command, args);
   });
 
   await expect(
     runHostRequest(ssh, '--cli-conversations', REQUEST, { deploy: false, timeout: 1_000 })
+  ).rejects.toThrow('Read-only file system');
+  expect(mocks.warn).toHaveBeenCalledWith(
+    'Could not remove a file staged for the shared host',
+    expect.objectContaining({
+      event: 'sdk_host.staged_file_cleanup',
+      stage: 'staging-failed',
+      host: 'build-box',
+    })
+  );
+});
+
+it('keeps a launch command’s own failure when its staged configuration cannot be removed', async () => {
+  const root = `${STATE}/sdk-sessions/abc`;
+  host(entrypoint, async () => Promise.reject(new Error('Command failed')));
+  removalFails();
+  const ctx = { exec: mocks.sshExec } as never;
+
+  await expect(
+    runSharedHostCommand(ssh, { ctx, root, entrypoint }, {}, '--ensure', false)
   ).rejects.toThrow('Command failed');
   expect(mocks.warn).toHaveBeenCalledWith(
-    'Could not remove a staged host request',
-    expect.objectContaining({ host: 'build-box' })
+    'Could not remove a file staged for the shared host',
+    expect.objectContaining({
+      event: 'sdk_host.staged_file_cleanup',
+      stage: 'command-failed',
+      host: 'build-box',
+    })
   );
+});
+
+it('fails a launch that ran when its staged configuration cannot be removed', async () => {
+  const root = `${STATE}/sdk-sessions/abc`;
+  host(entrypoint, async () => ({ stdout: '{"created":true}', stderr: '' }));
+  removalFails();
+  const ctx = { exec: mocks.sshExec } as never;
+
+  await expect(
+    runSharedHostCommand(ssh, { ctx, root, entrypoint }, {}, '--ensure', false)
+  ).rejects.toThrow('Permission denied');
+  expect(mocks.warn).not.toHaveBeenCalled();
 });
 
 it('stages a launch’s configuration on an SSH host in its state root, privately, and removes it', async () => {

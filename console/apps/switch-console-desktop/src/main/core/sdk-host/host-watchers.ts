@@ -144,10 +144,15 @@ export function watcherIsCurrent(
  * Whether a watcher runs the shared-host bundle `bundle` names, so the session
  * configurations it is handed are read by that build. Its own process says
  * which bundle it loaded, in its health file, taken only from the process
- * alive now; while that process is down, its supervisor, which starts it again
- * from the same file, says which file that is. A watcher too old to say runs
- * some other build. Null when neither is running: there is no watcher to hand
- * a session to, and handing it over says so.
+ * alive now; a record from that process that names none comes from a build
+ * too old to say, which is some other build. While that process is down, its
+ * supervisor, which starts it again from the same file, says which file that
+ * is.
+ *
+ * Null when no watcher is running, and when which bundle it runs cannot be
+ * told: its process has written no record of its own yet (one just started,
+ * or the file is its predecessor's), or its supervisor did not say which file
+ * it starts. Only a watcher that says it runs another build is false.
  */
 export function watcherRunsBundle(
   status: HostWatcherStatus | undefined,
@@ -156,11 +161,9 @@ export function watcherRunsBundle(
   if (!status || (!status.workerAlive && !status.running)) return null;
   if (status.workerAlive) {
     const written = watcherHealthFileSchema.safeParse(status.health);
-    return (
-      written.success &&
-      written.data.pid === status.workerPid &&
-      written.data.bundle === bundle.identity
-    );
+    if (!written.success || written.data.pid !== status.workerPid) return null;
+    return written.data.bundle === bundle.identity;
   }
-  return status.build?.split('/').pop() === bundle.file;
+  const file = status.build?.split('/').pop();
+  return file ? file === bundle.file : null;
 }

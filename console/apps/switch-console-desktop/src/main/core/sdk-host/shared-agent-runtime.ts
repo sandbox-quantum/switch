@@ -6,12 +6,12 @@ import {
 import { stopSharedSession } from './stop-shared-session';
 export { stopSharedSession } from './stop-shared-session';
 import { announceSessionIssue, recordRemoteHostFailure } from './host-failures';
-import { listHostWatchers, watcherRunsBundle } from './host-watchers';
 import { reconcileInitialPrompt } from './initial-prompt';
 import { stopLegacySidecar } from './legacy-sidecar';
 import { readLocalHostFailure, startLocalSession } from './local-host';
-import { deploySharedHost, sharedHostBundle } from './shared-host-deployment';
+import { deploySharedHost } from './shared-host-deployment';
 import { withSidecar } from './sidecar-control';
+import { ensureWatcherCanContinueCliConversation } from './watcher-bundle-check';
 export { deploySharedHost } from './shared-host-deployment';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
@@ -201,18 +201,13 @@ export class SharedAgentRuntime implements AgentRuntimeProvider {
         ]);
         return JSON.parse(result.stdout);
       };
-      // A sidecar on another build reads the configuration with its own
-      // schema: an older one refuses the key and could not import the history
-      // anyway. So it is asked which build it runs before it is handed one.
-      if (
-        config.importHistory &&
-        watcherRunsBundle(
-          (await listHostWatchers(deployed.ctx)).get(agent.switchAgentId),
-          await sharedHostBundle()
-        ) === false
-      )
-        throw new Error(
-          `The Room watcher on ${this.transport.host} does not run this version of Switch Console's host, so it cannot continue a CLI conversation. Press Update on its Room watcher, then start this session again.`
+      // Checked only before the first start, the one that imports the
+      // conversation: a relaunch goes ahead as any other session's does.
+      if (config.importHistory && !isResuming)
+        await ensureWatcherCanContinueCliConversation(
+          deployed.ctx,
+          this.transport.host,
+          agent.switchAgentId
         );
       // Started by the agent's sidecar, which is then its parent: it talks to
       // the session over IPC, and Console reaches it through the sidecar.
@@ -535,9 +530,10 @@ export async function buildSharedHostConfig(
 }
 
 /**
- * The copy a session that continues a CLI conversation resumes, when its row
- * does not hold one yet: the session is saved before its copy is made, so one
- * started meanwhile waits for the copy. Without a copy in flight, Console
+ * The copy a session that continues a CLI conversation resumes, when the
+ * session as it was read does not hold one: the session is saved before its
+ * copy is made, so one started meanwhile waits for the copy, and one read
+ * before the copy was recorded finds it in its row now. With neither, Console
  * stopped while copying, and the session refuses to start rather than open a
  * new conversation in place of the one it was made to continue. Undefined for
  * every other session.
@@ -546,12 +542,15 @@ async function copyBeingMade(
   session: Pick<Session, 'id' | 'cliConversation'>
 ): Promise<string | undefined> {
   if (!session.cliConversation) return undefined;
-  const copy = cliConversationForkInFlight(session.id);
-  if (!copy)
-    throw new Error(
-      `This session was to continue the Claude Code conversation “${session.cliConversation.title}”, but its copy was never made. Delete it and start a new session from that conversation.`
-    );
-  return copy;
+  const inFlight = cliConversationForkInFlight(session.id);
+  if (inFlight) return inFlight;
+  const recorded = (await loadSessionWithAgent(session.id))?.row.config?.providerSessionId;
+  if (recorded) return recorded;
+  const started = cliConversationForkInFlight(session.id);
+  if (started) return started;
+  throw new Error(
+    `This session was to continue the Claude Code conversation “${session.cliConversation.title}”, but its copy was never made. Delete it and start a new session from that conversation.`
+  );
 }
 
 /** The generation a session's host last recorded, or null if it has recorded none. */

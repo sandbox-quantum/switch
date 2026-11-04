@@ -133,6 +133,26 @@ it('leaves out a stopped turn’s note and command output, and shows a ! command
   ]);
 });
 
+it('shows a prompt that quotes Claude Code’s command tags as it was typed', () => {
+  const pastedCommand =
+    'Why does this show up in my transcript? <command-name>/review</command-name><command-args>main.ts</command-args>';
+  const pastedShell = 'What does <bash-input>git status</bash-input> mean here?';
+  const trailing = '<command-name>/review</command-name> and then what?';
+  const turns = historyFromClaudeMessages([
+    entry('user', 'p1', pastedCommand),
+    entry('user', 'p2', pastedShell),
+    entry('user', 'p3', trailing),
+    entry('user', 'c1', '<command-name>/review</command-name>\n<command-args>a < b</command-args>'),
+  ]);
+
+  expect(turns.map((turn) => turn.items.map((item) => item.text))).toEqual([
+    [pastedCommand],
+    [pastedShell],
+    [trailing],
+    ['/review a < b'],
+  ]);
+});
+
 it('marks where a conversation was compacted instead of showing its summary as a prompt', () => {
   const turns = historyFromClaudeMessages([
     entry(

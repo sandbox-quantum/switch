@@ -21,21 +21,40 @@ import type { CliConversationList } from '@shared/core/sessions/cli-conversation
 const LIST_TIMEOUT_MS = 60_000;
 /** How long copying may take on the host: a long conversation is a large file. */
 const FORK_TIMEOUT_MS = 120_000;
-/** How long removing a session's copies may take on the host. */
+/** How long removing sessions' copies may take on the host. */
 const DELETE_TIMEOUT_MS = 60_000;
-
-/** The host ran the command and said why it failed, so its outcome is known. */
-class HostRefusedError extends Error {}
+/**
+ * How long after a copy's outcome became unknown a removal that finds no copy
+ * is taken at its word. Until then the copy may still be being made: a copy
+ * Console stopped waiting for can finish on the host well after that.
+ */
+const UNSETTLED_COPY_WINDOW_MS = 15 * 60_000;
 
 /**
- * Sessions whose copy may still be on a location's host, by location id: the
- * copy was asked for and no answer came back (a timeout, a dropped
- * connection), so it may have been made after Console stopped waiting, or
- * removing it failed. Each list or copy in the location tries removing them
- * again. In memory only, so a copy whose session is forgotten across a
- * restart stays; it is still tagged as a copy and hidden from the dialog.
+ * What a request that is not one session's resolves the session's environment
+ * with: it only says where the session's Claude Code would look.
  */
-const unsettledCopies = new Map<string, Set<string>>();
+const NO_SESSION = { id: 'new-session', title: 'Session' };
+
+/** The host ran the command and said why it failed, so its outcome is known. */
+export class HostRefusedError extends Error {}
+
+/**
+ * Sessions whose copy may still be on a location's host, by location id, each
+ * with when that was last found to be so: the copy was asked for and no
+ * answer came back (a timeout, a dropped connection), so it may be made after
+ * Console stopped waiting; or its session will not run, and the copy has yet
+ * to be removed. Each list or copy in the location tries removing them again,
+ * in the background. A session is forgotten once a removal finds its copy, or
+ * once one finds none {@link UNSETTLED_COPY_WINDOW_MS} after it was recorded; a
+ * removal that fails says nothing, and is tried again. In memory only, so a
+ * copy whose session is forgotten across a restart stays; it is still tagged
+ * as a copy and hidden from the dialog.
+ */
+const unsettledCopies = new Map<string, Map<string, number>>();
+
+/** The removal running in each location, by location id, which the next one there follows. */
+const removals = new Map<string, Promise<void>>();
 
 /**
  * The conversations started in Claude Code's own CLI in an agent's folder that
@@ -56,18 +75,17 @@ export async function listCliConversations(
       throw new Error('Only Claude Code agents can continue a conversation started in its CLI.');
     const location = locationManager.getLocation(agent.locationId);
     if (!location) throw new Error('Open the agent’s folder in Console first.');
-    const request = await conversationRequest(location, { id: 'new-session', title: 'Session' });
-    const [list] = await Promise.all([
-      runConversationRequest(
+    const request = await conversationRequest(location, NO_SESSION);
+    void removeUnsettledCopies(location);
+    return ok(
+      await runConversationRequest(
         location,
         '--cli-conversations',
         request,
         { deploy: false, timeout: LIST_TIMEOUT_MS },
         cliConversationListSchema
-      ),
-      removeUnsettledCopies(location),
-    ]);
-    return ok(list);
+      )
+    );
   } catch (error) {
     return err({ message: error instanceof Error ? error.message : String(error) });
   }
@@ -78,9 +96,10 @@ export async function listCliConversations(
  * and returns the copy's id. The copy is tagged with the session, so a copy
  * whose session never starts can be removed ({@link discardCliConversationCopies}).
  * Refused while a Claude Code process has the conversation open, or, where
- * Claude Code cannot say, unless the person said it is closed. Part of
- * starting the session, so it deploys this build's bundle to an SSH host that
- * lacks it.
+ * Claude Code cannot say, unless the person said it is closed. A copy the host
+ * refused, a {@link HostRefusedError}, leaves none tagged as the session's.
+ * Part of starting the session, so it deploys this build's bundle to an SSH
+ * host that lacks it.
  */
 export async function forkCliConversation(
   location: LocationProvider,
@@ -89,74 +108,101 @@ export async function forkCliConversation(
   confirmedClosed: boolean
 ): Promise<string> {
   const request = await conversationRequest(location, session);
-  const [fork] = await Promise.all([
-    runConversationRequest(
-      location,
-      '--fork-cli-conversation',
-      { ...request, nativeSessionId, consoleSessionId: session.id, confirmedClosed },
-      { deploy: true, timeout: FORK_TIMEOUT_MS },
-      forkedCliConversationSchema
-    ).catch((error: unknown) => {
-      if (!(error instanceof HostRefusedError)) rememberUnsettledCopy(location, session.id);
-      throw error;
-    }),
-    removeUnsettledCopies(location),
-  ]);
+  void removeUnsettledCopies(location);
+  const fork = await runConversationRequest(
+    location,
+    '--fork-cli-conversation',
+    { ...request, nativeSessionId, consoleSessionId: session.id, confirmedClosed },
+    { deploy: true, timeout: FORK_TIMEOUT_MS },
+    forkedCliConversationSchema
+  ).catch((error: unknown) => {
+    if (!(error instanceof HostRefusedError)) rememberUnsettledCopy(location, session.id);
+    throw error;
+  });
   return fork.nativeSessionId;
 }
 
 /**
- * Removes the copies made for a session that will not run: its copy failed,
- * timed out, or finished after its row was deleted. Only conversations tagged
- * as this session's are removed. Never throws: a removal that fails is
- * logged, and tried again with the location's next list or copy, so it
- * cannot hide why the session did not start.
+ * Removes the copies made for a session that will not run: its copy's
+ * outcome is unknown, or it finished after the session's row was deleted.
+ * Only conversations tagged as this session's are removed, and the session is
+ * tried again with the location's next list or copy until its copy is found
+ * or long enough has passed ({@link unsettledCopies}). Nothing needs to wait
+ * for it: the returned promise settles once this attempt is over and never
+ * rejects, so it cannot hide why the session did not start.
  */
-export async function discardCliConversationCopies(
+export function discardCliConversationCopies(
   location: LocationProvider,
   sessionId: string
 ): Promise<void> {
-  try {
-    await deleteCopies(location, sessionId);
-  } catch (error) {
-    rememberUnsettledCopy(location, sessionId);
-    log.warn(
-      'Could not remove the copy of a CLI conversation made for a session that did not start',
-      {
-        event: 'cli_conversation.copy_cleanup',
-        stage: 'failed',
-        sessionId,
-        error: String(error),
-      }
-    );
-  }
+  rememberUnsettledCopy(location, sessionId);
+  return removeUnsettledCopies(location);
 }
 
 function rememberUnsettledCopy(location: LocationProvider, sessionId: string): void {
-  const sessions = unsettledCopies.get(location.locationId) ?? new Set<string>();
-  sessions.add(sessionId);
+  const sessions = unsettledCopies.get(location.locationId) ?? new Map<string, number>();
+  sessions.set(sessionId, Date.now());
   unsettledCopies.set(location.locationId, sessions);
 }
 
 /**
  * Tries again to remove the copies {@link unsettledCopies} holds for this
- * location, forgetting each once it is removed. Never throws.
+ * location, once the removal already running there is over, and settles when
+ * it is. Never rejects.
  */
-async function removeUnsettledCopies(location: LocationProvider): Promise<void> {
+function removeUnsettledCopies(location: LocationProvider): Promise<void> {
+  const next = (removals.get(location.locationId) ?? Promise.resolve()).then(() =>
+    removeCopiesOnce(location)
+  );
+  removals.set(location.locationId, next);
+  void next.then(() => {
+    if (removals.get(location.locationId) === next) removals.delete(location.locationId);
+  });
+  return next;
+}
+
+/** One attempt at {@link removeUnsettledCopies}, with one request to the host. Never throws. */
+async function removeCopiesOnce(location: LocationProvider): Promise<void> {
   const sessions = unsettledCopies.get(location.locationId);
-  if (!sessions) return;
-  for (const sessionId of [...sessions]) {
-    try {
-      await deleteCopies(location, sessionId);
+  if (!sessions?.size) return;
+  const sessionIds = [...sessions.keys()];
+  let deleted: Record<string, number>;
+  try {
+    deleted = await deleteCopies(location, sessionIds);
+  } catch (error) {
+    log.warn(
+      'Could not remove the copies of CLI conversations made for sessions that did not start',
+      {
+        event: 'cli_conversation.copy_cleanup',
+        stage: 'failed',
+        sessionIds,
+        error: String(error),
+      }
+    );
+    return;
+  }
+  const now = Date.now();
+  for (const sessionId of sessionIds) {
+    const recordedAt = sessions.get(sessionId);
+    if (recordedAt === undefined) continue;
+    const count = deleted[sessionId] ?? 0;
+    if (count > 0) {
       sessions.delete(sessionId);
-    } catch (error) {
+      log.info('Removed the copy of a CLI conversation made for a session that did not start', {
+        event: 'cli_conversation.copy_cleanup',
+        stage: 'removed',
+        sessionId,
+        deleted: count,
+      });
+    } else if (now - recordedAt >= UNSETTLED_COPY_WINDOW_MS) {
+      sessions.delete(sessionId);
       log.warn(
-        'Could not remove the copy of a CLI conversation made for a session that did not start',
+        'Stopped looking for the copy of a CLI conversation made for a session that did not start: none was found long after it was asked for',
         {
           event: 'cli_conversation.copy_cleanup',
-          stage: 'retry-failed',
+          stage: 'abandoned',
           sessionId,
-          error: String(error),
+          recordedAt: new Date(recordedAt).toISOString(),
         }
       );
     }
@@ -165,22 +211,20 @@ async function removeUnsettledCopies(location: LocationProvider): Promise<void> 
     unsettledCopies.delete(location.locationId);
 }
 
-async function deleteCopies(location: LocationProvider, sessionId: string): Promise<void> {
-  const request = await conversationRequest(location, { id: sessionId, title: 'Session' });
+/** Removes the copies tagged as these sessions', in one request, and says how many each had. */
+async function deleteCopies(
+  location: LocationProvider,
+  sessionIds: string[]
+): Promise<Record<string, number>> {
+  const request = await conversationRequest(location, NO_SESSION);
   const { deleted } = await runConversationRequest(
     location,
     '--delete-cli-conversation-copies',
-    { ...request, consoleSessionId: sessionId },
+    { ...request, consoleSessionIds: sessionIds },
     { deploy: false, timeout: DELETE_TIMEOUT_MS },
     deletedCliConversationCopiesSchema
   );
-  if (deleted > 0)
-    log.info('Removed the copy of a CLI conversation made for a session that did not start', {
-      event: 'cli_conversation.copy_cleanup',
-      stage: 'removed',
-      sessionId,
-      deleted,
-    });
+  return deleted;
 }
 
 /**

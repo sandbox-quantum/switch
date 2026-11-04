@@ -97,13 +97,35 @@ const REQUEST_MAX_BUFFER = 64 * 1024 * 1024;
 type StagedFile = { path: string; remove: () => Promise<void> };
 
 /**
+ * When a staged file could not be removed: while staging it failed part way,
+ * after a one-off request (whatever its outcome), or after a launch command
+ * failed.
+ */
+type StagedFileStage = 'staging-failed' | 'request-finished' | 'command-failed';
+
+/**
+ * Records that a staged file could not be removed, in place of throwing: the
+ * failure must not hide how the command it was staged for went, and what is
+ * left is swept with abandoned launches (`HOST_PREPARE`).
+ */
+function stagedFileLeft(stage: StagedFileStage, host: string | null, error: unknown): void {
+  log.warn('Could not remove a file staged for the shared host', {
+    event: 'sdk_host.staged_file_cleanup',
+    stage,
+    host,
+    error: String(error),
+  });
+}
+
+/**
  * Stages `content` as a file named `name` that only the user can read, for one
  * of the shared host's commands to read rather than take on its command line,
  * where `ps` would show it to everyone. It is written here first, mode 0600,
  * in a directory of its own. For an SSH host it is then copied over SFTP into
  * a new private directory under the state root `root`, made as a launch's is
  * (`MAKE_LAUNCH_DIR`), and made 0600 there as well. `remove()` takes away both
- * copies; a staging that fails part way removes what it had made.
+ * copies; a staging that fails part way removes what it had made, and throws
+ * why it failed even when that removal fails too.
  */
 async function stagePrivateFile(
   name: string,
@@ -146,7 +168,9 @@ async function stagePrivateFile(
     ]);
     return { path, remove };
   } catch (error) {
-    await remove();
+    await remove().catch((removal: unknown) =>
+      stagedFileLeft('staging-failed', remote?.transport.host ?? null, removal)
+    );
     throw error;
   }
 }
@@ -180,7 +204,9 @@ export async function runHostRequest(
       });
     } finally {
       ctx.dispose();
-      await staged.remove();
+      await staged
+        .remove()
+        .catch((error: unknown) => stagedFileLeft('request-finished', null, error));
     }
   }
   const bundle = options.deploy
@@ -216,15 +242,10 @@ export async function runHostRequest(
       forgetHostBundle(transport.connectionId);
     throw error;
   } finally {
-    // Not allowed to hide why the command failed. What is left is swept with
-    // abandoned launches (`HOST_PREPARE`).
     if (staged)
-      await staged.remove().catch((error: unknown) =>
-        log.warn('Could not remove a staged host request', {
-          host: transport.host,
-          error: String(error),
-        })
-      );
+      await staged
+        .remove()
+        .catch((error: unknown) => stagedFileLeft('request-finished', transport.host, error));
     ctx.dispose();
   }
 }
@@ -304,15 +325,20 @@ export async function runSharedHostCommand(
     JSON.stringify(config),
     transport.kind === 'ssh' ? { transport, ctx: deployed.ctx, root: deployed.root } : null
   );
-  try {
-    return await deployed.ctx.exec('node', [
-      deployed.entrypoint,
-      deployed.root,
-      staged.path,
-      mode,
-      String(resuming),
-    ]);
-  } finally {
-    await staged.remove();
-  }
+  const result = await deployed.ctx
+    .exec('node', [deployed.entrypoint, deployed.root, staged.path, mode, String(resuming)])
+    .catch(async (error: unknown) => {
+      await staged
+        .remove()
+        .catch((removal: unknown) =>
+          stagedFileLeft(
+            'command-failed',
+            transport.kind === 'ssh' ? transport.host : null,
+            removal
+          )
+        );
+      throw error;
+    });
+  await staged.remove();
+  return result;
 }

@@ -38,12 +38,13 @@ export const cliConversationRequestSchema = z.strictObject({
   inheritEnv: z.array(z.string()),
   /** The conversation to copy, for `--fork-cli-conversation`. */
   nativeSessionId: z.string().min(1).optional(),
-  /**
-   * The Console session a copy is for, for `--fork-cli-conversation`, which
-   * tags the copy with it, and `--delete-cli-conversation-copies`, which
-   * removes the copies tagged with it.
-   */
+  /** The Console session a copy is for, for `--fork-cli-conversation`, which tags the copy with it. */
   consoleSessionId: z.string().min(1).optional(),
+  /**
+   * The Console sessions whose copies `--delete-cli-conversation-copies`
+   * removes: the conversations tagged with exactly one of them.
+   */
+  consoleSessionIds: z.array(z.string().min(1)).min(1).optional(),
   /**
    * The person said the conversation is closed, for a copy where Claude Code
    * cannot say which conversations are open. Absent means they did not.
@@ -56,7 +57,9 @@ export type CliConversationRequest = z.infer<typeof cliConversationRequestSchema
 export async function answerCliConversationRequest(
   mode: CliConversationMode,
   path: string
-): Promise<CliConversationList | { nativeSessionId: string } | { deleted: number }> {
+): Promise<
+  CliConversationList | { nativeSessionId: string } | { deleted: Record<string, number> }
+> {
   const request = cliConversationRequestSchema.parse(JSON.parse(await readFile(path, 'utf8')));
   if (request.provider !== 'claude')
     throw new Error(
@@ -69,9 +72,12 @@ export async function answerCliConversationRequest(
     request.inheritEnv
   );
   if (mode === '--cli-conversations') return listClaudeCliConversations(request.dir, env);
+  if (mode === '--delete-cli-conversation-copies') {
+    if (!request.consoleSessionIds)
+      throw new Error('Name the Console sessions whose copies to remove.');
+    return deleteClaudeCliConversationCopies(request.dir, request.consoleSessionIds, env);
+  }
   if (!request.consoleSessionId) throw new Error('Name the Console session the copy is for.');
-  if (mode === '--delete-cli-conversation-copies')
-    return deleteClaudeCliConversationCopies(request.dir, request.consoleSessionId, env);
   if (!request.nativeSessionId) throw new Error('Name the conversation to copy.');
   return forkClaudeCliConversation(
     {

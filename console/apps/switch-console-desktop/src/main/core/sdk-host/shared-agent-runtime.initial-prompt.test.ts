@@ -201,6 +201,25 @@ it('refuses to start a continued session whose copy was never made', async () =>
   ).rejects.toThrow('its copy was never made');
 });
 
+it('starts a continued session with the copy its row recorded after the session was read', async () => {
+  mocks.loadSession.mockResolvedValue({
+    row: { config: { providerSessionId: 'copy-1' } },
+    providerId: 'claude',
+    name: 'scout',
+  });
+  await expect(
+    buildSharedHostConfig(
+      { ...session, cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' } },
+      { sessionPath: '/work', sessionEnvVars: {} },
+      { kind: 'local' } as LocationTransport
+    )
+  ).resolves.toMatchObject({
+    start: { input: { resume: { nativeSessionId: 'copy-1' } } },
+    importHistory: true,
+  });
+  expect(mocks.loadSession).toHaveBeenCalledWith('session-1');
+});
+
 it('starts a session whose copy is still being made with that copy, once it is made', async () => {
   let made!: (id: string) => void;
   void trackCliConversationFork(
@@ -221,8 +240,8 @@ it('starts a session whose copy is still being made with that copy, once it is m
   });
 });
 
-/** A watcher on the host, with what its process says it runs. */
-function watcherRunning(bundle: string | undefined) {
+/** A watcher on the host, with what its process says it runs, in a record of its own or not. */
+function watcherRunning(bundle: string | undefined, recordedBy = 41) {
   return new Map([
     [
       'remote-agent',
@@ -242,7 +261,7 @@ function watcherRunning(bundle: string | undefined) {
           detail: null,
           since: '2026-11-01T00:00:00.000Z',
           placements: {},
-          pid: 41,
+          pid: recordedBy,
           updatedAt: '2026-11-01T00:00:00.000Z',
           ...(bundle ? { bundle } : {}),
         },
@@ -278,17 +297,39 @@ it.each([
   }
 );
 
-it('hands a continued session to a Room watcher on this build', async () => {
+it.each([
+  ['this build', watcherRunning('this-build')],
+  ['a build it cannot tell yet', watcherRunning('older-build', 40)],
+  ['no watcher', new Map()],
+])('hands a continued session to a host with a Room watcher on %s', async (_label, watchers) => {
   const agent = new SharedAgentRuntime(
     { kind: 'ssh', connectionId: 'host-1', host: 'build-box' } as LocationTransport,
     { sessionId: session.id, sessionPath: '/work', sessionEnvVars: {} }
   );
-  mocks.watchers.mockResolvedValue(watcherRunning('this-build'));
+  mocks.watchers.mockResolvedValue(watchers);
 
   await agent.start(continued, false, undefined, 'user');
 
   expect(mocks.sidecarEnsure).toHaveBeenCalledWith(
     expect.objectContaining({ config: expect.objectContaining({ importHistory: true }) })
+  );
+});
+
+it('relaunches a continued session without asking which build its Room watcher runs', async () => {
+  const agent = new SharedAgentRuntime(
+    { kind: 'ssh', connectionId: 'host-1', host: 'build-box' } as LocationTransport,
+    { sessionId: session.id, sessionPath: '/work', sessionEnvVars: {} }
+  );
+  mocks.watchers.mockResolvedValue(watcherRunning('older-build'));
+
+  await agent.start(continued, true);
+
+  expect(mocks.watchers).not.toHaveBeenCalled();
+  expect(mocks.sidecarEnsure).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resuming: true,
+      config: expect.objectContaining({ importHistory: true }),
+    })
   );
 });
 

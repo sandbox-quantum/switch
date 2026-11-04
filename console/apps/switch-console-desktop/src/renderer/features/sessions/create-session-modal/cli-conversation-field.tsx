@@ -22,8 +22,9 @@ import type { CliConversation, CliConversationList } from '@shared/core/sessions
  * The conversations started in Claude Code's own CLI in an agent's folder, read
  * on the machine its sessions run on. Asked for only once `request` is called,
  * when the person opens the picker: each read runs on the agent's host, and
- * most sessions start a new conversation. Never asked for when `agentId` is
- * null.
+ * most sessions start a new conversation. A listing that failed is asked for
+ * again the next time the picker opens; one that succeeded is kept. Never
+ * asked for when `agentId` is null.
  */
 export function useCliConversations(agentId: string | null): {
   list: CliConversationList | null;
@@ -45,15 +46,20 @@ export function useCliConversations(agentId: string | null): {
     refetchOnWindowFocus: false,
   });
   const result = query.data;
+  const error = query.error
+    ? failureText(query.error, 'Could not list the agent’s Claude Code conversations.')
+    : result && !result.success
+      ? result.error.message
+      : null;
+  const retrying = error !== null && query.isFetching;
   return {
-    request: () => setRequestedFor(agentId),
+    request: () => {
+      if (requestedFor !== agentId) setRequestedFor(agentId);
+      else if (error !== null && !query.isFetching) void query.refetch();
+    },
     list: result?.success ? result.data : null,
-    loading: query.isLoading,
-    error: query.error
-      ? failureText(query.error, 'Could not list the agent’s Claude Code conversations.')
-      : result && !result.success
-        ? result.error.message
-        : null,
+    loading: query.isLoading || retrying,
+    error: retrying ? null : error,
   };
 }
 
@@ -71,7 +77,7 @@ function openInLabel(openIn: NonNullable<CliConversation['openIn']>): string {
  * terminal's own is never written to. One a terminal has open cannot be
  * picked; where Claude Code does not record which are open, picking one asks
  * the person to say it is closed. The conversations are read when the picker
- * first opens.
+ * first opens, and again when it reopens after a listing failed.
  */
 export function CliConversationField({
   conversations,

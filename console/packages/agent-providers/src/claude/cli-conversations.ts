@@ -40,8 +40,10 @@ export type CliConversationList = z.infer<typeof cliConversationListSchema>;
 
 export const forkedCliConversationSchema = z.object({ nativeSessionId: z.string() });
 
-/** How many copies `--delete-cli-conversation-copies` removed. */
-export const deletedCliConversationCopiesSchema = z.object({ deleted: z.number().int().min(0) });
+/** How many copies `--delete-cli-conversation-copies` removed, for each Console session it named. */
+export const deletedCliConversationCopiesSchema = z.object({
+  deleted: z.record(z.string(), z.number().int().min(0)),
+});
 
 /** What a fork is titled in Claude Code's own `/resume` list, so it reads as taken. */
 const FORK_TITLE_SUFFIX = ' (continued in Switch Console)';
@@ -205,7 +207,8 @@ export async function forkClaudeCliConversation(
       );
     const fork = await deps.forkSession(nativeSessionId, {
       dir,
-      title: `${source.summary.slice(0, 200)}${FORK_TITLE_SUFFIX}`,
+      // Cut by code point, so a character outside the BMP is never split in two.
+      title: `${Array.from(source.summary).slice(0, 200).join('')}${FORK_TITLE_SUFFIX}`,
     });
     try {
       await deps.tagSession(fork.sessionId, cliConversationCopyTag(request.consoleSessionId), {
@@ -230,24 +233,34 @@ export async function forkClaudeCliConversation(
 }
 
 /**
- * Removes the copies in `dir` tagged as the given Console session's, and says
- * how many there were: what is left when a session's copy was made but the
- * session never started. Only a conversation carrying exactly that session's
- * tag is removed.
+ * Removes the copies in `dir` tagged as any of the given Console sessions',
+ * and says how many each had: what is left when a session's copy was made but
+ * the session never started. Only a conversation carrying exactly one of those
+ * sessions' tags is removed. The folder is listed once for all of them.
  */
 export async function deleteClaudeCliConversationCopies(
   dir: string,
-  consoleSessionId: string,
+  consoleSessionIds: string[],
   env: Record<string, string | undefined>,
   deps: CliConversationDeps = defaultDeps
-): Promise<{ deleted: number }> {
-  const tag = cliConversationCopyTag(consoleSessionId);
+): Promise<{ deleted: Record<string, number> }> {
+  const owners = new Map(consoleSessionIds.map((id) => [cliConversationCopyTag(id), id]));
   return withClaudeConfigDir(env, async () => {
-    const copies = (
-      await deps.listSessions({ dir, includeProgrammatic: true, includeWorktrees: false })
-    ).filter((session) => session.tag === tag);
-    for (const copy of copies) await deps.deleteSession(copy.sessionId, { dir });
-    return { deleted: copies.length };
+    const deleted: Record<string, number> = Object.fromEntries(
+      consoleSessionIds.map((id) => [id, 0])
+    );
+    const sessions = await deps.listSessions({
+      dir,
+      includeProgrammatic: true,
+      includeWorktrees: false,
+    });
+    for (const session of sessions) {
+      const owner = session.tag === undefined ? undefined : owners.get(session.tag);
+      if (owner === undefined) continue;
+      await deps.deleteSession(session.sessionId, { dir });
+      deleted[owner] = (deleted[owner] ?? 0) + 1;
+    }
+    return { deleted };
   });
 }
 

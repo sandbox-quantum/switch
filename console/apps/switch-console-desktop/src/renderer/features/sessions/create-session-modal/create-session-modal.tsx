@@ -337,7 +337,8 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         agentId: resolvedAgent.id,
         title:
           trimmedName ||
-          cliConversation?.title.slice(0, MAX_SESSION_TITLE_LENGTH) ||
+          (cliConversation &&
+            Array.from(cliConversation.title).slice(0, MAX_SESSION_TITLE_LENGTH).join('')) ||
           (activeRoom ? `Session for ${activeRoom.roomName}` : 'Session'),
         initialPrompt,
         agentName: effectiveAgentName || undefined,

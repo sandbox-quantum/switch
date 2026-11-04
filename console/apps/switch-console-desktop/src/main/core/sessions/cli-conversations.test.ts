@@ -1,7 +1,8 @@
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   discardCliConversationCopies,
   forkCliConversation,
+  HostRefusedError,
   listCliConversations,
 } from './cli-conversations';
 
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   getLocation: vi.fn(),
   runHostRequest: vi.fn(),
   resolveSessionEnv: vi.fn(),
+  warn: vi.fn(),
 }));
 
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: mocks.getAgentById }));
@@ -22,7 +24,7 @@ vi.mock('@main/core/locations/location-runtime-factory', () => ({
 vi.mock('@main/core/sdk-host/shared-host-deployment', () => ({
   runHostRequest: mocks.runHostRequest,
 }));
-vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn() } }));
+vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: mocks.warn } }));
 
 let locations = 0;
 /** An open location of its own, so what one test leaves to retry stays there. */
@@ -48,22 +50,44 @@ function conversation(nativeSessionId: string) {
   };
 }
 
-/** The requests the host was asked, in order: each command and the session it named. */
-function asked(): [string, string | undefined][] {
-  return mocks.runHostRequest.mock.calls.map(([, mode, request]) => [
-    mode,
-    (request as { consoleSessionId?: string }).consoleSessionId,
-  ]);
+/** The requests the host was asked, in order: each command and the sessions it named. */
+function asked(): [string, string | string[] | undefined][] {
+  return mocks.runHostRequest.mock.calls.map(([, mode, request]) => {
+    const { consoleSessionId, consoleSessionIds } = request as {
+      consoleSessionId?: string;
+      consoleSessionIds?: string[];
+    };
+    return [mode, consoleSessionIds ?? consoleSessionId];
+  });
 }
 
-/** Answers each host command with `answers[mode]`: a value is printed, an Error is thrown. */
+/**
+ * Answers each host command with `answers[mode]`: a value is printed, an Error
+ * is thrown, and a promise is waited for first.
+ */
 function hostAnswers(answers: Record<string, unknown>) {
   mocks.runHostRequest.mockImplementation(async (_transport, mode: string) => {
-    const answer = answers[mode];
+    const answer = await answers[mode];
     if (answer instanceof Error) throw answer;
     return { stdout: `${JSON.stringify(answer)}\n`, stderr: '' };
   });
 }
+
+/** What the host prints for a copy it refused to make. */
+function refusal(error: string) {
+  return Object.assign(new Error('Command failed'), {
+    stdout: `${JSON.stringify({ error })}\n`,
+  });
+}
+
+/** Lets the removals a list or copy started in the background finish. */
+function removalsSettle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -140,13 +164,18 @@ it('copies with the session’s own environment, for the session to tag it with,
 
 it('throws the reason the host gave for refusing a copy, not that its command failed', async () => {
   mocks.runHostRequest.mockRejectedValue(
-    Object.assign(new Error('Command failed'), {
-      stdout: `${JSON.stringify({ error: 'This conversation is open in Claude Code (process 41). Close it there, then try again.' })}\n`,
-    })
+    refusal(
+      'This conversation is open in Claude Code (process 41). Close it there, then try again.'
+    )
   );
-  await expect(
-    forkCliConversation(location as never, { id: 'session-1', title: 'Fix' }, 'cli-1', true)
-  ).rejects.toThrow('This conversation is open in Claude Code (process 41)');
+  const copied = forkCliConversation(
+    location as never,
+    { id: 'session-1', title: 'Fix' },
+    'cli-1',
+    true
+  );
+  await expect(copied).rejects.toThrow('This conversation is open in Claude Code (process 41)');
+  await expect(copied).rejects.toBeInstanceOf(HostRefusedError);
 });
 
 it('passes on a failure the host did not explain', async () => {
@@ -158,77 +187,181 @@ it('passes on a failure the host did not explain', async () => {
 });
 
 it('removes the copies tagged as a session’s, reading the host without deploying', async () => {
-  hostAnswers({ '--delete-cli-conversation-copies': { deleted: 1 } });
+  hostAnswers({ '--delete-cli-conversation-copies': { deleted: { 'session-1': 1 } } });
   await discardCliConversationCopies(location as never, 'session-1');
   expect(mocks.runHostRequest).toHaveBeenCalledWith(
     location.transport,
     '--delete-cli-conversation-copies',
-    expect.objectContaining({ provider: 'claude', dir: '/work', consoleSessionId: 'session-1' }),
+    expect.objectContaining({ provider: 'claude', dir: '/work', consoleSessionIds: ['session-1'] }),
     { deploy: false, timeout: 60_000 }
   );
+  mocks.runHostRequest.mockClear();
+  hostAnswers({ '--cli-conversations': { ownershipKnown: true, conversations: [] } });
+  await listCliConversations('agent');
+  await removalsSettle();
+  expect(asked()).toEqual([['--cli-conversations', undefined]]);
 });
 
 it('does not try again for a copy the host refused to make', async () => {
   hostAnswers({
-    '--fork-cli-conversation': Object.assign(new Error('Command failed'), {
-      stdout: `${JSON.stringify({ error: 'This conversation is open in Claude Code (process 41).' })}\n`,
-    }),
-    '--delete-cli-conversation-copies': { deleted: 0 },
+    '--fork-cli-conversation': refusal('This conversation is open in Claude Code (process 41).'),
+    '--delete-cli-conversation-copies': { deleted: { 'session-1': 0 } },
     '--cli-conversations': { ownershipKnown: true, conversations: [] },
   });
   await expect(
     forkCliConversation(location as never, { id: 'session-1', title: 'Fix' }, 'cli-1', true)
   ).rejects.toThrow('open in Claude Code');
-  await discardCliConversationCopies(location as never, 'session-1');
   mocks.runHostRequest.mockClear();
   await listCliConversations('agent');
+  await removalsSettle();
   expect(asked()).toEqual([['--cli-conversations', undefined]]);
 });
 
-it('tries again with the next list for a copy whose outcome is unknown, until removing it succeeds', async () => {
+it('keeps trying, with each list, to remove a copy whose outcome is unknown until a removal finds it', async () => {
   hostAnswers({
     '--fork-cli-conversation': new Error('Timed out after 120000ms'),
-    '--delete-cli-conversation-copies': { deleted: 0 },
+    '--delete-cli-conversation-copies': { deleted: { 'session-1': 0 } },
     '--cli-conversations': { ownershipKnown: true, conversations: [] },
   });
   await expect(
     forkCliConversation(location as never, { id: 'session-1', title: 'Fix' }, 'cli-1', true)
   ).rejects.toThrow('Timed out');
-  // Removed at once, and again later: the copy may be made after Console
-  // stopped waiting for it.
+  // Found nothing: the copy may still be being made on the host.
   await discardCliConversationCopies(location as never, 'session-1');
   mocks.runHostRequest.mockClear();
   await listCliConversations('agent');
-  expect(asked()).toContainEqual(['--delete-cli-conversation-copies', 'session-1']);
+  await removalsSettle();
+  expect(asked()).toContainEqual(['--delete-cli-conversation-copies', ['session-1']]);
+  hostAnswers({
+    '--delete-cli-conversation-copies': { deleted: { 'session-1': 1 } },
+    '--cli-conversations': { ownershipKnown: true, conversations: [] },
+  });
   mocks.runHostRequest.mockClear();
   await listCliConversations('agent');
+  await removalsSettle();
+  expect(asked()).toContainEqual(['--delete-cli-conversation-copies', ['session-1']]);
+  mocks.runHostRequest.mockClear();
+  await listCliConversations('agent');
+  await removalsSettle();
   expect(asked()).toEqual([['--cli-conversations', undefined]]);
 });
 
-it('tries again with the next copy in the location when removing a copy failed', async () => {
+it('stops looking for a copy no removal found, long after its outcome became unknown, and says so', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-11-04T10:00:00.000Z'));
+  hostAnswers({
+    '--fork-cli-conversation': new Error('Timed out after 120000ms'),
+    '--delete-cli-conversation-copies': { deleted: { 'session-1': 0 } },
+    '--cli-conversations': { ownershipKnown: true, conversations: [] },
+  });
+  await expect(
+    forkCliConversation(location as never, { id: 'session-1', title: 'Fix' }, 'cli-1', true)
+  ).rejects.toThrow('Timed out');
+  vi.setSystemTime(new Date('2026-11-04T10:14:00.000Z'));
+  await listCliConversations('agent');
+  await removalsSettle();
+  expect(mocks.warn).not.toHaveBeenCalled();
+  vi.setSystemTime(new Date('2026-11-04T10:15:00.000Z'));
+  mocks.runHostRequest.mockClear();
+  await listCliConversations('agent');
+  await removalsSettle();
+  expect(asked()).toContainEqual(['--delete-cli-conversation-copies', ['session-1']]);
+  expect(mocks.warn).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({
+      event: 'cli_conversation.copy_cleanup',
+      stage: 'abandoned',
+      sessionId: 'session-1',
+      recordedAt: '2026-11-04T10:00:00.000Z',
+    })
+  );
+  mocks.runHostRequest.mockClear();
+  await listCliConversations('agent');
+  await removalsSettle();
+  expect(asked()).toEqual([['--cli-conversations', undefined]]);
+});
+
+it('keeps trying, however long it takes, while removing a copy fails', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-11-04T10:00:00.000Z'));
   hostAnswers({ '--delete-cli-conversation-copies': new Error('ssh: connection reset') });
   await discardCliConversationCopies(location as never, 'session-1');
+  expect(mocks.warn).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({
+      event: 'cli_conversation.copy_cleanup',
+      stage: 'failed',
+      sessionIds: ['session-1'],
+    })
+  );
+  vi.setSystemTime(new Date('2026-11-04T11:00:00.000Z'));
   hostAnswers({
-    '--delete-cli-conversation-copies': { deleted: 1 },
+    '--delete-cli-conversation-copies': { deleted: { 'session-1': 1 } },
     '--fork-cli-conversation': { nativeSessionId: 'copy-2' },
   });
   mocks.runHostRequest.mockClear();
   await expect(
     forkCliConversation(location as never, { id: 'session-2', title: 'Fix' }, 'cli-1', true)
   ).resolves.toBe('copy-2');
-  expect(asked()).toContainEqual(['--delete-cli-conversation-copies', 'session-1']);
+  await removalsSettle();
+  expect(asked()).toContainEqual(['--delete-cli-conversation-copies', ['session-1']]);
   // Another location's copies are its own.
   const elsewhere = newLocation();
-  mocks.runHostRequest.mockClear();
   hostAnswers({ '--delete-cli-conversation-copies': new Error('ssh: connection reset') });
   await discardCliConversationCopies(elsewhere as never, 'session-3');
-  mocks.getAgentById.mockResolvedValue({
-    id: 'agent',
-    locationId: location.locationId,
-    providerId: 'claude',
-  });
   hostAnswers({ '--cli-conversations': { ownershipKnown: true, conversations: [] } });
   mocks.runHostRequest.mockClear();
   await listCliConversations('agent');
+  await removalsSettle();
   expect(asked()).toEqual([['--cli-conversations', undefined]]);
+});
+
+it('asks the host once for every session whose copies it is removing', async () => {
+  hostAnswers({
+    '--fork-cli-conversation': new Error('Timed out after 120000ms'),
+    '--delete-cli-conversation-copies': new Error('ssh: connection reset'),
+  });
+  for (const id of ['session-1', 'session-2'])
+    await expect(
+      forkCliConversation(location as never, { id, title: 'Fix' }, 'cli-1', true)
+    ).rejects.toThrow('Timed out');
+  await removalsSettle();
+  hostAnswers({
+    '--delete-cli-conversation-copies': { deleted: { 'session-1': 1, 'session-2': 0 } },
+    '--cli-conversations': { ownershipKnown: true, conversations: [] },
+  });
+  mocks.runHostRequest.mockClear();
+  await listCliConversations('agent');
+  await removalsSettle();
+  expect(asked()).toEqual([
+    ['--cli-conversations', undefined],
+    ['--delete-cli-conversation-copies', ['session-1', 'session-2']],
+  ]);
+  mocks.runHostRequest.mockClear();
+  await listCliConversations('agent');
+  await removalsSettle();
+  expect(asked()).toContainEqual(['--delete-cli-conversation-copies', ['session-2']]);
+});
+
+it('does not hold up a list or a copy for the removals it starts', async () => {
+  hostAnswers({
+    '--fork-cli-conversation': new Error('Timed out after 120000ms'),
+    '--delete-cli-conversation-copies': new Error('ssh: connection reset'),
+  });
+  await expect(
+    forkCliConversation(location as never, { id: 'session-1', title: 'Fix' }, 'cli-1', true)
+  ).rejects.toThrow('Timed out');
+  await removalsSettle();
+  hostAnswers({
+    '--delete-cli-conversation-copies': new Promise(() => {}),
+    '--cli-conversations': { ownershipKnown: true, conversations: [conversation('cli-1')] },
+    '--fork-cli-conversation': { nativeSessionId: 'copy-2' },
+  });
+  await expect(listCliConversations('agent')).resolves.toEqual({
+    success: true,
+    data: { ownershipKnown: true, conversations: [conversation('cli-1')] },
+  });
+  await expect(
+    forkCliConversation(location as never, { id: 'session-2', title: 'Fix' }, 'cli-1', true)
+  ).resolves.toBe('copy-2');
 });

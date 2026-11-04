@@ -2,11 +2,6 @@ import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { ConversationHistoryItem, ConversationHistoryTurn } from '../adapter';
 import { isRecord, toolTitle } from './claude-mapping';
 
-/** How Claude Code records a slash command someone ran: `<command-name>/mcp</command-name>…`. */
-const SLASH_COMMAND = /<command-name>([^<]*)<\/command-name>/;
-const COMMAND_ARGS = /<command-args>([^<]*)<\/command-args>/;
-/** A shell command someone ran with `!`. */
-const BASH_INPUT = /<bash-input>([^<]*)<\/bash-input>/;
 /** Claude Code's note that someone stopped a turn: not a prompt. */
 const INTERRUPTED = /^\[Request interrupted by user[^\]]*\]$/;
 /**
@@ -16,11 +11,15 @@ const INTERRUPTED = /^\[Request interrupted by user[^\]]*\]$/;
 const COMPACTION_SUMMARY = /^This session is being continued from a previous conversation/;
 const OPENING_TAG = /^<([a-z][\w-]*)(?:\s[^>]*)?>/;
 /**
- * The tags Claude Code wraps around what it adds to a conversation on its own.
- * Only these are left out: a person who pastes `<div>…</div>` as a prompt
- * still sees it.
+ * The tags Claude Code wraps around what it records on its own: the context it
+ * adds, and how it records a slash command someone ran
+ * (`<command-name>/mcp</command-name>…`) or a shell command run with `!`
+ * (`<bash-input>…</bash-input>`). Only text made of nothing but these is read
+ * as Claude Code's: a person who pastes `<div>…</div>`, or a prompt that
+ * quotes one of these tags, still sees what they typed.
  */
 const ADDED_CONTEXT_TAGS = new Set([
+  'bash-input',
   'bash-stderr',
   'bash-stdout',
   'command-args',
@@ -137,38 +136,41 @@ export function historyFromClaudeMessages(messages: SessionMessage[]): Conversat
 /**
  * What a person typed in one text block: a slash command or `!` command as they
  * typed it; nothing for what Claude Code added on its own, or its note that a
- * turn was stopped.
+ * turn was stopped; and anything else as it was typed.
  */
 function promptText(text: string): string {
   const trimmed = text.trim();
-  const command = SLASH_COMMAND.exec(trimmed);
-  if (command) {
-    const args = COMMAND_ARGS.exec(trimmed)?.[1]?.trim();
-    return [command[1]!.trim(), args].filter(Boolean).join(' ');
-  }
-  const shell = BASH_INPUT.exec(trimmed);
-  if (shell) return `! ${shell[1]!.trim()}`;
-  if (INTERRUPTED.test(trimmed) || onlyAddedContext(trimmed)) return '';
-  return trimmed;
+  if (INTERRUPTED.test(trimmed)) return '';
+  const blocks = addedContextBlocks(trimmed);
+  if (!blocks) return trimmed;
+  const command = blocks.get('command-name');
+  if (command !== undefined)
+    return [command.trim(), blocks.get('command-args')?.trim()].filter(Boolean).join(' ');
+  const shell = blocks.get('bash-input');
+  if (shell !== undefined) return `! ${shell.trim()}`;
+  return '';
 }
 
 /**
- * Whether a text is blocks of Claude Code's own tags and nothing else, such as
- * `<task-notification>…</task-notification>` or a command's
- * `<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>`: context Claude
- * Code added to the conversation, not something a person typed. Walked rather
- * than matched with one pattern, which would backtrack on a long paste.
+ * The contents of each of Claude Code's own tags in a text made of their
+ * blocks and nothing else, such as `<task-notification>…</task-notification>`
+ * or a command's `<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>`,
+ * by tag, the first of each; null for any other text, which a person typed.
+ * Walked rather than matched with one pattern, which would backtrack on a long
+ * paste.
  */
-function onlyAddedContext(text: string): boolean {
+function addedContextBlocks(text: string): Map<string, string> | null {
+  const blocks = new Map<string, string>();
   let rest = text;
-  if (!rest) return false;
+  if (!rest) return null;
   while (rest) {
     const open = OPENING_TAG.exec(rest);
-    if (!open || !ADDED_CONTEXT_TAGS.has(open[1]!)) return false;
+    if (!open || !ADDED_CONTEXT_TAGS.has(open[1]!)) return null;
     const closing = `</${open[1]}>`;
     const end = rest.indexOf(closing, open[0].length);
-    if (end < 0) return false;
+    if (end < 0) return null;
+    if (!blocks.has(open[1]!)) blocks.set(open[1]!, rest.slice(open[0].length, end));
     rest = rest.slice(end + closing.length).trimStart();
   }
-  return true;
+  return blocks;
 }

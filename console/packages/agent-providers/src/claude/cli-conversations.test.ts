@@ -314,7 +314,23 @@ it('leaves out the copies Switch made, a renamed one and one no session owns inc
   ]);
 });
 
-it('removes only the copies tagged as the given session’s, wherever they came from', async () => {
+it('cuts a long title by character, never between the halves of one', async () => {
+  const dir = await configDir({});
+  const summary = `${'a'.repeat(199)}😀 and more`;
+  const run = deps(
+    {},
+    {
+      getSessionInfo: vi.fn(async () => ({ sessionId: 'newer', summary, lastModified: 2_000 })),
+    }
+  );
+  await forkClaudeCliConversation(fork('newer', true), { CLAUDE_CONFIG_DIR: dir }, run);
+  expect(run.forkSession).toHaveBeenCalledWith('newer', {
+    dir: '/work',
+    title: `${'a'.repeat(199)}😀 (continued in Switch Console)`,
+  });
+});
+
+it('removes only the copies tagged as the given sessions’, wherever they came from', async () => {
   const dir = await configDir({});
   const seen: (string | undefined)[] = [];
   const run = deps(
@@ -337,6 +353,12 @@ it('removes only the copies tagged as the given session’s, wherever they came 
             lastModified: 4,
           },
           {
+            sessionId: 'theirs',
+            summary: 'Tidy the README',
+            tag: 'switch-console:session-2',
+            lastModified: 6,
+          },
+          {
             sessionId: 'untagged-copy',
             summary: 'Build fix (continued in Switch Console)',
             lastModified: 5,
@@ -346,16 +368,24 @@ it('removes only the copies tagged as the given session’s, wherever they came 
     }
   );
   await expect(
-    deleteClaudeCliConversationCopies('/work', 'session-1', { CLAUDE_CONFIG_DIR: dir }, run)
-  ).resolves.toEqual({ deleted: 1 });
+    deleteClaudeCliConversationCopies(
+      '/work',
+      ['session-1', 'session-2', 'session-3'],
+      { CLAUDE_CONFIG_DIR: dir },
+      run
+    )
+  ).resolves.toEqual({ deleted: { 'session-1': 1, 'session-2': 1, 'session-3': 0 } });
   // A copy is a programmatic conversation once its session has run in it.
+  expect(run.listSessions).toHaveBeenCalledOnce();
   expect(run.listSessions).toHaveBeenCalledWith({
     dir: '/work',
     includeProgrammatic: true,
     includeWorktrees: false,
   });
-  expect(run.deleteSession).toHaveBeenCalledOnce();
-  expect(run.deleteSession).toHaveBeenCalledWith('mine', { dir: '/work' });
+  expect(vi.mocked(run.deleteSession).mock.calls).toEqual([
+    ['mine', { dir: '/work' }],
+    ['theirs', { dir: '/work' }],
+  ]);
   expect(seen).toEqual([dir]);
 });
 
