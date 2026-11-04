@@ -864,6 +864,21 @@ export class HostedSession {
     return result;
   }
 
+  /** A replayed room cancellation keeps the generation under which it was first recorded. */
+  replayedCancellation(command: Command): Promise<Snapshot['commandStatuses'][number] | null> {
+    if (command.body.type !== 'turn.cancel' || command.epoch !== 'current')
+      return Promise.resolve(null);
+    const result = this.serial.then(() => {
+      const previous = this.commands.get(command.commandId);
+      if (!previous) return null;
+      if (!isDeepStrictEqual(previous, { ...command, epoch: previous.epoch }))
+        throw new Error('IDEMPOTENCY_CONFLICT');
+      return this.status(command.commandId);
+    });
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
   /** Resolves once every command and outcome queued before it has been taken or refused. */
   barrier(): Promise<void> {
     const result = this.serial.then(() => {});

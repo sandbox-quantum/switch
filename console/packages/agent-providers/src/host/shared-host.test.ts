@@ -1681,3 +1681,59 @@ it('answers a stale queued-card cancellation with a host refusal in its room, on
     await host.stop();
   }
 });
+
+it.each(['queued', 'active'])(
+  'replays a room cancellation of %s across restart without changing its logical identity',
+  async (target) => {
+    const first = await start({ rooms: true });
+    let resumed: Harness | null = null;
+    try {
+      for (const commandId of ['active', 'queued'])
+        await first.parent.ask({
+          type: 'command',
+          requesterName: null,
+          command: relayed('current', commandId, {
+            type: 'message.send',
+            text: commandId,
+            attachments: [],
+            delivery: 'queue',
+          }),
+        });
+      const command = relayed('current', 'cancel-before-restart', {
+        type: 'turn.cancel',
+        turnId: target,
+      });
+      const before = await first.parent.ask({ type: 'command', requesterName: null, command });
+      expect(before).toMatchObject({
+        ok: true,
+        value: { status: target === 'queued' ? 'applied' : 'rejected' },
+      });
+      const epoch = await first.snapshotEpoch();
+      await first.stop();
+      // Each real host exits its process before the next one takes ownership.
+      await rm(join(first.root, 'shared-owner.lock'));
+      resumed = await start({ base: first.base, rooms: true });
+      expect(await resumed.snapshotEpoch()).not.toBe(epoch);
+      const after = await resumed.parent.ask({ type: 'command', requesterName: null, command });
+      expect(after).toMatchObject({ ok: true, value: before.value });
+      for (const changed of [
+        { ...command, body: { type: 'turn.cancel' as const, turnId: 'another-turn' } },
+        { ...command, origin: { ...command.origin, actorId: 'another-sender' } },
+        { ...command, origin: { ...command.origin, roomId: 'another-room' } },
+        { ...command, origin: { ...command.origin, messageId: 'another-message' } },
+        { ...command, sessionId: 'another-session' },
+      ])
+        expect(
+          await resumed.parent.ask({ type: 'command', requesterName: null, command: changed })
+        ).toMatchObject({ ok: false, error: expect.stringContaining('IDEMPOTENCY_CONFLICT') });
+      expect(resumed.adapter.sendTurn).not.toHaveBeenCalled();
+      const snapshot = await resumed.parent.ask({ type: 'snapshot' });
+      expect(
+        (snapshot.value as Snapshot).turns.find((turn) => turn.turnId === 'queued')?.status
+      ).toBe(target === 'queued' ? 'cancelled' : 'interrupted');
+    } finally {
+      await first.stop();
+      await resumed?.stop();
+    }
+  }
+);

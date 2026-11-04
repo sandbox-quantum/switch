@@ -738,6 +738,8 @@ export async function runSharedHost(
         console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
         return `The command is not readable: ${parsed.error.message}`;
       }
+      const replayed = await host!.replayedCancellation(parsed.data);
+      if (replayed) return replayed;
       const command = current(parsed.data);
       if (!command) return 'There is no turn running to interrupt.';
       if (command.sessionId !== options.session.sessionId) {

@@ -2054,6 +2054,74 @@ it('passes an approval answer to the session it is for, and only that one', asyn
   }
 });
 
+it.each([false, true])(
+  'reports an unavailable cancellation host only while it still attends the room (displaced=%s)',
+  async (displaced) => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-watch-cancel-unavailable-'));
+    roots.push(root);
+    paths.root = root;
+    const config = await spawning(root);
+    const missing = await existing(root, config);
+    const other = await existing(root, config);
+    await assignTo(root, config, 1, 'room', missing.sessionId);
+    const hosts = sessionHosts();
+    await hosts.start(other.sessionRoot);
+    const calls = switchOps({ connect: false });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const control = new WatcherControl();
+    const abort = new AbortController();
+    const run = runAgentHost(
+      root,
+      config,
+      abort.signal,
+      hosts.supervision,
+      control,
+      openSwitchStream
+    );
+    try {
+      await eventually(() => streams.length === 1);
+      if (displaced) await control.place(other.sessionId, 'room');
+      await streams[0]!.onSessionCommand!({
+        contractVersion: 1,
+        sessionId: missing.sessionId,
+        epoch: 'current',
+        commandId: 'cancel-missing-host',
+        roomId: 'room',
+        origin: {
+          surface: 'mattermost',
+          actorId: '@sender:example',
+          roomId: 'room',
+          threadId: 'original-thread',
+          messageId: 'cancel-message',
+        },
+        body: { type: 'turn.cancel', turnId: 'queued-turn' },
+      });
+      const posts = calls.filter((call) => call.path.endsWith('/ops/post_message'));
+      if (displaced) {
+        expect(posts).toEqual([]);
+        expect(warn.mock.calls.some(([line]) => String(line).includes('no longer attends'))).toBe(
+          true
+        );
+        expect(published.at(-1)).toEqual({ [other.sessionId]: 'room' });
+      } else {
+        expect(posts).toHaveLength(1);
+        expect(posts[0]!.body).toEqual({
+          body: expect.stringContaining('could not confirm cancellation'),
+          thread_id: 'original-thread',
+        });
+        expect(posts[0]!.headers['X-Switch-Session-Id']).toBe(missing.sessionId);
+        expect(published.at(-1)).toEqual({ [missing.sessionId]: 'room' });
+      }
+      expect(hosts.to(missing.sessionRoot)).toEqual([]);
+      expect(hosts.to(other.sessionRoot)).toEqual([]);
+      expect(ensureSharedProcess).not.toHaveBeenCalled();
+    } finally {
+      abort.abort();
+      await run;
+    }
+  }
+);
+
 it('hands a relayed command to the session it names, and only if it runs here', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-relay-'));
   roots.push(root);
