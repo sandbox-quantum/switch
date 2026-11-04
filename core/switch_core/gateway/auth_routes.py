@@ -46,6 +46,7 @@ from switch_core.gateway.auth import (
     operator_entered_workspace,
     require_admin,
     set_session_cookie,
+    tenants_bindable_by,
     verify_password_off_loop,
 )
 from switch_core.gateway.dependencies import (
@@ -550,7 +551,12 @@ async def update_me(
     await session.commit()
     # The name other members see beside what this person writes in a
     # Console chat is their member client's, copied when it was made.
-    await rename_member_clients(session_factory, user.id, req.name)
+    await rename_member_clients(
+        session_factory,
+        await tenants_bindable_by(session_factory, user.id),
+        user.id,
+        req.name,
+    )
     return _session_response(user)
 
 

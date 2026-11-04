@@ -10,20 +10,26 @@ row-level security, so one tenant session at a time.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.db.models import Client
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.tenant_lookup import tenants_bindable_by_user
 
 
 async def rename_member_clients(
-    session_factory: async_sessionmaker[AsyncSession], user_id: str, name: str
+    session_factory: async_sessionmaker[AsyncSession],
+    tenant_ids: Iterable[str],
+    user_id: str,
+    name: str,
 ) -> None:
-    """Give every member client of `user_id` the display name `name`."""
-    for tenant_id in await tenants_bindable_by_user(session_factory, user_id):
+    """Give every member client of `user_id` in `tenant_ids` the display name
+    `name`. The caller says which tenants: the ones the person can reach, as
+    authentication already reads them (`gateway.auth.tenants_bindable_by`)."""
+    for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             await session.execute(
                 update(Client)
