@@ -118,3 +118,67 @@ def test_a_warning_too_long_for_the_message_is_cut() -> None:
     assert len(lines) == 1
     assert len(lines[0]) <= 10
     assert lines[0].startswith("⚠️")
+
+
+# ── Queued turns and message edits ───────────────────────────────────────────
+
+
+def test_queued_turn_with_original_user_message() -> None:
+    """An unedited message in queue shows standard queued status."""
+    items = [_item(kind="user-message", revision=1)]
+
+    lines = _status(items, "queued", tool_detail=True)
+
+    assert lines == ["**Queued. Waiting for the agent to start…**"]
+
+
+def test_queued_turn_with_edited_user_message_shows_queued_edited() -> None:
+    """An edited message in queue shows Queued (edited)."""
+    items = [_item(kind="user-message", revision=2)]
+
+    lines = _status(items, "queued", tool_detail=True)
+
+    assert lines == ["**Queued (edited). Waiting for the agent to start…**"]
+
+
+def test_status_state_reflects_user_message_revision() -> None:
+    """Advancing the user message revision produces a distinct status_state to trigger redraw."""
+    from datetime import UTC, datetime
+    from unittest.mock import MagicMock
+
+    from switch_core.session_activity.bridge_turns import TurnView, status_state
+
+    row = MagicMock()
+    now = datetime.now(UTC)
+
+    view_v1 = TurnView(
+        turn=_turn("queued"),
+        items=[_item(kind="user-message", revision=1)],
+        row=row,
+        started_at=now,
+    )
+    view_v2 = TurnView(
+        turn=_turn("queued"),
+        items=[_item(kind="user-message", revision=2)],
+        row=row,
+        started_at=now,
+    )
+
+    state_v1 = status_state(
+        view_v1,
+        elapsed_seconds=None,
+        interrupt_turn_id=None,
+        clock_redraws=False,
+        closed_by_platform=False,
+    )
+    state_v2 = status_state(
+        view_v2,
+        elapsed_seconds=None,
+        interrupt_turn_id=None,
+        clock_redraws=False,
+        closed_by_platform=False,
+    )
+
+    assert state_v1 != state_v2
+    assert state_v1 == "queued::/:1"
+    assert state_v2 == "queued::/:2"
