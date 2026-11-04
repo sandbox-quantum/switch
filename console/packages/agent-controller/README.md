@@ -88,9 +88,9 @@ switch-agent-controller enroll \
 
 switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
-switch-agent-controller status [--data-dir <dir>]
+switch-agent-controller status [--json] [--data-dir <dir>]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
-switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
+switch-agent-controller doctor [--json] [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller update [--check]
 ```
 
@@ -110,6 +110,17 @@ switch-agent-controller update [--check]
   controller whose credential is handed over with `--credential-stdin` is
   renamed in the gateway instead. It can run while `run` does.
 - `status` reads only local state. It makes no network call.
+- Colour is used only when the stream is a terminal, and never when `NO_COLOR`
+  holds any non-empty value or `TERM` is `dumb`. stdout and stderr are decided
+  one at a time, so piping or redirecting either leaves that one plain text.
+- `status --json` and `doctor --json` write one JSON document to stdout and
+  nothing else, so `| jq` works; anything else the command has to say goes to
+  stderr. The documents are `switch-agent-controller/status@1` and
+  `switch-agent-controller/doctor@1`; each names its `schema`, and fields are
+  added rather than renamed or dropped. `status` carries the identity, the
+  secret store, the relay and every assigned agent; `doctor` carries `ok` (which
+  matches the exit code) and a `checks` array of `{name, status, detail, fix}`,
+  where `fix` is how to clear a check that is not `ok`.
 - Logging goes to stderr. Set the level with `SWITCH_CONTROLLER_LOG_LEVEL`
   (`debug`, `info`, `warn`, `error`; the default is `info`).
 - Exit codes:

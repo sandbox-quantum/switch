@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
-import { type DoctorInputs, formatChecks, runDoctor } from './doctor';
+import { type DoctorInputs, doctorDocument, doctorPassed, runDoctor } from './doctor';
 import { MemorySecretStore } from './secrets';
 
 function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {
@@ -38,7 +38,8 @@ describe('doctor', () => {
   it('passes a machine that is ready', async () => {
     const checks = await runDoctor(inputs());
     expect(checks.filter((check) => check.status !== 'ok')).toEqual([]);
-    expect(formatChecks(checks)).toContain('ok    claude');
+    expect(doctorPassed(checks)).toBe(true);
+    expect(checks.map((check) => check.name)).toContain('claude');
   });
 
   it('passes a ready Windows machine, which Console runs rather than a service', async () => {
@@ -82,7 +83,7 @@ describe('doctor', () => {
         },
       })
     );
-    expect(checks.find((check) => check.name === 'Server')?.detail).toMatch(
+    expect(checks.find((check) => check.name === 'Server')?.fix).toMatch(
       /send \/v1 to switch-core/
     );
   });
@@ -113,5 +114,79 @@ describe('doctor', () => {
       })
     );
     expect(offline.find((check) => check.name === 'Version')?.detail).toMatch(/offline/);
+  });
+});
+
+describe('every problem carries its fix', () => {
+  it('leaves no warning or failure as a bare mark, however the machine is broken', async () => {
+    const broken: DoctorInputs[] = [
+      inputs({ identity: null }),
+      inputs({ nodeVersion: 'v20.0.0', platform: 'freebsd' }),
+      inputs({ revokedAt: '2026-10-02T00:00:00Z' }),
+      inputs({ secrets: new MemorySecretStore({}, 'test') }),
+      inputs({
+        exchange: async () => {
+          throw new Error('connect ECONNREFUSED');
+        },
+      }),
+      inputs({
+        exchange: async () => {
+          throw new ControllerApiError(401, 'unauthorized', 'no such controller', false, null);
+        },
+      }),
+      inputs({
+        bundle: () => {
+          throw new Error('no bundle here');
+        },
+      }),
+      inputs({
+        probe: async () => ({ status: 'unauthenticated', message: 'run login', models: [] }),
+      }),
+      inputs({
+        probe: async () => {
+          throw new Error('the probe timed out');
+        },
+      }),
+      inputs({ locate: async () => null }),
+      inputs({ service: async () => 'stopped' }),
+      inputs({ service: async () => 'not-installed' }),
+      inputs({
+        service: async () => {
+          throw new Error('no service manager here');
+        },
+      }),
+      inputs({ latest: async () => ({ version: '9.9.9', packageUrl: 'https://x.invalid' }) }),
+      inputs({
+        latest: async () => {
+          throw new Error('offline');
+        },
+      }),
+      inputs({
+        separateUsers: {
+          agentsDir: '/var/lib/switch-agents/1001',
+          agentUsers: 4,
+          controllerUnit: 'switch-agent-controller-1001.service',
+        },
+        service: async () => 'stopped',
+      }),
+    ];
+    for (const machine of broken) {
+      const checks = await runDoctor(machine);
+      expect(checks.some((check) => check.status !== 'ok')).toBe(true);
+      expect(checks.filter((check) => check.status !== 'ok' && !check.fix)).toEqual([]);
+    }
+  });
+});
+
+describe('doctorDocument', () => {
+  it('carries the documented keys, and `ok` agrees with the exit decision', async () => {
+    const checks = await runDoctor(inputs());
+    const document = doctorDocument('0.2.0', checks);
+    expect(document.schema).toBe('switch-agent-controller/doctor@1');
+    expect(document.version).toBe('0.2.0');
+    expect(document.ok).toBe(doctorPassed(checks));
+    expect(Object.keys(document.checks[0]!).sort()).toEqual(['detail', 'fix', 'name', 'status']);
+    expect(JSON.parse(JSON.stringify(document))).toEqual(document);
+    expect(doctorDocument('0.2.0', await runDoctor(inputs({ identity: null }))).ok).toBe(false);
   });
 });
