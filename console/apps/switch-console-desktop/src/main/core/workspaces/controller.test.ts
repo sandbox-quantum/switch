@@ -922,7 +922,8 @@ describe('selecting the workspace’s tenant before the call', () => {
     expect(serviceBrowserFlow.startServiceBrowserFlow).toHaveBeenCalledWith(
       srv,
       'example',
-      expect.any(Function)
+      expect.any(Function),
+      undefined
     );
     expect(serviceBrowserFlow.getServiceBrowserFlow).toHaveBeenCalledWith(srv, 'example', 'flow-1');
     expect(serviceBrowserFlow.cancelServiceBrowserFlow).toHaveBeenCalledWith(

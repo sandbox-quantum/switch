@@ -85,6 +85,21 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **Grafana Cloud can be connected.** People type their stack, sign in at
+  Grafana, and agents they turn it on for read dashboards, metrics, logs,
+  alerts and incidents as them, through Grafana's own MCP server. Read asks
+  for `grafana:read` alone; write adds `grafana:query` and `grafana:write`.
+- **An OAuth entry can ask for a public value that picks the vendor's MCP
+  server**, such as a Grafana Cloud stack. It fills one whole host label or
+  path segment on a fixed domain, is checked before the browser opens, is kept
+  with the connection for refreshes and sessions, and is part of the account
+  id, so connecting to another stack keeps none of the first one's grants.
+- **OAuth catalog entries can opt into MCP identity and unscoped consent.**
+  Identity tools must be read-only, take no arguments and identify one account;
+  ambiguous results fail sign-in. `account_id` may list several paths, joined
+  into one id, so a person in two accounts is two connections. Vendors with
+  documented absence of scopes can explicitly omit scope and are always shown
+  as read and write.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -2343,6 +2358,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Connecting a service can ask for its stack first.** A connector that needs
+  one, such as Grafana Cloud, shows a field for it, and Connect stays off until
+  the value fits.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

@@ -164,6 +164,11 @@ async def list_service_connections(
                 # What a person pastes to connect a service connected with a
                 # key, and where they make one; null for any other.
                 "key": _key_form(definition),
+                "oauth_fields": [
+                    field.model_dump() for field in definition.auth.oauth.fields
+                ]
+                if definition.auth.oauth is not None
+                else [],
                 "status": _status(standing, connection),
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (

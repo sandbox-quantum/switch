@@ -58,3 +58,7 @@ written out as the equivalent `fill` attributes and its ids removed.
   Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
+
+## Grafana Cloud
+
+`grafana.svg`: official Grafana mark from https://github.com/grafana/mcp-grafana/blob/main/ui/mcp-apps/src/grafana.svg, fetched 2026-11-02. The vendor drawing path and viewBox are retained; presentation wrappers and gradient references are replaced with a solid orange fill. Trademark of Grafana Labs; used to identify this integration, without endorsement. Brand terms: https://grafana.com/trademark-policy/.

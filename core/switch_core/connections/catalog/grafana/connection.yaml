@@ -1,0 +1,57 @@
+slug: grafana
+name: Grafana Cloud
+category: Observability
+description: >-
+  Read Grafana Cloud dashboards, metrics, logs, alerts and incidents, as you.
+  Needs Grafana Assistant on the stack; each person using it counts as an
+  Assistant user.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Each refresh returns a new refresh token (measured). Grafana documents
+  # one-hour access tokens and a 30-day refresh window, after which people
+  # sign in again; the 30 days were not measured.
+  refresh: rotating
+  oauth:
+    # The person types their stack, and Switch signs in to that stack's own
+    # MCP server, which Grafana documents under "Connect multiple stacks"
+    # (grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/). The
+    # stack fills one whole path segment on Grafana's fixed domain.
+    fields:
+      - name: stack
+        label: Grafana Cloud stack
+        help: Your stack's address, such as example-stack.grafana.net, without https:// or a path.
+        pattern: '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.grafana\.net$'
+    # Grafana offers dynamic registration, so Core registers its own public
+    # client: nothing to set up on the server.
+    registration: dynamic
+    redirect: [loopback]
+    # Grafana advertises no revocation endpoint.
+    remove_access: >-
+      Remove Switch in Grafana Cloud, under Grafana Assistant, Settings,
+      Connectors, MCP clients.
+  # No REST endpoint takes the MCP server's token. user_info is read-only and
+  # takes no arguments, and returns the person's login, but the same login
+  # signs in to every stack, so the account is the stack and the login
+  # together. Core supplies connection.stack; it is never read from Grafana's
+  # answer, its list of orgs or the token's claims.
+  identity:
+    mcp_tool: user_info
+    account_id: [connection.stack, login]
+    label: login
+# Grafana's access tokens live an hour (expires_in 3600, measured).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: grafana, url: "https://mcp.grafana.com/mcp/{stack}" }
+access:
+  # Grafana advertises grafana:read, grafana:query and grafana:write. A Read
+  # sign-in was granted grafana:read and neither of the others (measured).
+  # grafana:query runs SQL against data sources as written, which can change
+  # data, so it belongs to the write level, never to read.
+  read:
+    scopes: ["grafana:read"]
+  write:
+    scopes: ["grafana:read", "grafana:query", "grafana:write"]
+tools: { mode: pass_through }

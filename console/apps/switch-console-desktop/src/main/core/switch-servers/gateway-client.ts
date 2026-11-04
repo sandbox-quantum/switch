@@ -3538,6 +3538,7 @@ export async function getConnectionCatalog(
     unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
+    ...(entry.oauth_fields.length ? { oauth_fields: entry.oauth_fields } : {}),
     loopback_ports: entry.loopback_ports,
     key: entry.key,
     external_identity: entry.external_identity,
@@ -3886,7 +3887,7 @@ const serviceFlows = (service: string) =>
 export async function startServiceConnection(
   server: SwitchServer,
   service: string,
-  input: { port: number; state: string; completion_secret: string }
+  input: { port: number; state: string; completion_secret: string; fields?: Record<string, string> }
 ): Promise<ServiceFlowStart> {
   if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('Service connections require HTTPS, unless the server is on this computer.');

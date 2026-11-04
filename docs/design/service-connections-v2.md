@@ -447,6 +447,32 @@ Then:
 - Say in the entry's comments what the vendor needs turned on (Datadog's MCP
   access) and anything measured rather than documented (a token's lifetime).
 
+## Shared OAuth catalog opt-ins
+
+`auth.identity.mcp_tool` names a read-only MCP identity tool called without
+arguments, instead of an authenticated JSON GET `url`. Exactly one source is
+required. Core validates the advertised tool is read-only with no arguments
+before calling it. The configured `account_id` must resolve to one nonempty
+string or integer in the JSON object. `account_id` also accepts a nonempty
+list of paths, for example `[userId, hubId]`. Every component must resolve to
+one nonempty string or integer; each component is percent-encoded and joined
+with `:` so separators in vendor ids cannot create collisions. The original
+single-path form preserves the vendor id unchanged. Missing ids, arrays and multiple-account
+results fail sign-in; no first-account selection is performed. Calls are
+bounded to 15 seconds and 64 KiB, refuse redirects and sanitize vendor errors
+and identity-transport diagnostics. Other entries keep their REST identity.
+
+`access.unscoped: true` is only for vendors that advertise and document no
+OAuth scopes. The catalog entry must cite that evidence in a YAML comment.
+Both Read and Write scope lists must be empty; it is valid only for the
+OAuth adapter. Authorization omits `scope`, and consent always records Write,
+never Read. This does not enforce read-only tools. Entries without the opt-in
+still require nonempty scopes. Enforcing a narrower level with listed tools
+is outside this change.
+
+Neither feature enables a connector. Each connector supplies its own verified
+identity mapping, evidence comments, skill, tests and live acceptance.
+
 ## Atlassian
 
 Built from a sign-in run against a test Atlassian Cloud site with default MCP
@@ -602,6 +628,56 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `enabled: false`, or remove its client (under Connectors, or by unsetting
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
+
+## Connection fields
+
+An `oauth` entry may list `auth.oauth.fields`: public values a person types
+when connecting, each with a label, help and an anchored `pattern`, that pick
+which of the vendor's MCP servers they sign in to (Grafana's stack). A field
+fills one whole host label, with the domain around it fixed, or one whole path
+segment of an MCP server's URL, and its value is also held to the plain
+characters of a URL part: no slash, port, query or escape. The authorization,
+token and revocation URLs and a REST identity URL stay fixed.
+
+Console asks for the fields before it starts a flow, and Core checks them
+then, keeps them with the flow, and signs in, reads the account and refreshes
+through the server they name; the connection keeps them, encrypted, for
+refreshes and for the server URL a session is given. Every field is part of
+the account id, as `connection.<name>` in its list form, and Core supplies
+that value itself, never the vendor's answer. So connecting the same login to
+another stack is another account, and the first one's grants stop.
+
+## Grafana Cloud
+
+Built from sign-in runs against a Grafana Cloud stack:
+
+- People type their stack (`example-stack.grafana.net`), and Switch uses that
+  stack's MCP server, `https://mcp.grafana.com/mcp/<stack>`, which Grafana
+  documents under "Connect multiple stacks". Its 401 names that stack's own
+  metadata, which offers dynamic registration, PKCE with S256 and a public
+  client, so Core registers its client and nothing is set up on the server.
+- No REST endpoint takes the MCP server's token. `user_info` is read-only and
+  takes no arguments, and names the person's `login`, but one login signs in
+  to every stack, so the account id is `[connection.stack, login]`. The org
+  list it also returns is never used to choose one.
+- Grafana advertises `grafana:read`, `grafana:query` and `grafana:write`. A
+  read sign-in asks for `grafana:read`, and was granted neither of the
+  others. Query runs
+  SQL against data sources as written, which can change data, so it is part
+  of the write level only. Tools pass through: what a call may do is
+  Grafana's to enforce, from the scopes granted and the person's role.
+- Access tokens live an hour; each refresh returns a new refresh token.
+  Grafana documents a 30-day refresh window, after which people sign in
+  again; that was not measured.
+- No revocation endpoint is advertised, so `remove_access` tells people to
+  remove Switch under Grafana Assistant, Settings, Connectors, MCP clients.
+- It needs Grafana Assistant on the stack, and each person using MCP counts as
+  an Assistant user. `ask_assistant` and `create_investigation` call
+  Assistant's models, so the skill uses them only when asked.
+
+To connect: Settings, Connections in Switch Console, then Grafana Cloud, and
+type the stack. To roll back, add `grafana` to `DISABLED_SERVICES`, or set the
+entry's `enabled: false`.
 
 ## Not yet
 
