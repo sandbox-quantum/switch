@@ -25,18 +25,20 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_dropbox_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "google-workspace",
     ]
@@ -44,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -225,6 +228,62 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_dropbox_entry_signs_in_as_the_spec_found_it_must():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "DROPBOX"
+    assert oauth.prompt == "consent"
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    assert oauth.revocation_discovered is True
+    assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
+    assert definition.auth.refresh == "reusable"
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.method,
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == (
+        "POST",
+        "https://api.dropboxapi.com/2/users/get_current_account",
+        "account_id",
+        "email",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        14400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read_scopes = [
+        "account_info.read",
+        "files.metadata.read",
+        "files.content.read",
+        "sharing.read",
+        "file_requests.read",
+    ]
+    write_scopes = [
+        *read_scopes,
+        "files.content.write",
+        "files.metadata.write",
+        "sharing.write",
+        "file_requests.write",
+    ]
+    assert definition.access.read.scopes == read_scopes
+    assert definition.access.write.scopes == write_scopes
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 @pytest.fixture

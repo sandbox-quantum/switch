@@ -1,0 +1,66 @@
+slug: dropbox
+name: Dropbox
+category: File storage
+description: Search and read Dropbox files and folders, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Dropbox refresh tokens are long-lived and reusable; Dropbox does not rotate
+  # or return a new refresh token when refreshed.
+  refresh: reusable
+  oauth:
+    # Dropbox MCP server supports dynamic registration only for trusted clients
+    # (Claude, ChatGPT, etc.); other deployments register a static Dropbox OAuth app
+    # in the Dropbox App Console and configure DROPBOX_CLIENT_CONFIG_PATH.
+    registration: static
+    client_settings: DROPBOX
+    # Redirects back to Core's callback (<GATEWAY_PUBLIC_URL>/gateway/service-connections/dropbox/flows/callback),
+    # configured as a Redirect URI in the Dropbox App Console.
+    redirect: [core]
+    # Re-prompt for consent to ensure offline refresh tokens and user approval.
+    prompt: consent
+    # Offline access is required for Dropbox to return a refresh token alongside the access token.
+    authorization_params: { token_access_type: offline }
+    # Dropbox publishes its revocation endpoint (https://api.dropboxapi.com/2/auth/token/revoke)
+    # in its OAuth authorization server metadata.
+    revocation_discovered: true
+    # Dropbox validates redirect URIs during authorization code exchange.
+    unchecked: >-
+      Switch can't check that the redirect URI matches. Have someone connect
+      once to confirm.
+  identity:
+    # Dropbox API v2 RPC endpoint; requires POST and returns the authenticated user's account info.
+    method: POST
+    url: https://api.dropboxapi.com/2/users/get_current_account
+    account_id: account_id
+    label: email
+# Dropbox access tokens live 4 hours (14,400 seconds).
+token: { kind: pass_through, max_lifetime: 14400 }
+mcp:
+  servers:
+    # The official Dropbox remote MCP server.
+    - { name: dropbox, url: "https://mcp.dropbox.com/mcp" }
+access:
+  # Dropbox MCP server supported scopes for search and reading files.
+  # Read grants allow browsing, searching and reading file metadata and content.
+  # Write grants include file modifications and creations.
+  read:
+    scopes:
+      - account_info.read
+      - files.metadata.read
+      - files.content.read
+      - sharing.read
+      - file_requests.read
+  write:
+    scopes:
+      - account_info.read
+      - files.metadata.read
+      - files.content.read
+      - sharing.read
+      - file_requests.read
+      - files.content.write
+      - files.metadata.write
+      - sharing.write
+      - file_requests.write
+tools: { mode: pass_through }

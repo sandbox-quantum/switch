@@ -490,7 +490,7 @@ class OAuthAdapter:
         """The account the token acts as, as the catalog says to read it."""
         response = await self._send(
             self._http.build_request(
-                "GET",
+                self._identity.method,
                 self._identity.url,
                 headers={
                     "Authorization": f"Bearer {access_token}",
@@ -581,6 +581,8 @@ class OAuthAdapter:
             return
         client = await self._client.credentials(endpoints)
         identifying, headers = client_fields(endpoints, client)
+        if "Authorization" not in headers:
+            headers = {**headers, "Authorization": f"Bearer {token}"}
         response = await self._send(
             self._http.build_request(
                 "POST",
