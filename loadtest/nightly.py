@@ -1056,7 +1056,7 @@ class Night:
             scale_core(cfg, cfg.night_pods)
         s = self.before = wait_core(cfg, cfg.night_pods, 1500)
         print(
-            f"staging runs {s['build']} on {s['ready']} pods, "
+            f"{cfg.environment} runs {s['build']} on {s['ready']} pods, "
             f"{sorted(s['by_node'].values())} per node",
             flush=True,
         )
