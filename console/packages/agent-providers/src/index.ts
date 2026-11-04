@@ -48,6 +48,7 @@ export type {
   AcpSessionContext,
   AcpSignInInput,
 } from './acp/hooks';
+export { ampAcp, createAmpAdapter } from './amp/amp-adapter';
 export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
 export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
