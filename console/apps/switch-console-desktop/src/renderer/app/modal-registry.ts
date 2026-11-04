@@ -12,6 +12,9 @@ import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnec
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
+import { AddMachineModal } from '@renderer/features/machines/add-machine-modal';
+import { MoveAgentModal } from '@renderer/features/machines/move-agent-modal';
+import { RenameMachineModal } from '@renderer/features/machines/rename-machine-modal';
 import { AddHostModal } from '@renderer/features/remote-hosts/add-host-modal';
 import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-agent-config-modal';
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
@@ -32,6 +35,8 @@ import { DeleteAccountModal } from '@renderer/features/switch-servers/delete-acc
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
 import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/DisconnectMessagingAppModal';
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
+import { ReplaceTokenModal } from '@renderer/features/switch-servers/ReplaceTokenModal';
+import { RequireLinkConfirmationModal } from '@renderer/features/switch-servers/RequireLinkConfirmationModal';
 import { TeamsPlacementModal } from '@renderer/features/switch-servers/TeamsPlacementModal';
 import { SaveTemplateModal } from '@renderer/features/templates/save-template-modal';
 import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
@@ -68,6 +73,12 @@ export const modalRegistry = {
   commandPaletteModal: createModal(CommandPaletteModal, { size: 'md' }),
   sessionModal: createModal(CreateSessionModal, { dismissOnOutsideClick: false }),
   addAgentModal: createModal(AddAgentModal, { size: 'lg', dismissOnOutsideClick: false }),
+  addMachineModal: createModal(AddMachineModal, { size: 'lg' }),
+  moveAgentModal: createModal(MoveAgentModal, { size: 'md' }),
+  renameMachineModal: createModal(RenameMachineModal, {
+    size: 'sm',
+    dismissOnOutsideClick: false,
+  }),
   saveTemplateModal: createModal(SaveTemplateModal, { size: 'sm', dismissOnOutsideClick: false }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
   deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),
@@ -121,8 +132,16 @@ export const modalRegistry = {
     size: 'md',
     dismissOnOutsideClick: false,
   }),
+  requireLinkConfirmationModal: createModal(RequireLinkConfirmationModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   bundledChatSignInModal: createModal(BundledChatSignInModal, { size: 'sm' }),
   disconnectMessagingAppModal: createModal(DisconnectMessagingAppModal, {
+    size: 'sm',
+    dismissOnOutsideClick: false,
+  }),
+  replaceTokenModal: createModal(ReplaceTokenModal, {
     size: 'sm',
     dismissOnOutsideClick: false,
   }),

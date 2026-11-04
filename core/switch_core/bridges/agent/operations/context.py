@@ -136,6 +136,14 @@ def sole_connected_room(rooms: set[str]) -> str:
     set as well and must not pay for reading it twice.
     """
     if not rooms:
+        caller = caller_session()
+        if caller is not None and caller.placed_by_controller:
+            raise ValueError(
+                "Not connected to a room: the agent controller running this agent "
+                "named no room for this session, so it has no record of the "
+                "session connecting to one. Call connect_to_room again; if this "
+                "keeps happening, the agent controller's log says why."
+            )
         raise ValueError("Not connected to a room. Call connect_to_room first.")
     if len(rooms) > 1:
         raise ValueError(

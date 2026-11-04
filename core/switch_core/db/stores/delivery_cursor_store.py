@@ -14,6 +14,7 @@ from sqlalchemy import BigInteger, bindparam, func, literal, select, text
 from sqlalchemy.dialects.postgresql import ARRAY, insert
 from sqlalchemy.types import Text
 
+from switch_core.db.id_lists import any_of
 from switch_core.db.models import DeliveryCursor, Message
 
 if TYPE_CHECKING:
@@ -131,7 +132,7 @@ class DeliveryCursorStore:
         result = await session.execute(
             select(DeliveryCursor.room_id, DeliveryCursor.last_seq).where(
                 DeliveryCursor.client_id == client_id,
-                DeliveryCursor.room_id.in_(list(room_ids)),
+                any_of(DeliveryCursor.room_id, room_ids),
             )
         )
         return dict(result.tuples().all())

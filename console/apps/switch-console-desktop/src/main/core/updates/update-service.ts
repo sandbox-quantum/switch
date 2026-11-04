@@ -27,6 +27,7 @@ import {
   updateProgressEvent,
 } from '@shared/events/updateEvents';
 import { switchConsoleReleaseApiUrl } from '@shared/urls';
+import { resolveCanaryFeedUrl } from './canary-feed';
 import {
   FAKE_UPDATE_VERSION_ENV_VAR,
   FakeUpdateDriver,
@@ -292,11 +293,23 @@ class UpdateService implements IInitializable, IDisposable {
 
     if (this.fake) return this.fake.check();
 
-    autoUpdater.setFeedURL({
-      provider: 'github',
-      owner: RELEASE_REPO_OWNER,
-      repo: RELEASE_REPO_NAME,
-    });
+    if (IS_CANARY) {
+      let url: string;
+      try {
+        url = await resolveCanaryFeedUrl();
+      } catch (error) {
+        // The updater never runs, so its error listener cannot report this.
+        this.signals.failed(error);
+        throw error;
+      }
+      autoUpdater.setFeedURL({ provider: 'generic', url, channel: 'canary' });
+    } else {
+      autoUpdater.setFeedURL({
+        provider: 'github',
+        owner: RELEASE_REPO_OWNER,
+        repo: RELEASE_REPO_NAME,
+      });
+    }
 
     log.info('Checking for updates...', {
       channel: UPDATE_CHANNEL,

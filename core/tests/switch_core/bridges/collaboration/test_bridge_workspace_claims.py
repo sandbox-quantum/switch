@@ -299,7 +299,10 @@ class TestAnEditIsHeldToTheSameRules:
                 if b.tenant_id == tenant
             ]
 
-        with tenant_scope(tenant):
+        with (
+            tenant_scope(tenant),
+            patch.object(DiscordAdapter, "verify_credentials", AsyncMock()),
+        ):
             await _service(session_factory).check_edited_connection_config(
                 bridge_id=bridge.id,
                 bridge_type="discord",

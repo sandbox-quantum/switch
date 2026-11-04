@@ -8,21 +8,15 @@ keeps the rest.
 
 from __future__ import annotations
 
-import json
-
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import ServiceAppCredential
+from switch_core.db.stores.app_secrets import (
+    decrypt_app_secrets,
+    encrypt_merged_secrets,
+)
 from switch_core.keys import Keyring
-
-
-class MissingSecretsError(ValueError):
-    """A save would leave the service without every secret its kind has."""
-
-    def __init__(self, names: list[str]) -> None:
-        super().__init__(f"Missing: {', '.join(names)}.")
-        self.names = names
 
 
 class ServiceAppCredentialStore:
@@ -49,12 +43,7 @@ class ServiceAppCredentialStore:
 
     def secrets(self, row: ServiceAppCredential) -> dict[str, str]:
         """The row's secrets. Raises `UndecryptableError` when no key opens them."""
-        values = json.loads(self._keyring.decrypt(row.encrypted_secrets))
-        if not isinstance(values, dict) or not all(
-            isinstance(value, str) for value in values.values()
-        ):
-            raise ValueError(f"The stored secrets for {row.service} are malformed.")
-        return values
+        return decrypt_app_secrets(self._keyring, row.encrypted_secrets, row.service)
 
     async def save(
         self,
@@ -67,12 +56,8 @@ class ServiceAppCredentialStore:
         secret_names: frozenset[str],
         updated_by: str,
     ) -> ServiceAppCredential:
-        """Write the row, merging `secrets` over those already stored.
-
-        `secret_names` are every secret the service's kind has. A save naming
-        them all replaces what is stored without reading it, so one under a
-        key since retired can be entered again; any other save must find the
-        rest stored, or raises `MissingSecretsError`.
+        """Write the row, merging `secrets` over those already stored
+        (`encrypt_merged_secrets`).
 
         Saves of one service are serialised by a lock held to the end of the
         caller's transaction, so two operators saving different secrets at
@@ -83,22 +68,13 @@ class ServiceAppCredentialStore:
             {"key": f"service-app-credential:{service}"},
         )
         row = await self.get(session, service)
-        if set(secrets) - secret_names:
-            raise ValueError(
-                f"{service} has no secret named {sorted(set(secrets) - secret_names)}."
-            )
-        stored = (
-            {} if row is None or secret_names <= set(secrets) else self.secrets(row)
+        encrypted = encrypt_merged_secrets(
+            self._keyring,
+            service=service,
+            stored=None if row is None else row.encrypted_secrets,
+            secrets=secrets,
+            secret_names=secret_names,
         )
-        merged = {
-            name: value
-            for name, value in {**stored, **secrets}.items()
-            if name in secret_names
-        }
-        missing = secret_names - set(merged)
-        if missing:
-            raise MissingSecretsError(sorted(missing))
-        encrypted = self._keyring.encrypt(json.dumps(merged))
         if row is None:
             row = ServiceAppCredential(
                 service=service,

@@ -17,7 +17,11 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import TrustSettings, User
 from switch_core.db.stores.trust_settings_store import TrustSettingsStore
 from switch_core.gateway.auth import require_admin
-from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_session,
+    trust_settings_changed,
+)
 from switch_core.gateway.schemas import (
     TrustSettingsResponse,
     TrustSettingsUpdateRequest,
@@ -97,6 +101,7 @@ async def update_trust_settings(
         api_key_encrypted=api_key_encrypted,
     )
     await session.commit()
+    trust_settings_changed()
     return _to_response(settings, config)
 
 
@@ -108,4 +113,5 @@ async def delete_trust_settings(
 ) -> TrustSettingsResponse:
     await TrustSettingsStore().clear(session)
     await session.commit()
+    trust_settings_changed()
     return _to_response(None, config)

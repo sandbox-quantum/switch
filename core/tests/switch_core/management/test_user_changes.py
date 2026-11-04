@@ -17,6 +17,7 @@ from switch_core.signals import SignalBus
 from switch_core.user_changes import (
     MACHINE,
     MANAGED_AGENT,
+    ROOM,
     USER_CHANGED_SIGNAL,
     LocalUserChanges,
     SignalUserChanges,
@@ -191,6 +192,7 @@ class TestAcrossProcesses:
         assert set(subscription.drain()) == {
             UserChange(MANAGED_AGENT, None),
             UserChange(MACHINE, None),
+            UserChange(ROOM, None),
         }
 
 

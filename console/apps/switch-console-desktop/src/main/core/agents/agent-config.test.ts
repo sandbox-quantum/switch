@@ -16,20 +16,18 @@ const state = vi.hoisted(() => ({
   writes: [] as string[],
 }));
 
-const fakeFs = vi.hoisted(
-  () => (): PluginFs => ({
-    read: async (path: string) => state.files.get(path) ?? null,
-    write: async (path: string, content: string) => {
-      state.writes.push(path);
-      state.files.set(path, content);
-    },
-    delete: async (path: string) => {
-      state.files.delete(path);
-    },
-    exists: async (path: string) => state.files.has(path),
-    list: async () => [],
-  })
-);
+const fakeFs = vi.hoisted(() => (): PluginFs => ({
+  read: async (path: string) => state.files.get(path) ?? null,
+  write: async (path: string, content: string) => {
+    state.writes.push(path);
+    state.files.set(path, content);
+  },
+  delete: async (path: string) => {
+    state.files.delete(path);
+  },
+  exists: async (path: string) => state.files.has(path),
+  list: async () => [],
+}));
 
 vi.mock('./getAgentById', () => ({
   getAgentById: async (agentId: string) => ({

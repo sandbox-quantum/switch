@@ -5,6 +5,7 @@ sites that use them.
 
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -34,10 +35,20 @@ class _FakeRow:
 
 class _FakeStore:
     def __init__(self, row: _FakeRow | None) -> None:
-        self._row = row
+        self.row = row
+        self.reads = 0
+        # Run as a read happens, for a change that lands while it is made.
+        self.during_read: Callable[[], None] | None = None
+        self.fail_next = False
 
     async def get(self, session: object) -> _FakeRow | None:
-        return self._row
+        self.reads += 1
+        if self.during_read is not None:
+            self.during_read()
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("the pool timed out")
+        return self.row
 
 
 class _FakeSession:
@@ -63,13 +74,16 @@ class _UndecryptableKeyring:
         raise UndecryptableError("no key in the keyring opens this value")
 
 
-def _dynamic_client(row: _FakeRow | None, handler, keyring=None) -> DynamicTrustClient:
+def _dynamic_client(
+    row: _FakeRow | None, handler, keyring=None, store=None, **kwargs
+) -> DynamicTrustClient:
     return DynamicTrustClient(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
-        store=_FakeStore(row),  # type: ignore[arg-type]
+        store=store or _FakeStore(row),  # type: ignore[arg-type]
         keyring=keyring or _FakeKeyring(),  # type: ignore[arg-type]
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         timeout_seconds=1.0,
+        **kwargs,
     )
 
 
@@ -147,6 +161,86 @@ def _client(handler) -> HttpTrustClient:
         timeout_seconds=1.0,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
+
+
+def _ok(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+
+
+_ROW = _FakeRow(
+    endpoint="https://trust.example", policy_id="pol_123", api_key_encrypted="enc:k"
+)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_client_reads_the_settings_once_for_many_checks() -> None:
+    """Every message an agent sends is checked; the row hardly ever changes."""
+    store = _FakeStore(_ROW)
+    client = _dynamic_client(None, _ok, store=store)
+
+    for _ in range(3):
+        await client.check(role="user", content="hi", room_id="room-1")
+
+    assert store.reads == 1
+
+
+@pytest.mark.asyncio
+async def test_settings_forgotten_are_read_before_the_next_check() -> None:
+    """A change made through the gateway takes effect on the next message."""
+    policies: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        policies.append(request.headers.get("x-guardrails-policy-id"))
+        return _ok(request)
+
+    store = _FakeStore(None)
+    client = _dynamic_client(None, handler, store=store)
+    await client.check(role="user", content="hi", room_id="room-1")
+    store.row = _ROW
+
+    client.forget()
+    await client.check(role="user", content="hi", room_id="room-1")
+
+    assert (policies, store.reads) == (["pol_123"], 2)
+
+
+@pytest.mark.asyncio
+async def test_settings_read_while_they_changed_are_not_kept() -> None:
+    """The read may have seen the row from before the change."""
+    store = _FakeStore(_ROW)
+    client = _dynamic_client(None, _ok, store=store)
+    store.during_read = client.forget
+    await client.check(role="user", content="hi", room_id="room-1")
+    store.during_read = None
+
+    await client.check(role="user", content="hi", room_id="room-1")
+
+    assert store.reads == 2
+
+
+@pytest.mark.asyncio
+async def test_settings_older_than_the_most_kept_are_read_again() -> None:
+    """For a change whose signal was lost."""
+    store = _FakeStore(_ROW)
+    client = _dynamic_client(None, _ok, store=store, max_age_seconds=0.0)
+
+    await client.check(role="user", content="hi", room_id="room-1")
+    await client.check(role="user", content="hi", room_id="room-1")
+
+    assert store.reads == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_is_read_again_by_the_next_check() -> None:
+    store = _FakeStore(_ROW)
+    client = _dynamic_client(None, _ok, store=store)
+    store.fail_next = True
+    with pytest.raises(GuardrailsCheckError):
+        await client.check(role="user", content="hi", room_id="room-1")
+
+    result = await client.check(role="user", content="hi", room_id="room-1")
+
+    assert (result.outcome, store.reads) == ("ok", 2)
 
 
 @pytest.mark.asyncio

@@ -159,6 +159,7 @@ class SharedConnections:
         self._bus = bus
         self._lease = lease
         self._incarnations: list[int] = []
+        self._incarnation_lock = asyncio.Lock()
         # Bumped every time an agent's state here is set from the rows or
         # written to them, so a full pass that read the rows before a move
         # does not set them back to what they were before it.
@@ -221,11 +222,12 @@ class SharedConnections:
             latest = max(
                 (row.incarnation for row in rows.connections.values()), default=0
             )
-            self._incarnations = [n for n in self._incarnations if n > latest]
-            if not self._incarnations:
-                self._incarnations.extend(
-                    await self._store.incarnations(session, INCARNATION_BATCH)
-                )
+            async with self._incarnation_lock:
+                self._incarnations = [n for n in self._incarnations if n > latest]
+                if not self._incarnations:
+                    self._incarnations = await self._store.incarnations(
+                        session, INCARNATION_BATCH
+                    )
             self._apply(agent_id, tenant_id, rows)
             # Compared with what is recorded rather than with the copy just
             # set from it: a claim of a connection this process has closed,

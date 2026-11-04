@@ -9,10 +9,12 @@ pushes an outcome on without reading anything back. `pg_notify` payloads are
 capped just under 8000 bytes, so a request too large to fit is announced by key
 alone and the subscriber reads that one row.
 
-A turn step's announcement carries only the turn it belongs to
-(`agent_id`, `session_id`, `turn_id`). Its subscriber, a bridge, redraws the
-whole turn from its rows on every change anyway, and a step's text is too
-large to ride along often enough to be worth the branch.
+A turn step's announcement carries the turn it belongs to (`agent_id`,
+`session_id`, `turn_id`), its room (`room_id`, null for a step outside any
+room), and the step itself (`item_id`, `revision`), so a subscriber that shows
+steps one by one reads only the one that moved. A bridge redraws the whole
+turn from its rows on every change anyway, and a step's text is too large to
+ride along often enough to be worth the branch.
 
 Fires on every insert or update of `session_activity_items`, every insert into
 `approval_requests`, and an approval request's change of state (answered,
@@ -42,7 +44,10 @@ BEGIN
             'tenant_id', NEW.tenant_id,
             'agent_id', NEW.agent_id,
             'session_id', NEW.session_id,
-            'key', body->>'turn_id'
+            'room_id', NEW.room_id,
+            'key', body->>'turn_id',
+            'item_id', NEW.item_id,
+            'revision', NEW.revision
         );
         payload := jsonb_build_object('table', TG_TABLE_NAME, 'key', key)::text;
     ELSE
@@ -50,6 +55,7 @@ BEGIN
             'tenant_id', NEW.tenant_id,
             'agent_id', NEW.agent_id,
             'session_id', NEW.session_id,
+            'room_id', NEW.room_id,
             'key', body->>'request_id'
         );
         payload := jsonb_build_object('table', TG_TABLE_NAME, 'row', body)::text;

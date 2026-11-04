@@ -134,6 +134,59 @@ export class SwitchHttpError extends Error {
   }
 }
 
+/** An agent's addressing policy: anyone no rule matches is refused. */
+export interface AddressingPolicy {
+  rules: {
+    rooms: "*" | string[];
+    room_groups: "*" | string[];
+    users: "*" | string[];
+    agents: "*" | string[];
+    owner: boolean;
+    owner_agents: boolean;
+    platform: boolean;
+  }[];
+}
+
+/** Only the agent's owner, and the platform identities its owner claimed. */
+export const OWNER_ONLY: AddressingPolicy = {
+  rules: [
+    {
+      rooms: "*",
+      room_groups: "*",
+      users: [],
+      agents: [],
+      owner: true,
+      owner_agents: false,
+      platform: false,
+    },
+  ],
+};
+
+/** What a template run made. */
+export interface TemplateRun {
+  created_agents: {
+    slot: string;
+    agent_id: string;
+    name: string;
+    machine: { id: string; name: string };
+    listening: boolean;
+  }[];
+  room: { room_id: string; room_name: string; failed_attachments: unknown[] };
+}
+
+/** A template run the server refused, having created nothing. */
+export class TemplateRefusal extends Error {
+  readonly problems: { slot: string; code: string; message: string }[];
+  constructor(
+    cause: SwitchHttpError,
+    problems: { slot: string; code: string; message: string }[],
+  ) {
+    super(cause.message, { cause });
+    this.name = "TemplateRefusal";
+    this.problems = problems;
+  }
+}
+
 /**
  * The reason code of a management API refusal (`{"error": {"code": …}}`), or
  * null when the error is not one.
@@ -148,6 +201,16 @@ export function managementErrorCode(error: unknown): string | null {
   }
 }
 
+/** A FastAPI error body's `detail` when it is a string, else the body as it came. */
+export function errorDetail(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    return typeof parsed.detail === "string" ? parsed.detail : body;
+  } catch {
+    return body;
+  }
+}
+
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
@@ -157,6 +220,22 @@ interface SwitchRequest {
   cookie?: string;
   body?: unknown;
   timeoutMs?: number;
+}
+
+export interface OrganizationSummary {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+}
+
+export interface WorkspaceMembership {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+  organization_role: string | null;
+  organization_id: string | null;
 }
 
 export class SwitchClient {
@@ -389,6 +468,80 @@ export class SwitchClient {
     return (parsed as { id: string }).id;
   }
 
+  /**
+   * `POST /gateway/organizations` — create an organization with its first
+   * workspace. The caller becomes its organization admin and the workspace's
+   * owner, and the server re-mints their session into the workspace, so from
+   * here on this client acts there.
+   */
+  async createOrganization(name: string): Promise<{
+    organization: OrganizationSummary;
+    workspace: WorkspaceMembership;
+  }> {
+    const { parsed, response } = await this.rawRequest(
+      "POST",
+      "/gateway/organizations",
+      {
+        cookie: await this.gatewayLogin(),
+        body: { name },
+      },
+    );
+    const cookie = sessionCookieFrom(response);
+    if (!cookie)
+      throw new Error(
+        "Creating an organization returned no switch_auth cookie for its workspace.",
+      );
+    this.issued.record(cookie.slice("switch_auth=".length));
+    this.gatewayCookie = cookie;
+    return parsed as {
+      organization: OrganizationSummary;
+      workspace: WorkspaceMembership;
+    };
+  }
+
+  /** `GET /gateway/organizations/current/audit-events` — the organization's audit log, newest first; organization admin only. */
+  async organizationAuditEvents(): Promise<
+    {
+      action: string;
+      actor_user_id: string | null;
+      target_id: string | null;
+      details: Record<string, unknown> | null;
+    }[]
+  > {
+    return this.gateway("GET", "/organizations/current/audit-events");
+  }
+
+  /** `GET /gateway/organizations/current` — the current workspace's organization and the caller's role there. */
+  async currentOrganization(): Promise<{
+    id: string;
+    name: string;
+    role: string | null;
+  }> {
+    return this.gateway("GET", "/organizations/current");
+  }
+
+  /** `GET /gateway/organizations` — the caller's organizations and their role in each. */
+  async organizations(): Promise<OrganizationSummary[]> {
+    return this.gateway<OrganizationSummary[]>("GET", "/organizations");
+  }
+
+  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
+  async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
+    return this.gateway<WorkspaceMembership[]>(
+      "GET",
+      "/organizations/current/workspaces",
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces` — add a workspace to the current organization; the session stays put. */
+  async createOrganizationWorkspace(name: string): Promise<WorkspaceMembership> {
+    return this.gateway<WorkspaceMembership>(
+      "POST",
+      "/organizations/current/workspaces",
+      { name },
+    );
+  }
+
   /** `POST /gateway/agents/register` — an agent owned by the signed-in user, in their current workspace. */
   async registerAgentAsUser(params: {
     name: string;
@@ -530,6 +683,54 @@ export class SwitchClient {
     await this.gateway("DELETE", `/rooms/${roomId}`);
   }
 
+  /** `DELETE /gateway/room-groups/{id}` — a group's rooms and subgroups move up a level, so delete those first. */
+  async deleteRoomGroup(groupId: string): Promise<void> {
+    await this.gateway("DELETE", `/room-groups/${groupId}`);
+  }
+
+  /** `POST /gateway/packages` — a private package owned by the signed-in admin, with nothing in it. */
+  async createPackage(params: {
+    name: string;
+    description: string;
+    instructions: string;
+  }): Promise<{ id: string; name: string }> {
+    return this.gateway<{ id: string; name: string }>("POST", "/packages", params);
+  }
+
+  async deletePackage(packageId: string): Promise<void> {
+    await this.gateway("DELETE", `/packages/${packageId}`);
+  }
+
+  /** `GET /gateway/rooms/{id}/packages` — the packages attached to a room. */
+  async roomPackages(roomId: string): Promise<{ id: string; name: string }[]> {
+    return this.gateway<{ id: string; name: string }[]>(
+      "GET",
+      `/rooms/${roomId}/packages`,
+    );
+  }
+
+  /**
+   * `GET /gateway/rooms/{id}/yaml` — the room captured as the document
+   * `/rooms/from-yaml` takes, so the room can be built again from it.
+   */
+  async exportRoomYaml(roomId: string): Promise<string> {
+    assertAllowed(this.environment, "GET", `/gateway/rooms/${roomId}/yaml`);
+    const response = await fetch(`${this.apiUrl}/gateway/rooms/${roomId}/yaml`, {
+      headers: {
+        Accept: "application/x-yaml",
+        Cookie: await this.gatewayLogin(),
+        ...this.requestId(),
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new SwitchHttpError("GET", `/gateway/rooms/${roomId}/yaml`, response.status, text);
+    }
+    return text;
+  }
+
   /**
    * `DELETE /gateway/agents/by-name/{name}` — admin-authenticated teardown that,
    * unlike `DELETE /agents/{id}`, does not need the agent's own API key. Used by
@@ -578,9 +779,47 @@ export class SwitchClient {
    * agents and an unclaimed platform user, so its agents are opened explicitly.
    */
   async openAddressing(agentId: string): Promise<void> {
+    await this.setAddressingPolicy(agentId, null);
+  }
+
+  /** `PUT /gateway/agents/{id}/addressing-policy` — who may address the agent; null lets anyone. */
+  async setAddressingPolicy(
+    agentId: string,
+    policy: AddressingPolicy | null,
+  ): Promise<void> {
     await this.gateway("PUT", `/agents/${agentId}/addressing-policy`, {
-      policy: null,
+      policy,
     });
+  }
+
+  /**
+   * `POST /gateway/rooms/from-template-document` — run a template as the
+   * signed-in admin: create its agents, wait for each to listen, then build
+   * its room. A refusal creates nothing and throws a {@link TemplateRefusal}
+   * naming every problem.
+   */
+  async runTemplateDocument(params: {
+    template: string;
+    templateName: string;
+  }): Promise<TemplateRun> {
+    try {
+      return await this.gateway<TemplateRun>(
+        "POST",
+        "/rooms/from-template-document",
+        { template: params.template, template_name: params.templateName },
+      );
+    } catch (error) {
+      if (error instanceof SwitchHttpError && error.status === 409) {
+        const body = JSON.parse(error.body) as {
+          code?: string;
+          problems?: { slot: string; code: string; message: string }[];
+        };
+        if (body.code === "agents_not_created") {
+          throw new TemplateRefusal(error, body.problems ?? []);
+        }
+      }
+      throw error;
+    }
   }
 
   /**
@@ -625,15 +864,19 @@ export class SwitchClient {
 
   /**
    * `POST /gateway/collaborations/{bridge}/identities` on the default bridge
-   * of `bridgeType` — link a chat account to the signed-in Switch user, so
-   * Switch can recognise that person in a room (what the rename and delete
-   * chat commands check).
+   * of `bridgeType` — start linking a chat account to the signed-in Switch
+   * user, so Switch can recognise that person in a room (what the rename and
+   * delete chat commands check).
+   *
+   * The link counts only once the account posts the returned code
+   * (`!link-account CODE`); `code` is null when the account had already
+   * confirmed it.
    */
   async claimIdentity(
     bridgeType: string,
     externalUserId: string,
     username: string,
-  ): Promise<void> {
+  ): Promise<{ bridgeId: string; identityId: string; code: string | null }> {
     const bridges = await this.gateway<
       { bridge_id: string; bridge_type: string; is_default?: boolean }[]
     >("GET", "/collaborations");
@@ -643,15 +886,83 @@ export class SwitchClient {
       throw new Error(
         `No ${bridgeType} collaboration bridge on this Switch server`,
       );
+    const body = await this.gateway<{
+      id: string;
+      link_request: { code: { code: string } | null } | null;
+    }>("POST", `/collaborations/${bridge.bridge_id}/identities`, {
+      external_user_id: externalUserId,
+      username,
+      user_id: null,
+      expects_confirmation: true,
+    });
+    if (body.link_request && !body.link_request.code)
+      throw new Error("A link for yourself came back without a code");
+    return {
+      bridgeId: bridge.bridge_id,
+      identityId: body.id,
+      code: body.link_request?.code?.code ?? null,
+    };
+  }
+
+  /**
+   * `DELETE /gateway/collaborations/{bridge}/identities/{identity}` — unlink
+   * the signed-in user from a chat account, or cancel a link still waiting
+   * for its code.
+   */
+  async releaseIdentity(bridgeId: string, identityId: string): Promise<void> {
     await this.gateway(
-      "POST",
-      `/collaborations/${bridge.bridge_id}/identities`,
-      {
-        external_user_id: externalUserId,
-        username,
-        user_id: null,
-      },
+      "DELETE",
+      `/collaborations/${bridgeId}/identities/${identityId}`,
     );
+  }
+
+  /**
+   * `DELETE /gateway/collaborations/{bridge}/identities/{identity}/request` —
+   * stop waiting for a chat account to confirm the signed-in user's link,
+   * leaving any link it already has.
+   */
+  async cancelLinkRequest(bridgeId: string, identityId: string): Promise<void> {
+    await this.gateway(
+      "DELETE",
+      `/collaborations/${bridgeId}/identities/${identityId}/request`,
+    );
+  }
+
+  /**
+   * `GET /gateway/collaborations/{bridge}/identities/unconfirmed` — the
+   * links on a bridge made before links needed confirming, by identity id.
+   * Admin only.
+   */
+  async unconfirmedLinkIds(bridgeId: string): Promise<string[]> {
+    const rows = await this.gateway<{ id: string }[]>(
+      "GET",
+      `/collaborations/${bridgeId}/identities/unconfirmed`,
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * `GET /gateway/auth/me/identities/pending` — the chat accounts waiting to
+   * confirm a link to the signed-in user, by identity id.
+   */
+  async pendingIdentityIds(): Promise<string[]> {
+    const rows = await this.gateway<{ id: string }[]>(
+      "GET",
+      "/auth/me/identities/pending",
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * `POST /gateway/collaborations/{bridge}/identities/{identity}/code` — a
+   * fresh code for the signed-in user's waiting link, replacing the last.
+   */
+  async issueLinkCode(bridgeId: string, identityId: string): Promise<string> {
+    const body = await this.gateway<{ code: string }>(
+      "POST",
+      `/collaborations/${bridgeId}/identities/${identityId}/code`,
+    );
+    return body.code;
   }
 
   async listAgents(): Promise<AgentSummary[]> {
@@ -663,6 +974,59 @@ export class SwitchClient {
       name: row.name,
       createdAt: row.created_at,
     }));
+  }
+
+  /** `GET /gateway/organizations/current/members` — the organization of the bound workspace, `org_admin` only. */
+  async organizationMembers(): Promise<{ user_id: string; role: string }[]> {
+    return this.gateway<{ user_id: string; role: string }[]>(
+      "GET",
+      "/organizations/current/members",
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current/members/{user_id}` — grant or take back `org_admin`. */
+  async setOrganizationRole(
+    userId: string,
+    role: "org_admin" | "member",
+  ): Promise<{ user_id: string; role: string }> {
+    return this.gateway<{ user_id: string; role: string }>(
+      "PATCH",
+      `/organizations/current/members/${encodeURIComponent(userId)}`,
+      { role },
+    );
+  }
+
+  /** `DELETE /gateway/organizations/current/members/{user_id}` — remove someone from the organization. */
+  async removeOrganizationMember(userId: string): Promise<void> {
+    await this.gateway<unknown>(
+      "DELETE",
+      `/organizations/current/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /** `GET /gateway/tenants/{tenant_id}/members` — the workspace roster, with each person's organization role. */
+  async workspaceMembers(tenantId: string): Promise<
+    {
+      user_id: string;
+      role: string;
+      organization_role: string | null;
+      via_organization: boolean;
+    }[]
+  > {
+    return this.gateway("GET", `/tenants/${encodeURIComponent(tenantId)}/members`);
+  }
+
+  /** `DELETE /gateway/tenants/{tenant_id}/members/{user_id}` — remove someone from a workspace. */
+  async removeWorkspaceMember(tenantId: string, userId: string): Promise<void> {
+    await this.gateway<unknown>(
+      "DELETE",
+      `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /** `GET /gateway/operator/workspaces` — every workspace on the server, platform operator only. */
+  async operatorWorkspaces(): Promise<{ id: string; name: string }[]> {
+    return this.gateway<{ id: string; name: string }[]>("GET", "/operator/workspaces");
   }
 
   /** `GET /gateway/auth/session` — the workspace this admin session is bound to. */
@@ -988,6 +1352,86 @@ export class SwitchClient {
       { token: agent.apiKey, body: { room_id: roomId, content } },
     );
     return body.event_id;
+  }
+
+  /**
+   * `POST /agents/{id}/rooms/{room_id}/media` — post one file to a room as the
+   * agent (multipart, part `file`). Returns the media URI it was stored under.
+   */
+  async uploadMedia(
+    agent: RegisteredAgent,
+    roomId: string,
+    file: { name: string; bytes: Uint8Array<ArrayBuffer>; contentType: string },
+  ): Promise<{ eventId: string; mxc: string }> {
+    const path = `/agents/${agent.id}/rooms/${roomId}/media`;
+    assertAllowed(this.environment, "POST", path);
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob([file.bytes], { type: file.contentType }),
+      file.name,
+    );
+    const response = await fetch(`${this.apiUrl}${path}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${agent.apiKey}`,
+        ...this.requestId(),
+      },
+      body: form,
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await response.text();
+    if (!response.ok) throw new SwitchHttpError("POST", path, response.status, text);
+    const body = JSON.parse(text) as { event_id: string; mxc: string };
+    return { eventId: body.event_id, mxc: body.mxc };
+  }
+
+  /**
+   * `GET /agents/{id}/rooms/{room_id}/media?mxc=` — an attachment's bytes, and
+   * the headers that name it, as the agent's session host downloads it.
+   */
+  async downloadMedia(
+    agent: RegisteredAgent,
+    roomId: string,
+    mxc: string,
+  ): Promise<{ bytes: Uint8Array; contentType: string; contentDisposition: string }> {
+    const path = `/agents/${agent.id}/rooms/${roomId}/media?mxc=${encodeURIComponent(mxc)}`;
+    assertAllowed(this.environment, "GET", path);
+    const response = await fetch(`${this.apiUrl}${path}`, {
+      headers: { Authorization: `Bearer ${agent.apiKey}`, ...this.requestId() },
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) {
+      throw new SwitchHttpError("GET", path, response.status, await response.text());
+    }
+    return {
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      contentType: response.headers.get("content-type") ?? "",
+      contentDisposition: response.headers.get("content-disposition") ?? "",
+    };
+  }
+
+  /**
+   * Any agent-bridge request as the agent, answered with its status and body
+   * whatever the status: for the checks that a client's mistake is answered
+   * with a 4xx that says what was wrong.
+   */
+  async agentAttempt(
+    agent: RegisteredAgent,
+    method: "GET" | "POST",
+    path: string,
+    body: unknown,
+  ): Promise<{ status: number; detail: string }> {
+    try {
+      await this.request(method, path, { token: agent.apiKey, body: body ?? undefined });
+      return { status: 200, detail: "" };
+    } catch (error) {
+      if (!(error instanceof SwitchHttpError)) throw error;
+      return { status: error.status, detail: errorDetail(error.body) };
+    }
   }
 
   // ── agent bridge: the operations front door ───────────────────────────────
