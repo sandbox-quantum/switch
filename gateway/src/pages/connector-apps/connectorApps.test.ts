@@ -393,3 +393,48 @@ describe("an organization's apps", () => {
     );
   });
 });
+
+const GITLAB_CALLBACK = `${PUBLIC_URL}/gateway/service-connections/gitlab/flows/callback`;
+
+const GITLAB = app({
+  slug: "gitlab",
+  name: "GitLab",
+  source: "none",
+  client_id: null,
+  saved_client_id: null,
+  configuration_variables: ["GITLAB_CLIENT_CONFIG_PATH"],
+  secrets: { client_secret: { set: false, last4: null } },
+  redirect_uri: GITLAB_CALLBACK,
+  redirect_uris: [GITLAB_CALLBACK],
+  needs_public_url: true,
+  scopes: ["mcp", "read_api", "api"],
+  connected_members: 0,
+  workspaces: 0,
+});
+
+describe("GitLab", () => {
+  it("walks GitLab's application form, with its redirect to paste and the scopes to tick", () => {
+    const steps = setupInstructions(GITLAB, "internal", null);
+    expect(steps[0]!.link).toEqual({
+      label: "Open your applications",
+      href: "https://gitlab.com/-/user_settings/applications",
+    });
+    expect(steps.slice(1).every((s) => s.link === null)).toBe(true);
+    expect(steps.flatMap((s) => s.copy)).toEqual([GITLAB_CALLBACK]);
+    expect(new Set(steps.map((s) => s.text)).size).toBe(steps.length);
+    expect(steps.find((s) => s.text === "Under Scopes, tick exactly these:")?.items).toEqual(["mcp", "read_api", "api"]);
+    const texts = steps.map((s) => s.text);
+    expect(texts[2]).toMatch(/^Set the Redirect URI to:/);
+    expect(texts[3]).toMatch(/^Keep Confidential ticked/);
+    expect(texts.at(-1)).toMatch(/allow access to the MCP server/);
+  });
+
+  it("needs the public URL, asks nothing before the check, and names its Helm value", () => {
+    expect(changeBlocked(GITLAB, null)).toBe(true);
+    expect(confirmBeforeCheck(GITLAB)).toBeNull();
+    expect(notSetUpSentence(GITLAB)).toBe("People can't connect GitLab until you add Switch's GitLab client.");
+    expect(moveChecklist(app({ ...GITLAB, source: "configuration" }))[1]!.text).toBe(
+      "Remove GITLAB_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.gitlabClientSecret.",
+    );
+  });
+});

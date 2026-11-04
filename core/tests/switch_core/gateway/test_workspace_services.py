@@ -245,6 +245,7 @@ class TestResults:
             "atlassian",
             "datadog",
             "github",
+            "gitlab",
             "google-workspace",
         }
         assert services["datadog"] == {
