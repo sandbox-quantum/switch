@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "snowflake",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "snowflake",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["snowflake"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1038,6 +1041,49 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     assert definition.token.issued_to_agents is False
 
 
+def test_the_shipped_snowflake_entry_uses_pat_and_mcp_servers():
+    definition = CATALOG["snowflake"].definition
+    assert definition.adapter == "api_key"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("account", False),
+        ("database", False),
+        ("schema", False),
+        ("mcp_server", False),
+        ("pat", True),
+    ]
+    fields_by_name = {f.name: f for f in sign_in.fields}
+    assert fields_by_name["account"].pattern == "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+    assert fields_by_name["database"].pattern == "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+    assert fields_by_name["schema"].pattern == "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+    assert fields_by_name["mcp_server"].pattern == "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.name == "snowflake"
+    assert (
+        server.url
+        == "https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}/mcp-servers/{mcp_server}"
+    )
+    assert server.headers == {
+        "Authorization": "Bearer {pat}",
+        "X-Snowflake-Authorization-Token-Type": "PROGRAMMATIC_ACCESS_TOKEN",
+    }
+    assert sign_in.identity.headers == {
+        "Authorization": "Bearer {pat}",
+        "X-Snowflake-Authorization-Token-Type": "PROGRAMMATIC_ACCESS_TOKEN",
+    }
+    assert sign_in.identity.body == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {},
+    }
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+
+
 def test_loads_an_api_key_entry(catalog_copy):
     _write_example(catalog_copy, API_KEY_ENTRY)
     definition = load_catalog(catalog_copy)["example"].definition
@@ -1074,7 +1120,7 @@ def test_loads_an_api_key_entry_whose_tool_is_a_cli(catalog_copy):
         (
             '      url: "https://mcp.{region}/mcp"\n',
             '      url: "https://mcp.example.test/{api_key}"\n',
-            "may name only a choice field",
+            "may name only a choice or pattern field",
         ),
         (
             '      headers: { Authorization: "Token token={api_key}" }\n',
@@ -1199,4 +1245,136 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         CatalogError,
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
+        load_catalog(catalog_copy)
+
+
+PATTERN_API_KEY_ENTRY = """slug: example
+name: Example
+category: Observability
+description: Query Example telemetry.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - { name: pat, label: Personal access token, secret: true }
+      - { name: account, label: Account, secret: false, pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" }
+      - { name: database, label: Database, secret: false, pattern: "^[A-Za-z_][A-Za-z0-9_]{0,254}$" }
+      - { name: schema, label: Schema, secret: false, pattern: "^[A-Za-z_][A-Za-z0-9_]{0,254}$" }
+      - { name: mcp_server, label: MCP Server, secret: false, pattern: "^[A-Za-z_][A-Za-z0-9_]{0,254}$" }
+    identity:
+      method: POST
+      url: "https://{account}.fixed.test/{database}/{schema}/{mcp_server}"
+      headers: { Authorization: "Bearer {pat}" }
+      body: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: example
+      url: "https://{account}.fixed.test/{database}/{schema}/{mcp_server}"
+      headers: { Authorization: "Bearer {pat}" }
+tools: { mode: pass_through }
+"""
+
+
+def test_loads_an_api_key_entry_with_five_pattern_fields(catalog_copy):
+    _write_example(catalog_copy, PATTERN_API_KEY_ENTRY)
+    definition = load_catalog(catalog_copy)["example"].definition
+    api_key = definition.auth.api_key
+    assert definition.adapter == "api_key"
+    assert api_key is not None
+    assert len(api_key.fields) == 5
+    assert api_key.choice_names() == set()
+    assert {f.name for f in api_key.fields if f.secret} == {"pat"}
+    assert api_key.pattern_names() == {"account", "database", "schema", "mcp_server"}
+    assert (
+        definition.mcp.servers[0].url
+        == "https://{account}.fixed.test/{database}/{schema}/{mcp_server}"
+    )
+
+
+def test_rejects_an_api_key_entry_with_six_fields(catalog_copy):
+    entry = PATTERN_API_KEY_ENTRY.replace(
+        "- { name: mcp_server",
+        "- { name: extra, label: Extra, secret: false, pattern: '^[a-z]+$' }\n      - { name: mcp_server",
+    )
+    _write_example(catalog_copy, entry)
+    with pytest.raises(CatalogError, match="at most 5"):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    ("bad", "match"),
+    [
+        ('pattern: "^[a-z]+$", choices: [a]', "choices and a pattern"),
+        ('pattern: "["', "disallowed regex pattern|invalid regex"),
+        *(
+            (f"pattern: '{p}'", "disallowed regex pattern")
+            for p in ["[0-z]+", "[A-z]+", "[^a]+", ".*", r"\w+"]
+        ),
+    ],
+)
+def test_rejects_invalid_pattern_fields(catalog_copy, bad: str, match: str):
+    entry = PATTERN_API_KEY_ENTRY.replace(
+        'pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"', bad
+    )
+    _write_example(catalog_copy, entry)
+    with pytest.raises(CatalogError, match=match):
+        load_catalog(catalog_copy)
+
+
+HOSTILE_URLS = [
+    ("https://pre-{account}.fixed.test/a", "whole host label"),
+    ("https://{account}-suf.fixed.test/a", "whole host label"),
+    ("https://{account}.com/a", "whole host label before a fixed domain"),
+    ("https://{account}/a", "whole host label before a fixed domain"),
+    ("https://{account}.{database}.com/a", "whole host label before a fixed domain"),
+    ("https://u:p@{account}.fixed.test/a", "no port|whole host label"),
+    ("https://{account}.fixed.test:443/a", "no port"),
+    ("https://{account}.fixed.test/{database}.json", "whole path segment"),
+    ("https://{account}.fixed.test/pre-{database}", "whole path segment"),
+    ("https://{account}.fixed.test/{database}{schema}", "whole path segment"),
+    ("https://{account}.fixed.test/a?q={database}", "query or fragment"),
+    (
+        "https://{account}.fixed.test/a#{database}",
+        "query or fragment|String should match pattern",
+    ),
+    ("http://{account}.fixed.test/a", "https"),
+    ("https://{account}.fixed.test/{pat}", "may name only a choice or pattern field"),
+]
+
+
+@pytest.mark.parametrize(("bad_url", "message"), HOSTILE_URLS)
+@pytest.mark.parametrize("target", ["identity", "mcp"])
+def test_position_rule_rejects_hostile_urls(
+    catalog_copy, bad_url: str, message: str, target: str
+):
+    url = "https://{account}.fixed.test/{database}/{schema}/{mcp_server}"
+    section = "      method: POST" if target == "identity" else "    - name: example"
+    entry = PATTERN_API_KEY_ENTRY.replace(
+        f'{section}\n      url: "{url}"', f'{section}\n      url: "{bad_url}"'
+    )
+    _write_example(catalog_copy, entry)
+    with pytest.raises(CatalogError, match=message):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    ("bad_header", "message"),
+    [
+        ('{ Authorization: "Bearer {unknown}" }', "names an unknown field 'unknown'"),
+        ('{ Authorization: "Bearer {pat" }', "brace that names no field"),
+    ],
+)
+def test_rejects_hostile_identity_header_templates(catalog_copy, bad_header, message):
+    _write_example(
+        catalog_copy,
+        PATTERN_API_KEY_ENTRY.replace(
+            'headers: { Authorization: "Bearer {pat}" }',
+            f"headers: {bad_header}",
+        ),
+    )
+    with pytest.raises(CatalogError, match=message):
         load_catalog(catalog_copy)
