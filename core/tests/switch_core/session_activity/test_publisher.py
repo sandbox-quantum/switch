@@ -651,6 +651,46 @@ async def test_a_queued_turns_stop_control_follows_the_running_turn(
     await platform.wait_until(lambda: queued_names()[-1] == "turn-2")
 
 
+async def test_a_queued_turns_message_is_redrawn_when_its_message_is_edited(
+    service, publisher, platform, bridged
+):
+    """The host revises the turn's message when an edit takes its place in the
+    queue, and the card says the agent will start on the edited message."""
+    await _turn(service, bridged.room_id, "running", 1, turn_id="turn-1")
+    await _turn(service, bridged.room_id, "queued", 1, turn_id="turn-2")
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="user-turn-2",
+        kind="user-message",
+        status="completed",
+        revision=1,
+        turn_id="turn-2",
+        text="Fix the typo in READNE",
+    )
+
+    def queued() -> list:
+        return [d for d in _turns(platform) if d.content.turn.turn_id == "turn-2"]
+
+    await platform.wait_until(lambda: len(queued()) >= 1)
+    drawn = len(queued())
+
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="user-turn-2",
+        kind="user-message",
+        status="completed",
+        revision=2,
+        turn_id="turn-2",
+        text="Fix the typo in README",
+    )
+
+    await platform.wait_until(lambda: len(queued()) > drawn)
+    [message] = [i for i in queued()[-1].content.items if i.kind == "user-message"]
+    assert message.revision == 2
+
+
 async def test_a_press_on_a_turns_message_finds_its_turn(
     service, publisher, platform, bridged
 ):
