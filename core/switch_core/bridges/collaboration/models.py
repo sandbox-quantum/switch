@@ -141,6 +141,26 @@ class InboundMessage(BaseModel):
     sender_is_app: bool = False
 
 
+class InboundEdit(BaseModel):
+    """Someone edited a post on the platform.
+
+    `message_ref` names the post in the form `InboundMessage.message_ref`
+    did, so the room message it was relayed as can be found. `edited_at` is
+    when the platform says the edit was made, in milliseconds since the epoch:
+    the same each time the platform delivers this edit, and different for the
+    next edit of the same post.
+    """
+
+    channel_id: str
+    sender_id: str
+    sender_name: str
+    content: str
+    message_ref: str
+    # The post's thread root, as `InboundMessage.root_id`; None at top level.
+    root_id: str | None
+    edited_at: int
+
+
 class InboundCommand(BaseModel):
     channel_id: str
     channel_type: ChannelType

@@ -50,6 +50,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -3459,7 +3460,8 @@ class SlackAdapter(PlatformAdapter):
     # Message subtypes we still treat as real posts. file_share carries uploaded
     # attachments; thread_broadcast is a thread reply also sent to the channel;
     # bot_message is a post from a third-party Slack app (e.g. Datadog alerts).
-    # Everything else (edits, deletes, channel-join system messages, …) is skipped.
+    # An edit (message_changed) is handled on its own (`_handle_message_changed`).
+    # Everything else (deletes, channel-join system messages, …) is skipped.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
 
     async def _handle_message_event(self, event: dict[str, object]) -> None:
@@ -3471,6 +3473,9 @@ class SlackAdapter(PlatformAdapter):
         ):
             return
         subtype = event.get("subtype")
+        if subtype == "message_changed":
+            await self._handle_message_changed(event)
+            return
         if subtype and subtype not in self._ALLOWED_SUBTYPES:
             return
 
@@ -3497,6 +3502,52 @@ class SlackAdapter(PlatformAdapter):
             # (`collaboration_core._post_source`).
             self._seen_ts.pop(message_ts, None)
             raise
+
+    async def _handle_message_changed(self, event: dict[str, object]) -> None:
+        """Pass on a person editing the text of a post.
+
+        Only an edit counts, and only an edit carries `edited`, whose `ts` is
+        when it was made: Slack sends `message_changed` for changes nobody
+        typed as well (a link unfurled, a thread's reply count moving). An
+        app's post is not a person's, and the bridge's own posts (its agents',
+        their activity and cards) are edited all the time.
+        """
+        if self._on_edit is None:
+            return
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        edited = message.get("edited")
+        channel_id = str(event.get("channel", ""))
+        message_ts = str(message.get("ts", ""))
+        user_id = str(message.get("user", ""))
+        if (
+            not isinstance(edited, dict)
+            or not edited.get("ts")
+            or not channel_id
+            or not message_ts
+            or not user_id
+            or user_id == self._bot_user_id
+            or message.get("bot_id")
+        ):
+            return
+        thread_ts = str(message.get("thread_ts", "")) or None
+        user = await self._resolve_user_name(user_id)
+        await self._on_edit(
+            InboundEdit(
+                channel_id=channel_id,
+                sender_id=user_id,
+                sender_name=user.name,
+                content=str(message.get("text", "")),
+                message_ref=f"{channel_id}:{message_ts}",
+                root_id=(
+                    f"{channel_id}:{thread_ts}"
+                    if thread_ts and thread_ts != message_ts
+                    else None
+                ),
+                edited_at=round(float(str(edited["ts"])) * 1000),
+            )
+        )
 
     async def _deliver_message_event(
         self, event: dict[str, object], channel_id: str, message_ts: str

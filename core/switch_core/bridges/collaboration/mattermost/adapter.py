@@ -68,6 +68,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -2763,6 +2764,10 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
+        if event_type == "post_edited":
+            await self._handle_post_edited(event)
+            return
+
         if event_type != "posted":
             return
 
@@ -2785,12 +2790,8 @@ class MattermostAdapter(PlatformAdapter):
             return
 
         post_id = post.get("id", "")
-        with self._seen_lock:
-            if post_id in self._seen_post_ids:
-                return
-            self._seen_post_ids[post_id] = None
-            if len(self._seen_post_ids) > self._seen_post_ids_max:
-                self._seen_post_ids.popitem(last=False)
+        if not self._first_sight(post_id):
+            return
 
         channel_id = post.get("channel_id", "")
         message = post.get("message", "")
@@ -2887,6 +2888,78 @@ class MattermostAdapter(PlatformAdapter):
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    def _first_sight(self, key: str) -> bool:
+        """Whether this is the first of the bridge's sockets to hand over the
+        event `key` names. Every agent's bot has a socket of its own, and each
+        is sent every event in the channels it is in."""
+        with self._seen_lock:
+            if key in self._seen_post_ids:
+                return False
+            self._seen_post_ids[key] = None
+            if len(self._seen_post_ids) > self._seen_post_ids_max:
+                self._seen_post_ids.popitem(last=False)
+        return True
+
+    async def _handle_post_edited(self, event: dict[str, Any]) -> None:
+        """Pass on a person editing the text of a post.
+
+        Only an edit counts. Mattermost sends `post_edited` for changes nobody
+        typed as well (a pin, a link preview filled in), and those leave
+        `edit_at` where it was: 0 for a post never edited, which is skipped,
+        and the time of its last edit otherwise, which repeats that edit: the
+        room already has it and is not written to again. The bridge's own bots
+        edit their posts all the time, and an incoming webhook cannot edit.
+        """
+        if self._on_edit is None:
+            return
+        try:
+            post = json.loads(event.get("data", {}).get("post") or "")
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(post, dict):
+            return
+        post_id = str(post.get("id", ""))
+        user_id = str(post.get("user_id", ""))
+        edited_at = post.get("edit_at")
+        props = post.get("props") or {}
+        if (
+            not post_id
+            or post.get("type")
+            or not isinstance(edited_at, int)
+            or edited_at <= 0
+            or user_id in self._bridge_bot_ids
+            or user_id == self._admin_user_id
+            or str(props.get("from_webhook", "")).lower() == "true"
+        ):
+            return
+        if not self._first_sight(f"{post_id}:edit:{edited_at}"):
+            return
+
+        loop = self._main_loop
+        if loop is None or self._admin_driver is None:
+            raise RuntimeError("Cannot handle post_edited event: adapter not started")
+        ws_loop = asyncio.get_event_loop()
+        try:
+            user = await ws_loop.run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
+            username: str = user.get("username", user_id)
+        except Exception:
+            logger.exception("Failed to resolve Mattermost user %s", user_id)
+            username = user_id
+        coro = self._on_edit(
+            InboundEdit(
+                channel_id=str(post.get("channel_id", "")),
+                sender_id=user_id,
+                sender_name=username,
+                content=str(post.get("message", "")),
+                message_ref=post_id,
+                root_id=post.get("root_id") or None,
+                edited_at=edited_at,
+            )
+        )
+        self._dispatch(coro, loop)  # type: ignore[arg-type]
 
     async def _fetch_attachments(
         self, file_ids: list[str], loop: asyncio.AbstractEventLoop
