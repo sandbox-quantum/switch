@@ -15,7 +15,6 @@ auth:
   # identifies the workspace and person together, without calling agent tools.
   identity:
     method: introspection
-    url: https://mcp.notion.com/introspect
     account_id: [workspace_id, user_id]
     label: workspace_id
 # Documented, not measured here: access lasts about eight hours. The broker

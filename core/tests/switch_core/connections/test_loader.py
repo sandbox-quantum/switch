@@ -57,7 +57,7 @@ def test_the_notion_entry_uses_mcp_identity_and_does_not_claim_read_only():
     assert definition.auth.oauth.redirect == ["loopback"]
     assert definition.auth.oauth.revocation_discovered
     assert definition.auth.identity.method == "introspection"
-    assert definition.auth.identity.url == "https://mcp.notion.com/introspect"
+    assert definition.auth.identity.url is None
     assert definition.auth.identity.account_id == ["workspace_id", "user_id"]
     assert definition.mcp.servers[0].url == "https://mcp.notion.com/mcp"
     assert definition.mcp.servers[0].name == "notion"

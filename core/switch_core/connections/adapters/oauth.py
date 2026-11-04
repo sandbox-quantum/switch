@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -71,6 +70,7 @@ class AuthorizationEndpoints:
     # where the catalog names the endpoints.
     resource: str | None
     client_authentication: ClientAuthentication
+    introspection: str | None = None
 
 
 def client_fields(
@@ -240,6 +240,10 @@ class OAuthAdapter:
         if self._endpoints is not None:
             return self._endpoints
         if self._oauth.authorization_url is not None and self._oauth.token_url:
+            if self._identity.method == "introspection":
+                raise ServiceAdapterError(
+                    f"{self._name} needs a discovered introspection endpoint."
+                )
             self._endpoints = AuthorizationEndpoints(
                 authorization=self._oauth.authorization_url,
                 token=self._oauth.token_url,
@@ -304,6 +308,15 @@ class OAuthAdapter:
             )
         registration = metadata.get("registration_endpoint")
         revocation = metadata.get("revocation_endpoint")
+        introspection = None
+        if self._identity.method == "introspection":
+            introspection = metadata.get("introspection_endpoint")
+            if introspection is None:
+                raise ServiceAdapterError(
+                    f"{self._name}'s authorization server advertises no "
+                    "introspection endpoint, so Switch cannot verify the account."
+                )
+            introspection = _https(introspection, "introspection endpoint")
         # The form body, unless the vendor takes a secret only as HTTP Basic:
         # Airtable refuses one in the body. Metadata that lists no methods
         # means Basic (RFC 8414 §2).
@@ -334,6 +347,7 @@ class OAuthAdapter:
             client_authentication=(
                 "client_secret_basic" if basic_only else "client_secret_post"
             ),
+            introspection=introspection,
         )
         return self._endpoints
 
@@ -492,16 +506,22 @@ class OAuthAdapter:
         client_id = None
         if self._identity.method == "introspection":
             endpoints = await self.endpoints()
+            if endpoints.introspection is None:
+                raise ServiceAdapterError(
+                    f"{self._name}'s authorization server advertises no "
+                    "introspection endpoint, so Switch cannot verify the account."
+                )
             client = await self._client.credentials(endpoints)
             client_id = client.client_id
             identifying, headers = client_fields(endpoints, client)
             request = self._http.build_request(
                 "POST",
-                self._identity.url,
+                endpoints.introspection,
                 data={"token": access_token, **identifying},
                 headers={"Accept": "application/json", **headers},
             )
         else:
+            assert self._identity.url is not None
             request = self._http.build_request(
                 "GET",
                 self._identity.url,
@@ -539,19 +559,16 @@ class OAuthAdapter:
             _path_value(body, path)
             for path in (paths if isinstance(paths, list) else [paths])
         ]
-        values = [str(value) if type(value) is int else value for value in values]
-        if any(not isinstance(value, str) or not value for value in values):
+        if any(
+            type(value) not in (str, int) or not str(value).strip() for value in values
+        ):
             raise ServiceAdapterError(f"{self._name} did not name the account's id.")
         account_id = (
-            json.dumps(values, separators=(",", ":"), ensure_ascii=False)
+            ":".join(quote(str(value), safe="") for value in values)
             if isinstance(paths, list)
-            else values[0]
+            else str(values[0])
         )
         label = _path_value(body, self._identity.label)
-        if type(account_id) is int:
-            account_id = str(account_id)
-        if not isinstance(account_id, str) or not account_id:
-            raise ServiceAdapterError(f"{self._name} did not name the account's id.")
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )
