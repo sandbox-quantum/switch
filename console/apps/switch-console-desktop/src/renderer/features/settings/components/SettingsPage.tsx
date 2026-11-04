@@ -120,7 +120,7 @@ export function SettingsPage({
     // Switch Console v0 hides Account, Integrations, Connections (SSH), and Browser tabs.
     { id: 'general', label: 'General' },
     { id: 'clis-models', label: 'Agent providers' },
-    { id: 'devices', label: 'Devices' },
+    { id: 'devices', label: 'Your devices' },
     { id: 'remote-hosts', label: 'Remote hosts' },
     { id: 'managed-agents', label: 'Managed agents' },
     { id: 'interface', label: 'Interface' },

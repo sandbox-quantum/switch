@@ -150,9 +150,9 @@ export function AddMachineModal({ serverId, onClose }: Props) {
               </Button>
             </p>
             <p className="text-xs text-foreground-muted">
-              The device shows up in Settings → Devices once its controller reports; if it does not,
-              run <code>switch-agent-controller doctor</code> on it. A computer you reach over SSH
-              can also join without this: create an agent on it, and Switch Console sets its
+              The device shows up in Settings → Your devices once its controller reports; if it does
+              not, run <code>switch-agent-controller doctor</code> on it. A computer you reach over
+              SSH can also join without this: create an agent on it, and Switch Console sets its
               controller up.
             </p>
           </>
