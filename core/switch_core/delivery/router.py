@@ -103,6 +103,7 @@ from switch_core.delivery.addressing import AddressingResolver, SenderPrincipal
 from switch_core.delivery.conversation import (
     ConversationMessage,
     ConversationRules,
+    RoomConversation,
     may_follow,
 )
 from switch_core.delivery.recipient import (
@@ -113,6 +114,7 @@ from switch_core.delivery.recipient import (
     RoomMember,
     command_event,
     file_index,
+    first_file,
 )
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import ROUTING_FAILURES
@@ -1167,30 +1169,13 @@ class MessageRouter:
         in `delivery/conversation.py`. Most chatter is settled by `may_follow`
         without a read; past it, what the rules read is read once for the
         room and shared by every agent's decision."""
-        rules = self._conversation
-        meta = reads.meta
-        message = ConversationMessage(
-            event_id=event.event_id,
-            sender=event.sender,
-            body=event.body or "",
-            content=event.content,
-            thread_root_id=event.thread_root_id,
-            # Not stamped until written (`_Unwritten`); the database stamps it
-            # with its own clock a moment from now.
-            sent_at=datetime.now(UTC),
+        # Not stamped until written (`_Unwritten`); the database stamps it
+        # with its own clock a moment from now.
+        conversation = self._conversation_of(
+            reads, recipients, event, sent_at=datetime.now(UTC)
         )
-        if not recipients or not may_follow(
-            rules.settings, channel_type=meta.channel_type, message=message
-        ):
+        if conversation is None:
             return _Plan()
-        conversation = rules.for_message(
-            addressing=reads.addressing,
-            room_id=reads.room_id,
-            channel_type=meta.channel_type,
-            follow_ups_enabled=meta.follow_ups_enabled,
-            main_agent_id=meta.main_agent_id,
-            message=message,
-        )
         deliveries: list[tuple[AgentRecipient, Delivery]] = []
         for recipient in recipients:
             decision = await conversation.decide(
@@ -1202,6 +1187,40 @@ class MessageRouter:
             if delivery.own_event is not None:
                 deliveries.append((recipient, delivery))
         return _Plan(deliveries=deliveries)
+
+    def _conversation_of(
+        self,
+        reads: RoomReads,
+        recipients: list[AgentRecipient],
+        event: InboundMessage,
+        *,
+        sent_at: datetime,
+    ) -> RoomConversation | None:
+        """`event`'s room as the follow-the-conversation rules read it, for a
+        message (or a post's first file) that names nobody; None when
+        `may_follow` settles that no rule can apply, without a read."""
+        rules = self._conversation
+        meta = reads.meta
+        message = ConversationMessage(
+            event_id=event.event_id,
+            sender=event.sender,
+            body=event.body or "",
+            content=event.content,
+            thread_root_id=event.thread_root_id,
+            sent_at=sent_at,
+        )
+        if not recipients or not may_follow(
+            rules.settings, channel_type=meta.channel_type, message=message
+        ):
+            return None
+        return rules.for_message(
+            addressing=reads.addressing,
+            room_id=reads.room_id,
+            channel_type=meta.channel_type,
+            follow_ups_enabled=meta.follow_ups_enabled,
+            main_agent_id=meta.main_agent_id,
+            message=message,
+        )
 
     async def _decide_file(
         self,
@@ -1241,37 +1260,85 @@ class MessageRouter:
             key = group_id
         return _Plan(
             deliveries=await self._decide_post(
-                session, recipients, files, lead=event, complete=True, key=key
+                session,
+                reads,
+                recipients,
+                files,
+                lead=event,
+                complete=True,
+                key=key,
+                # Decided as it is written, as a text message is.
+                sent_at=datetime.now(UTC),
             ),
             group=step,
         )
 
-    @staticmethod
     async def _decide_post(
+        self,
         session: AsyncSession,
+        reads: RoomReads,
         recipients: list[AgentRecipient],
         files: list[InboundMedia],
         *,
         lead: InboundMedia,
         complete: bool,
         key: str,
+        sent_at: datetime,
     ) -> list[tuple[AgentRecipient, Delivery]]:
+        """Each agent's delivery of a post of one or more files.
+
+        When no file names any agent in the room, the post is the room's
+        conversation, and following the conversation may still hand it to
+        one, as it does a text message (`_follow_the_conversation`): the rules
+        read the first file, whose text and thread are the post's, and the
+        agent is given the post with all its files (CHOO-4067).
+        """
+
+        # Whether any file names the agent: the text and its mentions ride on
+        # the first file alone, so every file is asked, not only the lead.
+        # An agent this cannot be worked out for misses the post.
+        named: dict[str, bool] = {}
+        for recipient in recipients:
+
+            async def name(recipient: AgentRecipient = recipient) -> Delivery:
+                for part in files:
+                    if await recipient.addressed_by(session, part):
+                        return Delivery(own_event=None, after=None, named=True)
+                return _NAMES_NOBODY
+
+            named_here = await _decided(recipient, lead, name)
+            if named_here is not NOTHING:
+                named[recipient.agent.id] = named_here.named
+        recipients = [r for r in recipients if r.agent.id in named]
+
+        conversation = (
+            None
+            if any(named.values())
+            else self._conversation_of(
+                reads, recipients, first_file(files) or lead, sent_at=sent_at
+            )
+        )
         deliveries = []
         for recipient in recipients:
 
             async def decide(recipient: AgentRecipient = recipient) -> Delivery:
-                named = False
-                for part in files:
-                    if await recipient.addressed_by(session, part):
-                        named = True
-                        break
+                follow = (
+                    None
+                    if conversation is None
+                    else await conversation.decide(
+                        session,
+                        agent=recipient.agent,
+                        agent_user_id=recipient.transport_user_id,
+                    )
+                )
                 return await recipient.decide_post(
                     session,
                     files,
-                    named=named,
+                    named=named[recipient.agent.id],
                     lead=lead,
                     complete=complete,
                     message_key=key,
+                    follow=follow,
                 )
 
             deliveries.append((recipient, await _decided(recipient, lead, decide)))
@@ -1711,14 +1778,20 @@ class MessageRouter:
             if member.client_id != sender
             and int(member.joined_at.timestamp() * 1000) <= began
         ]
+        first = first_file(files) or lead
         plan = _Plan(
             deliveries=await self._decide_post(
                 session,
+                reads,
                 recipients,
                 files,
                 lead=lead,
                 complete=complete,
                 key=group_id,
+                # When its first file was sent: the post is decided only now,
+                # its wait over, and how long ago that was is not a gap in
+                # the conversation.
+                sent_at=datetime.fromtimestamp(first.timestamp / 1000, UTC),
             )
         )
         stored = await self._store_own_events(session, reads, plan.deliveries, lead)
@@ -1844,6 +1917,11 @@ def _unwritten(message: Message) -> _Unwritten:
         msgtype=message.msgtype,
         thread_root_event_id=message.thread_root_event_id,
     )
+
+
+# What naming a post's files found for an agent no file named; distinct from
+# `NOTHING`, which `_decided` gives an agent it could not decide for.
+_NAMES_NOBODY = Delivery(own_event=None, after=None)
 
 
 # The time on a row not written yet, which nothing deciding it reads.

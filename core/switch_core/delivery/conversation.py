@@ -20,10 +20,11 @@ A room can turn the two follow-up rules off with `!follow-ups off`; the main
 agent rule is separate and unaffected. Both settings live in the room's
 `metadata` (`db/stores/room_store.py`).
 
-The rules only ever consider a person's text message that has no `@` in it
-at all: a mention always wins, and a message from an agent, an app or Switch
+The rules only ever consider a person's message that has no `@` in it at
+all: a mention always wins, and a message from an agent, an app or Switch
 itself never reaches anyone by these rules, so agents cannot set each other
-off. Permissions are not decided here; the caller applies the agent's policy
+off. A post of files counts as one message, read from its first file, which
+carries the post's text and thread. Permissions are not decided here; the caller applies the agent's policy
 afterwards, as it does for a mention.
 
 The router (`delivery/router.py`) asks these rules about a message that no
