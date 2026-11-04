@@ -3,11 +3,13 @@ package, the document chosen by the agent_management flag, never changed."""
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
 import yaml
 
+from switch_core.management.schemas import MAX_INSTRUCTIONS_BYTES
 from switch_core.official_templates import (
     _SHIPPED,
     current_revision,
@@ -96,6 +98,23 @@ def test_the_instructions_are_written_in_and_the_documents_are_clean():
             assert len(agent["instructions"]) > 1000
             result = lint_template(template.content)
             assert result.errors == [] and result.warnings == [], template.id
+
+
+def test_every_official_template_s_instructions_fit_the_server_limit():
+    """The server refuses longer agent instructions, so an AGENT.md past it
+    is a template nobody can create."""
+    for agent_management in (True, False):
+        for switch_buddy in (True, False):
+            for template in official_templates(agent_management, switch_buddy):
+                data = yaml.safe_load(template.content)
+                agents = (
+                    [r for r in data["resources"].values() if r["type"] == "agent"]
+                    if "resources" in data
+                    else [data["agent"]]
+                )
+                for agent in agents:
+                    size = len(agent["instructions"].encode())
+                    assert size <= MAX_INSTRUCTIONS_BYTES, (template.id, size)
 
 
 def test_switch_buddy_is_served_only_with_its_flag_and_agent_management():
@@ -240,4 +259,35 @@ def test_switch_buddy_s_icon_is_in_the_repository_where_its_link_points():
     assert path.is_file(), (
         f"{path.relative_to(_REPO)} is gone, and every switch-buddy's icon links "
         "to it there. Put it back: older releases go on creating buddies with this link."
+    )
+
+
+def test_switch_buddy_makes_every_private_room_private_in_switch():
+    """create_room defaults read and write visibility to public whatever the
+    channel type, so a private onboarding room must name both as private or
+    workspace nonmembers can find it and change its instructions."""
+    text = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
+    items = re.split(r"\n\s*(?:- |\d+\. )", text)
+    private_rooms = [i for i in items if "channel_private" in i or "include_owner" in i]
+    assert len(private_rooms) >= 2
+    for item in private_rooms:
+        item = " ".join(item.split())
+        assert '`read_visibility` and `write_visibility` "private"' in item, item
+
+
+def test_switch_buddy_has_itself_invited_to_a_chat_the_person_makes():
+    """A chat the person makes holds only the agents they invite, and buddy
+    must be in it to hand off there."""
+    text = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
+    assert "`/invite_agent @<your-name>`" in text
+    assert "`!invite-agent @<your-name>`" in text
+
+
+def test_switch_buddy_tells_telegram_users_to_reply_to_the_bot():
+    """Telegram privacy mode means the bot sees only commands and replies to
+    its messages, so buddy must tell people to reply when mentioning agents."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert (
+        "reply to the bot's message" in text
+        or "reply to the Switch bot's message" in text
     )
