@@ -129,7 +129,7 @@ function question(context: AcpSessionContext, request: AcpPermissionRequest): Pr
   );
 }
 
-/** Kiro CLI's `kiro-cli acp`, on whichever agent engine its own settings choose. */
+/** Kiro CLI's `kiro-cli acp`, on whichever agent engine Kiro picks for it. */
 export const kiroAcp: AcpProviderHooks = {
   provider: 'kiro',
   label: 'Kiro CLI',
@@ -142,7 +142,8 @@ export const kiroAcp: AcpProviderHooks = {
     userInput: true,
   },
   // No engine, agent, model or trust flags: the V3 engine refuses the V2
-  // ones, and the engine is the person's choice (`acp.agentEngine`). What the
+  // ones, and Kiro picks the engine itself (V3 for a client it recognises,
+  // Switch Console among them, else its `acp.agentEngine` setting). What the
   // session can do is read from the handshake.
   launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['acp'], env }),
   loginCommand: KIRO_LOGIN,
