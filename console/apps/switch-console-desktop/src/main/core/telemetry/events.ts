@@ -450,7 +450,8 @@ export type TelemetryEventMap = {
    * Deliberately named for what it can actually observe. A successful install
    * quits the app, so there is no moment afterwards in which to report one; what
    * this counts is the point the update was handed to the installer. Whether it
-   * worked is answered by `update_installed` on the next launch.
+   * worked is answered by `update_installed` on the next launch. A launch that
+   * comes back on the old version reports this event again, as a failure.
    */
   update_install_started: {
     outcome: TelemetryOutcome;

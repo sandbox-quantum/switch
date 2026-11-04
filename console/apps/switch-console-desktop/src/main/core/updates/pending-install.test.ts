@@ -15,6 +15,9 @@ vi.mock('@main/db/kv', () => ({
     async del(key: string) {
       h.values.delete(key);
     }
+    async clear() {
+      h.values.clear();
+    }
   },
 }));
 
@@ -38,13 +41,16 @@ describe('the handover marker', () => {
 
     // The update service and the launch report both ask; whichever is second
     // must not read the record the first one cleared and answer no.
-    expect([first, second]).toEqual([true, true]);
-    expect(await marker.pendingInstall.take()).toBe(true);
+    // A marker from a build that recorded no version.
+    const handover = { targetVersion: null, fromVersion: null };
+    expect([first, second]).toEqual([handover, handover]);
+    expect(await marker.pendingInstall.take()).toEqual(handover);
     expect(h.values.has('handover')).toBe(false);
-    expect(h.reads).toBe(1);
+    // One read of each of the three keys, once for the whole run.
+    expect(h.reads).toBe(3);
   });
 
   it('answers no when the previous run handed nothing over', async () => {
-    expect(await marker.pendingInstall.take()).toBe(false);
+    expect(await marker.pendingInstall.take()).toBeNull();
   });
 });
