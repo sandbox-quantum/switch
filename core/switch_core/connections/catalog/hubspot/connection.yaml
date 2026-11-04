@@ -28,19 +28,19 @@ auth:
     # (a DELETE naming the token in its path) is not one Switch can make.
     remove_access: In HubSpot, open Settings, Integrations, Connected Apps and uninstall Switch. Until you do, the sign-in keeps working.
   identity:
-    # Maintainer direction on #830 (petr-sandbox, 2026-11-02): get the
-    # identity from get_user_details through identity.mcp_tool, since no
-    # REST lookup is known to accept the MCP token. get_user_details is a
-    # read-only, no-argument tool HubSpot documents for exactly this; its
-    # result carries the user id and the account (hub) id. The documented
-    # field names are userId and hubId. The shared implementation keys the
-    # connection by this account_id alone, so the hub id is recorded here
-    # for the expected composite keying (user id plus account id, per the
-    # #830 discussion) but is not yet part of the key. An email/owner-name
-    # display field is expected from HubSpot's usage guidance but unverified
-    # until a live sign-in, so the user id is the label for now.
+    # Maintainer direction on #830 (petr-sandbox, 2026-11-02 and 2026-11-03):
+    # get the identity from get_user_details through identity.mcp_tool, since
+    # no REST lookup is known to accept the MCP token, and key the connection
+    # by user id plus HubSpot account id, since one person can belong to
+    # several accounts. get_user_details is a read-only, no-argument tool
+    # HubSpot documents for exactly this; its result carries the user id and
+    # the account (hub) id, documented as userId and hubId. The list form of
+    # account_id is the shared implementation of that composite keying. An
+    # email/owner-name display field is expected from HubSpot's usage
+    # guidance but unverified until a live sign-in, so the user id is the
+    # label for now.
     mcp_tool: get_user_details
-    account_id: userId
+    account_id: [userId, hubId]
     label: userId
 # HubSpot documents 30-minute OAuth access tokens; whether MCP-issued
 # tokens differ is not documented. Verify at manual QA.
