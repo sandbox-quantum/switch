@@ -1,5 +1,7 @@
 export type {
   AgentLaunchDefinition,
+  ConversationHistoryItem,
+  ConversationHistoryTurn,
   HttpMcpServerSpec,
   McpServerSpec,
   ModelSelection,
@@ -177,6 +179,18 @@ export { readSharedCredentials, sharedConfigSchema } from './host/shared-config'
 export type { SharedHostConfig } from './host/shared-config';
 
 export { providerReadinessSchema } from './readiness';
+export {
+  cliConversationListSchema,
+  deletedCliConversationCopiesSchema,
+  forkedCliConversationSchema,
+  type CliConversationList,
+} from './claude/cli-conversations';
+export {
+  cliConversationFailureSchema,
+  type CliConversationMode,
+  type CliConversationRequest,
+  MAX_SESSIONS_PER_REQUEST,
+} from './host/cli-conversations';
 export { verifyClaudeSignIn } from './claude/sign-in';
 export type { ProviderReadiness, SignInCheckInput } from './readiness';
 export {
