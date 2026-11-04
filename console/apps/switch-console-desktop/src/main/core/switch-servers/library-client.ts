@@ -30,6 +30,7 @@ type LibraryItemJson = {
   value?: { urls?: unknown };
   content?: string;
   attached_rooms_count?: number;
+  hidden_rooms_count?: number;
   packages?: string[];
   scope?: 'global' | 'room';
   created_at: string;
@@ -57,6 +58,7 @@ export function mapLibraryItem(kind: LibraryKind, r: LibraryItemJson): LibraryIt
     typeLabel: kind === 'references' ? (r.type_display_name ?? r.type ?? null) : null,
     urls,
     attachedRoomsCount: r.attached_rooms_count ?? 0,
+    ...(r.hidden_rooms_count !== undefined ? { hiddenRoomsCount: r.hidden_rooms_count } : {}),
     packageIds: r.packages ?? [],
     createdAt: r.created_at,
   };
@@ -161,10 +163,13 @@ export async function fetchLibraryItemRooms(
   id: string
 ): Promise<LibraryItemRoom[]> {
   const res = await gatewayFetch(server, `${itemPath(kind, id)}/rooms`, { authenticated: true });
-  return ((await res.json()) as { room_id: string; room_name: string }[]).map((r) => ({
-    roomId: r.room_id,
-    roomName: r.room_name,
-  }));
+  return ((await res.json()) as { room_id: string; room_name: string; can_unlink?: boolean }[]).map(
+    (r) => ({
+      roomId: r.room_id,
+      roomName: r.room_name,
+      ...(r.can_unlink !== undefined ? { canUnlink: r.can_unlink } : {}),
+    })
+  );
 }
 
 /** The types a new reference may be given: Switch's own, then those people wrote. */

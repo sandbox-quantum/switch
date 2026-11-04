@@ -145,6 +145,31 @@ describe('reading the library', () => {
     expect(doc).toMatchObject({ id: 'doc-1', content: '# Style' });
   });
 
+  it('keeps the count of rooms the owner cannot open, and leaves it unset when the server does not say', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([
+        { ...REFERENCE, hidden_rooms_count: 2 },
+        { ...REFERENCE, id: 'ref-2' },
+      ])
+    );
+    const [counted, older] = await fetchLibraryItems(SERVER, 'references');
+    expect(counted.hiddenRoomsCount).toBe(2);
+    expect(older).not.toHaveProperty('hiddenRoomsCount');
+  });
+
+  it('keeps the server’s word on detaching from each room, when it gives one', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([
+        { room_id: 'room-1', room_name: 'design', can_unlink: false },
+        { room_id: 'room-2', room_name: 'support' },
+      ])
+    );
+    expect(await fetchLibraryItemRooms(SERVER, 'references', 'ref-1')).toEqual([
+      { roomId: 'room-1', roomName: 'design', canUnlink: false },
+      { roomId: 'room-2', roomName: 'support' },
+    ]);
+  });
+
   it('lists the rooms an item is in', async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse([{ room_id: 'room-1', room_name: 'design' }])

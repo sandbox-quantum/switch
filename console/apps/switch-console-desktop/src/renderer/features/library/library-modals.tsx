@@ -17,7 +17,7 @@ import { ModalLayout } from '@renderer/lib/ui/modal-layout';
 import type { LibraryItem, LibraryKind } from '@shared/core/switch-servers/library';
 import { emptyForm, formProblem, inputOf, type LibraryForm } from './library-form';
 import { LibraryItemFields } from './library-item-form';
-import { KIND_TEXT } from './library-model';
+import { hiddenRoomsText, KIND_TEXT } from './library-model';
 import { invalidateLibrary, libraryRoomsKey, referenceTypesKey } from './library-queries';
 
 type NewProps = BaseModalProps<LibraryItem> & { workspaceId: string; kind: LibraryKind };
@@ -103,7 +103,7 @@ export function NewLibraryItemModal({ workspaceId, kind, onSuccess, onClose }: N
 
 type DeleteProps = BaseModalProps<void> & {
   workspaceId: string;
-  item: Pick<LibraryItem, 'id' | 'kind' | 'name' | 'packageIds'>;
+  item: Pick<LibraryItem, 'id' | 'kind' | 'name' | 'packageIds' | 'hiddenRoomsCount'>;
 };
 
 /**
@@ -128,6 +128,8 @@ export function DeleteLibraryItemModal({ workspaceId, item, onSuccess, onClose }
     (id) => packages.data?.find((p) => p.id === id)?.name ?? 'a package you cannot see'
   );
   const noun = KIND_TEXT[item.kind].noun;
+  // Rooms it is in that you cannot open: the server counts them for its owner, never names them.
+  const hidden = item.hiddenRoomsCount ?? 0;
 
   const remove = async () => {
     setDeleting(true);
@@ -179,8 +181,13 @@ export function DeleteLibraryItemModal({ workspaceId, item, onSuccess, onClose }
         ) : rooms.data.length > 0 ? (
           <WhatItLeaves
             title="It is removed from these rooms:"
-            names={rooms.data.map((r) => r.roomName)}
+            names={[
+              ...rooms.data.map((r) => r.roomName),
+              ...(hidden > 0 ? [`and ${hiddenRoomsText(hidden)}`] : []),
+            ]}
           />
+        ) : hidden > 0 ? (
+          <p className="text-sm text-foreground">It is removed from {hiddenRoomsText(hidden)}.</p>
         ) : (
           <p className="text-sm text-foreground-muted">
             It is not attached to any room you can see.

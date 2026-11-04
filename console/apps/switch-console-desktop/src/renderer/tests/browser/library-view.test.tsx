@@ -79,7 +79,9 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
 }));
 
 import { libraryItemView } from '@renderer/features/library/library-item-view';
+import { DeleteLibraryItemModal } from '@renderer/features/library/library-modals';
 import { libraryView } from '@renderer/features/library/library-view';
+import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 
 function item(over: Partial<LibraryItem>): LibraryItem {
   return {
@@ -308,6 +310,34 @@ describe('an item’s page', () => {
     });
   });
 
+  it('counts the rooms you cannot open without naming them', async () => {
+    state.item = item({ hiddenRoomsCount: 2 });
+    await render(libraryItemView.MainPanel);
+    expect(container.querySelector('[aria-label="Rooms"]')?.textContent).toContain(
+      'And 2 private rooms you can’t open.'
+    );
+  });
+
+  it('says so when every room it is in is one you cannot open', async () => {
+    state.item = item({ hiddenRoomsCount: 1 });
+    state.rooms = [];
+    await render(libraryItemView.MainPanel);
+    expect(container.querySelector('[aria-label="Rooms"]')?.textContent).toContain(
+      'Only in 1 private room you can’t open.'
+    );
+  });
+
+  it('follows the server on who may detach from each room', async () => {
+    state.item = item({});
+    state.rooms = [
+      { roomId: 'room-1', roomName: 'design', canUnlink: false },
+      { roomId: 'room-2', roomName: 'support', canUnlink: true },
+    ] as never;
+    await render(libraryItemView.MainPanel);
+    expect(container.querySelector('[aria-label="Detach from design"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Detach from support"]')).not.toBeNull();
+  });
+
   it('renders a document’s content as markdown', async () => {
     state.params = { serverId: 'srv', kind: 'documents', itemId: 'doc-1' };
     state.item = {
@@ -319,5 +349,34 @@ describe('an item’s page', () => {
     expect(content.textContent).toContain('Style');
     expect(content.textContent).not.toContain('# Style');
     expect(content.querySelector('strong')?.textContent).toBe('plain');
+  });
+});
+
+describe('deleting', () => {
+  const renderDelete = (over: Partial<LibraryItem>) =>
+    render(() => (
+      <Dialog open>
+        <DialogContent>
+          <DeleteLibraryItemModal
+            workspaceId="ws"
+            item={item(over)}
+            onSuccess={() => {}}
+            onClose={() => {}}
+          />
+        </DialogContent>
+      </Dialog>
+    ));
+  const dialogText = () => document.querySelector('[data-slot="dialog-content"]')?.textContent;
+
+  it('names the rooms it leaves, and counts those you cannot open', async () => {
+    await renderDelete({ hiddenRoomsCount: 2 });
+    expect(dialogText()).toContain('design');
+    expect(dialogText()).toContain('and 2 private rooms you can’t open');
+  });
+
+  it('counts the rooms you cannot open when they are all it is in', async () => {
+    state.rooms = [];
+    await renderDelete({ hiddenRoomsCount: 1 });
+    expect(dialogText()).toContain('It is removed from 1 private room you can’t open.');
   });
 });

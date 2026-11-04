@@ -142,6 +142,11 @@ export function ownerText(
   return item.ownerName ? `Owned by ${item.ownerName}` : null;
 }
 
+/** The rooms a viewer cannot open, which the server counts but never names. */
+export function hiddenRoomsText(count: number): string {
+  return count === 1 ? '1 private room you can’t open' : `${count} private rooms you can’t open`;
+}
+
 export function roomsText(count: number): string {
   return count === 0 ? 'In no rooms' : count === 1 ? 'In 1 room' : `In ${count} rooms`;
 }

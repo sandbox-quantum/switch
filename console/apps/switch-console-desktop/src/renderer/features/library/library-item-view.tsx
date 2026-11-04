@@ -51,6 +51,7 @@ import { changesOf, formOf, formProblem, type LibraryForm } from './library-form
 import { LibraryItemFields } from './library-item-form';
 import {
   accessOf,
+  hiddenRoomsText,
   KIND_TEXT,
   LIBRARY_ACCESS_OPTIONS,
   libraryPermissions,
@@ -382,6 +383,8 @@ const RoomsSection = observer(function RoomsSection({
   });
   const readable = useReadableRoomsInWorkspace(workspaceId);
   const summaries = new Map(readable.map((room) => [room.id, room]));
+  // Rooms it is in that you cannot open: counted for its owner and admins, never named.
+  const hidden = item.hiddenRoomsCount ?? 0;
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -431,41 +434,50 @@ const RoomsSection = observer(function RoomsSection({
         </p>
       ) : rooms.data.length === 0 ? (
         <p className="text-sm text-foreground-muted">
-          Not attached to any room you can see. Attach it and the agents there can use it.
+          {hidden > 0
+            ? `Only in ${hiddenRoomsText(hidden)}.`
+            : 'Not attached to any room you can see. Attach it and the agents there can use it.'}
         </p>
       ) : (
-        <List>
-          {rooms.data.map((room) => {
-            const summary = summaries.get(room.roomId);
-            const mayDetach =
-              summary !== undefined &&
-              switchRoomsStore.roomPermissions(workspaceId, summary).canUnlink;
-            return (
-              <div key={room.roomId} className="flex items-center gap-2 px-3.5 py-2.5">
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
-                  onClick={() => void openRoom(room.roomId)}
-                >
-                  <DoorOpen className="size-4 shrink-0 text-foreground-muted" />
-                  <span className="truncate text-sm text-foreground">{room.roomName}</span>
-                </button>
-                {mayDetach && (
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={`Detach from ${room.roomName}`}
-                    title={`Detach from ${room.roomName}`}
-                    disabled={busy === room.roomId}
-                    onClick={() => void detach(room.roomId, room.roomName)}
+        <>
+          <List>
+            {rooms.data.map((room) => {
+              // The server says per room; an older one leaves it to the room's own rule.
+              const summary = summaries.get(room.roomId);
+              const mayDetach =
+                room.canUnlink ??
+                (summary !== undefined &&
+                  switchRoomsStore.roomPermissions(workspaceId, summary).canUnlink);
+              return (
+                <div key={room.roomId} className="flex items-center gap-2 px-3.5 py-2.5">
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+                    onClick={() => void openRoom(room.roomId)}
                   >
-                    {busy === room.roomId ? <Loader2 className="animate-spin" /> : <X />}
-                  </Button>
-                )}
-              </div>
-            );
-          })}
-        </List>
+                    <DoorOpen className="size-4 shrink-0 text-foreground-muted" />
+                    <span className="truncate text-sm text-foreground">{room.roomName}</span>
+                  </button>
+                  {mayDetach && (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label={`Detach from ${room.roomName}`}
+                      title={`Detach from ${room.roomName}`}
+                      disabled={busy === room.roomId}
+                      onClick={() => void detach(room.roomId, room.roomName)}
+                    >
+                      {busy === room.roomId ? <Loader2 className="animate-spin" /> : <X />}
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </List>
+          {hidden > 0 && (
+            <p className="text-xs text-foreground-muted">And {hiddenRoomsText(hidden)}.</p>
+          )}
+        </>
       )}
       {error !== null && <p className="text-xs text-destructive">{error}</p>}
       {picking && (

@@ -30,6 +30,12 @@ export type LibraryItem = {
   /** A reference's links; empty for a document. */
   urls: string[];
   attachedRoomsCount: number;
+  /**
+   * Of those, the rooms the viewer may not open, which are never named to
+   * them. Sent only to whoever may manage the item, by a server that counts
+   * them; undefined from an older one.
+   */
+  hiddenRoomsCount?: number;
   /** The packages it is in, by id. */
   packageIds: string[];
   createdAt: string;
@@ -74,4 +80,9 @@ export type LibraryDeleteResult = {
 };
 
 /** A room a library item is attached to. */
-export type LibraryItemRoom = { roomId: string; roomName: string };
+export type LibraryItemRoom = {
+  roomId: string;
+  roomName: string;
+  /** Whether the viewer may detach the item from this room, when the server says. */
+  canUnlink?: boolean;
+};
