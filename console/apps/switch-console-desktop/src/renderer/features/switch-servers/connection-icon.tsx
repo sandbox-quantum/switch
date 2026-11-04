@@ -32,6 +32,7 @@ const MARK_COLOR: Record<string, string> = {
   linear: 'text-[#5E6AD2]',
   asana: 'text-[#F06A6A]',
   gitlab: 'text-[#FC6D26]',
+  cloudflare: 'text-[#F38020]',
   atlassian: 'text-[#0052CC] emdark:text-foreground',
   bitbucket: 'text-[#0052CC] emdark:text-foreground',
   box: 'text-[#0061D5] emdark:text-foreground',
