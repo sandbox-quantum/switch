@@ -11,7 +11,6 @@ from switch_core.connections.loader import (
 )
 
 PLACEHOLDERS = {
-    "asana",
     "gitlab",
     "bitbucket",
     "microsoft-365",
@@ -25,16 +24,18 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_asana_atlassian_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
+        "asana",
         "atlassian",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
+        "asana",
         "atlassian",
         "datadog",
         "github",
@@ -43,6 +44,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
+    assert "SKILL.md" in CATALOG["asana"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
@@ -227,6 +229,53 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity.account_id == "id"
 
 
+def test_the_shipped_asana_entry_signs_in_as_the_docs_say_it_must():
+    definition = CATALOG["asana"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Asana registers no client dynamically for its MCP server, so each
+    # server's operator registers an MCP app of their own, as Airtable's
+    # operator registers an integration.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "ASANA"
+    assert oauth.loopback_ports is None
+    # Asana's authorization server advertises a revocation endpoint, and
+    # revoking deauthorizes the refresh token and its access tokens with
+    # it, so nobody is sent to remove Switch by hand.
+    assert oauth.revocation_discovered is True
+    assert oauth.revocation_url is None and oauth.remove_access is None
+    # Nothing Switch asks Asana shows the redirect URL, or which workspaces
+    # the app allows.
+    assert oauth.unchecked is not None and "workspace" in oauth.unchecked
+    # The refresh token is long-lived and survives its use.
+    assert definition.auth.refresh == "reusable"
+    assert definition.token is not None
+    # Asana documents an hour; Switch has not measured it.
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("asana", "https://mcp.asana.com/v2/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    # The server's one scope, `default`, at both levels: consent is not
+    # granular, so a sign-in is write whichever level the person picked.
+    assert definition.access.read.scopes == ["default"]
+    assert definition.access.write.scopes == ["default"]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://app.asana.com/api/1.0/users/me"
+    assert (
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == ("data.gid", "data.email")
+
+
 @pytest.fixture
 def catalog_copy(tmp_path):
     root = tmp_path / "catalog"
@@ -275,7 +324,9 @@ def test_rejects_a_skill_whose_name_differs_from_the_slug(catalog_copy):
 
 
 def test_rejects_a_placeholder_that_ships_a_skill(catalog_copy):
-    shutil.copytree(catalog_copy / "github" / "skill", catalog_copy / "asana" / "skill")
+    shutil.copytree(
+        catalog_copy / "github" / "skill", catalog_copy / "gitlab" / "skill"
+    )
     with pytest.raises(CatalogError, match="must not ship a skill"):
         load_catalog(catalog_copy)
 
@@ -395,13 +446,13 @@ def test_rejects_write_without_read(catalog_copy):
 
 
 def test_a_placeholder_may_describe_its_levels(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "gitlab" / "connection.yaml"
     path.write_text(
         path.read_text()
         + "access:\n  read: { scopes: [read:jira-work] }\n"
         + "tools:\n  mode: listed\n  read: [search_issues]\n  write: []\n"
     )
-    definition = load_catalog(catalog_copy)["asana"].definition
+    definition = load_catalog(catalog_copy)["gitlab"].definition
     assert definition.level_tools("read") == ["search_issues"]
 
 

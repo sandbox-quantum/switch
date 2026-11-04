@@ -288,8 +288,8 @@ async def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
         "Atlassian is not set up on this server.",
     )
     assert (await standing(broker, "atlassian")).server_setup_needed is False
-    asana = (await standing(broker, "asana")).unavailable
-    assert asana is not None and asana.code == "coming_soon"
+    gitlab = (await standing(broker, "gitlab")).unavailable
+    assert gitlab is not None and gitlab.code == "coming_soon"
 
 
 async def test_a_key_that_never_expires_is_neither_connected_nor_granted(

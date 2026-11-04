@@ -165,6 +165,19 @@ version of their own to them without also giving them a release of their own.
   and carries nothing else. Notices travel between replicas on the signal bus,
   so a change made through one pod reaches a Console connected to another
   (#717).
+- **The Asana connection.** A person connects Asana from Switch Console,
+  and a granted agent reads and updates tasks and projects in their
+  workspaces, as that person, through Asana's MCP server. Each server's
+  operator registers an Asana MCP app — Asana offers no dynamic
+  registration for the server, and a standard API app is a different app —
+  and saves it under Connector apps, or names it in
+  `ASANA_CLIENT_CONFIG_PATH` (Helm: `switchCore.asanaClientSecret`); see
+  `docs/old/asana-setup.md`. Without it, Asana is listed as not set up.
+  Like Airtable and Google Workspace, it needs `GATEWAY_PUBLIC_URL`:
+  Asana sends people back to the server's own callback. Asana offers no
+  read-only sign-in: an MCP app's consent is the single `default` scope,
+  so every connection can write, within the person's own Asana
+  permissions. Disconnecting revokes the sign-in at Asana.
 - **The Airtable connection.** A person connects Airtable from Switch Console,
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that

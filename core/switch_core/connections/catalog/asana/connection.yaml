@@ -1,7 +1,61 @@
 slug: asana
 name: Asana
 category: Project management
-description: Read and update Asana tasks and projects.
-enabled: false
+description: Read and update Asana tasks and projects, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Asana's refresh token is long-lived and survives its use: a refresh
+  # answers a new access token and no new refresh token, and it can be
+  # repeated for as long as the person keeps the app authorized.
+  refresh: reusable
+  oauth:
+    # Each server's operator registers an Asana MCP app and names its
+    # settings in ASANA_CLIENT_CONFIG_PATH. Asana offers no dynamic
+    # registration for its MCP server: a client must be pre-registered in
+    # Asana's developer console, as an app of the MCP app type. A standard
+    # API app is a different app, and its sign-ins are not the ones this
+    # server takes. See docs/old/asana-setup.md.
+    registration: static
+    client_settings: ASANA
+    # Back to Core's own https callback, as Airtable's and Google's: the
+    # server needs GATEWAY_PUBLIC_URL, and nothing listens on people's
+    # computers.
+    redirect: [core]
+    # Asana compares the redirect only at sign-in, and which workspaces the
+    # app may reach is set on the app, where Switch cannot look. A person
+    # whose workspace the app does not allow is refused at Asana's consent
+    # page, with nothing wrong in Switch.
+    unchecked: >-
+      Switch can't check the redirect URL, or that the app allows your
+      workspace. Have someone whose workspace it allows connect once to
+      confirm.
+    # Disconnecting revokes at the revocation endpoint Asana's authorization
+    # server advertises in its metadata (/-/oauth_revoke): the refresh token
+    # is deauthorized, and its access tokens with it.
+    revocation_discovered: true
+  identity:
+    url: https://app.asana.com/api/1.0/users/me
+    account_id: data.gid
+    label: data.email
+# Asana's access tokens live 60 minutes (documented, not measured).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: asana, url: "https://mcp.asana.com/v2/mcp" }
+access:
+  # Asana's MCP server knows one scope, `default`: its protected-resource
+  # metadata lists no other, and an MCP app's consent is not granular. Every
+  # authorization may use every tool the server offers, within the person's
+  # own Asana permissions, so the two levels name the same scope and a
+  # sign-in is granted as write whichever level the person picked: there is
+  # no read-only Asana sign-in. Not the personal access token the issue
+  # names as the alternative: Asana documents MCP apps' tokens for its MCP
+  # server, and does not document a pasted key working there, while a key
+  # would also reach the whole REST API rather than the server alone.
+  read:
+    scopes: [default]
+  write:
+    scopes: [default]
+tools: { mode: pass_through }
