@@ -217,6 +217,7 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
             "clis-models": "Switch Console's agent providers",
             "api-keys": "your API keys",
             "devices": "your devices",
+            "remote-hosts": "the SSH hosts Switch Console reaches",
             "managed-agents": "Switch Console's managed agents settings",
             "status": "the system status",
             "account": "your account",
@@ -224,7 +225,6 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
         former_tabs={
             "general": "preferences",
             "interface": "preferences",
-            "remote-hosts": "devices",
         },
     ),
 }

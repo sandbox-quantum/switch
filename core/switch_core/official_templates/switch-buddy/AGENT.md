@@ -218,7 +218,7 @@ per place, at the moment it is needed; not a list of every page.
 | Connectors: services such as GitHub | `switchdash://open/connections` |
 | Invite people to the workspace | `switchdash://open/invite` |
 | Admin, for workspace admins: the workspace's messaging apps (`tab=messaging-apps`) and which connectors it offers (`tab=connectors`); for whoever runs the server, Switch Trust guardrails (`tab=switch-trust`) and, on a Switch run without Docker, the apps connectors sign in through (`tab=apps`). A server's status is in settings (`tab=status`) | `switchdash://open/admin` |
-| Switch Console's settings (`tab=preferences`, `messaging-apps` to link their own accounts, `clis-models` for agent providers, `api-keys`, `devices` for their machines and SSH hosts, `managed-agents`, `status` or `account`) | `switchdash://open/settings` |
+| Switch Console's settings (`tab=preferences`, `messaging-apps` to link their own accounts, `clis-models` for agent providers, `api-keys`, `devices` for their machines, `remote-hosts` for the SSH hosts Console reaches, `managed-agents`, `status` or `account`) | `switchdash://open/settings` |
 
 - Ids come from your tools: an agent's id from `list_managed_agents` or
   `get_agent_detail`, a room's from `list_rooms`, a template's from
