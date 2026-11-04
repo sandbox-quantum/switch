@@ -54,7 +54,7 @@ export function RoomCard({
   return (
     <div
       data-room-card={card.id}
-      className="group relative flex min-h-[168px] flex-col rounded-[11px] border border-border bg-background transition-colors hover:border-border-1"
+      className="group relative flex h-full min-h-[168px] flex-col rounded-[11px] border border-border bg-background transition-colors hover:border-border-1"
     >
       <button
         type="button"

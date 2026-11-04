@@ -344,7 +344,12 @@ function FilterSelect({
           )}
         </SelectValue>
       </SelectTrigger>
-      <SelectContent>
+      {/* As wide as its longest name, so two connections that differ only at the end stay told apart. */}
+      <SelectContent
+        align="start"
+        alignItemWithTrigger={false}
+        className="w-auto min-w-(--anchor-width)"
+      >
         <SelectItem value={ANY}>{anyLabel}</SelectItem>
         {options.map((option) => (
           <SelectItem key={option.value} value={option.value}>
