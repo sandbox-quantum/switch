@@ -243,6 +243,39 @@ version of their own to them without also giving them a release of their own.
 - **A room's own documents are deleted by their creator, the room's owner or
   an admin.** Anyone who could write to the room could delete them. A
   document an agent made counts as made by the agent's owner.
+- **Usage telemetry tells people from bots.** Slack, Discord and Mattermost
+  posts from an integration (an app, a bot account, a webhook that isn't
+  Switch's own) were counted as people. The bridge now marks them, and the
+  daily snapshot reports `person_identity_active_*`, `bot_identity_active_*`
+  and `account_active_*` beside the old `chat_identity_active_*` and
+  `user_active_*`, which are still sent for one more stable release. Room and
+  agent message events report such posts as `sender_kind = bot`. An app's post
+  on Discord or Mattermost also no longer answers a request card or wakes an
+  agent following the conversation, as already on Slack.
+- **Usage telemetry follows Switch Cloud.** Every event now carries
+  `deployment_kind` (`switch_cloud`, `managed_by_console` or `self_hosted`),
+  so Cloud can be charted on its own or left out. New events cover its funnel:
+  `account_created` (sign-up, a first single sign-on sign-in, or an admin),
+  `signup_refused` with the reason, `workspace_created`, and a cloud machine
+  being requested, becoming ready (with how long a new one took), failing
+  (with the reason), being woken, and being stopped. Machine events are sent
+  only once their change is committed.
+- **Usage telemetry counts each finished day, week and month.** The daily
+  snapshot's `*_7d` counts are a trailing week, so a chart adding them up
+  over a week counted a room once for every day it was active. A new
+  `usage_period` event is sent once per finished UTC day, ISO week and
+  calendar month, with distinct active rooms, people and accounts for exactly
+  that period, dated to its middle. Summed at the matching interval it is the
+  real figure. A server that was off sends the periods it missed, up to 35
+  days back, when it next runs.
+- **Agent telemetry says connection where it meant one.**
+  `agent_connected`, `agent_disconnected` and the `first_agent_connected`
+  milestone are sent alongside `agent_session_started`, `agent_session_ended`
+  and `first_session_started`, which measured an agent coming online, not a
+  coding-agent session. The old names stay for one more stable release. The
+  new `first_agent_session` milestone is the first session a host reports. A
+  deployment that already passed either milestone claims it at startup
+  without reporting it.
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and
   downgrade the database before rolling back.** Every existing workspace gets
   an organization of its own, and its owners become the organization's admins.
@@ -2445,6 +2478,20 @@ version of their own to them without also giving them a release of their own.
   removed.
 
 #### Changed
+- **Usage data follows an install to a working agent.** Three new
+  `activation_milestone` steps (`server_ready`, `agent_ready`,
+  `first_agent_session`) are each sent once per install, and only by installs
+  made on this version or later, with `path` saying whether the install
+  started switch-buddy or skipped it. Sessions of agents on the agent
+  controller Console runs on this computer, which never reached
+  `session_started`, are sent as `managed_session_started`. Updates send
+  `update_download_started` and, on the first launch after one,
+  `update_installed` with the version it came from. Adding a server by
+  address, starting a server Console runs, and creating a room now say why
+  they failed where they said `error`, and Switch Cloud is its own
+  `server_kind`. An install once signed in with a staff account stays
+  labelled internal after it signs out. `agent_reset`, which was listed but
+  never sent, is gone from the list. `docs/TELEMETRY.md` has every field.
 - **Managed agents and machines update when the server says they changed.**
   Against a server that pushes change notices, Console reads those lists
   again when told to, and otherwise only every five minutes instead of every
@@ -4504,6 +4551,11 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Tells Switch Console when a session started.** Once Switch has taken a
+  session host's start report, the controller Console runs on its own
+  computer passes the session's provider and how it started to Console over
+  its IPC channel, for Console's usage data. A controller with no parent
+  listening, on an SSH host or run as a service, sends nothing.
 - **Waits its turn when Switch is busy opening connections.** An open or an
   attach refused as `busy` comes with when to try again, the controller's
   place in the server's queue, and the controller now waits that long

@@ -311,6 +311,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
         message:
           'The local server cannot run as root: PostgreSQL refuses to. Start Switch Console as ' +
           'a normal user, then set up the server.',
+        failure: 'running_as_root',
       },
       bringUpMattermost: null,
     };
@@ -445,7 +446,11 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
           ? ''
           : `: ${reason.length > room ? `${reason.slice(0, room - 1)}…` : reason}`;
       return {
-        result: { kind: 'error', message: `${head}${shown}${tail}` },
+        result: {
+          kind: 'error',
+          message: `${head}${shown}${tail}`,
+          failure: alive ? 'health_timeout' : 'core_exited',
+        },
         bringUpMattermost: null,
       };
     }

@@ -16,6 +16,9 @@ const store = new KV<Record<string, boolean>>('updates:pending-install');
 
 const KEY = 'handover';
 
+/** This run's answer, once anything has asked. */
+let taken: Promise<boolean> | null = null;
+
 export const pendingInstall = {
   set: (): Promise<void> => store.set(KEY, true),
   clear: (): Promise<void> => store.del(KEY),
@@ -25,10 +28,17 @@ export const pendingInstall = {
    * launch is only ever counted once. Cleared before the caller reports, so a
    * report that fails to send loses one event rather than repeating it on every
    * launch from here on.
+   *
+   * The same answer for every caller in this run: the update service reports
+   * the handover and the launch report says which kind of install it was, and
+   * whichever asks first must not leave the other reading a cleared record.
    */
-  async take(): Promise<boolean> {
-    if ((await store.get(KEY)) !== true) return false;
-    await store.del(KEY);
-    return true;
+  take(): Promise<boolean> {
+    taken ??= (async () => {
+      if ((await store.get(KEY)) !== true) return false;
+      await store.del(KEY);
+      return true;
+    })();
+    return taken;
   },
 };

@@ -44,11 +44,13 @@ from switch_core.gateway.auth import (
     set_session_cookie,
     workspace_creation_refusal,
 )
+from switch_core.gateway.dependencies import current_telemetry
 from switch_core.gateway.schemas import (
     OrganizationCreateResponse,
     OrganizationSummary,
     TenantMembershipResponse,
 )
+from switch_core.telemetry import emit_safely
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +418,11 @@ async def _add_creator(
             creator_id,
         )
         raise
+    emit_safely(
+        current_telemetry(),
+        "workspace_created",
+        {"new_organization": new_organization is not None},
+    )
 
 
 async def _discard_organization(

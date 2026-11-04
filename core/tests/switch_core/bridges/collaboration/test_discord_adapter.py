@@ -213,9 +213,10 @@ class _FakeClient:
 
 
 class _Author:
-    def __init__(self, user_id: int, name: str) -> None:
+    def __init__(self, user_id: int, name: str, *, bot: bool = False) -> None:
         self.id = user_id
         self.name = name
+        self.bot = bot
 
 
 def _gateway_message(
@@ -322,6 +323,25 @@ def test_own_webhook_message_dropped_but_foreign_webhook_bridged() -> None:
 
     assert len(captured) == 1
     assert captured[0].message_ref == f"{CHANNEL_ID}:2"
+    # Someone else's webhook is an integration posting, not a person.
+    assert captured[0].sender_is_app is True
+
+
+def test_another_bot_is_bridged_as_an_app_and_a_person_is_not() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+    channel = _FakeChannel()
+
+    _run(
+        adapter._handle_message(
+            _gateway_message(
+                channel=channel, author=_Author(55, "ci-bot", bot=True), message_id=1
+            )
+        )
+    )
+    _run(adapter._handle_message(_gateway_message(channel=channel, message_id=2)))
+
+    assert [m.sender_is_app for m in captured] == [True, False]
 
 
 def test_system_messages_skipped() -> None:

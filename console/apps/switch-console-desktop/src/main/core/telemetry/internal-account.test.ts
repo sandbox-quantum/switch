@@ -12,14 +12,7 @@ vi.mock('@main/db/kv', () => ({
   },
 }));
 
-const {
-  currentInternalFlag,
-  emailFromJwt,
-  forgetSessionAccount,
-  internalFrom,
-  isInternalEmail,
-  recordSessionAccount,
-} = await import('./internal-account');
+const { emailFromJwt, internalFrom, isInternalEmail } = await import('./internal-account');
 
 function jwtWith(payload: Record<string, unknown>): string {
   const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -73,27 +66,45 @@ describe('reading the account from a session', () => {
 });
 
 describe('the answer kept beside each session', () => {
+  // A fresh module per test: the answers live in the module's store, and one
+  // test's staff sign-in would otherwise make every later one internal.
+  async function fresh() {
+    vi.resetModules();
+    return import('./internal-account');
+  }
+
   it('is recorded when a session is stored, and forgotten when it goes', async () => {
-    expect(await currentInternalFlag()).toBe('unknown');
+    const accounts = await fresh();
+    expect(await accounts.currentInternalFlag()).toBe('unknown');
 
-    await recordSessionAccount('outside', jwtWith({ email: 'someone@example.com' }));
-    expect(await currentInternalFlag()).toBe('false');
+    await accounts.recordSessionAccount('outside', jwtWith({ email: 'someone@example.com' }));
+    expect(await accounts.currentInternalFlag()).toBe('false');
 
-    await recordSessionAccount('staff', jwtWith({ email: 'someone@sandboxaq.com' }));
-    expect(await currentInternalFlag()).toBe('true');
-
-    await forgetSessionAccount('staff');
-    expect(await currentInternalFlag()).toBe('false');
-
-    await forgetSessionAccount('outside');
-    expect(await currentInternalFlag()).toBe('unknown');
+    await accounts.forgetSessionAccount('outside');
+    expect(await accounts.currentInternalFlag()).toBe('unknown');
   });
 
   it('follows a server signed in again as someone else', async () => {
-    await recordSessionAccount('server', jwtWith({ email: 'someone@sandboxaq.com' }));
-    await recordSessionAccount('server', jwtWith({ email: 'someone@example.com' }));
+    const accounts = await fresh();
+    await accounts.recordSessionAccount('server', jwtWith({ email: 'someone@example.com' }));
+    await accounts.recordSessionAccount('server', jwtWith({ email: 'other@example.org' }));
 
-    expect(await currentInternalFlag()).toBe('false');
-    await forgetSessionAccount('server');
+    expect(await accounts.currentInternalFlag()).toBe('false');
+  });
+
+  it('stays internal once a staff account has signed in, after that session goes', async () => {
+    // Staff who sign out, or whose session lapses, are still staff using this
+    // installation; dropping back would count them as a customer.
+    const accounts = await fresh();
+    await accounts.recordSessionAccount('outside', jwtWith({ email: 'someone@example.com' }));
+    await accounts.recordSessionAccount('staff', jwtWith({ email: 'someone@sandboxaq.com' }));
+    expect(await accounts.currentInternalFlag()).toBe('true');
+
+    await accounts.forgetSessionAccount('staff');
+    expect(await accounts.currentInternalFlag()).toBe('true');
+
+    await accounts.recordSessionAccount('staff', jwtWith({ email: 'someone@example.com' }));
+    await accounts.forgetSessionAccount('outside');
+    expect(await accounts.currentInternalFlag()).toBe('true');
   });
 });
