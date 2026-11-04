@@ -1,17 +1,30 @@
 import { z } from 'zod';
-import { readiness, type ProviderReadiness, type SignInCheckInput } from '../readiness';
-import { startOpencodeServer, stopOpencodeServer } from './server';
+import {
+  loginWontHelp,
+  readiness,
+  type ProviderReadiness,
+  type SignInCheckInput,
+} from '../readiness';
+import { type OpencodeServerHandle, startOpencodeServer, stopOpencodeServer } from './server';
+import { OPENCODE_UNSUPPORTED_MESSAGE, OpencodeUnsupportedVersionError } from './version';
 
 export const OPENCODE_LOGIN = 'opencode auth login';
 
 /** OpenCode signs in per backend, so "signed in" means at least one backend is connected. */
 export async function checkOpencodeSignIn(input: SignInCheckInput): Promise<ProviderReadiness> {
-  const server = await startOpencodeServer({
-    ...input,
-    startupTimeoutMs: 15000,
-    skills: [],
-    config: { $schema: 'https://opencode.ai/config.json', permission: {}, mcp: {} },
-  });
+  let server: OpencodeServerHandle;
+  try {
+    server = await startOpencodeServer({
+      ...input,
+      startupTimeoutMs: 15000,
+      skills: [],
+      config: { $schema: 'https://opencode.ai/config.json', permission: {}, mcp: {} },
+    });
+  } catch (error) {
+    if (error instanceof OpencodeUnsupportedVersionError)
+      return loginWontHelp(readiness('unknown', OPENCODE_UNSUPPORTED_MESSAGE));
+    throw error;
+  }
   try {
     const response = await fetch(`${server.url}/provider`, {
       headers: { Authorization: server.authorization },

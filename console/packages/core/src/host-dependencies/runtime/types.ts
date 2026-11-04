@@ -322,6 +322,12 @@ export interface DependencyDescriptor {
    */
   minVersion?: string;
   /**
+   * First unsupported version (dotted, e.g. '2.0.0'). When the probed version is at or
+   * above it, the dependency resolves to `error` with `message`, so an installed but
+   * incompatible binary is reported as not ready rather than failing later.
+   */
+  unsupportedFrom?: { version: string; message: string };
+  /**
    * Skip executing the CLI after resolving its path.
    * Use for CLIs whose version command has project-local side effects.
    */

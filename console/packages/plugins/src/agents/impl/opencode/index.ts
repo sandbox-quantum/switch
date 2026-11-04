@@ -15,6 +15,15 @@ import {
 const validateSessionId = (id: string) => id.startsWith('ses');
 
 /**
+ * OpenCode 2.x is a different package (`@opencode/cli`) whose `serve` speaks a new
+ * API, so Console only drives the 1.x line (`opencode-ai`). Install and update
+ * pin the 1.x major (`opencode-ai@1`), so an update never jumps to 2.x.
+ */
+export const OPENCODE_SUPPORTED_PACKAGE = 'opencode-ai@1';
+export const OPENCODE_UNSUPPORTED_MESSAGE =
+  "OpenCode 2.x isn't supported yet. Install the 1.x line: npm i -g opencode-ai@1";
+
+/**
  * OpenCode, installed into the user prefix on Linux.
  *
  * npm's default global prefix there is a system directory, so `npm install -g`
@@ -27,27 +36,30 @@ const validateSessionId = (id: string) => id.startsWith('ses');
  * user-writable, and changing them would strand anyone who already has it.
  */
 const OPENCODE_HOST_DEPENDENCY = (() => {
-  const base = npmDependency({ id: 'opencode', package: '@opencode/cli' });
+  const base = npmDependency({ id: 'opencode', package: 'opencode-ai', versionSuffix: '@1' });
 
-  // Uninstall must target both the current package (@opencode/cli) and the
-  // legacy name (opencode-ai) that Console used to install. Users may have
-  // either one; npm silently skips whichever isn't present.
+  // Uninstall removes both the supported package (opencode-ai) and the 2.x one
+  // (@opencode/cli), which an earlier Console installed. npm silently skips
+  // whichever isn't present.
   const patchUninstall = (options: typeof base.installCommands.macos) =>
     options?.map((opt) => ({
       ...opt,
-      ...(opt.uninstallCommand ? { uninstallCommand: opt.uninstallCommand + ' opencode-ai' } : {}),
+      ...(opt.uninstallCommand
+        ? { uninstallCommand: opt.uninstallCommand + ' @opencode/cli' }
+        : {}),
     }));
 
   return {
     ...base,
+    unsupportedFrom: { version: '2.0.0', message: OPENCODE_UNSUPPORTED_MESSAGE },
     installCommands: {
       macos: patchUninstall(base.installCommands.macos),
       windows: patchUninstall(base.installCommands.windows),
       linux: [
         {
           method: 'npm' as const,
-          command: 'npm install -g --prefix "$HOME/.local" @opencode/cli',
-          uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" @opencode/cli opencode-ai',
+          command: `npm install -g --prefix "$HOME/.local" ${OPENCODE_SUPPORTED_PACKAGE}`,
+          uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" opencode-ai @opencode/cli',
           recommended: true,
         },
       ],

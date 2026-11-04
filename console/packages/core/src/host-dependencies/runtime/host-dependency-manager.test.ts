@@ -395,6 +395,40 @@ describe('HostDependencyManager install', () => {
     expect(result?.error).toBeUndefined();
   });
 
+  describe('unsupportedFrom', () => {
+    const capped: DependencyDescriptor[] = [
+      {
+        id: 'node',
+        name: 'Node.js',
+        category: 'core',
+        commands: ['node'],
+        versionArgs: ['--version'],
+        unsupportedFrom: { version: '20.0.0', message: 'Node 20 is not supported yet.' },
+      },
+    ];
+
+    it('reports a version at or above it as error with its message', async () => {
+      for (const output of ['v20.0.0', 'v22.1.3']) {
+        const manager = new HostDependencyManager(nodeVersionCtx(output), {
+          dependencies: capped,
+        });
+        const result = await manager.probe('node');
+        expect(result?.status).toBe('error');
+        expect(result?.version).toBe(output.slice(1));
+        expect(result?.error).toBe('Node 20 is not supported yet.');
+      }
+    });
+
+    it('accepts a version below it', async () => {
+      const manager = new HostDependencyManager(nodeVersionCtx('v19.9.0'), {
+        dependencies: capped,
+      });
+      const result = await manager.probe('node');
+      expect(result?.status).toBe('available');
+      expect(result?.error).toBeUndefined();
+    });
+  });
+
   it('skips version probes for dependencies configured as path-only', async () => {
     const ctx = makeCtx(async (command, args = []) => {
       if (command === 'which' && args[0] === 'letta') {
