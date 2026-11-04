@@ -86,6 +86,16 @@ class Inviter(BaseModel):
         return cls(kind="agent", id=agent_id, owner_user_id=owner_user_id)
 
     @classmethod
+    def chat_account(
+        cls, external_user_id: str, user_ids: Iterable[str] = ()
+    ) -> Inviter:
+        """Someone who added an agent on the platform itself (its bot put in a
+        channel), as the `ExternalUser` Switch knows them by and the Switch
+        users who claimed that account. Pass "" for an account Switch has never
+        seen: it is judged like any unlinked account, never as trusted."""
+        return cls(kind="user", id=external_user_id, user_ids=tuple(user_ids))
+
+    @classmethod
     def system(cls) -> Inviter:
         return cls(kind="system")
 
@@ -163,6 +173,40 @@ def require_may_invite(
         raise InviteRefused(
             [agent.name for agent in refused], refusal_message(refused, inviter)
         )
+
+
+def needs_verified_inviter(agent: Agent) -> bool:
+    """Whether who invited this agent matters: true unless anyone may talk
+    to it. A join nobody can be named for is disclosed only for these."""
+    return not parse_policy(agent.addressing_policy).is_open()
+
+
+def platform_refused_notice(agent: Agent) -> str:
+    """Posted in a channel when the person who added the agent's bot there may
+    not bring it in: the bot stays in the channel, but the agent is not in the
+    room, so it reads and answers nothing there."""
+    return (
+        f"`{agent.name}` was added to this channel, but it won't take part: "
+        "its owner limits who can talk to it, and the person who added it "
+        "isn't one of them. It won't read or answer anything here. Ask its "
+        'owner to add it, or to allow that person in its "who can talk to '
+        'this agent" setting, then add it again. You can remove it from the '
+        "channel in the meantime."
+    )
+
+
+def unverified_join_notice(agent: Agent, owner: str | None) -> str:
+    """Posted in a channel when the platform added the agent's bot without
+    saying who did it. The join stands; `owner` is how to reach the agent's
+    owner here (a mention), or None when they have no account on this
+    platform."""
+    who = owner if owner else "Its owner"
+    return (
+        f"`{agent.name}` was added to this channel, but Switch couldn't verify "
+        "who added it, so it couldn't check that against who may talk to "
+        f"`{agent.name}`. {who} can remove it from this channel if it "
+        "shouldn't be here."
+    )
 
 
 def refusal_message(refused: list[Agent], inviter: Inviter) -> str:

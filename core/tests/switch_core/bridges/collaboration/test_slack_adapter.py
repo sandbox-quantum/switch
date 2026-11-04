@@ -1095,6 +1095,22 @@ def test_user_join_does_not_fire_on_app_joined() -> None:
     assert app_joins == []
     assert len(user_joins) == 1
     assert user_joins[0].external_user_id == "U1"
+    # Joined on their own: nobody to name.
+    assert user_joins[0].added_by_external_user_id is None
+
+    _run(
+        adapter._handle_member_joined_channel(
+            {
+                "type": "member_joined_channel",
+                "user": "U1",
+                "channel": "C123",
+                "inviter": "U2",
+            }
+        )
+    )
+
+    # Invited: Slack names who did it, so the invite can be judged as them.
+    assert user_joins[1].added_by_external_user_id == "U2"
 
 
 # ── Outbound attachments ─────────────────────────────────────────────────────

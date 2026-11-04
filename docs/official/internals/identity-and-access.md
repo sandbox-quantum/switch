@@ -127,7 +127,9 @@ The same policy decides who may bring an agent into a room. Inviting is asked as
 
 Every way of adding an agent goes through this check: `!invite-agent` and `/invite-agent`, the `invite_agent_to_room` tool and the agent API, creating a room with agents (Gateway, agent tools, room YAML, Switch Console) and the Gateway's room page. A refused invite names the agent and says to ask its owner, or to be allowed in its "who can talk to this agent" setting.
 
-Two cases aren't judged. Agents already in a room stay there when their policy changes; the check runs only for agents an invite would add. And when someone adds an agent's bot to a channel on the platform itself, the platform doesn't report who did, so the room follows the channel.
+Agents already in a room stay there when their policy changes; the check runs only for agents an invite would add.
+
+Someone can also add an agent's bot to a channel on the platform itself. When the platform reports who did it (Slack and Telegram do), that person is the inviter, judged like anyone else; an account Switch hasn't seen yet counts as an unlinked one. If they may not invite the agent, it stays out of the room and the channel is told why: the bot remains in the channel, since Switch can't remove it there, but it reads and answers nothing. When the platform doesn't say who it was (Mattermost, or a channel found on startup), the join goes through but is never trusted silently: for an agent whose policy restricts who may talk to it, Switch logs a warning and posts a notice in the channel that it couldn't verify who added the agent, mentioning the owner when they have a linked account on that platform, so they can remove it.
 
 ## Identity claims
 

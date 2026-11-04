@@ -1094,14 +1094,16 @@ class RoomService:
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
         *,
         invited_by: Inviter,
-    ) -> None:
+    ) -> list[str]:
         """`with_agents` runs in the transaction that records the agents, so
         what it writes commits with them or not at all.
 
         `invited_by` is who is adding them. Each agent not already in the room
         must be one its addressing policy lets them talk to there, or
         `InviteRefused` is raised and nothing is added (see `invite_policy`).
-        Agents already in the room are left alone."""
+        Agents already in the room are left alone.
+
+        Returns the ids of the agents this call added."""
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1141,7 +1143,7 @@ class RoomService:
                 new_agent_ids,
                 agent_ids,
             )
-            return
+            return []
 
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 
@@ -1190,6 +1192,7 @@ class RoomService:
                 "added_by_kind": added_by_kind,
             },
         )
+        return new_agent_ids
 
     async def remove_agents_from_room(
         self,

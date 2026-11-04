@@ -157,7 +157,10 @@ version of their own to them without also giving them a release of their own.
   (gateway, agent tools, room YAML) and the gateway's room page. A refused
   invite names the agent and says to ask its owner. The check lives in
   `RoomService`, whose `add_agents_to_room` now requires `invited_by`. Agents
-  already in rooms stay where they are.
+  already in rooms stay where they are. An agent added on the platform itself
+  is judged as whoever added it when the platform says (Slack, Telegram);
+  when it doesn't, the join stands, but Switch logs a warning and posts a
+  notice that mentions the owner.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when

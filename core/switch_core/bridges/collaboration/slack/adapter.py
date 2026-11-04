@@ -3488,6 +3488,9 @@ class SlackAdapter(PlatformAdapter):
                 external_user_id=user_id,
                 external_username=user.name,
                 channel_name=channel_name,
+                # Present when someone invited them; absent when they joined
+                # on their own.
+                added_by_external_user_id=str(event.get("inviter", "")) or None,
             )
         )
 
