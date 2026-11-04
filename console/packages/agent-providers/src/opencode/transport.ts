@@ -14,6 +14,8 @@ export type OpencodeMessage = Message;
 
 export type OpencodePermissionReply = 'once' | 'always' | 'reject';
 
+export class OpencodePromptRefused extends Error {}
+
 export interface OpencodePromptInput {
   text: string;
   variant?: string;
@@ -165,22 +167,31 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
             );
         },
         async prompt(promptInput) {
-          await client.session.promptAsync<true>({
-            sessionID: nativeSessionId,
-            directory: input.cwd,
-            ...(promptInput.model ? { model: promptInput.model } : {}),
-            ...(promptInput.variant ? { variant: promptInput.variant } : {}),
-            ...(promptInput.system ? { system: promptInput.system } : {}),
-            parts: [
-              { type: 'text', text: promptInput.text },
-              ...(promptInput.files ?? []).map((file) => ({
-                type: 'file' as const,
-                url: file.url,
-                mime: file.mime,
-                filename: file.filename,
-              })),
-            ],
-          });
+          const response = await client.session.promptAsync<false>(
+            {
+              sessionID: nativeSessionId,
+              directory: input.cwd,
+              ...(promptInput.model ? { model: promptInput.model } : {}),
+              ...(promptInput.variant ? { variant: promptInput.variant } : {}),
+              ...(promptInput.system ? { system: promptInput.system } : {}),
+              parts: [
+                { type: 'text', text: promptInput.text },
+                ...(promptInput.files ?? []).map((file) => ({
+                  type: 'file' as const,
+                  url: file.url,
+                  mime: file.mime,
+                  filename: file.filename,
+                })),
+              ],
+            },
+            { throwOnError: false }
+          );
+          if (!response.response?.ok) {
+            const status = response.response?.status;
+            if (status !== undefined && status >= 400 && status < 500)
+              throw new OpencodePromptRefused(`Prompt refused (HTTP ${status}).`);
+            throw new Error(`Prompt outcome unknown (HTTP ${status ?? 'unavailable'}).`);
+          }
         },
         async abort() {
           await client.session.abort<true>({ sessionID: nativeSessionId, directory: input.cwd });

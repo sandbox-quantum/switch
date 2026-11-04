@@ -112,7 +112,7 @@ function setup(provider: Session['provider']) {
   };
   return { adapter, config, emit };
 }
-function message(commandId: string): Command {
+function message(commandId: string, delivery: 'queue' | 'steer' = 'queue'): Command {
   return {
     contractVersion: 1,
     commandId,
@@ -121,21 +121,96 @@ function message(commandId: string): Command {
     origin: { actorId: 'user', surface: 'console', roomId: null, threadId: null, messageId: null },
     body: {
       type: 'message.send',
-      delivery: 'queue',
+      delivery,
       text: 'Hello',
       attachments: [],
     },
   };
 }
-async function start(provider: Session['provider']) {
+async function start(provider: Session['provider'], steering = false) {
   const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
   roots.push(root);
   const fixture = setup(provider);
+  fixture.adapter.capabilities.steering = steering;
   const host = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(host);
   await until(() => expect(host.snapshot().session.status).toBe('ready'));
   return { ...fixture, root, host };
 }
+it('labels a steered message on the running turn and deduplicates it', async () => {
+  const { host, adapter } = await start('claude', true);
+  await host.command(message('first'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  vi.mocked(adapter.sendTurn).mockResolvedValueOnce({ turnId: 'correction', steeredInto: 'first' });
+  const correction = message('correction', 'steer');
+  expect((await host.command(correction)).status).toBe('applied');
+  await host.command(correction);
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+  expect(host.snapshot().turns).toHaveLength(1);
+  expect(host.snapshot().items).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ title: 'Queued', turnId: 'first', itemId: 'user-first' }),
+      expect.objectContaining({ title: 'Steered', turnId: 'first', itemId: 'user-correction' }),
+    ])
+  );
+});
+
+it('keeps a refused steer in the queue once across recovery', async () => {
+  const { host, adapter, root } = await start('claude', true);
+  await host.command(message('first'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  vi.mocked(adapter.sendTurn).mockResolvedValueOnce({ turnId: 'correction', steerRefused: true });
+  const correction = message('correction', 'steer');
+  await host.command(correction);
+  await host.command(correction);
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+  expect(host.snapshot().notices).toEqual(
+    expect.arrayContaining([expect.objectContaining({ code: 'STEER_QUEUED' })])
+  );
+  await host.shutdown();
+
+  const recovered = setup('claude');
+  recovered.adapter.capabilities.steering = true;
+  const next = await startHost(root, recovered.config, recovered.adapter);
+  hosts.push(next);
+  await until(() => expect(recovered.adapter.sendTurn).toHaveBeenCalledTimes(1));
+  expect(recovered.adapter.sendTurn).toHaveBeenCalledWith(
+    expect.objectContaining({ turnId: 'correction', expectedTurnId: null })
+  );
+  await next.command(correction);
+  expect(recovered.adapter.sendTurn).toHaveBeenCalledTimes(1);
+});
+
+it('starts a normal turn for a steer sent while idle', async () => {
+  const { host, adapter } = await start('claude', true);
+  await host.command(message('first', 'steer'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  expect(adapter.sendTurn).toHaveBeenCalledWith(
+    expect.objectContaining({ turnId: 'first', expectedTurnId: null })
+  );
+  expect(host.snapshot().notices.some((notice) => notice.code === 'STEER_QUEUED')).toBe(false);
+});
+
+it('queues a room steer whose target already finished', async () => {
+  const { host, adapter } = await start('claude', true);
+  await host.command(message('correction', 'steer'), 'previous-turn');
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  expect(adapter.sendTurn).toHaveBeenCalledWith(
+    expect.objectContaining({ turnId: 'correction', expectedTurnId: null })
+  );
+  expect(host.snapshot().notices.some((notice) => notice.code === 'STEER_QUEUED')).toBe(true);
+});
+
+it('queues normally and rejects explicit steering on an unsupported provider', async () => {
+  const { host, adapter } = await start('cursor');
+  await host.command(message('first'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  await host.command(message('second'));
+  await expect(host.command(message('third', 'steer'))).rejects.toThrow('UNSUPPORTED_CAPABILITY');
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(1);
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'second')?.status).toBe('queued');
+});
+
 it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
   'serializes and deduplicates %s commands across recovery',
   async (provider) => {

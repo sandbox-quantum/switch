@@ -32,6 +32,8 @@ export const roomMessageSchema = z.object({
       )
       .default([]),
     opening_message: z.string().nullish(),
+    sender_owns_agent: z.boolean().optional(),
+    steering_actor_id: z.string().nullish(),
     sender_role: z.enum(['owner', 'admin', 'member']).nullish(),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
@@ -154,6 +156,11 @@ export function roomCommand(input: {
   roomId: string;
   message: RoomMessage;
   surface: Surface;
+  steering?: {
+    supported: boolean;
+    mode?: 'steer' | 'queue';
+    running: Command['origin'] | null;
+  };
   attachments: PlannedAttachment[];
   /** Said before the message, such as that the agent's instructions changed; null for nothing. */
   preface: string | null;
@@ -202,6 +209,19 @@ export function roomCommand(input: {
     (notices.length ? `\n\n${notices.join('\n')}` : '') +
     unreadNotice(input.message.missed) +
     `\n${REPLY_REMINDER}`;
+  const { steering } = input;
+  const actorId = payload.steering_actor_id ?? payload.sender;
+  const threadId = payload.thread_id ?? null;
+  const delivery =
+    steering?.supported &&
+    steering.mode !== 'queue' &&
+    steering.running?.roomId === input.roomId &&
+    (steering.running.threadId ?? steering.running.messageId) ===
+      (threadId ?? payload.message_id) &&
+    (payload.sender_owns_agent ||
+      (typeof payload.steering_actor_id === 'string' && steering.running.actorId === actorId))
+      ? 'steer'
+      : 'queue';
   return {
     contractVersion: 1,
     commandId: roomCommandId(input.agentId, input.roomId, payload.message_id),
@@ -209,11 +229,11 @@ export function roomCommand(input: {
     epoch: input.epoch,
     origin: {
       surface: input.surface,
-      actorId: payload.sender,
+      actorId,
       roomId: input.roomId,
-      threadId: payload.thread_id ?? null,
+      threadId,
       messageId: payload.message_id,
     },
-    body: { type: 'message.send', text, attachments, delivery: 'queue' },
+    body: { type: 'message.send', text, attachments, delivery },
   };
 }

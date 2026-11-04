@@ -34,6 +34,8 @@ import { ToolDetailBuffer } from './tool-detail-buffer';
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
   z.object({ type: z.literal('dispatched'), commandId: z.string() }),
+  z.object({ type: z.literal('steer-queued'), commandId: z.string() }),
+  z.object({ type: z.literal('steered'), commandId: z.string(), turnId: z.string() }),
   z.object({
     type: z.literal('finished'),
     commandId: z.string(),
@@ -62,6 +64,7 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
   session: Session;
+  midTurnMessages?: 'steer' | 'queue';
   resumeOperationId?: string;
   authenticate?: () => Promise<void>;
   input: ProviderSessionStartInput;
@@ -104,6 +107,8 @@ export class HostedSession {
   private replica: SessionReplica;
   private readonly commands = new Map<string, Command>();
   private readonly dispatched = new Set<string>();
+  private readonly steerQueued = new Set<string>();
+  private readonly steeredTurns = new Map<string, string>();
   private readonly finished = new Set<string>();
   private readonly roomReplies = new Set<string>();
   private readonly postedTurns = new Set<string>();
@@ -119,6 +124,7 @@ export class HostedSession {
   /** Recent tool input and output, in memory only, under the same rules as reasoning. */
   private readonly toolDetails = new ToolDetailBuffer();
   private activeTurn: string | null = null;
+  private steering = false;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
   private publishing: Promise<unknown> = Promise.resolve();
@@ -142,6 +148,7 @@ export class HostedSession {
   ) {
     // Every host from this one on runs `message.retry`; one built before says nothing, meaning no.
     config.session.capabilities.retry = true;
+    config.session.capabilities.input = adapter.capabilities.steering ? 'steer' : 'queue';
     const snapshot: Snapshot = {
       contractVersion: 1,
       throughSequence: 0,
@@ -172,6 +179,14 @@ export class HostedSession {
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
       if (record.type === 'dispatched') this.dispatched.add(record.commandId);
+      if (record.type === 'steer-queued') {
+        this.dispatched.delete(record.commandId);
+        this.steerQueued.add(record.commandId);
+      }
+      if (record.type === 'steered') {
+        this.steeredTurns.set(record.commandId, record.turnId);
+        this.finished.add(record.commandId);
+      }
       if (record.type === 'finished') {
         this.finished.add(record.commandId);
         if (record.usage) this.usage.set(record.commandId, record.usage);
@@ -247,10 +262,47 @@ export class HostedSession {
               commandId: null,
               result: null,
             });
+        const willResume = (commandId: string) =>
+          !host.stopped &&
+          !host.resetPending &&
+          host.steerQueued.has(commandId) &&
+          !host.dispatched.has(commandId) &&
+          !host.finished.has(commandId) &&
+          !snapshot.turns.some(
+            (turn) => turn.turnId === commandId && turn.status === 'interrupted'
+          );
         for (const turn of snapshot.turns)
-          if (turn.status === 'running' || turn.status === 'queued')
+          if ((turn.status === 'running' || turn.status === 'queued') && !willResume(turn.turnId))
             await host.publish({ ...turn, status: 'interrupted' });
         for (const command of host.commands.values()) {
+          const steeredInto = host.steeredTurns.get(command.commandId);
+          if (steeredInto && command.body.type === 'message.send') {
+            if (!host.snapshot().items.some((item) => item.itemId === `user-${command.commandId}`))
+              await host.publishMessage(command, command.body, steeredInto);
+            if (
+              host.snapshot().commandStatuses.find((s) => s.commandId === command.commandId)
+                ?.status !== 'applied'
+            )
+              await host.publish({
+                type: 'command.status',
+                commandId: command.commandId,
+                status: 'applied',
+                code: null,
+                message: null,
+              });
+            continue;
+          }
+          if (willResume(command.commandId) && command.body.type === 'message.send') {
+            await host.queueMessage(command, command.body, true);
+            await host.publish({
+              type: 'command.status',
+              commandId: command.commandId,
+              status: 'applied',
+              code: null,
+              message: null,
+            });
+            continue;
+          }
           const status = host
             .snapshot()
             .commandStatuses.find((s) => s.commandId === command.commandId);
@@ -308,6 +360,7 @@ export class HostedSession {
       await host.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
       host.nativeId = native.nativeSessionId;
       await host.eventSerial;
+      void host.runNext().catch((error: unknown) => host.fail(error));
       void host
         .refreshModels()
         .catch(async (error: unknown) => {
@@ -688,9 +741,33 @@ export class HostedSession {
     return true;
   }
 
-  command(input: Command): Promise<Snapshot['commandStatuses'][number]> {
+  runningMessage(): { turnId: string; origin: Origin } | null {
+    const turnId = this.activeTurn;
+    if (
+      !turnId ||
+      this.finished.has(turnId) ||
+      !this.snapshot().turns.some((turn) => turn.turnId === turnId && turn.status === 'running')
+    )
+      return null;
+    const origin = this.commands.get(turnId)?.origin;
+    return origin ? { turnId, origin } : null;
+  }
+
+  private directSteerTarget(origin: Origin): string | null {
+    const running = this.runningMessage();
+    if (
+      running?.origin.actorId === origin.actorId &&
+      running.origin.roomId === origin.roomId &&
+      (running.origin.threadId ?? running.origin.messageId) ===
+        (origin.threadId ?? origin.messageId)
+    )
+      return running.turnId;
+    return null;
+  }
+
+  command(input: Command, roomSteerTarget?: string): Promise<Snapshot['commandStatuses'][number]> {
     const command = commandSchema.parse(input);
-    const result = this.serial.then(() => this.accept(command));
+    const result = this.serial.then(() => this.accept(command, roomSteerTarget));
     this.serial = result.catch(() => {});
     return result;
   }
@@ -724,10 +801,17 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    return {
+      ...command,
+      origin: original.origin,
+      body: { ...original.body, delivery: 'queue' },
+    };
   }
 
-  private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
+  private async accept(
+    command: Command,
+    roomSteerTarget?: string
+  ): Promise<Snapshot['commandStatuses'][number]> {
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
@@ -749,8 +833,8 @@ export class HostedSession {
       );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');
-      if (body.delivery !== 'queue')
-        throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
+      if (body.delivery === 'steer' && !this.adapter.capabilities.steering)
+        throw new Error('UNSUPPORTED_CAPABILITY: provider cannot steer messages.');
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
       if (body.attachments.length && !this.config.stageAttachments)
@@ -813,6 +897,12 @@ export class HostedSession {
       )
         throw new Error('UNSUPPORTED_MODEL: choose an offered model and options.');
     }
+    const steerTarget =
+      body.type === 'message.send' &&
+      body.delivery === 'steer' &&
+      this.config.midTurnMessages !== 'queue'
+        ? (roomSteerTarget ?? this.directSteerTarget(command.origin))
+        : null;
     if (body.type === 'request.answer') this.validateAnswer(command);
     await this.inbox.append({ type: 'accepted', command });
     this.commands.set(command.commandId, command);
@@ -825,32 +915,9 @@ export class HostedSession {
     });
     try {
       if (body.type === 'message.send') {
-        const turnId = command.commandId;
-        this.projector.bindTurn(turnId, {
-          commandId: command.commandId,
-          origin: command.origin,
-        });
-        await this.publish({
-          type: 'turn.upsert',
-          turnId,
-          commandId: command.commandId,
-          status: 'queued',
-        });
-        await this.publish({
-          type: 'item.upsert',
-          item: {
-            itemId: `user-${command.commandId}`,
-            turnId,
-            revision: 1,
-            kind: 'user-message',
-            status: 'completed',
-            title: '',
-            text: body.text,
-            attachments: body.attachments,
-            origin: command.origin,
-          },
-        });
-        this.queue.push(command);
+        const steered = steerTarget !== null && (await this.steer(command, steerTarget));
+        if (steered) await this.publishMessage(command, body, steerTarget);
+        else await this.queueMessage(command, body, steerTarget !== null);
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -996,10 +1063,16 @@ export class HostedSession {
         code: null,
         message: null,
       });
-      if (body.type === 'message.send')
-        void this.runNext().catch((error: unknown) => this.fail(error));
     } catch (error) {
       if (body.type === 'session.model.set') await this.fail(error);
+      if (steerTarget !== null && this.dispatched.has(command.commandId))
+        await this.publish({
+          type: 'notice',
+          level: 'warning',
+          code: 'STEER_OUTCOME_UNKNOWN',
+          message:
+            'The provider could not confirm steering. Review the turn before resending the message.',
+        });
       if (body.type === 'request.answer') {
         const request = this.snapshot().requests.find((r) => r.requestId === body.requestId);
         if (request?.state === 'submitting')
@@ -1019,6 +1092,10 @@ export class HostedSession {
         code: this.dispatched.has(command.commandId) ? 'OUTCOME_UNKNOWN' : 'PROVIDER_ERROR',
         message: String(error),
       });
+    }
+    if (body.type === 'message.send') {
+      this.steering = false;
+      void this.runNext().catch((error: unknown) => this.fail(error));
     }
     return this.status(command.commandId);
   }
@@ -1042,8 +1119,90 @@ export class HostedSession {
     return status;
   }
 
+  private async publishMessage(
+    command: Command,
+    body: Extract<Command['body'], { type: 'message.send' }>,
+    steeredInto: string | null
+  ): Promise<void> {
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId: `user-${command.commandId}`,
+        turnId: steeredInto ?? command.commandId,
+        revision: 1,
+        kind: 'user-message',
+        status: 'completed',
+        title: steeredInto ? 'Steered' : 'Queued',
+        text: body.text,
+        attachments: body.attachments,
+        origin: command.origin,
+      },
+    });
+  }
+
+  private async queueMessage(
+    command: Command,
+    body: Extract<Command['body'], { type: 'message.send' }>,
+    fallback: boolean
+  ): Promise<void> {
+    if (fallback && !this.steerQueued.has(command.commandId)) {
+      await this.inbox.append({ type: 'steer-queued', commandId: command.commandId });
+      this.steerQueued.add(command.commandId);
+      this.dispatched.delete(command.commandId);
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'STEER_QUEUED',
+        message: 'The running turn could not accept the message. It was queued.',
+      });
+    }
+    this.projector.bindTurn(command.commandId, {
+      commandId: command.commandId,
+      origin: command.origin,
+    });
+    if (!this.snapshot().turns.some((turn) => turn.turnId === command.commandId))
+      await this.publish({
+        type: 'turn.upsert',
+        turnId: command.commandId,
+        commandId: command.commandId,
+        status: 'queued',
+      });
+    if (!this.snapshot().items.some((item) => item.itemId === `user-${command.commandId}`))
+      await this.publishMessage(command, body, null);
+    this.queue.push(command);
+  }
+
+  private async steer(command: Command, expectedTurnId: string): Promise<boolean> {
+    if (command.body.type !== 'message.send') throw new Error('Expected a message.');
+    this.steering = true;
+    const attachments = command.body.attachments.length
+      ? await this.config.stageAttachments!(command.body.attachments)
+      : [];
+    if (this.activeTurn !== expectedTurnId || this.finished.has(expectedTurnId)) return false;
+    if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
+    await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+    this.dispatched.add(command.commandId);
+    const result = await this.adapter.sendTurn({
+      sessionId: command.sessionId,
+      turnId: command.commandId,
+      expectedTurnId,
+      text: command.body.text,
+      attachments,
+    });
+    if (result.steerRefused) return false;
+    if (result.steeredInto !== expectedTurnId)
+      throw new Error('Provider did not confirm delivery into the requested turn.');
+    await this.inbox.append({
+      type: 'steered',
+      commandId: command.commandId,
+      turnId: expectedTurnId,
+    });
+    this.finished.add(command.commandId);
+    return true;
+  }
+
   private async runNext(): Promise<void> {
-    if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
+    if (this.steering || this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
     const command = this.queue.shift();
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
@@ -1059,6 +1218,7 @@ export class HostedSession {
         turnId: command.commandId,
         text: command.body.text,
         attachments,
+        expectedTurnId: null,
       });
     } catch (error) {
       await this.publish({
@@ -1159,7 +1319,10 @@ export class HostedSession {
             result: null,
           });
       for (const turn of this.snapshot().turns)
-        if (turn.status === 'running' || turn.status === 'queued')
+        if (
+          (turn.status === 'running' || turn.status === 'queued') &&
+          (this.stopped || !this.steerQueued.has(turn.turnId) || this.dispatched.has(turn.turnId))
+        )
           await this.publish({ ...turn, status: 'interrupted' });
       this.queue.length = 0;
       this.activeTurn = null;

@@ -566,13 +566,25 @@ export class CodexAdapter implements ProviderAdapter {
     const codexInput = toCodexInput(input.text, input.attachments);
 
     const active = state.activeNativeTurnId;
-    if (active) {
-      const steered = await this.trySteer(state, active, codexInput);
+    if (
+      typeof input.expectedTurnId === 'string' &&
+      (!active || state.turnIdByNative.get(active) !== input.expectedTurnId)
+    )
+      return { turnId: input.turnId, steerRefused: true };
+    if (active && input.expectedTurnId !== null) {
+      const steered = await this.trySteer(
+        state,
+        active,
+        codexInput,
+        input.expectedTurnId === undefined
+      );
       if (steered) {
         return { turnId: input.turnId, steeredInto: state.turnIdByNative.get(steered) ?? steered };
       }
     }
 
+    if (typeof input.expectedTurnId === 'string')
+      return { turnId: input.turnId, steerRefused: true };
     state.unboundTurnIds.push(input.turnId);
     try {
       const response = await state.client.request<CodexTurnStartResponse>(
@@ -845,7 +857,8 @@ export class CodexAdapter implements ProviderAdapter {
   private async trySteer(
     state: CodexSessionState,
     activeTurnId: string,
-    input: CodexUserInput[]
+    input: CodexUserInput[],
+    fallback: boolean
   ): Promise<string | null> {
     try {
       const response = await state.client.request<CodexTurnSteerResponse>(
@@ -855,6 +868,7 @@ export class CodexAdapter implements ProviderAdapter {
       return response.turnId;
     } catch (cause) {
       if (!(cause instanceof JsonRpcError)) throw cause;
+      if (!fallback) return null;
       this.logger.warn('codex turn/steer refused; queueing a new turn instead', {
         sessionId: state.sessionId,
         error: cause.message,

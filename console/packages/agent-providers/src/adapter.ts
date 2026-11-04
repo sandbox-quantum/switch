@@ -134,6 +134,8 @@ export interface ProviderSendTurnInput {
   /** Caller-chosen id; the adapter echoes it in turn events for this turn. */
   turnId: string;
   text: string;
+  /** A turn ID limits delivery to that turn. Null requires a new turn. */
+  expectedTurnId?: string | null;
   attachments?: TurnAttachment[];
   model?: ModelSelection;
 }
@@ -145,6 +147,8 @@ export interface ProviderTurnStartResult {
    * is that turn's id, not the requested one.
    */
   steeredInto?: string;
+  /** The provider confirmed that it did not deliver the message. */
+  steerRefused?: true;
 }
 
 export interface ProviderCapabilities {

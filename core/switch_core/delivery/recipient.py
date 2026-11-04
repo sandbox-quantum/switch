@@ -626,14 +626,21 @@ class AgentRecipient:
                 addressed = gate.addressed
                 refusal = gate.refusal
 
-        sender_role = (
-            await self._sender_role(session, event.sender, event.content)
+        sender_role, owns_agent, actor_id = (
+            await self._sender_details(session, event.sender, event.content)
             if addressed
-            else None
+            else (None, False, None)
         )
         notice = await self._switch_notice(session) if addressed else None
         own_event = _message_own_event(
-            meta, event, thread_id, self.agent.id, sender_role, notice
+            meta,
+            event,
+            thread_id,
+            self.agent.id,
+            sender_role,
+            notice,
+            owns_agent,
+            actor_id,
         )
 
         async def after(row: InboundEvent) -> None:
@@ -702,11 +709,20 @@ class AgentRecipient:
             assert isinstance(row, InboundMessage)
             await self._after_follow_up(row)
 
-        sender_role = await self._sender_role(session, event.sender, event.content)
+        sender_role, owns_agent, actor_id = await self._sender_details(
+            session, event.sender, event.content
+        )
         notice = await self._switch_notice(session)
         return Delivery(
             own_event=_message_own_event(
-                meta, event, event.thread_root_id, self.agent.id, sender_role, notice
+                meta,
+                event,
+                event.thread_root_id,
+                self.agent.id,
+                sender_role,
+                notice,
+                owns_agent,
+                actor_id,
             ),
             after=after,
         )
@@ -876,10 +892,10 @@ class AgentRecipient:
 
         # Read now: the event is built after the row commits, from the rows alone.
         opening = opening_message_for(meta, self.agent.id)
-        sender_role = (
-            await self._sender_role(session, anchor.sender, anchor.content)
+        sender_role, owns_agent, actor_id = (
+            await self._sender_details(session, anchor.sender, anchor.content)
             if gate.addressed
-            else None
+            else (None, False, None)
         )
         switch_notice = await self._switch_notice(session) if gate.addressed else None
 
@@ -908,6 +924,8 @@ class AgentRecipient:
                 ],
                 opening_message=opening,
                 sender_role=sender_role,
+                sender_owns_agent=owns_agent,
+                steering_actor_id=actor_id,
                 switch_notice=switch_notice,
             )
             if logger.isEnabledFor(logging.DEBUG):
@@ -1778,10 +1796,12 @@ class AgentRecipient:
         agent reads how it differs (`get_template_status`)."""
         return await self._notices.switch_notice(session, self.agent.id)
 
-    async def _sender_role(
+    async def _sender_details(
         self, session: AsyncSession, sender: str, content: Mapping[str, object]
-    ) -> str | None:
-        """The sending person's role in this workspace, read as the message
+    ) -> tuple[str | None, bool, str | None]:
+        """The sender's workspace role, agent ownership and steering identity.
+
+        The role is read as the message
         arrives: "owner", "admin" or "member". None for an agent, the
         platform, or a person no Switch user has claimed.
 
@@ -1789,8 +1809,22 @@ class AgentRecipient:
         was told earlier: a role can change between two messages.
         """
         principal = await self._addressing.resolve_sender(session, sender, content)
-        if principal is None or principal.kind != "user" or not principal.user_ids:
-            return None
+        if principal is None:
+            return None, False, None
+        if principal.kind == "platform" and principal.on_behalf_of:
+            return (
+                None,
+                self.agent.owner_id == principal.on_behalf_of,
+                principal.on_behalf_of,
+            )
+        if principal.kind != "user":
+            return None, False, None
+        actor_id = principal.user_ids[0] if len(principal.user_ids) == 1 else sender
+        owns_agent = self.agent.owner_id is not None and principal.user_ids == [
+            self.agent.owner_id
+        ]
+        if not principal.user_ids:
+            return None, False, actor_id
         tenant_id = self.tenant_id
         roles = set(
             await session.scalars(
@@ -1802,14 +1836,14 @@ class AgentRecipient:
         )
         for role in TENANT_ADMIN_ROLES:
             if role in roles:
-                return role
+                return role, owns_agent, actor_id
         # An organization's admin administers the workspace without a
         # membership row, and is told to agents as an admin, as the workspace's
         # own pages show them.
         for user_id in principal.user_ids:
             if await session.scalar(select(organization_admin_of(tenant_id, user_id))):
-                return ORGANIZATION_ADMIN_TENANT_ROLE
-        return "member" if "member" in roles else None
+                return ORGANIZATION_ADMIN_TENANT_ROLE, owns_agent, actor_id
+        return ("member" if "member" in roles else None), owns_agent, actor_id
 
     def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.
@@ -1860,6 +1894,8 @@ def _message_own_event(
     agent_id: str,
     sender_role: str | None,
     switch_notice: str | None,
+    owns_agent: bool,
+    actor_id: str | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
     written."""
@@ -1884,6 +1920,8 @@ def _message_own_event(
             thread_id=thread_id,
             opening_message=opening_message_for(meta, agent_id),
             sender_role=sender_role,
+            sender_owns_agent=owns_agent,
+            steering_actor_id=actor_id,
             switch_notice=switch_notice,
         )
         # Serialising runs once per agent per message, so only when it will
