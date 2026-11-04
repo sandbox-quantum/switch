@@ -12,7 +12,6 @@ from switch_core.connections.loader import (
 
 PLACEHOLDERS = {
     "asana",
-    "gitlab",
     "bitbucket",
     "microsoft-365",
     "new-relic",
@@ -32,12 +31,16 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "gitlab",
     }
-    assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
+    assert sorted(
+        slug for slug, entry in CATALOG.items() if entry.definition.enabled
+    ) == [
         "airtable",
         "atlassian",
         "datadog",
         "github",
+        "gitlab",
         "google-workspace",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
@@ -45,6 +48,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["gitlab"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -225,6 +229,43 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["gitlab"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "GITLAB"
+    assert oauth.authorization_url == "https://gitlab.com/oauth/authorize"
+    assert oauth.token_url == "https://gitlab.com/oauth/token"
+    assert oauth.revocation_url == "https://gitlab.com/oauth/revoke"
+    assert oauth.unchecked is not None
+    assert definition.auth.refresh == "rotating"
+    assert definition.auth.identity is not None
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "id",
+        "username",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        7200,
+    )
+    access = definition.access
+    assert access is not None and access.write is not None
+    read = set(access.read.scopes or [])
+    write = set(access.write.scopes or [])
+    assert {"read_api", "read_user", "openid"} <= read < write
+    assert "api" in write
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url == "https://gitlab.com/api/v4/mcp"
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 @pytest.fixture
