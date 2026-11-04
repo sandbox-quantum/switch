@@ -1,0 +1,43 @@
+slug: intercom
+name: Intercom
+category: Customer support
+description: Read and reply to Intercom conversations and look up contacts, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Intercom's official MCP server supports OAuth Dynamic Client Registration (RFC 7591)
+    # discovered via RFC 9728 and RFC 8414 metadata endpoints from https://mcp.intercom.com/mcp.
+    # Core registers a public client dynamically; no operator credentials are required.
+    registration: dynamic
+    # Intercom accepts loopback redirects on 127.0.0.1 for desktop clients (Switch Console).
+    # Remote redirects require Intercom developer support.
+    redirect: [loopback]
+    # Discovered metadata lists a revocation endpoint, allowing Switch to revoke on disconnect.
+    revocation_discovered: true
+  identity:
+    # GET https://api.intercom.io/me returns the current authenticated teammate/admin profile.
+    url: https://api.intercom.io/me
+    account_id: id
+    label: email
+# Intercom access tokens issued via the OAuth authorization server refresh using rotating refresh tokens.
+# Tokens are capped at 1 hour (3600s) to enforce hourly grant reviews by Switch.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # Official US-hosted MCP server endpoint. (For EU-hosted workspaces, Intercom hosts mcp.eu.intercom.com/mcp).
+    - { name: intercom, url: "https://mcp.intercom.com/mcp" }
+access:
+  # Intercom MCP advertises scopes [mcp, operator].
+  # Least access: 'read' requests only 'mcp' for querying conversations and contacts.
+  # 'write' adds 'operator' for taking action, drafting/sending replies, and managing tickets.
+  read:
+    scopes:
+      - mcp
+  write:
+    scopes:
+      - mcp
+      - operator
+tools: { mode: pass_through }
