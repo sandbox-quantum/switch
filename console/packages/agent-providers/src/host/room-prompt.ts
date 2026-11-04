@@ -42,6 +42,17 @@ export const roomMessageSchema = z.object({
 });
 export type RoomMessage = z.infer<typeof roomMessageSchema>;
 
+export const roomEditSchema = z.object({
+  type: z.literal('message_edit'),
+  payload: z.object({
+    message_id: z.string().min(1),
+    body: z.string(),
+    edit_id: z.string().min(1),
+    revision: z.number().int(),
+  }),
+});
+export type RoomEdit = z.infer<typeof roomEditSchema>;
+
 /** Where a room attachment's bytes are fetched from, by the id the command names it by. */
 export type RoomAttachmentSource = { roomId: string; mxc: string };
 
@@ -216,4 +227,55 @@ export function roomCommand(input: {
     },
     body: { type: 'message.send', text, attachments, delivery: 'queue' },
   };
+}
+
+/**
+ * Safely swaps the message body between BEGIN SWITCH MESSAGE and END SWITCH MESSAGE fences.
+ *
+ * Rules:
+ * - Fail closed if newBody > 60 KB.
+ * - Fail closed if newBody contains BEGIN SWITCH MESSAGE, END SWITCH MESSAGE, or the fence token.
+ * - Fail closed unless BEGIN SWITCH MESSAGE and END SWITCH MESSAGE each appear exactly once with matching tokens.
+ */
+export function amendedRoomText(
+  originalText: string,
+  newBody: string
+): { text: string; changed: boolean } {
+  if (Buffer.byteLength(newBody, 'utf8') > 60 * 1024) {
+    return { text: originalText, changed: false };
+  }
+  if (newBody.includes('BEGIN SWITCH MESSAGE') || newBody.includes('END SWITCH MESSAGE')) {
+    return { text: originalText, changed: false };
+  }
+
+  const beginRegex = /BEGIN SWITCH MESSAGE ([a-zA-Z0-9]+)\n/g;
+  const endRegex = /\nEND SWITCH MESSAGE ([a-zA-Z0-9]+)/g;
+
+  const beginMatches = [...originalText.matchAll(beginRegex)];
+  const endMatches = [...originalText.matchAll(endRegex)];
+
+  if (beginMatches.length !== 1 || endMatches.length !== 1) {
+    return { text: originalText, changed: false };
+  }
+
+  const beginToken = beginMatches[0]![1];
+  const endToken = endMatches[0]![1];
+
+  if (!beginToken || beginToken !== endToken) {
+    return { text: originalText, changed: false };
+  }
+
+  if (newBody.includes(beginToken)) {
+    return { text: originalText, changed: false };
+  }
+
+  const startIdx = beginMatches[0]!.index! + beginMatches[0]![0].length;
+  const endIdx = endMatches[0]!.index!;
+
+  if (endIdx < startIdx) {
+    return { text: originalText, changed: false };
+  }
+
+  const newText = originalText.slice(0, startIdx) + newBody + originalText.slice(endIdx);
+  return { text: newText, changed: true };
 }

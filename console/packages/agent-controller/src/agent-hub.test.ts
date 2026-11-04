@@ -103,6 +103,28 @@ describe('handing events to the watcher', () => {
     expect(hub.cursors()).toEqual({ [AGENT]: 3 });
   });
 
+  it('delivers message_edit events to the watcher', async () => {
+    const { stream, seen } = watcher();
+    stream.start();
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    hub.ingest({
+      agent_id: AGENT,
+      seq: 1,
+      event: {
+        type: 'message_edit',
+        room_id: 'room-a',
+        payload: { message_id: '$m1', body: 'edited body', edit_id: '$edit1', revision: 2 },
+      },
+    });
+    await waitFor(() => seen.events.length === 1, 'edit event delivered');
+    expect(seen.events[0]).toMatchObject({
+      type: 'message_edit',
+      sequence: 1,
+      room_id: 'room-a',
+    });
+  });
+
   it('confirms an event only once the watcher has taken it', async () => {
     let release: () => void = () => {};
     const taken = new Promise<void>((resolve) => (release = resolve));

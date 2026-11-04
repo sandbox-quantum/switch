@@ -12,6 +12,10 @@ export function roomInputId(event: AgentBridgeEvent): string | null {
       'message_id' in event.payload
       ? String(event.payload.message_id)
       : null;
+  if (event.type === 'message_edit')
+    return 'edit_id' in event.payload && event.payload.edit_id
+      ? String(event.payload.edit_id)
+      : null;
   if (
     event.type === 'room_join' &&
     (!('listening' in event.payload) || event.payload.listening !== true)
