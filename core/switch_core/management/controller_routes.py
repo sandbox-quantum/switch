@@ -25,6 +25,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import (
@@ -94,6 +95,7 @@ from switch_core.management.schemas import (
     wire_time,
 )
 from switch_core.management.service import ManagementService
+from switch_core.management.wake_replay import resume_cursors_after_wake
 
 logger = logging.getLogger(__name__)
 
@@ -646,6 +648,16 @@ async def open_connection(
     resume_cursors = body.resume_cursors()
     if presence.is_revoked(principal.controller_id):
         raise _connection_refusal(ControllerRevokedError(principal.controller_id))
+    # A cloud machine's controller with no cursor for an agent gets what
+    # arrived while it was down, such as the message that woke it (v2 only).
+    resume_cursors = await resume_cursors_after_wake(
+        session,
+        protocol.event_buffer,
+        tenant_id=principal.tenant_id,
+        controller_id=principal.controller_id,
+        resume_cursors=resume_cursors,
+        now=datetime.now(UTC),
+    )
     # Recorded before it is held: a read of the row in between would find the
     # connection this one replaces still named there, and close this one.
     identity = presence.new_connection()
