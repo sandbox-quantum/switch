@@ -10,6 +10,7 @@ import {
 import type {
   TelemetryAgentRemoveTrigger,
   TelemetryEntryPoint,
+  TelemetryIdentityLinkKind,
   TelemetryInstallMethod,
   TelemetryRoomAgentsDirection,
   TelemetrySessionProvisionTrigger,
@@ -75,4 +76,14 @@ export function updateTriggerOf(value: unknown): TelemetryUpdateTrigger {
 
 export function installMethodOf(value: unknown): TelemetryInstallMethod {
   return oneOf<TelemetryInstallMethod>([...INSTALL_METHODS, 'unspecified'], value, 'unspecified');
+}
+
+/**
+ * The confirmation screen's own name for the link it waited on: `pending` is a
+ * new link, `unverified` one made before links had to be confirmed.
+ */
+export function identityLinkKindOf(value: unknown): TelemetryIdentityLinkKind {
+  if (value === 'pending') return 'new';
+  if (value === 'unverified') return 'existing';
+  return 'unknown';
 }

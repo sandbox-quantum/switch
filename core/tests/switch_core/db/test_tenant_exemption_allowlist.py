@@ -87,6 +87,10 @@ _ALLOWED_MODULES = {
     # resolution shape as the line above, through the same `tenant_of_api_key`,
     # with the row then read scoped to the tenant it produced.
     "switch_core.management.auth",
+    # The boot-time re-encryption sweep visits every organization, including
+    # one with no workspace to reach it through, binding each in turn
+    # (`organization_session`) to rewrite its connector apps' secrets.
+    "switch_core.db.key_rotation",
     # Core keeps which controller runs each agent in memory, so at startup
     # every tenant's placed definitions are read back into it: enumerate the
     # tenants, then read each one's definitions under its own policy, the same
@@ -171,7 +175,6 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
     "switch_core.delivery.recipient",
-    "switch_core.clients.command_consumer",
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",
     "switch_core.room_service",
@@ -185,10 +188,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     # table here would be the one check that passes in development and raises
     # under the restricted runtime role in production.
     "switch_core.observability.health",
-    # ── The signal sender, which calls `pg_notify` and reads no table. A
-    # signal is for every process regardless of tenant, so there is no tenant
-    # to bind.
-    "switch_core.signals",
+    # ── The announcer, which sends this process's signals and its router's
+    # announcements with `pg_notify` and reads no table. They are for every
+    # process regardless of tenant, so there is no tenant to bind.
+    "switch_core.announcer",
     # `switch_core.transport.postgres` and `switch_core.bridges.agent.auth`
     # came off this list with the runtime role: the transport learned its own
     # tenant from its client row and the middleware learned a credential's

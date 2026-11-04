@@ -37,6 +37,7 @@ paper over here.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Annotated
@@ -49,7 +50,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from switch_core.db.engine import create_session_factory
-from switch_core.db.models import TENANT_ZERO_ID, Tenant, TenantMember, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    OrganizationMember,
+    Tenant,
+    TenantMember,
+    User,
+)
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import auth as gw_auth
 from switch_core.gateway import dependencies as gw_deps
@@ -462,6 +469,56 @@ class TestSessionStateEndpoint:
         assert body["state"] == "needs_selection"
         assert body["tenant"] is None
 
+    async def test_the_workspace_the_operator_entered_is_ready(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Tenant resolution lets the platform operator into any workspace that
+        exists, so the one they entered is where the session is, not a reason
+        to pick again."""
+        operator_id = await _make_user(
+            session_factory, name="operator", tenant_id=TENANT_ZERO_ID
+        )
+        entered = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            operator = await session.get(User, operator_id)
+            assert operator is not None
+            operator.role = "admin"
+            session.add(Tenant(id=entered, slug=entered, name="Elsewhere"))
+            await session.commit()
+        token = create_jwt(
+            operator_id, "operator@example.invalid", "admin", _KEYRING, entered
+        )
+
+        body = (
+            await self._get(session_factory, token, signup_mode="default_tenant")
+        ).json()
+
+        assert body["state"] == "ready"
+        assert body["tenant"]["id"] == entered
+        assert body["tenant"]["name"] == "Elsewhere"
+        assert {t["id"] for t in body["tenants"]} == {TENANT_ZERO_ID}
+
+    async def test_a_claim_naming_no_workspace_is_not_rescued_for_the_operator(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        operator_id = await _make_user(
+            session_factory, name="operator-stale", tenant_id=TENANT_ZERO_ID
+        )
+        async with session_factory() as session:
+            operator = await session.get(User, operator_id)
+            assert operator is not None
+            operator.role = "admin"
+            await session.commit()
+        token = create_jwt(
+            operator_id, "operator-stale@example.invalid", "admin", _KEYRING, "gone"
+        )
+
+        body = (
+            await self._get(session_factory, token, signup_mode="default_tenant")
+        ).json()
+
+        assert body["state"] == "needs_selection"
+
     async def test_no_membership_needs_a_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -475,6 +532,60 @@ class TestSessionStateEndpoint:
         assert body["state"] == "needs_workspace"
         assert body["tenants"] == []
         assert body["can_create_workspace"] is True
+
+    async def test_invite_only_still_lets_an_org_admin_add_a_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`invite_only` refuses new organizations, not a workspace an
+        `org_admin` adds to theirs, and the session state says both."""
+        admin_id = await _make_user(
+            session_factory, name="org-admin", tenant_id=TENANT_ZERO_ID
+        )
+        member_id = await _make_user(
+            session_factory, name="plain-member", tenant_id=TENANT_ZERO_ID
+        )
+        async with session_factory() as session:
+            for user_id, role in ((admin_id, "org_admin"), (member_id, "member")):
+                member = await session.get(
+                    OrganizationMember, (TENANT_ZERO_ID, user_id)
+                )
+                if member is None:
+                    session.add(
+                        OrganizationMember(
+                            organization_id=TENANT_ZERO_ID, user_id=user_id, role=role
+                        )
+                    )
+                else:
+                    member.role = role
+            await session.commit()
+
+        as_admin = (
+            await self._get(
+                session_factory,
+                create_jwt(
+                    admin_id, "a@example.invalid", "user", _KEYRING, TENANT_ZERO_ID
+                ),
+                signup_mode="invite_only",
+            )
+        ).json()
+        as_member = (
+            await self._get(
+                session_factory,
+                create_jwt(
+                    member_id, "m@example.invalid", "user", _KEYRING, TENANT_ZERO_ID
+                ),
+                signup_mode="invite_only",
+            )
+        ).json()
+
+        assert (as_admin["can_create_workspace"], as_admin["can_add_workspace"]) == (
+            False,
+            True,
+        )
+        assert (
+            as_member["can_create_workspace"],
+            as_member["can_add_workspace"],
+        ) == (False, False)
 
     async def test_invite_only_offers_no_workspace_creation(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -677,14 +788,15 @@ class TestNoClaimWithSeveralMemberships:
         goes through, and the case that builds a body is the one where a
         second `SECURITY DEFINER` round trip would be easiest not to notice."""
         calls = 0
-        real = gw_auth.tenants_of_user
+        real = gw_auth.tenants_bindable_by_user
 
         async def counting(*args: object, **kwargs: object) -> list[str]:
             nonlocal calls
             calls += 1
             return await real(*args, **kwargs)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(gw_auth, "tenants_of_user", counting)
+        monkeypatch.setattr(gw_auth, "tenants_bindable_by_user", counting)
+        monkeypatch.setattr(gw_auth, "tenants_of_user", _never)
 
         user_id = await _make_user_with_memberships(
             session_factory, name="counted", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
@@ -696,6 +808,10 @@ class TestNoClaimWithSeveralMemberships:
 
         assert response.status_code == 409
         assert calls == 1
+
+
+async def _never(*args: object, **kwargs: object) -> list[str]:
+    raise AssertionError("tenant resolution asked a second lookup")
 
 
 class TestAUserWithNoMembership:

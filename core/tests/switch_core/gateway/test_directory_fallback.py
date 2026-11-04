@@ -68,9 +68,9 @@ class _StubExternalUserStore:
     ) -> list[SimpleNamespace]:
         return self._rows
 
-    async def claimant_ids_for(
+    async def claims_for(
         self, _session: object, _row_ids: list[str]
-    ) -> dict[str, list[str]]:
+    ) -> dict[str, list[object]]:
         return {}
 
 
