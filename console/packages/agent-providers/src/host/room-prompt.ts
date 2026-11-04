@@ -42,6 +42,21 @@ export const roomMessageSchema = z.object({
 });
 export type RoomMessage = z.infer<typeof roomMessageSchema>;
 
+/**
+ * The part of a room message's edit (`message_edit`) a session reads: the
+ * message it edits, by the id it was sent under, and what it says now.
+ */
+export const roomEditSchema = z.object({
+  type: z.literal('message_edit'),
+  payload: z.object({
+    message_id: z.string().min(1),
+    edit_id: z.string().min(1),
+    body: z.string(),
+    edited_at: z.number().int(),
+  }),
+});
+export type RoomEdit = z.infer<typeof roomEditSchema>;
+
 /** Where a room attachment's bytes are fetched from, by the id the command names it by. */
 export type RoomAttachmentSource = { roomId: string; mxc: string };
 
@@ -147,7 +162,8 @@ export function planAttachments(input: {
   });
 }
 
-export function roomCommand(input: {
+/** What a room message's command is built from (`roomCommand`). */
+export type RoomCommandInput = {
   agentId: string;
   sessionId: string;
   epoch: string;
@@ -162,7 +178,9 @@ export function roomCommand(input: {
    * opening words (`opening_message`), if any, are told.
    */
   firstOfConversation: boolean;
-}): Command {
+};
+
+export function roomCommand(input: RoomCommandInput): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
     .filter((planned) => planned.refused === null)

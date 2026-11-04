@@ -735,6 +735,70 @@ it('routes a room that has a session to that session, and starts no other', asyn
   expect(journal.cursor).toBe(2);
 });
 
+const edited = (sequence: number, roomId: string, of: number): AgentBridgeEvent => ({
+  type: 'message_edit',
+  room_id: roomId,
+  sequence,
+  payload: {
+    message_id: `message-${of}`,
+    edit_id: `edit-${sequence}`,
+    sender: '@owner:example.test',
+    sender_name: 'Owner',
+    body: 'Run the other check',
+    edited_at: sequence,
+  },
+});
+
+it('hands an edit to the session serving its room, and starts no session for one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-edit-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  const hosts = sessionHosts();
+  const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(edited(2, 'room', 1));
+    // A room no session attends has nothing in it waiting to be edited.
+    await streams[0]!.onEvent!(edited(3, 'quiet-room', 1));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+
+  expect(hosts.to(owner.sessionRoot)).toMatchObject([
+    {
+      type: 'room',
+      handoff: {
+        sequence: 2,
+        roomId: 'room',
+        messageId: 'edit-2',
+        event: { type: 'message_edit', payload: { message_id: 'message-1' } },
+      },
+    },
+  ]);
+  expect(
+    new Set(
+      vi.mocked(ensureSharedProcess).mock.calls.map((call) => call[0].config.session.sessionId)
+    )
+  ).toEqual(new Set([owner.sessionId]));
+  expect((await AgentHostAssignments.open(root)).sessions()).toHaveLength(1);
+  expect(warned).toHaveBeenCalledWith(expect.stringContaining('Dropped edit edit-3'));
+});
+
 it('routes to the session Console moved the room to, and tells Switch where every session is', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-placed-'));
   roots.push(root);

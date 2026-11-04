@@ -41,6 +41,23 @@ export interface MessagePayload {
   sender_role?: 'owner' | 'admin' | 'member' | null;
 }
 
+/**
+ * A message the agent was sent, edited by its sender since (`message_edit`).
+ * Sent to each agent the message itself reached, and to nobody else.
+ */
+export interface MessageEditPayload {
+  /** The message edited, by the `message_id` its `message` event carried. */
+  message_id: string;
+  /** The edit's own id in the room. */
+  edit_id: string;
+  sender: string;
+  sender_name: string;
+  /** What the message says now. */
+  body: string;
+  /** When its sender made the edit, in milliseconds since the epoch: the later of two edits counts. */
+  edited_at: number;
+}
+
 export interface CommandPayload {
   command: string;
   // Command arguments. For `reset`/`compact` this carries the role name the
@@ -64,7 +81,7 @@ export interface RoomJoinPayload {
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload;
+  payload: MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload;
   /**
    * The event's number in the agent's own events (`s`). It is present on the push
    * transport and absent on the legacy poll. It is also absent on a message

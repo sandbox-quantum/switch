@@ -2186,3 +2186,134 @@ describe('retrying a room message', () => {
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
 });
+
+describe('editing a room message before its turn starts', () => {
+  const roomMessage = (commandId: string, text: string): Command => ({
+    ...message(commandId),
+    origin: {
+      actorId: 'user',
+      surface: 'switch-web',
+      roomId: 'room',
+      threadId: null,
+      messageId: `m-${commandId}`,
+    },
+    body: { type: 'message.send', delivery: 'queue', text, attachments: [] },
+  });
+  const userItem = (host: HostedSession, commandId: string) =>
+    host.snapshot().items.find((item) => item.itemId === `user-${commandId}`);
+  const notices = (host: HostedSession) => host.snapshot().notices.map((notice) => notice.code);
+  /** A host already running a turn, with a room message waiting behind it. */
+  async function busy() {
+    const started = await start('codex');
+    await started.host.command(roomMessage('running', 'Look at the logs'));
+    await until(() => expect(started.host.snapshot().turns[0]?.status).toBe('running'));
+    await started.host.command(roomMessage('waiting', 'Fix the typo in READNE'));
+    expect(started.host.isQueued('waiting')).toBe(true);
+    return started;
+  }
+
+  it('runs the waiting message as edited, in its place, and says so in the transcript', async () => {
+    const { host, emit, adapter } = await busy();
+
+    expect(await host.editQueued('waiting', roomMessage('waiting', 'Fix the typo in README'))).toBe(
+      'applied'
+    );
+    expect(userItem(host, 'waiting')).toMatchObject({
+      revision: 2,
+      text: 'Fix the typo in README',
+    });
+    emit({ type: 'turn.completed', turnId: 'running', outcome: 'completed', usage: [] });
+
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ turnId: 'waiting', text: 'Fix the typo in README' })
+    );
+    expect(host.snapshot().turns.map((turn) => turn.turnId)).toEqual(['running', 'waiting']);
+  });
+
+  it('keeps the command it accepted, so the message handed over again is the same request', async () => {
+    const { host } = await busy();
+    await host.editQueued('waiting', roomMessage('waiting', 'Fix the typo in README'));
+
+    expect((await host.command(roomMessage('waiting', 'Fix the typo in READNE'))).status).toBe(
+      'applied'
+    );
+  });
+
+  it('leaves a turn that has started as it is, and says the edit came too late', async () => {
+    const { host, adapter } = await busy();
+
+    expect(await host.editQueued('running', roomMessage('running', 'Look at the metrics'))).toBe(
+      'too-late'
+    );
+    expect(notices(host)).toContain('EDIT_AFTER_START');
+    expect(userItem(host, 'running')).toMatchObject({ revision: 1, text: 'Look at the logs' });
+    expect(adapter.sendTurn).toHaveBeenCalledOnce();
+    expect(adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ turnId: 'running', text: 'Look at the logs' })
+    );
+  });
+
+  it('says so when no turn here started from the message', async () => {
+    const { host } = await start('codex');
+
+    expect(await host.editQueued('elsewhere', null)).toBe('unknown');
+    expect(notices(host)).toContain('EDIT_UNMATCHED');
+  });
+
+  it('runs a turn starting at the moment of the edit wholly as edited or wholly as sent', async () => {
+    const { host, emit, adapter } = await busy();
+
+    emit({ type: 'turn.completed', turnId: 'running', outcome: 'completed', usage: [] });
+    const outcome = await host.editQueued(
+      'waiting',
+      roomMessage('waiting', 'Fix the typo in README')
+    );
+
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        turnId: 'waiting',
+        text: outcome === 'applied' ? 'Fix the typo in README' : 'Fix the typo in READNE',
+      })
+    );
+    expect(['applied', 'too-late']).toContain(outcome);
+  });
+
+  it('refuses an edit longer than one message can be, and runs the message as sent', async () => {
+    const { host, emit, adapter } = await busy();
+
+    expect(await host.editQueued('waiting', roomMessage('waiting', 'x'.repeat(61 * 1024)))).toBe(
+      'refused'
+    );
+    expect(notices(host)).toContain('EDIT_REFUSED');
+    emit({ type: 'turn.completed', turnId: 'running', outcome: 'completed', usage: [] });
+
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ turnId: 'waiting', text: 'Fix the typo in READNE' })
+    );
+  });
+
+  it('runs the edited message when its interrupted turn is run again, after a restart too', async () => {
+    const { host, root } = await busy();
+    await host.editQueued('waiting', roomMessage('waiting', 'Fix the typo in README'));
+    await host.shutdown();
+
+    const next = setup('codex');
+    const recovered = await startHost(root, next.config, next.adapter);
+    hosts.push(recovered);
+    await until(() => expect(recovered.snapshot().session.status).toBe('ready'));
+    const retry: Command = {
+      ...roomMessage('again', ''),
+      epoch: recovered.snapshot().session.epoch,
+      body: { type: 'message.retry', messageId: 'm-waiting' },
+    };
+    expect((await recovered.command(retry)).status).toBe('applied');
+
+    await until(() => expect(next.adapter.sendTurn).toHaveBeenCalledOnce());
+    expect(next.adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ turnId: 'again', text: 'Fix the typo in README' })
+    );
+  });
+});

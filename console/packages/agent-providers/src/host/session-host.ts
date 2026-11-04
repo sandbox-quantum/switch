@@ -65,6 +65,12 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
   /** The host posts this turn's reply to its room itself: decided once, before posting. */
   z.object({ type: z.literal('room-reply'), commandId: z.string() }),
+  /**
+   * A queued room message, run as its sender edited it (`editQueued`). The
+   * command it was accepted as stays as it was, so asking for that command
+   * again is still the same request; a retry runs the edited one.
+   */
+  z.object({ type: z.literal('edited'), command: commandSchema }),
 ]);
 /**
  * The notices that end a continued conversation's import, either way. Read
@@ -104,6 +110,12 @@ export type HostSessionStart = {
 export type RoomReply = { roomId: string; threadId: string | null; body: string };
 type PendingQuestion = { request: Request; options: Map<string, string> };
 /**
+ * What became of an edit of a room message (`editQueued`): run in place of
+ * the message, or not, because its turn had already started or ended, the
+ * edit was too long, or no turn here was started by the message.
+ */
+export type EditOutcome = 'applied' | 'too-late' | 'refused' | 'unknown';
+/**
  * What Switch recorded for a request: for an approval, `answer` is the chosen
  * option; for questions, `answers` holds one answer per question. Both are
  * null for an expiry.
@@ -122,6 +134,8 @@ export class HostedSession {
   private readonly projector: ChatProjector;
   private replica: SessionReplica;
   private readonly commands = new Map<string, Command>();
+  /** The latest edit of each queued message that was run as edited, by its command id. */
+  private readonly edited = new Map<string, Command>();
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
   private readonly roomReplies = new Set<string>();
@@ -211,6 +225,7 @@ export class HostedSession {
       if (record.type === 'reset-completed') this.resetPending = false;
       if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
       if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
+      if (record.type === 'edited') this.edited.set(record.command.commandId, record.command);
     }
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.unsubscribe = adapter.subscribe((event) => {
@@ -756,6 +771,80 @@ export class HostedSession {
     if (this.activeTurn) this.failedPosts.set(this.activeTurn, reason);
   }
 
+  /** Whether the command `commandId` is a message waiting in the queue for its turn. */
+  isQueued(commandId: string): boolean {
+    return this.queue.some((queued) => queued.commandId === commandId);
+  }
+
+  /**
+   * An edit of the room message that `commandId` was accepted for. While the
+   * message is still waiting in the queue, it runs as `edited`: its turn
+   * keeps its place, and its message in the transcript (and on the activity
+   * card) is revised to say what the agent will receive. Once the turn has
+   * started it is left as it is, and the transcript says the edit came too
+   * late; changing a running turn is a different thing from this.
+   *
+   * Taken in order with commands, and the queue is checked and changed with
+   * nothing in between, so a turn starting at the same moment either takes
+   * the edited message or never sees the edit. `edited` is null when the
+   * caller had nothing waiting to edit.
+   */
+  editQueued(commandId: string, edited: Command | null): Promise<EditOutcome> {
+    const result = this.serial.then(() => this.applyEdit(commandId, edited));
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
+  private async applyEdit(commandId: string, edited: Command | null): Promise<EditOutcome> {
+    if (this.shuttingDown) throw new Error('HOST_STOPPING');
+    const original = this.commands.get(commandId);
+    if (original?.body.type !== 'message.send') {
+      await this.publish({
+        type: 'notice',
+        level: 'info',
+        code: 'EDIT_UNMATCHED',
+        message: 'A room message was edited, but no turn of this session started from it.',
+      });
+      return 'unknown';
+    }
+    const index = this.queue.findIndex((queued) => queued.commandId === commandId);
+    if (index === -1) {
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'EDIT_AFTER_START',
+        message: this.dispatched.has(commandId)
+          ? `Room message ${original.origin.messageId} was edited after the agent had started on it. This turn goes on with the message as first sent; send a new message to change what the agent does.`
+          : `Room message ${original.origin.messageId} was edited after its turn had ended, so the edit was not run.`,
+      });
+      return 'too-late';
+    }
+    if (edited?.commandId !== commandId || edited.body.type !== 'message.send')
+      throw new Error(
+        `An edit of queued command ${commandId} must be a message under the same id.`
+      );
+    if (eventBytes(edited) > 60 * 1024) {
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'EDIT_REFUSED',
+        message: `Room message ${original.origin.messageId} was edited to more than this host takes in one message, so it will run as first sent.`,
+      });
+      return 'refused';
+    }
+    const body = edited.body;
+    this.queue[index] = { ...this.queue[index]!, body };
+    this.edited.set(commandId, edited);
+    await this.inbox.append({ type: 'edited', command: edited });
+    const item = this.replica.snapshot().items.find((each) => each.itemId === `user-${commandId}`);
+    if (item)
+      await this.publish({
+        type: 'item.upsert',
+        item: { ...item, revision: item.revision + 1, text: body.text },
+      });
+    return 'applied';
+  }
+
   /** Where the command that started `turnId` came from, if a command started it. */
   originOf(turnId: string): Origin | null {
     return this.commands.get(turnId)?.origin ?? null;
@@ -893,7 +982,8 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    const latest = this.edited.get(original.commandId) ?? original;
+    return { ...command, origin: original.origin, body: latest.body };
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {

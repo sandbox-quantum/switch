@@ -1412,6 +1412,15 @@ export async function runAgentHost(
           // an event arriving is the cheapest evidence that time has passed.
           if (held.size) await resolveHeld();
           if (held.has(assignment.roomId)) return hold(assignment, spawning, false);
+          // An edit is for the session holding the message it edits, and
+          // starts none: a room no session attends has nothing waiting in it.
+          if (event.type === 'message_edit') {
+            if (!(await admit(assignment, false, false)))
+              console.warn(
+                `Dropped edit ${messageId} in room ${assignment.roomId}: no session of this agent attends the room, so no message there is waiting to be edited.`
+              );
+            return;
+          }
           if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning, false);
         });
         return pending.catch((error: Error) => {
