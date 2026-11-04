@@ -235,6 +235,28 @@ reports `not_permitted` for that target instead of a reachability status, so the
 refusal happens in the room where everyone can see it rather than only in the
 sender's account of it.
 
+**The same policy decides who may invite the agent into a room**
+([`invites.py`](../core/switch_core/invites.py)). An agent somebody could not
+address is an agent they cannot summon either: pulling it in would only give
+them an agent that sits in the room refusing to act, and would tell them where
+it is used. Every path that puts an agent on a room's roster —
+`!invite-agent` / `/invite-agent`, the `invite_agent_to_room` tool and its HTTP
+twin, the gateway's room page, Switch Console's chats, room creation with
+agents, room templates — goes through `RoomService.add_agents_to_room` or
+`RoomService.create_room`, and both ask `require_can_invite` before anything is
+provisioned. A refused invite raises `InviteNotPermitted` with the same wording
+whichever path raised it: what was refused, that the owner restricts who may
+address it, and who to ask. Unlike a refused message this *is* blocked at the
+sender, because there is nothing to put in the room for everyone to see.
+
+The check covers only the agents an invite would newly add. An agent already in
+a room stays in it whatever its policy later says — tightening a policy never
+ejects anyone — and inviting an agent that is already present is success, not a
+refusal. Switch's own machinery (startup reconciliation, a channel the platform
+handed a bridge) invites as `Inviter.system()` and is not judged; a bridge
+adopting a channel someone added an agent bot to is the one invite Switch
+cannot attribute to a person, so it stays unjudged too.
+
 When the sender is not permitted, `AgentClient` demotes the message to
 unaddressed room chatter and posts a one-shot reply to the sender; commands are
 gated the same way (a command naming the agent draws a reply, a room-wide one is
@@ -414,6 +436,7 @@ A quick index for navigation:
 | Configuration | `core/switch_core/config.py` |
 | Authorization policy | `core/switch_core/authz.py` |
 | Scoped addressing policy | `core/switch_core/addressing.py` |
+| Who may invite an agent into a room | `core/switch_core/invites.py` |
 | Token encryption | `core/switch_core/crypto.py` |
 | Agent Bridge (API, MCP, protocol, auth, commands) | `core/switch_core/bridges/agent/` |
 | Agent operation registry | `core/switch_core/bridges/agent/operations/` |
