@@ -1007,6 +1007,46 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## Canva
+
+Built from sign-in runs against a Canva account; the operator's setup is
+in [`docs/old/canva-setup.md`](../old/canva-setup.md).
+
+- Canva's docs name `https://api.canva.com/connect/v1/mcp`. Its authorization
+  server, `www.canva.com`, offers S256 and advertises no registration endpoint,
+  so each server's operator creates a Developer Portal app, turns on Canva MCP
+  and saves the client under Connector apps. `mcp.canva.com` also answers, with
+  an authorization server of its own that lists dynamic registration, but
+  Canva's docs no longer name it.
+- Sign-ins come back to Switch Console on one of five fixed ports, so the server
+  needs no public address.
+- The metadata lists no token endpoint methods, so the adapter sends the secret
+  as HTTP Basic, which Canva accepts. Canva answers the check's made-up code
+  with `invalid_grant` whatever the redirect, so the first connection confirms
+  the redirects, the scopes and the Canva MCP switch. A wrong client ID or
+  secret is answered as `{"code": ...}`, not OAuth's `{"error": ...}`, so the
+  check refuses it as an answer it doesn't recognise.
+- A sign-in with the other read scopes but not `profile:read` gets a 500 from
+  MCP's `initialize`, every time. A sign-in with it, narrowed by a refresh that
+  leaves it out, still works, so the requirement is on the sign-in.
+- Every tool is listed at both levels. At the read level Canva refuses a write
+  with `Missing scopes` (tried with `comment-on-design`), so the level is
+  enforced by Canva. That was measured with a sign-in asking for the read scopes
+  alone: Canva's approval page has nothing to untick, so connecting from Console,
+  which asks for the write level, always gets it. Not asked for: `brandtemplate:content:write`, which creates
+  and publishes brand templates for a whole team, and `help:answers:write`.
+- Access tokens live 4 hours. Each refresh returns a new refresh token, and using
+  an old one ends the sign-in. Revoking at `/rest/v1/oauth/revoke`, which the
+  metadata does not list, refuses `/users/me`, a refresh and a tool call at
+  once; MCP's `initialize` still answers 200, as it does not look at the token.
+- `/rest/v1/users/me` accepts the MCP server's token and returns ids alone, so a
+  connection is named by its user id. The `get-logged-in-account-details` tool
+  also returns a name, for when the catalog can read identity from a tool.
+
+To connect: Connectors in Switch Console, then Canva. To roll back,
+add `canva` to `DISABLED_SERVICES`, remove its client under Connector apps or
+unset `CANVA_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP

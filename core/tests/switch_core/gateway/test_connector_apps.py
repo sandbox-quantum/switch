@@ -391,7 +391,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE, "gitlab"}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, "gitlab", "canva"}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -413,6 +413,12 @@ class TestOnlyTheOperator:
         assert apps["gitlab"]["redirect_uris"] == [gitlab]
         assert apps["gitlab"]["needs_public_url"] is True
         assert apps["gitlab"]["scopes"] == ["mcp", "read_api", "read_user", "api"]
+        # Canva comes back to Switch Console, on the ports its entry names.
+        assert apps["canva"]["redirect_uris"] == [
+            f"http://127.0.0.1:{port}/switch-services/callback"
+            for port in (39231, 39232, 39233, 39234, 39235)
+        ]
+        assert apps["canva"]["needs_public_url"] is False
         assert apps[AIRTABLE]["scopes"] == [
             "data.records:read",
             "schema.bases:read",

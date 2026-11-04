@@ -22,7 +22,6 @@ PLACEHOLDERS = {
     "new-relic",
     "salesforce",
     "box",
-    "canva",
     "vercel",
 }
 
@@ -32,6 +31,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "airtable",
         "atlassian",
+        "canva",
         "datadog",
         "google-workspace",
         "gitlab",
@@ -42,6 +42,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "canva",
         "datadog",
         "github",
         "gitlab",
@@ -402,6 +403,42 @@ def test_the_shipped_notion_entry_signs_in_as_the_spike_found_it_must():
     assert identity.account_id == ["workspace_id", "user_id"]
     # The answer names nothing by name, so the workspace's id tells two apart.
     assert identity.label == "workspace_id"
+
+
+def test_the_shipped_canva_entry_uses_the_operators_app_and_canvas_documented_server():
+    definition = CATALOG["canva"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "CANVA",
+    )
+    assert oauth.redirect == ["loopback"]
+    assert oauth.revocation_url == "https://api.canva.com/rest/v1/oauth/revoke"
+    assert oauth.unchecked is not None and "Canva MCP" in oauth.unchecked
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert definition.token.max_lifetime == 14400
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("canva", "https://api.canva.com/connect/v1/mcp")
+    ]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.account_id == "team_user.user_id"
+    assert definition.access is not None and definition.access.write is not None
+    read = set(definition.access.read.scopes or [])
+    assert not any(scope.endswith(":write") for scope in read)
+    # Canva's MCP server answers a sign-in without it with a 500.
+    assert "profile:read" in read
+    assert set(definition.access.write.scopes or []) == read | {
+        "design:content:write",
+        "folder:write",
+        "comment:write",
+        "asset:write",
+    }
+    # Never the scope that publishes brand templates for a whole team.
+    assert "brandtemplate:content:write" not in definition.access.write.scopes
 
 
 RESTRICTED_DRIVE = {

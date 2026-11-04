@@ -197,6 +197,9 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   (`ORGANIZATION_DIRECTORY=workos`): what it needs, linking organizations and
   existing accounts with `switch-link-workos`, what a sign-in and the mirror
   bring in or take away, and what is not done yet
+- `docs/old/canva-setup.md` — offering Canva on a self-hosted server: creating
+  the Developer Portal app, turning on Canva MCP, its redirect URLs and scopes,
+  saving it under Connector apps or in `CANVA_CLIENT_CONFIG_PATH`
 - `docs/old/google-workspace-setup.md` — offering Google Workspace on a
   self-hosted server: registering the Google app (Internal or External), its
   redirect URI, saving it under Connectors or in

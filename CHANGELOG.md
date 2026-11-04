@@ -53,6 +53,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Canva as a service connection.** A person connects their Canva account from
+  Switch Console and grants it to their agents, through Canva's remote MCP
+  server. Each server's operator creates a Canva Developer Portal app and saves
+  it under Connector apps, or names it in `CANVA_CLIENT_CONFIG_PATH` (with Helm,
+  `switchCore.canvaClientSecret`).
 - **Messages sent while an agent works can steer its running turn.** Each
   agent has a `mid_turn_delivery` setting (`steer`, the default, or `queue`),
   kept on the agent so re-registering leaves it alone, changed on the agent's
@@ -3734,6 +3739,8 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Admin → Connector apps sets up Canva.** Its dialog walks Canva's Developer
+  Portal, with the redirect URLs to copy and the scopes to tick.
 - **Confirm a linked chat account with a tap.** When the server can message
   the account, the link screen shows a number to tap in that message, with an
   **Open in …** button that opens the message in the chat app, the code below
