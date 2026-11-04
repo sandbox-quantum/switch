@@ -4,6 +4,10 @@ import { createGooseAdapter } from './goose-adapter';
 
 describeConformance('goose', {
   createAdapter: async () => createGooseAdapter(),
+  skip: {
+    'user-input':
+      'Goose 1.57.0 asks through ACP form elicitation; the generic ACP client does not advertise it (hooks set userInput: false). Verified 2026-11-04.',
+  },
   unavailableReason: async () => {
     const probe = spawnSync('goose', ['info', '-v'], { encoding: 'utf8' });
     if (probe.error || probe.status !== 0) return 'the goose binary is not on PATH';
