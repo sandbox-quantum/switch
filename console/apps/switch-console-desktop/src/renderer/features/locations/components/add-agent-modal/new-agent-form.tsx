@@ -21,6 +21,7 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
+import { useAnsweredFlags } from '@renderer/features/switch-buddy/use-this-computer';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -81,7 +82,10 @@ import {
   machineLabel,
   machineRunLocation,
   machineRunLocations,
+  autoEnablesMachine,
   boxBackends,
+  boxWakeState,
+  holdsThisComputer,
   hasSharedCloudBox,
   offlineSharedCloudMachine,
   SHARED_CLOUD_LABEL,
@@ -222,6 +226,58 @@ export const NewAgentForm = observer(function NewAgentForm({
     pickedSharedBox.current = true;
     setRunHost(machineRunLocation(sharedBox.id));
   }, [sharedBox]);
+  // Hosted agents v2 only. Nothing is turned on by itself: the run location's
+  // own button does it (B38, ask first). Before the flags have answered the
+  // form doesn't know, so it waits too; with v2 off it turns on as upstream.
+  const v2 = serverFlags['hosted_v2'];
+  // Both from the one answer, so `hosted_v2` can't lag behind the read; a failed
+  // or missing read never turns anything on by itself (unknown counts as v2).
+  const answer = useAnsweredFlags(selectedServerId);
+  const autoEnable = autoEnablesMachine(answer.readOk, answer.hostedV2 ?? true);
+  // A box put away or asleep isn't listed online, so nothing would pick it:
+  // start it (ensure, once per box while the form is open) and pick it once
+  // it is online, rather than settle on this computer.
+  const boxWake = boxWakeState(
+    v2CloudMachines.data,
+    v2,
+    new Set((serverMachines ?? []).filter((m) => m.state === 'online').map((m) => m.id))
+  );
+  // `isLoading`: a first read under way (a query not asked, signed out say, never counts as finding).
+  const findingBox =
+    v2 && !!selectedServerId && (machinesQuery.isLoading || v2CloudMachines.isLoading);
+  const wokenBox = useRef<string | null>(null);
+  // A box whose wake failed: the hold is let go, so the form offers the usual choices.
+  const [failedWakeId, setFailedWakeId] = useState<string | null>(null);
+  useEffect(() => {
+    if (boxWake?.action !== 'wake' || !selectedServerId) return;
+    if (wokenBox.current === boxWake.machine.machine_id) return;
+    wokenBox.current = boxWake.machine.machine_id;
+    rpc.switchServers.ensureCloudMachine(selectedServerId).then(
+      () => {
+        void v2CloudMachines.refetch();
+        void machinesQuery.refetch();
+      },
+      (error: unknown) => {
+        setFailedWakeId(boxWake.machine.machine_id);
+        const { headline, detail } = describeFailure(
+          error,
+          'Your Switch cloud could not be started.'
+        );
+        toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
+      }
+    );
+  }, [boxWake, selectedServerId, v2CloudMachines, machinesQuery]);
+  // While the box is being found or started, this computer isn't offered as
+  // the place by default: no "turn on" prompt for it until the box is settled.
+  const holdThisComputer = holdsThisComputer({
+    v2,
+    boxPicked: !!sharedBox,
+    findingBox,
+    boxWake,
+    failedWakeId,
+  });
+  // A box its owner stopped: ensure leaves it as it is, so say where to start it.
+  const boxOwnerStopped = v2 && !sharedBox && boxWake?.action === 'owner-stopped';
   // Choosing Switch cloud claims the owner's cloud machine and starts it. Once
   // its agent controller has enrolled and is online, the agent is placed on it
   // like on any machine.
@@ -869,16 +925,37 @@ export const NewAgentForm = observer(function NewAgentForm({
                 ))}
             </SelectContent>
           </Select>
-          {onSharedCloud && serverMachines && !sharedBox && !pickedSharedBox.current && (
-            <p className="flex items-start gap-1.5 text-xs text-foreground-warning" role="status">
+          {holdThisComputer && (
+            <p className="flex items-start gap-1.5 text-xs text-foreground-muted" role="status">
               <Cloud className="mt-0.5 size-3.5 shrink-0" />
               <span>
-                {offlineBox
-                  ? `Your Switch cloud machine, ${offlineBox.name}, is offline right now, so this agent can't go there yet. Choose another place, or wait and try again.`
-                  : "Choose where this agent runs. Switch couldn't tell which of your machines is your Switch cloud machine, so it hasn't picked one for you."}
+                {boxWake
+                  ? 'Starting your Switch cloud. This agent goes there as soon as it’s ready.'
+                  : 'Finding your Switch cloud…'}
               </span>
             </p>
           )}
+          {boxOwnerStopped && (
+            <p className="flex items-start gap-1.5 text-xs text-foreground-warning" role="status">
+              <Cloud className="mt-0.5 size-3.5 shrink-0" />
+              <span>Your Switch cloud is stopped. Start it from the Your cloud card.</span>
+            </p>
+          )}
+          {!holdThisComputer &&
+            !boxOwnerStopped &&
+            onSharedCloud &&
+            serverMachines &&
+            !sharedBox &&
+            !pickedSharedBox.current && (
+              <p className="flex items-start gap-1.5 text-xs text-foreground-warning" role="status">
+                <Cloud className="mt-0.5 size-3.5 shrink-0" />
+                <span>
+                  {offlineBox
+                    ? `Your Switch cloud machine, ${offlineBox.name}, is offline right now, so this agent can't go there yet. Choose another place, or wait and try again.`
+                    : "Choose where this agent runs. Switch couldn't tell which of your machines is your Switch cloud machine, so it hasn't picked one for you."}
+                </span>
+              </p>
+            )}
           {cloudFallback && !isCloudRun && (
             <p className="flex items-start gap-1.5 text-xs text-foreground-muted" role="status">
               <Cloud className="mt-0.5 size-3.5 shrink-0" />
@@ -892,8 +969,9 @@ export const NewAgentForm = observer(function NewAgentForm({
                 : 'This server runs on this computer, so its agents run here too.'}
             </p>
           )}
-          {machine && pickState.serverId && workspaceId && (
+          {machine && pickState.serverId && workspaceId && !holdThisComputer && (
             <ManagedRunLocationNotice
+              autoEnable={autoEnable}
               machine={machine}
               label={runLocationLabel}
               sshHost={isRemoteRun ? runHost : null}

@@ -7,8 +7,8 @@ import {
 } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { events, rpc } from '@renderer/lib/ipc';
+import type { ServerFeatureFlags } from '@shared/core/feature-flags/feature-flags';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import { featureFlagsChangedChannel } from '@shared/events/featureFlagEvents';
 import {
@@ -61,9 +61,10 @@ function setUp(serverId: string, workspaceId: string, allowEnrol: boolean) {
  * server's flags are known, so a v2 server never enrols on a first guess.
  */
 export function useThisComputer(serverId: string, workspaceId: string) {
-  // The shared-cloud wording only where Core says hosted agents v2 is on, on a box it names.
-  const hostedV2 = useFeatureFlags(serverId).hosted_v2;
-  const flagsKnown = useFlagsAnswered(serverId);
+  // One answer for both the opening and the shared-cloud wording, so neither
+  // lags the other: enrolled by itself only after a good read with v2 off.
+  const answer = useAnsweredFlags(serverId);
+  const hostedV2 = answer.hostedV2 === true;
   const cloudMachines = useCloudMachines(hostedV2 ? serverId : null);
   const queryClient = useQueryClient();
   const [setupError, setSetupError] = useState<string | null>(null);
@@ -72,7 +73,7 @@ export function useThisComputer(serverId: string, workspaceId: string) {
 
   useEffect(() => {
     // B38 (ask first) only with hosted agents v2 on; off, enrol straight away, as upstream.
-    const opening = openingSetup(flagsKnown, hostedV2);
+    const opening = openingSetup(answer.answered, answer.readOk, answer.hostedV2);
     if (opening === 'wait') return;
     let cancelled = false;
     void (async () => {
@@ -93,7 +94,7 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     return () => {
       cancelled = true;
     };
-  }, [serverId, workspaceId, flagsKnown, hostedV2, queryClient]);
+  }, [serverId, workspaceId, answer.answered, answer.readOk, answer.hostedV2, queryClient]);
 
   /**
    * The person's yes: makes this computer a machine of the workspace. When it
@@ -184,21 +185,40 @@ export function thisComputerIn(machines: OwnedMachine[] | null | undefined): Own
 }
 
 /**
- * Whether the server's flags have answered (`flagsAnswered`), kept current: a
- * read refused before sign-in waits for the read after it, so the buddy never
- * enrols a v2 server's computer on that first refusal (B38).
+ * The server's flags once they have answered (`flagsAnswered`), kept current:
+ * a read refused before sign-in waits for the read after it, so the buddy
+ * never enrols a v2 server's computer on that first refusal (B38). With `readOk` (the flags were actually read: no error) and `hostedV2` taken
+ * from that same answer, never from an older read. `hostedV2` is null until
+ * answered; a failed read answers with `readOk` false and every flag off.
  */
-function useFlagsAnswered(serverId: string): boolean {
-  const [answered, setAnswered] = useState(false);
+export function useAnsweredFlags(serverId: string | null): {
+  answered: boolean;
+  readOk: boolean;
+  hostedV2: boolean | null;
+} {
+  const [answer, setAnswer] = useState<{
+    answered: boolean;
+    readOk: boolean;
+    hostedV2: boolean | null;
+  }>(NO_ANSWER);
   useEffect(() => {
-    setAnswered(false);
+    setAnswer(NO_ANSWER);
+    if (!serverId) return;
     let current = true;
+    const answerOf = (state: ServerFeatureFlags) =>
+      flagsAnswered(state)
+        ? {
+            answered: true,
+            readOk: state.fetchedAt !== null && state.error === null,
+            hostedV2: state.flags.hosted_v2 === true,
+          }
+        : NO_ANSWER;
     const off = events.on(featureFlagsChangedChannel, (state) => {
-      if (state.serverId === serverId) setAnswered(flagsAnswered(state));
+      if (state.serverId === serverId) setAnswer(answerOf(state));
     });
     void rpc.featureFlags.get(serverId).then((res) => {
       if (!current || !res?.success) return;
-      setAnswered((now) => now || flagsAnswered(res.data));
+      setAnswer((now) => (now.answered ? now : answerOf(res.data)));
       // Last read refused for want of a sign-in: read again now that this page is open
       // (signed in), rather than wait for the next poll. The change event answers.
       if (res.data.error === FLAGS_NOT_SIGNED_IN) void rpc.featureFlags.refresh();
@@ -208,5 +228,7 @@ function useFlagsAnswered(serverId: string): boolean {
       off();
     };
   }, [serverId]);
-  return answered;
+  return answer;
 }
+
+const NO_ANSWER = { answered: false, readOk: false, hostedV2: null } as const;

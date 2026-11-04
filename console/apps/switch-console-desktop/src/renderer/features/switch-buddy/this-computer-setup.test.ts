@@ -57,19 +57,24 @@ describe('setting this computer up for switch-buddy', () => {
   });
 });
 
-// The v1/v2 switch: B38's ask-first opening only with hosted agents v2 on.
+// The v1/v2 switch: enrols by itself only after a good read with hosted agents v2 off.
 describe('openingSetup', () => {
   it("waits until the server's flags are known, so a v2 server never enrols on a first guess", () => {
-    expect(openingSetup(false, false)).toBe('wait');
-    expect(openingSetup(false, true)).toBe('wait');
+    expect(openingSetup(false, false, null)).toBe('wait');
+    expect(openingSetup(false, true, false)).toBe('wait');
+    expect(openingSetup(false, true, true)).toBe('wait');
   });
 
   it('only reads, asking before enrolling, with hosted_v2 on (B38)', () => {
-    expect(openingSetup(true, true)).toBe('read');
+    expect(openingSetup(true, true, true)).toBe('read');
   });
 
-  it('enrols straight away with hosted_v2 off, exactly as upstream', () => {
-    expect(openingSetup(true, false)).toBe('enrol');
+  it('enrols straight away after a good read with hosted_v2 off, exactly as upstream', () => {
+    expect(openingSetup(true, true, false)).toBe('enrol');
+  });
+
+  it('only reads, asking first, when the read failed (every flag off is no proof v2 is off)', () => {
+    expect(openingSetup(true, false, false)).toBe('read');
   });
 });
 
@@ -87,14 +92,14 @@ describe('flagsAnswered', () => {
     expect(flagsAnswered({ fetchedAt: null, error: FLAGS_NOT_SIGNED_IN })).toBe(false);
     // A v2 server's buddy must wait, not enrol on every flag off.
     expect(
-      openingSetup(flagsAnswered({ fetchedAt: null, error: FLAGS_NOT_SIGNED_IN }), false)
+      openingSetup(flagsAnswered({ fetchedAt: null, error: FLAGS_NOT_SIGNED_IN }), false, false)
     ).toBe('wait');
   });
 
-  it('answers when a read fails while signed in, so v1 is never held up (every flag off: enrol, as upstream)', () => {
+  it('answers when a read fails while signed in, so the page is never held up, but only asks (no enrol)', () => {
     const failed = { fetchedAt: null, error: 'The server did not answer in time.' };
     expect(flagsAnswered(failed)).toBe(true);
-    expect(openingSetup(flagsAnswered(failed), false)).toBe('enrol');
+    expect(openingSetup(flagsAnswered(failed), false, false)).toBe('read');
   });
 
   it("matches the gateway client's own not-signed-in refusal word for word", () => {
