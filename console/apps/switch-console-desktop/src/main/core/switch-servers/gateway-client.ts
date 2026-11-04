@@ -264,6 +264,13 @@ type FetchOptions = {
   body?: unknown;
   /** A multipart body, sent as is; `fetch` sets its boundary. Excludes `body`. */
   formData?: FormData;
+  /**
+   * A raw file download (a chat attachment), whose body is whatever the file
+   * is, HTML included: skips the check that takes a web page for a proxy
+   * answering in switch-core's place (`answeredWithPage`). Everything else,
+   * the session and the HTTP status, is checked as for any call.
+   */
+  raw?: boolean;
 };
 
 /**
@@ -412,7 +419,7 @@ export async function gatewayRequest(
   if (response.status === 401) {
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
-  if (answeredWithPage(response)) {
+  if (!options.raw && answeredWithPage(response)) {
     throw new NoManagementApiError(server.name, server.url, response.status);
   }
   return response;
