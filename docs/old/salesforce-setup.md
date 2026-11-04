@@ -57,7 +57,10 @@ App**:
    and **Issue JSON Web Token (JWT)-based access tokens for named users**,
    and uncheck the secret requirements for the web server and refresh token
    flows. MCP calls fail after sign-in (`INVALID_JWT_FORMAT`) unless JWT
-   tokens are on.
+   tokens are on. Enable **Refresh Token Rotation** to match this entry's
+   `refresh: rotating` policy; a successful refresh must save the replacement
+   token. Confirm this behavior during live QA rather than assuming a token
+   is reusable.
 6. Create the app. It can take up to 30 minutes to become usable. Then open
    **Settings**, **Consumer Key and Secret**, and copy the **Consumer Key**.
 

@@ -6,10 +6,10 @@ enabled: true
 adapter: oauth
 auth:
   type: oauth
-  # Salesforce refresh tokens are reused until they expire or are revoked;
-  # an org admin sets the expiry policy. Rotation is available but off by
-  # default; not measured. Confirm at manual QA.
-  refresh: reusable
+  # The External Client App must enable refresh token rotation (see setup).
+  # Confirmed enabled in the Developer Edition test app; a replacement token
+  # has not yet been measured through a live Switch refresh.
+  refresh: rotating
   oauth:
     # Salesforce offers no dynamic registration for its hosted MCP servers:
     # an org admin creates an External Client App (Connected Apps are not

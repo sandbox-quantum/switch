@@ -1072,6 +1072,7 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
 
 def test_salesforce_uses_one_write_level_and_passes_vendor_tools_through():
     definition = CATALOG["salesforce"].definition
+    assert definition.auth.refresh == "rotating"
     assert definition.access.read is None
     assert definition.access.write.scopes == ["mcp_api", "refresh_token", "openid"]
     assert definition.tools.mode == "pass_through"
