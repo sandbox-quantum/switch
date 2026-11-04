@@ -1,15 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { DoorOpen, Lock, MessagesSquare, Plus } from 'lucide-react';
+import { DoorOpen, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
-import { ACCESS_LABELS } from '@renderer/features/switch-rooms/room-settings-sections';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -26,20 +23,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/lib/ui/select';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import { cn } from '@renderer/utils/utils';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
+import { AppMark, RoomCard } from './room-card';
 import { allReadableRooms, isConsoleGroupChatSummary, withConsoleGroupChats } from './room-filters';
 import {
-  ACCESS_SHORT,
   appOptions,
-  filterRoomRows,
+  filterRoomCards,
   groupOptions,
   NO_FILTER,
-  type RoomRow,
+  offeredFilter,
+  type RoomCard as RoomCardData,
   type RoomsFilter,
-  roomRow,
-} from './rooms-table';
+  roomCard,
+} from './room-list';
 import { ServerPage, ServerTableEmpty } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
@@ -70,10 +66,9 @@ const STATES = [
 const ANY = '__any__';
 
 /**
- * The workspace's rooms as one table: yours by default, every room you can
- * read at a switch, and the archived ones at another. The same row whichever
- * slice you look at, so moving between them never changes what a column
- * means.
+ * The workspace's rooms as cards: yours by default, every room you can read
+ * at a switch, and the archived ones at another. The same card whichever
+ * slice you look at.
  */
 const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   const serverId = useServerId();
@@ -82,7 +77,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   const queryClient = useQueryClient();
   const [scope, setScope] = useState<Scope>('mine');
   const [state, setState] = useState<State>('active');
-  const [filter, setFilter] = useState<RoomsFilter>(NO_FILTER);
+  const [picked, setFilter] = useState<RoomsFilter>(NO_FILTER);
 
   useEffect(() => {
     void refreshSidebarRoomState(false);
@@ -90,10 +85,14 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
 
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const viewerId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
-  const yours = useListedRoomsInWorkspace(workspaceId);
-  const all = allReadableRooms(yours, useReadableRoomsInWorkspace(workspaceId));
+  const listed = useListedRoomsInWorkspace(workspaceId);
+  const all = allReadableRooms(listed, useReadableRoomsInWorkspace(workspaceId));
   const signedOut = switchRoomsStore.workspacesNotSignedIn.some((w) => w.id === workspaceId);
   const failed = switchRoomsStore.workspacesThatFailedToLoad.some((w) => w.id === workspaceId);
+  // On a server Console runs, the sidebar lists every room, so only the
+  // server's word says which are yours. Elsewhere what the sidebar lists as
+  // yours counts too, for a server that does not say.
+  const listedIds = server?.managed ? undefined : new Set(listed.map((room) => room.id));
 
   // Archived rooms in a messaging app come from the server; archived group
   // chats from the chats list, which follows the active workspace.
@@ -106,52 +105,75 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
     },
     enabled: workspaceId !== null && !signedOut,
   });
-  const archivedChats =
-    chatsStore.serverId === serverId
-      ? [...chatsStore.archived.values()].filter(isConsoleGroupChatSummary)
-      : [];
+  const chatsHere = chatsStore.serverId === serverId;
+  const archivedChats = chatsHere
+    ? [...chatsStore.archived.values()].filter(isConsoleGroupChatSummary)
+    : [];
 
-  const toRow = (room: RemoteRoomSummary): RoomRow => {
-    const row = roomRow(room, viewerId);
+  const toCard = (room: RemoteRoomSummary): RoomCardData => {
+    const card = roomCard(room, { id: viewerId, listedIds });
     // A chat's people are its members, which the chat list knows.
-    const chat = room.isConsoleChat ? chatsStore.chats.get(room.id) : undefined;
-    return chat ? { ...row, peopleCount: chat.memberCount } : row;
+    const chat = room.isConsoleChat
+      ? (chatsStore.chats.get(room.id) ?? chatsStore.archived.get(room.id))
+      : undefined;
+    return chat ? { ...card, peopleCount: chat.memberCount } : card;
   };
-  const activeRows = (scope === 'all' ? all : yours).map(toRow);
-  const archivedRows = [
-    ...(archivedRoomsQuery.data ?? []).map(toRow),
+  const activeCards = all.map(toCard);
+  const archivedCards = [
+    ...(archivedRoomsQuery.data ?? []).map(toCard),
     ...withConsoleGroupChats([], archivedChats).map((room) => ({
-      ...toRow(room),
+      ...toCard(room),
       archived: true,
     })),
-  ].filter((row) => scope === 'all' || row.mine);
-  const rows = state === 'archived' ? archivedRows : activeRows;
-  const shown = filterRoomRows(rows, filter);
-  const apps = appOptions(rows);
-  const groups = groupOptions(rows);
+  ];
+  const cards = (state === 'archived' ? archivedCards : activeCards).filter(
+    (card) => scope === 'all' || card.mine
+  );
+  const apps = appOptions(cards);
+  const groups = groupOptions(cards);
+  const filter = offeredFilter(picked, apps, groups);
+  const shown = filterRoomCards(cards, filter);
+  const archivedError =
+    state === 'archived' &&
+    (archivedRoomsQuery.isError || (chatsHere && chatsStore.archivedError !== null));
 
-  async function unarchive(row: RoomRow) {
+  const archivedSummary = (card: RoomCardData) =>
+    (archivedRoomsQuery.data ?? []).find((each) => each.id === card.id) ??
+    all.find((each) => each.id === card.id);
+  const mayArchive = (card: RoomCardData): boolean => {
+    if (card.isConsoleChat)
+      return (
+        (card.archived ? chatsStore.archived.get(card.id) : chatsStore.chats.get(card.id))
+          ?.canManage ?? false
+      );
+    const room = archivedSummary(card);
+    return room !== undefined && workspaceId !== null
+      ? switchRoomsStore.roomPermissions(workspaceId, room).canWrite
+      : false;
+  };
+  async function setArchived(card: RoomCardData) {
     if (workspaceId === null) return;
+    const archived = !card.archived;
     try {
-      if (row.isConsoleChat) {
-        await chatsStore.unarchive(serverId, row.id);
+      if (card.isConsoleChat) {
+        if (archived) await chatsStore.archive(serverId, card.id);
+        else await chatsStore.unarchive(serverId, card.id);
       } else {
-        await rpc.workspaces.setRoomArchived({ workspaceId, roomId: row.id, archived: false });
+        await rpc.workspaces.setRoomArchived({ workspaceId, roomId: card.id, archived });
         await queryClient.invalidateQueries({ queryKey: ['archived-rooms', workspaceId] });
         await switchRoomsStore.refreshRoomState();
       }
       void refreshSidebarRoomState(true);
     } catch (error) {
-      toast({ title: failureText(error, 'Could not unarchive the room.'), variant: 'destructive' });
+      toast({
+        title: failureText(
+          error,
+          archived ? 'Could not archive the room.' : 'Could not unarchive the room.'
+        ),
+        variant: 'destructive',
+      });
     }
   }
-  const mayUnarchive = (row: RoomRow): boolean => {
-    if (row.isConsoleChat) return chatsStore.archived.get(row.id)?.canManage ?? false;
-    const room = (archivedRoomsQuery.data ?? []).find((each) => each.id === row.id);
-    return room !== undefined && workspaceId !== null
-      ? switchRoomsStore.roomPermissions(workspaceId, room).canWrite
-      : false;
-  };
 
   return (
     <ServerPage
@@ -173,9 +195,9 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
         </Button>
       }
     >
-      {/* Four ways to have no rows, and only one of them means "there are no
-        rooms". Saying that in the others would send someone off to create a
-        room they already have. */}
+      {/* Four ways to have no rooms to show, and only one of them means
+        "there are no rooms". Saying that in the others would send someone off
+        to create a room they already have. */}
       {workspaceId === null ? (
         <ServerTableEmpty>
           This server has no workspace yet, so its rooms cannot be read.
@@ -195,10 +217,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
               <SegmentedControl
                 ariaLabel="Whose rooms"
                 value={scope}
-                onChange={(next) => {
-                  setScope(next);
-                  setFilter((current) => ({ ...current, app: null, groupId: null }));
-                }}
+                onChange={setScope}
                 options={SCOPES}
               />
             }
@@ -217,7 +236,11 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
                   label="Messaging app"
                   anyLabel="Any messaging app"
                   value={filter.app}
-                  options={apps.map((app) => ({ value: app, label: app }))}
+                  options={apps.map((app) => ({
+                    value: app.value,
+                    label: app.label,
+                    icon: <AppMark bridgeType={app.bridgeType} />,
+                  }))}
                   onChange={(app) => setFilter({ ...filter, app })}
                 />
                 <FilterSelect
@@ -236,22 +259,34 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
               </>
             }
           />
-          {state === 'archived' && archivedRoomsQuery.isError && (
+          {archivedError && (
             <p className="text-xs text-destructive">
-              {failureText(archivedRoomsQuery.error, 'Could not list the archived rooms.')}
+              {archivedRoomsQuery.isError
+                ? failureText(archivedRoomsQuery.error, 'Could not list the archived rooms.')
+                : chatsStore.archivedError}
             </p>
           )}
           {shown.length === 0 ? (
             <p className="py-2 text-sm text-foreground-muted">
-              {emptyText({ rows: rows.length, scope, state, query: filter.query })}
+              {emptyText({ rooms: cards.length, scope, state, query: filter.query })}
             </p>
           ) : (
-            <RoomsTable
-              rows={shown}
-              scope={scope}
-              unarchive={state === 'archived' ? unarchive : null}
-              mayUnarchive={mayUnarchive}
-            />
+            <div
+              role="list"
+              aria-label="Rooms"
+              className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-[14px]"
+            >
+              {shown.map((card) => (
+                <div role="listitem" key={card.id}>
+                  <RoomCard
+                    card={card}
+                    showYours={scope === 'all'}
+                    onOpen={() => void openRoom(card.id)}
+                    onArchive={mayArchive(card) ? () => void setArchived(card) : null}
+                  />
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -259,19 +294,19 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   );
 });
 
-/** What an empty table means, which depends on why it is empty. */
+/** What an empty page means, which depends on why it is empty. */
 export function emptyText({
-  rows,
+  rooms,
   scope,
   state,
   query,
 }: {
-  rows: number;
+  rooms: number;
   scope: Scope;
   state: State;
   query: string;
 }): string {
-  if (rows > 0) return query.trim() ? `No room matches “${query.trim()}”.` : 'No room matches.';
+  if (rooms > 0) return query.trim() ? `No room matches “${query.trim()}”.` : 'No room matches.';
   if (state === 'archived') return 'No archived rooms.';
   return scope === 'mine'
     ? 'You are in no rooms yet. Create one, or choose All rooms to see the rest.'
@@ -288,152 +323,39 @@ function FilterSelect({
   label: string;
   anyLabel: string;
   value: string | null;
-  options: { value: string; label: string }[];
+  options: { value: string; label: string; icon?: React.ReactNode }[];
   onChange: (next: string | null) => void;
 }) {
-  const current = options.find((option) => option.value === value)?.label ?? anyLabel;
+  const current = options.find((option) => option.value === value);
   return (
     <Select
       value={value ?? ANY}
       onValueChange={(next) => onChange(next === ANY ? null : (next as string))}
     >
       <SelectTrigger size="sm" className="w-auto min-w-[150px]" aria-label={label}>
-        <SelectValue>{current}</SelectValue>
+        <SelectValue>
+          {current ? (
+            <span className="flex items-center gap-1.5">
+              {current.icon}
+              {current.label}
+            </span>
+          ) : (
+            anyLabel
+          )}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={ANY}>{anyLabel}</SelectItem>
         {options.map((option) => (
           <SelectItem key={option.value} value={option.value}>
-            {option.label}
+            <span className="flex items-center gap-1.5">
+              {option.icon}
+              {option.label}
+            </span>
           </SelectItem>
         ))}
       </SelectContent>
     </Select>
-  );
-}
-
-const RoomsTable = observer(function RoomsTable({
-  rows,
-  scope,
-  unarchive,
-  mayUnarchive,
-}: {
-  rows: RoomRow[];
-  scope: Scope;
-  /** The way to unarchive a row, in the archived view. */
-  unarchive: ((row: RoomRow) => Promise<void>) | null;
-  mayUnarchive: (row: RoomRow) => boolean;
-}) {
-  return (
-    <div className="overflow-hidden rounded-[10px] border border-border">
-      <table className="w-full border-collapse text-sm">
-        <thead>
-          <tr className="border-b border-border text-left text-xs text-foreground-muted">
-            <th className="px-3 py-2 font-normal">Room</th>
-            <th className="px-3 py-2 font-normal">Messaging app</th>
-            <th className="px-3 py-2 font-normal">Group</th>
-            <th className="px-3 py-2 font-normal">Owner</th>
-            <th className="px-3 py-2 font-normal">Access</th>
-            <th className="px-3 py-2 font-normal">Agents · people</th>
-            <th className="px-3 py-2 font-normal">Created</th>
-            {unarchive && <th className="px-3 py-2" />}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr
-              key={row.id}
-              onClick={() => void openRoom(row.id)}
-              className="cursor-pointer border-b border-border last:border-b-0 hover:bg-[var(--fill)]"
-            >
-              <td className="px-3 py-2">
-                <span className="flex min-w-0 items-center gap-2">
-                  <RoomMark row={row} />
-                  <span
-                    className={cn(
-                      'truncate',
-                      // In All rooms, yours stand out; the rest are there to find.
-                      scope === 'all' && !row.mine
-                        ? 'text-foreground-muted'
-                        : 'font-medium text-foreground'
-                    )}
-                  >
-                    {row.name}
-                  </span>
-                  <UnreadBadge roomId={row.id} />
-                </span>
-              </td>
-              <td className="px-3 py-2 text-foreground">{row.appLabel}</td>
-              <td className="px-3 py-2 text-foreground">{row.groupName ?? '—'}</td>
-              <td className="px-3 py-2 text-foreground">{row.ownerLabel ?? '—'}</td>
-              <td className="px-3 py-2 text-foreground">
-                {row.access ? (
-                  <Tooltip>
-                    <TooltipTrigger render={<span>{ACCESS_SHORT[row.access]}</span>} />
-                    <TooltipContent>{ACCESS_LABELS[row.access]}</TooltipContent>
-                  </Tooltip>
-                ) : (
-                  '—'
-                )}
-              </td>
-              <td className="px-3 py-2 text-foreground tabular-nums">
-                {row.agentCount} · {row.peopleCount ?? '—'}
-              </td>
-              <td className="px-3 py-2 text-foreground-muted">
-                {row.createdAt ? <AbsoluteDate value={row.createdAt} /> : '—'}
-              </td>
-              {unarchive && (
-                <td className="px-3 py-2 text-right">
-                  {mayUnarchive(row) && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void unarchive(row);
-                      }}
-                    >
-                      Unarchive
-                    </Button>
-                  )}
-                </td>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-});
-
-/** Where the room lives at a glance: its app's mark, or a lock for one only its people reach. */
-function RoomMark({ row }: { row: RoomRow }) {
-  if (row.privateChannel && !row.isConsoleChat) {
-    return (
-      <Lock className="size-3.5 shrink-0 text-foreground-muted" aria-label="Private channel" />
-    );
-  }
-  if (hasBridgeIcon(row.bridgeType)) {
-    return <BridgeIcon bridgeType={row.bridgeType} size={14} className="shrink-0" />;
-  }
-  return <MessagesSquare className="size-3.5 shrink-0 text-foreground-muted" />;
-}
-
-/** A day, with the year only when it is not this one. */
-function AbsoluteDate({ value }: { value: string }) {
-  const date = new Date(
-    value.includes('T') || value.includes('Z') ? value : value.replace(' ', 'T')
-  );
-  if (Number.isNaN(date.getTime())) return <>—</>;
-  const sameYear = date.getFullYear() === new Date().getFullYear();
-  return (
-    <time dateTime={date.toISOString()}>
-      {date.toLocaleDateString(undefined, {
-        day: 'numeric',
-        month: 'short',
-        ...(sameYear ? {} : { year: 'numeric' }),
-      })}
-    </time>
   );
 }
 

@@ -368,6 +368,9 @@ export type RemoteRoomSummary = {
    * where Console works it out the same way (`roomPermissionsFor`).
    */
   serverPermissions?: { canWrite: boolean; canManage: boolean; canUnlink: boolean };
+  /** The messaging app connection it is on, when the server says (the list does). Unlike
+   * the display name, it tells two connections to the same platform apart. */
+  bridgeId?: string | null;
   /** The group the room is filed under, when the server says (the list does). */
   groupId?: string | null;
   groupName?: string | null;

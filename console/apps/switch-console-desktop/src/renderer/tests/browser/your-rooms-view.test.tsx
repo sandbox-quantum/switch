@@ -1,6 +1,6 @@
 /**
- * Your Rooms lists the rooms the sidebar lists. Someone who can read more (an
- * admin, or public rooms) can switch to All rooms, which never offers a Switch
+ * Rooms shows yours by default, as cards. Someone who can read more (an admin,
+ * or public rooms) can switch to All rooms, which never offers a Switch
  * Console chat they are not in: the server would not open it.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -21,6 +21,7 @@ vi.hoisted(() => {
 const rooms = vi.hoisted(() => ({ list: null as unknown as { all: RemoteRoomSummary[] } }));
 const archivedRooms = vi.hoisted(() => ({ list: [] as RemoteRoomSummary[] }));
 const setRoomArchived = vi.hoisted(() => vi.fn(async () => ({})));
+const serverState = vi.hoisted(() => ({ managed: false, canWrite: true }));
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
@@ -67,7 +68,9 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
-    servers: [{ id: 'srv', name: 'Server' }],
+    get servers() {
+      return [{ id: 'srv', name: 'Server', managed: serverState.managed }];
+    },
     statusFor: () => ({ connected: true, user: { id: 'me' } }),
   },
 }));
@@ -77,11 +80,14 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     workspacesNotSignedIn: [],
     workspacesThatFailedToLoad: [],
     localMemberIds: () => [],
+    // On a server Console runs, the sidebar lists every room.
     listedRoomsInWorkspace: () =>
-      rooms.list.all.filter((room) => room.ownerId === 'me' || room.viewerIsMember),
+      serverState.managed
+        ? rooms.list.all
+        : rooms.list.all.filter((room) => room.ownerId === 'me' || room.viewerIsMember),
     readableRoomsInWorkspace: () => rooms.list.all,
     noteRooms: () => {},
-    roomPermissions: () => ({ canWrite: true, canManage: false }),
+    roomPermissions: () => ({ canWrite: serverState.canWrite, canManage: false }),
     refreshRoomState: async () => {},
   },
 }));
@@ -124,6 +130,8 @@ function chat(id: string) {
 
 beforeEach(() => {
   archivedRooms.list = [];
+  serverState.managed = false;
+  serverState.canWrite = true;
   setRoomArchived.mockClear();
   rooms.list = observable({
     all: [
@@ -147,6 +155,7 @@ beforeEach(() => {
   });
   runInAction(() => {
     chatsStore.chats.clear();
+    chatsStore.archivedError = null;
     chatsStore.chats.set('bobs-chat', chat('bobs-chat') as never);
   });
 });
@@ -180,11 +189,16 @@ async function render(): Promise<void> {
 }
 
 const names = () =>
-  [...container.querySelectorAll('tbody tr td:first-child span.truncate')].map(
-    (s) => s.textContent
-  );
+  [...container.querySelectorAll('[data-room-card] h3')].map((h) => h.textContent);
+const cardFor = (name: string) =>
+  [...container.querySelectorAll<HTMLElement>('[data-room-card]')].find(
+    (card) => card.querySelector('h3')?.textContent === name
+  )!;
 const toggle = (label: string) =>
   [...container.querySelectorAll('button')].find((b) => b.textContent === label);
+const settle = async () => {
+  for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+};
 
 it('lists your rooms by default, and drops a chat once you are removed from it', async () => {
   await render();
@@ -201,22 +215,41 @@ it('shows every room you can read under All rooms, never chats you are not in', 
   expect(names()).toEqual(['private-tool-room', 'public-slack', 'yaml-room']);
 });
 
-it('keeps the same columns in both, and marks a room only its people reach', async () => {
+it('keeps Mine to your rooms on a server Console runs, where the sidebar lists them all', async () => {
+  serverState.managed = true;
   await render();
-  const headers = [...container.querySelectorAll('thead th')].map((th) => th.textContent);
-  expect(headers).toEqual([
-    'Room',
-    'Messaging app',
-    'Group',
-    'Owner',
-    'Access',
-    'Agents · people',
-    'Created',
-  ]);
-  expect(container.querySelector('[aria-label="Private channel"]')).not.toBeNull();
+  expect(names()).toEqual(['bobs-chat', 'yaml-room']);
 });
 
-it('lists archived rooms under Archived, and brings one back', async () => {
+it('says who owns a room and what is in it in words, and marks one only its people reach', async () => {
+  rooms.list.all.push(
+    room('mine-slack', {
+      ownerId: 'me',
+      bridgeType: 'slack',
+      bridgeDisplayName: 'Slack',
+      channelType: 'channel_private',
+      connectedUserCount: 1,
+    })
+  );
+  await render();
+  const card = cardFor('mine-slack');
+  expect(card.textContent).toContain('Owned by you');
+  expect(card.textContent).toContain('2 agents');
+  expect(card.textContent).toContain('1 person');
+  expect(card.querySelector('[aria-label="Private"]')).not.toBeNull();
+  // A room with no messaging app: the server's people count would read 0, so none is shown.
+  expect(cardFor('yaml-room').textContent).not.toMatch(/people|person/);
+});
+
+it('offers archiving only where the server lets you', async () => {
+  await render();
+  expect(cardFor('yaml-room').querySelector('[aria-label="yaml-room actions"]')).not.toBeNull();
+  serverState.canWrite = false;
+  await act(async () => toggle('All rooms')!.click());
+  expect(cardFor('yaml-room').querySelector('[aria-label="yaml-room actions"]')).toBeNull();
+});
+
+it('lists archived rooms under Archived, and brings one back from its menu', async () => {
   archivedRooms.list = [
     room('old-slack', {
       bridgeType: 'slack',
@@ -226,14 +259,32 @@ it('lists archived rooms under Archived, and brings one back', async () => {
     }),
   ];
   await render();
-  for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+  await settle();
   await act(async () => toggle('Archived')!.click());
-  for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+  await settle();
   expect(names()).toEqual(['old-slack']);
-  await act(async () => toggle('Unarchive')!.click());
+  await act(async () =>
+    cardFor('old-slack')
+      .querySelector<HTMLButtonElement>('[aria-label="old-slack actions"]')!
+      .click()
+  );
+  await settle();
+  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+    (each) => each.textContent === 'Unarchive'
+  )!;
+  await act(async () => item.click());
   expect(setRoomArchived).toHaveBeenCalledWith({
     workspaceId: 'ws',
     roomId: 'old-slack',
     archived: false,
   });
+});
+
+it('says so when the archived chats cannot be listed', async () => {
+  runInAction(() => {
+    chatsStore.archivedError = 'Your archived chats could not be listed.';
+  });
+  await render();
+  await act(async () => toggle('Archived')!.click());
+  expect(container.textContent).toContain('Your archived chats could not be listed.');
 });
