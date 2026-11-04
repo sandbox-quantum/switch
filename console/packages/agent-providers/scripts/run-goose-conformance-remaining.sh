@@ -17,16 +17,27 @@ export GOOSE_DISABLE_KEYRING=1
 MODELS=(gemini-3-flash-preview gemini-3.5-flash gemini-flash-lite-latest)
 MODEL="${GOOSE_MODEL:-gemini-3-flash-preview}"
 
-scenarios=(interrupt mcp-registered subagent steer-mid-turn)
+# Run each scenario alone; never run the full file back-to-back (Gemini free tier).
+scenarios=(
+  simple-turn
+  file-write-full-access
+  approval-required
+  approval-declined
+  interrupt
+  steer-mid-turn
+  resume
+  subagent
+  mcp-registered
+)
 for s in "${scenarios[@]}"; do
   echo "=== scenario: $s (model=$MODEL) ==="
   if ! pnpm exec vitest run src/goose/goose.integration.test.ts -t "$s"; then
-    echo "=== retry $s with event logging hint: check quota vs bug ===" >&2
+    echo "=== $s failed (quota vs provider bug — check /tmp/goose-spaced-$s.log) ===" >&2
     exit 1
   fi
   echo "waiting 65s for Gemini rate limit..."
   sleep 65
 done
 
-echo "=== full suite ==="
-pnpm exec vitest run src/goose/goose.integration.test.ts
+echo "=== user-input: skipped in goose.integration.test.ts (ACP form elicitation) ==="
+echo "=== all runnable scenarios passed ==="
