@@ -286,10 +286,25 @@ decision:
 With `decision.enabled` the chart renders one Deployment (the `decision`
 container, plus the `model-server` sidecar serving the model), a ClusterIP
 Service on port 8230, a PVC the weights are downloaded into at first start, a
-ServiceAccount, and a NetworkPolicy that admits only this release's switch-core
-pods to port 8230. It sets `DECISION_ENDPOINT_URL` on switch-core to the
-Service, so every workspace's Decision routing settings in Switch Console show
-it as the server default with no further setup.
+ServiceAccount, a NetworkPolicy that admits only this release's switch-core
+pods to port 8230, and a Secret holding the service's bearer token. It sets
+`DECISION_ENDPOINT_URL` on switch-core to the Service, so every workspace's
+Decision routing settings in Switch Console show it as the server default with
+no further setup.
+
+- **The service token.** The decision service requires a bearer token on
+  everything but `/health` (`DECISION_SERVICE_TOKEN`), and switch-core sends it
+  (`DECISION_API_KEY`), so another pod in the cluster gets 401 even where the
+  NetworkPolicy isn't enforced. The chart generates it into the Secret
+  `<release>-decision-token` on the first install, and reads it back with
+  `lookup` on every upgrade, so it stays the same. `helm template` can't read
+  the cluster, so it renders a new value each time; that is expected, and only
+  matters if you apply its output directly (do it with
+  `decision.token.existingSecret` then). To manage the token yourself, put it
+  in a Secret of your own and name it in `decision.token.existingSecret` (the
+  entry `decision.token.existingSecretKey`, `token` by default); the chart then
+  renders no Secret. Rotating it: change the Secret's value and restart both
+  the decision and switch-core pods.
 
 - **The model.** `decision.modelServer.kind` picks the model server:
   - `strands` (default): **Strands Decider 4B** (the E4B checkpoint) on its own
@@ -335,9 +350,9 @@ it as the server default with no further setup.
   `decision.backend` to `anthropic` or `bedrock`.
 - **Other settings.** `decision.env` passes anything else in the service's
   environment (`DECISION_TIMEOUT_S`, `DECISION_HISTORY_LIMIT`, …).
-- **The NetworkPolicy** needs a CNI that enforces it. Turn it off with
-  `decision.networkPolicy.enabled: false` only if something else restricts who
-  reaches the service: it has no key of its own in this setup.
+- **The NetworkPolicy** needs a CNI that enforces it; where none does, the
+  service token still keeps other pods out. It stays on by default as a
+  second layer; turn it off with `decision.networkPolicy.enabled: false`.
 
 To use a decision service run elsewhere instead, leave `decision.enabled` off
 and set `switchCore.decision.endpointUrl` (and `bedrockEnabled` if that service

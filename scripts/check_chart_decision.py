@@ -4,7 +4,8 @@
 The decision service (auto-route) is optional in the chart. Off, nothing of it
 renders and switch-core gets no endpoint. On, the chart runs it beside its
 model server (Strands Decider by default, or Qwen on llama.cpp), points
-switch-core at it and admits only switch-core to it. An endpoint run elsewhere
+switch-core at it and admits only switch-core to it, both by NetworkPolicy and
+by a bearer token the chart generates. An endpoint run elsewhere
 can be named instead, but not as well as the chart's own. These are the
 promises deploy/remote/helm/switch/README.md makes about `decision.*`; a render
 that breaks one fails here, before a cluster finds out.
@@ -16,6 +17,7 @@ Needs `helm` on PATH and PyYAML. Run from the repo root:
 
 from __future__ import annotations
 
+import base64
 import subprocess
 import sys
 from collections.abc import Callable
@@ -84,12 +86,31 @@ def env_of(container: dict[str, Any]) -> dict[str, Any]:
     return {e["name"]: e.get("value") for e in container.get("env", [])}
 
 
+def secret_refs_of(container: dict[str, Any]) -> dict[str, Any]:
+    return {
+        e["name"]: e["valueFrom"]["secretKeyRef"]
+        for e in container.get("env", [])
+        if "secretKeyRef" in e.get("valueFrom", {})
+    }
+
+
+def core_container(docs: list[dict[str, Any]]) -> dict[str, Any]:
+    deployment = next(
+        d
+        for d in docs
+        if d["kind"] == "Deployment"
+        and d["metadata"]["name"] == f"{RELEASE}-switch-core"
+    )
+    return containers(deployment)["switch-core"]
+
+
 def test_off_by_default_renders_nothing_and_sets_no_endpoint() -> None:
     docs = render()
     assert decision_objects(docs) == {}
     env = core_env(docs)
     assert "DECISION_ENDPOINT_URL" not in env
     assert "DECISION_BEDROCK_ENABLED" not in env
+    assert "DECISION_API_KEY" not in env
 
 
 def test_on_runs_the_service_and_points_switch_core_at_it() -> None:
@@ -101,6 +122,7 @@ def test_on_runs_the_service_and_points_switch_core_at_it() -> None:
         "PersistentVolumeClaim",
         "ServiceAccount",
         "NetworkPolicy",
+        "Secret",
     }, sorted(objects)
 
     assert core_env(docs)["DECISION_ENDPOINT_URL"] == f"http://{RELEASE}-decision:8230"
@@ -314,6 +336,57 @@ def test_an_endpoint_elsewhere() -> None:
     assert env["DECISION_ENDPOINT_URL"] == "http://decider.example:8230"
     assert env["DECISION_BEDROCK_ENABLED"] == "true"
     assert env["DECISION_TIMEOUT_SECONDS"] == "8"
+    assert "DECISION_API_KEY" not in env
+
+
+def test_the_service_requires_a_token_that_switch_core_sends() -> None:
+    docs = render("--set", "decision.enabled=true", *FLAGS)
+    objects = decision_objects(docs)
+    secret = objects["Secret"]
+    assert secret["metadata"]["name"] == f"{RELEASE}-decision-token"
+    assert secret["type"] == "Opaque"
+    assert set(secret["data"]) == {"token"}
+    # `helm template` can't `lookup`, so this is a fresh value; an install
+    # keeps the stored one. Long and random either way.
+    token = base64.b64decode(secret["data"]["token"]).decode()
+    assert len(token) == 48 and token.isalnum(), token
+    assert (
+        token
+        != base64.b64decode(
+            decision_objects(render("--set", "decision.enabled=true"))["Secret"][
+                "data"
+            ]["token"]
+        ).decode()
+    )
+
+    ref = {"name": f"{RELEASE}-decision-token", "key": "token"}
+    decision = containers(objects["Deployment"])["decision"]
+    assert secret_refs_of(decision)["DECISION_SERVICE_TOKEN"] == ref
+    assert secret_refs_of(core_container(docs))["DECISION_API_KEY"] == ref
+    # The model server is reached only on localhost and takes no token.
+    model_server = containers(objects["Deployment"])["model-server"]
+    assert "DECISION_SERVICE_TOKEN" not in secret_refs_of(model_server)
+
+
+def test_an_existing_token_secret_replaces_the_generated_one() -> None:
+    docs = render(
+        "--set",
+        "decision.enabled=true",
+        "--set",
+        "decision.token.existingSecret=my-decision-token",
+        "--set",
+        "decision.token.existingSecretKey=bearer",
+        *FLAGS,
+    )
+    objects = decision_objects(docs)
+    assert "Secret" not in objects
+    assert not any(
+        d["kind"] == "Secret" and "decision" in d["metadata"]["name"] for d in docs
+    )
+    ref = {"name": "my-decision-token", "key": "bearer"}
+    decision = containers(objects["Deployment"])["decision"]
+    assert secret_refs_of(decision)["DECISION_SERVICE_TOKEN"] == ref
+    assert secret_refs_of(core_container(docs))["DECISION_API_KEY"] == ref
 
 
 def test_refuses_contradictions() -> None:
@@ -356,6 +429,8 @@ TESTS: list[Callable[[], None]] = [
     test_without_a_model_server_there_is_no_gpu_or_volume,
     test_network_policy_can_be_left_out,
     test_an_endpoint_elsewhere,
+    test_the_service_requires_a_token_that_switch_core_sends,
+    test_an_existing_token_secret_replaces_the_generated_one,
     test_refuses_contradictions,
 ]
 
