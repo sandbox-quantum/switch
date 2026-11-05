@@ -172,6 +172,29 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **The server's administrator can delete someone's account.** The Users page
+  has a Delete action (`DELETE /users/{id}`) that removes the account in every
+  workspace, with the same refusals as deleting your own. Administrator
+  accounts and your own account are refused, and every attempt is recorded in
+  the server audit log with its outcome.
+- **Transfer ownership.** The owner, or a workspace admin, can hand an agent,
+  room, package, reference, reference type, library document or template to
+  another member of the workspace (`POST /ownership/transfer`, and a Transfer
+  ownership action on the detail pages). Each transfer is audited. An agent
+  that uses its owner's service connections, is managed on its owner's
+  machine, can manage agents, has sub-agents or signs in with its own OAuth
+  client is refused; any other agent gets a new API key that only the new
+  owner can see, so it has to be reconnected. Chats and room documents are not
+  transferable.
+- **Workspace admins can delete an empty workspace.** Workspace settings has a
+  Delete workspace action that asks for the workspace's name
+  (`DELETE /tenants/{id}`). It is refused, with what is left by kind and count,
+  until the workspace has no rooms (archived ones included), agents, packages,
+  references, reference types, documents, templates, room groups, messaging or
+  service connections, machines, connectors, skills or other members. Its audit
+  history is kept, and the deletion is recorded in the server audit log. The
+  server's default workspace can't be deleted. Deleting your account now also
+  deletes a workspace you leave empty.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -807,6 +830,10 @@ version of their own to them without also giving them a release of their own.
   through. Slack apps that list `/run-cmd` in their manifest keep showing it,
   answering "Unknown command", until an admin deletes it; Discord and Telegram
   drop it from their command lists by themselves (#730).
+- **Deleting your account now also clears workspaces you were removed from.**
+  Removing a member leaves what they own in that workspace, and deleting their
+  account afterwards failed on it. Those rows are now deleted or handed over as
+  they are in the workspaces you are still in.
 
 ### [0.31.0] - 2026-10-20
 

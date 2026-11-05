@@ -1,4 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import ArchiveOutlined from "@mui/icons-material/ArchiveOutlined";
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import Close from "@mui/icons-material/Close";
@@ -161,6 +162,14 @@ export default function RoomDetailPage() {
         )}
         {canManage && (
           <>
+            <Divider />
+            <TransferOwnershipSection
+              kind="room"
+              resourceId={room.id}
+              resourceLabel={room.name}
+              ownerId={room.owner_id}
+              onTransferred={refetch}
+            />
             <Divider />
             <DangerSection room={room} onDeleted={() => navigate("/rooms")} />
           </>

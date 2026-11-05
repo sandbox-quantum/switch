@@ -277,6 +277,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/tenants/{tenant_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/tenants/{tenant_id}/budgets/{budget_id}",
       "auth": "session",
       "flags": []
@@ -298,6 +303,11 @@
     },
     {
       "route": "DELETE /gateway/trust-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/users/{user_id}",
       "auth": "session",
       "flags": []
     },
@@ -1276,6 +1286,11 @@
     },
     {
       "route": "POST /gateway/organizations/current/workspaces",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/ownership/transfer",
       "auth": "session",
       "flags": []
     },

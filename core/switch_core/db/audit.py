@@ -28,6 +28,7 @@ from switch_core.db.models import (
 
 class AuditAction(StrEnum):
     TENANT_CREATED = "tenant.created"
+    TENANT_DELETED = "tenant.deleted"
     INVITATION_CREATED = "invitation.created"
     INVITATION_REVOKED = "invitation.revoked"
     INVITATION_ACCEPTED = "invitation.accepted"
@@ -72,6 +73,7 @@ class AuditAction(StrEnum):
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
     WORKSPACE_SERVICE_CLEARED = "workspace_service.cleared"
+    OWNERSHIP_TRANSFERRED = "ownership.transferred"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -113,6 +115,10 @@ class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
     CONNECTOR_APP_REMOVED = "connector_app.removed"
+    USER_DELETED = "user.deleted"
+    USER_DELETION_REFUSED = "user.deletion_refused"
+    USER_DELETION_FAILED = "user.deletion_failed"
+    WORKSPACE_DELETED = "workspace.deleted"
     # WorkOS refused where the directory mirror had got to in its events, and
     # the mirror started again from now, with a full check of every linked
     # organization.
