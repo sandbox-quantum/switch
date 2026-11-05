@@ -94,6 +94,7 @@ export type RendererTelemetryEvents = {
       | 'antigravity'
       | 'deepseek-harness'
       | 'pi'
+      | 'copilot'
       | 'none';
   };
   /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */

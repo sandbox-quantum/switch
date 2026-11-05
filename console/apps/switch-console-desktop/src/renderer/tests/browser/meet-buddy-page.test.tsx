@@ -142,7 +142,8 @@ describe('MeetBuddyPage', () => {
       signedOut('opencode'),
       signedOut('cursor'),
       signedOut('antigravity'),
-      signedOut('pi')
+      signedOut('pi'),
+      signedOut('copilot')
     );
     await render();
     expect(buttons()).toEqual(['Skip', 'Set up AI provider']);

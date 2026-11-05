@@ -92,6 +92,7 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'antigravity',
       'deepseek-harness',
       'pi',
+      'copilot',
       'none',
     ]),
   }),

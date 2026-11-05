@@ -73,6 +73,7 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "cursor": ("cursor", "Cursor CLI"),
         "deepseek-harness": ("deepseek-harness", "DeepSeek Harness"),
         "pi": ("pi", "Pi"),
+        "copilot": ("copilot", "GitHub Copilot CLI"),
     }
 
 
@@ -92,6 +93,7 @@ _CONSOLE_SIGN_IN = {
         r"DSH_LOGIN = '([^']+)'",
     ),
     "pi": ("pi/sign-in.ts", r"PI_LOGIN = '([^']+)'"),
+    "copilot": ("copilot/copilot-acp.ts", r"COPILOT_LOGIN = '([^']+)'"),
 }
 
 
@@ -111,7 +113,7 @@ def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
         agent_provider("gemini")
     assert str(raised.value) == (
         "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
-        "deepseek-harness, pi"
+        "deepseek-harness, pi, copilot"
     )
 
 

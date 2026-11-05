@@ -203,6 +203,7 @@ class TestUnavailableReplyRouting:
             "cursor": "agent login",
             "deepseek-harness": "dsh web",
             "pi": "pi",
+            "copilot": "copilot login",
         }
         for agent_type, command in sign_in.items():
             agent = _agent(
