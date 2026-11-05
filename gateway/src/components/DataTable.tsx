@@ -17,10 +17,11 @@ interface DataTableProps<T extends { id: string | number }> {
   fillHeight?: boolean;
   pageSize?: number;
   checkboxSelection?: boolean;
+  // Rows that may be ticked, when not every one may (the viewer cannot act
+  // on the rest).
+  isRowSelectable?: (row: T) => boolean;
   onRowSelectionModelChange?: (ids: GridRowId[]) => void;
   onRowClick?: (params: GridRowParams<T>) => void;
-  /** Rows the user may not act on can't be ticked for a bulk action. */
-  isRowSelectable?: (params: GridRowParams<T>) => boolean;
   sx?: SxProps<Theme>;
 }
 
@@ -75,9 +76,9 @@ export default function DataTable<T extends { id: string | number }>({
   fillHeight = false,
   pageSize = 25,
   checkboxSelection = false,
+  isRowSelectable,
   onRowSelectionModelChange,
   onRowClick,
-  isRowSelectable,
   sx,
 }: DataTableProps<T>) {
   const extraSx = Array.isArray(sx) ? sx : sx ? [sx] : [];
@@ -91,13 +92,15 @@ export default function DataTable<T extends { id: string | number }>({
       pageSizeOptions={[10, 25, 50]}
       pagination
       checkboxSelection={checkboxSelection}
+      isRowSelectable={
+        isRowSelectable ? (params: GridRowParams<T>) => isRowSelectable(params.row) : undefined
+      }
       onRowSelectionModelChange={
         onRowSelectionModelChange
           ? (model: GridRowSelectionModel) => onRowSelectionModelChange([...model.ids])
           : undefined
       }
       onRowClick={onRowClick}
-      isRowSelectable={isRowSelectable}
       disableRowSelectionOnClick
       sx={[HOOT_GRID_SX, { height: fillHeight ? "100%" : height }, ...extraSx]}
     />

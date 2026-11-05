@@ -73,23 +73,14 @@ export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
               direction="row"
               alignItems="center"
               spacing={1}
-              // A linked room the viewer can't read is listed, but not as a
-              // link: opening it would only be refused.
               sx={{
                 px: 1,
                 py: 0.5,
                 borderRadius: 1,
-                ...(link.can_read && {
-                  cursor: "pointer",
-                  "&:hover": { backgroundColor: "action.hover" },
-                }),
+                cursor: "pointer",
+                "&:hover": { backgroundColor: "action.hover" },
               }}
-              onClick={
-                link.can_read
-                  ? () => navigate(`/rooms/${link.target_room_id}`)
-                  : undefined
-              }
-              data-testid={`linked-room-${link.target_room_id}`}
+              onClick={() => navigate(`/rooms/${link.target_room_id}`)}
             >
               <Chip label={link.label} size="small" />
               <Stack sx={{ flexGrow: 1, minWidth: 0 }}>
@@ -110,6 +101,7 @@ export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
                     e.stopPropagation();
                     handleDetach(link.target_room_id);
                   }}
+                  aria-label={`Remove link to ${link.target_room_name}`}
                 >
                   <DeleteOutline fontSize="small" />
                 </IconButton>
@@ -129,30 +121,30 @@ export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
           >
             Add linked room
           </Button>
-          <AddLinkedRoomDialog
-            open={dialogOpen}
-            sourceRoomId={roomId}
-            existingTargetIds={existingTargetIds}
-            onClose={() => setDialogOpen(false)}
-            onCreated={() => {
-              setDialogOpen(false);
-              refetch();
-            }}
-          />
+          {dialogOpen && (
+            <AddLinkedRoomDialog
+              sourceRoomId={roomId}
+              existingTargetIds={existingTargetIds}
+              onClose={() => setDialogOpen(false)}
+              onCreated={() => {
+                setDialogOpen(false);
+                refetch();
+              }}
+            />
+          )}
         </>
       )}
     </Stack>
   );
 }
 
+// Mounted only while open, so the room list loads only when someone links.
 function AddLinkedRoomDialog({
-  open,
   sourceRoomId,
   existingTargetIds,
   onClose,
   onCreated,
 }: {
-  open: boolean;
   sourceRoomId: string;
   existingTargetIds: Set<string>;
   onClose: () => void;
@@ -183,9 +175,6 @@ function AddLinkedRoomDialog({
     setError(null);
     try {
       await attachLinkedRoom(sourceRoomId, selectedId, label.trim());
-      setSearch("");
-      setSelectedId(null);
-      setLabel("");
       onCreated();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to add link");
@@ -194,16 +183,8 @@ function AddLinkedRoomDialog({
     }
   };
 
-  const handleClose = () => {
-    setSearch("");
-    setSelectedId(null);
-    setLabel("");
-    setError(null);
-    onClose();
-  };
-
   return (
-    <Dialog open={open} onClose={handleClose} fullWidth maxWidth="sm">
+    <Dialog open onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>Add linked room</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
@@ -256,7 +237,7 @@ function AddLinkedRoomDialog({
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={handleClose} disabled={busy}>
+        <Button onClick={onClose} disabled={busy}>
           Cancel
         </Button>
         <Button

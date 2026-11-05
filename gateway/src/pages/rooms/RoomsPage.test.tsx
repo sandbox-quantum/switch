@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { GridColDef, GridRowId, GridRowParams } from "@mui/x-data-grid";
+import type { GridColDef, GridRowId } from "@mui/x-data-grid";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RoomSummary } from "../../data/api";
@@ -71,7 +71,7 @@ vi.mock("../../components/DataTable", () => ({
   }: {
     rows: RoomSummary[];
     columns: GridColDef<RoomSummary>[];
-    isRowSelectable?: (p: GridRowParams<RoomSummary>) => boolean;
+    isRowSelectable?: (row: RoomSummary) => boolean;
     onRowSelectionModelChange?: (ids: GridRowId[]) => void;
   }) {
     const [picked, setPicked] = useState<GridRowId[]>([]);
@@ -81,7 +81,7 @@ vi.mock("../../components/DataTable", () => ({
         {rows.map((row) => (
           <div key={row.id} data-testid={`row-${row.name}`}>
             {row.name}
-            {(isRowSelectable?.({ row } as GridRowParams<RoomSummary>) ?? true) && (
+            {(isRowSelectable?.(row) ?? true) && (
               <input
                 type="checkbox"
                 aria-label={`select ${row.name}`}

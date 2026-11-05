@@ -24,9 +24,12 @@ from switch_core.feature_flags import (
     KNOWN_FEATURE_FLAGS,
     ORGANIZATION_CONNECTOR_APPS,
     SERVICE_CONNECTIONS,
+    SWITCH_CLOUD,
 )
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
+
+DeploymentKind = Literal["switch_cloud", "managed_by_console", "self_hosted"]
 
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
 _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
@@ -337,6 +340,12 @@ class SwitchConfig(BaseSettings):
     # reason, and cannot be connected, granted or issued; disconnecting still
     # works. Unknown slugs stop the server.
     disabled_services: dict[str, str] = Field(default_factory=dict)
+    # Catalog services that reach what one of their entry's access profiles
+    # does on this server, in place of the entry's own levels, as JSON:
+    # {"<slug>": "<profile>"}. For a vendor that reviews an app before it may
+    # ask for some scopes, e.g. {"google-workspace": "drive-file"}. Unknown
+    # services or profiles stop the server.
+    service_access_profiles: dict[str, str] = Field(default_factory=dict)
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -384,6 +393,26 @@ class SwitchConfig(BaseSettings):
     # an operator provisioning workspaces for other people is not that.
     # docs/old/multi-tenancy-phase2-tenants.md, §5.
     gateway_max_workspaces_per_user: int = 3
+
+    # Who keeps the record of organizations and their members
+    # (`organization_directory.py`). "local": this server, in its own tables.
+    # "workos": the WorkOS environment behind the gateway's OIDC sign-in, read
+    # with `WORKOS_API_KEY`; organization membership comes from there, and
+    # workspaces and their roles stay here.
+    organization_directory: Literal["local", "workos"] = "local"
+    workos_api_key: str | None = None
+    workos_api_url: str = "https://api.workos.com"
+    # Changes made from Switch to a linked organization's members, sent to
+    # the service every product in the WorkOS environment changes them
+    # through (`members_service.py`), with the admin's own WorkOS access
+    # token. All three or none; unset, Switch takes nothing to WorkOS,
+    # refuses what grants, and what it takes away lasts only until WorkOS is
+    # read again. `WORKOS_CLIENT_ID` is the AuthKit application Switch signs
+    # admins in to for that token, and `WORKOS_REDIRECT_URL` its callback
+    # (`.../gateway/auth/workos/callback`), registered on that application.
+    members_service_url: str | None = None
+    workos_client_id: str | None = None
+    workos_redirect_url: str | None = None
 
     # Outbound mail for invitations addressed to an e-mail. Setting the host
     # turns it on; any SMTP relay works. Unset, an addressed invitation is
@@ -1315,6 +1344,16 @@ class SwitchConfig(BaseSettings):
         return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
 
     @property
+    def deployment_kind(self) -> DeploymentKind:
+        """Who runs this server: Switch Cloud (its feature flag), Switch Console
+        for the person using it (`managed_by_console`), or anyone else."""
+        if self.feature_flags[SWITCH_CLOUD]:
+            return "switch_cloud"
+        if self.managed_by_console:
+            return "managed_by_console"
+        return "self_hosted"
+
+    @property
     def agent_management_enabled(self) -> bool:
         return self.feature_flags[AGENT_MANAGEMENT]
 
@@ -1415,6 +1454,20 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_service_access_profiles(self) -> "SwitchConfig":
+        for slug, profile in self.service_access_profiles.items():
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
+                raise ValueError(
+                    f"SERVICE_ACCESS_PROFILES names an invalid service: {slug!r}"
+                )
+            if not _SERVICE_SLUG_RE.fullmatch(profile):
+                raise ValueError(
+                    f"SERVICE_ACCESS_PROFILES names an invalid profile for {slug}: "
+                    f"{profile!r}"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _validate_migration_lock_timeout(self) -> "SwitchConfig":
         if not _PG_INTERVAL_RE.match(self.db_migration_lock_timeout):
             raise ValueError(
@@ -1489,6 +1542,47 @@ class SwitchConfig(BaseSettings):
                     "register an http redirect or event URL, so an http origin "
                     f"cannot work, got {self.messaging_public_url!r}."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_organization_directory(self) -> "SwitchConfig":
+        if self.organization_directory != "workos":
+            if self.members_service_url:
+                raise ValueError(
+                    "MEMBERS_SERVICE_URL is for ORGANIZATION_DIRECTORY=workos: "
+                    "under the local directory there is nobody to send changes to."
+                )
+            return self
+        if not self.workos_api_key:
+            raise ValueError(
+                "ORGANIZATION_DIRECTORY=workos needs WORKOS_API_KEY, to read "
+                "who belongs to which organization."
+            )
+        if not self.gateway_oidc_issuer_url:
+            raise ValueError(
+                "ORGANIZATION_DIRECTORY=workos needs the gateway's OIDC sign-in "
+                "(GATEWAY_OIDC_*) set up against the same WorkOS environment: "
+                "the sign-in is what names the person there."
+            )
+        if self.gateway_signup_mode != "invite_only":
+            raise ValueError(
+                "ORGANIZATION_DIRECTORY=workos needs GATEWAY_SIGNUP_MODE=invite_only: "
+                "until organizations can be created in WorkOS from Switch, a "
+                "customer's organization is linked by an operator "
+                "(switch-link-workos), not created by whoever signs up."
+            )
+        changes = (
+            self.members_service_url,
+            self.workos_client_id,
+            self.workos_redirect_url,
+        )
+        if 0 < sum(1 for value in changes if value) < len(changes):
+            raise ValueError(
+                "MEMBERS_SERVICE_URL, WORKOS_CLIENT_ID and WORKOS_REDIRECT_URL "
+                "are set together: changes to a linked organization's members "
+                "go to the members service with a token from that AuthKit "
+                "application."
+            )
         return self
 
     @model_validator(mode="after")

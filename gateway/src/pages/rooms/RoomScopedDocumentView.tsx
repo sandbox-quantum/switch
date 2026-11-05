@@ -15,7 +15,7 @@ import {
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { detachDocumentFromRoom } from "../../data/api";
-import { useRoom, useRoomDocument } from "../../data/hooks";
+import { useRoomDocument } from "../../data/hooks";
 
 export default function RoomScopedDocumentView() {
   const { roomId, documentId } = useParams<{
@@ -24,10 +24,6 @@ export default function RoomScopedDocumentView() {
   }>();
   const navigate = useNavigate();
   const { data: doc, loading, error } = useRoomDocument(roomId, documentId);
-  // Deleting a room document (or detaching a shared one) is a write to the
-  // room, so it is offered only to those who may write to it.
-  const { data: room } = useRoom(roomId);
-  const canWrite = !!room && room.can_write;
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -55,10 +51,16 @@ export default function RoomScopedDocumentView() {
     );
   }
 
+  const isRoomScoped = doc.scope === "room";
+
+  // A room-scoped document lives only here, so removing it deletes it. An
+  // attached one is only unlinked from the room.
   const handleDelete = async () => {
     if (
       !window.confirm(
-        `Delete room document “${doc.name}”? This cannot be undone.`,
+        isRoomScoped
+          ? `Delete room document “${doc.name}”? This cannot be undone.`
+          : `Unlink “${doc.name}” from this room? The document itself is kept.`,
       )
     )
       return;
@@ -72,8 +74,6 @@ export default function RoomScopedDocumentView() {
       setDeleting(false);
     }
   };
-
-  const isRoomScoped = doc.scope === "room";
 
   return (
     <Box>
@@ -136,12 +136,12 @@ export default function RoomScopedDocumentView() {
             </Paper>
           </Stack>
 
-          {canWrite && (
-            <>
-              <Divider />
+          <Divider />
 
-              {deleteError && <Alert severity="error">{deleteError}</Alert>}
-              <Stack direction="row" justifyContent="flex-end">
+          {deleteError && <Alert severity="error">{deleteError}</Alert>}
+          {doc.can_remove && (
+            <Stack direction="row" justifyContent="flex-end">
+              {isRoomScoped ? (
                 <Button
                   color="error"
                   startIcon={<DeleteOutline />}
@@ -150,8 +150,12 @@ export default function RoomScopedDocumentView() {
                 >
                   Delete
                 </Button>
-              </Stack>
-            </>
+              ) : (
+                <Button onClick={handleDelete} disabled={deleting}>
+                  Unlink from room
+                </Button>
+              )}
+            </Stack>
           )}
         </Stack>
       </Paper>

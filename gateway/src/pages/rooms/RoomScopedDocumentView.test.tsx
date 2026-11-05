@@ -1,11 +1,8 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DocumentDetail, RoomDetail } from "../../data/api";
+import type { RoomDocumentDetail } from "../../data/api";
 import * as hooks from "../../data/hooks";
 import RoomScopedDocumentView from "./RoomScopedDocumentView";
-
-// Deleting a room's document is a write to the room, offered only when the
-// server says the caller may write to it. A reader sees the document only.
 
 vi.mock("react-router", () => ({
   useNavigate: () => vi.fn(),
@@ -13,53 +10,51 @@ vi.mock("react-router", () => ({
 }));
 
 vi.mock("../../data/hooks", () => ({
-  useRoom: vi.fn(),
   useRoomDocument: vi.fn(),
 }));
 
-const doc = {
-  id: "d1",
-  name: "notes",
-  description: "",
-  instructions: "",
-  content: "hello",
-  scope: "room",
-} as unknown as DocumentDetail;
-
-const query = <T,>(data: T | null) => ({
-  data,
-  loading: false,
-  error: null,
-  refetch: vi.fn(),
-});
-
-function showDocument(room: { can_write: boolean } | null) {
-  vi.mocked(hooks.useRoomDocument).mockReturnValue(query(doc));
-  vi.mocked(hooks.useRoom).mockReturnValue(
-    query(room && ({ id: "r1", ...room } as RoomDetail)),
-  );
-  render(<RoomScopedDocumentView />);
+function showDocument(canRemove: boolean, scope: "room" | "global" = "room") {
+  vi.mocked(hooks.useRoomDocument).mockReturnValue({
+    data: {
+      id: "d1",
+      name: "Notes",
+      description: "",
+      content: "hello",
+      scope,
+      can_remove: canRemove,
+    } as RoomDocumentDetail,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+  });
 }
 
-afterEach(cleanup);
+describe("RoomScopedDocumentView", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
 
-describe("room document delete", () => {
-  it("is not offered to someone who may only read the room", () => {
-    showDocument({ can_write: false });
+  it("offers deleting a room document to someone who may delete it", () => {
+    showDocument(true);
+    render(<RoomScopedDocumentView />);
 
-    expect(screen.getByText("hello")).toBeTruthy();
+    screen.getByRole("button", { name: "Delete" });
+  });
+
+  it("shows a reader the document with no way to delete it", () => {
+    showDocument(false);
+    render(<RoomScopedDocumentView />);
+
+    screen.getByText("hello");
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
   });
 
-  it("is not offered before the room has loaded", () => {
-    showDocument(null);
+  it("offers unlinking, not deleting, a document only attached to the room", () => {
+    showDocument(true, "global");
+    render(<RoomScopedDocumentView />);
 
+    screen.getByRole("button", { name: "Unlink from room" });
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
-  });
-
-  it("is offered to someone who may write to the room", () => {
-    showDocument({ can_write: true });
-
-    expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
   });
 });

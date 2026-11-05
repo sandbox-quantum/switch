@@ -76,10 +76,6 @@ export default function RoomsPage() {
     ],
   );
 
-  // Archiving is a write, as the server reports it for each room. Other rooms
-  // get no archive action and can't be selected.
-  const canWrite = useCallback((room: RoomSummary) => room.can_write, []);
-
   const handleToggleArchive = useCallback(
     async (roomId: string, archived: boolean) => {
       setNotice(null);
@@ -211,8 +207,9 @@ export default function RoomsPage() {
         width: 116,
         sortable: false,
         filterable: false,
+        // Archiving takes write access to the room.
         renderCell: ({ row }) =>
-          canWrite(row) && (
+          row.can_write ? (
             <Button
               size="small"
               color="inherit"
@@ -230,10 +227,10 @@ export default function RoomsPage() {
             >
               {row.archived ? "Unarchive" : "Archive"}
             </Button>
-          ),
+          ) : null,
       },
     ],
-    [handleToggleArchive, byId, canWrite],
+    [handleToggleArchive, byId],
   );
 
   return (
@@ -293,8 +290,8 @@ export default function RoomsPage() {
           columns={columns}
           fillHeight
           checkboxSelection
+          isRowSelectable={(room) => room.can_write}
           onRowSelectionModelChange={setSelected}
-          isRowSelectable={({ row }) => canWrite(row)}
           onRowClick={(params) => navigate(`/rooms/${params.id}`)}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
         />

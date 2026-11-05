@@ -81,6 +81,7 @@ async def _attributes_on_the_wire(
         version="1.0.0",
         telemetry_environment="prod",
         telemetry_internal=False,
+        deployment_kind="self_hosted",
     )
     service.emit(event, **{key: value(kind) for key, kind in event_spec(event).items()})
     await service.aclose()

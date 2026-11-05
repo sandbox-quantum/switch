@@ -19,7 +19,6 @@ import {
   Divider,
   FormControlLabel,
   IconButton,
-  MenuItem,
   Stack,
   Switch,
   TextField,
@@ -42,12 +41,12 @@ import {
   deleteRoomRole,
   removeRoomAgent,
   setRoomAgentJoinEvents,
-  setRoomGroup,
   unarchiveRoom,
   updateRoom,
   updateRoomRole,
 } from "../../data/api";
-import { useAgents, useBridgeUsers, useRoom, useRoomGroups } from "../../data/hooks";
+import { useAgents, useBridgeUsers, useRoom } from "../../data/hooks";
+import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
 import {
@@ -57,15 +56,17 @@ import {
   formatDateTime,
   titleCase,
 } from "../../theme/hootFormat";
-import { effectiveColor, buildGroupIndex, flattenTree } from "./groupTree";
+import RoomGroupSection from "./RoomGroupSection";
 import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
 import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
+import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
 
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
+  const { canAdminTenant } = useAuth();
   const { data: room, loading, error, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -90,12 +91,8 @@ export default function RoomDetailPage() {
     );
   }
 
-  // The server says what the caller may do: write covers the room's fields,
-  // agents, people and resources; deleting it and changing its access need
-  // manage, which public write never gives.
   const canWrite = room.can_write;
   const canManage = room.can_manage;
-  const canDelete = canManage;
 
   return (
     <Box>
@@ -123,7 +120,12 @@ export default function RoomDetailPage() {
       <Stack spacing={4}>
         <RoomInfoSection room={room} />
         <Divider />
-        <GroupSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <RoomGroupSection
+          room={room}
+          canWrite={canWrite}
+          canFile={canAdminTenant}
+          onChanged={refetch}
+        />
         <Divider />
         <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
@@ -136,7 +138,11 @@ export default function RoomDetailPage() {
         <Divider />
         <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
-        <RoomResourcesSection roomId={room.id} canWrite={canWrite} />
+        <RoomResourcesSection
+          roomId={room.id}
+          canWrite={canWrite}
+          canUnlink={room.can_unlink}
+        />
         <Divider />
         <RoomLinkedRoomsSection roomId={room.id} canWrite={canWrite} />
         <Divider />
@@ -153,7 +159,7 @@ export default function RoomDetailPage() {
             <ArchiveSection room={room} onChanged={refetch} />
           </>
         )}
-        {canDelete && (
+        {canManage && (
           <>
             <Divider />
             <DangerSection room={room} onDeleted={() => navigate("/rooms")} />
@@ -223,82 +229,6 @@ function InfoChip({
         </Box>
       )}
     </Typography>
-  );
-}
-
-// ── Group ─────────────────────────────────────────────────────────────────────
-
-function GroupSection({
-  room,
-  canWrite,
-  onChanged,
-}: {
-  room: RoomDetail;
-  canWrite: boolean;
-  onChanged: () => void;
-}) {
-  const { data: groups, refetch: refetchGroups } = useRoomGroups();
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const groupList = useMemo(() => groups ?? [], [groups]);
-  const byId = useMemo(() => buildGroupIndex(groupList), [groupList]);
-
-  const handleChange = useCallback(
-    async (value: string) => {
-      setSaving(true);
-      setError(null);
-      try {
-        await setRoomGroup(room.id, value || null);
-        refetchGroups();
-        onChanged();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to update group");
-      } finally {
-        setSaving(false);
-      }
-    },
-    [room.id, onChanged, refetchGroups],
-  );
-
-  return (
-    <Stack spacing={1.5}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-        Group
-      </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
-      <Stack direction="row" spacing={1.5} alignItems="center">
-        {room.group_id && (
-          <Box
-            sx={{
-              width: 12,
-              height: 12,
-              borderRadius: "50%",
-              bgcolor: effectiveColor(room.group_id, byId),
-              flexShrink: 0,
-            }}
-          />
-        )}
-        <TextField
-          select
-          size="small"
-          label="Group"
-          value={room.group_id ?? ""}
-          onChange={(e) => handleChange(e.target.value)}
-          disabled={saving || !canWrite}
-          sx={{ width: 320 }}
-          helperText="Groups organise rooms in the list and colour them in the graph."
-        >
-          <MenuItem value="">Standalone (no group)</MenuItem>
-          {flattenTree(groupList).map(({ group, depth }) => (
-            <MenuItem key={group.id} value={group.id}>
-              {"  ".repeat(depth)}
-              {group.name}
-            </MenuItem>
-          ))}
-        </TextField>
-      </Stack>
-    </Stack>
   );
 }
 
@@ -592,8 +522,7 @@ function RoleRow({
 
 // ── Editable fields ─────────────────────────────────────────────────────────
 
-// Exported for its test.
-export function EditableFieldsSection({
+function EditableFieldsSection({
   room,
   canWrite,
   canManage,
@@ -601,8 +530,6 @@ export function EditableFieldsSection({
 }: {
   room: RoomDetail;
   canWrite: boolean;
-  /** Owner or admin. A publicly writable room lets anyone edit its settings,
-   * but only these people may change who can see and write to it. */
   canManage: boolean;
   onSaved: () => void;
 }) {
@@ -638,11 +565,7 @@ export function EditableFieldsSection({
           !isBridged && description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
-        // The server refuses the whole update if it carries a visibility
-        // change from someone who doesn't manage the room.
-        ...(canManage && access !== toAccessLevel(room)
-          ? fromAccessLevel(access)
-          : {}),
+        ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
       });
       onSaved();
     } catch (err) {
@@ -697,13 +620,8 @@ export function EditableFieldsSection({
         value={access}
         onChange={setAccess}
         disabled={!canManage || saving}
-        helpers={
-          canManage
-            ? undefined
-            : {
-                [access]: "Only the room's owner and admins can change who can see and write to it.",
-              }
-        }
+        helpers={ROOM_ACCESS_HELPERS}
+        optionLabels={ROOM_ACCESS_OPTION_LABELS}
         sx={{ maxWidth: 360 }}
       />
       <Box>
@@ -732,9 +650,6 @@ function ParticipantsSection({
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
-  const { data: bridgeUsers, loading: bridgeUsersLoading } = useBridgeUsers(
-    room.bridge_id ?? undefined,
-  );
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -821,19 +736,6 @@ function ParticipantsSection({
     [room.id, onChanged],
   );
 
-  const addableUserOptions = useMemo<PickerOption[]>(
-    () =>
-      (bridgeUsers ?? [])
-        .filter((u) => !room.connected_user_names.includes(u.external_username))
-        .map((u) => ({
-          id: u.external_username,
-          primary: u.external_username,
-          secondary: u.external_user_id,
-          search: `${u.external_username} ${u.external_user_id}`.toLowerCase(),
-        })),
-    [bridgeUsers, room.connected_user_names],
-  );
-
   const handleAddUsers = useCallback(
     async (names: string[]) => {
       setWorking(true);
@@ -873,12 +775,12 @@ function ParticipantsSection({
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
               onToggleJoinEvents={
-                working || !canWrite
+                !canWrite || working
                   ? undefined
                   : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                isFixedMembership || working || !canWrite
+                !canWrite || isFixedMembership || working
                   ? undefined
                   : () => handleRemoveAgent(id)
               }
@@ -890,7 +792,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {!isFixedMembership && canWrite && (
+        {canWrite && !isFixedMembership && (
           <>
             <Button
               size="small"
@@ -948,21 +850,59 @@ function ParticipantsSection({
               >
                 Add user
               </Button>
-              <SearchablePickerDialog
-                open={addUserOpen}
-                title="Add users"
-                searchPlaceholder="Search users…"
-                submitLabel="Add"
-                options={addableUserOptions}
-                loading={bridgeUsersLoading}
-                onClose={() => setAddUserOpen(false)}
-                onSubmit={handleAddUsers}
-              />
+              {addUserOpen && (
+                <BridgeUserPicker
+                  bridgeId={room.bridge_id}
+                  connectedNames={room.connected_user_names}
+                  onClose={() => setAddUserOpen(false)}
+                  onSubmit={handleAddUsers}
+                />
+              )}
             </>
           )}
         </Box>
       )}
     </Stack>
+  );
+}
+
+// Mounted only while open, so the platform's user directory loads only when
+// someone adds a user.
+function BridgeUserPicker({
+  bridgeId,
+  connectedNames,
+  onClose,
+  onSubmit,
+}: {
+  bridgeId: string;
+  connectedNames: string[];
+  onClose: () => void;
+  onSubmit: (names: string[]) => Promise<void>;
+}) {
+  const { data: bridgeUsers, loading } = useBridgeUsers(bridgeId);
+  const options = useMemo<PickerOption[]>(
+    () =>
+      (bridgeUsers ?? [])
+        .filter((u) => !connectedNames.includes(u.external_username))
+        .map((u) => ({
+          id: u.external_username,
+          primary: u.external_username,
+          secondary: u.external_user_id,
+          search: `${u.external_username} ${u.external_user_id}`.toLowerCase(),
+        })),
+    [bridgeUsers, connectedNames],
+  );
+  return (
+    <SearchablePickerDialog
+      open
+      title="Add users"
+      searchPlaceholder="Search users…"
+      submitLabel="Add"
+      options={options}
+      loading={loading}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />
   );
 }
 
@@ -1005,7 +945,8 @@ function AgentRow({
   agentId: string;
   name: string;
   status: string | undefined;
-  receivesJoinEvents?: boolean;
+  receivesJoinEvents: boolean;
+  // Absent while the switch cannot be changed; it still shows the setting.
   onToggleJoinEvents?: (next: boolean) => void;
   onRemove?: () => void;
 }) {
@@ -1047,33 +988,32 @@ function AgentRow({
       <Typography variant="caption" color="text.secondary">
         {meta.label}
       </Typography>
-      {onToggleJoinEvents && (
-        <Tooltip title="When on, this agent is notified when someone joins the room (room_join events) — useful for a welcome/onboarding agent. Does not affect the agent's presence or status.">
-          <FormControlLabel
-            onClick={(e) => e.stopPropagation()}
-            labelPlacement="start"
-            sx={{ mr: 0, ml: 0 }}
-            control={
-              <Switch
-                size="small"
-                checked={!!receivesJoinEvents}
-                onChange={(e) => onToggleJoinEvents(e.target.checked)}
-                inputProps={{ "aria-label": `Notify ${name} when someone joins` }}
+      <Tooltip title="When on, this agent is notified when someone joins the room (room_join events) — useful for a welcome/onboarding agent. Does not affect the agent's presence or status.">
+        <FormControlLabel
+          onClick={(e) => e.stopPropagation()}
+          labelPlacement="start"
+          sx={{ mr: 0, ml: 0 }}
+          control={
+            <Switch
+              size="small"
+              checked={receivesJoinEvents}
+              disabled={!onToggleJoinEvents}
+              onChange={(e) => onToggleJoinEvents?.(e.target.checked)}
+              slotProps={{ input: { "aria-label": `Notify ${name} when someone joins` } }}
+            />
+          }
+          label={
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <NotificationsActiveOutlined
+                sx={{ fontSize: 15, color: "text.secondary" }}
               />
-            }
-            label={
-              <Stack direction="row" spacing={0.5} alignItems="center">
-                <NotificationsActiveOutlined
-                  sx={{ fontSize: 15, color: "text.secondary" }}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  Notify on join
-                </Typography>
-              </Stack>
-            }
-          />
-        </Tooltip>
-      )}
+              <Typography variant="caption" color="text.secondary">
+                Notify on join
+              </Typography>
+            </Stack>
+          }
+        />
+      </Tooltip>
       {onRemove && (
         <IconButton
           size="small"

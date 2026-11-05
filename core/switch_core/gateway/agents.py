@@ -36,7 +36,11 @@ from switch_core.db.models import User, require_tenant_id
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.auth import (
+    get_current_user,
+    get_tenant_is_admin,
+    readable_room_ids,
+)
 from switch_core.gateway.chats import get_chat_service
 from switch_core.gateway.dependencies import (
     get_agent_store,
@@ -749,6 +753,7 @@ async def update_addressing_policy(
     detail = await assemble_agent_detail(
         session,
         agent=agent,
+        visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
@@ -802,6 +807,7 @@ async def update_can_manage_agents(
     detail = await assemble_agent_detail(
         session,
         agent=agent,
+        visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
@@ -832,6 +838,7 @@ async def get_agent_detail(
     detail = await assemble_agent_detail(
         session,
         agent=agent,
+        visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
