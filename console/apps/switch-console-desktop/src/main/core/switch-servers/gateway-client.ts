@@ -3659,11 +3659,12 @@ export async function createRoom(
     /** Null makes an internal room: no channel, not even on the default app. */
     bridgeId: string | null;
     agentIds: string[];
-    /** A new public channel when absent. */
-    channel?: NewRoomChannel;
-    groupId?: string | null;
+    /** Null for a new public channel. */
+    channel: NewRoomChannel | null;
+    groupId: string | null;
     /** The server's default (open to the workspace) when absent. */
-    access?: RoomAccess;
+    /** Null for the server's default. */
+    access: RoomAccess | null;
   }
 ): Promise<RemoteRoomSummary> {
   const channel = params.channel ?? { kind: 'new', private: false };

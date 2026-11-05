@@ -1,6 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
-import { ACCESS_LABELS } from '@renderer/features/switch-rooms/room-settings-sections';
+import {
+  ACCESS_LABELS,
+  ACCESS_ORDER,
+} from '@renderer/features/switch-rooms/room-settings-sections';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
@@ -15,17 +18,10 @@ import {
 } from '@renderer/lib/ui/select';
 import { cn } from '@renderer/utils/utils';
 import type { RemoteBridge, RoomAccess } from '@shared/core/switch-servers/switch-servers';
-import { type ChannelChoice, channelChoiceCards, channelIdProblem } from './room-channel-choices';
+import { channelChoiceCards, channelChoiceOf, channelIdProblem } from './room-channel-choices';
 import type { RoomCreateOptions } from './room-create-request';
 
 const NO_GROUP = '__none__';
-const ACCESS_ORDER: RoomAccess[] = ['public', 'read_only', 'private'];
-
-/** The channel choice a set of options holds. */
-function channelChoiceOf(options: RoomCreateOptions): ChannelChoice {
-  if (options.channel.kind === 'existing') return 'existing';
-  return options.channel.private ? 'private' : 'public';
-}
 
 /**
  * Where a room on a messaging app lives: a new public channel (the default),
@@ -136,11 +132,18 @@ export function CreateRoomOptions({
 }) {
   const [open, setOpen] = useState(false);
   const groups = useQuery({
-    queryKey: ['room-groups', workspaceId],
+    // The key every view reads the groups under, so they go stale and refresh together.
+    queryKey: ['remote-room-groups', workspaceId],
     queryFn: () => rpc.workspaces.listRoomGroups(workspaceId as string),
     enabled: workspaceId !== null,
   });
-  const groupName = (groups.data ?? []).find((group) => group.id === value.groupId)?.name;
+  // The group is named once the list has it; until then (or if it could not be
+  // read) the room is still filed under it, so say so rather than "none".
+  const groupName =
+    value.groupId === null
+      ? null
+      : ((groups.data ?? []).find((group) => group.id === value.groupId)?.name ??
+        (groups.isError ? 'unknown (the groups could not be read)' : 'loading…'));
   const access = value.access ?? 'public';
 
   return (

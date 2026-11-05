@@ -648,7 +648,15 @@ describe('room creation', () => {
       }) as never
     );
 
-    await createRoom(SERVER, { name: 'design', description: 'd', bridgeId: null, agentIds: [] });
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: null,
+      agentIds: [],
+      channel: null,
+      groupId: null,
+      access: null,
+    });
 
     expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({ bridge_id: null, internal_only: true });
   });
@@ -673,6 +681,9 @@ describe('room creation', () => {
       description: 'd',
       bridgeId: 'b1',
       agentIds: ['a1'],
+      channel: null,
+      groupId: null,
+      access: null,
     });
 
     const body = bodyOf(fetchMock.mock.calls[0]);
@@ -739,6 +750,8 @@ describe('room creation', () => {
       bridgeId: 'b1',
       agentIds: [],
       channel: { kind: 'existing', externalChannelId: 'C123' },
+      groupId: null,
+      access: null,
     });
 
     const body = bodyOf(fetchMock.mock.calls[0]);
@@ -768,6 +781,9 @@ describe('room creation', () => {
       instructions: '   ',
       bridgeId: 'b1',
       agentIds: [],
+      channel: null,
+      groupId: null,
+      access: null,
     });
 
     expect(bodyOf(fetchMock.mock.calls[0]).instructions).toBeNull();
@@ -777,7 +793,15 @@ describe('room creation', () => {
     fetchMock.mockResolvedValue(errorResponse(400, '{"detail":"Bridge not running: b1"}') as never);
 
     await expect(
-      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+      createRoom(SERVER, {
+        name: 'x',
+        description: 'y',
+        bridgeId: 'b1',
+        agentIds: [],
+        channel: null,
+        groupId: null,
+        access: null,
+      })
     ).rejects.toMatchObject({ status: 400, detail: 'Bridge not running: b1' });
   });
 
@@ -800,7 +824,15 @@ describe('room creation', () => {
     fetchMock.mockResolvedValue(errorResponse(502, '<html>bad gateway</html>') as never);
 
     await expect(
-      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+      createRoom(SERVER, {
+        name: 'x',
+        description: 'y',
+        bridgeId: 'b1',
+        agentIds: [],
+        channel: null,
+        groupId: null,
+        access: null,
+      })
     ).rejects.toMatchObject({ status: 502, detail: undefined });
   });
 });

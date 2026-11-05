@@ -85,12 +85,16 @@ describe('channelIdProblem', () => {
     expect(channelIdProblem('teams', '19%3aabc%40thread.tacv2')).toMatch(/%3a/);
   });
 
+  it('takes a Slack id with no digits as pasted, but not a channel’s name typed in lower case', () => {
+    expect(channelIdProblem('slack', 'CABCDEFGHJ')).toBeNull();
+    expect(channelIdProblem('slack', 'general')).toMatch(/starts with C or G/);
+    expect(channelIdProblem('slack', 'cabcdefghj')).toMatch(/starts with C or G/);
+  });
+
   it('takes an id differing only in case or surrounding space as meant', () => {
     expect(channelIdProblem('slack', '  c0123abcd ')).toBeNull();
     expect(normalizedChannelId('slack', '  c0123abcd ')).toBe('C0123ABCD');
-    expect(normalizedChannelId('mattermost', MATTERMOST_ID.toUpperCase())).toBe(
-      MATTERMOST_ID
-    );
+    expect(normalizedChannelId('mattermost', MATTERMOST_ID.toUpperCase())).toBe(MATTERMOST_ID);
     // Teams ids are left as pasted, but for the space around them.
     expect(normalizedChannelId('teams', ' 19:AbC@thread.tacv2 ')).toBe('19:AbC@thread.tacv2');
   });

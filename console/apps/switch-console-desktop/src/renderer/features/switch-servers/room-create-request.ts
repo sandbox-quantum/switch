@@ -27,8 +27,8 @@ export type RoomCreateRequest =
         agentIds: string[];
         channel: NewRoomChannel;
         groupId: string | null;
-        /** Absent leaves the server's default. */
-        access?: RoomAccess;
+        /** Null leaves the server's default. */
+        access: RoomAccess | null;
       };
     };
 
@@ -51,8 +51,8 @@ export function roomCreateRequest(form: {
   workspaceId: string;
   /** Null for Switch Console. */
   bridgeId: string | null;
-  /** The chosen app's platform, so an existing channel's id is sent as it writes it. */
-  bridgeType?: string;
+  /** The chosen app's platform, so an existing channel's id is sent as it writes it; null for Switch Console. */
+  bridgeType: string | null;
   name: string;
   description: string;
   instructions: string;
@@ -61,7 +61,7 @@ export function roomCreateRequest(form: {
   memberUserIds: string[];
   requestId: string;
   /** A bridged room's More options; a Switch Console room has none. */
-  options?: RoomCreateOptions;
+  options: RoomCreateOptions;
 }): RoomCreateRequest {
   const name = form.name.trim();
   const agentIds = [...new Set(form.agentIds)];
@@ -87,7 +87,7 @@ export function roomCreateRequest(form: {
       instructions: form.instructions.trim() || undefined,
       bridgeId: form.bridgeId,
       agentIds,
-      ...roomOptionsParams(form.options ?? DEFAULT_ROOM_OPTIONS, form.bridgeType ?? ''),
+      ...roomOptionsParams(form.options, form.bridgeType ?? ''),
     },
   };
 }
@@ -103,7 +103,7 @@ function roomOptionsParams(options: RoomCreateOptions, bridgeType: string) {
   return {
     channel,
     groupId: options.groupId,
-    ...(options.access ? { access: options.access } : {}),
+    access: options.access,
   };
 }
 

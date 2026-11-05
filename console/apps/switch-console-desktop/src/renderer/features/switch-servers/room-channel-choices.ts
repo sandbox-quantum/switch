@@ -74,13 +74,15 @@ export function optionsForBridge(
 ): RoomCreateOptions {
   if (bridge === null) return options;
   const offered = new Set(channelChoiceCards(bridge).map((card) => card.value));
-  const choice =
-    options.channel.kind === 'existing'
-      ? 'existing'
-      : options.channel.private
-        ? 'private'
-        : 'public';
-  return offered.has(choice) ? options : { ...options, channel: { kind: 'new', private: false } };
+  return offered.has(channelChoiceOf(options))
+    ? options
+    : { ...options, channel: { kind: 'new', private: false } };
+}
+
+/** The channel choice a set of options holds. */
+export function channelChoiceOf(options: RoomCreateOptions): ChannelChoice {
+  if (options.channel.kind === 'existing') return 'existing';
+  return options.channel.private ? 'private' : 'public';
 }
 
 /**
@@ -94,7 +96,12 @@ export function channelIdProblem(bridgeType: string, id: string): string | null 
   const value = normalizedChannelId(bridgeType, id);
   if (value === '') return null;
   const shape = CHANNEL_ID_SHAPE[bridgeType];
-  return shape && !shape.pattern.test(value) ? shape.problem : null;
+  if (!shape) return null;
+  if (!shape.pattern.test(value)) return shape.problem;
+  // Slack ids usually carry digits but need not. One with none is taken only as
+  // pasted, in capitals: typed in lower case it is a channel's name ("general").
+  if (bridgeType === 'slack' && !/\d/.test(value) && /[a-z]/.test(id)) return shape.problem;
+  return null;
 }
 
 /**
@@ -111,8 +118,7 @@ export function normalizedChannelId(bridgeType: string, id: string): string {
 
 const CHANNEL_ID_SHAPE: Record<string, { pattern: RegExp; problem: string }> = {
   slack: {
-    // Letters and digits, always some digits: so a channel's name (GENERAL) is not taken for one.
-    pattern: /^[CG](?=[A-Z0-9]*\d)[A-Z0-9]{6,}$/,
+    pattern: /^[CG][A-Z0-9]{6,}$/,
     problem:
       'A Slack channel id starts with C or G, like C0123ABCD. It is at the bottom of the channel’s details.',
   },

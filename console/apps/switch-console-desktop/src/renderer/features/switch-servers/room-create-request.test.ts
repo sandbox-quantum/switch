@@ -18,6 +18,8 @@ const form = {
   agentIds: ['a1'],
   memberUserIds: ['u2'],
   requestId: 'req',
+  bridgeType: null,
+  options: DEFAULT_ROOM_OPTIONS,
 };
 
 describe('roomCreateRequest', () => {
@@ -60,6 +62,7 @@ describe('roomCreateRequest', () => {
         // A new public channel and the server's default access, as before.
         channel: { kind: 'new', private: false },
         groupId: null,
+        access: null,
       },
     });
   });

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -124,6 +124,16 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const selectedBridge =
     bridges.find((b) => b.id === where) ?? (consoleOffered ? null : (bridges[0] ?? null));
   const nowhere = !consoleOffered && selectedBridge === null && !bridgesQuery.isLoading;
+  // A channel, and above all a typed id, belongs to the app it was chosen for:
+  // when the app the room would go to changes, however it changed, the choice
+  // starts again from a new public channel. Picking the app already shown keeps it.
+  const resolvedBridgeId = selectedBridge?.id ?? null;
+  const channelBridgeId = useRef(resolvedBridgeId);
+  useEffect(() => {
+    if (channelBridgeId.current === resolvedBridgeId) return;
+    channelBridgeId.current = resolvedBridgeId;
+    setOptions((now) => ({ ...now, channel: DEFAULT_ROOM_OPTIONS.channel }));
+  }, [resolvedBridgeId]);
 
   const managedProviders = new Map(
     (managedQuery.data ?? []).map((managed) => [managed.agentId, managed.definition.provider])
@@ -208,7 +218,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         serverId,
         workspaceId: workspaceId as string,
         bridgeId,
-        bridgeType: selectedBridge?.type,
+        bridgeType: selectedBridge?.type ?? null,
         name,
         description,
         instructions,
@@ -420,10 +430,6 @@ export const CreateRoomModal = observer(function CreateRoomModal({
           onChange={(next) => {
             setWhere(next);
             setError(null);
-            // A channel, and above all a typed id, belongs to the app it was
-            // chosen for: another app starts again from a new public channel.
-            if (next !== where)
-              setOptions((now) => ({ ...now, channel: DEFAULT_ROOM_OPTIONS.channel }));
             // A bridged room starts with agents only.
             if (next !== SWITCH_CONSOLE)
               changePicks(shownPicked.filter((each) => each.kind === 'agent'));
