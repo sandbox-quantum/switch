@@ -182,6 +182,34 @@ def require_manage(principal: Principal, owner_id: str | None) -> None:
         raise PermissionError("Not authorized to manage this resource")
 
 
+def require_visibility_change(
+    principal: Principal,
+    resource: Authorizable,
+    read_visibility: str | None,
+    write_visibility: str | None,
+    label: str,
+) -> None:
+    """Raise ``PermissionError`` if this changes who may see or edit
+    `resource` and `principal` is neither its owner nor an admin.
+
+    Write access is not enough, the same as for a room: with write visibility
+    public, anyone could otherwise make the resource private and lock everyone
+    else out of it, and out of the rooms that use it. A value equal to the
+    current one changes nothing, so an edit that sends it back unchanged
+    needs only write access.
+    """
+    changes = (
+        read_visibility is not None and read_visibility != resource.read_visibility
+    ) or (
+        write_visibility is not None and write_visibility != resource.write_visibility
+    )
+    if changes and not can_manage(principal, resource.owner_id):
+        raise PermissionError(
+            f"Only the {label}'s owner or a workspace admin can change who may "
+            "see or edit it."
+        )
+
+
 def can_unlink_from_room(principal: Principal, *, takes_part: bool) -> bool:
     """Whether `principal` may unlink a reference, document or package from a
     room: those taking part in it and tenant admins. `takes_part` is the room
