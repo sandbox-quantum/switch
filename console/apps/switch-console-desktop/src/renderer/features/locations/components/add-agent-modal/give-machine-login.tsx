@@ -42,6 +42,10 @@ export function loginKindsFor(provider: AgentProviderId): { value: LoginKind; la
       ];
     case 'cursor':
       return [{ value: 'api-key', label: 'API key' }];
+    // Pi signs in on the machine itself (`pi`, then `/login`, or an API key in
+    // its environment); Console does not send it a login.
+    case 'pi':
+      return [];
     default:
       return [{ value: 'this-computer', label: "This computer's sign-in" }];
   }

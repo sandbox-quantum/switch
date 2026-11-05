@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These adapters are the only Console session runtime.
 
 ## Shape
 
@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `antigravity-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection through a `model` config option, MCP registration, approvals and questions. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `pi` | `pi --mode rpc` spawned per session, JSONL over stdio, with Switch's extension loaded (`-e`) | Pi does not speak ACP, and `pi-acp` neither passes MCP servers through nor has a permission path, so it could not give a session its Switch tools or approvals. RPC mode streams every event, takes `abort`, and forwards extension dialogs, which is how approvals and questions reach the room. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -67,6 +68,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| pi | 1.5.0 | not run: no model API key on the test machine (2026-11-05) | `subagent` is skipped: Pi has no built-in subagent tool, its README leaves sub-agents to extensions. Pi has no permission modes, so the extension asks wherever `approval-required` does, in `auto` mode too. A message sent mid-turn is queued by the adapter, not steered. "Allow for this session" remembers a tool by name. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
@@ -108,3 +110,50 @@ call id starts with `interaction_`. Native session ids are stored with an
 `acp:` prefix; a conversation saved by the retired `agy` runtime starts fresh.
 Its sign-in check reads `authMethods` from the handshake and never calls
 `authenticate`, which would open a browser.
+
+## Pi
+
+`src/pi/` drives `pi --mode rpc`, one process per session, on the adapter in
+`pi-adapter.ts` and the JSONL client in `rpc.ts`. Pi has no permission system,
+no way to ask the user a question and no per-session MCP configuration, so every
+session loads a small extension of Switch's (`switch-extension.ts`):
+
+- **It is installed per session, never into Pi's configuration.** The adapter
+  writes it, with the session's settings, to a directory of its own under the
+  temporary directory and starts Pi with `-e <file>`. Nothing is written to
+  `~/.pi` or the project's `.pi/`, and the directory is removed with the
+  session. (Pi keeps the conversation itself in its own session store, as it
+  does for any `pi`.) The settings hold the session's MCP credentials, so Pi reads them at
+  start and the adapter deletes the file then.
+- **It registers the session's MCP servers** with `pi.registerMcpServer`, which
+  lasts for the session only, in `direct` exposure so the model sees the Switch
+  tools as tools of their own.
+- **It gates every tool call** (`tool_call` sees Pi's own tools and MCP tools
+  alike) on the runtime mode, as the other adapters do: full access asks about
+  nothing; the session's own MCP servers are never asked about; auto-accept-edits
+  allows `edit` and `write`; every other mode, `auto` included, asks before
+  `bash`, `edit`, `write`, connector tools and tools it does not know. Pi has no
+  automatic reviewer, so `auto` cannot do better than ask.
+- **It asks through one `select` dialog**, which Pi forwards as an
+  `extension_ui_request`. Pi's dialogs carry only a title and choices, so the
+  title is `switch-pi:` and JSON naming the tool (`protocol.ts`), and the
+  choices are the fixed `Allow once`, `Allow for this session` and `Reject`. The
+  adapter takes only a dialog with that prefix and those choices for an approval
+  and shows its own words (it has the tool's arguments from
+  `tool_execution_start`); any other extension's select, input, editor or
+  confirm dialog becomes a question or a decision. A rejected or cancelled
+  request blocks the tool, and so does an extension that fails.
+- **It gives the model `ask_user`**, a multiple-choice question that goes out
+  the same way, for `user-input.requested`.
+
+Pi goes on without an extension that fails to load, and a session without the
+gate would run tools it should have asked about, so the extension registers a
+marker command last and the adapter refuses to start a session unless
+`get_commands` lists it.
+
+A turn runs until `agent_settled`, not `agent_end`, which retries and queued work
+can follow. The conversation resumes from Pi's session file, whose path is the
+native session id; Pi would start a new conversation at a path that holds none,
+so a missing file is reported as unavailable and the host starts a fresh one.
+Sign-in is read from `get_available_models` (empty when no provider holds a
+credential) and never starts a login.

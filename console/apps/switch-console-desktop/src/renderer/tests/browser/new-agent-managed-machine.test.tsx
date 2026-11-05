@@ -442,4 +442,33 @@ describe('the providers a server machine offers', () => {
     );
     expect(el.textContent).not.toMatch(/Give build-box a login/);
   });
+
+  it('offers no login for Pi, which signs in on the machine itself', async () => {
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={{
+          ...BOX,
+          acceptsLogins: true,
+          providers: [
+            { provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true },
+            {
+              provider: 'pi',
+              ready: false,
+              problem: 'not logged in',
+              detail: null,
+              loginHelps: true,
+            },
+          ],
+        }}
+        value="claude"
+        onChange={vi.fn()}
+        defaultAgent="claude"
+      />
+    );
+    // The buttons that give a login are named for their provider alone.
+    const offered = [...el.querySelectorAll('button')].map((button) => button.textContent);
+    expect(offered).toContain('Codex');
+    expect(offered).not.toContain('Pi');
+  });
 });
