@@ -488,7 +488,7 @@ switchCore:
     # The From address, e.g. "Switch <invites@your-domain>".
     from: ""
     # Addressed invitations one workspace may send per 24 hours. With sign-up
-    # open anyone can own a workspace, so this keeps the relay from being used
+    # open anyone can create a workspace, so this keeps the relay from being used
     # to mail arbitrary addresses. Operators are exempt.
     emailsPerDayPerWorkspace: 50
   # Public origin every distributed messaging app (Slack, Discord, Teams,

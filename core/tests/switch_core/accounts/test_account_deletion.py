@@ -397,9 +397,9 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
 ) -> None:
     deletion, protocol, rooms = _deletion(session_factory)
     async with session_factory() as session:
-        owner = await _user(session, "owner")
+        admin = await _user(session, "admin")
         leaving = await _user(session, "leaving")
-        await _member(session, TENANT_ZERO_ID, owner, "admin")
+        await _member(session, TENANT_ZERO_ID, admin, "admin")
         await _member(session, TENANT_ZERO_ID, leaving, "member")
         agent = await _agent(session, TENANT_ZERO_ID, leaving, "helper")
         invitation = await _invitation(session, TENANT_ZERO_ID, leaving)
@@ -459,7 +459,7 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
         await session.commit()
         ids = {
             "user": leaving.id,
-            "owner": owner.id,
+            "admin": admin.id,
             "agent": agent.id,
             "invitation": invitation.id,
             "shared_room": shared_room.id,
@@ -483,14 +483,14 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
             await session.scalar(
                 select(Invitation.created_by).where(Invitation.id == ids["invitation"])
             )
-        ) == ids["owner"]
+        ) == ids["admin"]
         assert (
             await session.scalar(
                 select(WorkspaceServiceSetting.updated_by).where(
                     WorkspaceServiceSetting.service == "github"
                 )
             )
-        ) == ids["owner"]
+        ) == ids["admin"]
         room = await session.scalar(select(Room).where(Room.id == ids["shared_room"]))
         assert room is not None and room.owner_id is None and room.created_by is None
         assert (

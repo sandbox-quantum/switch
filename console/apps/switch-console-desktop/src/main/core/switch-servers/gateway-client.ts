@@ -991,7 +991,7 @@ function joinDomainsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/join-domains`;
 }
 
-/** The domains a workspace is open to. Admins and owners only. */
+/** The domains a workspace is open to. Admins only. */
 export async function fetchJoinDomains(
   server: SwitchServer,
   tenantId: string
@@ -1043,7 +1043,7 @@ function invitationsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/invitations`;
 }
 
-/** Every invitation to a workspace, revoked and spent ones included. Admins and owners only. */
+/** Every invitation to a workspace, revoked and spent ones included. Admins only. */
 export async function fetchInvitations(
   server: SwitchServer,
   tenantId: string

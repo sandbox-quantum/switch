@@ -132,12 +132,12 @@ class TestOnlyOrgAdmins:
         self, world: World, session_factory
     ) -> None:
         await _install(world)
-        owner = await _user(session_factory, "owner", member_role="admin")
+        ws_admin = await _user(session_factory, "ws-admin", member_role="admin")
         operator = await _user(session_factory, "operator", role="admin")
         async with world.harness.client() as client:
             answers = [
                 await call(cookies_for(someone))
-                for someone in (owner, operator)
+                for someone in (ws_admin, operator)
                 for call in (
                     lambda cookies: client.get(ORGANIZATION_APPS, cookies=cookies),
                     lambda cookies: client.put(

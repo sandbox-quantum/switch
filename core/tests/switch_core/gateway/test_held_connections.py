@@ -309,12 +309,12 @@ def _client(app: Any, user: User) -> httpx.AsyncClient:
 
 
 async def _admin(session_factory: async_sessionmaker[AsyncSession]) -> User:
-    """A workspace owner: a plain user whose admin bit comes from membership,
+    """A workspace admin: a plain user whose admin bit comes from membership,
     so `get_tenant_is_admin` has to read it."""
     async with session_factory() as session:
         user = User(
-            name="owner",
-            email="owner@example.com",
+            name="ws-admin",
+            email="ws-admin@example.com",
             role="user",
             password_hash=hash_password(_PASSWORD),
         )

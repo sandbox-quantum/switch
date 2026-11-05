@@ -105,7 +105,7 @@ class _World:
         owner: async_sessionmaker[AsyncSession],
         *,
         bea_role: str = "org_admin",
-        ada_owns_joined: bool = False,
+        ada_administers_joined: bool = False,
     ) -> _World:
         world = cls(_id("org"), _id("joined"), _id("reached"))
         async with owner() as session:
@@ -155,10 +155,10 @@ class _World:
                 TenantMember(
                     tenant_id=world.joined,
                     user_id=world.ada,
-                    role="admin" if ada_owns_joined else "member",
+                    role="admin" if ada_administers_joined else "member",
                 )
             )
-            if not ada_owns_joined:
+            if not ada_administers_joined:
                 session.add(
                     TenantMember(
                         tenant_id=world.joined, user_id=world.bea, role="admin"
@@ -377,7 +377,7 @@ class TestConflicts:
         self, rls_harness: RLSHarness
     ) -> None:
         owner = rls_harness.owner
-        world = await _World.make(owner, ada_owns_joined=True)
+        world = await _World.make(owner, ada_administers_joined=True)
 
         await _apply(rls_harness, world, None)
 
@@ -426,10 +426,10 @@ class TestARetryAfterAFailure:
     async def test_finds_the_workspaces_left_and_their_conflicts_recorded(
         self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ada is the only owner of `joined` and owns an agent there; a second
+        """Ada is the only admin of `joined` and owns an agent there; a second
         workspace she is in has a busy connection the first time."""
         owner = rls_harness.owner
-        world = await _World.make(owner, ada_owns_joined=True)
+        world = await _World.make(owner, ada_administers_joined=True)
         await _agent(owner, world.joined, world.ada)
         busy = _id("busy")
         async with owner() as session:

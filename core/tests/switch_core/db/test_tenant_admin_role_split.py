@@ -2,7 +2,7 @@
 
 Before this change, `authz.Principal.is_admin` came from `users.role ==
 "admin"` alone — a global bit that `tenant_members.role` never fed into. So a
-workspace's `owner` (now `admin`) membership row granted nothing: every admin-gated route
+workspace's `admin` membership row granted nothing: every admin-gated route
 checked the global bit, never the caller's role in the tenant the request is
 bound to.
 
@@ -67,19 +67,19 @@ async def _membership(
 
 
 class TestUserStoreAdministers:
-    async def test_owner_administers_their_own_tenant(
+    async def test_admin_administers_their_own_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         store = UserStore()
         async with session_factory() as session:
-            owner = await _make_user(session, "owner-of-zero")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "admin")
+            admin = await _make_user(session, "admin-of-zero")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
             await session.commit()
 
             # Ambient tenant is TENANT_ZERO_ID (see conftest.session_factory).
-            assert await store.administers(session, owner) is True
+            assert await store.administers(session, admin) is True
 
-    async def test_owner_has_no_power_in_a_tenant_they_only_belong_to_as_member(
+    async def test_admin_has_no_power_in_a_tenant_they_only_belong_to_as_member(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         # Two sessions, one per tenant: `TenantCheckedSession` stamps a
@@ -91,16 +91,16 @@ class TestUserStoreAdministers:
         store = UserStore()
         async with session_factory() as session:
             tenant_b = await _make_tenant(session, TENANT_B)
-            owner = await _make_user(session, "cross-tenant-owner")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "admin")
-            await _membership(session, tenant_b.id, owner.id, "member")
+            admin = await _make_user(session, "cross-tenant-admin")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
+            await _membership(session, tenant_b.id, admin.id, "member")
             await session.commit()
 
-            assert await store.administers(session, owner) is True
+            assert await store.administers(session, admin) is True
 
         with tenant_scope(tenant_b.id):
             async with session_factory() as session_b:
-                assert await store.administers(session_b, owner) is False
+                assert await store.administers(session_b, admin) is False
 
     async def test_admin_membership_role_also_administers(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -159,17 +159,17 @@ class TestUserStoreAdministers:
         # Answering here would mean answering a question that was not asked:
         # "may this person administer" has no deployment-wide form. The
         # tempting fallback — the operator bit alone — silently strips a
-        # workspace owner of their role, and the 403 that follows names no
+        # workspace admin of their role, and the 403 that follows names no
         # cause. Same call as the one #442 made for the bridge identities.
         store = UserStore()
         async with session_factory() as session:
-            owner = await _make_user(session, "unbound-owner")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "admin")
+            admin = await _make_user(session, "unbound-admin")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
             await session.commit()
 
             with no_tenant():
                 with pytest.raises(RuntimeError, match="requires a bound tenant"):
-                    await store.administers(session, owner)
+                    await store.administers(session, admin)
 
     async def test_unbound_is_refused_for_an_operator_too(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -193,14 +193,14 @@ class TestRoomAuthzThroughTenantRole:
     `Room` neither party personally owns, built from `UserStore.administers`
     the way `gateway/rooms.py` and `gateway/auth.py` build it."""
 
-    async def test_workspace_owner_can_delete_a_room_they_do_not_personally_own(
+    async def test_workspace_admin_can_delete_a_room_they_do_not_personally_own(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         store = UserStore()
         async with session_factory() as session:
-            owner = await _make_user(session, "room-admin-owner")
+            admin = await _make_user(session, "room-admin")
             someone_else = await _make_user(session, "room-creator")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "admin")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
             room = Room(
                 tenant_id=TENANT_ZERO_ID,
                 transport_room_id="!private-room:test",
@@ -213,19 +213,19 @@ class TestRoomAuthzThroughTenantRole:
             session.add(room)
             await session.commit()
 
-            principal = Principal(owner.id, await store.administers(session, owner))
+            principal = Principal(admin.id, await store.administers(session, admin))
             assert can(principal, "delete", room)
 
-    async def test_workspace_owner_cannot_delete_the_same_room_from_another_tenant(
+    async def test_workspace_admin_cannot_delete_the_same_room_from_another_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         store = UserStore()
         async with session_factory() as session:
             tenant_b = await _make_tenant(session, TENANT_B)
-            owner = await _make_user(session, "room-admin-owner-2")
+            admin = await _make_user(session, "room-admin-2")
             someone_else = await _make_user(session, "room-creator-2")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "admin")
-            await _membership(session, tenant_b.id, owner.id, "member")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
+            await _membership(session, tenant_b.id, admin.id, "member")
             room = Room(
                 tenant_id=TENANT_ZERO_ID,
                 transport_room_id="!private-room-2:test",
@@ -241,7 +241,7 @@ class TestRoomAuthzThroughTenantRole:
         with tenant_scope(tenant_b.id):
             async with session_factory() as session_b:
                 principal = Principal(
-                    owner.id, await store.administers(session_b, owner)
+                    admin.id, await store.administers(session_b, admin)
                 )
         assert not can(principal, "delete", room)
 

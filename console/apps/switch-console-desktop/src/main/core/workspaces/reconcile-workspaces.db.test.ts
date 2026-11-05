@@ -131,7 +131,7 @@ describe('reconcile-workspaces', () => {
   it('records each workspace’s organization, its name and the account’s role in it', async () => {
     await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
     fetchTenants.mockResolvedValue([
-      tenant('t-1', 'Default', 'owner', { id: 'o-1', role: 'org_admin' }),
+      tenant('t-1', 'Default', 'admin', { id: 'o-1', role: 'org_admin' }),
       tenant('t-2', 'Research', 'member', { id: 'o-2', role: 'member' }),
     ]);
     fetchOrganizationNames.mockResolvedValue(
@@ -156,7 +156,7 @@ describe('reconcile-workspaces', () => {
 
   it('does not ask a server from before organizations to name any', async () => {
     await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
-    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'owner')]);
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'admin')]);
 
     await reconcileServerWorkspaces('srv-1');
 
@@ -172,7 +172,7 @@ describe('reconcile-workspaces', () => {
   it('records the workspace, and says so, where the server cannot name its organization', async () => {
     await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
     fetchTenants.mockResolvedValue([
-      tenant('t-1', 'Default', 'owner', { id: 'o-1', role: 'org_admin' }),
+      tenant('t-1', 'Default', 'admin', { id: 'o-1', role: 'org_admin' }),
     ]);
     fetchOrganizationNames.mockRejectedValue(new Error('Switch gateway returned 503'));
 
@@ -193,7 +193,7 @@ describe('reconcile-workspaces', () => {
   it('keeps the names it has when a later reconcile cannot read them', async () => {
     await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
     fetchTenants.mockResolvedValue([
-      tenant('t-1', 'Default', 'owner', { id: 'o-1', role: 'org_admin' }),
+      tenant('t-1', 'Default', 'admin', { id: 'o-1', role: 'org_admin' }),
     ]);
     fetchOrganizationNames.mockResolvedValue(new Map([['o-1', 'Acme']]));
     await reconcileServerWorkspaces('srv-1');
@@ -208,13 +208,13 @@ describe('reconcile-workspaces', () => {
   it('drops a kept name once the workspace has moved to another organization', async () => {
     await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
     fetchTenants.mockResolvedValue([
-      tenant('t-1', 'Default', 'owner', { id: 'o-1', role: 'org_admin' }),
+      tenant('t-1', 'Default', 'admin', { id: 'o-1', role: 'org_admin' }),
     ]);
     fetchOrganizationNames.mockResolvedValue(new Map([['o-1', 'Acme']]));
     await reconcileServerWorkspaces('srv-1');
 
     fetchTenants.mockResolvedValue([
-      tenant('t-1', 'Default', 'owner', { id: 'o-2', role: 'member' }),
+      tenant('t-1', 'Default', 'admin', { id: 'o-2', role: 'member' }),
     ]);
     fetchOrganizationNames.mockRejectedValue(new Error('Switch gateway returned 503'));
     await reconcileServerWorkspaces('srv-1');

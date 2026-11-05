@@ -566,13 +566,13 @@ describe('addOrganizationWorkspace', () => {
       id: 't9',
       slug: 'labs',
       name: 'Labs',
-      role: 'owner',
+      role: 'admin',
       organizationId: 'o1',
       organizationRole: 'org_admin',
     });
     listWorkspacesForServer.mockResolvedValue([
       workspaceRow({ id: 'ws-1', tenantId: 't1' }),
-      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Labs', role: 'owner' }),
+      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Labs', role: 'admin' }),
     ]);
 
     const created = await switchServersController.addOrganizationWorkspace({

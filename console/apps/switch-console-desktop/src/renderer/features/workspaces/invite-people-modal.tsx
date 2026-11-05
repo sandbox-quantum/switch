@@ -41,7 +41,7 @@ import {
 import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 
 type InvitePeopleModalArgs = {
-  /** The workspace to invite to. Its admins and owners are the only ones offered this. */
+  /** The workspace to invite to. Its admins are the only ones offered this. */
   workspaceId: string;
 };
 
