@@ -26,7 +26,7 @@ class TestGetOrCreateOidcUser:
         is written."""
         store = UserStore()
         async with session_factory() as session:
-            existing = await store.get_or_create_oidc_user(
+            existing, _ = await store.get_or_create_oidc_user(
                 session,
                 iss="https://password.example",
                 email="kept@example.com",
@@ -91,6 +91,7 @@ class TestGetOrCreateOidcUser:
                 sub="okta|9",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
             )
             assert (returning.id, created_again) == (user.id, False)
 
