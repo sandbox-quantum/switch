@@ -30,6 +30,7 @@ import { useAgents, useHostedV2 } from "../../data/hooks";
 import { useCloudView } from "../../data/hostedCloud";
 import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
 import { type CloudPresentation, cloudStatusFor } from "./cloud/cloudAgentState";
+import CloudLoginsSection from "./cloud/CloudLoginsSection";
 import YourCloudPanel from "./cloud/YourCloudPanel";
 import CloudAgentDialog from "./CloudAgentDialog";
 import RegisterAgentDialog from "./RegisterAgentDialog";
@@ -56,6 +57,9 @@ export default function AgentsPage() {
   // Add agent on Switch cloud: where this workspace may have a box, from the
   // same read as the panel (`available`).
   const [cloudOpen, setCloudOpen] = useState(false);
+  // A cloud agent just made: its provider's login is asked for straight away.
+  const [askLoginFor, setAskLoginFor] = useState<string | null>(null);
+  const loginAsked = useCallback(() => setAskLoginFor(null), []);
   const cloudAgents = hostedV2 && cloud.available;
   const [ownerFilter, setOwnerFilter] = useState<string>("");
   const [search, setSearch] = useState<string>("");
@@ -309,6 +313,13 @@ export default function AgentsPage() {
       {hostedV2 && cloud.machine && (
         <YourCloudPanel machine={cloud.machine} onChanged={cloud.refresh} />
       )}
+      {hostedV2 && cloud.machine?.controller_id && (
+        <CloudLoginsSection
+          controllerId={cloud.machine.controller_id}
+          askFor={askLoginFor}
+          onAsked={loginAsked}
+        />
+      )}
 
       {deleteNotice && (
         <Alert
@@ -433,9 +444,10 @@ export default function AgentsPage() {
         <CloudAgentDialog
           open={cloudOpen}
           onClose={() => setCloudOpen(false)}
-          onCreated={() => {
+          onCreated={(created) => {
             refetch();
             cloud.refresh();
+            setAskLoginFor(created.definition.provider);
           }}
         />
       )}

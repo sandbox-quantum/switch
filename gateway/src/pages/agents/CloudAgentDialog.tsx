@@ -34,6 +34,9 @@ import {
 /** How often the box is looked at while it starts. */
 export const BOX_POLL_MS = 5000;
 
+/** When the person's cloud machine isn't a v2 box: Switch web can't add an agent to it. */
+export const NOT_A_BOX = "Your cloud machine can't take agents from Switch web. Use Switch Console for this machine.";
+
 const EMPTY: CloudAgentForm = { name: "", description: "", provider: "", model: "", instructions: "" };
 
 /**
@@ -98,7 +101,13 @@ export default function CloudAgentDialog({
       }
     };
     ensureCloudMachine().then(
-      (machine) => void look(machine),
+      (machine) => {
+        if (mine !== generation.current) return;
+        // Not a v2 box (a v1 cloud machine): nothing here can use it, so say
+        // where to go and stop, rather than waiting for a box that won't come.
+        if (machine === null) setPlacement({ kind: "error", message: NOT_A_BOX });
+        else void look(machine);
+      },
       (error: unknown) => {
         if (mine !== generation.current) return;
         setEnsureError(error instanceof Error ? error.message : "Switch couldn't start your cloud.");

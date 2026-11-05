@@ -450,3 +450,63 @@ def test_people_s_routes_never_fall_back_from_a_bearer_to_the_cookie() -> None:
     with pytest.raises(HTTPException) as refused:
         _session_claims(request, SimpleNamespace())  # type: ignore[arg-type]
     assert refused.value.status_code == 401
+
+
+# ── Switch web's hosted calls go through the check (hosted agents v2, security) ──
+
+
+def _hosted_web_app(allowed: frozenset[str] = frozenset({SERVER})) -> TestClient:
+    """The real routes Switch web's hosted pages change things with: agent
+    management (create an agent, give or withdraw a login) and the person's
+    box (ensure, lifecycle), mounted on a gateway app behind the middleware as
+    Core mounts them (`mount_gateway_routes`, `create_gateway_app`). A refused
+    request never reaches a route: no database is needed to show it."""
+    from switch_core.gateway.hosted_machines import router as hosted_machines_router
+    from switch_core.management.wiring import mount_gateway_routes
+
+    gateway = FastAPI()
+    mount_gateway_routes(gateway)
+    gateway.include_router(hosted_machines_router)
+    gateway.add_middleware(OriginCheckMiddleware, allowed=allowed)
+    outer = FastAPI()
+    outer.mount("/gateway", gateway)
+    return TestClient(outer, base_url=SERVER, raise_server_exceptions=False)
+
+
+HOSTED_WEB_CHANGES = [
+    ("POST", "/gateway/management/agents"),
+    ("POST", "/gateway/hosted-machines/ensure"),
+    ("POST", "/gateway/hosted-machines/m-1/lifecycle"),
+    ("PUT", "/gateway/management/controllers/c-1/provider-logins/claude"),
+    ("DELETE", "/gateway/management/controllers/c-1/provider-logins/claude"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), HOSTED_WEB_CHANGES)
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"origin": "https://evil.example.com"},
+        {"referer": "https://evil.example.com/page"},
+        {"sec-fetch-site": "cross-site"},
+    ],
+)
+def test_a_cross_origin_hosted_change_with_the_cookie_is_refused(
+    method: str, path: str, headers: dict
+) -> None:
+    client = _hosted_web_app()
+    response = client.request(method, path, headers={**COOKIE, **headers}, json={})
+    assert _refused(response)
+
+
+@pytest.mark.parametrize(("method", "path"), HOSTED_WEB_CHANGES)
+def test_the_same_hosted_change_from_switch_web_passes_the_check(
+    method: str, path: str
+) -> None:
+    """From Switch web's own page the check lets it through to the route, which
+    then answers for itself (here without a database, never the check's 403)."""
+    client = _hosted_web_app()
+    response = client.request(
+        method, path, headers={**COOKIE, "origin": SERVER}, json={}
+    )
+    assert not _refused(response)

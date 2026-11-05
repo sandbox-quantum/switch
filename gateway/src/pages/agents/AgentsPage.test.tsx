@@ -26,6 +26,8 @@ vi.mock("../../data/api", async (importOriginal) => {
 });
 
 vi.mock("./RegisterAgentDialog", () => ({ default: () => null }));
+// The logins section has tests of its own; here it would add its own reads.
+vi.mock("./cloud/CloudLoginsSection", () => ({ default: () => null }));
 
 // The data grid lays rows out from measured sizes, which jsdom does not have,
 // so it renders none. This draws each row and its action cell plainly.

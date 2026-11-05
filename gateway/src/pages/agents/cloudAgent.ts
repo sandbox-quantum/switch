@@ -17,7 +17,7 @@ export const BOX_LOGINS: Readonly<Record<string, readonly ("api-key" | "setup-to
 
 /** The server's providers a cloud agent can use: those a box takes a login for, in the server's order. */
 export function cloudProviders(providers: readonly ProviderInfo[]): ProviderInfo[] {
-  return providers.filter((provider) => Object.hasOwn(BOX_LOGINS, provider.id));
+  return (Array.isArray(providers) ? providers : []).filter((provider) => Object.hasOwn(BOX_LOGINS, provider.id));
 }
 
 /**

@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import CloudAgentDialog, { BOX_POLL_MS } from "./CloudAgentDialog";
+import CloudAgentDialog, { BOX_POLL_MS, NOT_A_BOX } from "./CloudAgentDialog";
 
 type Call = { url: string; method: string; body: unknown };
 
@@ -150,10 +150,17 @@ describe("Add agent on Switch cloud", () => {
     backend = "vm";
     ensureAnswer = { status: 200, body: { ...BOX, backend: "vm", state: "ready" } };
     boxOnline = true;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<CloudAgentDialog open onClose={() => {}} onCreated={() => {}} />);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => expect(screen.getByText(NOT_A_BOX)).toBeTruthy());
     fill();
     expect((screen.getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled).toBe(true);
+    // It stops there: no more looking at the machine or its controllers.
+    const looked = calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BOX_POLL_MS * 3);
+    });
+    expect(calls.length).toBe(looked);
     expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/agents"))).toBe(false);
   });
 
