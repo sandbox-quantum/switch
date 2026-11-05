@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import CloudFilesPage from "./CloudFilesPage";
+import CloudFilesPage, { DOWNLOAD_REVOKE_MS } from "./CloudFilesPage";
 
 // Your cloud files in Switch web, with fetch mocked by address: hidden with no
 // request unless both flags are on and there's a cloud agent, View files by
@@ -171,6 +171,7 @@ describe("Your cloud files (Switch web)", () => {
   });
 
   it("a download goes through <a download> as bytes only, never window.open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const opened = vi.spyOn(window, "open").mockImplementation(() => null);
     const clicked: HTMLAnchorElement[] = [];
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
@@ -192,9 +193,15 @@ describe("Your cloud files (Switch web)", () => {
     await waitFor(() => expect(clicked).toHaveLength(1));
     expect(clicked[0]!.download).toBe("page.html");
     expect(createObjectURL.mock.calls.at(-1)![0].type).toBe("application/octet-stream");
+    // Kept a moment after the click (Safari), then released.
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DOWNLOAD_REVOKE_MS);
+    });
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview");
     expect(opened).not.toHaveBeenCalled();
     click.mockRestore();
     opened.mockRestore();
+    vi.useRealTimers();
   });
 });

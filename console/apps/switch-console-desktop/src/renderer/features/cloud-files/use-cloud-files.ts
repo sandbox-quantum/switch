@@ -53,6 +53,8 @@ export function useCloudFolder(serverId: string | null, path: string, enabled: b
   const cursor = useRef<string | undefined>(undefined);
   const generation = useRef(0);
   const woke = useRef(false);
+  /** The folder's current run: ended when the folder changes or the view closes. */
+  const run = useRef<{ live: boolean }>({ live: false });
 
   const load = useCallback(
     async (from: 'start' | 'more', mine: number): Promise<CloudFilesCode | null> => {
@@ -94,6 +96,13 @@ export function useCloudFolder(serverId: string | null, path: string, enabled: b
     void load('start', mine).then((code) => {
       if (code && mine === generation.current) show(code);
     });
+    // Leaving the folder or closing the view ends a wake's retries: each listing
+    // counts as the box's awake time.
+    const current = { live: true };
+    run.current = current;
+    return () => {
+      current.live = false;
+    };
   }, [enabled, serverId, path, load, show]);
 
   const loadMore = useCallback(async () => {
@@ -110,6 +119,7 @@ export function useCloudFolder(serverId: string | null, path: string, enabled: b
     if (!serverId || woke.current) return;
     woke.current = true;
     const mine = generation.current;
+    const current = run.current;
     setState({ kind: 'waking' });
     try {
       await rpc.switchServers.ensureCloudMachine(serverId);
@@ -121,7 +131,7 @@ export function useCloudFolder(serverId: string | null, path: string, enabled: b
     const giveUp = Date.now() + WAKE_GIVE_UP_MS;
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, WAKE_RETRY_MS));
-      if (mine !== generation.current) return;
+      if (!current.live || mine !== generation.current) return;
       const code = await load('start', mine);
       if (code === null) return;
       if (code !== 'box_resting' && code !== 'files_elsewhere' && code !== 'unreachable') {

@@ -368,6 +368,9 @@ function FolderList({
   );
 }
 
+/** How long a download's Blob address is kept after the click. */
+export const DOWNLOAD_REVOKE_MS = 5_000;
+
 type Preview =
   | { kind: "loading" }
   | { kind: "image"; url: string }
@@ -427,7 +430,9 @@ function FilePreview({ path, entry, onClose }: { path: string; entry: CloudFileE
       link.download = safeSuggestedName(entry.name, "file");
       link.rel = "noopener";
       link.click();
-      URL.revokeObjectURL(url);
+      // Released a moment later: some Safari versions cancel a download whose
+      // address is revoked straight after the click.
+      window.setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_REVOKE_MS);
     } catch (error) {
       setSaveError(cloudFilesMessage(error instanceof CloudFilesError ? error.code : "unknown"));
     } finally {

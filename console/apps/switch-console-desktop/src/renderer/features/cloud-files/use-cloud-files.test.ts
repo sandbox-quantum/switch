@@ -146,6 +146,21 @@ describe('useCloudFolder', () => {
     view.done();
   });
 
+  it('closing the view while it wakes stops the retries, so no listing adds awake time', async () => {
+    vi.useFakeTimers();
+    list.mockResolvedValue({ ok: false, code: 'box_resting' });
+    const view = await mount(() => useCloudFolder('s1', '', true));
+    ensureCloudMachine.mockResolvedValueOnce({});
+    await act(async () => {
+      void view.seen.value.wake();
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(WAKE_RETRY_MS));
+    const before = list.mock.calls.length;
+    view.done();
+    await act(async () => vi.advanceTimersByTimeAsync(WAKE_RETRY_MS * 7));
+    expect(list.mock.calls.length - before).toBe(0);
+  });
+
   it('a refused wake says so plainly and does not try again', async () => {
     list.mockResolvedValueOnce({ ok: false, code: 'box_resting' });
     const view = await mount(() => useCloudFolder('s1', '', true));
