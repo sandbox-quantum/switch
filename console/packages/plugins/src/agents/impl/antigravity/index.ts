@@ -79,7 +79,21 @@ export const plugin = definePlugin(
   { icon }
 );
 
+/**
+ * How the Antigravity CLI at `binaryPath` updates. agy updates itself; the
+ * legacy `antigravity-acp` launcher takes no update command, so updating it
+ * installs agy with Google's installer, which then takes over. That launcher
+ * was only ever installed on macOS and Linux.
+ */
+export function antigravityUpdateCommand(binaryPath: string): { command: string; args: string[] } {
+  const name = binaryPath.replaceAll('\\', '/').split('/').at(-1)!.toLowerCase();
+  return name.startsWith('antigravity-acp')
+    ? { command: 'bash', args: ['-c', AGY_INSTALL_UNIX] }
+    : { command: binaryPath, args: ['update'] };
+}
+
 export const provider = registerPluginBehavior(plugin, {
+  hostDependency: { buildUpdateCommand: antigravityUpdateCommand },
   prompt: {
     buildCommand: () => {
       throw new Error('Antigravity runs through the ACP session host.');

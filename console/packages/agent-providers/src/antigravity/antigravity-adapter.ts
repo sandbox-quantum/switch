@@ -3,18 +3,17 @@ import type { AcpAdapterOptions, AcpProviderHooks, AcpSelectedAnswer } from '../
 import { ACP_CANCELLED, type AcpSessionModes } from '../acp/protocol';
 import type { RuntimeMode } from '../adapter';
 import type { UserInputQuestion } from '../events';
-import { readiness } from '../readiness';
+import { readiness, SIGNED_OUT_ERROR } from '../readiness';
 import {
   AGY_LOGIN,
   ANTIGRAVITY_SIGN_IN,
   LEGACY_ANTIGRAVITY_SIGN_IN,
   antigravityLaunch,
+  antigravityLoginCommand,
   antigravityProfile,
   antigravitySignedIn,
   isLegacyAntigravityRuntime,
 } from './runtime';
-
-const SIGNED_OUT = /sign in|auth required|authentication required|unauthenticated|not logged in/i;
 
 /**
  * The modes to try for each runtime mode, best first. `agy acp` offers
@@ -29,13 +28,17 @@ const MODE_PREFERENCES: Record<RuntimeMode, readonly string[]> = {
   'approval-required': ['default'],
 };
 
-/** The session mode for `runtimeMode` among those the session advertised. */
+/**
+ * The session mode for `runtimeMode` among those the session advertised, or
+ * none when it advertised none: the ids differ between runtimes, so one is
+ * only sent when the session named it.
+ */
 export function antigravitySessionMode(
   runtimeMode: RuntimeMode,
   modes: AcpSessionModes | undefined
-): string {
+): string | undefined {
   const preferences = MODE_PREFERENCES[runtimeMode];
-  if (!modes?.availableModes.length) return preferences[0]!;
+  if (!modes?.availableModes.length) return undefined;
   return (
     preferences.find((id) => modes.availableModes.some((mode) => mode.id === id)) ??
     preferences.at(-1)!
@@ -64,58 +67,132 @@ export interface AcpElicitationRequest {
   requestedSchema?: { properties?: Record<string, ElicitationProperty> };
 }
 
-function choices(property: ElicitationProperty | undefined): UserInputQuestion['options'] {
+type ElicitationValue = string | number | boolean;
+
+/** The answers `property` offers, each with the value the schema takes for it. */
+function choices(
+  property: ElicitationProperty | undefined
+): Array<{ value: ElicitationValue; label: string }> {
   const offered = property?.oneOf ?? property?.anyOf;
   if (offered)
     return offered.map((choice) => ({
-      value: String(choice.const),
+      value: choice.const,
       label: choice.title ?? String(choice.const),
     }));
-  return (property?.enum ?? []).map((value) => ({ value: String(value), label: String(value) }));
+  if (property?.enum) return property.enum.map((value) => ({ value, label: String(value) }));
+  if (property?.type === 'boolean')
+    return [
+      { value: true, label: 'Yes' },
+      { value: false, label: 'No' },
+    ];
+  return [];
+}
+
+/** One question a form elicitation asks, and the fields its answer fills. */
+interface ElicitationField {
+  question: UserInputQuestion;
+  /** Option value as offered to the user → the value the schema takes. */
+  values: Map<string, ElicitationValue>;
+  /** The field typed text goes into, if any: the question's own, or its "Other". */
+  textField?: { id: string; property: ElicitationProperty };
 }
 
 /**
- * The questions a form elicitation asks: each field with offered answers, one
- * of them or (an array field) several. A free-text field, such as the
- * optional "Other" agy adds beside each question, is left unanswered.
+ * The questions a form elicitation asks. A field with offered answers is one
+ * question, choosing one of them or (an array field) several; the free-text
+ * "Other" agy adds beside it as `<field>_other` becomes that question's own
+ * typed answer. Any other free-text field is a question answered by typing.
  */
-export function elicitationQuestions(request: AcpElicitationRequest): UserInputQuestion[] {
+function elicitationFields(request: AcpElicitationRequest): ElicitationField[] {
   if (request.mode !== undefined && request.mode !== 'form') return [];
-  return Object.entries(request.requestedSchema?.properties ?? {}).flatMap(([id, property]) => {
-    const multiSelect = property.type === 'array';
-    const options = choices(multiSelect ? property.items : property);
-    if (!options.length) return [];
+  const properties = request.requestedSchema?.properties ?? {};
+  const offeredBy = (property: ElicitationProperty) =>
+    choices(property.type === 'array' ? property.items : property);
+  const freeText = (property: ElicitationProperty | undefined): property is ElicitationProperty =>
+    property !== undefined && !offeredBy(property).length;
+  return Object.entries(properties).flatMap(([id, property]): ElicitationField[] => {
+    const base = id.endsWith('_other') ? properties[id.slice(0, -'_other'.length)] : undefined;
+    if (freeText(property) && base && !freeText(base)) return [];
+    const offered = offeredBy(property);
+    const other = properties[`${id}_other`];
+    const textField = !offered.length
+      ? { id, property }
+      : freeText(other)
+        ? { id: `${id}_other`, property: other }
+        : undefined;
     return [
       {
-        id,
-        question: property.title ?? property.description ?? request.message ?? 'Choose an option.',
-        options,
-        multiSelect,
-        allowCustomAnswer: false,
+        question: {
+          id,
+          question:
+            property.title ?? property.description ?? request.message ?? 'Choose an option.',
+          options: offered.map((choice) => ({ value: String(choice.value), label: choice.label })),
+          multiSelect: property.type === 'array' && offered.length > 0,
+          allowCustomAnswer: Boolean(textField),
+        },
+        values: new Map(offered.map((choice) => [String(choice.value), choice.value])),
+        ...(textField ? { textField } : {}),
       },
     ];
   });
 }
 
-/** The elicitation result for the answers chosen. */
+export function elicitationQuestions(request: AcpElicitationRequest): UserInputQuestion[] {
+  return elicitationFields(request).map((field) => field.question);
+}
+
+/** Typed text as the schema of the field it fills takes it. */
+function typedValue(
+  text: string,
+  property: ElicitationProperty
+): ElicitationValue | ElicitationValue[] {
+  if (property.type === 'array')
+    return [typedValue(text, property.items ?? {}) as ElicitationValue];
+  if (property.type === 'number' || property.type === 'integer') {
+    const number = Number(text);
+    // Text that is no number is passed as typed, for the agent to refuse.
+    return text.trim() && Number.isFinite(number) ? number : text;
+  }
+  return text;
+}
+
+/** The elicitation result for the answers given. */
 export function elicitationAnswer(
-  questions: UserInputQuestion[],
+  request: AcpElicitationRequest,
   selected: AcpSelectedAnswer[]
-): { action: 'accept'; content: Record<string, string | string[]> } {
-  return {
-    action: 'accept',
-    content: Object.fromEntries(
-      selected.map(({ questionId, values }) => [
-        questionId,
-        questions.find((question) => question.id === questionId)?.multiSelect ? values : values[0]!,
-      ])
-    ),
-  };
+): { action: 'accept'; content: Record<string, ElicitationValue | ElicitationValue[]> } {
+  const fields = new Map(elicitationFields(request).map((field) => [field.question.id, field]));
+  const content: Record<string, ElicitationValue | ElicitationValue[]> = {};
+  for (const { questionId, values, custom } of selected) {
+    const field = fields.get(questionId);
+    if (!field) continue;
+    const chosen = values.map((value) => field.values.get(value) ?? value);
+    if (field.question.multiSelect) {
+      if (chosen.length) content[questionId] = chosen;
+    } else if (chosen.length) content[questionId] = chosen[0]!;
+    if (custom !== undefined && field.textField)
+      content[field.textField.id] = typedValue(custom, field.textField.property);
+  }
+  return { action: 'accept', content };
+}
+
+/** Whether a running agy answers as signed in, asked without signing it in. */
+async function agySignedIn(
+  request: <T>(method: string, params: unknown) => Promise<T>
+): Promise<boolean> {
+  try {
+    await request('session/list', {});
+    return true;
+  } catch (error) {
+    if (SIGNED_OUT_ERROR.test(String(error))) return false;
+    throw error;
+  }
 }
 
 /**
  * Antigravity over ACP: Google's `agy acp`, or a legacy `antigravity-acp`
- * install. Questions arrive as permission requests.
+ * install. agy asks its questions as form elicitations; the legacy runtime
+ * asked them as permission requests.
  */
 export const antigravityAcp: AcpProviderHooks = {
   provider: 'antigravity',
@@ -130,18 +207,24 @@ export const antigravityAcp: AcpProviderHooks = {
   },
   launch: antigravityLaunch,
   loginCommand: AGY_LOGIN,
-  // A check must never sign in: `authenticate` with Google's methods opens a
-  // browser. `agy` signs itself in from the user's keychain when it starts,
-  // and refuses `session/list` with "Authentication required" when it could
-  // not, so that request answers the question without changing anything.
+  loginCommandFor: antigravityLoginCommand,
+  // A check must never sign in, nor change how the CLI signs in: `authenticate`
+  // with Google's methods opens a browser, and agy keeps the method it is
+  // sent, so an API key chosen once would replace the user's Google sign-in.
+  // agy signs itself in when it starts, and refuses `session/list` with
+  // "Authentication required" when it could not.
   checkSignIn: async ({ binaryPath, env, handshake, request }) => {
     try {
       if (!isLegacyAntigravityRuntime(binaryPath)) {
         await handshake();
-        const method = antigravityAcp.authMethodId?.(env, binaryPath);
-        if (method) await request('authenticate', { methodId: method });
-        await request('session/list', {});
-        return readiness('authenticated', 'Signed in to Antigravity.');
+        if (await agySignedIn(request))
+          return readiness('authenticated', 'Signed in to Antigravity.');
+        return env.GEMINI_API_KEY
+          ? readiness(
+              'authenticated',
+              'Antigravity is not signed in itself; sessions sign it in with GEMINI_API_KEY, which is checked when one starts.'
+            )
+          : readiness('unauthenticated', ANTIGRAVITY_SIGN_IN);
       }
       // Antigravity ACP 1.3 lists every method whether or not one is in use,
       // so an outstanding method is only signed out when the profile holds no
@@ -151,7 +234,7 @@ export const antigravityAcp: AcpProviderHooks = {
         ? readiness('authenticated', 'Signed in to Antigravity ACP.')
         : readiness('unauthenticated', LEGACY_ANTIGRAVITY_SIGN_IN);
     } catch (error) {
-      if (SIGNED_OUT.test(String(error)))
+      if (SIGNED_OUT_ERROR.test(String(error)))
         return readiness(
           'unauthenticated',
           isLegacyAntigravityRuntime(binaryPath) ? LEGACY_ANTIGRAVITY_SIGN_IN : ANTIGRAVITY_SIGN_IN
@@ -159,16 +242,17 @@ export const antigravityAcp: AcpProviderHooks = {
       throw error;
     }
   },
-  // `agy` needs no call when it signed itself in from the keychain; an API
-  // key in the environment is only used once it is chosen. The legacy runtime
-  // opens a browser when its profile holds no usable token, which is why only
-  // a session start sends it.
+  // The legacy runtime opens a browser when its profile holds no usable
+  // token, which is why only a session start sends it. agy is sent the API key
+  // method only when it could not sign itself in: see `checkSignIn`.
   authMethodId: (env, binaryPath) =>
     isLegacyAntigravityRuntime(binaryPath)
       ? 'oauth-personal'
       : env.GEMINI_API_KEY
         ? 'gemini-api-key'
         : undefined,
+  alreadySignedIn: async ({ binaryPath, request }) =>
+    !isLegacyAntigravityRuntime(binaryPath) && (await agySignedIn(request)),
   promptCapabilities: { image: true, audio: true, embeddedContext: true },
   // Antigravity has no reviewer of its own, so auto mode is its auto-edit
   // mode: edits run, commands and connector calls still ask.
@@ -191,10 +275,12 @@ export const antigravityAcp: AcpProviderHooks = {
   clientCapabilities: { elicitation: { form: {} } },
   extensions: (context, on) => {
     on.request('elicitation/create', async (params) => {
-      const questions = elicitationQuestions(params as AcpElicitationRequest);
+      const request = params as AcpElicitationRequest;
+      const questions = elicitationQuestions(request);
+      // A form with no fields, or a mode other than a form (a URL to open).
       if (!questions.length) return { action: 'decline' };
       const result = await context.askQuestions(questions, (selected) =>
-        elicitationAnswer(questions, selected)
+        elicitationAnswer(request, selected)
       );
       return result === ACP_CANCELLED ? { action: 'cancel' } : result;
     });

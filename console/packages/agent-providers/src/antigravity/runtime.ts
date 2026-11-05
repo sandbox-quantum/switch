@@ -9,8 +9,10 @@ export const AGY_LOGIN = 'agy acp --login';
 export const ANTIGRAVITY_SIGN_IN = `Sign in to Antigravity on the execution host with ${AGY_LOGIN}, or set GEMINI_API_KEY.`;
 
 /** How a retired Switch wrapper install is signed in: it keeps a profile of its own. */
-export const LEGACY_ANTIGRAVITY_SIGN_IN =
-  'Sign in to Antigravity ACP on the execution host with antigravity-acp --login, or install Google’s agy CLI and sign in with agy acp --login.';
+/** The command that signs a retired Switch wrapper install in, into its own profile. */
+export const LEGACY_ANTIGRAVITY_LOGIN = 'antigravity-acp --login';
+
+export const LEGACY_ANTIGRAVITY_SIGN_IN = `Sign in to Antigravity ACP on the execution host with ${LEGACY_ANTIGRAVITY_LOGIN}, or install Google’s agy CLI and sign in with ${AGY_LOGIN}.`;
 
 /**
  * Whether `binaryPath` is the ACP runtime Switch Console used to install
@@ -21,6 +23,21 @@ export const LEGACY_ANTIGRAVITY_SIGN_IN =
 export function isLegacyAntigravityRuntime(binaryPath: string): boolean {
   const name = basename(binaryPath.replaceAll('\\', '/')).toLowerCase();
   return name.startsWith('antigravity-acp') || name.startsWith('agy_acp_server');
+}
+
+/** The command that signs in the Antigravity runtime at `binaryPath`. */
+export function antigravityLoginCommand(binaryPath: string): string {
+  return isLegacyAntigravityRuntime(binaryPath) ? LEGACY_ANTIGRAVITY_LOGIN : AGY_LOGIN;
+}
+
+/**
+ * Whether `binaryPath` is the Antigravity IDE's command-line launcher, which
+ * opens the editor (and would take `acp` for a folder to open) rather than
+ * serving ACP.
+ */
+function isAntigravityIdeLauncher(binaryPath: string): boolean {
+  const name = basename(binaryPath.replaceAll('\\', '/')).toLowerCase();
+  return /^antigravity(\.(exe|cmd|bat))?$/.test(name);
 }
 
 /** The Gemini home a legacy Antigravity ACP server runs with: its sign-in and settings live under it. */
@@ -59,6 +76,10 @@ export async function antigravitySignedIn(profile: string): Promise<boolean> {
  * first use, and is killed when it prints a sign-in link instead of answering.
  */
 export async function antigravityLaunch(input: AcpLaunchInput): Promise<AcpLaunch> {
+  if (isAntigravityIdeLauncher(input.binaryPath))
+    throw new Error(
+      'The selected executable is the Antigravity IDE launcher, which does not serve ACP. Install Google’s agy CLI and select it in provider setup.'
+    );
   if (!isLegacyAntigravityRuntime(input.binaryPath))
     return {
       command: input.binaryPath,

@@ -36,10 +36,14 @@ export interface AcpLaunchInput {
   env: Record<string, string>;
 }
 
-/** One answered question: the option values chosen, already checked against what was offered. */
+/**
+ * One answered question: the option values chosen, already checked against
+ * what was offered, and the text typed where the question takes it.
+ */
 export interface AcpSelectedAnswer {
   questionId: string;
   values: string[];
+  custom?: string;
 }
 
 /**
@@ -100,6 +104,11 @@ export interface AcpProviderHooks {
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /**
+   * The sign-in command for the executable at `binaryPath`, where it is not
+   * `loginCommand` for every one (an older runtime of the same provider, say).
+   */
+  loginCommandFor?(binaryPath: string): string;
+  /**
    * Environment variables the CLI reads (an API key, an endpoint) that a
    * session host should pass through from the machine's environment. The
    * common vendor keys are already passed through for every provider.
@@ -123,15 +132,23 @@ export interface AcpProviderHooks {
    */
   authMethodId?(env: Record<string, string>, binaryPath: string): string | undefined;
   /**
+   * Whether the agent is signed in already, asked after `initialize` and
+   * before `authenticate` is sent for `authMethodId`; true sends none. For an
+   * agent that keeps the method it is sent, where `authenticate` would move a
+   * signed-in CLI onto another method for good. Absent always sends it.
+   */
+  alreadySignedIn?(input: AcpSignedInQuery): Promise<boolean>;
+  /**
    * Prompt content the agent accepts whether or not it advertises it. What it
    * advertises in `initialize` is always honoured as well.
    */
   promptCapabilities?: AcpPromptCapabilities;
   /**
    * The ACP mode to put a new session in for Switch's runtime mode, given the
-   * modes the session advertised. Omit to leave the agent's default.
+   * modes the session advertised. Omit, or return undefined, to leave the
+   * agent's default.
    */
-  sessionMode?(runtimeMode: RuntimeMode, modes: AcpSessionModes | undefined): string;
+  sessionMode?(runtimeMode: RuntimeMode, modes: AcpSessionModes | undefined): string | undefined;
   /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id
@@ -157,6 +174,13 @@ export interface AcpProviderHooks {
   clientCapabilities?: Record<string, unknown>;
   /** Register vendor-specific requests and notifications for a session. */
   extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
+}
+
+export interface AcpSignedInQuery {
+  binaryPath: string;
+  env: Record<string, string>;
+  /** A request to the agent the session started. */
+  request<T>(method: string, params: unknown): Promise<T>;
 }
 
 export interface AcpSignInInput extends SignInCheckInput {

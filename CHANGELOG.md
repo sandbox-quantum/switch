@@ -2541,8 +2541,11 @@ version of their own to them without also giving them a release of their own.
   Google's installers, runs sessions with `agy acp`, and checks the sign-in you
   made with `agy acp --login` or a `GEMINI_API_KEY`, instead of a separate
   Antigravity ACP profile that a Google sign-in never reached. Antigravity's
-  questions now reach you, too. A machine that only has the older
-  `antigravity-acp` runtime keeps using it until `agy` is installed.
+  questions now reach you, too, including typed answers. A machine that only
+  has the older `antigravity-acp` runtime keeps using it until `agy` is
+  installed, and Update installs `agy` there. An Antigravity sign-in Switch
+  holds for the older runtime cannot sign `agy` in: a session given one now
+  says how to sign in on the machine instead of starting signed out.
 - **Console no longer opens to a blank window on a database a newer build
   has changed.** Stable and Canary share one database, so after Canary added a
   migration, an older build found tables it was not written for, applied

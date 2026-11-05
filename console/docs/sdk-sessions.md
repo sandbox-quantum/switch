@@ -288,9 +288,12 @@ and Windows. Install it with Google's installer (`curl -fsSL
 https://antigravity.google/cli/install.sh | bash`, or on Windows `irm
 https://antigravity.google/cli/install.ps1 | iex`, which puts `agy.exe` in
 `%LOCALAPPDATA%\agy\bin`). It uses the person's own `agy` sign-in: sign in with
-`agy acp --login` on the execution host, or set `GEMINI_API_KEY`. The sign-in
-check asks `agy acp` for its sessions, which it refuses while signed out, and
-never signs in itself. Approvals and cancellation use ACP; questions arrive as
+`agy acp --login` on the execution host, or set `GEMINI_API_KEY`, which a
+session uses only when `agy` is not signed in itself. The sign-in check asks
+`agy acp` for its sessions, which it refuses while signed out, and never signs
+in itself. A hosted Antigravity login made for the older runtime cannot sign
+`agy` in; a session given one fails with an error saying how to sign in on the
+machine instead. Approvals and cancellation use ACP; questions arrive as
 ACP form elicitations. A machine that only has the `antigravity-acp` runtime
 Switch Console used to install keeps using it, with its own `antigravity-acp
 --login`, until `agy` is installed. Conversations saved by that runtime, or by

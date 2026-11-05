@@ -105,16 +105,25 @@ AskQuestion tool, so `user-input` is skipped in its conformance run.
 
 **Antigravity** runs Google's `agy` as `agy acp`, with the user's own profile
 and sign-in (the OS keychain), so the launch sets nothing up. `agy` signs
-itself in when it starts; Switch sends `authenticate` only with
-`gemini-api-key` when the session environment has `GEMINI_API_KEY`. The
-sign-in check asks for `session/list`, which a signed-out `agy` refuses with
-`Authentication required`, and never calls `authenticate` with a Google
-method, which would open a browser. Questions arrive as ACP form elicitations
-(`elicitation/create`), which the adapter announces it can answer. `agy`'s
-modes are `default`, `accept-edits` and `plan`: auto mode is `accept-edits`,
-and full access is `default` with every request approved by the adapter.
+itself in when it starts, and refuses `session/list` with `Authentication
+required` when it could not. The sign-in check asks exactly that and never
+calls `authenticate`: Google's methods open a browser, and `agy` keeps the
+method it is sent, so even the API key method would move a user signed in
+with Google onto the key for good. A session start sends `authenticate` with
+`gemini-api-key` only when the environment has `GEMINI_API_KEY` and
+`session/list` was refused. Questions arrive as ACP form elicitations
+(`elicitation/create`), which the adapter announces it can answer: each field
+with offered answers is a question, the `<field>_other` text `agy` adds beside
+it is that question's typed answer, and any other text field is a question
+answered by typing. `agy`'s modes are `default`, `accept-edits` and `plan`:
+auto mode is `accept-edits`, and full access is `default` with every request
+approved by the adapter. A session that advertises no modes is left in its
+own. A hosted Antigravity login (the token file of the legacy runtime) is
+refused for an `agy` target with an error saying how to sign in there,
+rather than written where `agy` never reads it.
 A legacy `antigravity-acp` install still runs in its own profile directory
 (`GEMINI_HOME`) with its `auto_edit` and `yolo` modes, questions as permission
 requests whose tool call id starts with `interaction_`, and its old sign-in
-check. Native session ids are stored with an `acp:` prefix; a conversation
-saved by the retired CLI runtime starts fresh.
+check; its sign-in command is `antigravity-acp --login`, and Update installs
+`agy` over it. Native session ids are stored with an `acp:` prefix; a
+conversation saved by the retired CLI runtime starts fresh.

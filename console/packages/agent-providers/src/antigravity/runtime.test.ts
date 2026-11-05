@@ -34,6 +34,17 @@ it('runs agy as `agy acp` in the user’s own profile, on every OS', async () =>
   }
 });
 
+it('refuses the Antigravity IDE launcher, which would take `acp` for a folder to open', async () => {
+  for (const binaryPath of [
+    'antigravity',
+    '/usr/bin/antigravity',
+    'C:\\Users\\u\\AppData\\Local\\Programs\\Antigravity\\bin\\antigravity.cmd',
+  ])
+    await expect(antigravityLaunch({ binaryPath, cwd: '/work', env: {} })).rejects.toThrow(
+      'Antigravity IDE launcher'
+    );
+});
+
 it('tells a legacy wrapper install from Google’s agy', () => {
   expect(isLegacyAntigravityRuntime('/home/u/.local/bin/antigravity-acp')).toBe(true);
   expect(isLegacyAntigravityRuntime('/opt/acp/agy_acp_server.par')).toBe(true);

@@ -84,18 +84,25 @@ it('reports a signed-out agy as unauthenticated, pointing at agy acp --login', a
   expect(mock.request.mock.calls.map((call) => call[0])).not.toContain('authenticate');
   expect(mock.dispose).toHaveBeenCalledOnce();
 });
-it('checks agy with the Gemini API key the environment carries', async () => {
-  mock.request
-    .mockResolvedValueOnce({})
-    .mockResolvedValueOnce({})
-    .mockResolvedValueOnce({ sessions: [] });
+// agy keeps the method it is sent: authenticating with the key, even once,
+// would move a user signed in with Google onto the key for good.
+it('checks agy without choosing the Gemini API key the environment carries', async () => {
+  mock.request.mockResolvedValueOnce({}).mockResolvedValueOnce({ sessions: [] });
   const result = await checkProviderReadiness({ ...agy, env: { GEMINI_API_KEY: 'placeholder' } });
   expect(result.status).toBe('authenticated');
   expect(mock.request.mock.calls).toEqual([
     ['initialize', expect.anything()],
-    ['authenticate', { methodId: 'gemini-api-key' }],
     ['session/list', {}],
   ]);
+});
+it('counts on the Gemini API key for an agy not signed in itself, saying it is unchecked', async () => {
+  mock.request
+    .mockResolvedValueOnce({})
+    .mockRejectedValueOnce(new JsonRpcError(-32000, 'Authentication required'));
+  const result = await checkProviderReadiness({ ...agy, env: { GEMINI_API_KEY: 'placeholder' } });
+  expect(result).toMatchObject({ status: 'authenticated' });
+  expect(result.message).toContain('checked when one starts');
+  expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize', 'session/list']);
 });
 // A legacy `antigravity-acp` install keeps its own profile and is checked as before.
 const legacy = { ...input, binaryPath: '/home/u/.local/bin/antigravity-acp' };
@@ -116,7 +123,13 @@ it('reports an outstanding legacy sign-in as unauthenticated', async () => {
   const result = await checkProviderReadiness({ ...legacy, provider: 'antigravity' });
   expect(result.status).toBe('unauthenticated');
   expect(result.message).toContain('antigravity-acp --login');
+  // Console's sign-in hint and button follow the executable checked.
+  expect(result.loginCommand).toBe('antigravity-acp --login');
   expect(mock.dispose).toHaveBeenCalledOnce();
+});
+it('names no login command of its own for agy, the provider’s usual one', async () => {
+  mock.request.mockResolvedValueOnce({}).mockResolvedValueOnce({ sessions: [] });
+  expect(await checkProviderReadiness(agy)).not.toHaveProperty('loginCommand');
 });
 // Antigravity ACP 1.3 lists every sign-in method in its handshake, signed in or
 // not: the token --login wrote is what says.

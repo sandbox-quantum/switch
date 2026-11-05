@@ -18,7 +18,14 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
-import { readiness, signInWith, type ProviderReadiness, type SignInCheckInput } from '../readiness';
+import {
+  loginCommandOf,
+  readiness,
+  SIGNED_OUT_ERROR,
+  signInWith,
+  type ProviderReadiness,
+  type SignInCheckInput,
+} from '../readiness';
 import {
   JsonRpcError,
   noopLogger,
@@ -88,7 +95,7 @@ export async function checkAcpSignIn(
     await handshake();
     return readiness(
       'unknown',
-      `${hooks.label} started but has no sign-in check. If its sessions fail, sign in on the execution machine with ${hooks.loginCommand}.`
+      `${hooks.label} started but has no sign-in check. If its sessions fail, sign in on the execution machine with ${loginCommandOf(hooks, input.binaryPath)}.`
     );
   } finally {
     await client?.dispose();
@@ -239,7 +246,15 @@ export class AcpAdapter implements ProviderAdapter {
       // for, so a browser opening is an answer to something they did. Sign-in
       // checks stop at the handshake above.
       const authMethodId = hooks.authMethodId?.(input.env, binaryPath);
-      if (authMethodId) await client.request('authenticate', { methodId: authMethodId });
+      if (
+        authMethodId &&
+        !(await hooks.alreadySignedIn?.({
+          binaryPath,
+          env: input.env,
+          request: <T>(method: string, params: unknown) => client.request<T>(method, params),
+        }))
+      )
+        await client.request('authenticate', { methodId: authMethodId });
       const mcpServers = acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
       if (input.resume) {
@@ -287,8 +302,10 @@ export class AcpAdapter implements ProviderAdapter {
           ? String(cause.data.details)
           : '';
       const signIn =
-        cause instanceof JsonRpcError && cause.code === -32000 && /auth/i.test(cause.message)
-          ? `. ${signInWith(hooks.loginCommand)}`
+        cause instanceof JsonRpcError &&
+        cause.code === -32000 &&
+        SIGNED_OUT_ERROR.test(cause.message)
+          ? `. ${signInWith(loginCommandOf(hooks, binaryPath))}`
           : '';
       throw new ProviderSessionError(
         hooks.provider,
@@ -437,20 +454,23 @@ export class AcpAdapter implements ProviderAdapter {
     const pending = state.questions.get(requestId);
     if (!pending)
       throw new ProviderSessionError(this.provider, id, `No pending question ${requestId}`);
-    const selected = pending.questions.map((question) => {
+    const selected = pending.questions.map((question): AcpSelectedAnswer => {
       const answer = answers[question.id];
-      const values = Array.isArray(answer) ? answer : typeof answer === 'string' ? [answer] : [];
+      const given = Array.isArray(answer) ? answer : typeof answer === 'string' ? [answer] : [];
+      const offered = (value: string) => question.options.some((option) => option.value === value);
+      const values = given.filter(offered);
+      const typed = given.filter((value) => !offered(value));
       if (
-        !values.length ||
-        (!question.multiSelect && values.length !== 1) ||
-        values.some((value) => !question.options.some((option) => option.value === value))
+        !given.length ||
+        (!question.multiSelect && given.length !== 1) ||
+        typed.length > (question.allowCustomAnswer ? 1 : 0)
       )
         throw new ProviderSessionError(
           this.provider,
           id,
           `Invalid answer for ${question.id}: choose one of the offered answers.`
         );
-      return { questionId: question.id, values };
+      return { questionId: question.id, values, ...(typed.length ? { custom: typed[0]! } : {}) };
     });
     state.questions.delete(requestId);
     pending.settle(pending.answer(selected));

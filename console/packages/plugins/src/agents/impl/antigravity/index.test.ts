@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { AGY_INSTALL_UNIX, AGY_INSTALL_WINDOWS, plugin } from './index';
+import {
+  AGY_INSTALL_UNIX,
+  AGY_INSTALL_WINDOWS,
+  antigravityUpdateCommand,
+  plugin,
+  provider,
+} from './index';
 
 const dependency = plugin.capabilities.hostDependency;
 
@@ -27,5 +33,24 @@ describe('Antigravity host dependency', () => {
 
   it('updates agy with its own update command', () => {
     expect(dependency.updates).toMatchObject({ update: { kind: 'cli', args: ['update'] } });
+  });
+
+  it('runs `agy update` for agy, wherever it is installed', () => {
+    for (const binaryPath of [
+      '/home/u/.local/bin/agy',
+      'C:\\Users\\u\\AppData\\Local\\agy\\bin\\agy.exe',
+    ])
+      expect(antigravityUpdateCommand(binaryPath)).toEqual({
+        command: binaryPath,
+        args: ['update'],
+      });
+    expect(provider.behavior.hostDependency?.buildUpdateCommand).toBe(antigravityUpdateCommand);
+  });
+
+  it('updates a legacy antigravity-acp install by installing agy, which it takes no update command for', () => {
+    expect(antigravityUpdateCommand('/home/u/.local/bin/antigravity-acp')).toEqual({
+      command: 'bash',
+      args: ['-c', AGY_INSTALL_UNIX],
+    });
   });
 });
