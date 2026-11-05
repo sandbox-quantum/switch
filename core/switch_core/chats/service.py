@@ -1108,7 +1108,7 @@ class ChatService:
             )
             if agent_id in await self._room_store.get_agent_ids(session, room.id):
                 return room
-        # The same check as above, in the funnel itself (#805): the
+        # The same check as above, in the funnel itself: the
         # pre-check answers first in practice, and the gate is the backstop
         # that cannot be bypassed by another caller of the funnel.
         try:
@@ -1553,7 +1553,7 @@ class ChatService:
                     except InviteRefused as refused:
                         # The creator may not use one of the agents
                         # (`_require_may_use_agent` above answers first in
-                        # practice; the gate is the backstop, #805).
+                        # practice; the gate is the backstop).
                         raise ChatError(
                             403, "AGENT_NOT_ALLOWED", str(refused)
                         ) from refused

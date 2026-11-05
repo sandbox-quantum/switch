@@ -1064,7 +1064,7 @@ def test_user_join_does_not_fire_on_app_joined() -> None:
 
 def test_an_app_join_names_who_invited_the_app() -> None:
     # Slack's member_joined event carries the inviter; the join is judged
-    # by the agents' addressing policies as that person (#805).
+    # by the agents' addressing policies as that person.
     from switch_core.bridges.collaboration.models import InboundAppJoin
 
     adapter = _adapter()
@@ -1096,7 +1096,7 @@ def test_an_app_join_names_who_invited_the_app() -> None:
 
 def test_a_user_join_names_who_invited_them() -> None:
     # A "user" who is an agent's bot is routed to the agent-join path with
-    # this inviter, so it has to survive the trip (#805).
+    # this inviter, so it has to survive the trip.
     from switch_core.bridges.collaboration.models import InboundUserJoin
 
     adapter = _adapter()

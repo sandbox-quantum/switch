@@ -169,9 +169,9 @@ class RoomCreateResult(BaseModel):
     room: Room
     failed_attachments: list[dict[str, Any]] = []
     # Ids of restricted agents a platform join let in unverified — the
-    # platform did not say who added them, so nobody could be judged
-    # (#805). The bridging caller discloses them in the channel; empty for
-    # every invite that named its inviter.
+    # platform did not say who added them, so nobody could be judged. The
+    # bridging caller discloses them in the channel; empty for every invite
+    # that named its inviter.
     invite_unverified: list[str] = []
 
 
@@ -215,7 +215,7 @@ class RoomService:
         self._telemetry = telemetry
         # The shared delivery read; told when a room goes.
         self._room_cache = room_cache
-        # Who may put an agent in a room (#805); asked by create_room and
+        # Who may put an agent in a room; asked by create_room and
         # add_agents_to_room, the two funnels every invite path ends in.
         self._invites = InviteGate.build(room_store=room_store, agent_store=agent_store)
 

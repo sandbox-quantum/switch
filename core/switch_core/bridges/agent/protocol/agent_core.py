@@ -2984,7 +2984,7 @@ class AgentCore:
             )
             try:
                 # The room is the calling agent's doing, so every agent it
-                # seats is judged as invited by that agent (#805) — its own
+                # seats is judged as invited by that agent — its own
                 # seat included, which the gate always allows.
                 result = await self.room_service.create_room(
                     config, invited_by=AgentInviter(agent.id)
@@ -3058,7 +3058,7 @@ class AgentCore:
                     )
                 include_for = [target.id]
         try:
-            # Judged as the inviting agent (#805): the invited agent's
+            # Judged as the inviting agent: the invited agent's
             # addressing policy decides whether it takes instructions from
             # this agent's owner — an `InviteRefused` (a PermissionError)
             # reaches the caller with its reason, like the roster check

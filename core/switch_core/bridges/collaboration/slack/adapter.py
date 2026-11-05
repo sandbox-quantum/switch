@@ -3423,7 +3423,7 @@ class SlackAdapter(PlatformAdapter):
             return
         # Slack names whoever invited the member; a join by link or by the
         # member themselves carries none. Whoever it was is who an agent
-        # join is judged as (#805) — the app join included, which the other
+        # join is judged as — the app join included, which the other
         # reading of this event (a user joining) already had.
         inviter = event.get("inviter")
         added_by = str(inviter) if inviter else None

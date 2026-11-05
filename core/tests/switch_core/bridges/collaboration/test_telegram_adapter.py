@@ -610,7 +610,7 @@ def test_the_bot_being_added_provisions_the_room() -> None:
 
 def test_a_join_names_the_person_who_added_the_member() -> None:
     # The service message's sender is who added the new members; the join
-    # is judged by an agent's addressing policy as that person (#805).
+    # is judged by an agent's addressing policy as that person.
     adapter = _adapter()
     joins: list[Any] = []
     adapter._on_user_joined = lambda j: _collect(joins, j)

@@ -1,4 +1,4 @@
-"""Invites are judged in the funnel (#805).
+"""Invites are judged in the funnel.
 
 `RoomService.create_room` and `RoomService.add_agents_to_room` are where
 every invite path ends — the chat command, the MCP tool, the gateway, a

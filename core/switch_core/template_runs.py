@@ -489,7 +489,7 @@ class TemplateAgents:
                 )
                 await self._finish(tenant_id, owner_id, result["agent_id"], agent)
                 for room_id in agent.join_room_ids:
-                    # Judged as the person running the template (#805): the
+                    # Judged as the person running the template: the
                     # new agent is theirs, so its owner-scoped policy admits
                     # them by construction.
                     await self._protocol.room_service.add_agents_to_room(

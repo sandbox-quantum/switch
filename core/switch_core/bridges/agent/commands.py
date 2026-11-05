@@ -1241,7 +1241,7 @@ async def _cmd_invite(
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
     # MCP tool) so the agent is invited to the room AND added to any bridged
     # channel — and judged by its addressing policy as whoever typed the
-    # command (#805): the refusal goes back to them, unchanged, because it
+    # command: the refusal goes back to them, unchanged, because it
     # already says why and who can invite instead.
     try:
         await cast("CommandConsumer", client)._room_service.add_agents_to_room(

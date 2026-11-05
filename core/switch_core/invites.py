@@ -1,4 +1,4 @@
-"""Who may put an agent into a room (#805).
+"""Who may put an agent into a room.
 
 An agent's addressing policy says who may address it — send it work it is
 expected to act on. An invite is how work reaches it: a room it has been put
@@ -159,10 +159,6 @@ class InviteOutcome:
 
     refused: list[InviteRefused] = field(default_factory=list)
     unverified: list[Agent] = field(default_factory=list)
-
-    @property
-    def refused_ids(self) -> set[str]:
-        return {refusal.agent_id for refusal in self.refused}
 
 
 def refusal_message(agent: Agent, owner_name: str | None, *, unclaimed: bool) -> str:

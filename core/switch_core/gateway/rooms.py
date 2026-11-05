@@ -431,7 +431,7 @@ async def create_room(
     )
     try:
         # The signed-in user is the inviter: an agent whose addressing
-        # policy does not admit them refuses the room (#805), answered 403
+        # policy does not admit them refuses the room, answered 403
         # with the gate's own message — why, and who can invite instead.
         result = await room_service.create_room(config, invited_by=UserInviter(user.id))
     except InviteRefused as e:

@@ -1100,7 +1100,7 @@ class RoomYamlService:
             package_ids=attached_package_ids or None,
             aliases=spec.aliases,
         )
-        # Judged as whoever is provisioning (#805): the calling agent when
+        # Judged as whoever is provisioning: the calling agent when
         # an agent runs the template (its origin is on the config), the
         # user themselves otherwise.
         invited_by: Inviter = (

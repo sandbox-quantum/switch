@@ -444,10 +444,7 @@ class AddressingResolver:
         policy."""
         policy = parse_policy(agent.addressing_policy)
         if principal.kind == "platform" and principal.on_behalf_of is not None:
-            # An open policy admits the person without anyone's accounts
-            # being looked up — `allows_on_behalf_of` says the same, after
-            # the lookup this skips.
-            allowed = policy.is_open() or allows_on_behalf_of(
+            allowed = allows_on_behalf_of(
                 policy,
                 room_id=room_id,
                 group_id=group_id,

@@ -1,4 +1,4 @@
-"""Who may put an agent into a room (#805).
+"""Who may put an agent into a room.
 
 The gate is the one place every invite path is judged, so it is tested here
 path by path — a person, an agent, a chat command's sender, and the

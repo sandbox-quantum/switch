@@ -87,7 +87,7 @@ async def test_switch_declining_is_still_a_400() -> None:
 
 
 async def test_an_invite_refusal_is_403_carrying_the_gates_words() -> None:
-    # The signed-in user may not invite one of the agents (#805): the
+    # The signed-in user may not invite one of the agents: the
     # gate's message — why, and who can invite instead — is the detail.
     exc = await _call(
         InviteRefused(

@@ -178,7 +178,7 @@ class TestInviteCommandRegistration:
 
 class TestInviteCommandRefused:
     """The funnel refuses someone the agent's addressing policy does not
-    admit (#805): the refusal is the reply — it already says why, and who
+    admit: the refusal is the reply — it already says why, and who
     can invite instead — and no "Added" follows it."""
 
     async def test_a_refusal_is_the_reply(self) -> None:

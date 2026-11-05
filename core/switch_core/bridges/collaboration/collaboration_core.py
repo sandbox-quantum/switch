@@ -280,7 +280,7 @@ class CollaborationCore:
         )
         self._max_attachment_bytes = max_attachment_bytes
         self._trust_client = trust_client
-        # The shared invite gate (#805): asked here only for an owner's
+        # The shared invite gate: asked here only for an owner's
         # handle on this bridge, when a join has to be disclosed.
         self._invite_gate = InviteGate.build(
             room_store=room_store, agent_store=agent_store
@@ -1480,7 +1480,7 @@ class CollaborationCore:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
             # Judged as whoever added the agent's bot on the platform, when
-            # the platform said who it was (#805). A refusal is posted in
+            # the platform said who it was. A refusal is posted in
             # the channel, where the person who added it can see it; an
             # unnamed adder lets the join through but disclosed.
             try:
@@ -1630,7 +1630,7 @@ class CollaborationCore:
         """`added_by` is the platform's own id for whoever added the agent
         (or the bridge app) to the channel, when the platform reported it:
         the room's agents are judged by their addressing policies as that
-        person (#805). Callers that are not reporting a join — an inbound
+        person. Callers that are not reporting a join — an inbound
         message or command that merely finds an unmapped channel — pass
         nothing, and the seating is then disclosed rather than judged,
         because nobody added the agents; the channel simply appeared."""
@@ -1768,7 +1768,7 @@ class CollaborationCore:
 
     async def _disclose_unverified(self, channel_id: str, agents: list[Agent]) -> None:
         """Say, in the room, that these agents were added on the platform by
-        someone it did not name (#805).
+        someone it did not name.
 
         The join stands — the platform put the agent there, and removing it
         is the owner's call — but it is never silently trusted: the notice

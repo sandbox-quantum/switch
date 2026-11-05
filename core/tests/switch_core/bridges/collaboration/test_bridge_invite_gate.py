@@ -1,4 +1,4 @@
-"""Platform joins are judged by who added the agent (#805).
+"""Platform joins are judged by who added the agent.
 
 When someone adds an agent's bot — or the bridge app — to a channel on the
 platform, the room the bridge makes for that channel seats the channel's

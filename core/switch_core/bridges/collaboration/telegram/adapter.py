@@ -2658,7 +2658,7 @@ class TelegramAdapter(PlatformAdapter):
         channel_id = str(chat.id)
         if self._on_app_joined is not None:
             # The update names who changed the bot's membership — who added
-            # it, when that is what the change was (#805).
+            # it, when that is what the change was.
             actor = getattr(event, "from_user", None)
             await self._on_app_joined(
                 InboundAppJoin(
@@ -2697,7 +2697,7 @@ class TelegramAdapter(PlatformAdapter):
         if new_members:
             # The service message's sender is who added the new members (or
             # a member who joined by link, adding themselves): who an agent
-            # join is judged as (#805).
+            # join is judged as.
             await self._handle_new_members(
                 new_members,
                 chat_id,
