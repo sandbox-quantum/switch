@@ -1,4 +1,4 @@
-import { app, clipboard, Menu, shell } from 'electron';
+import { app, clipboard, Menu, shell, webContents } from 'electron';
 import { events } from '@main/lib/events';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import {
@@ -6,6 +6,7 @@ import {
   menuOpenSettingsChannel,
   menuQuitRequestedChannel,
   menuRedoChannel,
+  menuSelectAllChannel,
   menuUndoChannel,
 } from '@shared/events/appEvents';
 import {
@@ -22,6 +23,21 @@ function copyVersionInfo(): void {
     `Electron: ${process.versions.electron}`,
   ];
   clipboard.writeText(lines.join('\n'));
+}
+
+/**
+ * Edit > Select All. In the app's own window the renderer decides, so it acts
+ * only inside the focused text field rather than selecting the whole window
+ * (CHOO-4120). Embedded web pages keep Chromium's select-all.
+ */
+function selectAll(): void {
+  const focused = webContents.getFocusedWebContents();
+  const win = getMainWindow();
+  if (win && !win.isDestroyed() && (!focused || focused === win.webContents)) {
+    events.emit(menuSelectAllChannel, undefined);
+    return;
+  }
+  focused?.selectAll();
 }
 
 function requestQuit(): void {
@@ -125,7 +141,7 @@ export function setupApplicationMenu(): void {
         { role: 'paste' as const },
         ...(isMac ? [{ role: 'pasteAndMatchStyle' as const }] : []),
         { role: 'delete' as const },
-        { role: 'selectAll' as const },
+        { label: 'Select All', accelerator: 'CmdOrCtrl+A', click: selectAll },
       ],
     },
     // View menu
