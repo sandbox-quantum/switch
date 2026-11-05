@@ -43,7 +43,7 @@ describe('an agent on the shared cloud, as a person reads it', () => {
     const resting = { agent_id: 'a', state: 'resting' as const, box_stopped: true };
     expect(sharedCloudPresentation(resting, now, true)).toMatchObject({
       label: 'Stopped',
-      detail: 'Your cloud is stopped',
+      detail: 'Start your cloud to use it',
     });
     expect(sharedCloudPresentation(resting, now).label).toBe('Resting');
     // A failure keeps its own words on a stopped box.

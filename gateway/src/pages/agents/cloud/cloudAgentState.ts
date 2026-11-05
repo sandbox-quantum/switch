@@ -18,7 +18,7 @@ export interface CloudPresentation {
 /** A resting agent on a box Your cloud shows as Stopped. */
 export const BOX_STOPPED: CloudPresentation = {
   label: "Stopped",
-  detail: "Your cloud is stopped",
+  detail: "Start your cloud to use it",
   tone: "resting",
   when: null,
 };

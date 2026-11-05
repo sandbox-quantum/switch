@@ -59,7 +59,7 @@ export function sharedCloudPresentation(
       };
     case 'resting':
       if (boxStopped)
-        return { label: 'Stopped', detail: 'Your cloud is stopped', tone: 'resting', when };
+        return { label: 'Stopped', detail: 'Start your cloud to use it', tone: 'resting', when };
       return {
         label: 'Resting',
         detail: agent.box_stopped ? 'Starts when messaged' : 'Back when messaged',

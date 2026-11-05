@@ -216,7 +216,7 @@ describe("AgentsPage with hosted agents v2", () => {
     expect(await screen.findByText("Start it to add or use an agent.")).toBeTruthy();
     await waitFor(() =>
       expect(within(screen.getByTestId("row-notes-taker")).getByTestId("cloud").textContent).toBe(
-        "Stopped · Your cloud is stopped",
+        "Stopped · Start your cloud to use it",
       ),
     );
     expect(within(screen.getByTestId("row-stopped-one")).getByTestId("cloud").textContent).toBe(
