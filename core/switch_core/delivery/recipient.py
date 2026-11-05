@@ -633,8 +633,16 @@ class AgentRecipient:
             else None
         )
         notice = await self._switch_notice(session) if addressed else None
+        owns = await self._sender_owns_agent(session, event) if addressed else False
         own_event = _message_own_event(
-            meta, event, thread_id, self.agent.id, sender_role, notice
+            meta,
+            event,
+            thread_id,
+            self.agent.id,
+            sender_role,
+            notice,
+            owns,
+            self._mid_turn_delivery(),
         )
 
         async def after(row: InboundEvent) -> None:
@@ -707,7 +715,14 @@ class AgentRecipient:
         notice = await self._switch_notice(session)
         return Delivery(
             own_event=_message_own_event(
-                meta, event, event.thread_root_id, self.agent.id, sender_role, notice
+                meta,
+                event,
+                event.thread_root_id,
+                self.agent.id,
+                sender_role,
+                notice,
+                await self._sender_owns_agent(session, event),
+                self._mid_turn_delivery(),
             ),
             after=after,
         )
@@ -883,6 +898,10 @@ class AgentRecipient:
             else None
         )
         switch_notice = await self._switch_notice(session) if gate.addressed else None
+        owns = (
+            await self._sender_owns_agent(session, anchor) if gate.addressed else False
+        )
+        mid_turn_delivery = self._mid_turn_delivery()
 
         def own_event(row: InboundEvent) -> OwnEvent:
             parts = written(row)
@@ -909,6 +928,8 @@ class AgentRecipient:
                 ],
                 opening_message=opening,
                 sender_role=sender_role,
+                sender_owns_agent=owns,
+                mid_turn_delivery=mid_turn_delivery,
                 switch_notice=switch_notice,
             )
             if logger.isEnabledFor(logging.DEBUG):
@@ -1780,6 +1801,26 @@ class AgentRecipient:
         agent reads how it differs (`get_template_status`)."""
         return await self._notices.switch_notice(session, self.agent.id)
 
+    async def _sender_owns_agent(
+        self, session: AsyncSession, event: InboundMessage
+    ) -> bool:
+        if self.agent.owner_id is None:
+            return False
+        principal = await self._addressing.resolve_sender(
+            session, event.sender, event.content
+        )
+        return bool(
+            principal
+            and principal.kind == "user"
+            and self.agent.owner_id in principal.user_ids
+        )
+
+    def _mid_turn_delivery(self) -> Literal["steer", "queue"]:
+        metadata = (
+            self.agent.metadata_ if isinstance(self.agent.metadata_, dict) else {}
+        )
+        return "queue" if metadata.get("mid_turn_delivery") == "queue" else "steer"
+
     async def _sender_role(
         self, session: AsyncSession, sender: str, content: Mapping[str, object]
     ) -> str | None:
@@ -1862,6 +1903,8 @@ def _message_own_event(
     agent_id: str,
     sender_role: str | None,
     switch_notice: str | None,
+    sender_owns_agent: bool,
+    mid_turn_delivery: Literal["steer", "queue"],
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
     written."""
@@ -1886,6 +1929,8 @@ def _message_own_event(
             thread_id=thread_id,
             opening_message=opening_message_for(meta, agent_id),
             sender_role=sender_role,
+            sender_owns_agent=sender_owns_agent,
+            mid_turn_delivery=mid_turn_delivery,
             switch_notice=switch_notice,
         )
         # Serialising runs once per agent per message, so only when it will

@@ -77,6 +77,9 @@ def _fake_self(
     ) -> str | None:
         return None
 
+    async def _not_owner(_session: object, _event: object) -> bool:
+        return False
+
     async def _no_notice(_session: object) -> None:
         return None
 
@@ -94,6 +97,8 @@ def _fake_self(
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
         _sender_role=_sender_role,
+        _sender_owns_agent=_not_owner,
+        _mid_turn_delivery=lambda: "steer",
         _switch_notice=_no_notice,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,

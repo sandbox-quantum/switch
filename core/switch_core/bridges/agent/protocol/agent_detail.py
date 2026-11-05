@@ -133,6 +133,9 @@ def agent_summary(
         known_agent_options=known_agent_options
         if isinstance(known_agent_options, dict)
         else None,
+        mid_turn_delivery="queue"
+        if md.get("mid_turn_delivery") == "queue"
+        else "steer",
         addressing_policy=(
             AddressingPolicy.model_validate(agent.addressing_policy)
             if isinstance(agent.addressing_policy, dict)

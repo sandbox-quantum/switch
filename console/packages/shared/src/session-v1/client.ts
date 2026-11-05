@@ -145,6 +145,8 @@ export class SessionChatClient {
         !isDeepEqual(this.pending.body.attachments, attachments))
     )
       throw new Error('Resolve the previous message before sending another.');
+    // Console has no room/thread identity with which to authorize a steer.
+    const delivery = 'queue' as const;
     const command: ClientCommand = this.pending ?? {
       contractVersion: 1,
       commandId,
@@ -154,7 +156,7 @@ export class SessionChatClient {
         type: 'message.send',
         text,
         attachments,
-        delivery: 'queue',
+        delivery,
       },
     };
     if (command.epoch !== snapshot.session.epoch)
