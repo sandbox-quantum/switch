@@ -864,12 +864,18 @@ export async function runController(
     signal.removeEventListener('abort', forward);
     stop.abort();
     try {
-      if (revocation) await revocation;
-      await queue.drain();
-      await reporter.idle();
-      await deps.selfUpdate?.settled();
+      // First, and waited for: the model server holds gigabytes of memory,
+      // and whatever supervises this process may kill it before the rest
+      // is done, which would leave the server running.
+      try {
+        await decision.close();
+      } finally {
+        if (revocation) await revocation;
+        await queue.drain();
+        await reporter.idle();
+        await deps.selfUpdate?.settled();
+      }
     } finally {
-      await decision.close();
       await runtime.close();
       await relay.close();
     }

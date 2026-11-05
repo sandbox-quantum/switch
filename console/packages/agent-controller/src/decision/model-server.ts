@@ -242,15 +242,40 @@ export const WARM_UP_PAYLOAD = {
 export type StaleServers = {
   record(pid: number, binary: string): Promise<void>;
   clear(): Promise<void>;
-  /** Stops a model server an earlier run recorded and left running. */
+  /**
+   * Stops a model server an earlier run recorded and left running, and
+   * resolves once it has exited, so a new one does not start beside it.
+   */
   stopStale(): Promise<void>;
 };
+
+/** How long a stale model server has to exit after SIGTERM, and then after SIGKILL. */
+export const STALE_STOP_GRACE_MS = STOP_GRACE_MS;
+const STALE_POLL_MS = 50;
 
 export function pidFileStaleServers(input: {
   file: string;
   run: RunCommand;
-  kill: (pid: number, signal: NodeJS.Signals) => void;
+  /** `process.kill`: signal 0 only asks whether the process is still there. */
+  kill: (pid: number, signal: NodeJS.Signals | 0) => void;
+  graceMs: number;
 }): StaleServers {
+  const running = (pid: number): boolean => {
+    try {
+      input.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const exitsWithin = async (pid: number, ms: number): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (running(pid)) {
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, STALE_POLL_MS));
+    }
+    return true;
+  };
   return {
     record: (pid, binary) =>
       writeFile(input.file, JSON.stringify({ pid, binary }), { mode: 0o600 }),
@@ -270,9 +295,22 @@ export function pidFileStaleServers(input: {
         .run('ps', ['-o', 'command=', '-p', String(recorded.pid)])
         .catch(() => '');
       if (!command.trim().startsWith(recorded.binary)) return;
+      const pid = recorded.pid;
       try {
-        input.kill(recorded.pid, 'SIGTERM');
-      } catch {}
+        input.kill(pid, 'SIGTERM');
+      } catch {
+        return;
+      }
+      if (await exitsWithin(pid, input.graceMs)) return;
+      try {
+        input.kill(pid, 'SIGKILL');
+      } catch {
+        return;
+      }
+      if (!(await exitsWithin(pid, input.graceMs)))
+        throw new Error(
+          `The model server an earlier run left (pid ${pid}) is still running after SIGKILL.`
+        );
     },
   };
 }
