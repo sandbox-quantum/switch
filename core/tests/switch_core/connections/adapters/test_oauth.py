@@ -228,6 +228,105 @@ class TestSignIn:
             await adapter.identify(secret.access_token or "")
 
 
+WHOAMI = STATIC.replace(
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n",
+    f"    url: {MCP_URL}\n"
+    "    mcp_tool: whoami\n"
+    "    account_id: user.id\n"
+    "    label: user.email\n",
+)
+
+
+class TestIdentityFromATool:
+    async def _identify(self, vendor: FakeOAuthServer, token: str | None = None):
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        return await adapter.identify(token or secret.access_token or "")
+
+    async def test_reads_the_account_from_the_tools_structured_answer(
+        self, vendor
+    ) -> None:
+        identity = await self._identify(vendor)
+        assert (identity.account_id, identity.label) == ("7", "ada@example.test")
+        assert [call["method"] for call in vendor.mcp_calls] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+        ]
+        assert vendor.mcp_calls[2]["params"] == {"name": "whoami", "arguments": {}}
+        assert IDENTITY_URL not in vendor.paths
+
+    async def test_closes_the_session_the_server_opened(self, vendor) -> None:
+        vendor.mcp_session = "session-1"
+        await self._identify(vendor)
+        assert vendor.mcp_closed == ["session-1"]
+
+    async def test_closes_nothing_when_the_server_opened_no_session(
+        self, vendor
+    ) -> None:
+        await self._identify(vendor)
+        assert vendor.mcp_closed == []
+
+    async def test_reads_an_answer_sent_as_an_event_stream(self, vendor) -> None:
+        vendor.mcp_stream = True
+        identity = await self._identify(vendor)
+        assert identity.account_id == "7"
+
+    async def test_falls_back_to_text_content_that_is_json(self, vendor) -> None:
+        vendor.whoami = {
+            "content": [
+                {"type": "text", "text": "Signed in as:"},
+                {
+                    "type": "text",
+                    "text": json.dumps({"user": {"id": "u-2", "email": "b@x.test"}}),
+                },
+            ]
+        }
+        identity = await self._identify(vendor)
+        assert (identity.account_id, identity.label) == ("u-2", "b@x.test")
+
+    async def test_an_answer_without_json_is_refused(self, vendor) -> None:
+        vendor.whoami = {"content": [{"type": "text", "text": "You are Ada."}]}
+        with pytest.raises(
+            ServiceAdapterError, match="did not answer with the account"
+        ):
+            await self._identify(vendor)
+
+    async def test_a_failed_tool_is_refused_and_its_session_closed(
+        self, vendor
+    ) -> None:
+        vendor.mcp_session = "session-1"
+        vendor.whoami = {
+            "isError": True,
+            "content": [{"type": "text", "text": "Not allowed"}],
+        }
+        with pytest.raises(ServiceAdapterError, match="whoami failed"):
+            await self._identify(vendor)
+        assert vendor.mcp_closed == ["session-1"]
+
+    async def test_a_refused_token_asks_for_a_new_sign_in(self, vendor) -> None:
+        with pytest.raises(ReauthorizationRequiredError):
+            await self._identify(vendor, token="vendor_access_unknown")
+
+    async def test_an_unavailable_server_is_reported_as_unavailable(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        vendor.fail[MCP_URL] = (503, {"error": "down"})
+        with pytest.raises(ServiceUnavailableError):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_a_get_identity_still_takes_only_200(self, vendor) -> None:
+        vendor.fail[IDENTITY_URL] = (202, {"account": vendor.account})
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="HTTP 202"):
+            await adapter.identify(secret.access_token or "")
+
+
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:
         adapter, _ = _adapter(vendor)

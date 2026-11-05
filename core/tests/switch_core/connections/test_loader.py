@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_its_live_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "sentry",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "sentry",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["sentry"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +179,41 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_sentry_entry_signs_in_as_its_mcp_server_requires():
+    definition = CATALOG["sentry"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("sentry", "https://mcp.sentry.dev/mcp")
+    ]
+    # Sentry's REST API refuses an MCP token, so the account comes from the
+    # MCP server's whoami tool.
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.mcp_tool) == (
+        "https://mcp.sentry.dev/mcp",
+        "whoami",
+    )
+    assert (identity.account_id, identity.label) == ("user.id", "user.email")
+    # Sentry grants the same scopes whatever is chosen at consent.
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == definition.access.write.scopes
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -587,6 +625,40 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_reads_an_identity_from_a_tool_on_the_entrys_mcp_server(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    url: https://api.example.test/me\n",
+            "    url: https://mcp.example.test/v1/mcp\n    mcp_tool: whoami\n",
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None and identity.mcp_tool == "whoami"
+
+
+@pytest.mark.parametrize(
+    ("tool", "url", "message"),
+    [
+        ("whoami", "https://api.example.test/me", "one of the entry's own MCP servers"),
+        ("who/ami", "https://mcp.example.test/v1/mcp", "mcp_tool"),
+    ],
+    ids=["not-its-server", "bad-name"],
+)
+def test_rejects_an_identity_tool_off_the_entrys_server_or_badly_named(
+    catalog_copy, tool, url, message
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    url: https://api.example.test/me\n",
+            f"    url: {url}\n    mcp_tool: {tool}\n",
+        ),
+    )
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):

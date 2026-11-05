@@ -46,6 +46,8 @@ auth:
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
+    # mcp_tool: whoami        # instead of a GET: call this tool on url,
+    #                         #   one of the entry's own MCP servers
 token: { kind: pass_through, max_lifetime: 28800 }
 mcp:
   servers:
@@ -424,6 +426,8 @@ one of three shapes. Pick the first that fits:
    the server (`registration: dynamic`); otherwise each server's operator
    registers an OAuth app and saves it under Connectors in the dashboard,
    or names it in `<PREFIX>_CLIENT_CONFIG_PATH` (`registration: static`).
+   Where the vendor's API refuses its MCP tokens (Sentry), the account
+   is read from a tool on the MCP server (`identity.mcp_tool`).
 2. **A command-line tool with OAuth** (Google Workspace): `adapter: oauth` with
    `cli`, a pinned release per platform with its SHA-256, and the allow and
    deny lists that keep it to the vendor's own commands.
@@ -602,6 +606,40 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `enabled: false`, or remove its client (under Connectors, or by unsetting
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
+
+## Sentry
+
+Built from sign-ins against sentry.io with a test organization:
+
+- Sentry's MCP server (`mcp.sentry.dev/mcp`) offers dynamic registration,
+  PKCE S256 and revocation at its token endpoint, so Core registers its client
+  and nothing is set up on the server. It connects through Switch Console in
+  loopback mode, on Atlassian's five ports.
+- The token answer names nobody, and `sentry.io/api/0/users/me/` answers an
+  MCP token with 401: the token works with the MCP server alone. So the
+  account is read from the server's own `whoami` tool (`identity.mcp_tool`).
+  Core opens a short MCP session, calls the tool, reads `user.id` and
+  `user.email` from its structured answer, and closes the session.
+- The first access token lives 3600 s. Sentry's MCP server never refreshes
+  upstream: a refresh re-issues a token that lives as long as the person's
+  30-day Sentry token has left (`tokenExchangeCallback` in getsentry/sentry-mcp).
+  That outlives the entry's `max_lifetime`, and a pass-through token may be
+  capped at 7 days at most, so the broker withholds it (503, retryable) until
+  it is within an hour of expiring. Agents have Sentry for the hour after each
+  sign-in, until Switch can hand out such a token.
+- Sentry's consent screen asks which skills to allow: Inspect Issues & Events
+  (read-only tools), Seer, Triage Issues, and Manage Projects & Teams. The
+  token's scopes are the same four (`org:read`, `project:write`,
+  `team:write`, `event:write`) whatever is chosen. The choice limits the tools
+  on Sentry's side, and Sentry remembers it for the next sign-in. A read level
+  cannot be asked for by scope, so every connection is granted the write
+  level, and a person who wants a read-only agent allows Inspect alone.
+- Tools pass through unchanged.
+- Sentry.io only: a self-hosted Sentry is not part of this entry.
+
+To connect: Settings, Connections in Switch Console, then Sentry. Nothing
+needs configuring on the server. To roll back, add `sentry` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
 ## Not yet
 

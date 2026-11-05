@@ -18,7 +18,9 @@ metadata (RFC 9728) names the authorization server, whose metadata
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -488,26 +490,21 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
-        response = await self._send(
-            self._http.build_request(
-                "GET",
-                self._identity.url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
-                },
+        if self._identity.mcp_tool is not None:
+            body = await self._identity_from_tool(access_token, self._identity.mcp_tool)
+        else:
+            response = await self._send(
+                self._http.build_request(
+                    "GET",
+                    self._identity.url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                    },
+                )
             )
-        )
-        if response.status_code == 401:
-            raise ReauthorizationRequiredError(
-                f"{self._name} refused the new sign-in when asked whose it is."
-            )
-        if response.status_code != 200:
-            raise ServiceAdapterError(
-                f"{self._name} would not say whose sign-in this is "
-                f"(HTTP {response.status_code})."
-            )
-        body = self._json(response, "account")
+            self._check_identity_status(response, (200,))
+            body = self._json(response, "account")
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
         if type(account_id) is int:
@@ -517,6 +514,119 @@ class OAuthAdapter:
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )
+
+    def _check_identity_status(
+        self, response: httpx.Response, accepted: tuple[int, ...]
+    ) -> None:
+        if response.status_code == 401:
+            raise ReauthorizationRequiredError(
+                f"{self._name} refused the new sign-in when asked whose it is."
+            )
+        if response.status_code not in accepted:
+            raise ServiceAdapterError(
+                f"{self._name} would not say whose sign-in this is "
+                f"(HTTP {response.status_code})."
+            )
+
+    async def _identity_from_tool(self, access_token: str, tool: str) -> dict[str, Any]:
+        """The JSON a tool on the identity's MCP server answers with: its
+        `structuredContent`, else the first text content that is a JSON
+        object. One short MCP session: initialize, the call, then close."""
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json, text/event-stream",
+        }
+        opened = await self._mcp_call(
+            headers,
+            1,
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "switch", "version": "1.0.0"},
+            },
+        )
+        session = opened.headers.get("mcp-session-id")
+        if session:
+            headers["Mcp-Session-Id"] = session
+        try:
+            await self._mcp_call(headers, None, "notifications/initialized", None)
+            called = await self._mcp_call(
+                headers, 2, "tools/call", {"name": tool, "arguments": {}}
+            )
+            result = self._mcp_result(called, 2)
+        finally:
+            if session:
+                with contextlib.suppress(httpx.HTTPError):
+                    await self._http.delete(self._identity.url, headers=headers)
+        if result.get("isError"):
+            raise ServiceAdapterError(
+                f"{self._name} would not say whose sign-in this is ({tool} failed)."
+            )
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+        for item in result.get("content") or []:
+            if isinstance(item, dict) and item.get("type") == "text":
+                try:
+                    parsed = json.loads(item.get("text") or "")
+                except ValueError:
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+        raise ServiceAdapterError(
+            f"{self._name}'s {tool} did not answer with the account as JSON."
+        )
+
+    async def _mcp_call(
+        self,
+        headers: dict[str, str],
+        request_id: int | None,
+        method: str,
+        params: dict[str, Any] | None,
+    ) -> httpx.Response:
+        message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if request_id is not None:
+            message["id"] = request_id
+        if params is not None:
+            message["params"] = params
+        response = await self._send(
+            self._http.build_request(
+                "POST", self._identity.url, json=message, headers=headers
+            )
+        )
+        # A notification is acknowledged with 202 and no body.
+        self._check_identity_status(
+            response, (200, 202) if request_id is None else (200,)
+        )
+        if len(response.content) > MAX_METADATA_BYTES:
+            raise ServiceAdapterError(f"{self._name}'s account answer is too large.")
+        return response
+
+    def _mcp_result(self, response: httpx.Response, request_id: int) -> dict[str, Any]:
+        """The `result` of the reply to `request_id`, whether the server
+        answered with JSON or with an event stream."""
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            candidates = [
+                line[len("data:") :].strip()
+                for line in response.text.splitlines()
+                if line.startswith("data:")
+            ]
+        else:
+            candidates = [response.text]
+        for candidate in candidates:
+            try:
+                message = json.loads(candidate)
+            except ValueError:
+                continue
+            if isinstance(message, dict) and message.get("id") == request_id:
+                result = message.get("result")
+                if isinstance(result, dict):
+                    return result
+                raise ServiceAdapterError(
+                    f"{self._name} would not say whose sign-in this is."
+                )
+        raise ServiceAdapterError(f"{self._name}'s account answer could not be read.")
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
