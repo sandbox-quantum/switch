@@ -230,6 +230,18 @@ owner runs, anywhere, and nobody else. The owner can narrow it to themselves
 alone or widen it. Existing agents keep the policy they were created with
 (open, for those that predate scoped addressing) rather than being migrated.
 
+Room invitations use the same policy, including room and group constraints.
+Gateway and template actions are judged as the acting person; MCP invitations
+are judged as the inviting agent. Administrator status grants no implicit
+bypass, and policy changes do not evict agents already in rooms. Platform joins
+use the reported inviter where available. If the platform reports no inviter,
+Switch allows the join, posts a room warning, logs it, and sends the agent's
+owner a private **Switch invite notices** chat in Console. An unclaimed or
+unresolvable reported inviter is refused for a restricted agent. An owner who
+is no longer a workspace member cannot receive the private notice; that failure
+is logged. An ownerless agent has no owner to notify. Neither case relaxes the
+agent's addressing policy.
+
 A message is never blocked at the sender: `send_targeted_message` posts, and
 reports `not_permitted` for that target instead of a reachability status, so the
 refusal happens in the room where everyone can see it rather than only in the

@@ -46,6 +46,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
+from switch_core.agent_invites import AgentInviteDenied
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE, administers_tenant
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
@@ -289,6 +290,62 @@ class ChatService:
             lock = asyncio.Lock()
             self._locks[key] = lock
         return lock
+
+    async def notify_invite_owner(
+        self, tenant_id: str, user_id: str, body: str
+    ) -> None:
+        """Deliver a platform-invite warning to an owner's private Console inbox."""
+        key = f"agent-invite-notices:{user_id}"
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            await session.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        func.hashtextextended(f"{tenant_id}:{key}", 0)
+                    )
+                )
+            )
+            user = await self._user_store.get(session, user_id)
+            if user is None or not await self.has_tenant_role(
+                session, tenant_id, user_id
+            ):
+                logger.warning(
+                    "Cannot deliver agent invite warning: owner %s is not a member of tenant %s",
+                    user_id,
+                    tenant_id,
+                )
+                return
+            room = await session.scalar(
+                select(Room).where(
+                    Room.metadata_["chat_operation_id"].astext == key,
+                    Room.owner_id == user_id,
+                    Room.read_visibility == "private",
+                    Room.write_visibility == "private",
+                    Room.bridge_id.is_(None),
+                    Room.archived_at.is_(None),
+                )
+            )
+            if room is None:
+                room = (
+                    await self._room_service.create_room(
+                        RoomCreateConfig(
+                            name="Switch invite notices",
+                            description="Unverified platform invitations to your agents",
+                            agent_ids=[],
+                            internal_only=True,
+                            owner_id=user_id,
+                            read_visibility="private",
+                            write_visibility="private",
+                            created_by_kind="system",
+                            chat_operation_id=key,
+                        )
+                    )
+                ).room
+            client = await self.member_actor(tenant_id, user)
+            await self._join(tenant_id, room, client)
+            await self._make_lasting(tenant_id, user_id, room.id)
+            await self._room_service.post_invite_notice(room, body)
+            await session.commit()
+        self._memberships_changed(tenant_id, [user_id], [room.id])
 
     # ── Identity and access ──────────────────────────────────────────────────
 
@@ -1539,6 +1596,8 @@ class ChatService:
                                 ),
                             )
                         )
+                    except AgentInviteDenied as exc:
+                        raise ChatError(403, "AGENT_INVITE_DENIED", str(exc)) from exc
                     except ValueError as exc:
                         raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
                     room = created.room

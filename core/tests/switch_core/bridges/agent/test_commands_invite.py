@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
+from switch_core.agent_invites import AgentInviter
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_invite
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
@@ -43,6 +44,7 @@ def _build_client(
         return list(room_agent_ids)
 
     async def _add_agents_to_room(room_id, agent_names=None, **_kw):  # type: ignore[no-untyped-def]
+        assert _kw["inviter"] == AgentInviter(kind="sender", subject="@human:test")
         added.append((room_id, list(agent_names or [])))
 
     client = SimpleNamespace(
@@ -57,7 +59,9 @@ def _build_client(
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, thread_id=None, user_id="@human:test"
+    )
 
 
 def _agent(
