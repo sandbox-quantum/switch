@@ -29,6 +29,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     Agent,
     MessagingInstall,
+    ServiceConnection,
     Tenant,
     TenantMember,
     User,
@@ -36,7 +37,6 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
-from switch_core.feature_flags import SWITCH_CLOUD
 from switch_core.version import switch_core_version
 
 _CONNECTIONS = ServiceConnectionStore()
@@ -167,7 +167,7 @@ async def get_my_context() -> dict[str, Any]:
             )
         )
         connections = {
-            connection.service: connection.status
+            connection.service: connection
             for connection in await _CONNECTIONS.list_connections(session, owner.id)
         }
         grants = {
@@ -209,7 +209,7 @@ async def get_my_context() -> dict[str, Any]:
             "members": members,
         },
         "server": {
-            "kind": _server_kind(protocol.config),
+            "kind": protocol.config.deployment_kind,
             "version": switch_core_version(),
             "features": sorted(
                 key for key, enabled in protocol.config.feature_flags.items() if enabled
@@ -263,14 +263,6 @@ async def get_my_context() -> dict[str, Any]:
     }
 
 
-def _server_kind(config: Any) -> str:
-    if config.feature_flags[SWITCH_CLOUD]:
-        return "switch_cloud"
-    if config.managed_by_console:
-        return "managed_by_console"
-    return "self_hosted"
-
-
 def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
     service = protocol.install_service
     official = set(service.platforms()) if service is not None else set()
@@ -293,7 +285,7 @@ def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
 async def _services(
     session: AsyncSession,
     protocol: Any,
-    connections: dict[str, str],
+    connections: dict[str, ServiceConnection],
     agents: list[Agent],
     grants: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
@@ -317,7 +309,9 @@ async def _services(
                 if unavailable is None
                 else unavailable.reason,
                 "unavailable_code": None if unavailable is None else unavailable.code,
-                "connection": connections.get(definition.slug, "not_connected"),
+                "connection": broker.connection_status(
+                    standing, connections.get(definition.slug)
+                ),
                 "agents_using": sorted(
                     names[agent_id]
                     for agent_id, services in grants.items()

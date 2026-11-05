@@ -79,6 +79,13 @@ def _config(
             key: key == SWITCH_CLOUD and cloud for key in KNOWN_FEATURE_FLAGS
         },
         managed_by_console=managed_by_console,
+        deployment_kind=(
+            "switch_cloud"
+            if cloud
+            else "managed_by_console"
+            if managed_by_console
+            else "self_hosted"
+        ),
     )
 
 

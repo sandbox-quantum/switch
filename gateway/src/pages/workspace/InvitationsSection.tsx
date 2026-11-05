@@ -10,7 +10,12 @@ import {
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
-import { type Invitation, fetchInvitations, revokeInvitation } from "../../data/api";
+import {
+  type Invitation,
+  fetchCurrentOrganization,
+  fetchInvitations,
+  revokeInvitation,
+} from "../../data/api";
 import { formatDate, titleCase } from "../../theme/hootFormat";
 import CreateInvitationDialog from "./CreateInvitationDialog";
 import { useLoad } from "./useLoad";
@@ -24,15 +29,24 @@ function invitationStatus(inv: Invitation, now: number): string {
 
 export default function InvitationsSection({
   tenantId,
+  inOrganization,
   isOwner,
   emailEnabled,
 }: {
   tenantId: string;
+  inOrganization: boolean;
   isOwner: boolean;
   emailEnabled: boolean;
 }) {
   const load = useCallback(() => fetchInvitations(tenantId), [tenantId]);
   const { data: invitations, error, loading, refetch } = useLoad(load);
+  // Whether only people already in the organization can accept: where its
+  // members come from its account settings, Switch can't add anyone new.
+  const loadOrganization = useCallback(
+    () => (inOrganization ? fetchCurrentOrganization() : Promise.resolve(null)),
+    [inOrganization],
+  );
+  const { data: organization, error: organizationError } = useLoad(loadOrganization);
   const [createOpen, setCreateOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   // Re-evaluated on a timer so an invitation that expires while the page is
@@ -114,6 +128,18 @@ export default function InvitationsSection({
           Invite
         </Button>
       </Stack>
+      {organization?.members_from_directory && (
+        <Alert severity="info">
+          This organization's members come from your organization's account settings, so only
+          people already in the organization can accept an invitation. Add anyone new there
+          first.
+        </Alert>
+      )}
+      {organizationError && (
+        <Alert severity="warning">
+          Could not check who can accept an invitation here: {organizationError}
+        </Alert>
+      )}
       {error && <Alert severity="error">{error}</Alert>}
       {actionError && (
         <Alert severity="error" onClose={() => setActionError(null)}>

@@ -118,13 +118,10 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
                       ? UNSAVED_CHAT_NAME
                       : null))}
             </span>
-            {room && (
-              <span className="shrink-0 [-webkit-app-region:no-drag]">
-                <RoomTabs roomId={room} fallback={embeddedRoomFallbackTab(room)} />
-              </span>
-            )}
           </div>
           <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            {/* At the right, so the tabs stay put however long the room's name is. */}
+            {room && <RoomTabs roomId={room} fallback={embeddedRoomFallbackTab(room)} />}
             {room && <OpenInMessagingApp roomId={room} />}
             {server &&
               serverState(server) !== 'connected' &&

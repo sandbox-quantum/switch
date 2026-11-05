@@ -13,7 +13,6 @@ import {
   type BridgeDetail,
   type BridgeTypeInfo,
   type ExternalUserSummary,
-  type DocumentDetail,
   type DocumentSummary,
   type InboundLinkedRoomDetail,
   type InstallablePlatforms,
@@ -28,6 +27,8 @@ import {
   type ReferenceTypeInfo,
   type ResourceRoom,
   type RoomDetail,
+  type RoomDocumentDetail,
+  type RoomDocumentSummary,
   type RoomGroupDetail,
   type RoomSummary,
   type TemplateSummary,
@@ -290,7 +291,7 @@ export function useRoomReferences(
 
 export function useRoomDocuments(
   roomId: string | undefined,
-): UseQueryResult<DocumentSummary[]> {
+): UseQueryResult<RoomDocumentSummary[]> {
   const fetcher = useCallback(
     () => (roomId ? fetchRoomDocuments(roomId) : Promise.resolve(null)),
     [roomId],
@@ -301,7 +302,7 @@ export function useRoomDocuments(
 export function useRoomDocument(
   roomId: string | undefined,
   documentId: string | undefined,
-): UseQueryResult<DocumentDetail> {
+): UseQueryResult<RoomDocumentDetail> {
   const fetcher = useCallback(
     () =>
       roomId && documentId
