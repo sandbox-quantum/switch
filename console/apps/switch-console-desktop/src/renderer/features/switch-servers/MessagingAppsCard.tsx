@@ -111,9 +111,16 @@ const WAITING_EXPLANATION =
 export const MessagingAppsCard = observer(function MessagingAppsCard({
   serverId,
   className,
+  personal = false,
 }: {
   serverId: string;
   className?: string;
+  /**
+   * Only your own accounts in each app, for Settings: linking and unlinking
+   * them. The workspace's side — connecting an app, its token, its defaults —
+   * is for its admins, in Admin and the workspace settings.
+   */
+  personal?: boolean;
 }) {
   const queryClient = useQueryClient();
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
@@ -122,7 +129,8 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showConnectChat = useShowModal('connectChatModal');
   const showRequireLinkConfirmation = useShowModal('requireLinkConfirmationModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const isAdmin = administersWorkspaceInScope(serverId);
+  const administers = administersWorkspaceInScope(serverId);
+  const isAdmin = administers && !personal;
   const flags = useFeatureFlags(serverId);
   // With chats on, Switch Console's own chats and rooms need no messaging app.
   const chatsWithoutApp = flags.agent_chats || flags.group_chats;
@@ -370,10 +378,12 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">
           {chatsWithoutApp
-            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : 'An owner or admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
+            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : administers ? 'Connect one from Admin to also reach your agents from Slack, Discord and others.' : 'An owner or admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
             : isAdmin
               ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
-              : 'No messaging app is connected. An owner or admin of this workspace can connect one.'}
+              : administers
+                ? 'No messaging app is connected. Connect one from Admin.'
+                : 'No messaging app is connected. An owner or admin of this workspace can connect one.'}
         </p>
       ) : (
         <div className="mt-2 flex flex-col">
@@ -406,6 +416,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                 }
                 showBundledSignIn={isManaged && bridge.type === 'mattermost'}
                 isAdmin={isAdmin}
+                personal={personal}
                 savingChannelCreation={savingBridgeId === bridge.id}
                 onToggleChannelCreation={(enabled) =>
                   void handleToggleChannelCreation(bridge, enabled)
@@ -506,6 +517,7 @@ export function MessagingAppRow({
   olderLinks,
   showBundledSignIn,
   isAdmin,
+  personal = false,
   savingChannelCreation,
   onToggleChannelCreation,
   onConnectChat,
@@ -529,6 +541,8 @@ export function MessagingAppRow({
   olderLinks: { count: number; onRequireConfirmation: () => void } | null;
   showBundledSignIn: boolean;
   isAdmin: boolean;
+  /** Only your own side of the app, as Settings shows it: no workspace settings in the menu. */
+  personal?: boolean;
   savingChannelCreation: boolean;
   onToggleChannelCreation: (enabled: boolean) => void;
   /** Set on a connection whose chats are connected one at a time, for a user
@@ -835,27 +849,30 @@ export function MessagingAppRow({
               </>
             )}
 
-            <DropdownMenuSeparator />
-            {/* "Off" and "this platform has no such thing" are different claims,
+            {!personal && (
+              <>
+                <DropdownMenuSeparator />
+                {/* "Off" and "this platform has no such thing" are different claims,
               and an unticked box makes them look the same (CHOO-2137). A
               platform that cannot do it at all gets a plain disabled line
               saying so, never an unchecked box. */}
-            {bridge.channelCreationSupported ? (
-              <DropdownMenuCheckboxItem
-                checked={bridge.canCreateChannels}
-                disabled={!isAdmin || savingChannelCreation}
-                onCheckedChange={(next) => onToggleChannelCreation(next)}
-              >
-                Create channels on {platform}
-              </DropdownMenuCheckboxItem>
-            ) : (
-              <DropdownMenuItem disabled>Channels not supported on {platform}</DropdownMenuItem>
+                {bridge.channelCreationSupported ? (
+                  <DropdownMenuCheckboxItem
+                    checked={bridge.canCreateChannels}
+                    disabled={!isAdmin || savingChannelCreation}
+                    onCheckedChange={(next) => onToggleChannelCreation(next)}
+                  >
+                    Create channels on {platform}
+                  </DropdownMenuCheckboxItem>
+                ) : (
+                  <DropdownMenuItem disabled>Channels not supported on {platform}</DropdownMenuItem>
+                )}
+                {channelsLockedReason !== null && (
+                  <p className="px-2 py-1 text-xs text-foreground-muted">{channelsLockedReason}</p>
+                )}
+              </>
             )}
-            {channelsLockedReason !== null && (
-              <p className="px-2 py-1 text-xs text-foreground-muted">{channelsLockedReason}</p>
-            )}
-
-            {bridge.receivesWebhooks && (
+            {!personal && bridge.receivesWebhooks && (
               <>
                 <DropdownMenuSeparator />
                 {/* The address the platform delivers this connection's events

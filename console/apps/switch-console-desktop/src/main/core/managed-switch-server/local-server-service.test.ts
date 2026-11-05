@@ -286,7 +286,11 @@ it('surfaces a failed backup with its error and refuses sessions until a retry s
 
 it('records an upgrade that never turned healthy as failed', async () => {
   m.start.mockImplementation(
-    upgradingStart({ kind: 'error', message: 'The server did not become healthy in time.' })
+    upgradingStart({
+      kind: 'error',
+      message: 'The server did not become healthy in time.',
+      failure: 'health_timeout',
+    })
   );
   const service = new LocalServerService();
   await boot(service);
@@ -351,7 +355,9 @@ it('a Start click during the boot upgrade joins it instead of starting twice', a
 });
 
 it('keeps an owed upgrade pending across a stop', async () => {
-  m.start.mockImplementationOnce(upgradingStart({ kind: 'error', message: 'unhealthy' }));
+  m.start.mockImplementationOnce(
+    upgradingStart({ kind: 'error', message: 'unhealthy', failure: 'health_timeout' })
+  );
   const service = new LocalServerService();
   await boot(service);
   await service.stop();
@@ -391,7 +397,11 @@ it('records what happens to the stack: an update, a start, a stop, a failed star
 
   m.record.mockClear();
   await service.stop();
-  m.start.mockResolvedValue({ kind: 'error', message: 'bind: address already in use' });
+  m.start.mockResolvedValue({
+    kind: 'error',
+    message: 'bind: address already in use',
+    failure: 'unexpected',
+  });
   await service.start();
   expect(m.record.mock.calls).toEqual([
     ['stopped', null],
@@ -451,7 +461,11 @@ it('reports a stop that errored with the stack still up, or unreadable, as a fai
   });
 
   // The next start says nothing about the stop any more.
-  m.start.mockResolvedValue({ kind: 'error', message: 'bind: address already in use' });
+  m.start.mockResolvedValue({
+    kind: 'error',
+    message: 'bind: address already in use',
+    failure: 'unexpected',
+  });
   await service.start();
   expect(service.getStatus()).toMatchObject({ phase: 'error', failedTo: null });
 });

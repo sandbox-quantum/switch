@@ -16,7 +16,7 @@ not import (`management/wiring.py` installs it here with
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +33,9 @@ from switch_core.db.stores.hosted_machine_store import (
     bump_revision,
     idle_sleeping,
 )
+from switch_core.gateway.dependencies import current_telemetry
 from switch_core.keys import Keyring
+from switch_core.telemetry import emit_after_commit
 
 # How recent the machine's last status report must be for its silence to count
 # as idle rather than as a machine that stopped reporting.
@@ -212,15 +214,36 @@ async def record_controller_status(
         machine.error = None
         machine.error_code = None
         machine.updated_at = now
+        # Revision 1 is the machine as first claimed: anything since (a wake, a
+        # restart, a workspace joining) bumped it. Only the first is timed,
+        # since nothing records when a later start began.
+        new_machine = machine.revision == 1
+        emit_after_commit(
+            session,
+            current_telemetry(),
+            "cloud_machine_ready",
+            {
+                "new_machine": new_machine,
+                "provisioning_seconds": (
+                    max((now - machine.created_at).total_seconds(), 0.0)
+                    if new_machine
+                    else -1
+                ),
+            },
+        )
 
 
 async def wake_controller_machine(
-    session: AsyncSession, controller_id: str, now: datetime
+    session: AsyncSession,
+    controller_id: str,
+    now: datetime,
+    trigger: Literal["message", "agent_placed"],
 ) -> CloudMachine | None:
     """The cloud machine running `controller_id`, started again if it was put
     to sleep when idle, and kept awake otherwise. A machine its owner stopped
     is left stopped. None for a controller that runs on no cloud machine. The
-    caller holds no other machine lock, and commits."""
+    caller holds no other machine lock, and commits; `trigger` is what woke
+    it, for telemetry."""
     found = await machine_of_controller(session, controller_id)
     if found is None:
         return None
@@ -228,6 +251,12 @@ async def wake_controller_machine(
     store = CloudMachineStore()
     if idle_sleeping(machine):
         store.start(machine, now)
+        emit_after_commit(
+            session,
+            current_telemetry(),
+            "cloud_machine_woken",
+            {"trigger": trigger, "stopped_by": "idle"},
+        )
     elif machine.desired_state == "running":
         machine.active_at = now
     return machine

@@ -131,11 +131,13 @@ class InboundMessage(BaseModel):
     # tagged. Lets the bridge guide users who tag the app instead of an agent.
     self_mention_token: str | None = None
     # The platform reported this post as coming from an app rather than a
-    # person (a Slack workflow, a third-party integration). Such a post is
-    # relayed like any other, but it cannot answer a request: a decision is
-    # attributed to whoever made it, and an app made none. Only Slack reports
-    # it today; a platform that cannot tell an app from a person leaves this
-    # False and its cards accept the answer.
+    # person (a Slack workflow, a third-party integration, another Switch
+    # server's agent). Such a post is relayed like any other, but it cannot
+    # answer a request: a decision is attributed to whoever made it, and an app
+    # made none. Usage telemetry leaves it out of every count of people for the
+    # same reason. Slack, Discord and Mattermost report it. Telegram never
+    # delivers another bot's posts, and Teams does not mark them, so both leave
+    # this False and their cards accept the answer.
     sender_is_app: bool = False
 
 

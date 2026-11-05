@@ -31,7 +31,7 @@ from switch_core.connections.app_credentials import (
 )
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.flows import ServiceFlows
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, Connection
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
@@ -190,6 +190,8 @@ class World:
         self.public_url = public_url
         # Settings beyond the public URL, such as a configured GitHub App.
         self.config: dict[str, object] = {}
+        # The catalog as the server offers it, after SERVICE_ACCESS_PROFILES.
+        self.catalog: dict[str, Connection] = CATALOG
         self.harness: Harness = build_harness(session_factory)
         self.session_factory = session_factory
 
@@ -212,7 +214,7 @@ class World:
             server_name="switch.example.com",
         )
         apps = ConnectorApps(
-            catalog=CATALOG,
+            catalog=self.catalog,
             config=_config(gateway_public_url=self.public_url, **self.config),
             environ=environ or {},
             session_factory=self.session_factory,
@@ -224,9 +226,9 @@ class World:
         broker = ServiceBroker(
             session_factory=self.session_factory,
             keyring=TEST_KEYRING,
-            catalog=CATALOG,
+            catalog=self.catalog,
             adapters=build_adapters(
-                CATALOG,
+                self.catalog,
                 github_app=apps.github_app(),
                 oauth_clients=apps.oauth_clients(),
                 http=http,

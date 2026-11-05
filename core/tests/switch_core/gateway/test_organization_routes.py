@@ -11,6 +11,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -40,10 +41,12 @@ from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
+from switch_core.gateway import workspace_creation
 from switch_core.gateway.auth import create_jwt, decode_jwt
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
+from tests.telemetry_records import recording_telemetry
 
 _KEYRING = Keyring.parse(
     "test:" + "organization-routes-test-secret-" + "0" * 32, legacy_secret=None
@@ -587,6 +590,33 @@ async def _workspaces_created(
 
 
 class TestCreatingAnOrganization:
+    async def test_a_new_organization_and_a_workspace_in_one_are_reported(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        service, sink = recording_telemetry()
+        monkeypatch.setattr(workspace_creation, "current_telemetry", lambda: service)
+        ada = await _user(session_factory, "user")
+
+        async with _client(_app(session_factory), ada, None) as client:
+            created = await client.post(
+                "/organizations", json={"name": "Acme", "workspace_name": "Research"}
+            )
+        assert created.status_code == 201, created.text
+        async with _client(
+            _app(session_factory), ada, created.json()["workspace"]["id"]
+        ) as client:
+            another = await client.post(
+                "/organizations/current/workspaces", json={"name": "Design"}
+            )
+        assert another.status_code == 201, another.text
+
+        assert sink.events("workspace_created") == [
+            {"new_organization": True},
+            {"new_organization": False},
+        ]
+
     async def test_anyone_signed_in_creates_one_with_its_first_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

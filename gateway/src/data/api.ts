@@ -35,6 +35,14 @@ export interface RoomSummary {
   write_visibility: "public" | "private";
   created_at: string;
   archived: boolean;
+  // What the viewer may do, as the server decides it. `can_write` covers the
+  // room's settings, roles, participants, links and attaching resources;
+  // `can_manage` (owner or workspace admin) covers its access and deleting it;
+  // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
+  // reference, document or package from it.
+  can_write: boolean;
+  can_manage: boolean;
+  can_unlink: boolean;
 }
 
 export interface AgentSummary {
@@ -1532,6 +1540,9 @@ export interface ReferenceDetail {
   instructions: string;
   value: Record<string, unknown>;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   packages: string[];
   created_at: string;
   // Resolved server-side and unfiltered by the type's visibility. Null when
@@ -1568,6 +1579,9 @@ export interface DocumentSummary {
   description: string;
   instructions: string;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   packages: string[];
   scope: "global" | "room";
   room_id: string | null;
@@ -1578,6 +1592,20 @@ export interface DocumentSummary {
 
 export interface DocumentDetail extends DocumentSummary {
   content: string;
+}
+
+// Whether the viewer may remove a document from a room it is in: delete it if
+// it is room-scoped (its creator, the room's owner, a workspace admin), unlink
+// it if it is attached (those taking part in the room, a workspace admin).
+
+/** A document as listed in a room it is in. */
+export interface RoomDocumentSummary extends DocumentSummary {
+  can_remove: boolean;
+}
+
+/** A document as seen from a room it is in. */
+export interface RoomDocumentDetail extends DocumentDetail {
+  can_remove: boolean;
 }
 
 export interface DocumentCreateInput {
@@ -1601,6 +1629,9 @@ export interface DocumentUpdateInput {
 export interface ResourceRoom {
   room_id: string;
   room_name: string;
+  // Whether the viewer may unlink the resource from this room: they take part
+  // in it, or are a workspace admin.
+  can_unlink: boolean;
 }
 
 export interface ResourceDeleteResult {
@@ -1855,15 +1886,15 @@ export async function fetchDocumentRooms(id: string): Promise<ResourceRoom[] | n
 
 export async function fetchRoomDocuments(
   roomId: string,
-): Promise<DocumentSummary[] | null> {
-  return fetchJson<DocumentSummary[]>(`/rooms/${roomId}/documents`);
+): Promise<RoomDocumentSummary[] | null> {
+  return fetchJson<RoomDocumentSummary[]>(`/rooms/${roomId}/documents`);
 }
 
 export async function fetchRoomDocument(
   roomId: string,
   documentId: string,
-): Promise<DocumentDetail | null> {
-  return fetchJson<DocumentDetail>(`/rooms/${roomId}/documents/${documentId}`);
+): Promise<RoomDocumentDetail | null> {
+  return fetchJson<RoomDocumentDetail>(`/rooms/${roomId}/documents/${documentId}`);
 }
 
 export async function attachDocumentToRoom(
@@ -1904,6 +1935,9 @@ export interface PackageDetail {
   references_count: number;
   documents_count: number;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   created_at: string;
 }
 
@@ -1926,8 +1960,11 @@ export interface PackageUpdateInput {
 export interface PackageMemberRemoveResult {
   package_id: string;
   member_id: string;
+  // The rooms that lost sight of the member, of those the viewer may read.
   affected_room_ids: string[];
   affected_room_names: string[];
+  // How many more did among rooms the viewer may not read, never named.
+  hidden_affected_rooms_count: number;
 }
 
 export async function fetchPackages(): Promise<PackageDetail[] | null> {

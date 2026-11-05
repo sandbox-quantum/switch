@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Collection
 from datetime import timedelta
+from typing import NamedTuple
 
 from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -47,6 +48,14 @@ def email_taken(err: IntegrityError) -> bool:
     # cause of the DBAPI adapter's.
     cause = getattr(err.orig, "__cause__", None)
     return getattr(cause, "constraint_name", None) == _EMAIL_CONSTRAINT
+
+
+class OidcUser(NamedTuple):
+    """The account an OIDC identity resolved to, and whether resolving it
+    made the account (a first sign-in) rather than finding or linking one."""
+
+    user: User
+    created: bool
 
 
 class OidcIdentityConflictError(Exception):
@@ -274,9 +283,9 @@ class UserStore:
         sub: str,
         email_verified: bool,
         join_tenant: bool,
-    ) -> User:
+    ) -> OidcUser:
         """Resolve an OIDC identity to a gateway user, provisioning on first
-        login (JIT).
+        login (JIT). `created` says whether this call made the account.
 
         `join_tenant` decides whether an account this creates, or links, is
         given a membership in the tenant bound to the caller's context. With
@@ -315,7 +324,7 @@ class UserStore:
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             user = await self.get_by_oidc_identity(session, iss=iss, sub=sub)
             if user is not None:
-                return user
+                return OidcUser(user, created=False)
 
             existing = await self.get_by_email(session, email)
             if existing is not None:
@@ -336,7 +345,7 @@ class UserStore:
                 except IntegrityError:
                     self._raise_if_exhausted(attempt)
                     continue
-                return existing
+                return OidcUser(existing, created=False)
 
             user = User(name=name, email=email.lower(), role="user", password_hash=None)
             try:
@@ -356,7 +365,7 @@ class UserStore:
             except IntegrityError:
                 self._raise_if_exhausted(attempt)
                 continue
-            return user
+            return OidcUser(user, created=True)
 
         raise AssertionError("unreachable: the loop above always returns or raises")
 

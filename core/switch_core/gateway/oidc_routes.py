@@ -27,11 +27,13 @@ from switch_core.db.stores.user_store import (
 )
 from switch_core.gateway.auth import initial_tenant_claim, set_session_cookie
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_config,
     get_session_factory,
     get_system_session,
     get_user_store,
 )
+from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -329,7 +331,7 @@ async def oidc_callback(
     )
     with scope:
         try:
-            user = await user_store.get_or_create_oidc_user(
+            user, created = await user_store.get_or_create_oidc_user(
                 session,
                 iss=iss,
                 email=email,
@@ -353,6 +355,8 @@ async def oidc_callback(
                 headers={"Retry-After": "1"},
             ) from exc
         await session.commit()
+    if created:
+        emit_safely(current_telemetry(), "account_created", {"method": "oidc"})
 
     # Verify-at-login only: we don't persist the IdP tokens.
     handoff = request.session.pop(_HANDOFF_SESSION_KEY, None)
