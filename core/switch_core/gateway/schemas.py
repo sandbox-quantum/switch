@@ -376,18 +376,40 @@ class AgentDetail(AgentSummary):
     children: list[AgentSummary]
 
 
-# What the caller may do with an agent, as the Gateway reports it. These live
-# on Gateway-only models rather than on `AgentSummary`, which the agent tools
-# share, so an agent never reads them. Each is decided by `switch_core.authz`
-# so no client repeats the rule.
-class GatewayAgentSummary(AgentSummary):
-    # Rename it, edit its options and who may address it, delete it: its owner
-    # or a workspace admin.
+class AgentCapabilities(BaseModel):
+    """What the caller may do with an agent, as the Gateway reports it.
+
+    On Gateway-only models rather than on `AgentSummary`, which the agent
+    tools share, so an agent never reads them. Each is decided by the rule its
+    route enforces, so no client repeats it.
+    """
+
+    # Edit its options, icon, display name, description and who may address
+    # it, and delete it: its owner or a workspace admin.
     can_manage: bool
+    # Change its name: `can_manage`, unless it is a sub-agent, whose name
+    # comes from its parent's, or has sub-agents named after it. A sub-agent's
+    # display name is still covered by `can_manage`.
+    can_rename: bool
+    # Hand it to another member: `can_manage`, unless it is tied to its owner
+    # by more than its owner id (`accounts/transfer.py`).
+    can_transfer: bool
+    # Why it can't be handed over, set only when `can_manage` is true and
+    # `can_transfer` false. Only its owner is told which services it uses.
+    transfer_blocked_reason: str | None
 
 
-class GatewayAgentDetail(AgentDetail):
-    can_manage: bool
+class GatewayAgentSummary(AgentSummary, AgentCapabilities):
+    pass
+
+
+class GatewayAgentDetail(AgentDetail, AgentCapabilities):
+    # Its owner only, not an admin, for both: turning on that it may manage
+    # its owner's agents, and granting it service access, which is made on
+    # the owner's own connections and exists only while service connections
+    # are switched on.
+    can_change_manage_agents: bool
+    can_grant_services: bool
     children: list[GatewayAgentSummary]  # type: ignore[assignment]  # narrows the base type
 
 

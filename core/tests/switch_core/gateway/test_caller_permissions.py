@@ -35,7 +35,12 @@ from switch_core.gateway.schemas import (
     GatewayAgentDetail,
     GatewayAgentSummary,
 )
-from tests.switch_core.gateway.agent_route_harness import add_agent, add_user
+from tests.switch_core.accounts.test_ownership_transfer import _grant_github
+from tests.switch_core.gateway.agent_route_harness import (
+    SERVICES_ON,
+    add_agent,
+    add_user,
+)
 from tests.switch_core.gateway.test_room_detail_access import (
     _ROOM_STORE,
     _USER_STORE,
@@ -138,6 +143,7 @@ class TestAgentPermissions:
                     _detail_protocol(),  # type: ignore[arg-type]
                     user,
                     admin,
+                    SERVICES_ON,  # type: ignore[arg-type]
                 )
                 return detail.can_manage, [c.can_manage for c in detail.children]
 
@@ -164,6 +170,115 @@ class TestAgentPermissions:
             [summary] = await list_agent_summaries(session, AgentStore(), UserStore())
 
             assert summary_flags.isdisjoint(agent_facing_summary(summary))
+
+    async def test_an_agent_in_a_family_of_sub_agents_cannot_be_renamed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            await add_agent(session, name="solo", owner_id=owner.id)
+            parent = await add_agent(session, name="parent", owner_id=owner.id)
+            child = await add_agent(session, name="parent-child", owner_id=owner.id)
+            child.parent_agent_id = parent.id
+            await session.flush()
+
+            summaries = await list_agents(
+                session, AgentStore(), UserStore(), owner, False
+            )
+
+            assert {s.name: (s.can_manage, s.can_rename) for s in summaries} == {
+                "solo": (True, True),
+                "parent": (True, False),
+                "parent-child": (True, False),
+            }
+
+    async def test_each_listed_agent_says_whether_it_can_be_transferred_and_why_not(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            member = await add_user(session, name="member")
+            await add_agent(session, name="plain", owner_id=owner.id)
+            manager = await add_agent(session, name="manager", owner_id=owner.id)
+            manager.can_manage_agents = True
+            await session.flush()
+
+            async def transfer(user: User) -> dict[str, tuple[bool, str | None]]:
+                summaries = await list_agents(
+                    session, AgentStore(), UserStore(), user, False
+                )
+                return {
+                    s.name: (s.can_transfer, s.transfer_blocked_reason)
+                    for s in summaries
+                }
+
+            by_owner = await transfer(owner)
+            assert by_owner["plain"] == (True, None)
+            assert by_owner["manager"][0] is False
+            assert "manage its owner's agents" in (by_owner["manager"][1] or "")
+            # Someone who may not transfer it at all is not told why not.
+            assert await transfer(member) == {
+                "plain": (False, None),
+                "manager": (False, None),
+            }
+
+    async def test_only_its_owner_is_told_which_services_block_a_transfer(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            admin = await add_user(session, name="admin")
+            agent = await add_agent(session, name="helper", owner_id=owner.id)
+            await _grant_github(session, owner, agent)
+
+            async def reason(user: User, is_admin: bool) -> str:
+                [summary] = await list_agents(
+                    session, AgentStore(), UserStore(), user, is_admin
+                )
+                assert summary.can_transfer is False
+                return summary.transfer_blocked_reason or ""
+
+            assert "github" in await reason(owner, False)
+            assert "github" not in await reason(admin, True)
+
+    @pytest.mark.parametrize(
+        ("caller", "services_on", "change_manage_agents", "grant_services"),
+        [
+            ("owner", True, True, True),
+            ("owner", False, True, False),
+            ("admin", True, False, False),
+            ("member", True, False, False),
+        ],
+    )
+    async def test_only_the_owner_may_change_what_the_agent_itself_may_do(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caller: str,
+        services_on: bool,
+        change_manage_agents: bool,
+        grant_services: bool,
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            member = await add_user(session, name="member")
+            agent = await add_agent(session, name="helper", owner_id=owner.id)
+
+            detail = await get_agent_detail(
+                agent.id,
+                session,
+                AgentStore(),
+                _ROOM_STORE,
+                UserStore(),
+                _detail_protocol(),  # type: ignore[arg-type]
+                owner if caller == "owner" else member,
+                caller == "admin",
+                SimpleNamespace(service_connections_enabled=services_on),  # type: ignore[arg-type]
+            )
+
+            assert (detail.can_change_manage_agents, detail.can_grant_services) == (
+                change_manage_agents,
+                grant_services,
+            )
 
 
 class TestRoomPackagePermissions:

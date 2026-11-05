@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -110,7 +110,7 @@ def _to_summary(
     )
 
 
-def _capabilities(reader: Principal, doc: Document) -> dict[str, bool]:
+def _capabilities(reader: Principal, doc: Document) -> dict[str, Any]:
     """What `reader` may do with `doc`, for its detail or summary."""
     manage = can_manage(reader, doc.owner_id)
     return {

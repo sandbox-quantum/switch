@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.accounts.transfer import (
+    AgentTransferFacts,
+    agent_transfer_facts,
+    agent_transfer_refusal,
+)
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
 from switch_core.agent_icon import (
     InvalidIconUrl,
@@ -14,7 +19,7 @@ from switch_core.agent_icon import (
     normalise_icon_url,
     refuse_third_party_avatar,
 )
-from switch_core.authz import Principal, can_manage, require_manage
+from switch_core.authz import Principal, can_manage, owns, require_manage
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentCore,
     AgentExistsError,
@@ -52,6 +57,7 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.known_agents import known_agent, known_agents
 from switch_core.gateway.schemas import (
+    AgentCapabilities,
     AgentDetail,
     AgentSummary,
     AvatarSettingsResponse,
@@ -83,27 +89,74 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _summary_for_caller(
-    summary: AgentSummary, user: User, is_admin: bool
+def _capabilities(
+    summary: AgentSummary, principal: Principal, facts: AgentTransferFacts
+) -> dict[str, Any]:
+    """`AgentCapabilities` for one agent, from the rules its routes enforce."""
+    manage = can_manage(principal, summary.owner_id)
+    refusal = (
+        agent_transfer_refusal(facts, to_owner=owns(principal, summary.owner_id))
+        if manage
+        else None
+    )
+    return AgentCapabilities(
+        can_manage=manage,
+        can_rename=manage and not facts.in_family,
+        can_transfer=manage and refusal is None,
+        transfer_blocked_reason=refusal,
+    ).model_dump()
+
+
+def _with_capabilities(
+    summary: AgentSummary, principal: Principal, facts: dict[str, AgentTransferFacts]
 ) -> GatewayAgentSummary:
-    """`summary` with what `user` may do with the agent filled in."""
-    principal = Principal(user.id, is_admin)
     return GatewayAgentSummary(
-        **summary.model_dump(), can_manage=can_manage(principal, summary.owner_id)
+        **summary.model_dump(), **_capabilities(summary, principal, facts[summary.id])
     )
 
 
-def _detail_for_caller(
-    detail: AgentDetail, user: User, is_admin: bool
+async def _summaries_for_caller(
+    session: AsyncSession, summaries: list[AgentSummary], user: User, is_admin: bool
+) -> list[GatewayAgentSummary]:
+    """`summaries` with what `user` may do with each agent filled in, reading
+    what that depends on for every agent at once."""
+    principal = Principal(user.id, is_admin)
+    facts = await agent_transfer_facts(
+        session, require_tenant_id(), [summary.id for summary in summaries]
+    )
+    return [_with_capabilities(summary, principal, facts) for summary in summaries]
+
+
+async def _summary_for_caller(
+    session: AsyncSession, summary: AgentSummary, user: User, is_admin: bool
+) -> GatewayAgentSummary:
+    [result] = await _summaries_for_caller(session, [summary], user, is_admin)
+    return result
+
+
+async def _detail_for_caller(
+    session: AsyncSession,
+    detail: AgentDetail,
+    user: User,
+    is_admin: bool,
+    config: SwitchConfig,
 ) -> GatewayAgentDetail:
     """`detail` with what `user` may do with the agent, and with each of its
     children, filled in."""
     principal = Principal(user.id, is_admin)
+    facts = await agent_transfer_facts(
+        session,
+        require_tenant_id(),
+        [detail.id, *(child.id for child in detail.children)],
+    )
+    owner = owns(principal, detail.owner_id)
     return GatewayAgentDetail(
         **detail.model_dump(exclude={"children"}),
-        can_manage=can_manage(principal, detail.owner_id),
+        **_capabilities(detail, principal, facts[detail.id]),
+        can_change_manage_agents=owner,
+        can_grant_services=owner and config.service_connections_enabled,
         children=[
-            _summary_for_caller(child, user, is_admin) for child in detail.children
+            _with_capabilities(child, principal, facts) for child in detail.children
         ],
     )
 
@@ -117,7 +170,7 @@ async def list_agents(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[GatewayAgentSummary]:
     summaries = await list_agent_summaries(session, agent_store, user_store)
-    return [_summary_for_caller(summary, user, is_admin) for summary in summaries]
+    return await _summaries_for_caller(session, summaries, user, is_admin)
 
 
 @router.delete("/by-name/{agent_name}")
@@ -452,7 +505,7 @@ async def update_agent_options(
 
     owner_name = user.name if agent.owner_id == user.id else None
     summary = await build_agent_summary(session, agent_store, agent, owner_name)
-    return _summary_for_caller(summary, user, is_admin)
+    return await _summary_for_caller(session, summary, user, is_admin)
 
 
 @router.put("/{agent_id}/icon")
@@ -518,7 +571,7 @@ async def update_agent_icon(
 
     owner_name = user.name if agent.owner_id == user.id else None
     summary = await build_agent_summary(session, agent_store, agent, owner_name)
-    return _summary_for_caller(summary, user, is_admin)
+    return await _summary_for_caller(session, summary, user, is_admin)
 
 
 @router.put("/{agent_id}/name")
@@ -573,7 +626,8 @@ async def rename_agent(
     await session.refresh(renamed)
     owner_name = user.name if renamed.owner_id == user.id else None
     return RenameAgentResponse(
-        agent=_summary_for_caller(
+        agent=await _summary_for_caller(
+            session,
             await build_agent_summary(session, agent_store, renamed, owner_name),
             user,
             is_admin,
@@ -640,7 +694,7 @@ async def update_agent_display_name(
 
     owner_name = user.name if agent.owner_id == user.id else None
     summary = await build_agent_summary(session, agent_store, agent, owner_name)
-    return _summary_for_caller(summary, user, is_admin)
+    return await _summary_for_caller(session, summary, user, is_admin)
 
 
 @router.put("/{agent_id}/description")
@@ -680,7 +734,7 @@ async def update_agent_description(
 
     owner_name = user.name if agent.owner_id == user.id else None
     summary = await build_agent_summary(session, agent_store, agent, owner_name)
-    return _summary_for_caller(summary, user, is_admin)
+    return await _summary_for_caller(session, summary, user, is_admin)
 
 
 @router.post("/register-other")
@@ -735,6 +789,7 @@ async def update_addressing_policy(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> GatewayAgentDetail:
     """Set or clear an agent's scoped addressing policy (CHOO-1585).
 
@@ -778,7 +833,7 @@ async def update_addressing_policy(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
-    return _detail_for_caller(detail, user, is_admin)
+    return await _detail_for_caller(session, detail, user, is_admin, config)
 
 
 @router.put("/{agent_id}/can-manage-agents")
@@ -792,6 +847,7 @@ async def update_can_manage_agents(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> GatewayAgentDetail:
     """Turn the agent's "can manage agents" capability on or off.
 
@@ -804,7 +860,7 @@ async def update_can_manage_agents(
     agent = await agent_store.get(session, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
-    if agent.owner_id is None or agent.owner_id != user.id:
+    if not owns(Principal(user.id, is_admin), agent.owner_id):
         raise HTTPException(
             status_code=403,
             detail="Only the agent's owner can change whether it can manage agents.",
@@ -832,7 +888,7 @@ async def update_can_manage_agents(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
-    return _detail_for_caller(detail, user, is_admin)
+    return await _detail_for_caller(session, detail, user, is_admin, config)
 
 
 # Declared after the literal GET routes (e.g. /known-types) so those are matched
@@ -847,6 +903,7 @@ async def get_agent_detail(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> GatewayAgentDetail:
     agent = await agent_store.get(session, agent_id)
     if agent is None:
@@ -863,4 +920,4 @@ async def get_agent_detail(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
-    return _detail_for_caller(detail, user, is_admin)
+    return await _detail_for_caller(session, detail, user, is_admin, config)
