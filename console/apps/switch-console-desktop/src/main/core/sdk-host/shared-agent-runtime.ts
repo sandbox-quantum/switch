@@ -21,6 +21,7 @@ import {
   controllerConnectionId,
   EXECUTION_INHERIT_ENV,
   type HostStartSource,
+  inputCapability,
   runtimeModeFor,
   SessionHostFailedError,
   sharedConfigSchema,
@@ -469,7 +470,7 @@ export async function buildSharedHostConfig(
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: agent.steerMessages ? inputCapability(capabilities) : 'queue',
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,

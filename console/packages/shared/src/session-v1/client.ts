@@ -154,7 +154,9 @@ export class SessionChatClient {
         type: 'message.send',
         text,
         attachments,
-        delivery: 'queue',
+        // A session that steers takes a message sent mid-turn into the
+        // running turn when that turn is this chat's; it queues otherwise.
+        delivery: snapshot.session.capabilities.input,
       },
     };
     if (command.epoch !== snapshot.session.epoch)

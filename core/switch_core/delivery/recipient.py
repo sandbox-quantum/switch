@@ -632,9 +632,14 @@ class AgentRecipient:
             if addressed
             else None
         )
+        sender_is_owner = (
+            await self._sender_is_owner(session, event.sender, event.content)
+            if addressed
+            else None
+        )
         notice = await self._switch_notice(session) if addressed else None
         own_event = _message_own_event(
-            meta, event, thread_id, self.agent.id, sender_role, notice
+            meta, event, thread_id, self.agent.id, sender_role, sender_is_owner, notice
         )
 
         async def after(row: InboundEvent) -> None:
@@ -704,10 +709,19 @@ class AgentRecipient:
             await self._after_follow_up(row)
 
         sender_role = await self._sender_role(session, event.sender, event.content)
+        sender_is_owner = await self._sender_is_owner(
+            session, event.sender, event.content
+        )
         notice = await self._switch_notice(session)
         return Delivery(
             own_event=_message_own_event(
-                meta, event, event.thread_root_id, self.agent.id, sender_role, notice
+                meta,
+                event,
+                event.thread_root_id,
+                self.agent.id,
+                sender_role,
+                sender_is_owner,
+                notice,
             ),
             after=after,
         )
@@ -882,6 +896,11 @@ class AgentRecipient:
             if gate.addressed
             else None
         )
+        sender_is_owner = (
+            await self._sender_is_owner(session, anchor.sender, anchor.content)
+            if gate.addressed
+            else None
+        )
         switch_notice = await self._switch_notice(session) if gate.addressed else None
 
         def own_event(row: InboundEvent) -> OwnEvent:
@@ -909,6 +928,7 @@ class AgentRecipient:
                 ],
                 opening_message=opening,
                 sender_role=sender_role,
+                sender_is_owner=sender_is_owner,
                 switch_notice=switch_notice,
             )
             if logger.isEnabledFor(logging.DEBUG):
@@ -1813,6 +1833,27 @@ class AgentRecipient:
                 return ORGANIZATION_ADMIN_TENANT_ROLE
         return "member" if "member" in roles else None
 
+    async def _sender_is_owner(
+        self, session: AsyncSession, sender: str, content: Mapping[str, object]
+    ) -> bool:
+        """Whether the sending person is this agent's owner.
+
+        A session that steers a message into a turn already under way does so
+        only for the person who started that turn or the agent's owner, so in
+        a shared room one person cannot redirect another's turn. Read as the
+        message arrives, like the role. False for an agent, the platform, a
+        person no Switch user has claimed, or an agent with no owner.
+        """
+        owner_id = self.agent.owner_id
+        if owner_id is None:
+            return False
+        principal = await self._addressing.resolve_sender(session, sender, content)
+        return (
+            principal is not None
+            and principal.kind == "user"
+            and owner_id in principal.user_ids
+        )
+
     def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.
 
@@ -1861,6 +1902,7 @@ def _message_own_event(
     thread_id: str | None,
     agent_id: str,
     sender_role: str | None,
+    sender_is_owner: bool | None,
     switch_notice: str | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
@@ -1886,6 +1928,7 @@ def _message_own_event(
             thread_id=thread_id,
             opening_message=opening_message_for(meta, agent_id),
             sender_role=sender_role,
+            sender_is_owner=sender_is_owner,
             switch_notice=switch_notice,
         )
         # Serialising runs once per agent per message, so only when it will

@@ -14,6 +14,7 @@ import type {
   Attachment,
   Command,
   HostBody,
+  Item,
   Origin,
   Request,
   ServerEvent,
@@ -138,7 +139,20 @@ export class HostedSession {
   private readonly reasoningBuffer = new ReasoningBuffer();
   /** Recent tool input and output, in memory only, under the same rules as reasoning. */
   private readonly toolDetails = new ToolDetailBuffer();
+  /** The turn the provider is running: the one a steered message joins. */
   private activeTurn: string | null = null;
+  /**
+   * Turns the provider took while {@link activeTurn} ran, in the order it took
+   * them: a steer the provider ran as a turn of its own instead, because the
+   * running turn had just ended or the provider declined to steer. Each runs
+   * after the one before it, so none of them is the next queued message's
+   * cue to start.
+   */
+  private readonly providerQueue: string[] = [];
+  /** Messages steered into a turn, keyed by that turn: they end when it does. */
+  private readonly steeredInto = new Map<string, string[]>();
+  /** Steers handed to the provider whose answer has not come back yet. */
+  private steersInFlight = 0;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
   private publishing: Promise<unknown> = Promise.resolve();
@@ -569,6 +583,8 @@ export class HostedSession {
     this.decisionCode = code;
     this.queue.length = 0;
     this.activeTurn = null;
+    this.providerQueue.length = 0;
+    this.steeredInto.clear();
     this.config.session.status = 'error';
     this.config.session.capabilities = {
       ...this.config.session.capabilities,
@@ -857,9 +873,14 @@ export class HostedSession {
     return true;
   }
 
-  command(input: Command): Promise<Snapshot['commandStatuses'][number]> {
+  /**
+   * Takes a command. `sentByOwner` says Switch vouched that the person who
+   * sent a message is the agent's owner: such a message may steer into a turn
+   * someone else started in the same thread.
+   */
+  command(input: Command, sentByOwner = false): Promise<Snapshot['commandStatuses'][number]> {
     const command = commandSchema.parse(input);
-    const result = this.serial.then(() => this.accept(command));
+    const result = this.serial.then(() => this.accept(command, sentByOwner));
     this.serial = result.catch(() => {});
     return result;
   }
@@ -875,7 +896,8 @@ export class HostedSession {
    * A retry as the room message it repeats: the message's turn run again, under
    * the retry's own id and tied to the same message, so nothing is posted twice
    * and the new turn shows where the failed one did. Only a turn that ended
-   * without an answer is run again.
+   * without an answer is run again. It always queues: it runs the whole turn
+   * again, and must not be folded into whatever turn runs now.
    */
   private retried(command: Command): Command {
     if (command.body.type !== 'message.retry') return command;
@@ -893,10 +915,13 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    return { ...command, origin: original.origin, body: { ...original.body, delivery: 'queue' } };
   }
 
-  private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
+  private async accept(
+    command: Command,
+    sentByOwner: boolean
+  ): Promise<Snapshot['commandStatuses'][number]> {
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
@@ -918,8 +943,10 @@ export class HostedSession {
       );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');
-      if (body.delivery !== 'queue')
-        throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
+      if (body.delivery === 'steer' && !this.steeringOffered())
+        throw new Error(
+          'UNSUPPORTED_CAPABILITY: this session queues messages; it does not steer them into a running turn.'
+        );
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
       if (body.attachments.length && !this.config.stageAttachments)
@@ -953,6 +980,8 @@ export class HostedSession {
       if (
         this.activeTurn ||
         this.queue.length ||
+        this.providerQueue.length ||
+        this.steersInFlight ||
         (session.status !== 'ready' && !decisionReset) ||
         this.snapshot().requests.some((r) => r.state === 'open' || r.state === 'submitting')
       )
@@ -992,34 +1021,32 @@ export class HostedSession {
       code: null,
       message: null,
     });
+    let steerInto: string | null = null;
+    let steerHeld = false;
     try {
       if (body.type === 'message.send') {
-        const turnId = command.commandId;
-        this.projector.bindTurn(turnId, {
+        this.projector.bindTurn(command.commandId, {
           commandId: command.commandId,
           origin: command.origin,
         });
-        await this.publish({
-          type: 'turn.upsert',
-          turnId,
-          commandId: command.commandId,
-          status: 'queued',
-        });
+        steerInto = this.steerTarget(command, sentByOwner);
+        // A steered message joins the running turn rather than starting one:
+        // it is drawn in that turn and ends when that turn does.
+        if (steerInto === null)
+          await this.publish({
+            type: 'turn.upsert',
+            turnId: command.commandId,
+            commandId: command.commandId,
+            status: 'queued',
+          });
         await this.publish({
           type: 'item.upsert',
-          item: {
-            itemId: `user-${command.commandId}`,
-            turnId,
-            revision: 1,
-            kind: 'user-message',
-            status: 'completed',
-            title: '',
-            text: body.text,
-            attachments: body.attachments,
-            origin: command.origin,
-          },
+          item: userMessageItem(command, steerInto ?? command.commandId, 1),
         });
-        this.queue.push(command);
+        if (steerInto !== null) {
+          this.steersInFlight++;
+          steerHeld = true;
+        } else this.queue.push(command);
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -1165,9 +1192,18 @@ export class HostedSession {
         code: null,
         message: null,
       });
-      if (body.type === 'message.send')
-        void this.runNext().catch((error: unknown) => this.fail(error));
+      if (body.type === 'message.send') {
+        if (steerInto !== null) {
+          steerHeld = false;
+          void this.steer(command, steerInto).catch((error: unknown) => this.fail(error));
+        } else void this.runNext().catch((error: unknown) => this.fail(error));
+      }
     } catch (error) {
+      // A steer decided but never handed over no longer holds the queue back.
+      if (steerHeld) {
+        this.steersInFlight--;
+        void this.runNext().catch((next: unknown) => this.fail(next));
+      }
       if (body.type === 'session.model.set') await this.fail(error);
       if (body.type === 'request.answer') {
         const request = this.snapshot().requests.find((r) => r.requestId === body.requestId);
@@ -1211,8 +1247,154 @@ export class HostedSession {
     return status;
   }
 
+  /** Whether this session takes steered messages: its provider can, and it says so. */
+  private steeringOffered(): boolean {
+    return this.adapter.capabilities.steering && this.config.session.capabilities.input === 'steer';
+  }
+
+  /**
+   * The running turn a message asking to steer joins, or null to queue it.
+   *
+   * Only a turn already handed to the provider can be steered, and only by a
+   * message from the same conversation as the one that started it — the same
+   * room thread, or the session's own chat — so a different request is never
+   * folded into unrelated work. Within that conversation, only the person who
+   * started the turn or the agent's owner steers: in a shared room one person
+   * cannot redirect another's turn, and anyone else's message queues.
+   */
+  private steerTarget(command: Command, sentByOwner: boolean): string | null {
+    if (command.body.type !== 'message.send' || command.body.delivery !== 'steer') return null;
+    if (!this.steeringOffered()) return null;
+    const target = this.activeTurn;
+    if (target === null || !this.dispatched.has(target) || this.finished.has(target)) return null;
+    // A turn the provider queued behind the running one would see the message
+    // only after it starts: queue it in order instead.
+    if (this.providerQueue.length) return null;
+    const started = this.commands.get(target)?.origin;
+    if (!started || conversationOf(started) !== conversationOf(command.origin)) return null;
+    if (started.actorId !== command.origin.actorId && !sentByOwner) return null;
+    return target;
+  }
+
+  /**
+   * Hands a steered message to the provider. Most often it joins `target`;
+   * when the provider runs it as a turn of its own instead — the turn ended
+   * as the message arrived, or the provider declined to steer — it becomes
+   * that turn, drawn and finished as one, and nothing is sent twice.
+   */
+  private async steer(command: Command, target: string): Promise<void> {
+    if (command.body.type !== 'message.send') return;
+    const body = command.body;
+    try {
+      const attachments = body.attachments.length
+        ? await this.config.stageAttachments!(body.attachments)
+        : [];
+      if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
+      await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+      this.dispatched.add(command.commandId);
+      const started = await this.adapter.sendTurn({
+        sessionId: this.config.session.sessionId,
+        turnId: command.commandId,
+        text: body.text,
+        attachments,
+      });
+      if (started.steeredInto !== undefined) {
+        const joined = this.knownTurn(started.steeredInto) ?? target;
+        if (joined !== started.steeredInto)
+          console.warn(
+            `Provider steered command ${command.commandId} into ${started.steeredInto}, a turn this host does not know; recording it against ${target}.`
+          );
+        const steered = this.steeredInto.get(joined) ?? [];
+        steered.push(command.commandId);
+        this.steeredInto.set(joined, steered);
+        if (joined !== target)
+          await this.publish({ type: 'item.upsert', item: userMessageItem(command, joined, 2) });
+        await this.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'MESSAGE_STEERED',
+          message: 'A new message was steered into the running turn; the agent reads it now.',
+        });
+        // The turn may have ended while the provider took the message: it
+        // ended with it.
+        if (this.finished.has(joined)) await this.finishSteered(joined);
+      } else {
+        // The provider may already have reported the turn starting, or even
+        // ending: what it said stands.
+        if (!this.snapshot().turns.some((turn) => turn.turnId === command.commandId))
+          await this.publish({
+            type: 'turn.upsert',
+            turnId: command.commandId,
+            commandId: command.commandId,
+            status: 'queued',
+          });
+        await this.publish({
+          type: 'item.upsert',
+          item: userMessageItem(command, command.commandId, 2),
+        });
+        await this.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'STEER_QUEUED',
+          message:
+            'The message could not join the running turn, so it runs as its own turn once that one ends.',
+        });
+        if (!this.finished.has(command.commandId)) {
+          if (this.activeTurn === null) this.activeTurn = command.commandId;
+          else this.providerQueue.push(command.commandId);
+        }
+      }
+    } catch (error) {
+      await this.publish({
+        type: 'turn.upsert',
+        turnId: command.commandId,
+        commandId: command.commandId,
+        status: 'error',
+      });
+      await this.publish({
+        type: 'item.upsert',
+        item: userMessageItem(command, command.commandId, 2),
+      });
+      await this.publish({
+        type: 'notice',
+        level: 'error',
+        code: 'STEER_FAILED',
+        message: `The message could not be steered into the running turn: ${String(error)}`,
+      });
+      await this.replyIfUnposted(command.commandId, 'error', String(error));
+    } finally {
+      this.steersInFlight--;
+      void this.runNext().catch((error: unknown) => this.fail(error));
+    }
+  }
+
+  /** `turnId` when this host is tracking it as running or queued at the provider. */
+  private knownTurn(turnId: string): string | null {
+    return turnId === this.activeTurn || this.providerQueue.includes(turnId) ? turnId : null;
+  }
+
+  /** Records the messages steered into `turnId` as finished with it. */
+  private async finishSteered(turnId: string): Promise<void> {
+    const steered = this.steeredInto.get(turnId);
+    if (!steered) return;
+    this.steeredInto.delete(turnId);
+    for (const commandId of steered) {
+      if (this.finished.has(commandId)) continue;
+      await this.inbox.append({ type: 'finished', commandId });
+      this.finished.add(commandId);
+    }
+  }
+
   private async runNext(): Promise<void> {
-    if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
+    if (
+      this.activeTurn ||
+      this.providerQueue.length ||
+      this.steersInFlight ||
+      this.shuttingDown ||
+      this.stopped ||
+      this.fault
+    )
+      return;
     const command = this.queue.shift();
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
@@ -1332,6 +1514,8 @@ export class HostedSession {
           await this.publish({ ...turn, status: 'interrupted' });
       this.queue.length = 0;
       this.activeTurn = null;
+      this.providerQueue.length = 0;
+      this.steeredInto.clear();
       this.questions.clear();
     }
     if (event.type === 'session.started') {
@@ -1419,11 +1603,16 @@ export class HostedSession {
       });
       this.finished.add(event.turnId);
       if (event.usage.length > 0) this.usage.set(event.turnId, event.usage);
+      await this.finishSteered(event.turnId);
     }
     await this.publishAll(this.projector.ingest(event, Date.now()));
     if (event.type === 'turn.completed') {
       await this.replyIfUnposted(event.turnId, event.outcome, event.message ?? null);
-      this.activeTurn = null;
+      // A turn the provider took behind this one is running now; the next
+      // queued message waits for it too.
+      const behind = this.providerQueue.indexOf(event.turnId);
+      if (behind >= 0) this.providerQueue.splice(behind, 1);
+      else this.activeTurn = this.providerQueue.shift() ?? null;
       void this.runNext().catch((error: unknown) => this.fail(error));
       void this.refreshContext().catch((error: unknown) => this.fail(error));
     }
@@ -1616,6 +1805,32 @@ const REQUEST_TOO_LARGE =
 /** What the host posts for a turn whose every post to the room was refused. */
 export function postFailedReply(reason: string): string {
   return `I couldn't post my reply here: ${cap(reason.trim(), 1000)}`;
+}
+
+/** A message's own transcript item, drawn in `turnId`: its own turn, or the one it joined. */
+function userMessageItem(command: Command, turnId: string, revision: number): Item {
+  if (command.body.type !== 'message.send') throw new Error('Not a message.');
+  return {
+    itemId: `user-${command.commandId}`,
+    turnId,
+    revision,
+    kind: 'user-message',
+    status: 'completed',
+    title: '',
+    text: command.body.text,
+    attachments: command.body.attachments,
+    origin: command.origin,
+  };
+}
+
+/**
+ * The conversation a message belongs to: a room thread (a thread's root
+ * message is its own thread), or the session's direct chat, which every
+ * surface without a room shares.
+ */
+export function conversationOf(origin: Origin): string {
+  if (origin.roomId === null) return 'direct';
+  return JSON.stringify([origin.roomId, origin.threadId ?? origin.messageId]);
 }
 
 function cap(text: string, limit: number): string {

@@ -626,7 +626,8 @@ export async function runSharedHost(
             delivery: 'queue',
           },
         },
-        null
+        null,
+        false
       );
     };
     /** Tells the parent whenever the session's busy state changes. */
@@ -722,10 +723,15 @@ export async function runSharedHost(
         return { note: roomInstructionsUnreadNote(roomId, reason), instructions: null };
       }
     };
-    /** Runs a command, answering with what the host recorded for it, or why it did not run. */
+    /**
+     * Runs a command, answering with what the host recorded for it, or why it
+     * did not run. `sentByOwner` is true only for a room message Switch said
+     * the agent's owner sent.
+     */
     const run = async (
       value: unknown,
-      requesterName: string | null
+      requesterName: string | null,
+      sentByOwner: boolean
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -751,7 +757,7 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.some((entry) => entry.commandId === command.commandId);
       try {
-        await host!.command(command);
+        await host!.command(command, sentByOwner);
       } catch (error) {
         await host!.reject(command, error);
       }
@@ -848,11 +854,12 @@ export async function runSharedHost(
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
+          delivery: host!.snapshot().session.capabilities.input,
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null);
+        const outcome = await run(command, null, message.data.payload.sender_is_owner === true);
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
@@ -886,7 +893,8 @@ export async function runSharedHost(
           },
           body: { type: 'session.reset' },
         },
-        null
+        null,
+        false
       );
       if (typeof outcome === 'string')
         throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
@@ -904,7 +912,7 @@ export async function runSharedHost(
       // Busy is announced before the reply, so a parent that has the reply has
       // already heard any change the command made.
       command: async ({ command, requesterName }) => {
-        const outcome = await run(command, requesterName);
+        const outcome = await run(command, requesterName, false);
         announceBusy();
         if (typeof outcome === 'string') throw new Error(outcome);
         return outcome;

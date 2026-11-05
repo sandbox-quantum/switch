@@ -41,6 +41,17 @@ export function runtimeModeFor(settings: { autoApprove: boolean; autoMode: boole
   return 'approval-required';
 }
 
+/**
+ * What a session advertises for messages sent while a turn runs: `steer` when
+ * its provider can fold one into the running turn, `queue` otherwise. A
+ * provider without steering keeps queueing exactly as before.
+ */
+export function inputCapability(
+  capabilities: Pick<ProviderCapabilities, 'steering'>
+): 'steer' | 'queue' {
+  return capabilities.steering ? 'steer' : 'queue';
+}
+
 export interface StdioMcpServerSpec {
   transport: 'stdio';
   command: string;

@@ -33,6 +33,11 @@ export const roomMessageSchema = z.object({
       .default([]),
     opening_message: z.string().nullish(),
     sender_role: z.enum(['owner', 'admin', 'member']).nullish(),
+    /**
+     * Whether Switch read the sender as the agent's owner. Only the owner, or
+     * whoever started the running turn, steers a message into it.
+     */
+    sender_is_owner: z.boolean().nullish(),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
   }),
@@ -162,6 +167,12 @@ export function roomCommand(input: {
    * opening words (`opening_message`), if any, are told.
    */
   firstOfConversation: boolean;
+  /**
+   * What the session offers for a message that arrives mid-turn. A session
+   * that steers asks to: the host folds the message into the running turn
+   * only when that turn answers the same room thread, and queues it otherwise.
+   */
+  delivery: 'queue' | 'steer';
 }): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
@@ -214,6 +225,6 @@ export function roomCommand(input: {
       threadId: payload.thread_id ?? null,
       messageId: payload.message_id,
     },
-    body: { type: 'message.send', text, attachments, delivery: 'queue' },
+    body: { type: 'message.send', text, attachments, delivery: input.delivery },
   };
 }

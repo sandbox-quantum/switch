@@ -13,7 +13,13 @@ import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
-import { HostedSession, recentTurns, type RoomReply, unpostedReply } from './session-host';
+import {
+  conversationOf,
+  HostedSession,
+  recentTurns,
+  type RoomReply,
+  unpostedReply,
+} from './session-host';
 
 // Every step here is a journal write flushed to disk, and Windows runners take
 // many times longer over that. The waits have no deadline of their own (see
@@ -40,10 +46,14 @@ afterEach(async () => {
     abandonWaits();
   }
 });
-function setup(provider: Session['provider']) {
+function setup(provider: Session['provider'], options: { steering?: boolean } = {}) {
+  const steering = options.steering ?? false;
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
   let live = false;
-  const emit = (event: Record<string, unknown>) =>
+  // The turn the fake provider is running, which a steering provider folds a send into.
+  let running: string | null = null;
+  const emit = (event: Record<string, unknown>) => {
+    if (event.type === 'turn.completed' && event.turnId === running) running = null;
     listener({
       ...event,
       provider,
@@ -51,11 +61,12 @@ function setup(provider: Session['provider']) {
       eventId: randomUUID(),
       createdAt: new Date().toISOString(),
     } as ProviderRuntimeEvent);
+  };
   const adapter: ProviderAdapter = {
     provider,
     capabilities: {
       resume: true,
-      steering: false,
+      steering,
       approvals: true,
       userInput: true,
       modelSwitchInSession: false,
@@ -66,6 +77,8 @@ function setup(provider: Session['provider']) {
       return { provider, sessionId: 'session', nativeSessionId: 'native' };
     }),
     sendTurn: vi.fn(async (input) => {
+      if (steering && running !== null) return { turnId: input.turnId, steeredInto: running };
+      running = input.turnId;
       emit({ type: 'turn.started', turnId: input.turnId });
       return { turnId: input.turnId };
     }),
@@ -96,7 +109,7 @@ function setup(provider: Session['provider']) {
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: steering ? 'steer' : 'queue',
         approvals: true,
         questions: true,
         interrupt: true,
@@ -132,10 +145,10 @@ function message(commandId: string): Command {
     },
   };
 }
-async function start(provider: Session['provider']) {
+async function start(provider: Session['provider'], options: { steering?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
   roots.push(root);
-  const fixture = setup(provider);
+  const fixture = setup(provider, options);
   const host = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(host);
   await until(() => expect(host.snapshot().session.status).toBe('ready'));
@@ -2185,4 +2198,294 @@ describe('retrying a room message', () => {
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
+});
+
+// ── Steering: a message sent while a turn runs ──────────────────────────────
+
+function steer(commandId: string, origin: Partial<Command['origin']> = {}): Command {
+  const base = message(commandId);
+  return {
+    ...base,
+    origin: { ...base.origin, ...origin },
+    body: { type: 'message.send', delivery: 'steer', text: `Steer ${commandId}`, attachments: [] },
+  };
+}
+const roomOrigin = (threadId: string | null, messageId: string) => ({
+  surface: 'slack',
+  actorId: 'user',
+  roomId: 'room',
+  threadId,
+  messageId,
+});
+const userItem = (host: HostedSession, commandId: string) =>
+  host.snapshot().items.find((item) => item.itemId === `user-${commandId}`);
+const noticeCodes = (host: HostedSession) => host.snapshot().notices.map((notice) => notice.code);
+
+it.each(['claude', 'codex', 'opencode'] as const)(
+  'steers a message sent mid-turn into the running %s turn, and it ends with that turn',
+  async (provider) => {
+    const { host, adapter, emit } = await start(provider, { steering: true });
+    await host.command(message('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    expect((await host.command(steer('correction'))).status).toBe('applied');
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(adapter.sendTurn).mock.calls[1]?.[0]).toMatchObject({
+      turnId: 'correction',
+      text: 'Steer correction',
+    });
+    await until(() => expect(noticeCodes(host)).toContain('MESSAGE_STEERED'));
+    // Drawn in the running turn, with no turn of its own.
+    expect(userItem(host, 'correction')?.turnId).toBe('first');
+    expect(host.snapshot().turns.map((turn) => turn.turnId)).toEqual(['first']);
+    emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+    expect(host.snapshot().session.status).not.toBe('error');
+    // The next message starts a turn of its own, as the running one has ended.
+    await host.command(message('later'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(adapter.sendTurn).mock.calls[2]?.[0]).toMatchObject({ turnId: 'later' });
+  }
+);
+
+it('queues as before when the message asks to queue, even on a steering provider', async () => {
+  const { host, adapter, emit } = await start('claude', { steering: true });
+  await host.command(message('first'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await host.command(message('second'));
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'second')?.status).toBe('queued');
+  expect(userItem(host, 'second')?.turnId).toBe('second');
+  expect(adapter.sendTurn).toHaveBeenCalledOnce();
+  emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(adapter.sendTurn).mock.calls[1]?.[0]).toMatchObject({ turnId: 'second' });
+});
+
+it('refuses to steer on a session that queues, and keeps queueing there', async () => {
+  const { host, adapter } = await start('cursor');
+  await host.command(message('first'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await expect(host.command(steer('correction'))).rejects.toThrow('UNSUPPORTED_CAPABILITY');
+  expect(host.snapshot().session.status).not.toBe('error');
+  expect(adapter.sendTurn).toHaveBeenCalledOnce();
+  await host.command(message('second'));
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'second')?.status).toBe('queued');
+});
+
+it('refuses to steer when the session does not offer it, though its provider could', async () => {
+  const fixture = await start('claude');
+  expect(fixture.adapter.capabilities.steering).toBe(false);
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(root);
+  const capable = setup('claude', { steering: true });
+  capable.config.session.capabilities.input = 'queue';
+  const host = await startHost(root, capable.config, capable.adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  await expect(host.command(steer('correction'))).rejects.toThrow('UNSUPPORTED_CAPABILITY');
+});
+
+it('queues a message asking to steer when no turn is running, and runs it at once', async () => {
+  const { host, adapter } = await start('codex', { steering: true });
+  await host.command(steer('alone'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  expect(userItem(host, 'alone')?.turnId).toBe('alone');
+  await until(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'alone')?.status).toBe('running')
+  );
+  expect(noticeCodes(host)).not.toContain('MESSAGE_STEERED');
+});
+
+it('queues a message from another conversation instead of folding it into unrelated work', async () => {
+  const { host, adapter, emit } = await start('claude', { steering: true });
+  await host.command({ ...message('room-turn'), origin: { ...roomOrigin(null, 'root') } });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  // The session's own chat, and another thread of the same room: both queue.
+  await host.command(steer('direct'));
+  await host.command(steer('other-thread', roomOrigin('another-root', 'reply')));
+  expect(adapter.sendTurn).toHaveBeenCalledOnce();
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'direct')?.status).toBe('queued');
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'other-thread')?.status).toBe(
+    'queued'
+  );
+  // A reply in the running turn's own thread steers.
+  await host.command(steer('same-thread', roomOrigin('root', 'reply-2')));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(userItem(host, 'same-thread')?.turnId).toBe('room-turn');
+  emit({ type: 'turn.completed', turnId: 'room-turn', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+  // The queue keeps its order.
+  expect(vi.mocked(adapter.sendTurn).mock.calls[2]?.[0]).toMatchObject({ turnId: 'direct' });
+});
+
+it('runs a steer as its own turn when the running turn ended as it arrived, sending nothing twice', async () => {
+  const { host, adapter, emit } = await start('claude', { steering: true });
+  await host.command(message('first'));
+  await host.command(message('queued'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  // The provider finished the turn before the host heard: it starts the
+  // message as a new turn rather than steering it.
+  vi.mocked(adapter.sendTurn).mockImplementationOnce(async (input) => {
+    emit({ type: 'turn.started', turnId: input.turnId });
+    return { turnId: input.turnId };
+  });
+  await host.command(steer('late'));
+  await until(() => expect(noticeCodes(host)).toContain('STEER_QUEUED'));
+  expect(userItem(host, 'late')?.turnId).toBe('late');
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+  emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+  await until(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'first')?.status).toBe('completed')
+  );
+  // The queued message waits for the provider's own turn as well, which is
+  // now the one running: the one a stop would interrupt.
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'late')?.status).toBe('running');
+  const stop = await host.command({
+    ...message('stop-late'),
+    body: { type: 'turn.interrupt', turnId: 'late' },
+  });
+  expect(stop.status).toBe('applied');
+  expect(adapter.interruptTurn).toHaveBeenCalledOnce();
+  emit({ type: 'turn.completed', turnId: 'late', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(adapter.sendTurn).mock.calls[2]?.[0]).toMatchObject({ turnId: 'queued' });
+  expect(vi.mocked(adapter.sendTurn).mock.calls.map(([input]) => input.turnId)).toEqual([
+    'first',
+    'late',
+    'queued',
+  ]);
+});
+
+it('fails a steer the provider refused visibly, never retries it, and keeps the session', async () => {
+  const { host, adapter, emit } = await start('opencode', { steering: true });
+  await host.command(message('first'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  vi.mocked(adapter.sendTurn).mockRejectedValueOnce(new Error('prompt was rejected'));
+  await host.command(steer('refused'));
+  await until(() => expect(noticeCodes(host)).toContain('STEER_FAILED'));
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'refused')?.status).toBe('error');
+  expect(userItem(host, 'refused')?.turnId).toBe('refused');
+  expect(host.snapshot().session.status).not.toBe('error');
+  emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+  await host.command(message('next'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(adapter.sendTurn).mock.calls.map(([input]) => input.turnId)).toEqual([
+    'first',
+    'refused',
+    'next',
+  ]);
+});
+
+it('never resends a steered message after a restart, and knows it ended with its turn', async () => {
+  const { root, host, adapter, emit } = await start('claude', { steering: true });
+  await host.command(message('first'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await host.command(steer('ended'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await host.command(message('second'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+  await host.command(steer('in-flight'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(4));
+  await host.shutdown();
+  const recovered = setup('claude', { steering: true });
+  const next = await startHost(root, recovered.config, recovered.adapter);
+  hosts.push(next);
+  expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
+  const interrupted = next
+    .snapshot()
+    .notices.filter((notice) => notice.code === 'TURN_INTERRUPTED');
+  // `second` and the message steered into it were cut short; `ended` finished with `first`.
+  expect(interrupted).toHaveLength(2);
+  expect(userItem(next, 'in-flight')?.turnId).toBe('second');
+  expect(userItem(next, 'ended')?.turnId).toBe('first');
+});
+
+it('holds a reset back while a steer is on its way to the provider', async () => {
+  const { host, adapter, emit } = await start('claude', { steering: true });
+  await host.command(message('first'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  let release!: () => void;
+  vi.mocked(adapter.sendTurn).mockImplementationOnce(
+    (input) =>
+      new Promise((resolve) => {
+        release = () => resolve({ turnId: input.turnId, steeredInto: 'first' });
+      })
+  );
+  await host.command(steer('slow'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await expect(
+    host.command({ ...message('reset'), body: { type: 'session.reset' } })
+  ).rejects.toThrow('SESSION_BUSY');
+  release();
+  await until(() => expect(noticeCodes(host)).toContain('MESSAGE_STEERED'));
+});
+
+it('tells conversations apart by room thread, with direct chat as one conversation', () => {
+  const direct = {
+    surface: 'console',
+    actorId: 'a',
+    roomId: null,
+    threadId: null,
+    messageId: null,
+  };
+  expect(conversationOf(direct)).toBe(conversationOf({ ...direct, surface: 'switch-web' }));
+  expect(conversationOf(roomOrigin(null, 'root'))).toBe(
+    conversationOf(roomOrigin('root', 'reply'))
+  );
+  expect(conversationOf(roomOrigin('root', 'reply'))).not.toBe(
+    conversationOf(roomOrigin('other', 'reply'))
+  );
+  expect(conversationOf(roomOrigin(null, 'root'))).not.toBe(conversationOf(direct));
+  expect(conversationOf({ ...roomOrigin('root', 'reply'), roomId: 'elsewhere' })).not.toBe(
+    conversationOf(roomOrigin('root', 'reply'))
+  );
+});
+
+it('lets only the turn’s starter or the agent’s owner steer it; anyone else in the thread queues', async () => {
+  const { host, adapter, emit } = await start('codex', { steering: true });
+  await host.command({ ...message('ada-turn'), origin: { ...roomOrigin(null, 'root') } });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  // Someone else in the same thread cannot redirect Ada's turn.
+  await host.command(steer('bob', { ...roomOrigin('root', 'bob-reply'), actorId: 'bob' }));
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'bob')?.status).toBe('queued');
+  expect(userItem(host, 'bob')?.turnId).toBe('bob');
+  expect(adapter.sendTurn).toHaveBeenCalledOnce();
+  // The agent's owner can, as Switch vouched for them.
+  const fromOwner = steer('owner', { ...roomOrigin('root', 'owner-reply'), actorId: 'olga' });
+  await host.command(fromOwner, true);
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(userItem(host, 'owner')?.turnId).toBe('ada-turn');
+  // And so can Ada herself.
+  await host.command(steer('ada', roomOrigin('root', 'ada-reply')));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+  expect(userItem(host, 'ada')?.turnId).toBe('ada-turn');
+  emit({ type: 'turn.completed', turnId: 'ada-turn', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(4));
+  expect(vi.mocked(adapter.sendTurn).mock.calls[3]?.[0]).toMatchObject({ turnId: 'bob' });
+});
+
+it('runs a retried room message as a turn of its own, never steering it into the running turn', async () => {
+  const { host, adapter, emit } = await start('codex', { steering: true });
+  await host.command(steer('first', roomOrigin(null, 'm1')));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  emit({ type: 'turn.completed', turnId: 'first', outcome: 'error', message: 'x', usage: [] });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+  // The same person carries on in the same thread, and that turn is running…
+  await host.command(steer('second', roomOrigin('m1', 'm2')));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  // …when someone presses retry on the failed message.
+  await host.command({
+    ...message('again'),
+    origin: { surface: 'slack', actorId: 'user', roomId: 'room', threadId: null, messageId: null },
+    body: { type: 'message.retry', messageId: 'm1' },
+  });
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'again')?.status).toBe('queued');
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+  emit({ type: 'turn.completed', turnId: 'second', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(adapter.sendTurn).mock.calls[2]?.[0]).toMatchObject({ turnId: 'again' });
 });

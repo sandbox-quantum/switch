@@ -1,0 +1,1 @@
+ALTER TABLE `agents` ADD `steer_messages` integer DEFAULT true NOT NULL;

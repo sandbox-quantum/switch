@@ -80,6 +80,7 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     status: null,
     autoApprove: false,
     autoMode: false,
+    steerMessages: true,
     ownerName: null,
     providerConfig: null,
     createdAt: '2026-05-28T00:00:00.000Z',

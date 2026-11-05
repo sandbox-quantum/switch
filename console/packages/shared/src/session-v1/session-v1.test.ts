@@ -181,6 +181,18 @@ describe('session-v1 client transport', () => {
     expect(vi.mocked(wire.api.submit).mock.calls[0][0]).not.toHaveProperty('origin');
     expect(client.getSnapshot().snapshot?.commandStatuses[0].status).toBe('accepted');
   });
+  it('asks to steer a message on a session that offers steering', async () => {
+    const wire = transport();
+    const steering = initial();
+    steering.session.capabilities.input = 'steer';
+    vi.mocked(wire.api.snapshot).mockResolvedValue(steering);
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    await client.send('No, use the other file', 'send');
+    expect(wire.api.submit).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.objectContaining({ delivery: 'steer' }) })
+    );
+  });
   it('reconnects reads after an epoch change without resending an uncertain command', async () => {
     vi.useFakeTimers();
     const wire = transport();

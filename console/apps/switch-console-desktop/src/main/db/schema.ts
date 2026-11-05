@@ -235,6 +235,10 @@ export const agents = sqliteTable(
     // without asking, risky ones still ask. The column defaults false so rows
     // that predate it keep their behaviour; every create path sets it.
     autoMode: integer('auto_mode', { mode: 'boolean' }).notNull().default(false),
+    // Whether a message sent while a turn runs may steer into it (on providers
+    // that can steer), or always waits for a turn of its own. Defaults true,
+    // so every agent, including ones that predate it, steers. Editable per agent.
+    steerMessages: integer('steer_messages', { mode: 'boolean' }).notNull().default(true),
     // The display name of the agent's owner on the Switch server, set when the
     // agent was loaded from another install rather than created here.
     ownerName: text('owner_name'),

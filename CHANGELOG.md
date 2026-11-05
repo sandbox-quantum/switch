@@ -218,6 +218,10 @@ version of their own to them without also giving them a release of their own.
   Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
   `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
   nothing changes.
+- **Room messages say whether the agent's owner sent them.** A delivered
+  message carries `sender_is_owner`, read as it arrives, so a session that
+  steers mid-turn messages lets only the turn's starter or the owner redirect
+  a turn in a shared thread.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -2495,6 +2499,17 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A message sent while the agent is working reaches it now.** On Claude Code,
+  Codex and OpenCode sessions, a message from the same thread (or the session's
+  own chat) is steered into the running turn instead of waiting for it to end,
+  so a correction like "no, use the other file" lands while it still matters.
+  Only the person who started the turn or the agent's owner steers it; anyone
+  else's message, and messages from another thread or room, queue, so in a
+  shared room one person cannot redirect another's turn. Antigravity and
+  Cursor queue as before. A new per-agent setting, **Steer messages sent while
+  working** (on by default), turns it off. Console labels each message as
+  steered or queued, and the room's activity card notes a steer. If the turn
+  ends as the message arrives, it runs as its own turn; nothing is sent twice.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
@@ -4618,6 +4633,10 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Room messages steer into the running turn.** Watchers of Claude Code, Codex
+  and OpenCode agents now advertise steering, so a message from the thread the
+  agent is working in joins the turn under way instead of waiting for it.
+  Other threads, and Antigravity and Cursor agents, queue as before.
 - **Tells Switch Console when a session started.** Once Switch has taken a
   session host's start report, the controller Console runs on its own
   computer passes the session's provider and how it started to Console over
@@ -4943,6 +4962,8 @@ published on its own.
 ### [Unreleased]
 
 #### Added
+- Steers a message from the running turn's own thread into that turn on Claude
+  Code, Codex and OpenCode sessions, as Switch Console's local host does.
 - Serves the session-side half of service grants: granted skills in each
   session, the GitHub credential helper and `gh` wrapper, and scrubbing of
   issued tokens, as Switch Console does.

@@ -17,6 +17,7 @@ const LOCAL: Agent = {
   status: null,
   autoApprove: false,
   autoMode: false,
+  steerMessages: true,
   ownerName: null,
   providerConfig: null,
   createdAt: '2026-10-16T00:00:00Z',

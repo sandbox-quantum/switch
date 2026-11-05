@@ -1,4 +1,4 @@
-import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
+import type { Command, Item, SessionChatClient, Snapshot } from '@switch-console/shared/session-v1';
 import { Check, Loader2, Paperclip, RotateCw, Square, Wrench } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { SessionHeaderContent } from '@renderer/features/sessions/session-header-slots';
@@ -6,6 +6,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import type { InitialPromptDelivery } from '@shared/core/sessions/session-config';
+import { DELIVERY_NOTICE_CODES, messageDelivery, messageDeliveryLabel } from './message-delivery';
 import { SessionAttachmentList, useSessionAttachments } from './session-attachments';
 import { sessionStatePill } from './session-state';
 import { SessionStatePill } from './session-state-pill';
@@ -114,7 +115,7 @@ export function SessionV1Chat({
   );
   const noticesAfter = (itemId: string | null) =>
     view.notices
-      .filter((notice) => notice.afterItemId === itemId)
+      .filter((notice) => notice.afterItemId === itemId && !DELIVERY_NOTICE_CODES.has(notice.code))
       .map((notice, index) => (
         <p
           role="status"
@@ -471,6 +472,7 @@ export function SessionV1Chat({
                   <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap">
                     {item.text}
                   </div>
+                  <MessageDeliveryLabel item={item} turns={view.snapshot?.turns ?? []} />
                 </div>
               ) : item.kind === 'assistant-message' ? (
                 <div className="text-sm leading-relaxed">
@@ -697,4 +699,11 @@ export function SessionV1Chat({
       </div>
     </div>
   );
+}
+
+/** Under a message: whether it was steered into the running turn or is waiting in the queue. */
+function MessageDeliveryLabel({ item, turns }: { item: Item; turns: Snapshot['turns'] }) {
+  const label = messageDeliveryLabel(messageDelivery(item, turns));
+  if (label === null) return null;
+  return <span className="text-tiny text-foreground-passive">{label}</span>;
 }

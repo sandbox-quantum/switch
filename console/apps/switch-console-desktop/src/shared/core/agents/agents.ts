@@ -35,6 +35,11 @@ export type Agent = {
    * without asking, risky ones still ask. On for new agents, off for agents
    * that predate it; editable per agent. */
   autoMode: boolean;
+  /** When true, a message sent while a turn runs is steered into that turn on
+   * providers that can steer — only by the person who started the turn or the
+   * agent's owner, from the same conversation. When false every message waits
+   * for a turn of its own. On by default; editable per agent. */
+  steerMessages: boolean;
   /** The agent's owner on the Switch server, set when the agent was loaded from
    * another install. Null for agents this Console created. */
   ownerName: string | null;
