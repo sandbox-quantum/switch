@@ -214,6 +214,7 @@ async def test_the_owner_lists_a_folder_with_its_agent_labels(box: Box, caplog) 
     assert [e.get("agent") for e in listed.json()["entries"]] == ["agent-a", None]
     assert listed.json()["entries"][0]["mtime"] == 1793880000000
     assert listed.headers["cache-control"] == "private, no-store"
+    assert listed.headers["cross-origin-resource-policy"] == "same-origin"
     assert box.requests_sent()[0]["data"]["op"] == "list"
     assert "op=list" in caplog.text and "status=200" in caplog.text
 
@@ -236,6 +237,7 @@ async def test_an_html_file_comes_back_as_a_sandboxed_download(
     assert got.headers["x-content-type-options"] == "nosniff"
     assert got.headers["content-security-policy"] == "default-src 'none'; sandbox"
     assert got.headers["cache-control"] == "private, no-store"
+    assert got.headers["cross-origin-resource-policy"] == "same-origin"
     assert box.requests_sent()[0]["data"] == {
         "id": box.requests_sent()[0]["data"]["id"],
         "op": "read",
@@ -258,6 +260,7 @@ async def test_a_folder_zip_streams_one_chunk_per_pull(box: Box) -> None:
         'attachment; filename="agent-a.zip";'
     )
     assert got.headers["content-security-policy"] == "default-src 'none'; sandbox"
+    assert got.headers["cross-origin-resource-policy"] == "same-origin"
     events = [f["event"] for f in box.controller.sent]
     assert events == ["files.request", "files.more", "files.more"]
     assert box.controller.sent[0]["data"]["caches"] is False
@@ -435,6 +438,7 @@ async def test_an_empty_file_is_an_empty_200(box: Box) -> None:
 
     assert (got.status_code, got.content) == (200, b"")
     assert "content-range" not in got.headers
+    assert got.headers["cross-origin-resource-policy"] == "same-origin"
 
 
 async def test_a_file_over_25_mb_is_too_large_before_any_bytes(box: Box) -> None:

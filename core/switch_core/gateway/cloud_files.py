@@ -264,6 +264,13 @@ async def _first(request: FileRequest, timeout: float) -> FileReply:
 # ── Routes ───────────────────────────────────────────────────────────────
 
 
+# A listing or a file's bytes may be read by Switch's own pages only: another site can't
+# embed them (an <img>, a <script>, a fetch with no-cors), even with the
+# person's cookie. Their Lax session cookie already keeps a cross-site page
+# from reading them; this keeps it from embedding them too (Switch web).
+SAME_ORIGIN_ONLY = {"Cross-Origin-Resource-Policy": "same-origin"}
+
+
 @router.get("/list")
 async def list_files(
     user: Annotated[User, Depends(get_current_user)],
@@ -292,7 +299,9 @@ async def list_files(
         "cursor": reply.cursor,
     }
     _audit(user, machine_id, "list", path, 200, 0, began)
-    return JSONResponse(body, headers={"Cache-Control": "private, no-store"})
+    return JSONResponse(
+        body, headers={"Cache-Control": "private, no-store", **SAME_ORIGIN_ONLY}
+    )
 
 
 @router.get("/content")
@@ -328,6 +337,7 @@ async def file_content(
     headers = {
         "Cache-Control": "private, no-store",
         **untrusted_file_headers(name, None, "file"),
+        **SAME_ORIGIN_ONLY,
     }
     if total == 0 and offset == 0:
         # An empty file: no range to name.
@@ -420,6 +430,7 @@ async def folder_zip(
         headers={
             "Cache-Control": "private, no-store",
             **untrusted_file_headers(name, None, "cloud-files"),
+            **SAME_ORIGIN_ONLY,
             "Content-Disposition": content_disposition(
                 "attachment", name, "cloud-files"
             ),
