@@ -48,9 +48,12 @@ class DecisionSettingsStore:
         endpoint: str | None,
         api_key_encrypted: str | None,
         threshold: float | None,
+        saved_by: str | None,
     ) -> DecisionSettings:
-        """Write the workspace's row exactly as given, replacing any there.
-        For every backend but `machine` (`save_machine`)."""
+        """Write the workspace's row exactly as given, replacing any there,
+        as saved by the user `saved_by` (None: a row as from before saves
+        were recorded, which only a person can change). For every backend but `machine`
+        (`save_machine`)."""
         if backend == "machine":
             raise ValueError("A machine is saved with save_machine")
         values = {
@@ -61,6 +64,7 @@ class DecisionSettingsStore:
             "controller_id": None,
             "model": None,
             "machine_ready_at": None,
+            "saved_by": saved_by,
         }
         await session.execute(
             insert(DecisionSettings)
@@ -83,8 +87,10 @@ class DecisionSettingsStore:
         controller_id: str,
         model: str,
         threshold: float | None,
+        saved_by: str | None,
     ) -> DecisionSettings:
-        """Choose the workspace's machine and model, replacing any row there.
+        """Choose the workspace's machine and model, replacing any row there,
+        as saved by the user `saved_by` (None as for `save`).
         The machine is ready only once it reports the model running for this
         choice: choosing the same machine and model again keeps when it
         became ready, choosing another starts over."""
@@ -102,6 +108,7 @@ class DecisionSettingsStore:
             "threshold": threshold,
             "controller_id": controller_id,
             "model": model,
+            "saved_by": saved_by,
         }
         await session.execute(
             insert(DecisionSettings)

@@ -1053,6 +1053,7 @@ class TestAWorkspaceWithNoBackend:
                 endpoint=None,
                 api_key_encrypted=None,
                 threshold=None,
+                saved_by=None,
             )
             await session.commit()
         answer = await room.post("helper", "It starts the stack", at=6)
@@ -1085,6 +1086,7 @@ class TestAWorkspaceWithNoBackend:
                 endpoint="http://10.9.0.5/decide",
                 api_key_encrypted=TEST_KEYRING.encrypt("own-token"),
                 threshold=0.7,
+                saved_by=None,
             )
             await session.commit()
 
@@ -1112,6 +1114,7 @@ class TestAWorkspaceWithNoBackend:
                 endpoint="http://10.0.0.5:8230",
                 api_key_encrypted=None,
                 threshold=None,
+                saved_by=None,
             )
             await session.commit()
 

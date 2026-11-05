@@ -189,6 +189,7 @@ async def _save(
             endpoint=endpoint,
             api_key_encrypted=TEST_KEYRING.encrypt(api_key) if api_key else None,
             threshold=threshold,
+            saved_by=None,
         )
         await session.commit()
 

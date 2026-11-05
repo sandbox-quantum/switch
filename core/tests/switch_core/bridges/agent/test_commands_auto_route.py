@@ -239,6 +239,7 @@ class TestAutoRouteCommand:
                 endpoint=None,
                 api_key_encrypted=None,
                 threshold=None,
+                saved_by=None,
             )
             await session.commit()
         host, posted = _host(session_factory, room_id)

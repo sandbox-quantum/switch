@@ -102,6 +102,7 @@ async def _choose_machine(
             controller_id=controller.id,
             model=MODEL,
             threshold=None,
+            saved_by=world.owner_id,
         )
         if ready:
             await store.mark_machine_ready(

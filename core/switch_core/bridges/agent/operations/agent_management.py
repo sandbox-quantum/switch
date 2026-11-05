@@ -54,6 +54,26 @@ NOT_A_WORKSPACE_ADMIN = (
     "it in Switch Console → Admin → Decision routing."
 )
 
+
+def not_saved_by_your_owner(saver: User | None) -> str:
+    """Why an agent can't replace or clear the workspace's decision setting
+    someone other than its owner saved, as a sentence to relay."""
+    if saver is None:
+        return (
+            "Nothing was changed: this workspace's decision routing was saved "
+            "by someone other than your owner (Switch doesn't record who), and "
+            "an agent can only replace or clear a setting its owner saved. A "
+            "workspace admin can change it in Switch Console → Admin → "
+            "Decision routing."
+        )
+    return (
+        f"Nothing was changed: this workspace's decision routing was saved by "
+        f"{saver.name}, not your owner, and an agent can only replace or clear "
+        f"a setting its owner saved. {saver.name} can change it, or any "
+        "workspace admin in Switch Console → Admin → Decision routing."
+    )
+
+
 _port: AgentManagementPort | None = None
 _decisions: DynamicDecisionClient | None = None
 
@@ -412,7 +432,9 @@ async def set_decision_routing(
 
     Requires the "can manage agents" capability, and an owner who is an admin
     of this workspace and owns the machine; otherwise it is refused with a
-    sentence to relay. Confirm with the person before you call this: it
+    sentence to relay. It replaces or clears only a setting your owner saved:
+    a setting another admin saved (their endpoint and key, say) is refused,
+    with a sentence to relay naming who can change it. Confirm with the person before you call this: it
     changes how every auto-route room in the workspace is decided, and with
     "machine" the room's messages are read by the model on that machine.
 
@@ -441,7 +463,19 @@ async def set_decision_routing(
     protocol = get_protocol()
     tenant_id = permitted.tenant_id
     owner_id = permitted.owner.id
+    if choice not in ("machine", "server_default"):
+        raise ValueError('choice must be "machine" or "server_default".')
     async with tenant_session(protocol.session_factory, tenant_id) as session:
+        # Locked until the save or clear commits, so the row checked is the
+        # row replaced.
+        existing = await client.availability.store.get_for_update(session, tenant_id)
+        if existing is not None and existing.saved_by != owner_id:
+            saver = (
+                await session.get(User, existing.saved_by)
+                if existing.saved_by is not None
+                else None
+            )
+            raise PermissionError(not_saved_by_your_owner(saver))
         if choice == "server_default":
             await clear_settings(session, client, tenant_id=tenant_id)
             view = await settings_view(
@@ -452,8 +486,6 @@ async def set_decision_routing(
                 user_id=owner_id,
             )
             return view.model_dump(mode="json")
-        if choice != "machine":
-            raise ValueError('choice must be "machine" or "server_default".')
         if not machine:
             raise ValueError(
                 "Name the machine to run the decision model on: its id or exact "
@@ -491,7 +523,6 @@ async def set_decision_routing(
                     f"{', '.join(offered) or 'none'}."
                 )
             model = offered[0]
-        existing = await client.availability.store.get(session, tenant_id)
         try:
             view = await save_settings(
                 session,
