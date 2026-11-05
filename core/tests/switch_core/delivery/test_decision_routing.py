@@ -905,6 +905,28 @@ class TestTheRoomIsTold:
 
 
 class TestTheTriageAgent:
+    """Naming the triage agent takes the room's owner or a workspace admin;
+    alice is claimed by the room's owner here."""
+
+    @pytest.fixture(autouse=True)
+    async def _alice_owns_the_room(self, world: World) -> None:
+        async with world.session_factory() as session:
+            await session.execute(
+                update(Room)
+                .where(Room.id == world.room_id)
+                .values(owner_id=world.owner_id)
+            )
+            await session.commit()
+
+    async def test_bob_who_does_not_may_not_name_it(
+        self, world: World, room: Journey
+    ) -> None:
+        reply = await room.command("bob", "auto-route", "fallback @reviewer", at=5)
+
+        assert reply.startswith("Only the room's owner or a workspace admin")
+        async with world.session_factory() as session:
+            assert await RoomStore().auto_route_fallback(session, world.room_id) is None
+
     async def test_it_gets_the_message_while_the_service_fails(
         self, world: World, room: Journey, service: DecisionService
     ) -> None:

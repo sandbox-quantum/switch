@@ -17,6 +17,7 @@ from switch_core.db.models import (
     ApiKey,
     Client,
     Room,
+    TenantMember,
     User,
     room_agents,
 )
@@ -28,15 +29,34 @@ from switch_core.db.stores.room_store import (
     RoomStore,
 )
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
+from switch_core.delivery.addressing import SenderPrincipal
 from switch_core.transport import RoomRef
 
 
+async def _user(
+    session_factory: async_sessionmaker[AsyncSession], name: str, role: str
+) -> str:
+    async with session_factory() as session:
+        user = User(
+            name=name,
+            email=f"{name}-{uuid.uuid4().hex[:6]}@example.invalid",
+            role="user",
+        )
+        session.add(user)
+        await session.flush()
+        session.add(TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role=role))
+        await session.commit()
+        return user.id
+
+
 async def _room(session_factory: async_sessionmaker[AsyncSession]) -> str:
+    owner_id = await _user(session_factory, "room-owner", "member")
     async with session_factory() as session:
         room = Room(
             transport_room_id=f"!r-{uuid.uuid4().hex[:8]}:test",
             name="room",
             description="d",
+            owner_id=owner_id,
             metadata_={"created_by_kind": "user"},
         )
         session.add(room)
@@ -50,8 +70,21 @@ def _host(
     *,
     flag: bool = True,
     endpoint: bool = True,
+    sender: str | None = None,
 ) -> tuple[SimpleNamespace, list[str]]:
+    """A command host for `room_id`. The command's sender is the Switch user
+    `sender`, or the room's owner when it is None."""
     posted: list[str] = []
+
+    async def _resolve_sender(
+        session: AsyncSession, _transport_user_id: str
+    ) -> SenderPrincipal:
+        user_id = sender
+        if user_id is None:
+            room = await session.get(Room, room_id)
+            assert room is not None and room.owner_id is not None
+            user_id = room.owner_id
+        return SenderPrincipal("user", "ext-sender", [user_id], None)
 
     async def _resolve_room_meta(_transport_room_id: str) -> SimpleNamespace:
         return SimpleNamespace(room_id=room_id, name="room")
@@ -65,6 +98,7 @@ def _host(
         reply_command=_reply_command,
         _room_store=RoomStore(),
         _agent_store=AgentStore(),
+        _addressing=SimpleNamespace(resolve_sender=_resolve_sender),
         _decision_availability=DecisionAvailability(
             enabled=flag,
             server=ServerDefault(
@@ -79,7 +113,9 @@ def _host(
 
 
 async def _run(host: SimpleNamespace, args: str) -> None:
-    event = SimpleNamespace(command="auto-route", args=args, thread_id=None)
+    event = SimpleNamespace(
+        command="auto-route", args=args, thread_id=None, user_id="@sender:test"
+    )
     await _cmd_auto_route(host, RoomRef(room_id="!t:test"), event, False)  # type: ignore[arg-type]
 
 
@@ -293,6 +329,58 @@ class TestTheTriageAgent:
         await _run(host, "fallback off")
         assert "no longer has a triage agent" in posted[-1]
         assert await _fallback(session_factory, room_id) is None
+
+    async def test_a_member_turns_it_on_and_off(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        member = await _user(session_factory, "member", "member")
+        host, posted = _host(session_factory, room_id, sender=member)
+
+        await _run(host, "on")
+        assert "Automatic routing is **on**" in posted[-1]
+        assert await _on(session_factory, room_id)
+
+        await _run(host, "off")
+        assert "Automatic routing is **off**" in posted[-1]
+        assert not await _on(session_factory, room_id)
+
+    async def test_a_member_cannot_name_or_clear_it_but_may_see_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        agents = await _agents(session_factory, room_id)
+        member = await _user(session_factory, "member", "member")
+        host, posted = _host(session_factory, room_id, sender=member)
+
+        await _run(host, "fallback @triage")
+        assert posted[-1].startswith(
+            "Only the room's owner or a workspace admin can name or clear"
+        )
+        assert "Nothing was changed" in posted[-1]
+        assert await _fallback(session_factory, room_id) is None
+
+        owner, _ = _host(session_factory, room_id)
+        await _run(owner, "fallback @triage")
+        await _run(host, "fallback off")
+        assert posted[-1].startswith("Only the room's owner or a workspace admin")
+        assert await _fallback(session_factory, room_id) == agents["triage"].id
+
+        await _run(host, "fallback")
+        assert "go to **triage**" in posted[-1]
+
+    async def test_a_workspace_admin_may_name_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        agents = await _agents(session_factory, room_id)
+        admin = await _user(session_factory, "admin", "admin")
+        host, posted = _host(session_factory, room_id, sender=admin)
+
+        await _run(host, "fallback @triage")
+
+        assert "is now this room's triage agent" in posted[-1]
+        assert await _fallback(session_factory, room_id) == agents["triage"].id
 
     async def test_an_agent_not_in_the_room_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
