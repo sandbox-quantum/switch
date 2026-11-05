@@ -1,7 +1,10 @@
 import { useQueryClient } from '@tanstack/react-query';
+import { FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useCloudFilesVisible } from '@renderer/features/cloud-files/use-cloud-files';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
 import { Progress } from '@renderer/lib/ui/progress';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
@@ -88,6 +91,8 @@ export function CloudMachineCard({
     }
   };
   const agentCount = machine.agents.length;
+  // Your cloud files (the file explorer): a v2 box only, and only once the flags allow it.
+  const filesShown = useCloudFilesVisible(box ? serverId : null);
   return (
     <div className="mb-[14px] rounded-[11px] bg-[var(--surface-2)] p-[14px]">
       <div className="text-sm font-medium">{box ? 'Your cloud' : 'Cloud machine'}</div>
@@ -154,6 +159,18 @@ export function CloudMachineCard({
             )}
           </div>
         )
+      )}
+      {box && filesShown && (
+        <div className="mt-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => appState.navigation.navigate('cloudFiles', { serverId })}
+          >
+            <FolderOpen className="size-4" />
+            Your cloud files
+          </Button>
+        </div>
       )}
       {box && <RepairCloud machine={machine} serverId={serverId} />}
       {shown.problem && (

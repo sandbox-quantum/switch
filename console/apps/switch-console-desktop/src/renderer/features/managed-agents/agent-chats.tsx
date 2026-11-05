@@ -8,6 +8,7 @@ import { ChatRow, UnsavedChatRow } from '@renderer/features/chats/components/cha
 import { useOpenGroupAsRoom } from '@renderer/features/chats/console-chat-redirect';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { useCloudFilesVisible } from '@renderer/features/cloud-files/use-cloud-files';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
 import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
 import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
@@ -19,6 +20,7 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
+import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -42,6 +44,7 @@ import { shouldAutoStartChat } from './auto-start-chat';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
 import { useRunsOnThisComputer } from './use-managed-agents';
+import { viewFilesAgent } from './view-files';
 
 /**
  * The sections the agent's page offers, and the one showing: `chosen` from
@@ -186,6 +189,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
   const { sections, section } = useAgentSection(serverId, agent, params.section);
   const thisComputer = useRunsOnThisComputer(agent);
+  const filesAgent = viewFilesAgent(agent, useCloudFilesVisible(serverId));
   const setupCards = buddySetupCardsEnabled(useFeatureFlags(serverId));
   const shownRoom = openAgentRoom(agent, params.room, section);
   // The unsaved chat open before a reload is kept, but not in memory yet: it opens again.
@@ -236,6 +240,12 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           sections={sections}
           selected={section}
           onSelect={(chosen) => setParams({ section: chosen })}
+          {...(filesAgent
+            ? {
+                onViewFiles: () =>
+                  appState.navigation.navigate('cloudFiles', { serverId, agent: filesAgent }),
+              }
+            : {})}
         />
         {/* Why it stopped (visibility V2): hosted agents v2 only, on a v2 box, as the cards are. */}
         <AgentStatus agent={agent} />
