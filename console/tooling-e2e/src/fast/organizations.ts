@@ -64,7 +64,7 @@ export const organizations: FastScenario = {
     const { organization, workspace } = await founder.createOrganization(names.name('org'));
     expect(organization.role).toBe('org_admin');
     expect(workspace).toMatchObject({
-      role: 'owner',
+      role: 'admin',
       organization_role: 'org_admin',
       organization_id: organization.id,
     });
