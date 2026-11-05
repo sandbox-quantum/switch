@@ -291,7 +291,7 @@ it picked an agent or nobody, its confidence in tenths and its latency
 (`decision_made`), or why it failed (`decision_failed`: `timeout`,
 `unreachable`, `error_status`, `bad_answer`, `key_unreadable`,
 `endpoint_refused`, and for a machine `machine_offline`, `machine_not_ready`,
-`machine_busy`, `machine_error`). Which agent was
+`machine_busy`, `machine_error`, `owner_not_admin`). Which agent was
 picked, in which room, for which message, and which machine decided, is never
 sent.
 

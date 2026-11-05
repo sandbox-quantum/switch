@@ -261,6 +261,40 @@ async def test_a_machine_in_another_workspace_is_never_offered_or_chosen(
     assert await _row(session_factory, TENANT_B) is None
 
 
+async def test_a_demoted_owner_shows_as_the_reason_to_another_admin(
+    session_factory: async_sessionmaker[AsyncSession], service: _Service
+) -> None:
+    ada = await _person(session_factory, "ada", role="admin")
+    bea = await _person(session_factory, "bea", role="admin")
+    machine = await _machine(session_factory, ada.id)
+    app = _app(session_factory, service)
+    async with _as(app, ada) as client:
+        saved = await client.put(
+            "/decision-settings", json={**MACHINE, "machine_id": machine}
+        )
+    assert saved.status_code == 200, saved.text
+    async with session_factory() as session:
+        await DecisionSettingsStore().mark_machine_ready(
+            session, TENANT_ZERO_ID, machine, MODEL
+        )
+        await session.execute(
+            update(TenantMember)
+            .where(TenantMember.user_id == ada.id)
+            .values(role="member")
+        )
+        await session.commit()
+
+    async with _as(app, bea) as client:
+        body = (await client.get("/decision-settings")).json()
+
+    assert body["effective"]["available"] is False
+    assert (
+        "its owner is no longer an admin of this workspace"
+        in (body["effective"]["reason"])
+    )
+    assert body["effective"]["machine"]["reason"] == "owner_not_admin"
+
+
 async def test_a_revoked_machine_is_removed_and_cannot_be_chosen(
     session_factory: async_sessionmaker[AsyncSession], service: _Service
 ) -> None:

@@ -157,7 +157,13 @@ async def settings_view(
         if controller is not None
         else (False if row is not None and row.backend == "machine" else None)
     )
-    resolved = resolve(row, server, controller, connected)
+    resolved = resolve(
+        row,
+        server,
+        controller,
+        connected,
+        await checks.owner_administers(session, controller),
+    )
     applies = availability(checks.enabled, resolved)
     mine = await checks.controllers.list_for_owner(session, tenant_id, user_id)
     return DecisionSettingsResponse(

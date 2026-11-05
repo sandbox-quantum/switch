@@ -21,6 +21,11 @@ A connection lives in the process holding its socket, so only that process
 can ask (`MessageRouter.decide_pending` claims a workspace's waiting messages
 there, and wakes it from elsewhere). Room content never crosses processes.
 
+A machine is chosen by its owner while they administer the workspace, and
+asked only while they still do: each decision reads it again (with the
+settings, `DynamicDecisionClient.settings`), and a machine whose owner was
+demoted is sent nothing (`owner_not_admin`).
+
 What the machine says about itself comes from its status report
 (`controller.capabilities`, and the `decision` block: its hardware, the
 models it offers and the state of the one it serves), stored on its
@@ -70,6 +75,7 @@ REMOVED_REASON = (
 )
 
 MachineFailure = Literal[
+    "owner_not_admin",
     "machine_offline",
     "machine_not_ready",
     "machine_busy",
@@ -77,6 +83,10 @@ MachineFailure = Literal[
     "timeout",
     "bad_answer",
 ]
+
+# The reason a machine reports when its owner no longer administers the
+# workspace: Switch's own, checked before each decision.
+OWNER_NOT_ADMIN = "owner_not_admin"
 
 # What each error a controller answers with counts as.
 _RESULT_ERRORS: dict[str, MachineFailure] = {
@@ -189,6 +199,7 @@ class MachineChoice:
     model: str
     removed: bool
     ready: bool
+    owner_admin: bool
     connected: bool | None
     state: MachineStateName
     progress: dict[str, Any] | None
@@ -207,6 +218,13 @@ class MachineChoice:
         """Why auto-route can't act yet, for the room toggle and the admin."""
         if self.removed:
             return REMOVED_REASON
+        if not self.owner_admin:
+            return (
+                f"Auto-route's decisions run on {self.name}, and its owner is no "
+                "longer an admin of this workspace, so it is sent nothing. A "
+                "workspace admin can choose another in Switch Console → Admin → "
+                "Decision routing."
+            )
         if self.ready:
             return None
         if self.state == "failed":
@@ -231,9 +249,11 @@ def machine_choice(
     row: DecisionSettings,
     controller: AgentController | None,
     connected: bool | None,
+    owner_admin: bool,
 ) -> MachineChoice:
     """What a `machine` row resolves to, given its controller's row (None
-    when it is gone)."""
+    when it is gone) and whether the controller's owner still administers
+    the workspace."""
     assert row.controller_id is not None and row.model is not None
     removed = is_removed(controller)
     status = decision_status(controller) if controller is not None else {}
@@ -249,6 +269,9 @@ def machine_choice(
         state = "off"
     progress = status.get("progress")
     last = status.get("last_decision_ms")
+    reason = status.get("reason") if isinstance(status.get("reason"), str) else None
+    if not removed and not owner_admin:
+        reason = OWNER_NOT_ADMIN
     since: str | None = (
         status.get("since") if isinstance(status.get("since"), str) else None
     )
@@ -261,10 +284,11 @@ def machine_choice(
         model=row.model,
         removed=removed,
         ready=row.machine_ready_at is not None,
+        owner_admin=owner_admin,
         connected=connected,
         state=state,
         progress=progress if isinstance(progress, dict) else None,
-        reason=status.get("reason") if isinstance(status.get("reason"), str) else None,
+        reason=reason,
         detail=status.get("detail") if isinstance(status.get("detail"), str) else None,
         last_decision_ms=last if isinstance(last, int) else None,
         since=since,

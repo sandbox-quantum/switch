@@ -35,7 +35,8 @@ order:
 Nobody receives the message when the service names nobody. When the service
 fails (a timeout, a connection error, an error response, a malformed one, or
 one naming an agent that was not a candidate; for a model on a machine, also
-the machine offline, busy or its model not running), the room is told
+the machine offline, busy or its model not running, or its owner no longer a
+workspace admin, when it is sent nothing), the room is told
 auto-route is unavailable (`decision_notice`, naming the machine), at most
 once an hour, and the message goes
 to the room's triage agent if it has one (`!auto-route fallback @agent`),
@@ -103,6 +104,7 @@ def decision_notice(failed: Failed) -> str:
         "machine_busy": f"{name} is busy",
         "machine_not_ready": f"the decision model on {name} isn't running",
         "timeout": f"{name} did not answer in time",
+        "owner_not_admin": f"{name}'s owner is no longer a workspace admin",
     }.get(failed.reason, f"the decision model on {name} failed")
     return f"Auto-route is unavailable right now ({why}); tag an agent to reach it."
 

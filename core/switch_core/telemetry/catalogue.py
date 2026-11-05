@@ -215,8 +215,9 @@ DECISION_CONFIDENCE = one_of(
 # named an agent that was not a candidate), a workspace key the server can no
 # longer decrypt, or a workspace endpoint the server's outbound policy refuses.
 # For a model on a machine: the machine is not connected, its model is not
-# running, it has as many decisions in flight as it takes, or its model server
-# failed.
+# running, it has as many decisions in flight as it takes, its model server
+# failed, or its owner no longer administers the workspace (it is sent
+# nothing).
 DECISION_FAILURE_REASON = one_of(
     "timeout",
     "unreachable",
@@ -228,6 +229,7 @@ DECISION_FAILURE_REASON = one_of(
     "machine_not_ready",
     "machine_busy",
     "machine_error",
+    "owner_not_admin",
 )
 
 

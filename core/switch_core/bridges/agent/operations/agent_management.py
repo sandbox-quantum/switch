@@ -380,11 +380,13 @@ async def get_decision_routing() -> dict[str, Any]:
         last_decision_ms?}: `state` is "off", "downloading", "starting",
         "running", "failed", "offline" or "removed", and `ready` whether the
         machine has reported the model running (until then auto-route is
-        unavailable, without notices in the rooms). `options.machines` are
-        your owner's own machines in this workspace, each {id, name,
-        connected, decision: {supported, offered, hardware?, reason?}};
-        `offered` lists the models it can run, each {model, label, speed,
-        ...}.
+        unavailable, without notices in the rooms). `reason` is
+        "owner_not_admin" when the machine's owner is no longer an admin of
+        this workspace: it is sent nothing, and each decision fails until an
+        admin chooses again. `options.machines` are your owner's own
+        machines in this workspace, each {id, name, connected,
+        decision: {supported, offered, hardware?, reason?}}; `offered` lists
+        the models it can run, each {model, label, speed, ...}.
     """
     permitted = await _permitted_admin()
     protocol = get_protocol()
