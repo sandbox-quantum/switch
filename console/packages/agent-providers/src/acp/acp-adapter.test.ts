@@ -19,9 +19,11 @@ const agent: {
   session: Record<string, unknown>;
 } = { capabilities: {}, session: {} };
 const spawned: Array<{ command: string; args: string[] }> = [];
+const spawnedEnv: Array<Record<string, string> | undefined> = [];
 vi.mock('node:child_process', () => ({
-  spawn: (command: string, args: string[]) => {
+  spawn: (command: string, args: string[], options?: { env?: Record<string, string> }) => {
     spawned.push({ command, args });
+    spawnedEnv.push(options?.env);
     const server = new FakeAppServer();
     server.replyAlways('initialize', () => ({ agentCapabilities: agent.capabilities }));
     for (const method of ['session/new', 'session/load', 'session/resume'])
@@ -53,6 +55,7 @@ const dummy: AcpProviderHooks = {
 beforeEach(() => {
   servers.length = 0;
   spawned.length = 0;
+  spawnedEnv.length = 0;
   agent.capabilities = {};
   agent.session = {};
 });
@@ -403,3 +406,76 @@ it.each([
     expect(server.received.some((m) => m.id === 80 && m.result)).toBe(false);
   }
 );
+
+const httpServer = { transport: 'http' as const, url: 'http://127.0.0.1:1/mcp' };
+
+it('without prepareMcpServers, a session needing MCP over HTTP from an agent that does not declare it is refused', async () => {
+  await expect(start(dummy, { mcpServers: { switch: httpServer } })).rejects.toThrow(
+    /does not declare MCP over HTTP/
+  );
+});
+
+it('an agent whose hooks take over MCP delivery gets it in its own launch, and the wire carries none', async () => {
+  const cleanup = vi.fn(async () => {});
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    prepareMcpServers: async (servers) => {
+      expect(servers).toEqual({ switch: httpServer });
+      return { env: { MCP_SETTINGS_PATH: '/tmp/settings.json' }, cleanup };
+    },
+  };
+  const { server } = await start(hooks, { env: { X: '1' }, mcpServers: { switch: httpServer } });
+  // requireHttpMcp would otherwise refuse this session; it started anyway.
+  expect(spawnedEnv.at(-1)).toEqual({ X: '1', MCP_SETTINGS_PATH: '/tmp/settings.json' });
+  expect(server.received.find((m) => m.method === 'session/new')?.params?.mcpServers).toEqual([]);
+  expect(cleanup).not.toHaveBeenCalled();
+});
+
+it('cleans up the MCP delivery when a session is stopped', async () => {
+  const cleanup = vi.fn(async () => {});
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    prepareMcpServers: async () => ({ env: {}, cleanup }),
+  };
+  const { adapter } = await start(hooks, { mcpServers: { switch: httpServer } });
+  expect(cleanup).not.toHaveBeenCalled();
+  await adapter.stopSession('s');
+  expect(cleanup).toHaveBeenCalledTimes(1);
+});
+
+it('cleans up the MCP delivery when the process exits on its own', async () => {
+  const cleanup = vi.fn(async () => {});
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    prepareMcpServers: async () => ({ env: {}, cleanup }),
+  };
+  const { server } = await start(hooks, { mcpServers: { switch: httpServer } });
+  server.kill();
+  await flush();
+  expect(cleanup).toHaveBeenCalledTimes(1);
+});
+
+it('cleans up the MCP delivery when the session fails to start', async () => {
+  const cleanup = vi.fn(async () => {});
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    prepareMcpServers: async () => ({ env: {}, cleanup }),
+  };
+  // No sessionId in the agent's session/new result: the adapter throws
+  // "returned no session ID" from inside the same try block requireHttpMcp
+  // and acpMcpServers run in, after prepareMcpServers already ran.
+  agent.session = { sessionId: null };
+  await expect(start(hooks, { mcpServers: { switch: httpServer } })).rejects.toThrow(
+    /returned no session ID/
+  );
+  expect(cleanup).toHaveBeenCalledTimes(1);
+});
+
+it('without prepareMcpServers, nothing changes: the agent still gets mcpServers over the wire', async () => {
+  const { server } = await start(dummy, {
+    mcpServers: { tools: { transport: 'stdio', command: 'node', args: ['s.js'] } },
+  });
+  expect(server.received.find((m) => m.method === 'session/new')?.params?.mcpServers).toEqual([
+    { name: 'tools', command: 'node', args: ['s.js'], env: [] },
+  ]);
+});

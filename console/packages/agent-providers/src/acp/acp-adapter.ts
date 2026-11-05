@@ -27,6 +27,7 @@ import {
 } from '../transport/stdio-json-rpc';
 import type {
   AcpAdapterOptions,
+  AcpLaunch,
   AcpProviderHooks,
   AcpSelectedAnswer,
   AcpSessionContext,
@@ -97,6 +98,8 @@ interface State {
   id: string;
   nativeId: string;
   client: StdioJsonRpcClient;
+  /** Removes what {@link AcpProviderHooks.prepareMcpServers} prepared, idempotently. */
+  mcpCleanup?: () => Promise<void>;
   turn: string | null;
   queue: ProviderSendTurnInput[];
   items: Map<string, ProviderItem>;
@@ -163,11 +166,18 @@ export class AcpAdapter implements ProviderAdapter {
         input.sessionId,
         prefix.legacyMessage
       );
-    const launch = await hooks.launch({
-      binaryPath: this.options.binaryPath ?? hooks.defaultBinary,
-      cwd,
-      env: input.env,
-    });
+    const mcpDelivery = await hooks.prepareMcpServers?.(input.mcpServers, input.env);
+    let launch: AcpLaunch;
+    try {
+      launch = await hooks.launch({
+        binaryPath: this.options.binaryPath ?? hooks.defaultBinary,
+        cwd,
+        env: mcpDelivery ? { ...input.env, ...mcpDelivery.env } : input.env,
+      });
+    } catch (cause) {
+      await mcpDelivery?.cleanup();
+      throw cause;
+    }
     const client = new StdioJsonRpcClient({
       ...launch,
       cwd,
@@ -178,6 +188,7 @@ export class AcpAdapter implements ProviderAdapter {
       id: input.sessionId,
       nativeId: '',
       client,
+      mcpCleanup: mcpDelivery?.cleanup,
       turn: null,
       queue: [],
       items: new Map(),
@@ -215,7 +226,7 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      if (!mcpDelivery) requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -228,7 +239,7 @@ export class AcpAdapter implements ProviderAdapter {
       // checks stop at the handshake above.
       const authMethodId = hooks.authMethodId?.(input.env);
       if (authMethodId) await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = mcpDelivery ? [] : acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
       if (input.resume) {
         method = agent.loadSession
@@ -265,6 +276,7 @@ export class AcpAdapter implements ProviderAdapter {
       return { provider: hooks.provider, sessionId: state.id, nativeSessionId };
     } catch (cause) {
       await client.dispose();
+      await this.cleanupMcp(state);
       this.sessions.delete(state.id);
       if (cause instanceof ProviderConversationUnavailableError) throw cause;
       const details =
@@ -730,9 +742,21 @@ export class AcpAdapter implements ProviderAdapter {
   async stopAll(): Promise<void> {
     await Promise.all([...this.sessions.keys()].map((id) => this.stopSession(id)));
   }
+  /** Runs {@link State.mcpCleanup} at most once, however many exit paths race to call it. */
+  private async cleanupMcp(state: State): Promise<void> {
+    const cleanup = state.mcpCleanup;
+    if (!cleanup) return;
+    state.mcpCleanup = undefined;
+    await cleanup();
+  }
   private exited(id: string, reason: string): void {
     const state = this.sessions.get(id);
     if (!state) return;
+    void this.cleanupMcp(state).catch((error: unknown) =>
+      this.logger.error(`${this.hooks.label} could not clean up its MCP delivery`, {
+        error: String(error),
+      })
+    );
     const stopping = state.stopping;
     state.stopping = true;
     this.complete(state, stopping ? 'interrupted' : 'error', reason);
