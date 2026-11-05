@@ -1,19 +1,16 @@
 import type { CloudMachine } from "../../data/hostedCloud";
+import { BOX_LOGINS } from "../../data/sealLogin";
 import type { Controller, Definition, DesiredState, Provider, ProviderInfo } from "../../data/management";
 
 /** How an agent is named: what rooms address it by. */
 export const AGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
 /**
- * The logins a box takes, by provider: only those its provider gateway fronts
- * (`gatewayPlanFor` in `console/packages/agent-controller-box/src/gateway-logins.ts`).
- * A box refuses every other login, so a cloud agent is offered only these
- * providers, and the login step only these kinds (security).
+ * The logins a box takes, by provider: the one table, from the sealing module,
+ * so a cloud agent is offered only providers, and the login step only kinds,
+ * that the page will seal and the box will take (security).
  */
-export const BOX_LOGINS: Readonly<Record<string, readonly ("api-key" | "setup-token" | "vertex")[]>> = {
-  claude: ["setup-token", "api-key", "vertex"],
-  codex: ["api-key"],
-};
+export { BOX_LOGINS };
 
 /** The server's providers a cloud agent can use: those a box takes a login for, in the server's order. */
 export function cloudProviders(providers: readonly ProviderInfo[]): ProviderInfo[] {

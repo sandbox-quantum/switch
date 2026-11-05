@@ -2,6 +2,7 @@
 // Node's WebCrypto: the same API the browsers have (X25519, HKDF, AES-GCM).
 import { describe, expect, it, vi } from "vitest";
 import {
+  BOX_LOGINS,
   type ProviderLogin,
   rawKey,
   SEALED_LOGIN_ALG,
@@ -12,6 +13,7 @@ import {
   sealingKeyId,
   toBase64,
 } from "./sealLogin";
+import { BOX_LOGINS as CLOUD_AGENT_BOX_LOGINS } from "../pages/agents/cloudAgent";
 import { VertexKeyRefused, vertexCredential } from "./vertexLogin";
 
 const subtle = globalThis.crypto.subtle;
@@ -123,15 +125,20 @@ describe("the wire format", () => {
     expect(await sealingKeyId(rawKey(VECTOR.controllerPublic)!)).toBe(VECTOR.keyId);
   });
 
-  it.each(["api-key", "setup-token", "auth-json", "vertex"] as const)(
-    "a %s login opens with the controller's key, and a fresh ephemeral key and nonce each time",
-    async (kind) => {
+  it.each([
+    ["claude", "api-key"],
+    ["claude", "setup-token"],
+    ["claude", "vertex"],
+    ["codex", "api-key"],
+  ] as const)(
+    "a %s %s login opens with the controller's key, and a fresh ephemeral key and nonce each time",
+    async (provider, kind) => {
       const box = await controller();
       const login = { kind, credential: `secret-${kind}` };
-      const input = { publicKey: box.publicKey, keyId: box.keyId, controllerId: "ctl-1", provider: "claude", login };
+      const input = { publicKey: box.publicKey, keyId: box.keyId, controllerId: "ctl-1", provider, login };
       const first = await sealLogin(input);
       const second = await sealLogin(input);
-      expect(await open(box.pair.privateKey, box.publicKey, "ctl-1", "claude", first)).toEqual(login);
+      expect(await open(box.pair.privateKey, box.publicKey, "ctl-1", provider, first)).toEqual(login);
       expect(first.ephemeral_key).not.toBe(second.ephemeral_key);
       expect(first.nonce).not.toBe(second.nonce);
       expect(Object.keys(first).sort()).toEqual(["alg", "ciphertext", "ephemeral_key", "key_id", "nonce"]);
@@ -331,9 +338,11 @@ describe("the Vertex key file", () => {
 });
 
 /**
- * Engineer-4's vectors (`eng4-seal-vectors-v1.json`, sha256 a63a018ac2b8…),
+ * Engineer-4's vectors (`eng4-seal-vectors-v2.json`, sha256 e24d1d650501…),
  * made with Node and opened by the real `openProviderLogin`: a plain API key,
- * and an auth-json login with non-ASCII text. Test-only keys from public labels.
+ * an auth-json login with non-ASCII text (which no box takes, so the page
+ * refuses it), and a Claude API key with non-ASCII text. Test-only keys from
+ * public labels.
  */
 const NODE_VECTORS = [
   {
@@ -373,11 +382,46 @@ const NODE_VECTORS = [
       "nonce": "UjaGXxwTPp9lGsYF",
       "ciphertext": "IByKSYBvCFrbt5d1JCBSWyjh2UJrNQStKF2n5vaVMJXYKrODttTFHbW9tH8/mvZDnEeLCdfMOqOmSC19c7MERnS7jMXmC+30/yX7qhsEZ12CMDmdps6OHqU="
     }
+  },
+  {
+    "name": "api-key unicode",
+    "publicKey": "yr5Wgx7s3PEf+GlpmYMCIKen6zUBRQ70KsEt4kfEmVc=",
+    "ephemeralPrivate": "jpWwxbT7Z7E0QIImJiJiY5W8u2R4DFUyvzEaNH1y3Bs=",
+    "nonce": "uJfT9Og2WEpXORAf",
+    "controllerId": "ctrl-test-0003",
+    "provider": "claude",
+    "login": {
+      "kind": "api-key",
+      "credential": "sk-tëst-✓-not-real"
+    },
+    "expected": {
+      "alg": "X25519-HKDF-SHA256-A256GCM",
+      "key_id": "fd458a0d57b0ae45",
+      "ephemeral_key": "LdY4Pqht82FK5uL9kWaS3+MyJvKCi9VHcYXfrvXgHl0=",
+      "nonce": "uJfT9Og2WEpXORAf",
+      "ciphertext": "a+hMldDziP8zpjOln3CXa8aS/O39qeZZI+H9Y/QH4bO+vmJtUczXOGInKH9TeeKLTrCT8/DAz8+z3iP9+J/M5mWRc81Izdw="
+    }
   }
 ] as const;
 
+/** The vectors a box takes a login for: sealed byte for byte. */
+const SEALED_VECTORS = NODE_VECTORS.filter((v) => v.name !== "auth-json unicode");
+
 describe("engineer-4's Node vectors", () => {
-  it.each(NODE_VECTORS.map((v) => [v.name, v] as const))("%s: matches byte for byte", async (_name, v) => {
+  it("refuses vector 2: no box takes an auth-json login, so the page never seals one", async () => {
+    const v = NODE_VECTORS.find((vector) => vector.name === "auth-json unicode")!;
+    await expect(
+      sealLogin({
+        publicKey: v.publicKey,
+        keyId: v.expected.key_id,
+        controllerId: v.controllerId,
+        provider: v.provider,
+        login: v.login as ProviderLogin,
+      }),
+    ).rejects.toMatchObject({ code: "bad_login" });
+  });
+
+  it.each(SEALED_VECTORS.map((v) => [v.name, v] as const))("%s: matches byte for byte", async (_name, v) => {
     const pkcs8 = new Uint8Array([
       0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
       ...bytes(v.ephemeralPrivate),
@@ -407,5 +451,32 @@ describe("engineer-4's Node vectors", () => {
       keys.mockRestore();
       random.mockRestore();
     }
+  });
+});
+
+describe("one table of box logins", () => {
+  it("seals every kind the table offers, and refuses one it doesn't", async () => {
+    const box = await controller();
+    for (const [provider, kinds] of Object.entries(BOX_LOGINS))
+      for (const kind of kinds)
+        await expect(
+          sealLogin({ publicKey: box.publicKey, keyId: box.keyId, controllerId: "ctl-1", provider, login: { kind, credential: "k" } }),
+        ).resolves.toMatchObject({ alg: SEALED_LOGIN_ALG });
+  });
+
+  it.each([
+    ["a provider no box takes", "cursor", { kind: "api-key", credential: "k" }],
+    ["a provider named like an object property", "constructor", { kind: "api-key", credential: "k" }],
+    ["a kind Codex's box doesn't take", "codex", { kind: "setup-token", credential: "k" }],
+    ["auth-json, which no box takes", "claude", { kind: "auth-json", credential: "{}" }],
+  ] as const)("refuses %s", async (_name, provider, login) => {
+    const box = await controller();
+    await expect(
+      sealLogin({ publicKey: box.publicKey, keyId: box.keyId, controllerId: "ctl-1", provider, login: login as ProviderLogin }),
+    ).rejects.toMatchObject({ code: "bad_login" });
+  });
+
+  it("is the very table Add agent and the login dialog offer", () => {
+    expect(CLOUD_AGENT_BOX_LOGINS).toBe(BOX_LOGINS);
   });
 });

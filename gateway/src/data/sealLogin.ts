@@ -25,6 +25,18 @@ export const LOGIN_KINDS: readonly LoginKind[] = ["api-key", "setup-token", "aut
 
 export type ProviderLogin = { kind: LoginKind; credential: string };
 
+/**
+ * The logins a box takes, by provider: only those its provider gateway fronts
+ * (`gatewayPlanFor` in `console/packages/agent-controller-box/src/gateway-logins.ts`).
+ * A box refuses every other login, so the page seals only these, and offers
+ * only these: Add agent's providers and the login dialog's kinds read this same
+ * table (re-exported from `pages/agents/cloudAgent.ts`).
+ */
+export const BOX_LOGINS: Readonly<Record<string, readonly ("api-key" | "setup-token" | "vertex")[]>> = {
+  claude: ["setup-token", "api-key", "vertex"],
+  codex: ["api-key"],
+};
+
 export type SealedLogin = {
   alg: typeof SEALED_LOGIN_ALG;
   key_id: string;
@@ -108,10 +120,16 @@ export async function canSeal(): Promise<boolean> {
   }
 }
 
-function checkLogin(login: ProviderLogin): void {
+function checkLogin(provider: string, login: ProviderLogin): void {
+  const kinds: readonly string[] | undefined = Object.hasOwn(BOX_LOGINS, provider)
+    ? BOX_LOGINS[provider]
+    : undefined;
   if (
     !login ||
     !LOGIN_KINDS.includes(login.kind) ||
+    // Only a provider a box takes, and only a kind its box takes for it.
+    kinds === undefined ||
+    !kinds.includes(login.kind) ||
     typeof login.credential !== "string" ||
     login.credential.length < 1 ||
     login.credential.length > MAX_CREDENTIAL
@@ -144,7 +162,7 @@ export async function sealLogin(
     !PROVIDER_PATTERN.test(input.provider)
   )
     throw new SealRefused("bad_target");
-  checkLogin(input.login);
+  checkLogin(input.provider, input.login);
 
   let controller: CryptoKey;
   let ephemeralPrivate: CryptoKey;
