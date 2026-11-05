@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
 
@@ -291,17 +291,21 @@ def _trust_feedback(
     redaction can leave the words as they were, so it is told from the
     verdict rather than from the delivered text differing from the sent."""
     note = alert[0] if alert is not None and notice_error is None else None
+    alerted: Literal["alerted", "errored"] | None = None
+    if alert is not None:
+        alerted = "alerted" if alert[1] == "alerted" else "errored"
     if verdict == "redacted":
         return TrustFeedback(
             outcome="redacted",
             delivered=delivered,
+            alert=alerted,
             note=note,
             notice_error=notice_error,
         )
-    if alert is None:
+    if alerted is None:
         return None
     return TrustFeedback(
-        outcome="alerted" if alert[1] == "alerted" else "errored",
+        outcome=alerted,
         delivered=None,
         note=note,
         notice_error=notice_error,
@@ -2427,8 +2431,11 @@ class AgentCore:
             raise ValueError(f"Agent not found: {agent_id}")
         await collaboration_core.handle_outbound_typing(room.id, agent.name, is_typing)
 
-    async def update_status(self, agent_id: str, room_id: str, detail: str) -> None:
-        """Send a status message to a room.
+    async def update_status(
+        self, agent_id: str, room_id: str, detail: str
+    ) -> TrustFeedback | None:
+        """Send a status message to a room, and say what Switch Trust did to
+        it, as `post_message` does (`_trust_feedback`).
 
         Raises GuardrailBlockedError if Switch Trust blocks it.
         """
@@ -2436,23 +2443,29 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        detail, pending_alert, _verdict = await self._enforce_trust(
+        detail, pending_alert, verdict = await self._enforce_trust(
             room, detail, None, client
         )
         event_id = await client.send_message(
             room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )
-        if pending_alert is not None:
-            if event_id is None:
+        if event_id is None:
+            if pending_alert is not None:
                 logger.warning(
                     "Status update to %s failed to send; dropping its pending "
                     "Switch Trust %s notice along with it",
                     room.id,
                     pending_alert[1],
                 )
-            else:
-                annotation, outcome = pending_alert
-                await self._post_trust_alert_notice(room, event_id, annotation, outcome)
+            # Nothing reached the room, so there is nothing to tell.
+            return None
+        notice_error: str | None = None
+        if pending_alert is not None:
+            annotation, outcome = pending_alert
+            notice_error = await self._post_trust_alert_notice(
+                room, event_id, annotation, outcome
+            )
+        return _trust_feedback(verdict, detail, pending_alert, notice_error)
 
     async def set_runtime_state(
         self,

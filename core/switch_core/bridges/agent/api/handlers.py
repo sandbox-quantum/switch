@@ -691,18 +691,22 @@ async def update_status(
     req: StatusRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
+) -> dict[str, object]:
+    """Post a status line in the room. The result carries `trust` only when
+    Switch Trust changed or flagged it, as a sent message's does."""
+    result: dict[str, object] = {"ok": True}
     if req.detail:
         try:
-            await protocol.update_status(agent.id, req.room_id, req.detail)
+            feedback = await protocol.update_status(agent.id, req.room_id, req.detail)
         except GuardrailBlockedError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return {"ok": True}
+        if feedback is not None:
+            result["trust"] = feedback.to_result()
+    return result
 
 
 @router.post("/{agent_id}/runtime-state")

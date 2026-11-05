@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.agent.operations import definitions
-from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_core import AgentCore, _trust_feedback
 from switch_core.bridges.agent.protocol.types import (
     SendTargetedResult,
     SentMessage,
@@ -71,6 +71,7 @@ def _build(
 
     svc = object.__new__(AgentCore)
     svc.require_room_poster = _require  # type: ignore[assignment]
+    svc.require_room_member = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
         get_by_agent_id=lambda agent_id: client
     )
@@ -111,6 +112,52 @@ async def test_a_redaction_that_changed_nothing_is_still_reported() -> None:
         note=None,
         notice_error=None,
     )
+
+
+def test_a_redaction_does_not_hide_a_file_that_was_flagged_or_not_checked() -> None:
+    """A caption redacted beside a file Switch Trust could not check: the
+    outcome is the redaction, and `alert` keeps the file's side visible."""
+    feedback = _trust_feedback(
+        "redacted", "see [redacted]", ("the file was not checked", "errored"), None
+    )
+
+    assert feedback is not None
+    assert feedback.to_result() == {
+        "outcome": "redacted",
+        "delivered": "see [redacted]",
+        "alert": "errored",
+        "note": "the file was not checked",
+    }
+
+
+async def test_a_redacted_status_update_reports_what_the_room_received() -> None:
+    svc, client, _ = _build()
+
+    feedback = await svc.update_status("agent-1", "room-1", "reading token-123")
+
+    assert client.sent == ["*reading [redacted]*"]
+    assert feedback == TrustFeedback(
+        outcome="redacted",
+        delivered="reading [redacted]",
+        note=None,
+        notice_error=None,
+    )
+
+
+async def test_a_flagged_status_update_reports_the_notice_posted_under_it() -> None:
+    svc, _, notices = _build()
+
+    feedback = await svc.update_status("agent-1", "room-1", "something suspicious")
+
+    assert feedback is not None
+    assert feedback.outcome == "alerted"
+    assert feedback.note == notices[0][1]
+
+
+async def test_a_clean_status_update_reports_nothing_about_trust() -> None:
+    svc, _, _ = _build()
+
+    assert await svc.update_status("agent-1", "room-1", "working on it") is None
 
 
 async def test_a_flagged_message_reports_the_notice_posted_under_it() -> None:

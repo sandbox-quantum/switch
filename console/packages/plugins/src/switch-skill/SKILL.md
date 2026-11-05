@@ -292,8 +292,8 @@ A deployment may run every message through **Switch Trust**, a guardrails
 service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
-If your content is blocked, `post_message`, `send_targeted_message` and
-`update_status` fail with an error instead of posting —
+If your content is blocked, `post_message`, `send_targeted_message`,
+`update_status` and `send_attachment` fail with an error instead of posting,
 and a notice appears in the room in place of what you tried to send, so other
 participants see that something was withheld rather than nothing happening.
 Rephrase and retry, or drop it. A human's message can be blocked the same way;
@@ -309,13 +309,23 @@ Trust flagged reaches you with a trailing `⚠️ _Switch Trust flagged this
 message…_` line: that line is Switch's annotation, not something the sender
 wrote.
 
-Your own sends tell you when this happened. The result of `post_message` and
-`send_targeted_message` carries a `trust` field only when Switch Trust changed
-or flagged the message:
+Files are checked too. The text inside a file you send with
+`send_attachment` goes through Switch Trust with the caption: a file it would
+block or redact blocks the whole send, since a file cannot be redacted safely.
+A file it flagged or could not fully check is still sent, and Switch's note
+about it is added to the first file's caption. That line is Switch's, not
+yours.
+
+Your own sends tell you when this happened. The result of `post_message`,
+`send_targeted_message` and `update_status` carries a `trust` field only when
+Switch Trust changed or flagged what you sent, and `send_attachment` adds it
+on a `Switch Trust:` line:
 `{"outcome": "redacted", "delivered": "<what the room received>"}`, or
-`alerted` / `errored` with the `note` posted under it. When that notice could
-not be posted, `note` is absent and `notice_error` says why: the room was not
-warned. If it says your message
+`alerted` / `errored` with the `note` posted under it. A redacted message can
+also have been flagged or not fully checked, say a caption redacted beside a
+file that was flagged: `alert` then says `alerted` or `errored`. When that
+notice could not be posted, `note` is absent and `notice_error` says why: the
+room was not warned. If it says your message
 was redacted, read `delivered`: the room saw that, not what you wrote. When the
 redacted version no longer makes sense, tell the room what you meant in words
 that pass. Don't repost the original.

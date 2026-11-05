@@ -147,13 +147,16 @@ class TrustFeedback(BaseModel):
     the room received in `delivered` (which can match what was sent when
     there was nothing it could cut); otherwise `alerted` (flagged and
     delivered as sent) or `errored` (delivered as sent, not fully checked).
-    `note` is the notice posted in the room under the message, when one was
-    posted. When a notice was due but could not be posted, `note` is unset
-    and `notice_error` says why, so the agent is not told the room was
-    warned when it was not."""
+    A redacted message can also have been flagged or not fully checked, say a
+    caption redacted beside a file that was flagged: `alert` then says which,
+    so the redaction does not hide it. `note` is the notice posted in the
+    room under the message, when one was posted. When a notice was due but
+    could not be posted, `note` is unset and `notice_error` says why, so the
+    agent is not told the room was warned when it was not."""
 
     outcome: Literal["redacted", "alerted", "errored"]
     delivered: str | None
+    alert: Literal["alerted", "errored"] | None = None
     note: str | None
     notice_error: str | None
 
