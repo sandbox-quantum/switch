@@ -1414,6 +1414,16 @@ export async function runAgentHost(
           // Asked again here as well as on the timer: the answer a held room is
           // waiting for is written by a session that is doing other work, and
           // an event arriving is the cheapest evidence that time has passed.
+          // An edit only changes a message a session already has. It starts
+          // no session and waits for none: with no session in the room, the
+          // message it edits is waiting there too, and runs as it was sent.
+          if (event.type === 'message_edit') {
+            if (!held.has(assignment.roomId) && (await admit(assignment, false, false))) return;
+            console.warn(
+              `An edit of message ${String((event.payload as { message_id?: unknown }).message_id)} in room ${assignment.roomId} reached no session; the message runs as it was sent.`
+            );
+            return;
+          }
           if (held.size) await resolveHeld();
           if (held.has(assignment.roomId)) return hold(assignment, spawning, false);
           if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning, false);

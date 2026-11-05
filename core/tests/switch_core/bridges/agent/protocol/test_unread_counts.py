@@ -29,6 +29,7 @@ from switch_core.bridges.agent.protocol.types import (
     MessagePayload,
 )
 from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.messages.edits import edit_content, edit_fallback
 from tests.db_buffer import (
     age_events,
     db_buffer_on,
@@ -511,6 +512,24 @@ async def test_only_unaddressed_messages_are_counted(
         sender=await sender_of(session_factory, AGENT),
     )
     await _chatter(session_factory, ROOM_A)
+
+    assert (await _unread(buffer, ROOM_A)).count == 1
+
+
+async def test_an_edit_is_not_a_message_of_its_own(
+    db_buffer: EventBuffer, session_factory: SessionFactory
+) -> None:
+    """An edit changes a message already counted, or one the agent was woken
+    for; it is nothing more to catch up on."""
+    buffer = db_buffer
+    await buffer.ensure_counting(TENANT_ZERO_ID, AGENT, READER, ROOM_A)
+    chatter = await say(session_factory, ROOM_A, "lunch at noon?")
+    await say(
+        session_factory,
+        ROOM_A,
+        edit_fallback("lunch at one?"),
+        content=edit_content(chatter.transport_event_id, "lunch at one?"),
+    )
 
     assert (await _unread(buffer, ROOM_A)).count == 1
 

@@ -60,6 +60,61 @@ export const roomMessageSchema = z.object({
 });
 export type RoomMessage = z.infer<typeof roomMessageSchema>;
 
+/** The part of a room message's edit event an edited prompt is built from. */
+export const roomEditSchema = z.object({
+  type: z.literal('message_edit'),
+  payload: z.object({
+    message_id: z.string().min(1),
+    edit_id: z.string().min(1),
+    body: z.string(),
+    sender: z.string().min(1),
+    thread_id: z.string().nullish(),
+  }),
+});
+export type RoomEdit = z.infer<typeof roomEditSchema>;
+
+/**
+ * The prompt `roomCommand` built, with the sender's message replaced by its
+ * edited text and everything around it (the header, the notices, the
+ * reminder) as it was. Null when `text` is not a prompt `roomCommand` built.
+ */
+export function editedRoomText(text: string, body: string): string | null {
+  const begin = /^BEGIN SWITCH MESSAGE ([0-9a-f]{16})$/m.exec(text);
+  if (!begin) return null;
+  const end = `\nEND SWITCH MESSAGE ${begin[1]}\n`;
+  const start = begin.index + begin[0].length + 1;
+  const stop = text.lastIndexOf(end);
+  if (stop < start - 1) return null;
+  return `${text.slice(0, start)}${body}${text.slice(stop)}`;
+}
+
+/** The command an edit of a room message amounts to, for the turn that message queued. */
+export function roomEditCommand(input: {
+  agentId: string;
+  sessionId: string;
+  epoch: string;
+  roomId: string;
+  edit: RoomEdit;
+  surface: Surface;
+  text: string;
+}): Command {
+  const { payload } = input.edit;
+  return {
+    contractVersion: 1,
+    commandId: uuidFrom(`switch-room-edit:${input.agentId}:${input.roomId}:${payload.edit_id}`),
+    sessionId: input.sessionId,
+    epoch: input.epoch,
+    origin: {
+      surface: input.surface,
+      actorId: payload.sender,
+      roomId: input.roomId,
+      threadId: payload.thread_id ?? null,
+      messageId: payload.message_id,
+    },
+    body: { type: 'message.edit', messageId: payload.message_id, text: input.text },
+  };
+}
+
 /** Where a room attachment's bytes are fetched from, by the id the command names it by. */
 export type RoomAttachmentSource = { roomId: string; mxc: string };
 

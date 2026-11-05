@@ -56,6 +56,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -4129,7 +4130,8 @@ class SlackAdapter(PlatformAdapter):
     # Message subtypes we still treat as real posts. file_share carries uploaded
     # attachments; thread_broadcast is a thread reply also sent to the channel;
     # bot_message is a post from a third-party Slack app (e.g. Datadog alerts).
-    # Everything else (edits, deletes, channel-join system messages, …) is skipped.
+    # An edit (message_changed) goes to `_handle_message_changed`. Everything
+    # else (deletes, channel-join system messages, …) is skipped.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
 
     # The system line Slack posts into a channel when someone renames it,
@@ -4163,6 +4165,9 @@ class SlackAdapter(PlatformAdapter):
         ):
             return
         subtype = event.get("subtype")
+        if subtype == "message_changed":
+            await self._handle_message_changed(event)
+            return
         if subtype and subtype not in self._ALLOWED_SUBTYPES:
             return
 
@@ -4189,6 +4194,48 @@ class SlackAdapter(PlatformAdapter):
             # (`collaboration_core._post_source`).
             self._seen_ts.pop(message_ts, None)
             raise
+
+    async def _handle_message_changed(self, event: dict[str, object]) -> None:
+        """Someone edited a post: hand its new text to the edit callback.
+
+        Slack also reports a post as changed when it adds a link preview,
+        without anyone editing it. Only a change that carries an `edited`
+        stamp and new text is an edit."""
+        if self._on_edit is None:
+            return
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        edited = message.get("edited")
+        if not isinstance(edited, dict):
+            return
+        if message.get("bot_id"):
+            # This bridge's own posts, and other apps' (a CI status redrawn in
+            # place, say): an app updating what it posted, not a person
+            # correcting a request.
+            return
+        user_id = str(message.get("user", ""))
+        if not user_id or user_id == self._bot_user_id:
+            return
+        text = str(message.get("text", ""))
+        previous = event.get("previous_message")
+        if isinstance(previous, dict) and previous.get("text") == text:
+            return
+        channel_id = str(event.get("channel", ""))
+        message_ts = str(message.get("ts", ""))
+        if not channel_id or not message_ts:
+            return
+        user = await self._resolve_user_name(user_id)
+        await self._on_edit(
+            InboundEdit(
+                channel_id=channel_id,
+                sender_id=user_id,
+                sender_name=user.name,
+                content=text,
+                message_ref=f"{channel_id}:{message_ts}",
+                revision=str(edited.get("ts") or event.get("event_ts", "")),
+            )
+        )
 
     async def _deliver_message_event(
         self, event: dict[str, object], channel_id: str, message_ts: str

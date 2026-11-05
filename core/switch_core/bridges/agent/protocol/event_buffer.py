@@ -116,6 +116,7 @@ from switch_core.db.session_scope import (
     shared_tenant_session,
     tenant_session,
 )
+from switch_core.messages.edits import is_edit
 from switch_core.observability.catalogue import (
     AGENT_BUFFER_SCAN_DURATION,
     AGENT_BUFFER_SCANNED,
@@ -259,6 +260,10 @@ def is_notifiable(event: AgentEvent) -> bool:
     """
     if event.type == "message":
         return getattr(event.payload, "addressed", False)
+    if event.type == "message_edit":
+        # Only an agent the original was delivered to as its own event gets
+        # one, so it is as addressed as the original was.
+        return True
     if event.type in ("room_join", "room_leave"):
         return getattr(event.payload, "listening", False)
     return False
@@ -400,6 +405,7 @@ _UNREAD_IN_ROOM_SQL = text(
         AND m.seq <= :through
         AND m.seq > 0
         AND m.event_type = 'm.room.message'
+        AND m.content->'m.relates_to'->>'rel_type' IS DISTINCT FROM 'm.replace'
         AND m.sender_id <> b.me
         AND NOT EXISTS (
           SELECT 1 FROM agent_events e
@@ -1557,6 +1563,11 @@ class EventBuffer:
             if row.sender_id == my_sender or row.sent_at < joined_at:
                 continue
             if already_an_own_event(row):
+                continue
+            if is_edit(row.content or {}):
+                # An edit reaches the agents the original was delivered to,
+                # as a `message_edit` own event; in the conversation it is
+                # not a message of its own.
                 continue
             key = message_key(row)
             inbound = to_inbound(

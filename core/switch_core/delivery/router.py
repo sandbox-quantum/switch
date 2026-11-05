@@ -72,7 +72,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
-from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
+from switch_core.bridges.agent.protocol.event_buffer import (
+    OwnEventToStore,
+    message_key,
+)
+from switch_core.bridges.agent.protocol.types import AgentEvent, MessageEditPayload
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
@@ -85,6 +89,7 @@ from switch_core.db.agent_event_notify_ddl import (
 from switch_core.db.models import (
     Agent,
     AgentConnectionRecord,
+    AgentEventRow,
     Client,
     ClientRoom,
     CollaborationBridge,
@@ -124,6 +129,7 @@ from switch_core.delivery.recipient import (
     NOTHING,
     AgentRecipient,
     Delivery,
+    OwnEvent,
     RecipientServices,
     RoomMember,
     caption_of,
@@ -138,6 +144,7 @@ from switch_core.observability.catalogue import (
     DECISION_WAIT,
     ROUTING_FAILURES,
 )
+from switch_core.messages.edits import Edit, parse_edit
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL
 from switch_core.tenant_context import tenant_scope
@@ -1327,7 +1334,82 @@ class MessageRouter:
         if isinstance(event, InboundCustomEvent):
             return await self._decide_custom(recipients, event)
         assert isinstance(event, InboundMessage)
+        edit = parse_edit(event.content)
+        if edit is not None:
+            return await self._decide_edit(session, reads, recipients, event, edit)
         return await self._decide_message(session, reads, recipients, event)
+
+    async def _decide_edit(
+        self,
+        session: AsyncSession,
+        reads: RoomReads,
+        recipients: list[AgentRecipient],
+        event: InboundMessage,
+        edit: Edit,
+    ) -> _Plan:
+        """An edit goes to the agents the original message was delivered to
+        as their own event, and to nobody else: whom an edited message is
+        for was settled when it arrived, so an edit that names another agent
+        does not start that agent on it. Only the original's sender can
+        edit it; an edit from anyone else is kept in the room and delivered
+        to no one."""
+        original = (
+            await session.execute(
+                select(Message).where(
+                    Message.room_id == reads.room_id,
+                    Message.transport_event_id == edit.original_event_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if original is None or original.sender_id != event.sender:
+            return _Plan()
+        key = message_key(original)
+        received = set(
+            (
+                await session.scalars(
+                    select(AgentEventRow.agent_id).where(
+                        AgentEventRow.room_id == reads.room_id,
+                        AgentEventRow.message_key == key,
+                        AgentEventRow.type == "message",
+                    )
+                )
+            ).all()
+        )
+        meta = reads.meta
+        thread_id = event.thread_root_id or original.thread_root_event_id
+
+        def delivery(sender_name: str) -> Delivery:
+            def own_event(row: InboundEvent) -> OwnEvent:
+                return OwnEvent(
+                    AgentEvent(
+                        type="message_edit",
+                        room_id=meta.room_id,
+                        bridge_id=meta.bridge_id,
+                        channel_type=meta.channel_type,
+                        payload=MessageEditPayload(
+                            message_id=edit.original_event_id,
+                            edit_id=row.event_id,
+                            body=edit.body,
+                            sender=row.sender,
+                            sender_name=sender_name,
+                            timestamp=row.timestamp,
+                            thread_id=thread_id,
+                        ),
+                    ),
+                    room_seq=row.seq,
+                    message_key=row.event_id,
+                )
+
+            return Delivery(own_event=own_event, after=None)
+
+        sender_name = event.sender_name or original.sender_name or event.sender
+        return _Plan(
+            deliveries=[
+                (recipient, delivery(sender_name))
+                for recipient in recipients
+                if recipient.agent.id in received
+            ]
+        )
 
     async def _decide_message(
         self,

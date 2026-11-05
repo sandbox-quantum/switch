@@ -2343,3 +2343,50 @@ describe('retrying a room message', () => {
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
 });
+
+describe('editing a room message', () => {
+  const roomMessage = (commandId: string, messageId: string, text: string): Command => ({
+    ...message(commandId),
+    origin: { actorId: 'user', surface: 'switch-web', roomId: 'room', threadId: null, messageId },
+    body: { type: 'message.send', delivery: 'queue', text, attachments: [] },
+  });
+  const edit = (commandId: string, messageId: string, text: string): Command => ({
+    ...message(commandId),
+    origin: { actorId: 'user', surface: 'switch-web', roomId: 'room', threadId: null, messageId },
+    body: { type: 'message.edit', messageId, text },
+  });
+
+  it('runs a queued turn as edited and shows the new text on its card', async () => {
+    const { host, adapter, emit } = await start('codex');
+    await host.command(roomMessage('first', '$m1', 'busy work'));
+    await host.command(roomMessage('second', '$m2', 'fix pasre.py'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+
+    expect((await host.command(edit('edit-1', '$m2', 'fix parse.py'))).status).toBe('applied');
+    const card = host.snapshot().items.find((item) => item.itemId === 'user-second');
+    expect(card).toMatchObject({ text: 'fix parse.py', revision: 2 });
+
+    emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(adapter.sendTurn).mock.calls[1]![0]).toMatchObject({
+      turnId: 'second',
+      text: 'fix parse.py',
+    });
+  });
+
+  it('leaves a turn that has started as it was sent, and says it was too late', async () => {
+    const { host, adapter } = await start('codex');
+    await host.command(roomMessage('first', '$m1', 'fix pasre.py'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+
+    expect(await host.command(edit('edit-1', '$m1', 'fix parse.py'))).toMatchObject({
+      status: 'rejected',
+      code: 'TOO_LATE',
+    });
+    expect(host.snapshot().items.find((item) => item.itemId === 'user-first')).toMatchObject({
+      text: 'fix pasre.py',
+      revision: 1,
+    });
+    expect((await host.command(edit('edit-2', '$elsewhere', 'x'))).code).toBe('NOT_FOUND');
+  });
+});

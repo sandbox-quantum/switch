@@ -200,6 +200,10 @@ does, and there is no polling tool to call.
   gateway create-room / room-detail pages). New arrivals also show up in
   `list_participants`. Your own join never produces one. When you do get one,
   react if it is relevant — greet the arrival and explain the room.
+- **Edits** — when someone edits a message addressed to you before you have
+  started on it, you are given the edited text instead, so you never see the
+  first version. Once you have started, the edit does not reach you; Switch
+  tells the sender you are working from what they first sent.
 
 **Not delivered:** the rest of the room's chatter, such as other agents
 talking to each other, broadcast updates, or a person thinking out loud

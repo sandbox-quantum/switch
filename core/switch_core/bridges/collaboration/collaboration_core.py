@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -77,6 +78,7 @@ from switch_core.db.stores.room_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
+from switch_core.messages.edits import edit_content, edit_fallback
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
     BRIDGE_ERRORS,
@@ -154,6 +156,7 @@ _InboundEventT = TypeVar(
     "_InboundEventT",
     InboundInteraction,
     InboundMessage,
+    InboundEdit,
     InboundCommand,
     InboundAgentJoin,
     InboundUserJoin,
@@ -594,6 +597,7 @@ class CollaborationCore:
         # re-run on attach.
         if isinstance(self._adapter, SupportsSharedConnection):
             self._adapter.set_on_attached(self._provision_identities_on_attach)
+        self._adapter.set_edit_handler(self._traced("edit", self._handle_inbound_edit))
         # Always, not only where approval cards are drawn: a link prompt's
         # buttons (CHOO-4121) come back this way on every platform with any.
         self._adapter.set_interaction_handler(
@@ -1705,6 +1709,80 @@ class CollaborationCore:
                 external_post_id=msg.message_ref,
             )
         return first_event_id
+
+    async def _handle_inbound_edit(self, edit: InboundEdit) -> None:
+        """Write a platform edit into the room as an edit of the message the
+        edited post became (`switch_core.messages.edits`).
+
+        Only the text is relayed: the edit row refers to the original and
+        carries its whole new text, and the router hands it to the agents
+        the original was delivered to. A post this bridge never relayed (one
+        sent before the bridge was connected, or blocked by Switch Trust) has
+        no room message to edit, and its edit is dropped."""
+        if await self._is_registered_agent(edit.sender_name):
+            return
+        room_ids = self._channel_to_room.get(edit.channel_id)
+        if room_ids is None:
+            return
+        room_id, transport_room_id = room_ids
+        original = await self._event_for_external_post(edit.message_ref)
+        if original is None:
+            logger.info(
+                "[BRIDGE-IN] edit of a post with no room message (%s); not relayed",
+                edit.message_ref,
+            )
+            return
+        human_actor = await self._ensure_human_in_room(
+            external_user_id=edit.sender_id,
+            external_username=edit.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if human_actor is None:
+            return
+        content = self._adapter.translate_inbound(edit.content)
+        check = await check_message(
+            self._trust_client, role="user", content=content, room_id=room_id
+        )
+        if check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        ):
+            # The original stands; the agent never sees the blocked text.
+            logger.warning(
+                "[BRIDGE-IN] edit from %s not relayed — Switch Trust outcome=%s "
+                "(policy=%s) — room %s",
+                edit.sender_name,
+                check.outcome,
+                check.policy_id,
+                transport_room_id,
+            )
+            return
+        if check.redacted_content is not None:
+            content = check.redacted_content
+        annotation = trust_annotation(check)
+        if annotation is not None:
+            content = f"{content}\n\n{annotation}"
+        with writes_derived_from(
+            human_actor.client_id,
+            _post_source(
+                self._bridge_id,
+                edit.channel_id,
+                f"{edit.message_ref}\x1fedit\x1f{edit.revision}",
+            ),
+        ):
+            event_id = await human_actor.send_message(
+                transport_room_id,
+                edit_fallback(content),
+                format="markdown",
+                metered=True,
+                extra_content=edit_content(original, content),
+            )
+        if event_id is None:
+            logger.error(
+                "[BRIDGE-IN] failed to relay an edit from %s into room %s",
+                edit.sender_name,
+                transport_room_id,
+            )
 
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType

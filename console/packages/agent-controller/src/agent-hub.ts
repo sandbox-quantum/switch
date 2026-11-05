@@ -94,6 +94,8 @@ type AgentState = {
 export function isNotifiable(type: string, payload: Record<string, unknown>): boolean {
   if (type === 'message') return payload.addressed === true;
   if (type === 'room_join') return payload.listening === true;
+  // Sent only to an agent the edited message was delivered to as its own.
+  if (type === 'message_edit') return true;
   if (type === 'command') return false;
   return type.startsWith('task_');
 }
