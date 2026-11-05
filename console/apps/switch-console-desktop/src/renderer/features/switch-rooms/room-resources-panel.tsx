@@ -1,15 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  ExternalLink,
-  FileText,
-  Library,
-  Link2,
-  Loader2,
-  Package,
-  Plus,
-  Search,
-  X,
-} from 'lucide-react';
+import { ExternalLink, FileText, Link2, Loader2, Package, Plus, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
@@ -210,11 +200,6 @@ const ResourceSection = observer(function ResourceSection({
                         ? () => setReading(resource)
                         : null
                   }
-                  onShowInLibrary={
-                    serverId !== null && kind !== 'packages'
-                      ? () => navigate('libraryItem', { serverId, kind, itemId: resource.id })
-                      : null
-                  }
                   removeLabel={canUnlink ? `Detach ${resource.name}` : null}
                   busy={busy === resource.id}
                   onRemove={() => void detach(resource)}
@@ -265,6 +250,14 @@ const ResourceSection = observer(function ResourceSection({
           roomId={roomId}
           document={reading}
           onClose={() => setReading(null)}
+          onOpenInResources={
+            serverId !== null && !reading.roomScoped
+              ? () => {
+                  setReading(null);
+                  navigate('libraryItem', { serverId, kind: 'documents', itemId: reading.id });
+                }
+              : null
+          }
         />
       )}
     </section>
@@ -279,14 +272,11 @@ function ResourceRow({
   busy,
   confirm = false,
   onRemove,
-  onShowInLibrary = null,
 }: {
   resource: RoomResource;
   /** The packages that brought it in, by name. */
   via: string[];
   onOpen: (() => void) | null;
-  /** Opens its page in the Library; null for what has none there. */
-  onShowInLibrary?: (() => void) | null;
   /** The remove button's label, or null for someone who may not remove it. */
   removeLabel: string | null;
   busy: boolean;
@@ -330,17 +320,6 @@ function ResourceRow({
         </button>
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
-      )}
-      {onShowInLibrary && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={`Show ${resource.name} in Resources`}
-          title="Show in Resources"
-          onClick={onShowInLibrary}
-        >
-          <Library />
-        </Button>
       )}
       {removeLabel && confirm && armed && (
         <span className="flex shrink-0 items-center gap-1">
@@ -483,11 +462,14 @@ function DocumentDialog({
   roomId,
   document,
   onClose,
+  onOpenInResources,
 }: {
   workspaceId: string;
   roomId: string;
   document: RoomResource;
   onClose: () => void;
+  /** Opens a document from Resources on its own page there; null for one written in the room. */
+  onOpenInResources: (() => void) | null;
 }) {
   // The room's listing already carries the content; an older server's may not.
   const content = useQuery({
@@ -528,6 +510,13 @@ function DocumentDialog({
               ) : (
                 <p className="text-sm text-foreground-muted italic">Empty.</p>
               )}
+            </div>
+          )}
+          {onOpenInResources && (
+            <div className="flex justify-end">
+              <Button size="sm" variant="outline" onClick={onOpenInResources}>
+                Open in Resources
+              </Button>
             </div>
           )}
         </DialogContentArea>

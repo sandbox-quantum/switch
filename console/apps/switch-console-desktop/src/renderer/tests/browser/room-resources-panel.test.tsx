@@ -230,18 +230,23 @@ describe('the Resources tab', () => {
     expect(el.querySelector('[aria-label^="Delete"]')).toBeNull();
   });
 
-  it('opens a reference or document from the library on its Library page, not a room-only one', async () => {
+  it('opens a document from Resources on its page there from the reader, not one written in the room', async () => {
     const el = await renderPanel();
-    await act(async () =>
-      el.querySelector<HTMLButtonElement>('[aria-label="Show Guide in Resources"]')!.click()
-    );
+    expect(el.querySelector('[aria-label$=" in Resources"]')).toBeNull();
+    const open = (name: string) =>
+      act(async () =>
+        [...el.querySelectorAll('button')].find((b) => b.textContent?.includes(name))!.click()
+      );
+    await open('Guide');
+    for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+    const goTo = [...document.querySelectorAll('[data-slot="dialog-content"] button')].find(
+      (b) => b.textContent === 'Open in Resources'
+    ) as HTMLButtonElement;
+    await act(async () => goTo.click());
     expect(navigate).toHaveBeenCalledWith('libraryItem', {
       serverId: 'srv-1',
       kind: 'documents',
       itemId: 'd-1',
     });
-    expect(el.querySelector('[aria-label="Show Repo in Resources"]')).not.toBeNull();
-    expect(el.querySelector('[aria-label="Show Standup notes in Resources"]')).toBeNull();
-    expect(el.querySelector('[aria-label="Show Onboarding in Resources"]')).toBeNull();
   });
 });
