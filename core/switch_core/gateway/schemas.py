@@ -1122,6 +1122,11 @@ class CurrentOrganizationResponse(BaseModel):
     role: str | None
     members_from_directory: bool
     directory_takes_changes: bool
+    # Whether the caller is its `org_admin`, and whether they may manage its
+    # members and read its issues: its `org_admin`, or the platform operator
+    # while it has none, to make one.
+    administers: bool
+    can_manage_members: bool
 
 
 class OrganizationIssueDetail(BaseModel):
@@ -1399,6 +1404,16 @@ class OrganizationMemberDetail(BaseModel):
     # What could not be revoked at a vendor when a demotion took away what
     # they held in workspaces they were in only as `org_admin`.
     warning: str | None
+    # What the caller may do with them (`authz.can_change_organization_member`):
+    # never on their own row. `can_change_role` for whoever passes the role
+    # route's gate, the operator restoring an `org_admin` included;
+    # `can_grant_org_admin` too, unless the organization's members come from
+    # a directory Switch cannot change; `can_remove` for its `org_admin` only.
+    # The last `org_admin`, someone still in a workspace, and a directory that
+    # wants a sign-in first are answered when it is asked.
+    can_change_role: bool
+    can_grant_org_admin: bool
+    can_remove: bool
 
 
 class OrganizationMemberUpdateRequest(BaseModel):

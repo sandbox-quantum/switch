@@ -2,6 +2,7 @@ import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
   Button,
+  Chip,
   CircularProgress,
   IconButton,
   MenuItem,
@@ -75,9 +76,10 @@ function takePendingChange(organizationId: string): MemberChange | null {
 }
 
 /** Everyone in the organization, across its workspaces, and their role in it.
- * The server refuses demoting or removing the last organization admin, and
- * removing someone still in one of its workspaces, naming them; its message
- * is shown as is. Demoting or removing an admin also takes away their keys and
+ * Each row offers what the server says the caller may do with it: never their
+ * own row, which another organization admin changes. The server refuses
+ * demoting or removing the last organization admin, and removing someone
+ * still in one of its workspaces, naming them; its message is shown as is. Demoting or removing an admin also takes away their keys and
  * connections in workspaces they were in only as an admin; what could not be
  * revoked at a vendor comes back as a warning, shown too. */
 export default function OrganizationMembersSection({
@@ -169,33 +171,37 @@ export default function OrganizationMembersSection({
         field: "role",
         headerName: "Organization role",
         width: 170,
-        renderCell: ({ row }) => (
-          <Select
-            size="small"
-            value={row.role}
-            disabled={busy !== null}
-            onChange={(e) =>
-              act({ userId: row.user_id, role: e.target.value as OrganizationRole })
-            }
-            aria-label={`Organization role for ${row.email}`}
-            sx={{ fontSize: "0.875rem" }}
-          >
-            {(Object.keys(ROLE_LABELS) as OrganizationRole[]).map((role) => (
-              <MenuItem
-                key={role}
-                value={role}
-                disabled={
-                  fromDirectory &&
-                  !directoryTakesChanges &&
-                  role === "org_admin" &&
-                  row.role !== "org_admin"
-                }
-              >
-                {ROLE_LABELS[role]}
-              </MenuItem>
-            ))}
-          </Select>
-        ),
+        renderCell: ({ row }) =>
+          row.can_change_role ? (
+            <Select
+              size="small"
+              value={row.role}
+              disabled={busy !== null}
+              onChange={(e) =>
+                act({ userId: row.user_id, role: e.target.value as OrganizationRole })
+              }
+              aria-label={`Organization role for ${row.email}`}
+              sx={{ fontSize: "0.875rem" }}
+            >
+              {(Object.keys(ROLE_LABELS) as OrganizationRole[]).map((role) => (
+                <MenuItem
+                  key={role}
+                  value={role}
+                  disabled={
+                    role === "org_admin" && row.role !== "org_admin" && !row.can_grant_org_admin
+                  }
+                >
+                  {ROLE_LABELS[role]}
+                </MenuItem>
+              ))}
+            </Select>
+          ) : (
+            <Chip
+              label={ROLE_LABELS[row.role]}
+              size="small"
+              color={row.role === "org_admin" ? "primary" : "default"}
+            />
+          ),
       },
       {
         field: "created_at",
@@ -209,7 +215,7 @@ export default function OrganizationMembersSection({
         width: 60,
         sortable: false,
         renderCell: ({ row }) =>
-          row.user_id === selfId ? null : (
+          row.can_remove ? (
             <Tooltip title="Remove from organization">
               <span>
                 <IconButton
@@ -222,14 +228,16 @@ export default function OrganizationMembersSection({
                 </IconButton>
               </span>
             </Tooltip>
-          ),
+          ) : null,
       },
     ],
-    [act, busy, directoryTakesChanges, fromDirectory, selfId],
+    [act, busy, selfId],
   );
-  // The operator restores an admin and nothing more: removing a member is
-  // refused to them, so there is nothing to offer.
-  const shown = asOperator ? columns.filter((c) => c.field !== "actions") : columns;
+  // Nothing to offer when nobody may be removed, as for the operator, who
+  // restores an admin and nothing more.
+  const shown = (members ?? []).some((m) => m.can_remove)
+    ? columns
+    : columns.filter((c) => c.field !== "actions");
 
   return (
     <Stack spacing={1.5}>

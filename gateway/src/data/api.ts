@@ -1287,6 +1287,12 @@ export interface OrganizationMember {
    * taking away what they held in workspaces they were in only as an
    * organization admin. */
   warning: string | null;
+  /** What you may do with them, as the server decides it: never on your own
+   * row; making them Org Admin not where the members come from account
+   * settings Switch cannot change; removing them as an Org Admin only. */
+  can_change_role: boolean;
+  can_grant_org_admin: boolean;
+  can_remove: boolean;
 }
 
 export interface OrganizationAuditEvent {

@@ -261,9 +261,12 @@ class TestChangingRoles:
 
         assert response.status_code == 403
 
-    async def test_the_last_org_admin_cannot_be_demoted(
+    async def test_an_org_admin_cannot_change_their_own_role(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Another organization admin steps them down, so the last one can't
+        leave the organization without one: only an organization admin may
+        change a role, and never their own."""
         ada = _name("ada")
         tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
 
@@ -272,7 +275,7 @@ class TestChangingRoles:
                 f"/organizations/current/members/{ada}", json={"role": "member"}
             )
 
-        assert response.status_code == 409
+        assert response.status_code == 403, response.text
 
     async def test_an_unknown_role_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -399,7 +402,7 @@ class TestRemoving:
             await _events(session_factory, tenant_id, AuditAction.MEMBER_REMOVED) == []
         )
 
-    async def test_the_last_org_admin_cannot_be_removed(
+    async def test_an_org_admin_cannot_remove_themselves(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada = _name("ada")
@@ -408,8 +411,7 @@ class TestRemoving:
         async with _client(_app(session_factory), ada, tenant_id) as client:
             response = await client.delete(f"/organizations/current/members/{ada}")
 
-        assert response.status_code == 409
-        assert "last organization admin" in response.json()["detail"]
+        assert response.status_code == 403, response.text
 
 
 class TestTheWorkspaceRoster:
@@ -1473,3 +1475,89 @@ class TestIssues:
             response = await client.get("/organizations/current/issues")
 
         assert response.status_code == 403
+
+
+class TestWhatTheCallerMayDo:
+    @pytest.mark.parametrize(
+        ("who", "administers", "can_manage_members"),
+        [
+            ("org-admin", True, True),
+            ("member", False, False),
+            # Only while the organization has no admin, to make one.
+            ("operator-restoring", False, True),
+            ("operator", False, False),
+        ],
+    )
+    async def test_the_organization_says_whether_the_caller_runs_it(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        who: str,
+        administers: bool,
+        can_manage_members: bool,
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        restoring = who == "operator-restoring"
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "member" if restoring else "org_admin"),
+                bob: ("member", "member"),
+            },
+        )
+        caller = {"org-admin": ada, "member": bob}.get(who) or await _operator(
+            session_factory
+        )
+
+        async with _client(_app(session_factory), caller, tenant_id) as client:
+            response = await client.get("/organizations/current")
+
+        assert response.status_code == 200, response.text
+        assert (
+            response.json()["administers"],
+            response.json()["can_manage_members"],
+        ) == (administers, can_manage_members)
+
+    async def test_each_member_says_what_an_org_admin_may_do_with_them(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob, cy = _name("ada"), _name("bob"), _name("cy")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                bob: ("member", "member"),
+                cy: ("member", "org_admin"),
+            },
+        )
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            response = await client.get("/organizations/current/members")
+
+        assert response.status_code == 200, response.text
+        assert {
+            row["user_id"]: (
+                row["can_change_role"],
+                row["can_grant_org_admin"],
+                row["can_remove"],
+            )
+            for row in response.json()
+        } == {
+            # Never on their own row: another organization admin steps them down.
+            ada: (False, False, False),
+            bob: (True, True, True),
+            cy: (True, True, True),
+        }
+
+    async def test_the_operator_restoring_an_admin_may_change_roles_and_nothing_more(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bob = _name("bob")
+        tenant_id = await _workspace(session_factory, {bob: ("member", "member")})
+        operator_id = await _operator(session_factory)
+
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
+            response = await client.get("/organizations/current/members")
+
+        assert response.status_code == 200, response.text
+        [row] = response.json()
+        assert (row["can_change_role"], row["can_remove"]) == (True, False)

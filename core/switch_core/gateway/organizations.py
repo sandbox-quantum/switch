@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.authz import ORGANIZATION_ADMIN_ROLE
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE, can_change_organization_member
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
@@ -121,8 +121,17 @@ router = APIRouter()
 
 
 def _member_detail(
-    user: User, member: OrganizationMember, warning: str | None
+    user: User,
+    member: OrganizationMember,
+    warning: str | None,
+    *,
+    caller_id: str,
+    access: _OrganizationAccess,
+    accepts_promotion: bool,
 ) -> OrganizationMemberDetail:
+    """`member`, with what the caller, who passed the role-change gate as
+    `access` says, may do with them."""
+    change = can_change_organization_member(caller_id, user.id, permitted=True)
     return OrganizationMemberDetail(
         user_id=user.id,
         name=user.name,
@@ -130,7 +139,34 @@ def _member_detail(
         role=member.role,
         created_at=str(member.created_at),
         warning=warning,
+        can_change_role=change,
+        can_grant_org_admin=change and accepts_promotion,
+        # Removing takes the organization's own admin; the operator restoring
+        # one is let through to change roles only.
+        can_remove=can_change_organization_member(
+            caller_id, user.id, permitted=not access.platform_access
+        ),
     )
+
+
+def _accepts_promotion(
+    organization_directory: OrganizationDirectory, organization: Organization
+) -> bool:
+    """Whether someone may be made `org_admin` from Switch at all: not in an
+    organization whose members come from a directory Switch cannot change,
+    where that is done in the directory (`OrganizationDirectory.prepare_change`).
+    Whether the directory takes a given person is asked when it is done."""
+    return not organization_directory.keeps_members_of(
+        organization
+    ) or organization_directory.sends_changes_for(organization)
+
+
+def _refuse_acting_on_yourself(caller_id: str, user_id: str, detail: str) -> None:
+    """Raise 403 if a member route names the caller: stepping down or leaving
+    is done by another organization admin, so nobody locks themselves out by
+    mistake."""
+    if user_id == caller_id:
+        raise HTTPException(status_code=403, detail=detail)
 
 
 async def _current_organization_id(session: AsyncSession) -> str:
@@ -151,19 +187,19 @@ class _OrganizationAccess(NamedTuple):
     platform_access: bool
 
 
-async def require_organization_admin(
+async def organization_access(
     session: AsyncSession,
     user_store: UserStore,
     organization_store: OrganizationStore,
     user: User,
     *,
     operator_restores: bool,
-) -> _OrganizationAccess:
-    """The bound workspace's organization, and how `user` got in; 403 unless
-    they are its `org_admin`, 404 when the workspace belongs to no
+) -> _OrganizationAccess | None:
+    """How `user` gets into the bound workspace's organization as its admin,
+    or None when they don't; 404 when the workspace belongs to no
     organization.
 
-    With `operator_restores`, the platform operator passes too while the
+    With `operator_restores`, the platform operator gets in too while the
     organization has no `org_admin`, so that someone can be made one. That is
     the organization's own decision, not the workspace's: an operator who
     administers the bound workspace by role still has no role here.
@@ -180,9 +216,30 @@ async def require_organization_admin(
         and await organization_store.count_admins(session, organization_id) == 0
     ):
         return _OrganizationAccess(organization_id, platform_access=True)
-    raise HTTPException(
-        status_code=403, detail="Only an organization admin may do this"
+    return None
+
+
+async def require_organization_admin(
+    session: AsyncSession,
+    user_store: UserStore,
+    organization_store: OrganizationStore,
+    user: User,
+    *,
+    operator_restores: bool,
+) -> _OrganizationAccess:
+    """`organization_access`, refused with 403 when there is none."""
+    access = await organization_access(
+        session,
+        user_store,
+        organization_store,
+        user,
+        operator_restores=operator_restores,
     )
+    if access is None:
+        raise HTTPException(
+            status_code=403, detail="Only an organization admin may do this"
+        )
+    return access
 
 
 @router.get("/organizations")
@@ -247,6 +304,7 @@ async def create_organization(
 async def current_organization(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     organization_directory: Annotated[
         OrganizationDirectory, Depends(get_organization_directory)
     ],
@@ -259,13 +317,19 @@ async def current_organization(
     organization = await session.get(Organization, organization_id)
     if organization is None:
         raise HTTPException(status_code=404, detail="Organization not found")
+    role = await user_store.organization_role(session, require_tenant_id(), user.id)
     return CurrentOrganizationResponse(
         id=organization.id,
         slug=organization.slug,
         name=organization.name,
-        role=await user_store.organization_role(session, require_tenant_id(), user.id),
+        role=role,
         members_from_directory=organization_directory.keeps_members_of(organization),
         directory_takes_changes=organization_directory.sends_changes_for(organization),
+        administers=role == ORGANIZATION_ADMIN_ROLE,
+        can_manage_members=await organization_access(
+            session, user_store, organization_store, user, operator_restores=True
+        )
+        is not None,
     )
 
 
@@ -461,6 +525,9 @@ async def list_organization_members(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[OrganizationMemberDetail]:
     """Every member of the organization and their role in it. `org_admin` only:
@@ -469,9 +536,20 @@ async def list_organization_members(
         session, user_store, organization_store, user, operator_restores=True
     )
     organization_id = access.organization_id
+    accepts_promotion = _accepts_promotion(
+        organization_directory, await _organization(session, organization_id)
+    )
     members = await organization_store.list_members(session, organization_id)
     return [
-        _member_detail(member_user, member, None) for member_user, member in members
+        _member_detail(
+            member_user,
+            member,
+            None,
+            caller_id=user.id,
+            access=access,
+            accepts_promotion=accepts_promotion,
+        )
+        for member_user, member in members
     ]
 
 
@@ -656,6 +734,11 @@ async def update_organization_member_role(
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
+    _refuse_acting_on_yourself(
+        user.id,
+        user_id,
+        "You can't change your own organization role. Another organization admin can.",
+    )
     organization_id = access.organization_id
     member = await session.get(OrganizationMember, (organization_id, user_id))
     if member is None:
@@ -746,7 +829,14 @@ async def update_organization_member_role(
 
     target = await user_store.get(session, user_id)
     assert target is not None
-    return _member_detail(target, member, warning)
+    return _member_detail(
+        target,
+        member,
+        warning,
+        caller_id=user.id,
+        access=access,
+        accepts_promotion=_accepts_promotion(organization_directory, organization),
+    )
 
 
 @router.delete("/organizations/current/members/{user_id}", response_model=None)
@@ -784,6 +874,12 @@ async def remove_organization_member(
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
+    )
+    _refuse_acting_on_yourself(
+        user.id,
+        user_id,
+        "You can't remove yourself from the organization. Another organization "
+        "admin can.",
     )
     organization_id = access.organization_id
     member = await session.get(OrganizationMember, (organization_id, user_id))

@@ -417,7 +417,7 @@ class TestChangingRoles:
         assert first == 200 and second in (403, 409)
         assert [call[0] for call in directory.asked] == ["set_role"]
 
-    async def test_demoting_the_last_org_admin_is_refused_before_asking(
+    async def test_stepping_down_yourself_is_refused_before_asking(
         self, session_factory, directory: _Directory
     ) -> None:
         ada = _name("ada")
@@ -428,7 +428,7 @@ class TestChangingRoles:
                 f"/organizations/current/members/{ada}", json={"role": "member"}
             )
 
-        assert response.status_code == 409
+        assert response.status_code == 403
         assert directory.asked == []
 
 
@@ -497,3 +497,28 @@ class TestTheCurrentOrganization:
 
         assert response.status_code == 200, response.text
         assert response.json()["members_from_directory"] is True
+
+
+class _OneWayDirectory(_Directory):
+    """Keeps the organization's members, and takes no change made from Switch:
+    a linked organization with no WorkOS members service."""
+
+    def sends_changes_for(self, organization: Organization) -> bool:
+        return False
+
+
+async def test_nobody_is_offered_org_admin_where_the_directory_takes_no_changes(
+    session_factory,
+) -> None:
+    ada, bob = _name("ada"), _name("bob")
+    tenant_id = await _workspace(
+        session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
+    )
+    directory = _OneWayDirectory(None)
+
+    async with _client(_with(session_factory, directory), ada, tenant_id) as client:
+        response = await client.get("/organizations/current/members")
+
+    assert response.status_code == 200, response.text
+    [row] = [row for row in response.json() if row["user_id"] == bob]
+    assert (row["can_change_role"], row["can_grant_org_admin"]) == (True, False)
