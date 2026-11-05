@@ -503,7 +503,7 @@ async def _retry_refusal(
         if message is None:
             return "Could not retry: that message is not in this room."
         if message.sender_id != event.user_id and not await _manages_room(
-            client, session, room_id, event.user_id
+            client, session, room_id, event.user_id, "retry"
         ):
             return (
                 "Could not retry: only whoever sent that message, or someone who "
@@ -521,10 +521,14 @@ async def _retry_refusal(
 
 
 async def _manages_room(
-    client: AgentRecipient, session: AsyncSession, room_id: str, sender: str
+    client: AgentRecipient,
+    session: AsyncSession,
+    room_id: str,
+    sender: str,
+    command: str,
 ) -> bool:
     """Whether the Switch user behind `sender` owns the room or administers
-    the tenant."""
+    the tenant. `command` names the chat command in the admin audit record."""
     principal = await client._addressing.resolve_sender(session, sender)
     if principal is None or principal.kind != "user":
         return False
@@ -541,7 +545,7 @@ async def _manages_room(
             user,
             target_type="room",
             target_id=room_id,
-            details={"event": "chat_command", "command": "retry"},
+            details={"event": "chat_command", "command": command},
         ):
             return True
     return False
@@ -920,6 +924,11 @@ _AUTO_ROUTE_OFF = (
     "reaches an agent only as a follow-up or through an assigned agent. Turn it "
     "on with `!auto-route on`."
 )
+_AUTO_ROUTE_FALLBACK_REFUSED = (
+    "Only the room's owner or a workspace admin can name or clear the room's "
+    "triage agent. Nothing was changed. Anyone who can post here can still turn "
+    "auto-route on or off with `!auto-route on` or `!auto-route off`."
+)
 _AUTO_ROUTE_USAGE = (
     "Usage: `!auto-route on`, `!auto-route off`, `!auto-route` to see which it "
     "is, or `!auto-route fallback @agent` / `!auto-route fallback off` to name "
@@ -1022,6 +1031,11 @@ async def _auto_route_fallback(
             return
         if len(args) > 1:
             await _reply(client, room, event, _AUTO_ROUTE_USAGE)
+            return
+        if not await _manages_room(
+            client, session, room_id, event.user_id, "auto-route fallback"
+        ):
+            await _reply(client, room, event, _AUTO_ROUTE_FALLBACK_REFUSED)
             return
         handle = args[0]
         target: Agent | None = None

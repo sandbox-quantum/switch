@@ -14,7 +14,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
-import pytest
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -147,7 +146,9 @@ async def _agent(session: AsyncSession, owner: User, name: str) -> Agent:
 
 
 async def _room(
-    session_factory: async_sessionmaker[AsyncSession], owner: User
+    session_factory: async_sessionmaker[AsyncSession],
+    owner: User,
+    visibility: str = "public",
 ) -> tuple[Room, Agent, Agent]:
     async with session_factory() as session:
         room = Room(
@@ -155,8 +156,8 @@ async def _room(
             name="ops",
             description="d",
             owner_id=owner.id,
-            read_visibility="public",
-            write_visibility="public",
+            read_visibility=visibility,
+            write_visibility=visibility,
         )
         session.add(room)
         await session.flush()
@@ -334,29 +335,80 @@ class TestTheToggle:
         assert "assigned agent" in assigned.json()["detail"]
         assert stranger.status_code == 422
 
-    @pytest.mark.parametrize("role", ["member"])
-    async def test_someone_who_does_not_own_the_room_is_refused(
-        self, session_factory: async_sessionmaker[AsyncSession], role: str
+    async def test_a_writer_who_does_not_own_the_room_turns_it_on_and_off(
+        self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         owner = await _user(session_factory, "owner", "member")
-        other = await _user(session_factory, "other", role)
+        writer = await _user(session_factory, "writer", "member")
         room, _, _ = await _room(session_factory, owner)
-        async with _as(_app(session_factory), other) as client:
+        async with _as(_app(session_factory), writer) as client:
+            on = await client.put(f"/rooms/{room.id}/auto-route", json={"on": True})
+            assert (await _metadata(session_factory, room.id))[AUTO_ROUTE_ON_KEY]
+            off = await client.put(f"/rooms/{room.id}/auto-route", json={"on": False})
+
+        assert on.status_code == 200
+        assert on.json()["on"] is True
+        assert off.status_code == 200
+        assert off.json()["on"] is False
+
+    async def test_a_read_only_viewer_of_a_private_room_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        viewer = await _user(session_factory, "viewer", "member")
+        room, _, _ = await _room(session_factory, owner, visibility="private")
+        async with session_factory() as session:
+            # Owning an agent in the room lets the viewer read it, not write.
+            theirs = await _agent(session, viewer, "theirs")
+            await session.execute(
+                room_agents.insert().values(room_id=room.id, agent_id=theirs.id)
+            )
+            await session.commit()
+        async with _as(_app(session_factory), viewer) as client:
+            detail = await client.get(f"/rooms/{room.id}")
             refused = await client.put(
                 f"/rooms/{room.id}/auto-route", json={"on": True}
             )
 
+        assert detail.status_code == 200
+        assert detail.json()["can_write"] is False
         assert refused.status_code == 403
         assert AUTO_ROUTE_ON_KEY not in await _metadata(session_factory, room.id)
 
-    async def test_a_workspace_admin_may(
+    async def test_a_writer_cannot_name_the_triage_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        writer = await _user(session_factory, "writer", "member")
+        room, triage, _ = await _room(session_factory, owner)
+        async with _as(_app(session_factory), writer) as client:
+            named = await client.put(
+                f"/rooms/{room.id}/auto-route",
+                json={"on": True, "fallback_agent": triage.id},
+            )
+            cleared = await client.put(
+                f"/rooms/{room.id}/auto-route", json={"fallback_agent": None}
+            )
+
+        assert named.status_code == 403
+        assert "owner or a workspace admin" in named.json()["detail"]
+        assert cleared.status_code == 403
+        metadata = await _metadata(session_factory, room.id)
+        assert AUTO_ROUTE_FALLBACK_KEY not in metadata
+        assert AUTO_ROUTE_ON_KEY not in metadata
+
+    async def test_a_workspace_admin_may_name_the_triage_agent(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         owner = await _user(session_factory, "owner", "member")
         admin = await _user(session_factory, "admin", "admin")
-        room, _, _ = await _room(session_factory, owner)
+        room, triage, _ = await _room(session_factory, owner, visibility="private")
         async with _as(_app(session_factory), admin) as client:
-            put = await client.put(f"/rooms/{room.id}/auto-route", json={"on": True})
+            put = await client.put(
+                f"/rooms/{room.id}/auto-route",
+                json={"on": True, "fallback_agent": triage.id},
+            )
 
         assert put.status_code == 200
         assert put.json()["on"] is True
+        assert put.json()["fallback_agent"] == triage.id

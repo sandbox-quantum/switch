@@ -15,7 +15,6 @@ from switch_core.authz import (
     Principal,
     can,
     can_unlink_from_room,
-    require_manage,
 )
 from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -1225,14 +1224,17 @@ async def put_auto_route(
 ) -> RoomAutoRoute:
     """Turn the room's auto-route on or off, and name or clear its triage
     agent: the same settings as `!auto-route` and `!auto-route fallback`.
-    For the room's owner and the workspace's admins. Turning it on where it
-    cannot act (`available` false) is refused with 409 and the reason."""
+    Turning it on or off takes write access to the room, the same as
+    follow-ups; naming the triage agent also takes the room's owner or a
+    workspace admin (`can_manage`). Turning it on where it cannot act
+    (`available` false) is refused with 409 and the reason."""
     principal = Principal(user.id, is_admin)
-    room = await authorize_room(session, room_store, room_id, principal, "read")
-    try:
-        require_manage(principal, room.owner_id)
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
+    room = await authorize_room(session, room_store, room_id, principal, "write")
+    if "fallback_agent" in req.model_fields_set and not can(principal, "delete", room):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the room's owner or a workspace admin can name the triage agent.",
+        )
     try:
         if "fallback_agent" in req.model_fields_set:
             agent = None

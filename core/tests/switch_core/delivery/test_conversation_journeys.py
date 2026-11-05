@@ -53,6 +53,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.decision.client import DynamicDecisionClient
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery import router as router_module
+from switch_core.delivery.addressing import AddressingResolver
 from switch_core.delivery.conversation import ConversationSettings
 from switch_core.delivery.recipient import AgentRecipient
 from switch_core.transport import RoomRef
@@ -258,6 +259,14 @@ class Journey:
             _external_user_store=ExternalUserStore(),
             client_store=ClientStore(),
             _connections=SimpleNamespace(live_connection_ids=lambda: set()),
+            _addressing=AddressingResolver(
+                room_store=RoomStore(),
+                room_role_store=RoomRoleStore(),
+                client_store=ClientStore(),
+                agent_store=AgentStore(),
+                external_user_store=ExternalUserStore(),
+                live_connection_ids=lambda: set(),
+            ),
             _follow_the_conversation_enabled=True,
             _decision_availability=(
                 self.decisions.availability
