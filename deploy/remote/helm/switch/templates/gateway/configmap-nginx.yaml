@@ -39,7 +39,13 @@ data:
             proxy_set_header X-Real-IP $remote_addr;
         }
 
+        # Switch web's pages: the same headers Core sends on them (CSP from
+        # core/switch_core/gateway/origin_check.py, kept equal by
+        # test_gateway_ui.py). /gateway is Core's and sets its own.
         location / {
+            add_header Content-Security-Policy "frame-ancestors 'none'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; connect-src 'self'; img-src 'self' blob: data:" always;
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
             try_files $uri $uri/ /index.html;
         }
     }

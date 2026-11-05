@@ -32,6 +32,13 @@ from switch_core.trust.client import NullTrustClient
 from tests.db_buffer import QuietRooms
 
 _APP_TSX = Path(__file__).resolve().parents[4] / "gateway/src/App.tsx"
+_REPO = Path(__file__).resolve().parents[4]
+# The gateway image's nginx serves Switch web's pages itself (only /gateway
+# reaches Core), so it must send the same headers Core does.
+_GATEWAY_NGINX = (
+    _REPO / "deploy/shared_resources/gateway-nginx.conf",
+    _REPO / "deploy/remote/helm/switch/templates/gateway/configmap-nginx.yaml",
+)
 
 _INDEX = "<!doctype html><title>dashboard</title>"
 _SCRIPT = "console.log('dashboard')"
@@ -421,3 +428,18 @@ def test_a_page_carries_the_csp_and_refuses_framing(dist: Path) -> None:
             "img-src 'self' blob: data:"
         )
         assert response.headers["x-frame-options"] == "DENY"
+
+
+@pytest.mark.parametrize("config", _GATEWAY_NGINX, ids=lambda path: path.name)
+def test_the_gateway_nginx_sends_core_s_page_headers(config: Path) -> None:
+    from switch_core.gateway.origin_check import CONTENT_SECURITY_POLICY
+
+    text = config.read_text()
+    page = text[text.index("location / {") :]
+    page = page[: page.index("}")]
+    assert f'add_header Content-Security-Policy "{CONTENT_SECURITY_POLICY}" always;' in page
+    assert 'add_header X-Frame-Options "DENY" always;' in page
+    assert 'add_header X-Content-Type-Options "nosniff" always;' in page
+    # Core's own routes set their own headers; nginx adds none there, so no
+    # response carries two policies.
+    assert text.count("add_header Content-Security-Policy") == 1
