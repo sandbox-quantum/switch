@@ -41,6 +41,13 @@ describe("deleting a cloud agent and its box's login", () => {
     expect(deletePlan("a1", "box-ctl", agents, [login("claude")]).kind).toBe("withdraw_then_delete");
   });
 
+  it("never withdraws the box's login for an agent that isn't on this box", () => {
+    const agents = [agent("a1", "claude", { controller_id: "my-mac" })];
+    expect(deletePlan("a1", "box-ctl", agents, [login("claude")])).toEqual({ kind: "delete_only" });
+    const unplaced = [agent("a1", "claude", { controller_id: null })];
+    expect(deletePlan("a1", "box-ctl", unplaced, [login("claude")])).toEqual({ kind: "delete_only" });
+  });
+
   it("has nothing to withdraw when the box holds no login for its provider", () => {
     expect(deletePlan("a1", "box-ctl", [agent("a1", "claude")], [login("codex")])).toEqual({ kind: "delete_only" });
   });

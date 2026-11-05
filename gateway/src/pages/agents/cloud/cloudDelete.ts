@@ -22,6 +22,9 @@ export function deletePlan(
 ): DeletePlan {
   const agent = agents.find((a) => a.agent_id === agentId);
   if (!agent) return { kind: "not_found" };
+  // Only an agent on this box touches this box's logins: one on another
+  // controller (moved, or never here) is just deleted, and nothing is withdrawn.
+  if (agent.controller_id !== controllerId) return { kind: "delete_only" };
   const provider = agent.definition.provider;
   // No login for its provider on the box: nothing to withdraw.
   if (!logins.some((login) => login.provider === provider)) return { kind: "delete_only" };
