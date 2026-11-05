@@ -14,6 +14,7 @@ deployment already provides for the other webhook platforms
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import html
@@ -34,10 +35,12 @@ from pydantic.json_schema import SkipJsonSchema
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     PlatformAdapter,
-    RemovalFailed,
-    RequestCard,
     RichContent,
     RichContentFailed,
+    RichContentThrottled,
+    RichContentWedged,
+    ThreadUnavailable,
+    TurnActivity,
 )
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
@@ -68,6 +71,7 @@ from switch_core.bridges.collaboration.session.renderers import (
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
+    turn_status,
 )
 from switch_core.bridges.collaboration.webex.chunking import (
     MAX_MESSAGE_BYTES,
@@ -76,9 +80,11 @@ from switch_core.bridges.collaboration.webex.chunking import (
 )
 from switch_core.bridges.collaboration.webex.client import (
     FileTooLarge,
+    UntrustedFileLink,
     WebexAPIError,
     WebexClient,
 )
+from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +113,21 @@ _MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 # writes nothing the second time.
 _CATCH_UP_SECONDS = 15 * 60
 _CATCH_UP_MESSAGES = 25
+
+# Webex refuses the eleventh edit of a message. A turn's status is redrawn as
+# the turn moves, so a running turn spends its edits further and further apart
+# and the last one is kept for the final state.
+_MAX_EDITS = 10
+
+# A 429 that names no wait, and the longest a plain message waits on one.
+_DEFAULT_RETRY_SECONDS = 5.0
+_MAX_SEND_WAIT_SECONDS = 30.0
+
+# Webex tells these refusals apart only in its words: each is a 400 with no
+# code of its own, and each needs a different answer.
+_EDIT_LIMIT_REACHED = "Max allowed number of edits"
+_PARENT_DELETED = "Parent activity has been deleted"
+_REPLY_TO_REPLY = "Cannot reply to a reply"
 
 _ADAPTIVE_CARD = "application/vnd.microsoft.card.adaptive"
 
@@ -174,6 +195,45 @@ def sign(secret: str, body: bytes) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha1).hexdigest()
 
 
+class _EditBudget:
+    """How many of a message's edits this process has spent.
+
+    Safe to lose, so it stays in memory: a process that does not know a
+    message's count finds out from Webex's refusal."""
+
+    _TRACKED = 2000
+
+    def __init__(self) -> None:
+        self._spent: OrderedDict[str, tuple[int, float]] = OrderedDict()
+
+    def exhausted(self, message_ref: str) -> bool:
+        return self._spent.get(message_ref, (0, 0.0))[0] >= _MAX_EDITS
+
+    def allows_redraw(self, message_ref: str) -> bool:
+        """Whether a running turn may spend an edit now.
+
+        The wait doubles with each edit, so a short turn is drawn step by step
+        and a long one still has edits left minutes later. One edit is always
+        held back for the turn's final state."""
+        spent, last = self._spent.get(message_ref, (0, 0.0))
+        if spent == 0:
+            return True
+        return spent < _MAX_EDITS - 1 and time.monotonic() - last >= 2**spent
+
+    def charge(self, message_ref: str) -> None:
+        spent, _ = self._spent.get(message_ref, (0, 0.0))
+        self._remember(message_ref, spent + 1)
+
+    def exhaust(self, message_ref: str) -> None:
+        self._remember(message_ref, _MAX_EDITS)
+
+    def _remember(self, message_ref: str, spent: int) -> None:
+        self._spent[message_ref] = (spent, time.monotonic())
+        self._spent.move_to_end(message_ref)
+        if len(self._spent) > self._TRACKED:
+            self._spent.popitem(last=False)
+
+
 def _new_client(token: str) -> WebexClient:
     """The client every adapter call goes through. A seam for the tests, which
     swap the transport rather than the adapter's own methods."""
@@ -195,12 +255,21 @@ class WebexAdapter(PlatformAdapter):
       space with the bot every message arrives.
     - No reactions and no typing indicator, so an agent's work shows as its
       status message alone.
-    - Webex sends no webhook for an edited message, so edits made in Webex are
-      not mirrored into the room. Edits and deletes made by Switch are.
+    - Edits and deletes made in Webex are not mirrored into the room, which
+      has no way to take them. Edits and deletes made by Switch show in Webex.
+    - A message takes ten edits and no more, so a running turn's status is
+      redrawn less and less often (`_EditBudget`).
     """
 
     display_name: ClassVar[str] = "Webex"
     receives_webhooks: ClassVar[bool] = True
+    draws_session_activity: ClassVar[bool] = True
+    # An edit notifies nobody, so a problem somebody has to act on is posted.
+    separate_attention_slot: ClassVar[bool] = True
+    # By default a group space notifies its members only of mentions of them.
+    notifies_only_by_mention: ClassVar[bool] = True
+    # Every redraw spends one of the message's ten edits.
+    redraws_for_elapsed_time: ClassVar[bool] = False
     # Registering the webhooks is the one thing this adapter does that
     # subscribes to delivery, so only the process holding the bridge does it.
     # The deliveries themselves reach any process, and every process can
@@ -217,10 +286,9 @@ class WebexAdapter(PlatformAdapter):
     supports_channel_creation: ClassVar[bool] = True
     # Webex lets a bot look people up by name or email.
     supports_directory_search: ClassVar[bool] = True
-    # A Webex message cannot drop its card once posted (an edit replaces only
-    # the text), so an answered card is taken down rather than left showing
-    # buttons that would be refused.
-    removes_answered_cards: ClassVar[bool] = True
+    # An edit takes a card's buttons away, so an answered card stays in the
+    # space as the record of what was asked and what was decided.
+    removes_answered_cards: ClassVar[bool] = False
     channel_on_delete = "kept"
 
     def __init__(self, *, config: WebexConnectionConfig) -> None:
@@ -229,12 +297,14 @@ class WebexAdapter(PlatformAdapter):
         self._client: WebexClient | None = None
         self._bot_id = ""
         self._bot_name = ""
+        self._bot_handle = ""
         self._bridge_id: str | None = None
         # person id -> display name, so a sender is looked up once.
         self._names: OrderedDict[str, str] = OrderedDict()
         self._names_max = 2000
         # handle -> person id, for rendering an outbound `@handle` as a mention.
         self._mention_targets: dict[str, str] = {}
+        self._edits = _EditBudget()
 
     # ── Configuration ────────────────────────────────────────────────────────
 
@@ -331,6 +401,9 @@ class WebexAdapter(PlatformAdapter):
         me = await self._client.me()
         self._bot_id = str(me.get("id") or "")
         self._bot_name = str(me.get("displayName") or "")
+        emails = me.get("emails")
+        if isinstance(emails, list) and emails:
+            self._bot_handle = str(emails[0]).split("@", 1)[0]
         if not self._bot_id:
             raise BridgeOperationError("Webex did not say which bot this token is.")
 
@@ -535,8 +608,21 @@ class WebexAdapter(PlatformAdapter):
                 root_id=root_id,
                 attachments=attachments,
                 attachment_failures=failures,
+                self_mention_token=self._self_mention(channel_type, content),
             )
         )
+
+    def _self_mention(self, channel_type: ChannelType, content: str) -> str | None:
+        """The bot's handle, where the mention that delivered a message is all
+        that says who it is for.
+
+        Nothing but the bot can be mentioned for real in Webex, and every group
+        message that arrives mentions it, so `@Bot why did this fail?` is how a
+        person addresses a room's agent. A message that also names an agent
+        says who it is for already; a 1:1 space needs no mention at all."""
+        if channel_type == "lobby" or _OUTBOUND_MENTION.search(content):
+            return None
+        return self._bot_handle or None
 
     def _inbound_text(self, message: dict[str, Any]) -> str:
         """The message's text, without the mention of the bot that delivered it.
@@ -608,6 +694,10 @@ class WebexAdapter(PlatformAdapter):
                 info, data = await client.download(
                     url, max_bytes=self._max_attachment_bytes
                 )
+            except UntrustedFileLink as exc:
+                logger.warning("Refused a Webex file link: %s", exc)
+                failures.append(AttachmentFailure(filename=label, reason=str(exc)))
+                continue
             except FileTooLarge as exc:
                 failures.append(
                     AttachmentFailure(
@@ -752,20 +842,54 @@ class WebexAdapter(PlatformAdapter):
     async def _post_text(
         self, channel_id: str, markdown: str, thread_root_id: str | None
     ) -> str | None:
-        client = self._require_client()
         first: str | None = None
         for chunk in chunk_markdown(markdown):
             body: dict[str, Any] = {"roomId": channel_id, "markdown": chunk}
             if thread_root_id:
                 body["parentId"] = thread_root_id
             try:
-                sent = await client.post_message(body)
+                sent = await self._send_waiting(body)
             except WebexAPIError as exc:
                 logger.error("Webex refused a message in space %s: %s", channel_id, exc)
                 return first
             if first is None:
                 first = str(sent.get("id") or "") or None
         return first
+
+    async def _send_waiting(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Send a plain message, waiting out one rate limit.
+
+        Nothing retries a plain message on this bridge's behalf, so a wait
+        Webex asked for is served here rather than losing what was said."""
+        try:
+            return await self._send(body)
+        except WebexAPIError as exc:
+            if exc.status != 429:
+                raise
+            await asyncio.sleep(
+                min(exc.retry_after or _DEFAULT_RETRY_SECONDS, _MAX_SEND_WAIT_SECONDS)
+            )
+        return await self._send(body)
+
+    async def _send(self, body: dict[str, Any]) -> dict[str, Any]:
+        return await self._in_thread(self._require_client().post_message, body)
+
+    async def _in_thread(
+        self,
+        send: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Send `body`, moving a reply aimed at a reply up to its thread's root.
+
+        Webex threads are one level deep and it refuses a reply to a reply,
+        while the message Switch answers can be any message in the thread."""
+        try:
+            return await send(body)
+        except WebexAPIError as exc:
+            if exc.status != 400 or _REPLY_TO_REPLY not in str(exc):
+                raise
+        parent = await self._require_client().message(str(body["parentId"]))
+        return await send({**body, "parentId": parent["parentId"]})
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -782,6 +906,7 @@ class WebexAdapter(PlatformAdapter):
                 message_ref,
                 room_id=channel_id,
                 markdown=clamp_markdown(_join(heading, new_content)),
+                attachments=[],
             )
         except WebexAPIError as exc:
             logger.error("Failed to update Webex message %s: %s", message_ref, exc)
@@ -828,13 +953,21 @@ class WebexAdapter(PlatformAdapter):
                 thread_root_id,
             )
         text = _join(heading, self.translate_outbound(caption) if caption else "")
-        fields = {"roomId": channel_id, "markdown": clamp_markdown(text)}
+        fields: dict[str, Any] = {
+            "roomId": channel_id,
+            "markdown": clamp_markdown(text),
+        }
         if thread_root_id:
             fields["parentId"] = thread_root_id
-        try:
-            sent = await self._require_client().post_file(
-                fields, filename=filename, mimetype=mimetype, data=data
+        client = self._require_client()
+
+        async def upload(body: dict[str, Any]) -> dict[str, Any]:
+            return await client.post_file(
+                body, filename=filename, mimetype=mimetype, data=data
             )
+
+        try:
+            sent = await self._in_thread(upload, fields)
         except WebexAPIError as exc:
             logger.error(
                 "Webex refused the file %s in space %s: %s", filename, channel_id, exc
@@ -867,29 +1000,43 @@ class WebexAdapter(PlatformAdapter):
 
         A card is drawn as text that says how to answer by typing, as on every
         platform, with an Adaptive Card under it whose buttons answer in one
-        press. The text is what a client without card support shows."""
+        press. The text is what a client without card support shows.
+
+        Raises `RichContentFailed` only for what Webex definitely refused. A
+        send whose outcome nobody knows raises its own error, so the caller
+        keeps its reservation."""
         heading = await self._attribution(agent_name)
-        text, card = self._draw(content)
+        text, attachments = await self._draw(content)
         body: dict[str, Any] = {
             "roomId": channel_id,
             "markdown": clamp_markdown(_join(heading, text)),
         }
         if thread_root_id:
             body["parentId"] = thread_root_id
-        if card is not None:
-            body["attachments"] = [{"contentType": _ADAPTIVE_CARD, "content": card}]
+        if attachments:
+            body["attachments"] = attachments
         try:
-            sent = await self._require_client().post_message(body)
+            sent = await self._send(body)
         except WebexAPIError as exc:
-            raise RichContentFailed(
-                f"Webex refused the post in space {channel_id}: {exc}",
-                text=self.rich_fallback_text(content),
-            ) from exc
+            if exc.status == 400 and _PARENT_DELETED in str(exc):
+                raise ThreadUnavailable(
+                    f"The Webex message {thread_root_id} that this thread hangs "
+                    "from was deleted.",
+                    text=text,
+                ) from exc
+            failure = _as_rich_failure(
+                exc,
+                description=f"Webex refused the post in space {channel_id}",
+                text=text,
+            )
+            if failure is None:
+                raise
+            raise failure from exc
         ref = str(sent.get("id") or "")
         if not ref:
             raise RichContentFailed(
                 f"Webex accepted the post in space {channel_id} but gave no id.",
-                text=self.rich_fallback_text(content),
+                text=text,
             )
         return ref
 
@@ -901,49 +1048,80 @@ class WebexAdapter(PlatformAdapter):
         content: RichContent,
         thread_root_id: str | None,
     ) -> None:
+        """Redraw a publication in place.
+
+        The buttons are part of the edit: Webex takes a message's card away
+        unless the edit names it again, so an open card keeps its buttons and
+        an answered one is left showing its outcome with none.
+
+        A redraw of a running turn may be passed over to save the message's
+        edits; the next change to the turn draws the state it has reached."""
+        if self._edits.exhausted(message_ref):
+            logger.warning(
+                "Webex message %s has no edits left, so this redraw is dropped",
+                message_ref,
+            )
+            return
+        if _can_wait(content) and not self._edits.allows_redraw(message_ref):
+            return
         heading = await self._attribution(agent_name)
-        text, _card = self._draw(content)
+        text, attachments = await self._draw(content)
         try:
             await self._require_client().edit_message(
                 message_ref,
                 room_id=channel_id,
                 markdown=clamp_markdown(_join(heading, text)),
+                attachments=attachments,
             )
         except WebexAPIError as exc:
-            raise RichContentFailed(
-                f"Webex refused the edit to {message_ref}: {exc}",
-                text=text,
-            ) from exc
+            if exc.status == 400 and _EDIT_LIMIT_REACHED in str(exc):
+                self._edits.exhaust(message_ref)
+                raise RichContentWedged(
+                    f"Webex will take no more edits to {message_ref}: {exc}",
+                    text=text,
+                ) from exc
+            failure = _as_rich_failure(
+                exc, description=f"Webex refused the edit to {message_ref}", text=text
+            )
+            if failure is None:
+                raise
+            raise failure from exc
+        self._edits.charge(message_ref)
 
-    async def remove_publication(self, channel_id: str, message_ref: str) -> None:
-        try:
-            await self._require_client().delete_message(message_ref)
-        except WebexAPIError as exc:
-            if exc.status == 404:
-                logger.info("Webex card %s was already gone", message_ref)
-                return
-            raise RemovalFailed(
-                f"Webex refused to delete card {message_ref}: {exc}"
-            ) from exc
-
-    def _draw(self, content: RichContent) -> tuple[str, dict[str, Any] | None]:
-        """The text of a publication, and the card of buttons that goes with
-        it, or no card where there is nothing that one press could answer."""
-        if not isinstance(content, RequestCard):
-            return self.rich_fallback_text(content), None
+    async def _draw(self, content: RichContent) -> tuple[str, list[dict[str, Any]]]:
+        """The text of a publication, and the attachments that go with it:
+        none where there is nothing one press could answer."""
+        mention = await self._person_mention(content.notify_external_id)
+        limit = self.rich_fallback_limit()
+        tail = f"\n{self.unnotified_notice()}" if content.notify_unreachable else ""
+        if isinstance(content, TurnActivity):
+            status = turn_status(
+                content.items,
+                content.turn,
+                escape=self._rich_escape,
+                limit=max(1, limit - len(tail)),
+                markup=self.rich_markup(),
+                elapsed_seconds=content.elapsed_seconds,
+                mention=mention,
+                error_summary=content.error_summary,
+                tool_detail=False,
+            )
+            return f"{status}{tail}", []
+        lead = f"{mention}\n" if mention else ""
         drawn = render_request(
             content.request,
             content.reference,
             escape=self._rich_escape,
-            limit=self.rich_fallback_limit(),
+            limit=max(1, limit - len(lead) - len(tail)),
             markup=self.rich_markup(),
-            responder=None,
+            responder=await self._person_mention(content.responder_external_id),
             unavailable_reason=content.unavailable_reason,
             control_label_limit=None,
         )
+        text = f"{lead}{drawn.text}{tail}"
         controls = offered_controls(content.request) if drawn.answerable else []
         if not controls:
-            return drawn.text, None
+            return text, []
         actions = [
             {
                 "type": "Action.Submit",
@@ -969,7 +1147,14 @@ class WebexAdapter(PlatformAdapter):
             ],
             "actions": actions,
         }
-        return drawn.text, card
+        return text, [{"contentType": _ADAPTIVE_CARD, "content": card}]
+
+    async def _person_mention(self, person_id: str | None) -> str | None:
+        """A real Webex mention, which is the only form that notifies them."""
+        if person_id is None:
+            return None
+        name = await self._name_of(person_id, None)
+        return f"<@personId:{person_id}|{name}>"
 
     # ── Spaces and people ────────────────────────────────────────────────────
 
@@ -1109,6 +1294,9 @@ class WebexAdapter(PlatformAdapter):
 
     # ── Markup ───────────────────────────────────────────────────────────────
 
+    def render_app_mention(self, token: str) -> str:
+        return f"@{self._bot_name or token}"
+
     def prime_mention_targets(self, targets: dict[str, str]) -> None:
         self._mention_targets.update(targets)
 
@@ -1133,6 +1321,30 @@ class WebexAdapter(PlatformAdapter):
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _can_wait(content: RichContent) -> bool:
+    """Whether this redraw is only a running turn moving on."""
+    return (
+        isinstance(content, TurnActivity)
+        and content.turn.status not in TURN_ENDED
+        and not content.status_only
+        and content.error_summary is None
+    )
+
+
+def _as_rich_failure(
+    exc: WebexAPIError, *, description: str, text: str
+) -> RichContentFailed | None:
+    """What a refused publication means to its caller, or None where nobody
+    knows whether it happened: a 5xx can come after Webex acted on the call."""
+    if exc.status == 429:
+        return RichContentThrottled(
+            retry_after=exc.retry_after or _DEFAULT_RETRY_SECONDS, text=text
+        )
+    if exc.status >= 500:
+        return None
+    return RichContentFailed(f"{description}: {exc}", text=text)
 
 
 def _channel_type(room_type: object) -> ChannelType:

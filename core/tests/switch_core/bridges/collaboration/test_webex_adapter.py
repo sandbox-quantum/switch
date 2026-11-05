@@ -8,14 +8,24 @@ the adapter builds and the real parsing of what Webex answers.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
-from switch_core.bridges.collaboration.adapter import RequestCard, RichContentFailed
+from switch_core.bridges.collaboration.adapter import (
+    RequestCard,
+    RichContentFailed,
+    RichContentThrottled,
+    RichContentWedged,
+    ThreadUnavailable,
+    TurnActivity,
+)
 from switch_core.bridges.collaboration.install import (
     WebhookAuthenticityError,
     WebhookPayloadError,
@@ -40,6 +50,7 @@ from switch_core.bridges.collaboration.webex.adapter import (
     sign,
 )
 from switch_core.bridges.collaboration.webex.client import WebexAPIError, WebexClient
+from switch_core.sessions.contract import TurnUpsert
 
 from .session_fixtures import open_request
 
@@ -59,7 +70,14 @@ class FakeWebex:
         self.route(
             "GET",
             "/v1/people/me",
-            lambda r: _ok({"id": BOT_ID, "displayName": "Switch Bot", "type": "bot"}),
+            lambda r: _ok(
+                {
+                    "id": BOT_ID,
+                    "displayName": "Switch Bot",
+                    "type": "bot",
+                    "emails": ["switch-bot@webex.bot"],
+                }
+            ),
         )
         self.route("GET", "/v1/webhooks", lambda r: _ok({"items": []}))
         self.route("POST", "/v1/webhooks", lambda r: _ok({"id": "hook"}))
@@ -82,6 +100,10 @@ class FakeWebex:
 
 def _ok(body: dict[str, Any]) -> httpx.Response:
     return httpx.Response(200, json=body)
+
+
+def _refused(message: str) -> httpx.Response:
+    return httpx.Response(400, json={"message": message})
 
 
 @pytest.fixture
@@ -234,11 +256,15 @@ class TestVerifyCredentials:
 class TestClassifyFailure:
     def test_refusals_are_named(self) -> None:
         assert (
-            WebexAdapter.classify_failure(WebexAPIError(401, "x", tracking_id=None))
+            WebexAdapter.classify_failure(
+                WebexAPIError(401, "x", tracking_id=None, retry_after=None)
+            )
             == "auth_failed"
         )
         assert (
-            WebexAdapter.classify_failure(WebexAPIError(403, "x", tracking_id=None))
+            WebexAdapter.classify_failure(
+                WebexAPIError(403, "x", tracking_id=None, retry_after=None)
+            )
             == "platform_error"
         )
         assert WebexAdapter.classify_failure(httpx.ConnectError("down")) == "network"
@@ -433,6 +459,63 @@ class TestInbound:
         assert (command.command, command.args) == ("invite-agent", "claude")
         assert command.message_ref == "msg-1"
         assert received.messages == []
+
+    async def test_a_file_link_off_webex_never_gets_the_token(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, received = await _started(webex)
+        url = "https://files.example.test/stolen"
+        _serve_message(webex, _message(roomType="direct", text="see", files=[url]))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload={"data": {"id": "msg-1", "personId": "person-1"}},
+        )
+        [message] = received.messages
+        assert message.attachments == []
+        [failure] = message.attachment_failures
+        assert "files.example.test" in failure.reason
+        assert not [c for c in webex.calls if c.url.host == "files.example.test"]
+
+    async def test_a_lookalike_host_is_not_webex(self, webex: FakeWebex) -> None:
+        adapter, received = await _started(webex)
+        url = "https://webexapis.com.example.test/v1/contents/x"
+        _serve_message(webex, _message(roomType="direct", text="see", files=[url]))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload={"data": {"id": "msg-1", "personId": "person-1"}},
+        )
+        assert received.messages[0].attachment_failures
+
+    async def test_a_group_message_naming_nobody_is_for_the_rooms_agent(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, received = await _started(webex)
+        _serve_message(webex, _message(roomType="group", text="why did it fail?"))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload={"data": {"id": "msg-1", "personId": "person-1"}},
+        )
+        assert received.messages[0].self_mention_token == "switch-bot"
+
+    async def test_a_group_message_naming_an_agent_says_who_it_is_for(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, received = await _started(webex)
+        _serve_message(webex, _message(roomType="group", text="@claude why?"))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload={"data": {"id": "msg-1", "personId": "person-1"}},
+        )
+        assert received.messages[0].self_mention_token is None
+
+    async def test_a_direct_message_needs_no_mention(self, webex: FakeWebex) -> None:
+        adapter, received = await _started(webex)
+        _serve_message(webex, _message(roomType="direct", text="hello"))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload={"data": {"id": "msg-1", "personId": "person-1"}},
+        )
+        assert received.messages[0].self_mention_token is None
 
     async def test_a_file_is_relayed(self, webex: FakeWebex) -> None:
         adapter, received = await _started(webex)
@@ -675,6 +758,50 @@ class TestOutbound:
         assert adapter.translate_outbound("thanks @nobody") == "thanks @nobody"
 
 
+class TestThreads:
+    async def test_a_reply_to_a_reply_lands_in_the_same_thread(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+
+        def post(request: httpx.Request) -> httpx.Response:
+            if json.loads(request.content)["parentId"] == "reply-1":
+                return _refused(
+                    'Unable to post message to room: "Cannot reply to a reply"'
+                )
+            return _ok({"id": "m2"})
+
+        webex.route("POST", "/v1/messages", post)
+        webex.route(
+            "GET",
+            "/v1/messages/reply-1",
+            lambda r: _ok({"id": "reply-1", "parentId": "root-1"}),
+        )
+        assert await adapter.send_message("room-1", "claude", "hi", "reply-1") == "m2"
+        last = json.loads(webex.sent("POST", "/v1/messages")[-1].content)
+        assert last["parentId"] == "root-1"
+
+    async def test_a_rate_limited_message_is_sent_after_the_wait(
+        self, webex: FakeWebex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, _ = await _started(webex)
+        answers = iter(
+            [
+                httpx.Response(429, headers={"retry-after": "3"}, json={}),
+                _ok({"id": "m1"}),
+            ]
+        )
+        webex.route("POST", "/v1/messages", lambda r: next(answers))
+        waited: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            waited.append(seconds)
+
+        monkeypatch.setattr(webex_module.asyncio, "sleep", sleep)
+        assert await adapter.send_message("room-1", "claude", "hi", None) == "m1"
+        assert waited == [3]
+
+
 class TestCards:
     async def test_an_open_request_gets_a_button_per_option(
         self, webex: FakeWebex
@@ -712,11 +839,192 @@ class TestCards:
         with pytest.raises(RichContentFailed, match="bad card"):
             await adapter.post_rich("room-1", "claude", card)
 
-    async def test_an_answered_card_is_taken_down(self, webex: FakeWebex) -> None:
+    async def test_redrawing_an_open_card_keeps_its_buttons(
+        self, webex: FakeWebex
+    ) -> None:
         adapter, _ = await _started(webex)
-        webex.route("DELETE", "/v1/messages/card-1", lambda r: httpx.Response(204))
-        await adapter.remove_publication("room-1", "card-1")
-        assert webex.sent("DELETE", "/v1/messages/card-1")
+        webex.route("PUT", "/v1/messages/card-1", lambda r: _ok({"id": "card-1"}))
+        card = RequestCard(open_request(), RequestReference(token="tok-1", handle="R7"))
+        await adapter.update_rich("room-1", "claude", "card-1", card, None)
+        body = json.loads(webex.sent("PUT", "/v1/messages/card-1")[0].content)
+        assert body["attachments"][0]["content"]["actions"]
+
+    async def test_a_card_that_cannot_be_answered_loses_its_buttons(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("PUT", "/v1/messages/card-1", lambda r: _ok({"id": "card-1"}))
+        card = RequestCard(
+            open_request(),
+            RequestReference(token="tok-1", handle="R7"),
+            unavailable_reason="Answer this one in Console.",
+        )
+        await adapter.update_rich("room-1", "claude", "card-1", card, None)
+        body = json.loads(webex.sent("PUT", "/v1/messages/card-1")[0].content)
+        assert "attachments" not in body
+        assert "Answer this one in Console." in body["markdown"]
+
+    async def test_an_answered_card_stays_as_the_record(self) -> None:
+        assert WebexAdapter.removes_answered_cards is False
+
+    async def test_a_card_names_who_it_is_waiting_on(self, webex: FakeWebex) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("POST", "/v1/messages", lambda r: _ok({"id": "card-1"}))
+        webex.route(
+            "GET", "/v1/people/person-1", lambda r: _ok({"displayName": "Ada Lovelace"})
+        )
+        card = RequestCard(
+            open_request(),
+            RequestReference(token="tok-1", handle="R7"),
+            notify_external_id="person-1",
+        )
+        await adapter.post_rich("room-1", "claude", card)
+        body = json.loads(webex.sent("POST", "/v1/messages")[0].content)
+        assert "<@personId:person-1|Ada Lovelace>" in body["markdown"]
+
+    async def test_a_rate_limit_is_a_wait_not_a_refusal(self, webex: FakeWebex) -> None:
+        adapter, _ = await _started(webex)
+        webex.route(
+            "POST",
+            "/v1/messages",
+            lambda r: httpx.Response(429, headers={"retry-after": "12"}, json={}),
+        )
+        card = RequestCard(open_request(), RequestReference(token="tok-1", handle="R7"))
+        with pytest.raises(RichContentThrottled) as caught:
+            await adapter.post_rich("room-1", "claude", card)
+        assert caught.value.retry_after == 12
+
+    async def test_a_post_whose_outcome_is_unknown_keeps_the_reservation(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route(
+            "POST",
+            "/v1/messages",
+            lambda r: httpx.Response(502, json={"message": "bad gateway"}),
+        )
+        card = RequestCard(open_request(), RequestReference(token="tok-1", handle="R7"))
+        with pytest.raises(WebexAPIError):
+            await adapter.post_rich("room-1", "claude", card)
+
+    async def test_a_deleted_thread_root_is_reported_as_no_thread(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route(
+            "POST",
+            "/v1/messages",
+            lambda r: _refused(
+                'Unable to post message to room: "Parent activity has been deleted"'
+            ),
+        )
+        card = RequestCard(open_request(), RequestReference(token="tok-1", handle="R7"))
+        with pytest.raises(ThreadUnavailable):
+            await adapter.post_rich("room-1", "claude", card, "gone")
+
+
+def _status(state: str = "running") -> TurnActivity:
+    turn = TurnUpsert.model_validate(
+        {"type": "turn.upsert", "turn_id": "t1", "status": state, "command_id": None}
+    )
+    return TurnActivity([], turn)
+
+
+class TestTurnStatus:
+    @pytest.fixture
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+        now = SimpleNamespace(value=1000.0)
+        monkeypatch.setattr(
+            webex_module,
+            "time",
+            SimpleNamespace(monotonic=lambda: now.value, time=time.time),
+        )
+        return now
+
+    def test_the_platform_draws_session_activity(self) -> None:
+        assert WebexAdapter.draws_session_activity is True
+        assert WebexAdapter.redraws_for_elapsed_time is False
+
+    async def test_a_status_is_posted_with_no_buttons(self, webex: FakeWebex) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("POST", "/v1/messages", lambda r: _ok({"id": "status-1"}))
+        assert await adapter.post_rich("room-1", "claude", _status(), "root-1") == (
+            "status-1"
+        )
+        body = json.loads(webex.sent("POST", "/v1/messages")[0].content)
+        assert body["parentId"] == "root-1"
+        assert "attachments" not in body
+
+    async def test_a_problem_is_said_with_the_person_it_needs(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("POST", "/v1/messages", lambda r: _ok({"id": "attention-1"}))
+        webex.route("GET", "/v1/people/person-1", lambda r: _ok({"displayName": "Ada"}))
+        activity = replace(
+            _status(),
+            error_summary="The agent is signed out.",
+            notify_external_id="person-1",
+        )
+        await adapter.post_rich("room-1", "claude", activity)
+        markdown = json.loads(webex.sent("POST", "/v1/messages")[0].content)["markdown"]
+        assert "The agent is signed out." in markdown
+        assert "<@personId:person-1|Ada>" in markdown
+
+    async def test_a_long_turn_always_keeps_an_edit_for_its_final_state(
+        self, webex: FakeWebex, clock: SimpleNamespace
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("PUT", "/v1/messages/s1", lambda r: _ok({"id": "s1"}))
+        for _step in range(40):
+            clock.value += 3600
+            await adapter.update_rich("room-1", "claude", "s1", _status(), None)
+        assert len(webex.sent("PUT", "/v1/messages/s1")) == 9
+        await adapter.update_rich("room-1", "claude", "s1", _status("completed"), None)
+        assert len(webex.sent("PUT", "/v1/messages/s1")) == 10
+
+    async def test_a_busy_turn_spends_its_edits_further_and_further_apart(
+        self, webex: FakeWebex, clock: SimpleNamespace
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("PUT", "/v1/messages/s1", lambda r: _ok({"id": "s1"}))
+        await adapter.update_rich("room-1", "claude", "s1", _status(), None)
+        await adapter.update_rich("room-1", "claude", "s1", _status(), None)
+        assert len(webex.sent("PUT", "/v1/messages/s1")) == 1
+        clock.value += 2
+        await adapter.update_rich("room-1", "claude", "s1", _status(), None)
+        assert len(webex.sent("PUT", "/v1/messages/s1")) == 2
+        clock.value += 2
+        await adapter.update_rich("room-1", "claude", "s1", _status(), None)
+        assert len(webex.sent("PUT", "/v1/messages/s1")) == 2
+
+    async def test_a_final_state_is_never_passed_over(
+        self, webex: FakeWebex, clock: SimpleNamespace
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("PUT", "/v1/messages/s1", lambda r: _ok({"id": "s1"}))
+        await adapter.update_rich("room-1", "claude", "s1", _status(), None)
+        await adapter.update_rich("room-1", "claude", "s1", _status("error"), None)
+        assert len(webex.sent("PUT", "/v1/messages/s1")) == 2
+
+    async def test_a_message_out_of_edits_is_wedged_once_and_then_left_alone(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route(
+            "PUT",
+            "/v1/messages/s1",
+            lambda r: _refused(
+                'Unable to post message to room: "Max allowed number of edits per '
+                'activity reached"'
+            ),
+        )
+        with pytest.raises(RichContentWedged):
+            await adapter.update_rich(
+                "room-1", "claude", "s1", _status("completed"), None
+            )
+        await adapter.update_rich("room-1", "claude", "s1", _status("completed"), None)
+        assert len(webex.sent("PUT", "/v1/messages/s1")) == 1
 
 
 class TestSpaces:

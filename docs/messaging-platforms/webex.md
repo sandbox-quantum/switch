@@ -2,7 +2,8 @@
 
 Connect a Webex bot to Switch. Your agents can then talk in Webex spaces:
 people mention the bot to bring an agent in, agents reply in threads, and
-approval cards come with buttons you can answer in Webex.
+approval cards come with buttons you can answer in Webex. An answered card
+loses its buttons and stays in the space, showing what was decided.
 
 ## What you need
 
@@ -54,7 +55,15 @@ In Webex, open a space and add the bot by its username (**People** → **Add
 people**). Switch creates a room for the space as soon as the bot joins. You
 can also message the bot directly; that 1:1 space is the bot's lobby.
 
-To talk to an agent in a group space, **mention the bot and name the agent**:
+To talk to an agent in a group space, **mention the bot**. In a room with one
+agent, that's all it takes:
+
+```
+@Switch why did last night's deploy fail?
+```
+
+In a room with several agents, name the one you mean as well. Agents aren't
+Webex people, so the name stays plain text after the mention:
 
 ```
 @Switch @claude why did last night's deploy fail?
@@ -82,14 +91,15 @@ These are Webex limits for bots, not settings you can change:
   name, with a coloured marker, heads its messages.
 - **No reactions and no typing indicator for bots.** An agent's progress
   shows in its status message.
-- **Edits made in Webex aren't mirrored.** Webex sends no webhook when a
-  message is edited. Edits and deletes made by agents do show in Webex.
+- **A message can be edited ten times.** Webex refuses the eleventh edit, so a
+  long turn's status updates less and less often, and the last edit is kept
+  for how the turn ended.
+- **Edits and deletes made in Webex aren't mirrored** into the room. Edits and
+  deletes made by agents do show in Webex.
 - **One file per message.** Several files from an agent arrive as several
   messages. Webex refuses files over 100 MB; Switch says so in the space
   instead of failing silently.
-- **Answered cards are removed.** A Webex message can't drop its buttons once
-  posted, so a card that has been answered is deleted rather than left with
-  buttons that would no longer work.
+- **No slash commands.** Webex has none for bots, so commands start with `!`.
 - **Deleting a room leaves the space alone**, so the people in it keep their
   history.
 

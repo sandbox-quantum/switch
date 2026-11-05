@@ -13,6 +13,7 @@ import email.message
 import logging
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -24,14 +25,27 @@ API_BASE = "https://webexapis.com/v1"
 # the delivery that is waiting on it.
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
+# Where Webex serves a message's files. The bot's token goes with a download,
+# so a link anywhere else is refused rather than followed.
+_FILE_HOST = "webexapis.com"
+
 
 class WebexAPIError(Exception):
-    """Webex refused a call. `status` is the HTTP status it answered with."""
+    """Webex refused a call. `status` is the HTTP status it answered with, and
+    `retry_after` the seconds it asked for, where it asked for any."""
 
-    def __init__(self, status: int, message: str, *, tracking_id: str | None) -> None:
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        *,
+        tracking_id: str | None,
+        retry_after: float | None,
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.tracking_id = tracking_id
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -59,6 +73,25 @@ def _explain(response: httpx.Response) -> str:
             if isinstance(first, dict) and isinstance(first.get("description"), str):
                 return str(first["description"])
     return f"HTTP {response.status_code} {response.reason_phrase}".strip()
+
+
+def _refusal(response: httpx.Response, message: str) -> WebexAPIError:
+    wait = response.headers.get("retry-after", "")
+    return WebexAPIError(
+        response.status_code,
+        message,
+        tracking_id=response.headers.get("trackingid"),
+        retry_after=float(wait) if wait.isdecimal() else None,
+    )
+
+
+def _require_file_host(url: str) -> None:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not (
+        host == _FILE_HOST or host.endswith(f".{_FILE_HOST}")
+    ):
+        raise UntrustedFileLink(url)
 
 
 def _filename_of(response: httpx.Response, fallback: str) -> str:
@@ -107,11 +140,7 @@ class WebexClient:
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         response = await self._http.request(method, path, **kwargs)
         if response.status_code >= 400:
-            raise WebexAPIError(
-                response.status_code,
-                _explain(response),
-                tracking_id=response.headers.get("trackingid"),
-            )
+            raise _refusal(response, _explain(response))
         return response
 
     async def _json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -120,10 +149,9 @@ class WebexClient:
             return {}
         body = response.json()
         if not isinstance(body, dict):
-            raise WebexAPIError(
-                response.status_code,
+            raise _refusal(
+                response,
                 f"Webex answered {method} {path} with something other than an object",
-                tracking_id=response.headers.get("trackingid"),
             )
         return body
 
@@ -185,18 +213,27 @@ class WebexClient:
         )
 
     async def edit_message(
-        self, message_id: str, *, room_id: str, markdown: str
+        self,
+        message_id: str,
+        *,
+        room_id: str,
+        markdown: str,
+        attachments: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        return await self._json(
-            "PUT",
-            f"/messages/{message_id}",
-            json={"roomId": room_id, "markdown": markdown},
-        )
+        """Replace a message's text and its cards.
+
+        An edit that names no attachments takes away the ones the message had,
+        so `attachments` is what the message shows afterwards, not an addition."""
+        body: dict[str, Any] = {"roomId": room_id, "markdown": markdown}
+        if attachments:
+            body["attachments"] = attachments
+        return await self._json("PUT", f"/messages/{message_id}", json=body)
 
     async def delete_message(self, message_id: str) -> None:
         await self._request("DELETE", f"/messages/{message_id}")
 
     async def file_info(self, url: str) -> FileInfo:
+        _require_file_host(url)
         response = await self._request("HEAD", url)
         return FileInfo(
             filename=_filename_of(response, "file"),
@@ -206,14 +243,11 @@ class WebexClient:
 
     async def download(self, url: str, *, max_bytes: int) -> tuple[FileInfo, bytes]:
         """The file at `url`, refusing it as soon as it passes `max_bytes`."""
+        _require_file_host(url)
         async with self._http.stream("GET", url) as response:
             if response.status_code >= 400:
                 await response.aread()
-                raise WebexAPIError(
-                    response.status_code,
-                    _explain(response),
-                    tracking_id=response.headers.get("trackingid"),
-                )
+                raise _refusal(response, _explain(response))
             info = FileInfo(
                 filename=_filename_of(response, "file"),
                 mimetype=_mimetype_of(response),
@@ -280,3 +314,10 @@ class FileTooLarge(Exception):
         super().__init__(f"{filename} is larger than {max_bytes} bytes")
         self.filename = filename
         self.max_bytes = max_bytes
+
+
+class UntrustedFileLink(Exception):
+    """A message named a file somewhere other than Webex's own file host."""
+
+    def __init__(self, url: str) -> None:
+        super().__init__(f"{urlsplit(url).hostname or url} is not a Webex file host")
