@@ -22,6 +22,9 @@ interface Props {
   resourceId: string;
   resourceLabel: string;
   ownerId: string | null;
+  // Why the server would refuse to move it, which disables the button and is
+  // shown beside it; null when it can be moved.
+  blockedReason: string | null;
   onTransferred: () => void;
 }
 
@@ -53,6 +56,7 @@ export default function TransferOwnershipSection({
   resourceId,
   resourceLabel,
   ownerId,
+  blockedReason,
   onTransferred,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -66,10 +70,16 @@ export default function TransferOwnershipSection({
         variant="outlined"
         startIcon={<SwapHoriz />}
         onClick={() => setOpen(true)}
+        disabled={blockedReason !== null}
         sx={{ alignSelf: "flex-start" }}
       >
         Transfer ownership
       </Button>
+      {blockedReason !== null && (
+        <Typography variant="body2" sx={{ color: "text.secondary" }}>
+          {blockedReason}
+        </Typography>
+      )}
       {open && (
         <TransferOwnershipDialog
           kind={kind}

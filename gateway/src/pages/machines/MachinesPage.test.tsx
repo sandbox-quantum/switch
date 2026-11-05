@@ -21,6 +21,8 @@ const laptop: Controller = {
   created_at: "2026-10-01T00:00:00Z",
   revoked_at: null,
   release: null,
+  can_edit: true,
+  can_remove: true,
   status: {
     seq: 1,
     observed_at: new Date().toISOString(),
@@ -94,6 +96,8 @@ const pmAgent: ManagedAgent = {
   status: laptop.status!.agents[0],
   created_at: "2026-10-01T00:00:00Z",
   updated_at: "2026-10-01T00:00:00Z",
+  can_edit: true,
+  can_delete: true,
 };
 
 const servedProviders: ProviderInfo[] = [
@@ -137,6 +141,35 @@ describe("MachinesPage", () => {
     expect(screen.getByText("Codex: login expired")).toBeTruthy();
     expect(screen.getByText("pm-agent")).toBeTruthy();
     expect(screen.getByText("failed: invalid_credential")).toBeTruthy();
+  });
+
+  it("offers each action on a device only where the server says it may be taken", async () => {
+    mockManagement({
+      "GET /controllers": [
+        200,
+        [
+          laptop,
+          { ...laptop, id: "c2", name: "theirs", can_edit: false, can_remove: false },
+        ],
+      ],
+      "GET /agents": [
+        200,
+        [pmAgent, { ...pmAgent, agent_id: "a2", name: "their-agent", can_edit: false, can_delete: false }],
+      ],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    expect(await screen.findByRole("button", { name: "Edit machine laptop" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revoke laptop" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit machine theirs" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Revoke theirs" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Re-check providers on theirs" })).toBeNull();
+
+    expect(screen.getByRole("button", { name: "Edit pm-agent" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop managing pm-agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit their-agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop their-agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop managing their-agent" })).toBeNull();
   });
 
   it("shows the controller's version against the release Switch names", async () => {

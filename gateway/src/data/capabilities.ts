@@ -21,6 +21,10 @@ export interface Capabilities {
    * not one by the operator bit alone. */
   administersOrganization: boolean;
   inOrganization: boolean;
+  /** The current workspace's own `can_delete`: an admin membership of the
+   * caller's, which the reach of an organization admin or the operator does
+   * not count as, and never the server's default workspace. */
+  canDeleteWorkspace: boolean;
   features: FeatureFlags;
 }
 
@@ -34,6 +38,7 @@ export function capabilitiesOf(
     administersWorkspace: tenant?.administers ?? false,
     administersOrganization: session?.tenant?.organization_role === "org_admin",
     inOrganization: (session?.tenant?.organization_id ?? null) !== null,
+    canDeleteWorkspace: tenant?.can_delete ?? false,
     features,
   };
 }

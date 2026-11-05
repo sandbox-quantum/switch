@@ -40,6 +40,7 @@ function authState(canAdminTenant: boolean) {
       administersWorkspace: canAdminTenant,
       administersOrganization: false,
       inOrganization: false,
+      canDeleteWorkspace: false,
       features: ALL_OFF,
     },
     refresh: vi.fn(async () => {}),
@@ -66,6 +67,9 @@ function bridge(overrides: Partial<BridgeDetail> = {}): BridgeDetail {
     created_at: "2026-01-01",
     attention: null,
     team_placement_supported: false,
+    can_manage: true,
+    can_delete: true,
+    held_by_install: null,
     ...overrides,
   };
 }
@@ -80,7 +84,10 @@ function setup({
   installablePlatforms?: string[];
 } = {}) {
   vi.mocked(useAuth).mockReturnValue(authState(isAdmin));
-  vi.mocked(hooks.useBridges).mockReturnValue(queryResult(bridges));
+  // The server answers whether this person may change or delete each one.
+  vi.mocked(hooks.useBridges).mockReturnValue(
+    queryResult(isAdmin ? bridges : bridges.map((b) => ({ ...b, can_manage: false, can_delete: false }))),
+  );
   vi.mocked(hooks.useInstallablePlatforms).mockReturnValue(
     queryResult(installablePlatforms),
   );
@@ -280,6 +287,54 @@ describe("CollaborationsPage", () => {
         screen.queryByText("Microsoft did not answer; try again shortly."),
       ).toBeNull(),
     );
+  });
+
+  it("offers delete only on a connection the server says may be deleted", () => {
+    setup({
+      bridges: [
+        bridge({ bridge_id: "b1", display_name: "Deletable" }),
+        bridge({ bridge_id: "b2", display_name: "Kept", can_delete: false }),
+      ],
+    });
+    render(<CollaborationsPage />);
+
+    expect(screen.getByRole("button", { name: "Delete Deletable" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete Kept" })).toBeNull();
+  });
+
+  it("shows delete disabled on a connection an OAuth install holds, pointing at the install", () => {
+    setup({
+      bridges: [
+        bridge({
+          bridge_id: "b1",
+          display_name: "Installed",
+          can_delete: false,
+          held_by_install: "oauth",
+        }),
+      ],
+    });
+    render(<CollaborationsPage />);
+
+    const remove = screen.getByRole("button", { name: "Delete Installed" });
+    expect((remove as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      screen.getByLabelText("Installed from the platform: disconnect it under Installed apps"),
+    ).toBeTruthy();
+  });
+
+  it("lets someone who may not change a connection see it, with nothing to act on", () => {
+    setup({
+      isAdmin: false,
+      bridges: [bridge({ bridge_id: "b1", display_name: "Acme Corp", team_placement_supported: true })],
+    });
+    render(<CollaborationsPage />);
+
+    expect(screen.getByText("Acme Corp")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete Acme Corp" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Choose which teams this app is in" })).toBeNull();
+    for (const toggle of screen.getAllByRole("switch")) {
+      expect((toggle as HTMLInputElement).disabled).toBe(true);
+    }
   });
 
   it("labels the type column with the platform's own name", () => {

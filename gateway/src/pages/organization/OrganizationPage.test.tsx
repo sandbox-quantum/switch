@@ -76,7 +76,14 @@ function signedInAs(current: Session, features: FeatureFlags = CONNECTORS_ON) {
     session: current,
     capabilities: capabilitiesOf(
       current,
-      { id: "t1", slug: "acme", name: "Acme", role: current.tenant?.role ?? "member", administers },
+      {
+        id: "t1",
+        slug: "acme",
+        name: "Acme",
+        role: current.tenant?.role ?? "member",
+        administers,
+        can_delete: false,
+      },
       features,
     ),
     switchTo: vi.fn(),

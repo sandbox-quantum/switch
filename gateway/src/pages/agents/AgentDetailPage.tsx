@@ -29,7 +29,6 @@ import {
   renameAgent,
   updateAgentOptions,
 } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import { useAgent, useKnownAgentTypes } from "../../data/hooks";
 import {
   EM_DASH,
@@ -79,7 +78,6 @@ function StatusDot({ color, title }: { color: string; title?: string }) {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
-  const { user, canAdminTenant, capabilities } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
@@ -108,11 +106,10 @@ export default function AgentDetailPage() {
     );
   }
 
-  const isOwner = !!user && user.id === agent.owner_id;
-  // Renaming and editing options are open to whoever the server says may
-  // manage the agent (its owner or an admin); agent management and service
-  // access stay with the owner alone, because the agent then acts on the
-  // owner's own machines and credentials.
+  // Every control follows the server's answer for this agent. Editing its
+  // options is open to whoever may manage it (its owner or an admin); agent
+  // management and service access stay with the owner alone, because the
+  // agent then acts on the owner's own machines and credentials.
   const canManage = agent.can_manage;
 
   return (
@@ -122,7 +119,7 @@ export default function AgentDetailPage() {
           <ArrowBack />
         </IconButton>
         <Typography variant="h5">{agent.name}</Typography>
-        {canManage && !agent.parent_agent_id && agent.children.length === 0 && (
+        {agent.can_rename && (
           <Tooltip title="Rename agent">
             <IconButton
               size="small"
@@ -189,13 +186,13 @@ export default function AgentDetailPage() {
         />
         <AgentManagementSection
           agent={agent}
-          canEdit={isOwner}
+          canEdit={agent.can_change_manage_agents}
           onUpdated={refetch}
         />
-        {isOwner && capabilities.features.service_connections && (
+        {agent.can_grant_services && (
           <ServiceAccessSection agent={agent} onAgentUpdated={refetch} />
         )}
-        {(isOwner || canAdminTenant) && (
+        {(agent.can_transfer || agent.transfer_blocked_reason !== null) && (
           <>
             <Divider />
             <TransferOwnershipSection
@@ -203,6 +200,7 @@ export default function AgentDetailPage() {
               resourceId={agent.id}
               resourceLabel={agent.name}
               ownerId={agent.owner_id}
+              blockedReason={agent.can_transfer ? null : agent.transfer_blocked_reason}
               onTransferred={refetch}
             />
           </>

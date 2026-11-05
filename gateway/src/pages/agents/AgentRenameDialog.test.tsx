@@ -68,6 +68,11 @@ const agent: AgentDetail = {
   addressing_policy: null,
   can_manage_agents: false,
   can_manage: true,
+  can_rename: true,
+  can_transfer: true,
+  transfer_blocked_reason: null,
+  can_change_manage_agents: true,
+  can_grant_services: true,
 };
 
 function showPage(detail: AgentDetail) {

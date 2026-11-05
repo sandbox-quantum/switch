@@ -31,7 +31,7 @@ import {
   type RoomGroupDetail,
   type RoomSummary,
   type TemplateSummary,
-  type UserInfo,
+  type ListedUser,
   fetchAgent,
   fetchAgents,
   fetchApiKeys,
@@ -216,7 +216,7 @@ export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<Conne
   return { data, loading, error, refetch };
 }
 
-export function useUsers(): UseQueryResult<UserInfo[]> {
+export function useUsers(): UseQueryResult<ListedUser[]> {
   return useQuery(fetchUsers);
 }
 

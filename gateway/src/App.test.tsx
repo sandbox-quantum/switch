@@ -62,7 +62,13 @@ function signedInAs(
     flags = [],
     inOrganization = true,
     tenants = [],
-  }: { flags?: FeatureFlagKey[]; inOrganization?: boolean; tenants?: TenantMembership[] } = {},
+    canDelete = false,
+  }: {
+    flags?: FeatureFlagKey[];
+    inOrganization?: boolean;
+    tenants?: TenantMembership[];
+    canDelete?: boolean;
+  } = {},
 ): Routes {
   const tenant: TenantMembership = {
     ...acme,
@@ -83,7 +89,14 @@ function signedInAs(
     "/feature-flags": [200, { flags: flags.map((key) => ({ key, enabled: true })) }],
     "/tenants/current": [
       200,
-      { id: "t1", slug: "acme", name: "Acme", role: tenant.role, administers: role !== "member" },
+      {
+        id: "t1",
+        slug: "acme",
+        name: "Acme",
+        role: tenant.role,
+        administers: role !== "member",
+        can_delete: canDelete,
+      },
     ],
   };
 }
@@ -350,6 +363,21 @@ describe("today's layout", () => {
     mockFetch(signedInAs("member"));
     renderAt("/");
     await landsOn("/rooms");
+  });
+});
+
+describe("deleting the workspace", () => {
+  it("is offered where the server says the caller may delete it", async () => {
+    mockFetch(signedInAs("workspace_admin", { canDelete: true }));
+    renderAt("/workspace");
+    expect(await screen.findByRole("button", { name: "Delete workspace" })).toBeTruthy();
+  });
+
+  it("is not offered to an admin the server will not let delete it, such as an org admin", async () => {
+    mockFetch(signedInAs("org_admin", { canDelete: false }));
+    renderAt("/workspace");
+    expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete workspace" })).toBeNull();
   });
 });
 

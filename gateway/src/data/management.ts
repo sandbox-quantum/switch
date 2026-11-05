@@ -140,6 +140,10 @@ export interface Controller {
   assignment_revision: number;
   created_at: string;
   revoked_at: string | null;
+  /** What the caller may do to it: rename, describe and ask it to re-check
+   * its providers; and revoke it. */
+  can_edit: boolean;
+  can_remove: boolean;
 }
 
 export interface Definition {
@@ -170,6 +174,10 @@ export interface ManagedAgent {
   status: AgentStatus | null;
   created_at: string;
   updated_at: string;
+  /** What the caller may do to it: start, stop, restart and edit it; and
+   * stop managing it. */
+  can_edit: boolean;
+  can_delete: boolean;
 }
 
 export interface Operation {

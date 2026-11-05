@@ -42,8 +42,8 @@ function UsersSections({
 }
 
 function DeleteSection({ tenant }: { tenant: TenantMembership }) {
-  // An admin membership, not the operator's bypass: the server checks the same.
-  if (tenant.role !== "admin") return null;
+  const { capabilities } = useAuth();
+  if (!capabilities.canDeleteWorkspace) return null;
   return <DeleteWorkspaceSection tenantId={tenant.id} tenantName={tenant.name} />;
 }
 

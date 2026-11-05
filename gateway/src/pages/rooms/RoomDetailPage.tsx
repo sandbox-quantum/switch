@@ -160,7 +160,7 @@ export default function RoomDetailPage() {
             <ArchiveSection room={room} onChanged={refetch} />
           </>
         )}
-        {canManage && (
+        {room.can_transfer && (
           <>
             <Divider />
             <TransferOwnershipSection
@@ -168,8 +168,13 @@ export default function RoomDetailPage() {
               resourceId={room.id}
               resourceLabel={room.name}
               ownerId={room.owner_id}
+              blockedReason={null}
               onTransferred={refetch}
             />
+          </>
+        )}
+        {canManage && (
+          <>
             <Divider />
             <DangerSection room={room} onDeleted={() => navigate("/rooms")} />
           </>

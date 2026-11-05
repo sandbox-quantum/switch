@@ -30,6 +30,7 @@ function authState(canAdminTenant: boolean) {
       administersWorkspace: canAdminTenant,
       administersOrganization: false,
       inOrganization: false,
+      canDeleteWorkspace: false,
       features: ALL_OFF,
     },
     refresh: vi.fn(async () => {}),

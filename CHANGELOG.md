@@ -124,6 +124,14 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,
+  Templates and Connectors on the rail; Workspace and Organization settings
+  as areas of their own, each with a menu of only the pages you may open,
+  reopening the page you last used; and the operator's pages under Platform.
+  Today's pages move into it, and their old URLs lead there. It is still
+  being built, so turn it on for development and staging only. With it off,
+  the dashboard is laid out as before, and the new URLs lead back to today's
+  pages.
 - **The server's administrator can delete someone's account.** The Users page
   has a Delete action (`DELETE /users/{id}`) that removes the account in every
   workspace, with the same refusals as deleting your own. Administrator
@@ -617,6 +625,20 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **The dashboard opens and offers only what the server would allow.** A
+  page someone may not open no longer loads into a column of refusals: typing
+  its address says why instead, or that the server does not run it, and a
+  member can no longer open the operator's Users page. Every action follows
+  the server's own answer for that thing rather than the dashboard's guess
+  from someone's role or ownership. An organization admin was offered Delete workspace in a workspace they are
+  not an admin member of, and was refused. Anyone may edit a publicly
+  writable reference, document or package, but only its owner and admins
+  were offered the fields. An agent that cannot be handed over now says why
+  beside a disabled Transfer. A messaging app installed from the platform's
+  side offered Delete, which could only fail; it now points at Disconnect.
+  Agent management, connectors and organization connector apps are read
+  from the server's feature flags, not guessed from a missing page; if the
+  flags cannot be read, the dashboard says so rather than hiding pages.
 - **A file that names nobody now follows the conversation like text does.**
   A post with one or more files and no mention never reached the room's
   assigned agent, the agent whose thread it was posted in, or the agent the

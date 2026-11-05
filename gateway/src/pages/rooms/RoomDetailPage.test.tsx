@@ -79,6 +79,7 @@ const room = {
   can_write: true,
   can_manage: false,
   can_unlink: false,
+  can_transfer: false,
 } as RoomDetail;
 
 const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;

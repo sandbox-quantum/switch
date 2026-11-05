@@ -112,18 +112,26 @@ export default function RegistrationKeysPage() {
         filterable: false,
         renderCell: ({ row }) => (
           <>
-            <Tooltip title={copiedId === row.id ? "Copied!" : "Copy key"}>
-              <IconButton size="small" onClick={() => handleCopy(row.id)}>
-                {copiedId === row.id ? (
-                  <DoneOutline fontSize="small" color="success" />
-                ) : (
-                  <ContentCopy fontSize="small" />
-                )}
+            {row.can_reveal && (
+              <Tooltip title={copiedId === row.id ? "Copied!" : "Copy key"}>
+                <IconButton size="small" onClick={() => handleCopy(row.id)}>
+                  {copiedId === row.id ? (
+                    <DoneOutline fontSize="small" color="success" />
+                  ) : (
+                    <ContentCopy fontSize="small" />
+                  )}
+                </IconButton>
+              </Tooltip>
+            )}
+            {row.can_delete && (
+              <IconButton
+                size="small"
+                onClick={() => setDeleteTarget(row)}
+                aria-label={`Delete ${row.label}`}
+              >
+                <DeleteOutline fontSize="small" />
               </IconButton>
-            </Tooltip>
-            <IconButton size="small" onClick={() => setDeleteTarget(row)}>
-              <DeleteOutline fontSize="small" />
-            </IconButton>
+            )}
           </>
         ),
       },
@@ -157,17 +165,18 @@ export default function RegistrationKeysPage() {
         width: 60,
         sortable: false,
         filterable: false,
-        renderCell: ({ row }) => (
-          <Tooltip title={copiedId === row.id ? "Copied!" : "Copy key"}>
-            <IconButton size="small" onClick={() => handleCopy(row.id)}>
-              {copiedId === row.id ? (
-                <DoneOutline fontSize="small" color="success" />
-              ) : (
-                <ContentCopy fontSize="small" />
-              )}
-            </IconButton>
-          </Tooltip>
-        ),
+        renderCell: ({ row }) =>
+          row.can_reveal ? (
+            <Tooltip title={copiedId === row.id ? "Copied!" : "Copy key"}>
+              <IconButton size="small" onClick={() => handleCopy(row.id)}>
+                {copiedId === row.id ? (
+                  <DoneOutline fontSize="small" color="success" />
+                ) : (
+                  <ContentCopy fontSize="small" />
+                )}
+              </IconButton>
+            </Tooltip>
+          ) : null,
       },
     ],
     [copiedId, handleCopy],

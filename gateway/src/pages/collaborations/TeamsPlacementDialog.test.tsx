@@ -15,6 +15,9 @@ const bridge: BridgeDetail = {
   created_at: "2026-01-01",
   attention: null,
   team_placement_supported: true,
+  can_manage: true,
+  can_delete: true,
+  held_by_install: null,
 };
 
 function placements(
