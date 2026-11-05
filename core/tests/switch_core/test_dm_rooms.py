@@ -73,7 +73,11 @@ class _FakeAgentStore:
 
     async def get(self, session: Any, agent_id: str) -> Any:
         return SimpleNamespace(
-            id=agent_id, name=self._names[agent_id], display_name=None
+            id=agent_id,
+            name=self._names[agent_id],
+            display_name=None,
+            addressing_policy=None,
+            owner_id=None,
         )
 
 
