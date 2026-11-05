@@ -1017,9 +1017,18 @@ decision:
     # e.g. eks.amazonaws.com/role-arn for Bedrock through IRSA.
     annotations: {}
   # Admit only this release's switch-core pods to the decision port. Needs a
-  # CNI that enforces NetworkPolicy; without one it is accepted and ignored.
+  # CNI that enforces NetworkPolicy; without one it is accepted and ignored,
+  # and the token below is what keeps other pods out.
   networkPolicy:
     enabled: true
+  # The bearer token the service requires (DECISION_SERVICE_TOKEN) and
+  # switch-core sends (DECISION_API_KEY). By default the chart generates it
+  # into the Secret <release>-decision-token on the first install and keeps it
+  # on upgrades. Name a Secret of your own instead with existingSecret; the
+  # token is its existingSecretKey entry.
+  token:
+    existingSecret: ""
+    existingSecretKey: token
 
 # ── Setup Job ─────────────────────────────────────────────────────────────────
 setup:

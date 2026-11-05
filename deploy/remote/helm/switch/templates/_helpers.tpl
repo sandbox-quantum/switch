@@ -398,6 +398,26 @@ auto-route is unavailable until a workspace admin sets a backend up).
 {{- end }}
 
 {{/*
+The Secret holding the decision service's bearer token:
+decision.token.existingSecret, or the one the chart generates.
+*/}}
+{{- define "switch.decisionTokenSecret" -}}
+{{- .Values.decision.token.existingSecret | default (printf "%s-decision-token" (include "switch.fullname" .)) -}}
+{{- end }}
+
+{{/*
+An env entry `name` read from the decision token Secret.
+Usage: {{ include "switch.decisionTokenEnv" (dict "root" . "name" "DECISION_API_KEY") }}
+*/}}
+{{- define "switch.decisionTokenEnv" -}}
+- name: {{ .name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.decisionTokenSecret" .root }}
+      key: {{ .root.Values.decision.token.existingSecretKey }}
+{{- end }}
+
+{{/*
 Whether workspaces may choose Haiku on Bedrock (DECISION_BEDROCK_ENABLED).
 Non-empty for yes, nothing for no.
 */}}
@@ -900,6 +920,9 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- with include "switch.decisionEndpointUrl" . }}
 - name: DECISION_ENDPOINT_URL
   value: {{ . | quote }}
+{{- end }}
+{{- if .Values.decision.enabled }}
+{{ include "switch.decisionTokenEnv" (dict "root" . "name" "DECISION_API_KEY") }}
 {{- end }}
 {{- if include "switch.decisionBedrockEnabled" . }}
 - name: DECISION_BEDROCK_ENABLED

@@ -112,6 +112,7 @@ spec:
           env:
             - name: PORT
               value: {{ $d.port | quote }}
+            {{- include "switch.decisionTokenEnv" (dict "root" $ "name" "DECISION_SERVICE_TOKEN") | nindent 12 }}
             - name: DECISION_BACKEND
               value: {{ $backend | quote }}
             {{- with include "switch.decisionModel" . }}
