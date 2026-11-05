@@ -12,7 +12,7 @@ export function operatesServer(serverId: string): boolean {
 
 /**
  * Whether the signed-in account may manage the workspace a view about
- * `serverId` acts in: an owner or admin of that workspace, or the operator
+ * `serverId` acts in: an admin of that workspace, or the operator
  * running the server, whom the gateway lets administer every workspace.
  */
 export function administersWorkspaceInScope(serverId: string): boolean {
@@ -23,7 +23,7 @@ export function administersWorkspaceInScope(serverId: string): boolean {
 
 /**
  * Whether the signed-in account may manage the workspace `workspaceId` names:
- * an owner or admin of it, or the operator running its server.
+ * an admin of it, or the operator running its server.
  */
 export function administersWorkspaceById(workspaceId: string): boolean {
   const serverId = workspacesStore.serverIdFor(workspaceId);

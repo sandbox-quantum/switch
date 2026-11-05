@@ -190,8 +190,8 @@ async def apply_from_directory(
                     session, dependencies, organization_id, user_id, tenant, details
                 )
                 if (
-                    membership.role == "owner"
-                    and await dependencies.user_store.count_owners(session) <= 1
+                    membership.role == "admin"
+                    and await dependencies.user_store.lock_admins(session) <= 1
                 ):
                     await _conflict(
                         session,
@@ -199,7 +199,7 @@ async def apply_from_directory(
                         user_id,
                         {
                             **details,
-                            "kind": "workspace_left_without_owner",
+                            "kind": "workspace_left_without_admin",
                             "workspace": tenant.name,
                         },
                     )

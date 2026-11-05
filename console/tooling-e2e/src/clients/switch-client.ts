@@ -445,7 +445,7 @@ export class SwitchClient {
   }
 
   /**
-   * `POST /gateway/tenants` — create a workspace. The caller becomes its owner
+   * `POST /gateway/tenants` — create a workspace. The caller becomes its admin
    * and the server re-mints their session into it, so from here on this client
    * acts in the new workspace.
    */
@@ -471,7 +471,7 @@ export class SwitchClient {
   /**
    * `POST /gateway/organizations` — create an organization with its first
    * workspace. The caller becomes its organization admin and the workspace's
-   * owner, and the server re-mints their session into the workspace, so from
+   * admin, and the server re-mints their session into the workspace, so from
    * here on this client acts there.
    */
   async createOrganization(name: string): Promise<{

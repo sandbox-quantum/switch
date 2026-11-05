@@ -503,7 +503,7 @@ export const workspacesController = createRPCController({
   listRooms: (workspaceId: string): Promise<RemoteRoomSummary[]> =>
     withWorkspaceSession(workspaceId, fetchRooms),
 
-  /** Admins and owners only; the gateway refuses anyone else with a 403. */
+  /** Admins only; the gateway refuses anyone else with a 403. */
   listInvitations: listWorkspaceInvitations,
 
   createInvitation: createWorkspaceInvitation,
@@ -511,8 +511,8 @@ export const workspacesController = createRPCController({
   revokeInvitation: revokeWorkspaceInvitation,
 
   /**
-   * The e-mail domains anyone may join the workspace from. Admins and owners
-   * only, and an admin may add only the domain of their own address.
+   * The e-mail domains anyone may join the workspace from. Admins only, and an
+   * admin may add only the domain of their own address.
    */
   listJoinDomains: listWorkspaceJoinDomains,
 

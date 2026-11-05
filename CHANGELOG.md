@@ -275,6 +275,18 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **One role runs a workspace: owner merges into admin.** Every workspace
+  `owner` becomes an `admin`, and every admin now manages every member, other
+  admins included, as well as everything an owner could. A workspace always
+  keeps at least one admin: demoting or removing the last one is refused
+  (409), and so is deleting the account of the last admin of a workspace
+  others are in. Two admins demoting each other at once can't both succeed. A
+  client that still asks for `owner`, in an invitation or a role change, gets
+  `admin`. The organization issue `workspace_without_owner` is now
+  `workspace_without_admin`. The migration is not expand-only: until every
+  replica runs this release, an older one creating a workspace writes `owner`,
+  which the new check refuses, and an older one sees former owners as plain
+  admins with no last-admin rule. Roll every replica together.
 - **Only the owner or a workspace admin can change a reference's, reference
   type's, package's or library document's visibility.** This tightens
   permissions: before, anyone with write access could, so on a publicly
@@ -2548,6 +2560,10 @@ version of their own to them without also giving them a release of their own.
   terminal can't be picked. No earlier prompt is sent again.
 
 #### Changed
+- **No Owner role.** Inviting people and changing roles offer Admin and
+  Member, and the copy says "an admin of this workspace" where it said "an
+  owner or admin". A server from before the merge that still reports `owner`
+  shows as Admin, including for workspaces stored before the update.
 - **Usage data follows an install to a working agent.** Three new
   `activation_milestone` steps (`server_ready`, `agent_ready`,
   `first_agent_session`) are each sent once per install, and only by installs

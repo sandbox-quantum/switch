@@ -1,7 +1,7 @@
 """Installing a messaging app is workspace administration.
 
 An install lands a bridge in one tenant and nowhere else, so the person who
-may do it is that workspace's owner or admin — not only the deployment
+may do it is that workspace's admin — not only the deployment
 operator. On a server where people sign themselves up, the operator bit is
 held by nobody who runs a workspace, so gating these routes on it would leave
 the Slack button unreachable to exactly the people it is for.
@@ -94,11 +94,11 @@ async def _list_installs(
 
 
 class TestWhoMayManageInstalls:
-    async def test_a_workspace_owner_who_is_not_an_operator_may(
+    async def test_a_workspace_admin_who_is_not_an_operator_may(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        user_id = await _member(session_factory, name="owner", role="owner")
-        response = await _list_installs(session_factory, user_id, "owner")
+        user_id = await _member(session_factory, name="ws-admin", role="admin")
+        response = await _list_installs(session_factory, user_id, "ws-admin")
         assert response.status_code == 200, response.text
         assert response.json() == {"installs": []}
 

@@ -11,7 +11,6 @@ from switch_core.authz import (
     can_delete_room_document,
     can_manage,
     can_unlink_from_room,
-    owns_tenant,
     require,
     require_manage,
     require_visibility_change,
@@ -114,7 +113,7 @@ class TestCanManage:
 class TestAdministersTenant:
     """`administers_tenant` is the one function allowed to turn a role into
     the admin bit (`authz.py` module docstring) — the operator bypass and the
-    per-tenant `owner`/`admin` membership role, combined."""
+    per-tenant `admin` membership role, combined."""
 
     def test_operator_administers_regardless_of_tenant_role(self) -> None:
         assert administers_tenant(
@@ -124,12 +123,16 @@ class TestAdministersTenant:
             is_operator=True, tenant_role="member", organization_role=None
         )
 
-    def test_owner_or_admin_membership_administers(self) -> None:
-        assert administers_tenant(
-            is_operator=False, tenant_role="owner", organization_role=None
-        )
+    def test_admin_membership_administers(self) -> None:
         assert administers_tenant(
             is_operator=False, tenant_role="admin", organization_role=None
+        )
+
+    def test_owner_is_no_longer_an_admin_role(self) -> None:
+        """`owner` merged into `admin`; a stray `owner` string must not
+        grant anything."""
+        assert not administers_tenant(
+            is_operator=False, tenant_role="owner", organization_role=None
         )
 
     def test_plain_member_does_not_administer(self) -> None:
@@ -157,39 +160,6 @@ class TestAdministersTenant:
         assert administers_tenant(
             is_operator=False, tenant_role="admin", organization_role="member"
         )
-
-
-class TestOwnsTenant:
-    """`owns_tenant` is the narrower bit: who may move the ownership set,
-    which is not everyone who may administer the workspace."""
-
-    def test_operator_owns_regardless_of_tenant_role(self) -> None:
-        assert owns_tenant(is_operator=True, tenant_role=None)
-        assert owns_tenant(is_operator=True, tenant_role="member")
-
-    def test_owner_membership_owns(self) -> None:
-        assert owns_tenant(is_operator=False, tenant_role="owner")
-
-    def test_admin_membership_administers_but_does_not_own(self) -> None:
-        """The whole point of there being two functions: an admin who also
-        owned could take the workspace from its owner one safe-looking
-        request at a time."""
-        assert administers_tenant(
-            is_operator=False, tenant_role="admin", organization_role=None
-        )
-        assert not owns_tenant(is_operator=False, tenant_role="admin")
-
-    def test_organization_admin_does_not_own(self) -> None:
-        """`org_admin` is admin-level in each workspace of its organization:
-        it administers them but does not move their ownership set."""
-        assert administers_tenant(
-            is_operator=False, tenant_role=None, organization_role="org_admin"
-        )
-        assert not owns_tenant(is_operator=False, tenant_role=None)
-
-    def test_plain_member_and_no_membership_do_not_own(self) -> None:
-        assert not owns_tenant(is_operator=False, tenant_role="member")
-        assert not owns_tenant(is_operator=False, tenant_role=None)
 
 
 class TestCanUnlinkFromRoom:

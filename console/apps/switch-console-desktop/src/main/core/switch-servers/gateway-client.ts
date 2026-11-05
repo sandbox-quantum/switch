@@ -601,7 +601,7 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
 
 /**
  * Delete the signed-in account on this server, confirmed by its email. A
- * refusal (the only owner of a shared workspace, the server's own admin, …) is
+ * refusal (the only admin of a shared workspace, the server's own admin, …) is
  * raised with the server's own reason, which says what to do first.
  */
 export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
@@ -684,7 +684,9 @@ type TenantJson = {
 };
 
 function mapRole(raw: unknown): WorkspaceRole {
-  if (raw === 'owner' || raw === 'admin' || raw === 'member') return raw;
+  // A server from before `owner` merged into `admin` still reports it.
+  if (raw === 'owner') return 'admin';
+  if (raw === 'admin' || raw === 'member') return raw;
   throw new GatewayError('http', `Switch server reported an unknown workspace role: ${raw}`);
 }
 
@@ -989,7 +991,7 @@ function joinDomainsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/join-domains`;
 }
 
-/** The domains a workspace is open to. Admins and owners only. */
+/** The domains a workspace is open to. Admins only. */
 export async function fetchJoinDomains(
   server: SwitchServer,
   tenantId: string
@@ -1041,7 +1043,7 @@ function invitationsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/invitations`;
 }
 
-/** Every invitation to a workspace, revoked and spent ones included. Admins and owners only. */
+/** Every invitation to a workspace, revoked and spent ones included. Admins only. */
 export async function fetchInvitations(
   server: SwitchServer,
   tenantId: string

@@ -219,7 +219,7 @@ async def create_organization(
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> OrganizationCreateResponse:
     """Create an organization with its first workspace. The caller becomes the
-    organization's `org_admin` and the workspace's `owner`, and their session
+    organization's `org_admin` and the workspace's `admin`, and their session
     switches into the workspace.
 
     Anyone signed in may, as `workspace_creation_refusal` decides: sign-up
@@ -308,7 +308,7 @@ async def create_organization_workspace(
     user: Annotated[User, Depends(get_current_user)],
 ) -> TenantMembershipResponse:
     """Add a workspace to the organization. `org_admin` only; the creator
-    becomes its `owner`. The session stays where it is: an `org_admin` adds
+    becomes its `admin`. The session stays where it is: an `org_admin` adds
     workspaces for others as often as for themselves.
 
     Counts against the creator's allowance as every workspace does, and is
@@ -345,7 +345,7 @@ async def create_organization_workspace(
         id=tenant.id,
         slug=tenant.slug,
         name=tenant.name,
-        role="owner",
+        role="admin",
         organization_role=ORGANIZATION_ADMIN_ROLE,
         organization_id=organization_id,
     )

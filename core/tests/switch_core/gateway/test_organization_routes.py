@@ -194,7 +194,7 @@ class TestListing:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
@@ -211,7 +211,7 @@ class TestListing:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("admin", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "member")}
         )
 
         async with _client(_app(session_factory), bob, tenant_id) as client:
@@ -226,7 +226,7 @@ class TestChangingRoles:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
@@ -251,7 +251,7 @@ class TestChangingRoles:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("admin", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "member")}
         )
 
         async with _client(_app(session_factory), bob, tenant_id) as client:
@@ -265,7 +265,7 @@ class TestChangingRoles:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
             response = await client.patch(
@@ -278,7 +278,7 @@ class TestChangingRoles:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
             response = await client.patch(
@@ -294,7 +294,7 @@ class TestChangingRoles:
         then in the workspace."""
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("admin", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "org_admin")}
         )
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
@@ -365,7 +365,7 @@ class TestRemoving:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
@@ -379,7 +379,7 @@ class TestRemoving:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
         async with tenant_session(session_factory, tenant_id) as session:
             await session.delete(await session.get(TenantMember, (tenant_id, bob)))
@@ -403,7 +403,7 @@ class TestRemoving:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
             response = await client.delete(f"/organizations/current/members/{ada}")
@@ -420,7 +420,7 @@ class TestTheWorkspaceRoster:
         tenant_id = await _workspace(
             session_factory,
             {
-                ada: ("owner", "org_admin"),
+                ada: ("admin", "org_admin"),
                 bob: ("member", "member"),
                 cy: ("member", "org_admin"),
             },
@@ -442,7 +442,7 @@ class TestTheWorkspaceRoster:
             for row in response.json()
         }
         assert rows == {
-            ada: ("owner", "org_admin", False),
+            ada: ("admin", "org_admin", False),
             bob: ("member", "member", False),
             cy: ("admin", "org_admin", True),
         }
@@ -453,7 +453,7 @@ class TestThePlatformOperator:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
         operator_id = await _operator(session_factory)
 
         async with _client(_app(session_factory), operator_id, None) as client:
@@ -469,7 +469,7 @@ class TestThePlatformOperator:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("admin", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "member")}
         )
         operator_id = await _operator(session_factory)
 
@@ -496,7 +496,7 @@ class TestThePlatformOperator:
         `org_admin`, and is there as that."""
         operator_id = await _operator(session_factory)
         bob = _name("bob")
-        tenant_id = await _workspace(session_factory, {bob: ("admin", "member")})
+        tenant_id = await _workspace(session_factory, {bob: ("member", "member")})
         async with session_factory() as session:
             tenant = await session.get(Tenant, tenant_id)
             assert tenant is not None and tenant.organization_id is not None
@@ -513,7 +513,7 @@ class TestThePlatformOperator:
             await client.post(f"/tenants/{tenant_id}/switch")
         async with _client(_app(session_factory), operator_id, tenant_id) as client:
             write = await client.patch(
-                f"/tenants/{tenant_id}/members/{bob}", json={"role": "member"}
+                f"/tenants/{tenant_id}/members/{bob}", json={"role": "admin"}
             )
 
         assert write.status_code == 200, write.text
@@ -525,7 +525,7 @@ class TestThePlatformOperator:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
         operator_id = await _operator(session_factory)
 
         async with _client(_app(session_factory), operator_id, None) as client:
@@ -542,10 +542,10 @@ class TestThePlatformOperator:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         bob, cy = _name("bob"), _name("cy")
-        orphaned = await _workspace(session_factory, {bob: ("owner", "member")})
+        orphaned = await _workspace(session_factory, {bob: ("admin", "member")})
         governed = await _workspace(
             session_factory,
-            {cy: ("owner", "org_admin"), _name("dee"): ("member", "member")},
+            {cy: ("admin", "org_admin"), _name("dee"): ("member", "member")},
         )
         operator_id = await _operator(session_factory)
 
@@ -648,7 +648,7 @@ class TestCreatingAnOrganization:
             "acme",
             "org_admin",
         )
-        assert (workspace["name"], workspace["role"]) == ("Research", "owner")
+        assert (workspace["name"], workspace["role"]) == ("Research", "admin")
         assert workspace["organization_id"] == organization["id"]
         assert (
             await _organization_id(session_factory, workspace["id"])
@@ -663,7 +663,7 @@ class TestCreatingAnOrganization:
             organization_member = await session.get(
                 OrganizationMember, (organization["id"], ada)
             )
-        assert membership is not None and membership.role == "owner"
+        assert membership is not None and membership.role == "admin"
         assert organization_member is not None
         assert organization_member.role == "org_admin"
         async with tenant_session(session_factory, workspace["id"]) as session:
@@ -745,7 +745,7 @@ class TestCreatingAWorkspace:
         assert await _organization_id(session_factory, workspace["id"]) == (
             organization_id
         )
-        assert workspace["role"] == "owner"
+        assert workspace["role"] == "admin"
         # The session stays in the workspace it was in.
         assert response.cookies.get("switch_auth") is None
         assert await _workspaces_created(session_factory, ada) == 1
@@ -765,14 +765,14 @@ class TestCreatingAWorkspace:
         )
         async with tenant_session(session_factory, workspace["id"]) as session:
             membership = await session.get(TenantMember, (workspace["id"], ada))
-        assert membership is not None and membership.role == "owner"
+        assert membership is not None and membership.role == "admin"
 
     async def test_a_workspace_admin_who_is_no_org_admin_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("admin", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "member")}
         )
 
         async with _client(_app(session_factory), bob, tenant_id) as client:
@@ -787,7 +787,7 @@ class TestCreatingAWorkspace:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
 
         app = _app(session_factory, signup_mode="invite_only")
         async with _client(app, ada, tenant_id) as client:
@@ -801,7 +801,7 @@ class TestCreatingAWorkspace:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
 
         app = _app(session_factory, max_workspaces_per_user=1)
         async with _client(app, ada, tenant_id) as client:
@@ -822,7 +822,7 @@ class TestListingOrganizationsAndWorkspaces:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
         app = _app(session_factory)
         async with _client(app, ada, tenant_id) as client:
@@ -848,7 +848,7 @@ class TestListingOrganizationsAndWorkspaces:
         """There on the operator flag alone, the operator may enter every
         workspace of the organization, and is shown each as its admin."""
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
         app = _app(session_factory)
         async with _client(app, ada, tenant_id) as client:
             created = await client.post(
@@ -897,7 +897,7 @@ class TestTheOrganizationAuditLog:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
@@ -926,7 +926,7 @@ class TestTheOrganizationAuditLog:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("admin", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "member")}
         )
 
         async with _client(_app(session_factory), bob, tenant_id) as client:
@@ -966,7 +966,7 @@ class TestNamesInTheOrganizationAuditLog:
         removed member no longer is; both are named all the same."""
         bob, cy = _name("bob"), _name("cy")
         tenant_id = await _workspace(
-            session_factory, {bob: ("owner", "member"), cy: ("member", "member")}
+            session_factory, {bob: ("admin", "member"), cy: ("member", "member")}
         )
         operator_id = await _operator(session_factory)
         app = _app(session_factory)
@@ -1024,13 +1024,13 @@ class TestMarkingTheOperatorsOrganizationChanges:
             await session.commit()
         return operator_id
 
-    async def test_restoring_an_admin_is_marked_though_the_operator_owns_the_workspace(
+    async def test_restoring_an_admin_is_marked_though_the_operator_administers_the_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         bob = _name("bob")
         tenant_id = await _workspace(session_factory, {bob: ("member", "member")})
         operator_id = await self._operator_in(
-            session_factory, tenant_id, workspace_role="owner", organization_role=None
+            session_factory, tenant_id, workspace_role="admin", organization_role=None
         )
 
         async with _client(_app(session_factory), operator_id, tenant_id) as client:
@@ -1168,7 +1168,7 @@ class TestLosingOrgAdmin:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         first = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "org_admin")}
         )
         second = await _second_workspace(session_factory, first)
         kept = await _personal_key(session_factory, first, bob)
@@ -1196,7 +1196,7 @@ class TestLosingOrgAdmin:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         first = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "org_admin")}
         )
         second = await _second_workspace(session_factory, first)
         await _agent(session_factory, second, bob)
@@ -1219,7 +1219,7 @@ class TestLosingOrgAdmin:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
-        first = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        first = await _workspace(session_factory, {ada: ("admin", "org_admin")})
         second = await _second_workspace(session_factory, first)
         organization_id = await _organization_id(session_factory, first)
         assert organization_id is not None
@@ -1247,7 +1247,7 @@ class TestLosingOrgAdmin:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("owner", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "org_admin")}
         )
         app = _app(session_factory)
 
@@ -1278,7 +1278,7 @@ class TestLosingOrgAdmin:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada, bob, cy = _name("ada"), _name("bob"), _name("cy")
-        first = await _workspace(session_factory, {cy: ("owner", "member")})
+        first = await _workspace(session_factory, {cy: ("admin", "member")})
         organization_id = await _organization_id(session_factory, first)
         assert organization_id is not None
         async with session_factory() as session:
@@ -1331,7 +1331,7 @@ class TestIssues:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
             response = await client.get("/organizations/current/issues")
@@ -1339,12 +1339,14 @@ class TestIssues:
         assert response.status_code == 200, response.text
         assert response.json() == []
 
-    async def test_a_workspace_without_an_owner_until_one_is_made(
+    async def test_a_workspace_without_an_admin_until_one_is_made(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """The organization's admin administers the workspace, but a workspace
+        keeps an admin of its own, as the last-admin guard holds it to."""
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("member", "org_admin"), bob: ("member", "member")}
         )
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
@@ -1352,13 +1354,13 @@ class TestIssues:
             async with tenant_session(session_factory, tenant_id) as session:
                 member = await session.get(TenantMember, (tenant_id, bob))
                 assert member is not None
-                member.role = "owner"
+                member.role = "admin"
                 await session.commit()
             after = await client.get("/organizations/current/issues")
 
         assert before.json() == [
             {
-                "kind": "workspace_without_owner",
+                "kind": "workspace_without_admin",
                 "workspace_id": tenant_id,
                 "workspace_name": "Acme",
                 "agents": [],
@@ -1375,7 +1377,7 @@ class TestIssues:
         in any workspace."""
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
         operator_id = await _operator(session_factory)
         bobs_agent = await _agent(session_factory, tenant_id, bob)
@@ -1407,7 +1409,7 @@ class TestIssues:
         """Only a deletion of the WorkOS organization followed now counts,
         whatever order the audit log has it in."""
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
         organization_id = await _organization_of(session_factory, tenant_id)
         deleted_id, other_id = _name("org_workos"), _name("org_workos")
 
@@ -1450,7 +1452,7 @@ class TestIssues:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         bob = _name("bob")
-        tenant_id = await _workspace(session_factory, {bob: ("owner", "member")})
+        tenant_id = await _workspace(session_factory, {bob: ("admin", "member")})
         operator_id = await _operator(session_factory)
 
         async with _client(_app(session_factory), operator_id, tenant_id) as client:
@@ -1464,7 +1466,7 @@ class TestIssues:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
 
         async with _client(_app(session_factory), bob, tenant_id) as client:
