@@ -60,7 +60,6 @@ import type {
 } from '@shared/core/switch-servers/own-app-setup';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import {
-  SERVICE_CALLBACK_PATH,
   type ServiceFlowStart,
   type ServiceKeyConnected,
   type ServicePaste,
@@ -4360,6 +4359,7 @@ export async function getConnectionCatalog(
     token_lifetime: entry.token_lifetime,
     agent_access_note: entry.agent_access_note,
     loopback_ports: entry.loopback_ports,
+    loopback_callback_path: entry.loopback_callback_path,
     key: entry.key,
     sign_in_choices: entry.sign_in_choices,
     paste: knownPasteMethods(entry.paste),
@@ -4393,6 +4393,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         token_lifetime: null,
         agent_access_note: null,
         loopback_ports: null,
+        loopback_callback_path: null,
         key: null,
         sign_in_choices: null,
         paste: [],
@@ -4734,7 +4735,8 @@ export async function startServiceConnection(
     state: string;
     completion_secret: string;
     choices: Record<string, string>;
-  }
+  },
+  callbackPath: string = SERVICE_CALLBACK_PATH
 ): Promise<ServiceFlowStart> {
   if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('Service connections require HTTPS, unless the server is on this computer.');
@@ -4764,7 +4766,7 @@ export async function startServiceConnection(
       : url.protocol === 'https:' &&
         url.searchParams.get('state') === value.id &&
         url.searchParams.get('redirect_uri') ===
-          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}` &&
+          `http://127.0.0.1:${input.port}${callbackPath}` &&
         value.callback_url === null);
   if (!valid) throw new Error('The server returned an invalid sign-in URL.');
   return value;

@@ -53,8 +53,8 @@ def core_callback(public_url: str, service: str) -> str:
     )
 
 
-def loopback_redirect(port: int) -> str:
-    return f"http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}"
+def loopback_redirect(port: int, path: str = LOOPBACK_CALLBACK_PATH) -> str:
+    return f"http://127.0.0.1:{port}{path}"
 
 
 def preferred_mode(
@@ -140,19 +140,22 @@ def redirect_uris(
     named: RedirectMode | None,
     public_url: str | None,
     loopback_ports: list[int] | None,
+    loopback_callback_path: str | None = None,
 ) -> list[str]:
     """Every redirect a client lists for `service` on this server: Switch
     Console's listener where the entry lists loopback, one per loopback port
     where the vendor matches the port too, or one with no port, which RFC 8252
-    lets a native client use on any; and Core's callback only where sign-ins
-    come back through it. A vendor whose admin must allow-list the callback
-    is never sent it until the server names `core`."""
+    lets a native client use on any. `loopback_callback_path` is the catalog
+    entry's own path, in place of the server's default; and Core's callback only
+    where sign-ins come back through it. A vendor whose admin must allow-list
+    the callback is never sent it until the server names `core`."""
+    path = loopback_callback_path or LOOPBACK_CALLBACK_PATH
     uris = []
     if "loopback" in modes:
         if loopback_ports is None:
-            uris.append(LOOPBACK_REDIRECT_URI)
+            uris.append(f"http://127.0.0.1{path}")
         else:
-            uris.extend(loopback_redirect(port) for port in loopback_ports)
+            uris.extend(loopback_redirect(port, path) for port in loopback_ports)
     if public_url is not None and sign_in_mode(modes, named, public_url) == "core":
         uris.append(core_callback(public_url, service))
     return uris

@@ -39,6 +39,8 @@ auth:
     redirect: [loopback, core]   # loopback (Switch Console) and/or core (Core's
                                  # callback); a server picks with SERVICE_SIGN_IN_REDIRECT
     loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # loopback_callback_path: /callback   # the server's default
+    #   (/switch-services/callback) unless named; only with redirect: [loopback]
     prompt: consent           # sent with every authorization
     # authorization_params: { access_type: offline }   # also sent with every
     #   authorization; only keys Core does not set itself (access_type,
@@ -336,6 +338,11 @@ catalog allows that it can:
 
 - **loopback**: straight to Console's listener on 127.0.0.1. With
   `loopback_ports`, only on one of them; Console listens on the first free one.
+  The listener's path is `/switch-services/callback`, unless the entry names
+  its own with `loopback_callback_path`, for a vendor that insists on one
+  (New Relic matches an empty or `/callback` path, nothing else). Console
+  reads this from the catalog entry, the same way it reads `loopback_ports`,
+  and listens and checks the vendor's redirect on that path instead.
 - **core**: to Core's callback (needs `GATEWAY_PUBLIC_URL`), which sends the
   browser straight on to Console's listener with the code. A cookie set as the
   browser left through Core ties it to that browser, and the callback takes a
@@ -675,6 +682,9 @@ Then:
   dynamic registration needs a development OAuth app of the tester's own.
 - Say in the entry's comments what the vendor needs turned on (Datadog's MCP
   access) and anything measured rather than documented (a token's lifetime).
+- A vendor that rejects every loopback redirect path but one of its own needs
+  `loopback_callback_path`, with a comment on what was measured and when
+  (New Relic: nothing but an empty or `/callback` path).
 
 ## Shared OAuth catalog opt-ins
 

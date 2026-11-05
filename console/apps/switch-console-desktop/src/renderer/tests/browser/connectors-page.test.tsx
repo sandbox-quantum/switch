@@ -224,6 +224,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     token_lifetime: 3600,
     agent_access_note: null,
     loopback_ports: null,
+    loopback_callback_path: null,
     key: null,
     sign_in_choices: null,
     paste: [],

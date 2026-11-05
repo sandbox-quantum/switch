@@ -310,6 +310,7 @@ def saved_app_redirects(apps: ConnectorApps, spec: AppSpec) -> list[str]:
         apps.named_redirect(spec.service),
         public_url,
         oauth.loopback_ports,
+        oauth.loopback_callback_path,
     )
 
 
