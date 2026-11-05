@@ -379,21 +379,25 @@ function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): stri
 /**
  * The settings a session adds to the person's own Claude Code settings.
  *
- * The tools of the servers the host registers are allowed outright. `canUseTool`
- * allows them too, but Claude Code's auto mode, when it is the person's
- * default, asks its classifier before `canUseTool` is ever reached, and the
- * classifier refuses a Switch tool that hands out access as a permission grant,
- * whatever Switch itself allows. An allow rule is settled before the classifier.
+ * The tools of the servers the host registers, other than connectors, are
+ * allowed outright. `canUseTool` allows them too, but Claude Code's auto mode,
+ * when it is the person's default, asks its classifier before `canUseTool` is
+ * ever reached, and the classifier refuses a Switch tool that hands out access
+ * as a permission grant, whatever Switch itself allows. An allow rule is
+ * settled before the classifier.
+ *
+ * Connectors get no rule here: an allow rule would settle their calls before
+ * the classifier and `canUseTool`, so they would skip the approval the runtime
+ * mode asks for. Their tools follow the runtime mode instead (see
+ * `PERMISSION_MODE_BY_RUNTIME_MODE`): full access runs them, auto lets the
+ * classifier decide, and the other modes ask the person.
  *
  * The connector plugin Switch used to ship would add a second Switch server with
  * its own connection; it is kept off for installs that still have it.
- *
- * Connector MCP tools are excluded: they require user approval (unless in
- * full-access mode) and must not be pre-allowed in session settings.
  */
 function sessionSettings(
   mcpServers: Record<string, McpServerConfig>,
-  connectorMcpServers: readonly string[] = []
+  connectorMcpServers: readonly string[]
 ): { settings: Record<string, unknown> } | Record<string, never> {
   const connectorSet = new Set(connectorMcpServers);
   const names = Object.keys(mcpServers).filter((name) => !connectorSet.has(name));
@@ -401,12 +405,8 @@ function sessionSettings(
   if (names.length === 0 && !hasSwitch) return {};
   return {
     settings: {
-      ...(hasSwitch
-        ? { enabledPlugins: { 'switch-connector@switch-plugins': false } }
-        : {}),
-      ...(names.length > 0
-        ? { permissions: { allow: names.map((name) => `mcp__${name}`) } }
-        : {}),
+      ...(hasSwitch ? { enabledPlugins: { 'switch-connector@switch-plugins': false } } : {}),
+      ...(names.length > 0 ? { permissions: { allow: names.map((name) => `mcp__${name}`) } } : {}),
     },
   };
 }
