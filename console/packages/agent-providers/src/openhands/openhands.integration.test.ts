@@ -97,6 +97,19 @@ async function ready(
   expect(recorder.assistantText(turnId)).toContain('READY');
 }
 
+// Its ACP server reads lines of at most 64 KiB, and Switch's context is longer.
+it('answers a first turn whose system context is longer than the line OpenHands reads', async (ctx) => {
+  const reason = await unavailableReason();
+  if (reason) return ctx.skip(`openhands unavailable: ${reason}`);
+  await session(
+    'long-context',
+    {
+      systemContext: 'Background note for this session; nothing in it needs doing.\n'.repeat(1200),
+    },
+    async (adapter, recorder) => await ready(adapter, recorder, 'long-context')
+  );
+}, 300_000);
+
 // It accepts `session/set_model` and changes nothing, so its own record of the
 // conversation is what says which model answered.
 it('runs a turn on the model set in OpenHands, the only one it lists, and refuses another', async (ctx) => {

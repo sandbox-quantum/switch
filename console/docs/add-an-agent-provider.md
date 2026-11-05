@@ -107,6 +107,7 @@ Add hooks only for what really differs:
 | `resumeOnLaunch` | Only when the agent's `session/load` drops the session's MCP servers. `launch` is given the conversation to resume, and the session starts with `session/new` (OpenHands' `--resume`). |
 | `fixedModel` | Only when the agent runs the model in its own settings whatever `session/set_model` asks for (OpenHands accepts it and changes nothing). Return that model: the session lists it as its only one and refuses any other. |
 | `interruptPermissionWithError` | Only when the agent takes ACP's `cancelled` answer to a permission request as a refusal and carries on with the turn (OpenHands). A request an interrupt cuts off is answered with an error instead, which stops it. |
+| `maxLineBytes` | Only when the agent stops reading its input at a line longer than this (OpenHands, 64 KiB). Prompt text over it, the system context included, is sent in labelled parts, the earlier ones answered with "OK" and not shown; any other message over it is refused. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:
 

@@ -208,6 +208,40 @@ it('lists only the model an agent runs from its own settings, takes it, and refu
   );
 });
 
+it('sends a prompt longer than the agent reads in labelled parts, showing only the answer to the last', async () => {
+  const context = 'Context line, nothing to do.\n'.repeat(150);
+  const { adapter, events, server } = await start(
+    { ...dummy, maxLineBytes: 2000 },
+    { systemContext: context }
+  );
+  server.replyAlways('session/prompt', (params) => {
+    const [block] = params.prompt as Array<{ text: string }>;
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: block?.text.endsWith('go') ? 'done' : 'OK' },
+      },
+    });
+    return { stopReason: 'end_turn' };
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await vi.waitFor(() => expect(events.some((e) => e.type === 'turn.completed')).toBe(true));
+  const prompts = server.received.filter((m) => m.method === 'session/prompt');
+  expect(prompts.length).toBeGreaterThan(1);
+  for (const message of prompts)
+    expect(Buffer.byteLength(`${JSON.stringify(message)}\n`)).toBeLessThanOrEqual(2000);
+  const texts = prompts.map(
+    (m) => (m.params?.prompt as Array<{ text: string }> | undefined)?.[0]?.text ?? ''
+  );
+  expect(texts[0]).toMatch(/^\[Part 1 of \d+ of one message\. Reply with only "OK"/);
+  expect(texts.map((text) => text.slice(text.indexOf(']\n\n') + 3)).join('')).toBe(
+    `${context}\n\ngo`
+  );
+  expect(events.find((e) => e.type === 'turn.completed')).toMatchObject({ outcome: 'completed' });
+  expect(events.flatMap((e) => (e.type === 'content.delta' ? [e.delta] : []))).toEqual(['done']);
+});
+
 it('sends attachments as the agent advertises it can take them, else as resource links', async () => {
   agent.capabilities = { promptCapabilities: { image: true } };
   const { adapter, server } = await start();

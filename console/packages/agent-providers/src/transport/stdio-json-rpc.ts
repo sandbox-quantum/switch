@@ -25,6 +25,8 @@ export interface StdioJsonRpcClientOptions {
   /** Called once when the process goes away, whether or not it was asked to. */
   onExit: (reason: string) => void;
   rejectOutputLine?: (line: string) => string | undefined;
+  /** The longest line, newline included, the process reads. A longer message is refused, not written. */
+  maxLineBytes?: number;
 }
 
 export class JsonRpcError extends Error {
@@ -70,6 +72,7 @@ export class StdioJsonRpcClient {
   private readonly serverRequestHandlers = new Map<string, ServerRequestHandler>();
   private readonly logger: ProviderLogger;
   private readonly onExit: (reason: string) => void;
+  private readonly maxLineBytes: number | undefined;
   private stderrTail = '';
   private nextId = 0;
   private exited = false;
@@ -78,6 +81,7 @@ export class StdioJsonRpcClient {
   constructor(options: StdioJsonRpcClientOptions) {
     this.logger = options.logger;
     this.onExit = options.onExit;
+    this.maxLineBytes = options.maxLineBytes;
     this.child = spawnProvider(options.command, options.args, {
       cwd: options.cwd,
       env: options.env,
@@ -223,7 +227,13 @@ export class StdioJsonRpcClient {
     const stdin = this.child.stdin;
     if (!stdin || !stdin.writable)
       throw new Error('Provider input is closed; command was not written.');
-    stdin.write(`${JSON.stringify(message)}\n`);
+    const line = `${JSON.stringify(message)}\n`;
+    const bytes = Buffer.byteLength(line);
+    if (this.maxLineBytes !== undefined && bytes > this.maxLineBytes)
+      throw new Error(
+        `The message is ${bytes} bytes, more than the ${this.maxLineBytes} bytes the provider reads in one line; it was not sent.`
+      );
+    stdin.write(line);
   }
 
   private handleLine(line: string): void {

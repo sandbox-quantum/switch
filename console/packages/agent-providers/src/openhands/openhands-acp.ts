@@ -98,6 +98,10 @@ export const openhandsAcp: AcpProviderHooks = {
   // It accepts `session/set_model` and runs the model in its settings anyway.
   fixedModel: openhandsModel,
   interruptPermissionWithError: true,
+  // Its ACP server reads its input with asyncio's default 64 KiB line limit,
+  // and stops reading for good at a longer line. Switch's context alone is
+  // longer, so the first prompt of a session goes in parts.
+  maxLineBytes: 64 * 1024,
   // Its modes are confirmation policies. In auto mode its own security
   // analyzer settles every action it rates below high risk.
   sessionMode: (runtimeMode) => {

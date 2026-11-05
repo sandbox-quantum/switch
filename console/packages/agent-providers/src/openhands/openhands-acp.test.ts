@@ -47,7 +47,7 @@ beforeEach(() => {
   servers.length = 0;
   spawned.length = 0;
 });
-async function setup(resume?: string, home = '/home/a') {
+async function setup(resume?: string, home = '/home/a', systemContext?: string) {
   const adapter = createOpenhandsAdapter({ mcpRelay: relay });
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((e) => events.push(e));
@@ -61,6 +61,7 @@ async function setup(resume?: string, home = '/home/a') {
     },
     connectorMcpServers: [],
     ...(resume ? { resume: { nativeSessionId: resume } } : {}),
+    ...(systemContext ? { systemContext } : {}),
   });
   return { adapter, events, server: servers.at(-1)! };
 }
@@ -203,6 +204,20 @@ it('answers a confirmation an interrupt cuts off with an error, which OpenHands 
   expect(
     server.received.filter((m) => m.id !== undefined && !m.method).map((m) => m.error?.message)
   ).toEqual(['Error: The turn was interrupted.', 'Error: The turn was interrupted.']);
+});
+
+it('sends a first prompt over the 64 KiB line OpenHands reads in parts, each in one line', async () => {
+  const { adapter, server } = await setup(
+    undefined,
+    '/home/a',
+    'Switch context line.\n'.repeat(4000)
+  );
+  server.replyAlways('session/prompt', () => ({ stopReason: 'end_turn' }));
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'hello' });
+  const prompts = () => server.received.filter((m) => m.method === 'session/prompt');
+  await vi.waitFor(() => expect(prompts()).toHaveLength(2));
+  for (const message of prompts())
+    expect(Buffer.byteLength(`${JSON.stringify(message)}\n`)).toBeLessThanOrEqual(64 * 1024);
 });
 
 it('shows the task tool as a subagent', async () => {

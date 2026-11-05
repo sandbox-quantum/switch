@@ -124,6 +124,8 @@ interface State {
   messageText: string;
   stopping: boolean;
   interrupted: boolean;
+  /** The model is answering an earlier part of a prompt sent in parts; its text is not shown. */
+  muted: boolean;
   context: string;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   mcpNames: Set<string>;
@@ -133,6 +135,35 @@ interface State {
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
+}
+
+/** Room in a prompt part's line for the label saying which part it is. */
+const PART_LABEL_BYTES = 200;
+
+const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
+/**
+ * `text` cut into pieces that each take at most `bytes` inside a JSON string,
+ * after the last line end in a piece when the rest still fits in the next.
+ */
+function splitText(text: string, bytes: number): string[] {
+  const size = (value: string) => jsonBytes(value) - 2;
+  const pieces: string[] = [];
+  let piece = '';
+  let used = 0;
+  for (const char of text) {
+    const charBytes = size(char);
+    if (used + charBytes > bytes) {
+      let cut = piece.lastIndexOf('\n') + 1;
+      if (cut === 0 || size(piece.slice(cut)) + charBytes > bytes) cut = piece.length;
+      pieces.push(piece.slice(0, cut));
+      piece = piece.slice(cut);
+      used = size(piece);
+    }
+    piece += char;
+    used += charBytes;
+  }
+  return [...pieces, piece];
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -193,6 +224,7 @@ export class AcpAdapter implements ProviderAdapter {
       ...launch,
       cwd,
       logger: this.logger,
+      maxLineBytes: hooks.maxLineBytes,
       onExit: (reason) => this.exited(input.sessionId, reason),
     });
     const state: State = {
@@ -208,6 +240,7 @@ export class AcpAdapter implements ProviderAdapter {
       messageText: '',
       stopping: false,
       interrupted: false,
+      muted: false,
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
       mcpNames: new Set(Object.keys(input.mcpServers)),
@@ -380,10 +413,21 @@ export class AcpAdapter implements ProviderAdapter {
 
   private async run(state: State, input: ProviderSendTurnInput): Promise<string> {
     if (input.model) await this.setModel(state.id, input.model);
-    const prompt: Array<Record<string, unknown>> = [
-      { type: 'text', text: state.context ? `${state.context}\n\n${input.text}` : input.text },
-    ];
+    const parts = this.promptParts(
+      state,
+      state.context ? `${state.context}\n\n${input.text}` : input.text
+    );
     state.context = '';
+    for (const part of parts.slice(0, -1)) {
+      state.muted = true;
+      try {
+        const stopReason = await this.prompt(state, [{ type: 'text', text: part }]);
+        if (stopReason !== 'end_turn') return stopReason;
+      } finally {
+        state.muted = false;
+      }
+    }
+    const prompt: Array<Record<string, unknown>> = [{ type: 'text', text: parts.at(-1)! }];
     for (const attachment of input.attachments ?? []) {
       const { mimeType, path } = attachment;
       const media = mimeType.startsWith('image/')
@@ -413,12 +457,40 @@ export class AcpAdapter implements ProviderAdapter {
         });
       }
     }
+    return await this.prompt(state, prompt);
+  }
+
+  private async prompt(state: State, prompt: Array<Record<string, unknown>>): Promise<string> {
     return (
       await state.client.request<{ stopReason: string }>('session/prompt', {
         sessionId: state.nativeId,
         prompt,
       })
     ).stopReason;
+  }
+
+  /**
+   * The texts to send `text` in: itself, or for hooks with `maxLineBytes`, when
+   * its `session/prompt` would not fit in one line, labelled parts that each
+   * fit in one before any attachment is added to the last.
+   */
+  private promptParts(state: State, text: string): string[] {
+    const limit = this.hooks.maxLineBytes;
+    if (limit === undefined) return [text];
+    const envelope =
+      jsonBytes({
+        jsonrpc: '2.0',
+        id: Number.MAX_SAFE_INTEGER,
+        method: 'session/prompt',
+        params: { sessionId: state.nativeId, prompt: [{ type: 'text', text: '' }] },
+      }) + 1;
+    if (envelope + jsonBytes(text) - 2 <= limit) return [text];
+    const pieces = splitText(text, limit - envelope - PART_LABEL_BYTES);
+    return pieces.map((piece, index) =>
+      index < pieces.length - 1
+        ? `[Part ${index + 1} of ${pieces.length} of one message. Reply with only "OK" and do nothing else until the last part.]\n\n${piece}`
+        : `[Part ${pieces.length} of ${pieces.length}, the last. Act on all the parts as one message.]\n\n${piece}`
+    );
   }
 
   async interruptTurn(id: string): Promise<void> {
@@ -629,6 +701,7 @@ export class AcpAdapter implements ProviderAdapter {
       !Array.isArray(update.content) &&
       update.content.type === 'text'
     ) {
+      if (state.muted) return;
       if (!state.messageText)
         this.emit(state, {
           type: 'item.started',

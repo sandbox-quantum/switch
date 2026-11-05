@@ -143,6 +143,14 @@ export interface AcpProviderHooks {
    */
   interruptPermissionWithError?: boolean;
   /**
+   * The longest line, newline included, the agent reads from its input. At a
+   * longer one it stops reading for good without a word. Prompt text over it
+   * (a long system context, say) is sent in labelled parts, the model told to
+   * answer the earlier ones with only "OK", and those answers are not shown;
+   * any other message over it is refused rather than written.
+   */
+  maxLineBytes?: number;
+  /**
    * Whether the CLI is signed in, answered without signing it in: a check
    * must never be what changes its answer. `handshake` runs the agent and
    * returns its `initialize` answer. Without this hook the check runs the
