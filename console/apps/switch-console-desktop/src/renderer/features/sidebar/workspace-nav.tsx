@@ -58,7 +58,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     server: { icon: House, label: 'Home', params: homeParams },
     serverAgents: { icon: Bot, label: 'Your Agents', params: agentsParams },
     serverRooms: { icon: DoorOpen, label: 'Rooms', params: roomsParams },
-    library: { icon: Library, label: 'Library', params: libraryParams },
+    library: { icon: Library, label: 'Resources', params: libraryParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
     admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },

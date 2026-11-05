@@ -233,6 +233,19 @@ describe('the Library page', () => {
     );
   });
 
+  it('says where an agent’s room documents are, since they are not listed here', async () => {
+    await render(libraryView.MainPanel);
+    expect(container.textContent).not.toContain('belong to that room');
+    await act(async () => button('Documents')!.click());
+    await settle();
+    expect(container.textContent).toContain('Find them in the room’s Resources tab.');
+  });
+
+  it('calls the page Resources, as the gateway does', async () => {
+    await render(libraryView.MainPanel);
+    expect(container.querySelector('h1, h2')?.textContent).toBe('Resources');
+  });
+
   it('says so when there is nothing yet', async () => {
     state.items.references = [];
     await render(libraryView.MainPanel);

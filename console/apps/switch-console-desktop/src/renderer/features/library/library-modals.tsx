@@ -46,7 +46,7 @@ export function NewLibraryItemModal({ workspaceId, kind, onSuccess, onClose }: N
         input: inputOf(kind, form),
       });
       await invalidateLibrary(queryClient, workspaceId, kind);
-      toast({ title: `"${created.name}" added to the library` });
+      toast({ title: `"${created.name}" added to Resources` });
       onSuccess(created);
     } catch (e) {
       setError(failureText(e, `Could not add the ${text.noun}.`));

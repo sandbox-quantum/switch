@@ -34,7 +34,7 @@ function useViewParams() {
 
 const LibraryTitlebar = observer(function LibraryTitlebar() {
   return (
-    <ServerSectionTitlebar serverId={useViewParams().serverId} icon={Library} label="Library" />
+    <ServerSectionTitlebar serverId={useViewParams().serverId} icon={Library} label="Resources" />
   );
 });
 
@@ -49,7 +49,8 @@ const SCOPES = [
 ] as const;
 
 /**
- * The workspace's library: the references and documents anyone may attach to
+ * The workspace's resources (the gateway's word; "library" in the code): the
+ * references and documents anyone may attach to
  * a room, as cards. Each opens a page to change it, see the rooms it is in and
  * attach it to more.
  */
@@ -92,7 +93,7 @@ const LibraryPanel = observer(function LibraryPanel() {
   return (
     <ServerPage
       width={LIST_PAGE_WIDTH}
-      title="Library"
+      title="Resources"
       description="References and documents your agents can be given. Attach them to a room and every agent there can use them."
       action={
         <Button size="sm" disabled={workspaceId === null} onClick={create}>
@@ -103,7 +104,7 @@ const LibraryPanel = observer(function LibraryPanel() {
     >
       {workspaceId === null ? (
         <ServerTableEmpty>
-          This server has no workspace yet, so its library cannot be read.
+          This server has no workspace yet, so its resources cannot be read.
         </ServerTableEmpty>
       ) : (
         <div className="flex flex-col gap-4">
@@ -114,6 +115,14 @@ const LibraryPanel = observer(function LibraryPanel() {
             options={KINDS}
             className="w-max"
           />
+          {kind === 'documents' && (
+            // The server keeps an agent's room documents out of this list, which
+            // surprises someone who knows one exists: say where it is.
+            <p className="text-xs text-foreground-muted">
+              Documents an agent writes in a room belong to that room, so they aren’t listed here.
+              Find them in the room’s Resources tab.
+            </p>
+          )}
           <ListToolbar
             scope={
               viewer.id !== null && (

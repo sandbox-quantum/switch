@@ -233,15 +233,15 @@ describe('the Resources tab', () => {
   it('opens a reference or document from the library on its Library page, not a room-only one', async () => {
     const el = await renderPanel();
     await act(async () =>
-      el.querySelector<HTMLButtonElement>('[aria-label="Show Guide in the Library"]')!.click()
+      el.querySelector<HTMLButtonElement>('[aria-label="Show Guide in Resources"]')!.click()
     );
     expect(navigate).toHaveBeenCalledWith('libraryItem', {
       serverId: 'srv-1',
       kind: 'documents',
       itemId: 'd-1',
     });
-    expect(el.querySelector('[aria-label="Show Repo in the Library"]')).not.toBeNull();
-    expect(el.querySelector('[aria-label="Show Standup notes in the Library"]')).toBeNull();
-    expect(el.querySelector('[aria-label="Show Onboarding in the Library"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Show Repo in Resources"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Show Standup notes in Resources"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Show Onboarding in Resources"]')).toBeNull();
   });
 });

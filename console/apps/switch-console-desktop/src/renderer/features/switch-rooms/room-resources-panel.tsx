@@ -335,8 +335,8 @@ function ResourceRow({
         <Button
           variant="ghost"
           size="icon-xs"
-          aria-label={`Show ${resource.name} in the Library`}
-          title="Show in the Library"
+          aria-label={`Show ${resource.name} in Resources`}
+          title="Show in Resources"
           onClick={onShowInLibrary}
         >
           <Library />

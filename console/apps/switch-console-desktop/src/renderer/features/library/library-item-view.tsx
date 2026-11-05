@@ -83,7 +83,7 @@ const LibraryItemTitlebar = observer(function LibraryItemTitlebar() {
     <ServerSectionTitlebar
       serverId={serverId}
       icon={Library}
-      label="Library"
+      label="Resources"
       onSectionClick={() => navigate('library', { serverId, kind })}
       item={{ label: item.data?.name ?? KIND_TEXT[kind].Noun }}
     />
@@ -129,7 +129,7 @@ const LibraryItemPanel = observer(function LibraryItemPanel() {
         <PageHeader sticky title={text.Noun} back={back} />
         <p className="text-sm text-destructive">
           {workspaceId === null
-            ? 'This server has no workspace yet, so its library cannot be read.'
+            ? 'This server has no workspace yet, so its resources cannot be read.'
             : failureText(item.error, `Could not read this ${text.noun}.`)}
         </p>
       </Page>
