@@ -154,6 +154,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(id="junie", label="Junie", sign_in_command="junie"),
 )
 
 
