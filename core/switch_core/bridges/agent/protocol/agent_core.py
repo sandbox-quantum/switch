@@ -34,7 +34,13 @@ from switch_core.agent_icon import (
 )
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.authz import Action, Principal, require, require_manage
+from switch_core.authz import (
+    Action,
+    Principal,
+    require,
+    require_group_filing,
+    require_manage,
+)
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.mediation import MediationService
@@ -2934,6 +2940,10 @@ class AgentCore:
             agent, _owner_id, owner_is_admin = await self._resolve_acting_identity(
                 session, agent_id
             )
+            # Before resolving the name: the lookup's errors would map the
+            # group tree for an agent that may not file into any of it.
+            if group_name is not None:
+                require_group_filing(owner_is_admin)
             group_id = await self._resolve_group_name(session, group_name)
             owner = await session.get(User, agent.owner_id) if agent.owner_id else None
         if (reference_ids or package_ids) and agent.owner_id is None:

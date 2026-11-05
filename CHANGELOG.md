@@ -109,9 +109,19 @@ version of their own to them without also giving them a release of their own.
   whole workspace and have no owner, so any member could rename, move or
   delete one. Creating, changing and deleting a group, from the dashboard,
   the API or an agent's `create_room_group`, now needs a workspace admin (for
-  an agent, its owner). Anyone can still file a room they can write into an
-  existing group. Group room counts, and the rooms `get_room_group_detail`
-  lists, now leave out private rooms the caller cannot read.
+  an agent, its owner). Group room counts, and the rooms
+  `get_room_group_detail` lists, now leave out private rooms the caller
+  cannot read.
+- **Only a workspace admin puts a room in a room group.** A room's group can
+  decide who may address an agent, since an addressing policy can admit
+  everyone in a group's rooms, so any member who filed a room they could
+  write into a group could address that group's agents. Putting a room in a
+  group, whether when creating it, from the room's page, from the groups
+  page or through an agent's `create_room`, now needs a workspace admin (for
+  an agent, its owner). Running a template that makes a room group now
+  needs a workspace admin too, and an agent cannot run one, since it runs
+  templates without its owner's admin reach. Taking a room out of its group
+  still only needs write access to the room.
 
 #### Added
 - **The gateway says what the caller may change in a room.** Rooms, in the
