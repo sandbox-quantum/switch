@@ -785,7 +785,8 @@ export interface ApiKeyDetail {
   type: string;
   key_prefix: string;
   created_at: string;
-  // Copying the key, and deleting it (never an agent's own key).
+  // Copying the key, and deleting it: never a key an agent still signs in
+  // with, though one a deleted agent left behind can go.
   can_reveal: boolean;
   can_delete: boolean;
 }

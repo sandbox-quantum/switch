@@ -34,8 +34,9 @@ describe("RegistrationKeysPage", () => {
   it("offers copy and delete only where the server says each may be done", async () => {
     serve([
       key("mine", {}),
-      key("bootstrap", { type: "bootstrap", can_reveal: true, can_delete: false }),
-      key("agent", { type: "agent", label: "helper", can_reveal: true, can_delete: false }),
+      key("bootstrap", { type: "bootstrap" }),
+      key("active", { type: "agent", label: "helper", can_delete: false }),
+      key("leftover", { type: "agent", label: "deleted-helper" }),
       key("hidden", { type: "agent", label: "theirs", can_reveal: false, can_delete: false }),
     ]);
     render(<RegistrationKeysPage />);
@@ -43,12 +44,15 @@ describe("RegistrationKeysPage", () => {
     const mine = within(await screen.findByTestId("row-mine"));
     expect(mine.getByRole("button", { name: "Delete mine" })).toBeTruthy();
     expect(mine.getAllByRole("button")).toHaveLength(2);
+    expect(within(screen.getByTestId("row-bootstrap")).getAllByRole("button")).toHaveLength(2);
 
-    const bootstrap = within(screen.getByTestId("row-bootstrap"));
-    expect(bootstrap.queryByRole("button", { name: "Delete bootstrap" })).toBeNull();
-    expect(bootstrap.getAllByRole("button")).toHaveLength(1);
+    const active = within(screen.getByTestId("row-active"));
+    expect(active.queryByRole("button", { name: "Delete helper" })).toBeNull();
+    expect(active.getAllByRole("button")).toHaveLength(1);
 
-    expect(within(screen.getByTestId("row-agent")).getAllByRole("button")).toHaveLength(1);
+    const leftover = within(screen.getByTestId("row-leftover"));
+    expect(leftover.getByRole("button", { name: "Delete deleted-helper" })).toBeTruthy();
+
     expect(within(screen.getByTestId("row-hidden")).queryAllByRole("button")).toHaveLength(0);
   });
 });
