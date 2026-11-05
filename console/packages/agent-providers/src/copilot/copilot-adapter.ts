@@ -20,7 +20,14 @@ export function copilotEnvSignIn(env: Record<string, string>): boolean {
     return true;
   }
   if (env.COPILOT_PROVIDERS_CONFIG?.trim()) return true;
-  return Object.keys(env).some((key) => key.startsWith('COPILOT_PROVIDER_') && env[key]?.trim());
+  // A provider type by itself does not authenticate anything. The inline
+  // provider form needs an endpoint and a credential (or a credential command).
+  const endpoint = env.COPILOT_PROVIDER_BASE_URL?.trim();
+  const credential =
+    env.COPILOT_PROVIDER_API_KEY?.trim() ||
+    env.COPILOT_PROVIDER_BEARER_TOKEN?.trim() ||
+    env.COPILOT_PROVIDER_API_KEY_COMMAND?.trim();
+  return Boolean(endpoint && credential);
 }
 
 /**
