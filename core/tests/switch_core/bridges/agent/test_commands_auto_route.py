@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent import commands
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_auto_route
 from switch_core.bridges.collaboration.own_app_setup import slack_manifest
 from switch_core.db.models import (
@@ -98,7 +99,10 @@ def _host(
         reply_command=_reply_command,
         _room_store=RoomStore(),
         _agent_store=AgentStore(),
-        _addressing=SimpleNamespace(resolve_sender=_resolve_sender),
+        # Not `_addressing`: the Switch app's command consumer has no
+        # resolver of its own, so the command builds one from its stores
+        # (`_command_resolver`, stubbed below to resolve to `sender`).
+        _fake_resolve_sender=_resolve_sender,
         _decision_availability=DecisionAvailability(
             enabled=flag,
             server=ServerDefault(
@@ -110,6 +114,16 @@ def _host(
         ),
     )
     return host, posted
+
+
+@pytest.fixture(autouse=True)
+def _resolve_through_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        commands,
+        "_command_resolver",
+        lambda host: SimpleNamespace(resolve_sender=host._fake_resolve_sender),
+        raising=False,
+    )
 
 
 async def _run(host: SimpleNamespace, args: str) -> None:
