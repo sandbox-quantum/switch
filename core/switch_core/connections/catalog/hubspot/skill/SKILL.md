@@ -14,10 +14,12 @@ up or renew.
 - **You act as your owner.** Everything you read is what they can see in
   HubSpot, and everything you create, edit or delete shows there as done by
   them. HubSpot's own user permissions still apply to every call.
-- **Read or write is your owner's choice, made when they connected.** On a
-  read-only connection the create, update and delete tools refuse or are
-  missing: tell the user you can only read, rather than looking for another
-  way.
+- **This connection can write.** HubSpot's MCP connector does not offer a
+  vendor-enforced read-only consent boundary. Switch passes through the
+  available tools; even a connection labelled read can still have write
+  tools allowed by the owner's HubSpot permissions. A request to read is
+  never permission to change records. Do not call this connection
+  technically read-only or promise its write calls will be refused.
 - When a tool is refused, tell the user what you could not do. If Switch says
   the grant was removed or the connection must be reconnected, your owner has
   to do that.
