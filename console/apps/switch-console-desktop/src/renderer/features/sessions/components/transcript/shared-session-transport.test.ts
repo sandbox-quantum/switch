@@ -5,6 +5,7 @@ const ipc = vi.hoisted(() => ({
   transcriptOpen: vi.fn(),
   transcriptClose: vi.fn(),
   sessionSubmit: vi.fn(),
+  sessionUploadAttachment: vi.fn(),
 }));
 const bus = vi.hoisted(() => ({
   listeners: new Map<string, (payload: never) => void>(),
@@ -79,8 +80,28 @@ it('sends commands to the session through main', async () => {
   );
 });
 
-it('offers no attachment upload: the host takes files only from its rooms', () => {
-  expect(hostJournalTransport('agent').uploadAttachment).toBeUndefined();
+it('uploads attachments through main to the session host', async () => {
+  ipc.sessionUploadAttachment.mockResolvedValueOnce({
+    attachmentId: 'attachment',
+    name: 'file.pdf',
+    mimeType: 'application/pdf',
+    bytes: 12,
+    sha256: 'digest',
+  });
+  const file = {
+    attachmentId: 'attachment',
+    name: 'file.pdf',
+    mimeType: 'application/pdf',
+    data: 'cGRm',
+  };
+  await expect(hostJournalTransport('agent').uploadAttachment?.('session', file)).resolves.toEqual({
+    attachmentId: 'attachment',
+    name: 'file.pdf',
+    mimeType: 'application/pdf',
+    bytes: 12,
+    sha256: 'digest',
+  });
+  expect(ipc.sessionUploadAttachment).toHaveBeenCalledWith('agent', 'session', file);
 });
 
 it('reports a broken live feed so the view reloads the session', () => {

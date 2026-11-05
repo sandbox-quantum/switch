@@ -79,6 +79,12 @@ export {
   STOP_MESSAGE,
 } from './host/stop-request';
 export {
+  attachmentChunkSchema,
+  MAX_CHUNK_BYTES,
+  type AttachmentChunk,
+} from './host/attachment-transfers';
+export { ATTACHMENT_MIME_TYPES, MAX_ATTACHMENT_BYTES, stageAttachment } from './host/attachments';
+export {
   isProviderRecheckReply,
   isProviderRecheckRequest,
   PROVIDER_RECHECK_KIND,

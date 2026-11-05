@@ -3,6 +3,7 @@ import {
   serverEventSchema,
   type SessionTransport,
 } from '@switch-console/shared/session-v1';
+import type { AttachmentUpload } from '@switch-console/shared/session-v1';
 import { events, rpc } from '@renderer/lib/ipc';
 import {
   sessionTranscriptEventChannel,
@@ -15,12 +16,14 @@ import {
  * and every command sent to the host the same way. Sequence numbers are the
  * host's own.
  *
- * No attachment upload: the host takes files only from the rooms it is
- * addressed in, so the composer says attachments are unavailable here.
+ * Attachments are staged on the session host before the submitted command
+ * names them, just as when the host receives a file from its room.
  */
 export function hostJournalTransport(agentId: string): SessionTransport {
   return {
     snapshot: (id) => rpc.sdkHost.transcriptOpen(agentId, id),
+    uploadAttachment: (sessionId, file: AttachmentUpload) =>
+      rpc.sdkHost.sessionUploadAttachment(agentId, sessionId, file),
     subscribe(id, after, onEvent, onError, onCursor) {
       let cursor = after;
       const off = events.on(
