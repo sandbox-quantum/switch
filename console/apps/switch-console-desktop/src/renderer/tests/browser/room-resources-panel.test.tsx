@@ -52,6 +52,10 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { serverIdFor: () => 'srv-1', activeId: 'ws-1' },
 }));
 
+vi.mock('@renderer/lib/hooks/useTheme', () => ({
+  useTheme: () => ({ effectiveTheme: 'emlight' }),
+}));
+
 import { RoomResourcesPanel } from '@renderer/features/switch-rooms/room-resources-panel';
 
 const base = {
@@ -163,9 +167,8 @@ describe('the Resources tab', () => {
     const open = [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('Guide'))!;
     await act(async () => open.click());
     for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
-    expect(document.querySelector('[data-slot="dialog-content"]')?.textContent).toContain(
-      'Read **this** first.'
-    );
+    // Rendered as markdown, from what the listing carried.
+    expect(document.querySelector('[data-slot="dialog-content"] strong')?.textContent).toBe('this');
   });
 
   it('offers attaching, detaching, deleting and linking to someone who may change the room', async () => {
