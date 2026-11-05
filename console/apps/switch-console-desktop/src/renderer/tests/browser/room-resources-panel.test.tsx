@@ -275,4 +275,18 @@ describe('the Resources tab', () => {
       [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Open in Resources')
     ).toBeUndefined();
   });
+
+  it('opens a package on its page in Resources when clicked', async () => {
+    const el = await renderPanel();
+    await act(async () =>
+      [...el.querySelectorAll('[aria-label="Packages"] button')]
+        .find((b) => b.textContent?.includes('Onboarding'))!
+        .click()
+    );
+    expect(navigate).toHaveBeenCalledWith('libraryItem', {
+      serverId: 'srv-1',
+      kind: 'packages',
+      itemId: 'pkg-1',
+    });
+  });
 });
