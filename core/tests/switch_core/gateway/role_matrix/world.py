@@ -139,6 +139,10 @@ class World:
     async def tenant(self) -> str:
         return TENANT
 
+    async def self_id(self) -> str:
+        """The asking persona's own id."""
+        return self.id_of(Persona(self.tag))
+
     async def owner(self) -> str:
         return self.owner_id
 
@@ -219,6 +223,20 @@ class World:
     async def agent_name(self) -> str:
         await self.agent()
         return self.name("agent")
+
+    async def sub_agent(self) -> str:
+        """A sub-agent of the owner's agent."""
+        parent_id = await self.agent()
+        sub_id = str(await self._once("sub_agent", self._agent("sub-agent")))
+
+        async def make(session: AsyncSession) -> str:
+            sub = await session.get(Agent, sub_id)
+            assert sub is not None
+            sub.parent_agent_id = parent_id
+            await session.flush()
+            return sub_id
+
+        return str(await self._once("sub_agent_parented", make))
 
     async def other_agent(self) -> str:
         return str(await self._once("other_agent", self._agent("other-agent")))
@@ -303,6 +321,45 @@ class World:
 
     async def room(self) -> str:
         return str(await self._once("room", self._room(self.name("room"))))
+
+    async def readable_room(self) -> str:
+        """A room of the owner's that everyone may read and only its owner
+        and admins may change."""
+
+        async def make(session: AsyncSession) -> str:
+            room = Room(
+                transport_room_id=f"!{self.name('readable-room')}:test",
+                name=self.name("readable-room"),
+                description="",
+                owner_id=self.owner_id,
+                read_visibility="public",
+                write_visibility="private",
+            )
+            session.add(room)
+            await session.flush()
+            return room.id
+
+        return str(await self._once("readable_room", make))
+
+    async def room_document_itself(self) -> str:
+        """A document of the room's own, as an agent writes one there."""
+        room_id = await self.room()
+
+        async def make(session: AsyncSession) -> str:
+            document = Document(
+                owner_id=self.owner_id,
+                room_id=room_id,
+                name=self.name("room-own-document"),
+                description="",
+                instructions="",
+                content="",
+                **_PRIVATE,
+            )
+            session.add(document)
+            await session.flush()
+            return document.id
+
+        return str(await self._once("room_document_itself", make))
 
     async def other_room(self) -> str:
         return str(await self._once("other_room", self._room(self.name("other-room"))))
