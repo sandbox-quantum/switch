@@ -10,6 +10,8 @@ import { cursorAcp } from '../cursor/cursor-adapter';
 import { deepseekHarnessAcp } from '../deepseek-harness/deepseek-harness-acp';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
 import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
+import { createPiAdapter } from '../pi/pi-adapter';
+import { checkPiSignIn, PI_INHERIT_ENV, PI_LOGIN } from '../pi/sign-in';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 
@@ -108,6 +110,15 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   acpProviderRuntime(antigravityAcp),
   acpProviderRuntime(cursorAcp),
   acpProviderRuntime(deepseekHarnessAcp),
+  {
+    id: 'pi',
+    loginCommand: PI_LOGIN,
+    inheritEnv: PI_INHERIT_ENV,
+    unsupportedPlatforms: {},
+    createAdapter: ({ binaryPath, logger }) =>
+      createPiAdapter({ binaryPath, ...(logger ? { logger } : {}) }),
+    checkSignIn: checkPiSignIn,
+  },
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));

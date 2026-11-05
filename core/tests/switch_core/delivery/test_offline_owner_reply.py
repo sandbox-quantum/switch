@@ -202,6 +202,7 @@ class TestUnavailableReplyRouting:
             "antigravity": "agy acp --login",
             "cursor": "agent login",
             "deepseek-harness": "dsh web",
+            "pi": "pi",
         }
         for agent_type, command in sign_in.items():
             agent = _agent(

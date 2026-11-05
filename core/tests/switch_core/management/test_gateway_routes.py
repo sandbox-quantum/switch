@@ -489,6 +489,7 @@ class TestManagedAgents:
             "cursor",
             "antigravity",
             "deepseek-harness",
+            "pi",
         }
         assert providers["cursor"] == {"fields": []}
         effort = next(
@@ -516,6 +517,7 @@ class TestManagedAgents:
             "antigravity",
             "cursor",
             "deepseek-harness",
+            "pi",
         ]
         assert providers[0]["label"] == "Claude Code"
         for entry in providers:

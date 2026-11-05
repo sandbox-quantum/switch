@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity, Cursor and DeepSeek Harness. Local sessions and sessions reached through SSH run
+Antigravity, Cursor, DeepSeek Harness and Pi. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -241,7 +241,7 @@ the native thread setting. Choose an explicit effort to replace it. Claude
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
 boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
 `session.summarize` with native busy/idle completion. Console shows progress and the
-outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
+outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt. Pi compacts with its own RPC `compact` command.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
@@ -251,6 +251,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity ad
 | Antigravity (`agy acp`) | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 | DeepSeek Harness | Yes | ACP `model` option (its `[provider, model]` routes) | Unavailable | Staged file references |
+| Pi | Yes | Models of the providers Pi has credentials for | RPC `compact` | Images as bytes; other files named by path |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
@@ -396,7 +397,7 @@ resumes or attaches, including ones started automatically:
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
-  uses Smart Auto, Antigravity approves edits and asks before commands, and DeepSeek
+  uses Smart Auto, Antigravity and Pi approve edits and ask before commands, and DeepSeek
   Harness, with no reviewer of its own, asks before every tool except those that only read or search files.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
@@ -430,12 +431,13 @@ missing login. Existing sessions are not stopped when a setup check fails.
 
 Claude uses its native auth status command. Codex uses app-server account status.
 Cursor uses its native account status output. Antigravity initializes an empty
-session without sending a prompt, and returns its native model list. OpenCode checks connected backends; a local or free backend may need no
+session without sending a prompt, and returns its native model list. Pi lists the
+models it has credentials for (`pi --list-models`, offline). OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials
 can expire after a check. All model fields use the same editable picker: select a model from the host
 catalogue or enter an ID. Blank uses the provider default. Loading and failed
 catalogue checks are visible and do not prevent text entry. Claude, Codex,
-Cursor and Antigravity catalogues come from native SDK initialization without a
+Cursor, Antigravity and Pi catalogues come from native SDK initialization without a
 prompt; each metadata session is stopped after the probe. OpenCode uses its
 existing host catalogue.
 

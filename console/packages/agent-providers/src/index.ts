@@ -39,6 +39,8 @@ export { createOpencodeAdapter, OpencodeAdapter } from './opencode/opencode-adap
 export type { OpencodeSkill } from './opencode/server';
 export type { CodexAdapterOptions } from './codex/codex-adapter';
 export { CodexAdapter, createCodexAdapter } from './codex/codex-adapter';
+export type { PiAdapterOptions } from './pi/pi-adapter';
+export { createPiAdapter, PiAdapter } from './pi/pi-adapter';
 export { AcpAdapter, createAcpAdapter } from './acp/acp-adapter';
 export type {
   AcpAdapterOptions,
