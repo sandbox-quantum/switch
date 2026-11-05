@@ -625,6 +625,14 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **The dashboard's addressing policy editor judges rules as the server
+  does.** A rule letting in only the agent's owner, or its owner's agents,
+  was taken for one that lets in nobody, and Save was held; the editor now
+  shows both choices, and says why a rule can never let anyone in in the
+  server's own words. A restricted policy with no rules lets anyone address
+  the agent, as documented, though the editor said it let in nobody:
+  choosing Restricted now starts with an owner-only rule, the last rule
+  cannot be removed, and a policy saved with no rules shows as Open.
 - **The dashboard opens and offers only what the server would allow.** A
   page someone may not open no longer loads into a column of refusals: typing
   its address says why instead, or that the server does not run it, and a
