@@ -492,30 +492,34 @@ export const managedAgentsController = createRPCController({
     // On a cloud box with hosted agents v2, the box's login for the agent's
     // provider goes with its last agent there (as Switch web does it).
     await withReachableServerWorkspaceSession(params.serverId, (server) =>
-      deleteMindingBoxLogin(params.agentId, {
-        hostedV2: () => hostedV2On(server),
-        agents: async () =>
-          (await fetchManagedAgents(server)).map((agent) => ({
-            agentId: agent.agentId,
-            label: agent.displayName || agent.name,
-            controllerId: agent.controllerId,
-            provider: agent.provider,
-          })),
-        boxControllerId: async () =>
-          ((await listCloudMachines(server)) ?? []).find((machine) => machine.backend === 'box')
-            ?.controller_id ?? null,
-        loginProviders: (controllerId) => fetchMachineLoginProviders(server, controllerId),
-        withdrawLogin: async (controllerId, provider) => {
-          try {
-            await withdrawMachineLogin(server, controllerId, provider);
-            return 'withdrawn';
-          } catch (error) {
-            if (error instanceof GatewayError && error.status === 404) return 'gone';
-            throw error;
-          }
+      deleteMindingBoxLogin(
+        params.agentId,
+        {
+          hostedV2: () => hostedV2On(server),
+          agents: async () =>
+            (await fetchManagedAgents(server)).map((agent) => ({
+              agentId: agent.agentId,
+              label: agent.displayName || agent.name,
+              controllerId: agent.controllerId,
+              provider: agent.provider,
+            })),
+          boxControllerId: async () =>
+            ((await listCloudMachines(server)) ?? []).find((machine) => machine.backend === 'box')
+              ?.controller_id ?? null,
+          loginProviders: (controllerId) => fetchMachineLoginProviders(server, controllerId),
+          withdrawLogin: async (controllerId, provider) => {
+            try {
+              await withdrawMachineLogin(server, controllerId, provider);
+              return 'withdrawn';
+            } catch (error) {
+              if (error instanceof GatewayError && error.status === 404) return 'gone';
+              throw error;
+            }
+          },
+          deleteAgent: () => deleteAgent(server, params.agentId),
         },
-        deleteAgent: () => deleteAgent(server, params.agentId),
-      }, params.confirmedWithdraw)
+        params.confirmedWithdraw
+      )
     );
     await agentMigrationService
       .forgetDeleted(params.serverId, params.agentId)
