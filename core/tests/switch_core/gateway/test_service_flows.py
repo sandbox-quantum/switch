@@ -105,14 +105,20 @@ def _world(
     organization_apps: object = None,
     markers: str = "",
     named: RedirectMode | None = None,
+    loopback_callback_path: str | None = None,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
+    path = (
+        f"\n    loopback_callback_path: {loopback_callback_path}"
+        if loopback_callback_path is not None
+        else ""
+    )
     _write_example(
         root,
         entry.replace(
-            "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
+            "redirect: [loopback, core]", f"redirect: {redirect}{ports}{path}"
         ).replace("tools: {", f"{markers}tools: {{"),
     )
     catalog = load_catalog(root)
@@ -127,7 +133,12 @@ def _world(
         http=vendor.client(),
         client_name="Switch (switch.example.com)",
         redirect_uris=redirect_uris(
-            "example", oauth.redirect, named, PUBLIC, oauth.loopback_ports
+            "example",
+            oauth.redirect,
+            named,
+            PUBLIC,
+            oauth.loopback_ports,
+            oauth.loopback_callback_path,
         ),
         scopes=["read:items", "write:items"],
     )
@@ -222,11 +233,11 @@ class Console:
         )
 
 
-def _listener_code(url: str, state: str) -> str:
+def _listener_code(url: str, state: str, path: str = LOOPBACK_CALLBACK_PATH) -> str:
     """What Console's listener takes from the redirect it receives."""
     parts = urlsplit(url)
     assert f"{parts.scheme}://{parts.netloc}" == f"http://127.0.0.1:{PORT}"
-    assert parts.path == LOOPBACK_CALLBACK_PATH
+    assert parts.path == path
     query = parse_qs(parts.query)
     assert query["state"] == [state]
     return query["code"][0]
@@ -784,6 +795,89 @@ class TestLoopbackPorts:
         assert refused.status_code == 409
         assert "port 43123, 43124" in refused.json()["detail"]
         assert await _flow_ids(session_factory) == set()
+
+
+class TestLoopbackCallbackPath:
+    """A catalog entry naming its own loopback path, as New Relic's does."""
+
+    async def test_signs_in_on_the_entrys_own_path_not_the_servers_default(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback]",
+            loopback_callback_path="/callback",
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            query = parse_qs(urlsplit(started.json()["url"]).query)
+            assert query["redirect_uri"] == [f"http://127.0.0.1:{PORT}/callback"]
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]),
+                console.state,
+                path="/callback",
+            )
+            completed = await console.complete(code)
+            assert completed.status_code == 200, completed.text
+
+    async def test_a_code_on_the_servers_default_path_is_not_this_flows(
+        self, session_factory, tmp_path
+    ) -> None:
+        """Console's listener for this flow only answers on the entry's own
+        path; a code on the server's default path is not addressed to it."""
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback]",
+            loopback_callback_path="/callback",
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            back = urlsplit(world.vendor.authorize(started.json()["url"]))
+            assert back.path == "/callback"
+            assert back.path != LOOPBACK_CALLBACK_PATH
+
+    async def test_a_long_code_on_the_entrys_own_path_comes_back_through_core(
+        self, session_factory, tmp_path
+    ) -> None:
+        """In core mode, Core's own relay to Console's listener uses the
+        entry's path too, not the server's default. loopback_callback_path is
+        only valid alongside a loopback redirect (even an unused one), so
+        `core` is listed first to make the server actually pick it."""
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[core, loopback]",
+            public_url=PUBLIC,
+            loopback_callback_path="/callback",
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            cookie = {
+                f"switch_service_{console.state}": left.cookies[
+                    f"switch_service_{console.state}"
+                ]
+            }
+            back = urlsplit(world.vendor.authorize(left.headers["location"]))
+            code = parse_qs(back.query)["code"][0]
+            returned = await client.get(f"{back.path}?{back.query}", cookies=cookie)
+            assert returned.status_code == 303
+            assert (
+                _listener_code(
+                    returned.headers["location"], console.state, path="/callback"
+                )
+                == code
+            )
+            assert (await console.complete(code)).status_code == 200
 
 
 class _AskedOrganizationApps:

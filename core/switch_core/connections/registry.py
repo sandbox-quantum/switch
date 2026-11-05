@@ -140,6 +140,7 @@ def build_adapter(
                 registration.redirects.get(slug),
                 registration.public_url,
                 oauth.loopback_ports,
+                oauth.loopback_callback_path,
             )
             if not uris:
                 raise ServiceSetupError(

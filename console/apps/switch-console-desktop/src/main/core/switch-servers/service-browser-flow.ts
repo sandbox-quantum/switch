@@ -47,9 +47,10 @@ export async function startServiceBrowserFlow(
     (candidate) => candidate.slug === service
   );
   const name = catalogEntry?.name ?? service;
+  const callbackPath = catalogEntry?.loopback_callback_path ?? SERVICE_CALLBACK_PATH;
   const listener = await listenForSignIn({
     name,
-    path: SERVICE_CALLBACK_PATH,
+    path: callbackPath,
     state,
     maxCodeLength: MAX_CODE_LENGTH,
     ports: catalogEntry?.loopback_ports ?? null,
@@ -90,12 +91,17 @@ export async function startServiceBrowserFlow(
   active.set(key(server, service, state), entry);
   let started = false;
   try {
-    const flow = await startServiceConnection(server, service, {
-      port: listener.port,
-      state,
-      completion_secret: secret,
-      choices,
-    });
+    const flow = await startServiceConnection(
+      server,
+      service,
+      {
+        port: listener.port,
+        state,
+        completion_secret: secret,
+        choices,
+      },
+      callbackPath
+    );
     started = true;
     try {
       await open(flow.url);

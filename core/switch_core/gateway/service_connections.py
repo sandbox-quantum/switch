@@ -200,6 +200,13 @@ async def list_service_connections(
                     if definition.auth.oauth is None
                     else definition.auth.oauth.loopback_ports
                 ),
+                # The path Switch Console's listener takes a sign-in back on,
+                # in place of its default; null for the default.
+                "loopback_callback_path": (
+                    None
+                    if definition.auth.oauth is None
+                    else definition.auth.oauth.loopback_callback_path
+                ),
                 # What a person pastes to connect a service connected with a
                 # key, and where they make one; null for any other.
                 "key": _key_form(definition),
