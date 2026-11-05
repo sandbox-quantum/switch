@@ -15,7 +15,11 @@ function alive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    // Only ESRCH means gone; on Windows a process at a different elevation or
+    // in another session answers EPERM, which means it exists.
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
     throw error;
   }
 }

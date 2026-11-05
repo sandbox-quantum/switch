@@ -704,7 +704,12 @@ export async function runAgentHost(
         process.kill(pid, 0);
         throw new Error('The shared SDK watcher is already running.');
       } catch (error) {
-        if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        // EPERM on Windows means a watcher owns this root at an elevation or
+        // session this process cannot signal: it is running, so report that
+        // rather than the raw errno and rather than seizing the root from it.
+        if (code === 'EPERM') throw new Error('The shared SDK watcher is already running.');
+        if (!['ENOENT', 'ESRCH'].includes(code ?? '')) throw error;
       }
       await replaceOwner(ownerPath, owner);
     },
