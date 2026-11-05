@@ -9,6 +9,7 @@ import asyncio
 import uuid
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
@@ -42,7 +43,7 @@ from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway import workspace_creation
+from switch_core.gateway import organizations, workspace_creation
 from switch_core.gateway.auth import create_jwt, decode_jwt
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
@@ -569,6 +570,54 @@ class TestThePlatformOperator:
         assert changed.actor_user_id == operator_id
         assert changed.details is not None
         assert changed.details["platform_access"] is True
+
+    async def test_an_operator_in_the_organization_may_restore_themselves(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Making themselves its `org_admin` is no stepping down, so the
+        rule that an admin's own row is changed by another doesn't stop it."""
+        op = _name("op")
+        tenant_id = await _workspace(session_factory, {op: ("member", "member")})
+        async with session_factory() as session:
+            operator = await session.get(User, op)
+            assert operator is not None
+            operator.role = "admin"
+            await session.commit()
+
+        async with _client(_app(session_factory), op, tenant_id) as client:
+            [row] = (await client.get("/organizations/current/members")).json()
+            restored = await client.patch(
+                f"/organizations/current/members/{op}", json={"role": "org_admin"}
+            )
+
+        assert (row["can_change_role"], row["can_remove"]) == (True, False)
+        assert restored.status_code == 200, restored.text
+        assert restored.json()["role"] == "org_admin"
+        # Now their own row as an `org_admin`, which another one changes.
+        assert (
+            restored.json()["can_change_role"],
+            restored.json()["can_remove"],
+        ) == (False, False)
+
+    async def test_once_the_operator_restores_someone_else_their_way_in_closes(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bob = _name("bob")
+        tenant_id = await _workspace(session_factory, {bob: ("member", "member")})
+        operator_id = await _operator(session_factory)
+
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
+            restored = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "org_admin"}
+            )
+
+        assert restored.status_code == 200, restored.text
+        flags = restored.json()
+        assert (
+            flags["can_change_role"],
+            flags["can_grant_org_admin"],
+            flags["can_remove"],
+        ) == (False, False, False)
 
 
 async def _user(session_factory: async_sessionmaker[AsyncSession], role: str) -> str:
@@ -1323,6 +1372,94 @@ async def _organization_of(
         tenant = await session.get(Tenant, tenant_id)
         assert tenant is not None and tenant.organization_id is not None
         return tenant.organization_id
+
+
+class TestTheLastOrgAdminUnderARace:
+    """An admin's own row is changed by another admin, so the last `org_admin`
+    is only ever reached by two of them acting at once. These make the other
+    one's change land while the first is ending the target's access, the
+    window the re-count under the lock covers, so the refusal is seen every
+    time rather than when the timing allows."""
+
+    @staticmethod
+    def _demoted_meanwhile(
+        monkeypatch: pytest.MonkeyPatch,
+        session_factory: async_sessionmaker[AsyncSession],
+        organization_id: str,
+        caller: str,
+    ) -> None:
+        end_access = organizations._end_access_through_organization
+
+        async def and_the_caller_is_demoted(*args: Any, **kwargs: Any) -> str | None:
+            warning = await end_access(*args, **kwargs)
+            async with session_factory() as session:
+                member = await session.get(
+                    OrganizationMember, (organization_id, caller)
+                )
+                assert member is not None
+                member.role = "member"
+                await session.commit()
+            return warning
+
+        monkeypatch.setattr(
+            organizations, "_end_access_through_organization", and_the_caller_is_demoted
+        )
+
+    async def test_demoting_the_other_admin_is_refused_once_it_would_be_the_last(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "org_admin")}
+        )
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert organization_id is not None
+        self._demoted_meanwhile(monkeypatch, session_factory, organization_id, ada)
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            response = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "member"}
+            )
+
+        assert response.status_code == 409, response.text
+        assert "last organization admin" in response.json()["detail"]
+        async with session_factory() as session:
+            assert await OrganizationStore().count_admins(session, organization_id) == 1
+
+    async def test_removing_the_other_admin_is_refused_once_it_would_be_the_last(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ada, bob, cy = _name("ada"), _name("bob"), _name("cy")
+        tenant_id = await _workspace(session_factory, {cy: ("admin", "member")})
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert organization_id is not None
+        async with session_factory() as session:
+            for name in (ada, bob):
+                session.add(
+                    User(
+                        id=name, name=name, email=f"{name}@example.invalid", role="user"
+                    )
+                )
+                await session.flush()
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id, user_id=name, role="org_admin"
+                    )
+                )
+            await session.commit()
+        self._demoted_meanwhile(monkeypatch, session_factory, organization_id, ada)
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            response = await client.delete(f"/organizations/current/members/{bob}")
+
+        assert response.status_code == 409, response.text
+        assert "last organization admin" in response.json()["detail"]
+        async with session_factory() as session:
+            assert await OrganizationStore().count_admins(session, organization_id) == 1
 
 
 class TestIssues:

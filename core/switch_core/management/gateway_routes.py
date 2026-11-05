@@ -46,10 +46,9 @@ Broker = Annotated[ServiceBroker, Depends(get_service_broker)]
 
 def _controller(view: dict[str, Any]) -> dict[str, Any]:
     """`view` with what the caller may do with the machine. Every machine
-    these routes return is the caller's own: they may rename it, revoked or
-    not, and remove it until it is revoked, after which removing it again
-    changes nothing."""
-    return {**view, "can_edit": True, "can_remove": view["revoked_at"] is None}
+    these routes return is the caller's own, to rename and remove; removing a
+    revoked one again changes nothing, which `revoked_at` says."""
+    return {**view, "can_edit": True, "can_remove": True}
 
 
 def _managed_agent(view: dict[str, Any]) -> dict[str, Any]:

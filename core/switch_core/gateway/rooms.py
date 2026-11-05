@@ -78,7 +78,13 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
-from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
+from switch_core.room_service import (
+    MembershipFixed,
+    RoleSpec,
+    RoomCreateConfig,
+    RoomService,
+    require_membership_changeable_from_outside,
+)
 from switch_core.rooms_yaml import (
     GroupProvisionResult,
     GroupSpec,
@@ -106,19 +112,12 @@ router = APIRouter()
 
 
 def _refuse_fixed_membership(room: Room) -> None:
-    """Raise 409 for a direct or group conversation. Who is in one is fixed by
-    its platform, and a direct one is one person and one agent by rule
-    (`RoomService`), so its agents and people are not changed through these
-    routes. A Switch Console chat changes its own through `/chats`."""
-    if room.channel_type in ("direct", "group"):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"This is a {room.channel_type} conversation: who is in it is "
-                "fixed by its platform, so its agents and people can't be "
-                "changed here."
-            ),
-        )
+    """409 for a direct or group conversation, whose agents and people these
+    routes don't change (`require_membership_changeable_from_outside`)."""
+    try:
+        require_membership_changeable_from_outside(room)
+    except MembershipFixed as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 async def _require_room_released(

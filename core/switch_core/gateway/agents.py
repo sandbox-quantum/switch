@@ -90,6 +90,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _has_known_spec(summary: AgentSummary) -> bool:
+    """Whether Switch Console runs the agent from a spec it knows, which is
+    what its options and its service tools come from."""
+    return (
+        summary.known_agent_type is not None
+        and known_agent(summary.known_agent_type) is not None
+    )
+
+
 def _capabilities(
     summary: AgentSummary, principal: Principal, facts: AgentTransferFacts
 ) -> dict[str, Any]:
@@ -102,6 +111,7 @@ def _capabilities(
     )
     return AgentCapabilities(
         can_manage=manage,
+        can_edit_options=manage and _has_known_spec(summary),
         can_rename=manage and not facts.in_family,
         can_transfer=manage and refusal is None,
         transfer_blocked_reason=refusal,
@@ -155,7 +165,9 @@ async def _detail_for_caller(
         **detail.model_dump(exclude={"children"}),
         **_capabilities(detail, principal, facts[detail.id]),
         can_change_manage_agents=owner,
-        can_grant_services=owner and config.service_connections_enabled,
+        can_grant_services=owner
+        and config.service_connections_enabled
+        and _has_known_spec(detail),
         children=[
             _with_capabilities(child, principal, facts) for child in detail.children
         ],

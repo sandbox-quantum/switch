@@ -1,4 +1,6 @@
-from sqlalchemy import delete, func, or_, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,10 +104,10 @@ class PackageStore:
 
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, package_id: str
-    ) -> None:
-        """Attach a package to a room. Idempotent, as attaching a reference
-        is: attaching one that is already attached is a no-op."""
-        await session.execute(
+    ) -> bool:
+        """Attach a package to a room, saying whether it was attached now.
+        Idempotent, as attaching a reference is."""
+        result = await session.execute(
             pg_insert(room_packages)
             .values(room_id=room_id, package_id=package_id)
             .on_conflict_do_nothing(
@@ -113,6 +115,7 @@ class PackageStore:
             )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, package_id: str

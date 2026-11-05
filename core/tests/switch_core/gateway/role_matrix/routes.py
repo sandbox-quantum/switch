@@ -94,10 +94,7 @@ ROUTES: dict[str, Case] = {
         f"{G}/agents/by-name/{{agent_name}}", owner_or_admins()
     ),
     "PATCH /gateway/agents/{agent_id}/options": patch(
-        f"{G}/agents/{{agent}}/options",
-        owner_or_admins(ok=400),
-        json={"options": {}},
-        why="Let through, then refused: an agent of no known type has no options.",
+        f"{G}/agents/{{console_agent}}/options", owner_or_admins(), json={"options": {}}
     ),
     "PUT /gateway/agents/{agent_id}/icon": put(
         f"{G}/agents/{{agent}}/icon", owner_or_admins(), json={"icon_url": None}
@@ -134,10 +131,10 @@ ROUTES: dict[str, Case] = {
         why="Made on the owner's own connections; anyone else is told it isn't there.",
     ),
     "PUT /gateway/agents/{agent_id}/service-grants/{service}": put(
-        f"{G}/agents/{{agent}}/service-grants/github",
-        owner(ok=422),
+        f"{G}/agents/{{console_agent}}/service-grants/github",
+        owner(),
         json={"access": "read", "resources": {}},
-        why="Its owner's; refused then, the agent being one Switch Console doesn't run.",
+        why="Made on the owner's own connections; anyone else is told it isn't there.",
     ),
     "DELETE /gateway/agents/{agent_id}/service-grants/{service}": delete(
         f"{G}/agents/{{granted_agent}}/service-grants/github", owner()

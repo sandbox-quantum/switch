@@ -45,7 +45,7 @@ describe("MembersSection", () => {
       ),
     );
 
-    render(<MembersSection tenantId="t1" selfId="u1" canAdmin />);
+    render(<MembersSection tenantId="t1" selfId="u1" />);
 
     expect(await screen.findByLabelText("Role for bob@example.com")).toBeTruthy();
     expect(screen.getByLabelText("Remove bob@example.com")).toBeTruthy();
@@ -88,7 +88,7 @@ describe("MembersSection", () => {
       ),
     );
 
-    render(<MembersSection tenantId="t1" selfId="u1" canAdmin />);
+    render(<MembersSection tenantId="t1" selfId="u1" />);
 
     expect(await screen.findByText("Org Admin, via organization")).toBeTruthy();
     expect(screen.getByText("Admin · Org Admin")).toBeTruthy();

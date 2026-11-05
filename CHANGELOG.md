@@ -46,11 +46,14 @@ version of their own to them without also giving them a release of their own.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
-  The room routes added and removed agents and people in one, though its
-  platform fixes its members; a DM the bridge adopted is writable by every
-  member, so anyone could put their own agent in someone else's DM and have it
-  receive their messages. Those routes now refuse it with a 409; a Switch
-  Console chat still changes its own through its chat routes.
+  The room routes and the agent tools added agents and people to one from
+  outside it, though its platform fixes its members; a DM the bridge adopted
+  is writable by every member, so anyone could put their own agent in someone
+  else's DM and have it receive their messages. The room routes now refuse
+  adding or removing with a 409, and `invite_agent_to_room` and
+  `add_users_to_room` refuse adding. The people in the conversation still
+  invite agents with `!invite-agent`, and a Switch Console chat still changes
+  its own through its chat routes.
 - **Adding to a package takes being able to read what is added.** Only the
   package owner's reading was checked, and a package lists what it holds to
   everyone who may read it, so someone who could edit a publicly writable
@@ -143,9 +146,9 @@ version of their own to them without also giving them a release of their own.
   agent flags already there:
   - references, reference types, documents and packages carry `can_edit` and
     `can_manage`, and documents and rooms `can_transfer`;
-  - agents carry `can_rename`, `can_transfer` with `transfer_blocked_reason`,
-    and, on their detail, `can_change_manage_agents` and `can_grant_services`;
-    an agent's sub-agents carry them too;
+  - agents carry `can_edit_options`, `can_rename`, `can_transfer` with
+    `transfer_blocked_reason`, and, on their detail, `can_change_manage_agents`
+    and `can_grant_services`; an agent's sub-agents carry them too;
   - workspace and organization members carry `can_change_role` and
     `can_remove`, workspace members `can_receive_transfer`, and organization
     members `can_grant_org_admin`;
@@ -157,7 +160,9 @@ version of their own to them without also giving them a release of their own.
     `can_disconnect`, claims on a chat account `can_unlink`, connections
     `can_revoke`, and the operator's list of accounts `can_delete`.
   Each is decided by the same rule its route enforces, and a test holds every
-  flag to its route for each kind of caller.
+  flag to its route for each kind of caller. A flag says whether the caller
+  may, not whether there is anything left to do: an ended install or a revoked
+  machine says that by its own status.
 - **The server's administrator can delete someone's account.** The Users page
   has a Delete action (`DELETE /users/{id}`) that removes the account in every
   workspace, with the same refusals as deleting your own. Administrator
@@ -335,8 +340,9 @@ version of their own to them without also giving them a release of their own.
 - **Nobody changes their own membership.** An admin changing their own role
   or removing themselves from a workspace, or an organization admin doing so
   in the organization, is refused with a 403: another admin steps them down,
-  so nobody locks themselves out by mistake. The members pages no longer
-  offer it.
+  so nobody locks themselves out by mistake. The server operator restoring an
+  organization's admin may still make themselves it. The members pages no
+  longer offer it.
 - **A room's own document is changed in its room.** `PATCH` and
   `DELETE /documents/{id}` refuse one with a 409, and its library flags say no.
 - **Revoking an invitation that has already ended is refused** with a 409,
@@ -670,7 +676,9 @@ version of their own to them without also giving them a release of their own.
   is refused with a 409 that says to delete the agent; once the agent is gone,
   its leftover key can be deleted.
 - **Attaching a document or package that is already attached**, to a room or
-  a package, failed with a 500. It now changes nothing, as for a reference.
+  a package, failed with a 500. It now changes nothing, as for a reference,
+  and attaching anything a room already has is no longer reported as a new
+  attachment.
 - **A package in a room's list said the caller may open it** only on that
   list; every route now works it out from the package's read rule.
 - **Stable Switch Console can link chat accounts again.** Since links have to

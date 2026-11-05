@@ -35,7 +35,6 @@ from switch_core.bridges.collaboration.install_service import MessagingInstallSe
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import MessagingInstall, Room, User, require_tenant_id
 from switch_core.db.stores.messaging_install_store import (
-    INSTALL_ACTIVE,
     MessagingInstallNotFound,
 )
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
@@ -100,8 +99,9 @@ class InstalledApp(BaseModel):
     bridge_id: str | None
     installed_at: datetime
     ended_at: datetime | None
-    # Whether the caller may disconnect it (`_disconnect_refusal`): false once
-    # it has ended, which disconnecting again would not change.
+    # Whether the caller may disconnect it (`_disconnect_refusal`). An ended
+    # one may still be: disconnecting it again answers it as it is, and
+    # whether there is anything left to disconnect is `status`.
     can_disconnect: bool
 
 
@@ -275,8 +275,7 @@ async def list_installs(
             _installed(
                 install,
                 names.get(install.id),
-                can_disconnect=install.status == INSTALL_ACTIVE
-                and _disconnect_refusal(
+                can_disconnect=_disconnect_refusal(
                     service, install.platform, rooms.get(install.id), principal
                 )
                 is None,
@@ -378,11 +377,12 @@ async def disconnect_install(
         platform = await installs.install_platform(session, install_id=install_id)
     except MessagingInstallNotFound as missing:
         raise HTTPException(status_code=404, detail=str(missing)) from missing
+    principal = Principal(user.id, is_admin)
     refusal = _disconnect_refusal(
         installs,
         platform,
         (await installs.chat_rooms(session)).get(install_id),
-        Principal(user.id, is_admin),
+        principal,
     )
     if refusal is not None:
         raise HTTPException(status_code=403, detail=refusal)
@@ -412,6 +412,16 @@ async def disconnect_install(
     )
     await session.commit()
     logger.info("User %s disconnected messaging install %s", user.id, install_id)
-    # Ended, so it has let go of whatever it was called, and there is nothing
-    # left to disconnect.
-    return _installed(ended, None, can_disconnect=False)
+    # Ended, so it has let go of whatever it was called, and a chat has let go
+    # of its room, which may leave it an admin's.
+    return _installed(
+        ended,
+        None,
+        can_disconnect=_disconnect_refusal(
+            installs,
+            ended.platform,
+            (await installs.chat_rooms(session)).get(install_id),
+            principal,
+        )
+        is None,
+    )

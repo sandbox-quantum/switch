@@ -59,6 +59,7 @@ from switch_core.gateway.auth import (
     organization_candidates,
     organization_workspaces_bindable_by,
     organizations_bindable_by,
+    refuse_acting_on_yourself,
     workspaces_in_organization,
     workspaces_reached_through_organization,
 )
@@ -126,12 +127,17 @@ def _member_detail(
     warning: str | None,
     *,
     caller_id: str,
-    access: _OrganizationAccess,
+    access: _OrganizationAccess | None,
     accepts_promotion: bool,
 ) -> OrganizationMemberDetail:
-    """`member`, with what the caller, who passed the role-change gate as
-    `access` says, may do with them."""
-    change = can_change_organization_member(caller_id, user.id, permitted=True)
+    """`member`, with what the caller, who passes the role-change gate as
+    `access` says (None: they don't), may do with them."""
+    change = can_change_organization_member(
+        caller_id,
+        user.id,
+        permitted=access is not None,
+        restoring=access is not None and access.platform_access,
+    )
     return OrganizationMemberDetail(
         user_id=user.id,
         name=user.name,
@@ -144,7 +150,10 @@ def _member_detail(
         # Removing takes the organization's own admin; the operator restoring
         # one is let through to change roles only.
         can_remove=can_change_organization_member(
-            caller_id, user.id, permitted=not access.platform_access
+            caller_id,
+            user.id,
+            permitted=access is not None and not access.platform_access,
+            restoring=False,
         ),
     )
 
@@ -159,14 +168,6 @@ def _accepts_promotion(
     return not organization_directory.keeps_members_of(
         organization
     ) or organization_directory.sends_changes_for(organization)
-
-
-def _refuse_acting_on_yourself(caller_id: str, user_id: str, detail: str) -> None:
-    """Raise 403 if a member route names the caller: stepping down or leaving
-    is done by another organization admin, so nobody locks themselves out by
-    mistake."""
-    if user_id == caller_id:
-        raise HTTPException(status_code=403, detail=detail)
 
 
 async def _current_organization_id(session: AsyncSession) -> str:
@@ -734,11 +735,13 @@ async def update_organization_member_role(
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
-    _refuse_acting_on_yourself(
-        user.id,
-        user_id,
-        "You can't change your own organization role. Another organization admin can.",
-    )
+    if not access.platform_access:
+        refuse_acting_on_yourself(
+            user.id,
+            user_id,
+            "You can't change your own organization role. Another organization "
+            "admin can.",
+        )
     organization_id = access.organization_id
     member = await session.get(OrganizationMember, (organization_id, user_id))
     if member is None:
@@ -834,7 +837,11 @@ async def update_organization_member_role(
         member,
         warning,
         caller_id=user.id,
-        access=access,
+        # Read again: the change may be what let the caller in, or the
+        # operator's way in may have closed with it.
+        access=await organization_access(
+            session, user_store, organization_store, user, operator_restores=True
+        ),
         accepts_promotion=_accepts_promotion(organization_directory, organization),
     )
 
@@ -875,7 +882,7 @@ async def remove_organization_member(
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
-    _refuse_acting_on_yourself(
+    refuse_acting_on_yourself(
         user.id,
         user_id,
         "You can't remove yourself from the organization. Another organization "

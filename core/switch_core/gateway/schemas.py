@@ -384,9 +384,12 @@ class AgentCapabilities(BaseModel):
     route enforces, so no client repeats it.
     """
 
-    # Edit its options, icon, display name, description and who may address
-    # it, and delete it: its owner or a workspace admin.
+    # Edit its icon, display name, description and who may address it, and
+    # delete it: its owner or a workspace admin.
     can_manage: bool
+    # Edit its options: `can_manage`, for an agent Switch Console runs from a
+    # spec it knows. Any other agent has no options to edit.
+    can_edit_options: bool
     # Change its name: `can_manage`, unless it is a sub-agent, whose name
     # comes from its parent's, or has sub-agents named after it. A sub-agent's
     # display name is still covered by `can_manage`.
@@ -404,11 +407,14 @@ class GatewayAgentSummary(AgentSummary, AgentCapabilities):
 
 
 class GatewayAgentDetail(AgentDetail, AgentCapabilities):
-    # Its owner only, not an admin, for both: turning on that it may manage
-    # its owner's agents, and granting it service access, which is made on
-    # the owner's own connections and exists only while service connections
-    # are switched on.
+    # Its owner only, not an admin: turning on that it may manage its
+    # owner's agents.
     can_change_manage_agents: bool
+    # Granting it service access: its owner only, since a grant is made on
+    # the owner's own connections, while service connections are switched on,
+    # and for an agent Switch Console runs from a spec it knows, since nothing
+    # else would start its service tools. Seeing and revoking the grants it
+    # already has needs only the first two.
     can_grant_services: bool
     children: list[GatewayAgentSummary]  # type: ignore[assignment]  # narrows the base type
 

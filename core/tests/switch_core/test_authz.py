@@ -15,6 +15,7 @@ from switch_core.authz import (
     can_delete_workspace,
     can_manage,
     can_unlink_from_room,
+    deletes_workspace_by_role,
     owns,
     require,
     require_manage,
@@ -280,12 +281,33 @@ class TestCanChangeWorkspaceMember:
 
 
 class TestCanChangeOrganizationMember:
-    def test_whoever_passes_the_gate_may_change_someone_else(self) -> None:
-        assert can_change_organization_member("u-ada", "u-bob", permitted=True)
-        assert not can_change_organization_member("u-ada", "u-bob", permitted=False)
+    @pytest.mark.parametrize("restoring", [False, True])
+    def test_whoever_passes_the_gate_may_change_someone_else(
+        self, restoring: bool
+    ) -> None:
+        assert can_change_organization_member(
+            "u-ada", "u-bob", permitted=True, restoring=restoring
+        )
+        assert not can_change_organization_member(
+            "u-ada", "u-bob", permitted=False, restoring=restoring
+        )
 
     def test_nobody_may_change_their_own_row(self) -> None:
-        assert not can_change_organization_member("u-ada", "u-ada", permitted=True)
+        assert not can_change_organization_member(
+            "u-ada", "u-ada", permitted=True, restoring=False
+        )
+
+    def test_the_operator_restoring_an_org_admin_may_name_themselves(self) -> None:
+        assert can_change_organization_member(
+            "u-op", "u-op", permitted=True, restoring=True
+        )
+
+
+class TestDeletesWorkspaceByRole:
+    def test_only_an_admin_membership_does(self) -> None:
+        assert deletes_workspace_by_role("admin")
+        assert not deletes_workspace_by_role("member")
+        assert not deletes_workspace_by_role(None)
 
 
 class TestCanDeleteWorkspace:

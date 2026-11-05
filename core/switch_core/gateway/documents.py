@@ -114,12 +114,12 @@ def _capabilities(reader: Principal, doc: Document) -> dict[str, Any]:
     """What `reader` may do with `doc` through the library routes, for its
     detail or summary: nothing with a room's own document, which is changed
     and removed in its room (`RoomDocumentDetail.can_remove`)."""
-    library = kind_refusal(doc) is None
+    library = doc.room_id is None
     manage = library and can_manage(reader, doc.owner_id)
     return {
         "can_edit": library and can(reader, "write", doc),
         "can_manage": manage,
-        "can_transfer": manage,
+        "can_transfer": manage and kind_refusal(doc) is None,
     }
 
 
@@ -310,7 +310,7 @@ async def _refuse_room_document(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
-    if kind_refusal(doc) is not None:
+    if doc.room_id is not None:
         raise HTTPException(
             status_code=409,
             detail="This document belongs to a room: change or remove it in the room.",

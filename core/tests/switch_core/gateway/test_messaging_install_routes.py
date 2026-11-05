@@ -106,7 +106,9 @@ class _Service:
         return next(i.platform for i in self.installs if i.id == install_id)
 
     async def disconnect(self, *, tenant_id: str, install_id: str) -> SimpleNamespace:
+        """Ended, a chat lets go of its room, as `chat_rooms` then says."""
         self.disconnected.append(install_id)
+        self.rooms.pop(install_id, None)
         return next(i for i in self.installs if i.id == install_id)
 
 
@@ -370,8 +372,10 @@ class TestWhatTheCallerMayDisconnect:
         )
         assert {i.id: i.can_disconnect for i in listed.installs} == expected
 
-    async def test_an_ended_install_has_nothing_left_to_disconnect(self) -> None:
-        ended = _install("t1", "telegram")
+    async def test_an_ended_install_says_so_by_its_status_not_its_flag(self) -> None:
+        """Disconnecting it again answers it as it is, so the flag stays the
+        rule the route enforces."""
+        ended = _install("s1", "slack")
         ended.status = "disconnected"
         listed = await list_installs(
             _Session(),  # type: ignore[arg-type]
@@ -379,4 +383,20 @@ class TestWhatTheCallerMayDisconnect:
             _user(),
             True,
         )
-        assert [i.can_disconnect for i in listed.installs] == [False]
+        assert [(i.status, i.can_disconnect) for i in listed.installs] == [
+            ("disconnected", True)
+        ]
+
+    @pytest.mark.parametrize(("admin", "expected"), [(False, False), (True, True)])
+    async def test_a_disconnected_chat_is_an_admins_once_its_room_is_let_go(
+        self, admin: bool, expected: bool
+    ) -> None:
+        with tenant_scope(_TENANT):
+            ended = await disconnect_install(
+                "t1",
+                _Session(),  # type: ignore[arg-type]
+                _Service(),  # type: ignore[arg-type]
+                _user(),
+                admin,
+            )
+        assert ended.can_disconnect is expected

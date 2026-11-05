@@ -229,6 +229,14 @@ def can_delete_room_document(
     )
 
 
+def names_themselves(caller_id: str, member_id: str) -> bool:
+    """Whether a change to a member's role or membership is the caller's own.
+
+    An admin's own row is changed by another admin: stepping down or leaving
+    is not done by mistake, so nobody locks themselves out that way."""
+    return member_id == caller_id
+
+
 def can_change_workspace_member(
     caller_id: str,
     member_id: str,
@@ -238,34 +246,44 @@ def can_change_workspace_member(
 ) -> bool:
     """Whether the caller may change a workspace member's role or remove them.
 
-    A workspace admin may, but never on their own row: stepping down or
-    leaving is done by another admin, so nobody locks themselves out by
-    mistake. Nor on an organization admin's row, whose standing in the
-    workspace comes from the organization and is changed in its members.
+    A workspace admin may, but never on their own row (`names_themselves`),
+    nor on an organization admin's, whose standing in the workspace comes
+    from the organization and is changed in its members.
     """
-    return administers and member_id != caller_id and not member_is_organization_admin
+    return (
+        administers
+        and not names_themselves(caller_id, member_id)
+        and not member_is_organization_admin
+    )
 
 
 def can_change_organization_member(
-    caller_id: str, member_id: str, *, permitted: bool
+    caller_id: str, member_id: str, *, permitted: bool, restoring: bool
 ) -> bool:
     """Whether the caller may change an organization member's role or remove
     them: `permitted` is whether they pass that route's organization-admin
-    gate, which differs between the two. Never on their own row, for the same
-    reason as `can_change_workspace_member`."""
-    return permitted and member_id != caller_id
+    gate, which differs between the two. Never on their own row
+    (`names_themselves`), unless `restoring`: the operator, let in while the
+    organization has no `org_admin`, may make themselves one, which is no
+    stepping down."""
+    return permitted and (restoring or not names_themselves(caller_id, member_id))
+
+
+def deletes_workspace_by_role(tenant_role: str | None) -> bool:
+    """Whether `tenant_role` is one a workspace may be deleted with: its admins'
+    own admin membership, not the operator's bypass and not an organization
+    admin acting as one, since deleting a workspace is the one act nobody can
+    undo."""
+    return tenant_role in TENANT_ADMIN_ROLES
 
 
 def can_delete_workspace(*, tenant_role: str | None, is_default: bool) -> bool:
-    """Whether the caller may delete the workspace they hold `tenant_role` in.
-
-    Its admins only, by their own admin membership: not the operator's bypass
-    and not an organization admin acting as one, since deleting a workspace is
-    the one act nobody can undo. Never the server's default workspace, where
-    new accounts start. That it must first be emptied is checked when it is
-    deleted.
+    """Whether the caller may delete the workspace they hold `tenant_role` in:
+    `deletes_workspace_by_role`, and never the server's default workspace,
+    where new accounts start. That it must first be emptied is checked when
+    it is deleted.
     """
-    return tenant_role in TENANT_ADMIN_ROLES and not is_default
+    return deletes_workspace_by_role(tenant_role) and not is_default
 
 
 def can_delete_api_key(

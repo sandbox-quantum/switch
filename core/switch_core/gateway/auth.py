@@ -20,6 +20,7 @@ from switch_core.authz import (
     Action,
     Principal,
     can_unlink_from_room,
+    names_themselves,
     require,
     require_group_filing,
 )
@@ -768,6 +769,13 @@ async def initial_tenant_claim(
     if len(memberships) == 1:
         return memberships[0]
     return None
+
+
+def refuse_acting_on_yourself(caller_id: str, member_id: str, detail: str) -> None:
+    """Raise 403 if a workspace or organization member route names the
+    caller (`names_themselves`)."""
+    if names_themselves(caller_id, member_id):
+        raise HTTPException(status_code=403, detail=detail)
 
 
 def workspace_creation_refusal(

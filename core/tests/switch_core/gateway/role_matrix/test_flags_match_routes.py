@@ -1,10 +1,11 @@
 """Every capability flag says what its route does.
 
 Each persona reads a flag where the Gateway shows it, then asks the route it
-speaks for. A flag that says yes must not be refused, and one that says no
-must be: so a wrong flag can't hide behind a correct route. Refusals a flag
-leaves to the moment it is asked (the workspace isn't empty, say) count as
-let through.
+speaks for. A flag that says yes must be let through, and one that says no
+must be refused: so a wrong flag can't hide behind a correct route. A check
+names the refusals a flag leaves to the moment it is asked (the workspace
+isn't empty, say), which count as let through; any other answer, a server
+error above all, fails it either way.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from tests.switch_core.gateway.role_matrix.access import OK
 from tests.switch_core.gateway.role_matrix.harness import (
     Persona,
     build_gateway,
@@ -40,6 +42,9 @@ class Check:
     within: str | None = None
     # What the route answers when it says no to what the flag covers.
     refused: frozenset[int] = REFUSED
+    # What it answers, past what the flag covers, when the thing can't be
+    # done just then: let through as far as the flag is concerned.
+    later: frozenset[int] = frozenset()
 
 
 def _get(path: str, **params: str) -> Ask:
@@ -199,9 +204,36 @@ CHECKS: dict[str, Check] = {
                 ),
             ),
             Check(
+                "can_edit_options",
+                AGENT,
+                _act("PATCH", f"{G}/agents/{{agent}}/options", {"options": {}}),
+                refused=REFUSED | {400},
+            ),
+            Check(
                 "can_grant_services",
                 AGENT,
-                _act("GET", f"{G}/agents/{{agent}}/service-grants"),
+                _act(
+                    "PUT",
+                    f"{G}/agents/{{agent}}/service-grants/github",
+                    {"access": "read", "resources": {}},
+                ),
+                refused=REFUSED | {422},
+            ),
+        ],
+        "an agent Switch Console runs": [
+            Check(
+                "can_edit_options",
+                _get(f"{G}/agents/{{console_agent}}"),
+                _act("PATCH", f"{G}/agents/{{console_agent}}/options", {"options": {}}),
+            ),
+            Check(
+                "can_grant_services",
+                _get(f"{G}/agents/{{console_agent}}"),
+                _act(
+                    "PUT",
+                    f"{G}/agents/{{console_agent}}/service-grants/github",
+                    {"access": "read", "resources": {}},
+                ),
             ),
         ],
         "a sub-agent": [
@@ -263,6 +295,7 @@ CHECKS: dict[str, Check] = {
                 "can_delete",
                 _get(f"{G}/tenants/current"),
                 _act("DELETE", f"{G}/tenants/{{tenant}}", {"name": "{tenant}"}),
+                later=frozenset({409}),  # Still has other members in it.
             ),
         ],
         "the organization": [
@@ -465,7 +498,9 @@ async def test_a_flag_says_what_its_route_does(
                 params=act.params,
                 headers=people.headers(persona),
             )
-            if flag == (answered.status_code in check.refused):
+            if answered.status_code not in (
+                OK | check.later if flag else check.refused
+            ):
                 wrong.append(
                     f"{persona.value}: {check.flag} is {flag}, but {act.method} "
                     f"{act.path} answered {answered.status_code} {answered.text[:200]}"

@@ -690,12 +690,12 @@ class ResourceService:
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "read", ref)
-        await self._references.attach_to_room(session, room_id, reference_id)
-        emit_safely(
-            self._telemetry,
-            "reference_attached_to_room",
-            {"reference_type": _reference_type(ref.type)},
-        )
+        if await self._references.attach_to_room(session, room_id, reference_id):
+            emit_safely(
+                self._telemetry,
+                "reference_attached_to_room",
+                {"reference_type": _reference_type(ref.type)},
+            )
 
     async def detach_reference_from_room(
         self, session: AsyncSession, room_id: str, reference_id: str
@@ -996,8 +996,8 @@ class ResourceService:
                 "to another room"
             )
         require(Principal(user_id, is_admin), "read", doc)
-        await self._documents.attach_to_room(session, room_id, document_id)
-        emit_safely(self._telemetry, "document_attached_to_room", {})
+        if await self._documents.attach_to_room(session, room_id, document_id):
+            emit_safely(self._telemetry, "document_attached_to_room", {})
 
     async def detach_document_from_room(
         self, session: AsyncSession, room_id: str, document_id: str
@@ -1371,7 +1371,8 @@ class ResourceService:
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "read", pkg)
-        await self._packages.attach_to_room(session, room_id, package_id)
+        if not await self._packages.attach_to_room(session, room_id, package_id):
+            return
         # What the package brought with it, which is the whole point of
         # attaching one rather than its parts.
         emit_safely(

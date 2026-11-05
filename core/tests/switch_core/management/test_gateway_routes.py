@@ -1153,5 +1153,7 @@ class TestWhatTheOwnerMayDo:
         assert (machine["can_edit"], machine["can_remove"]) == (True, True)
         assert (listed["can_edit"], listed["can_delete"]) == (True, True)
         assert (single["can_edit"], single["can_delete"]) == (True, True)
-        # A revoked machine may still be renamed; removing it again does nothing.
-        assert (revoked["can_edit"], revoked["can_remove"]) == (True, False)
+        # Still the caller's to rename and remove: removing it again does
+        # nothing, which its `revoked_at` says.
+        assert revoked["revoked_at"] is not None
+        assert (revoked["can_edit"], revoked["can_remove"]) == (True, True)

@@ -29,9 +29,6 @@ type MemberRow = Member & { id: string };
 interface Props {
   tenantId: string;
   selfId: string;
-  /** Unused: each row carries what the caller may do with it. Still accepted
-   * so the pages that pass it need no change in the same release. */
-  canAdmin: boolean;
 }
 
 /** Each row offers what the server says the caller may do with it: an admin

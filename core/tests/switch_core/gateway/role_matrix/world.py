@@ -220,6 +220,25 @@ class World:
 
         return make
 
+    async def console_agent(self) -> str:
+        """An agent of the owner's that Switch Console runs, registered from
+        the Claude Code spec, so it has options and may be granted services on
+        the owner's GitHub connection."""
+        agent_id = str(await self._once("console_agent", self._agent("console-agent")))
+        await self.connection()
+
+        async def make(session: AsyncSession) -> str:
+            agent = await session.get(Agent, agent_id)
+            assert agent is not None
+            agent.metadata_ = {
+                "known_agent_type": "claude-code",
+                "known_agent_options": {},
+            }
+            await session.flush()
+            return agent_id
+
+        return str(await self._once("console_agent_registered", make))
+
     async def agent_name(self) -> str:
         await self.agent()
         return self.name("agent")

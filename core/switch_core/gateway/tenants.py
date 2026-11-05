@@ -20,6 +20,7 @@ from switch_core.authz import (
     administers_tenant,
     can_change_workspace_member,
     can_delete_workspace,
+    deletes_workspace_by_role,
     effective_tenant_role,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -80,6 +81,7 @@ from switch_core.gateway.auth import (
     list_tenant_memberships,
     may_bind_tenant,
     record_operator_entry,
+    refuse_acting_on_yourself,
     require_tenant_admin,
     set_session_cookie,
     tenant_of_invitation_token,
@@ -228,13 +230,6 @@ def _member_detail(
         can_remove=may_change,
         can_receive_transfer=user.id != caller_id,
     )
-
-
-def _refuse_acting_on_yourself(caller_id: str, user_id: str, detail: str) -> None:
-    """Raise 403 if a member route names the caller: stepping down or leaving
-    is done by another admin, so nobody locks themselves out by mistake."""
-    if user_id == caller_id:
-        raise HTTPException(status_code=403, detail=detail)
 
 
 async def _refuse_organization_admin(
@@ -423,7 +418,9 @@ async def delete_tenant(
     is exactly one.
     """
     _require_bound_tenant(tenant_id)
-    if await user_store.tenant_role(session, tenant_id, user.id) != "admin":
+    if not deletes_workspace_by_role(
+        await user_store.tenant_role(session, tenant_id, user.id)
+    ):
         raise HTTPException(
             status_code=403, detail="Only a workspace admin may delete the workspace"
         )
@@ -1454,7 +1451,7 @@ async def update_member_role(
     can manage it, and getting one back takes the server's operator.
     """
     _require_bound_tenant(tenant_id)
-    _refuse_acting_on_yourself(
+    refuse_acting_on_yourself(
         admin.id,
         user_id,
         "You can't change your own role. Another admin of this workspace can.",
@@ -1535,7 +1532,7 @@ async def remove_member(
     owner's own connections or machine).
     """
     _require_bound_tenant(tenant_id)
-    _refuse_acting_on_yourself(
+    refuse_acting_on_yourself(
         admin.id,
         user_id,
         "You can't remove yourself. Another admin of this workspace can.",

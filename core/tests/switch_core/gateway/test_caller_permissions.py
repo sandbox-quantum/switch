@@ -192,6 +192,36 @@ class TestAgentPermissions:
                 "parent-child": (True, False),
             }
 
+    async def test_only_an_agent_run_from_a_known_spec_has_options_to_edit(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            member = await add_user(session, name="member")
+            for name, known_type in (
+                ("console", "claude-code"),
+                ("retired", "retired-type"),
+                ("own-runtime", None),
+            ):
+                agent = await add_agent(session, name=name, owner_id=owner.id)
+                if known_type is not None:
+                    agent.metadata_ = {"known_agent_type": known_type}
+            await session.flush()
+
+            async def editable(user: User, admin: bool) -> dict[str, bool]:
+                summaries = await list_agents(
+                    session, AgentStore(), UserStore(), user, admin
+                )
+                return {s.name: s.can_edit_options for s in summaries}
+
+            assert await editable(owner, False) == {
+                "console": True,
+                "retired": False,
+                "own-runtime": False,
+            }
+            assert await editable(member, True) == await editable(owner, False)
+            assert set((await editable(member, False)).values()) == {False}
+
     async def test_each_listed_agent_says_whether_it_can_be_transferred_and_why_not(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -242,12 +272,20 @@ class TestAgentPermissions:
             assert "github" not in await reason(admin, True)
 
     @pytest.mark.parametrize(
-        ("caller", "services_on", "change_manage_agents", "grant_services"),
+        (
+            "caller",
+            "services_on",
+            "known_type",
+            "change_manage_agents",
+            "grant_services",
+        ),
         [
-            ("owner", True, True, True),
-            ("owner", False, True, False),
-            ("admin", True, False, False),
-            ("member", True, False, False),
+            ("owner", True, "claude-code", True, True),
+            ("owner", False, "claude-code", True, False),
+            ("owner", True, None, True, False),
+            ("owner", True, "retired-type", True, False),
+            ("admin", True, "claude-code", False, False),
+            ("member", True, "claude-code", False, False),
         ],
     )
     async def test_only_the_owner_may_change_what_the_agent_itself_may_do(
@@ -255,6 +293,7 @@ class TestAgentPermissions:
         session_factory: async_sessionmaker[AsyncSession],
         caller: str,
         services_on: bool,
+        known_type: str | None,
         change_manage_agents: bool,
         grant_services: bool,
     ) -> None:
@@ -262,6 +301,9 @@ class TestAgentPermissions:
             owner = await add_user(session, name="owner")
             member = await add_user(session, name="member")
             agent = await add_agent(session, name="helper", owner_id=owner.id)
+            if known_type is not None:
+                agent.metadata_ = {"known_agent_type": known_type}
+                await session.flush()
 
             detail = await get_agent_detail(
                 agent.id,

@@ -1412,6 +1412,9 @@ async def invite_agent_to_room(
 ) -> dict[str, bool]:
     """Invite an agent into an existing room by name.
 
+    A direct or group conversation is refused: its platform fixes who is in
+    it, and the people in it add agents with `!invite-agent` there.
+
     Args:
         room_id: The Switch room id (UUID string).
         agent_name: Registry name of the agent to add.
@@ -1465,7 +1468,8 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
     be a user already known to that bridge — e.g. someone who has signed into
     the workspace — otherwise the bridge cannot resolve them. Use this after a
     bridge change to re-invite the humans who were dropped, since their
-    identities are bridge-specific and are not carried across.
+    identities are bridge-specific and are not carried across. A direct or
+    group conversation is refused: its platform fixes who is in it.
 
     Args:
         room_id: The Switch room id (UUID string).
