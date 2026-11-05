@@ -35,6 +35,7 @@ it('discovers and reselects the configured free custom model without a model pro
       mcpServers: {}, connectorMcpServers: [],
     })
     const models = await adapter.listModels('model-metadata')
+    console.info('Junie advertised model IDs:', JSON.stringify(models.map((model) => model.id)))
     expect(models.some((model) => model.id === env.JUNIE_MODEL)).toBe(true)
     await adapter.setModel('model-metadata', { id: env.JUNIE_MODEL })
   } finally {
