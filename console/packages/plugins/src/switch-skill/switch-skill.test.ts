@@ -29,6 +29,13 @@ describe('switch skill', () => {
     expect(text).toContain("came to you as the room's triage agent");
   });
 
+  it('says where an untagged thread reply goes while the decision service is down', () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain(
+      "while the decision service is down, a reply in your thread that doesn't tag you reaches you only if you are the room's triage agent, and otherwise nobody"
+    );
+  });
+
   it('says who may turn auto-route on or off, and who may name the triage agent', () => {
     const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
     expect(text).toContain('Anyone who can post in the room may turn it on or off');
