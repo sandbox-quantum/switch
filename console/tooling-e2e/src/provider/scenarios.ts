@@ -104,6 +104,7 @@ export type TurnState = 'queued' | 'running' | 'completed' | 'interrupted' | 'er
 
 const TURN_STATE_HEADINGS: readonly [TurnState, string][] = [
   ['queued', 'Queued.'],
+  ['queued', 'Queued (prompt updated).'],
   ['running', 'Working…'],
   ['completed', 'Turn complete.'],
   // A completed turn whose duration is known says how long it ran instead.
@@ -464,6 +465,155 @@ export const interrupt: Scenario = (harness) =>
     return 'command start confirmed; completion marker absent after 95s';
   });
 
+// ── a message edited in the room ─────────────────────
+
+/** How long a blocking command runs: long enough to queue and edit behind it. */
+const BLOCKER_SECONDS = 30;
+
+function wordFor(harness: Harness, word: string): string {
+  return `${word}-${harness.runId}-${Date.now()}`.toUpperCase();
+}
+
+/** Answer any card a command raises, until the command has begun. */
+async function untilCommandStarts(
+  harness: Harness,
+  startedFile: string,
+  since: number,
+  record: (posts: MattermostPost[]) => void
+): Promise<void> {
+  const answered = new Set<string>();
+  const deadline = Date.now() + 120_000;
+  while (!isStartMarker((await markerContents(startedFile)) ?? '')) {
+    if (Date.now() > deadline) throw new Error('The command did not write its start marker.');
+    const posts = await harness.mattermost.postsFrom(harness.channel.id, harness.bot.id, since);
+    record(posts);
+    assertNotNoSession(posts);
+    for (const post of posts) {
+      if (answered.has(post.id) || requestHandle(post.message) === null) continue;
+      answered.add(post.id);
+      await answerCard(harness, post, 1);
+    }
+    await sleep(500);
+  }
+}
+
+/** Keep the session busy with a real command, so that what follows queues. */
+async function occupyTheSession(
+  harness: Harness,
+  label: string,
+  record: (posts: MattermostPost[]) => void
+): Promise<void> {
+  const dir = harness.env.provider.agentRepoDir;
+  if (!dir) throw new Error('The queued-edit scenario requires SWITCH_E2E_AGENT_DIR.');
+  const stem = `edit-${label}-${harness.runId}-${Date.now()}`;
+  const done = wordFor(harness, `${label}-DONE`);
+  const since = await ask(
+    harness,
+    `Run this exact shell command: \`printf SWITCH_INTERRUPT_STARTED > ${stem}.txt; sleep ${BLOCKER_SECONDS}\`. Wait for it to finish, then reply with exactly ${done}`
+  );
+  await untilCommandStarts(harness, path.join(dir, `${stem}.txt`), since, record);
+}
+
+/** A status card, which `expectBotPost` deliberately never matches. */
+async function expectCard(
+  harness: Harness,
+  since: number,
+  text: string,
+  record: (posts: MattermostPost[]) => void
+): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    const posts = await harness.mattermost.postsFrom(harness.channel.id, harness.bot.id, since);
+    record(posts);
+    if (posts.some((post) => post.message.includes(text))) return;
+    if (Date.now() > deadline)
+      throw new Error(`No card says «${text}». Channel said: ${summarise(posts)}`);
+    await sleep(250);
+  }
+}
+
+/** What the agent itself said, leaving out Switch's cards. */
+async function agentSaid(harness: Harness, since: number): Promise<string[]> {
+  const posts = await harness.mattermost.postsFrom(harness.channel.id, harness.bot.id, since);
+  return posts.filter((post) => !isRuntimeStatusPost(post)).map((post) => post.message);
+}
+
+/**
+ * Editing a message in a real room, against a real session. Still queued, the
+ * edit decides what runs, and Approve edited to Decline does not approve. Once
+ * the turn has started it stays as it was, and its card says so.
+ */
+export const queuedEdit: Scenario = (harness) =>
+  scenario('queued-edit', async (record) => {
+    const where = sharedRoom(harness);
+    const mention = `@${harness.agent.name}`;
+    const say = (message: string): Promise<MattermostPost> =>
+      harness.mattermost.post({ channelId: harness.channel.id, message });
+
+    // Edited while queued: the edited words are what runs.
+    const stale = wordFor(harness, 'STALE');
+    const fresh = wordFor(harness, 'FRESH');
+    await occupyTheSession(harness, 'first', record);
+    const queuedSince = Date.now() - 1;
+    const queued = await say(`${mention} Reply with exactly ${stale}`);
+    await expectCard(harness, queuedSince, 'Queued.', record);
+    await harness.mattermost.editPost(queued.id, `${mention} Reply with exactly ${fresh}`);
+    await expectCard(harness, queuedSince, 'Queued (prompt updated)', record);
+    await expectBotPost(harness.mattermost, {
+      where,
+      since: queuedSince,
+      record,
+      predicate: (post) => post.message.includes(fresh),
+      describe: 'the reply to the edited words',
+    });
+    if ((await agentSaid(harness, queuedSince)).some((said) => said.includes(stale)))
+      throw new Error('The agent acted on the words the edit replaced.');
+
+    // Edited after it started: the turn stays as it was.
+    const dir = harness.env.provider.agentRepoDir!;
+    const stem = `edit-started-${harness.runId}-${Date.now()}`;
+    const asked = wordFor(harness, 'ASKED');
+    const late = wordFor(harness, 'LATE');
+    const run = (word: string): string =>
+      `${mention} Run this exact shell command: \`printf SWITCH_INTERRUPT_STARTED > ${stem}.txt; sleep ${BLOCKER_SECONDS}\`. Wait for it to finish, then reply with exactly ${word}`;
+    const startedSince = Date.now() - 1;
+    const started = await say(run(asked));
+    await untilCommandStarts(harness, path.join(dir, `${stem}.txt`), startedSince, record);
+    await harness.mattermost.editPost(started.id, run(late));
+    await expectCard(harness, startedSince, 'Edited after start. Turn unchanged.', record);
+    await expectBotPost(harness.mattermost, {
+      where,
+      since: startedSince,
+      record,
+      predicate: (post) => post.message.includes(asked),
+      describe: 'the reply the turn was started with',
+    });
+    if ((await agentSaid(harness, startedSince)).some((said) => said.includes(late)))
+      throw new Error('An edit after the start changed the running turn.');
+
+    // Approve edited to Decline before pickup. Sample data only.
+    const order = `WO-SAMPLE-${harness.runId}`.toUpperCase();
+    const decision = (word: string): string =>
+      `${mention} Sample work order ${order}. Manager decision: ${word}. If the decision is Approve, reply with exactly APPROVED ${order}. If the decision is Decline, reply with exactly DECLINED ${order}.`;
+    await occupyTheSession(harness, 'second', record);
+    const decisionSince = Date.now() - 1;
+    const manager = await say(decision('Approve'));
+    await expectCard(harness, decisionSince, 'Queued.', record);
+    await harness.mattermost.editPost(manager.id, decision('Decline'));
+    await expectCard(harness, decisionSince, 'Queued (prompt updated)', record);
+    await expectBotPost(harness.mattermost, {
+      where,
+      since: decisionSince,
+      record,
+      predicate: (post) => post.message.includes(`DECLINED ${order}`),
+      describe: 'the work order declined',
+    });
+    if ((await agentSaid(harness, decisionSince)).some((said) => said.includes('APPROVED')))
+      throw new Error('The work order was approved on the stale Approve.');
+
+    return `queued edit ran as edited; after-start edit left the turn as it was; ${order} declined`;
+  });
+
 // ── card answered by someone who may not ─────────────────────────────────────
 
 /**
@@ -761,6 +911,10 @@ export const SCENARIOS: readonly ProviderScenario[] = [
   {
     header: providerHeader('interrupt', ['connect_to_room', 'post_message'], ['agent-dir']),
     run: interrupt,
+  },
+  {
+    header: providerHeader('queued-edit', ['connect_to_room', 'post_message'], ['agent-dir']),
+    run: queuedEdit,
   },
   {
     // A second person signs up, which only a throwaway or local Mattermost lets anyone do.
