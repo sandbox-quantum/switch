@@ -45,6 +45,20 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Security
+- **Only the people in a direct or group conversation decide who is in it.**
+  The room routes added and removed agents and people in one, though its
+  platform fixes its members; a DM the bridge adopted is writable by every
+  member, so anyone could put their own agent in someone else's DM and have it
+  receive their messages. Those routes now refuse it with a 409; a Switch
+  Console chat still changes its own through its chat routes.
+- **Adding to a package takes being able to read what is added.** Only the
+  package owner's reading was checked, and a package lists what it holds to
+  everyone who may read it, so someone who could edit a publicly writable
+  package could add a private reference or document by id and then read it.
+- **A refused agent transfer names the services it uses to its owner only.**
+  An admin who tried to transfer someone's agent was told which of the owner's
+  connections it was granted, which the owner's service access otherwise
+  shows nobody.
 - **Counts and replies no longer name private rooms either.** Beyond the
   room listings below, a reference, document or package's attached-rooms count
   took in every room it was attached to, an agent's detail named every room
@@ -124,6 +138,26 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **The gateway says what the caller may do with every object it shows**, so
+  no page works a permission out for itself. Alongside the room, template and
+  agent flags already there:
+  - references, reference types, documents and packages carry `can_edit` and
+    `can_manage`, and documents and rooms `can_transfer`;
+  - agents carry `can_rename`, `can_transfer` with `transfer_blocked_reason`,
+    and, on their detail, `can_change_manage_agents` and `can_grant_services`;
+    an agent's sub-agents carry them too;
+  - workspace and organization members carry `can_change_role` and
+    `can_remove`, workspace members `can_receive_transfer`, and organization
+    members `can_grant_org_admin`;
+  - `GET /tenants/current` carries `can_delete`, and
+    `GET /organizations/current` `administers` and `can_manage_members`;
+  - API keys carry `can_reveal` and `can_delete`, machines `can_edit` and
+    `can_remove`, managed agents `can_edit` and `can_delete`;
+  - messaging apps carry `can_manage` and `can_delete`, installs
+    `can_disconnect`, claims on a chat account `can_unlink`, connections
+    `can_revoke`, and the operator's list of accounts `can_delete`.
+  Each is decided by the same rule its route enforces, and a test holds every
+  flag to its route for each kind of caller.
 - **The server's administrator can delete someone's account.** The Users page
   has a Delete action (`DELETE /users/{id}`) that removes the account in every
   workspace, with the same refusals as deleting your own. Administrator
@@ -298,6 +332,15 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Nobody changes their own membership.** An admin changing their own role
+  or removing themselves from a workspace, or an organization admin doing so
+  in the organization, is refused with a 403: another admin steps them down,
+  so nobody locks themselves out by mistake. The members pages no longer
+  offer it.
+- **A room's own document is changed in its room.** `PATCH` and
+  `DELETE /documents/{id}` refuse one with a 409, and its library flags say no.
+- **Revoking an invitation that has already ended is refused** with a 409,
+  rather than rewriting when, and by whom, it ended.
 - **One role runs a workspace: owner merges into admin.** Every workspace
   `owner` becomes an `admin`, and every admin now manages every member, other
   admins included, as well as everything an owner could. A workspace always
@@ -617,6 +660,13 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **Deleting an API key an agent still signs in with** failed with a 500. It
+  is refused with a 409 that says to delete the agent; once the agent is gone,
+  its leftover key can be deleted.
+- **Attaching a document or package that is already attached**, to a room or
+  a package, failed with a 500. It now changes nothing, as for a reference.
+- **A package in a room's list said the caller may open it** only on that
+  list; every route now works it out from the package's read rule.
 - **A file that names nobody now follows the conversation like text does.**
   A post with one or more files and no mention never reached the room's
   assigned agent, the agent whose thread it was posted in, or the agent the
