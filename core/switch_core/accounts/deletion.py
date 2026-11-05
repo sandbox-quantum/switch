@@ -4,7 +4,7 @@ Everything they own goes, and everything that only names them stops naming
 them, so the `users` row can be deleted without any foreign key holding it
 back. What other people depend on is handed over or kept: rooms they created
 stay, with no owner, for the workspace's admins to manage, and the invitations,
-join domains and messaging installs they set up pass to another owner of the
+join domains and messaging installs they set up pass to another admin of the
 workspace.
 
 Nothing is deleted until every refusal has been checked, so a refused deletion
@@ -13,7 +13,7 @@ ahead would strand something nobody else could reach:
 
 - the server's own administrator account, which the server recreates on every
   start anyway;
-- a workspace with other people in it whose only owner is this person;
+- a workspace with other people in it whose only admin is this person;
 - an organization with other people in it whose only `org_admin` is this
   person;
 - a cloud machine, whose teardown is driven from its row;
@@ -487,8 +487,13 @@ class AccountDeletion:
     ) -> None:
         """Check `refusal`'s last-admin rule again, in the transaction that
         removes the membership and with the admin rows locked: another admin
-        may have been demoted or removed since `refusal` read them."""
-        if workspace.role != "admin":
+        may have been demoted or removed since `refusal` read them.
+
+        Their own membership row decides, not `workspace.role`: that is the
+        role they act with, which is `admin` for the organization's
+        `org_admin` whatever their row says, and only an `admin` row counts
+        towards keeping the workspace one."""
+        if await self.users.tenant_role(session, workspace.id, user_id) != "admin":
             return
         members = await self.users.list_tenant_members(session)
         if all(member.id == user_id for member, _ in members):

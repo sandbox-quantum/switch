@@ -252,15 +252,50 @@ async def test_the_only_admin_of_a_shared_workspace_is_refused(
 ) -> None:
     deletion, _, _ = _deletion(session_factory)
     async with session_factory() as session:
-        owner = await _user(session, "owner")
+        admin = await _user(session, "admin")
         other = await _user(session, "other")
-        await _member(session, TENANT_ZERO_ID, owner, "admin")
+        await _member(session, TENANT_ZERO_ID, admin, "admin")
         await _member(session, TENANT_ZERO_ID, other, "member")
         await session.commit()
         reason = await deletion.refusal(
-            session, owner, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
+            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
     assert reason is not None and "only admin of Acme" in reason
+
+
+async def test_an_org_admin_with_a_member_row_takes_no_admin_away(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The workspace lists its organization's `org_admin` as an admin, but
+    their own row is a member's: deleting them leaves the workspace's one
+    admin row where it was, so the last-admin rule has nothing to stop."""
+    deletion, _, _ = _deletion(session_factory)
+    async with session_factory() as session:
+        org_admin = await _user(session, "org-admin")
+        second = await _user(session, "second-org-admin")
+        workspace_admin = await _user(session, "ws-admin")
+        await _member(session, TENANT_ZERO_ID, org_admin, "member")
+        await _member(session, TENANT_ZERO_ID, workspace_admin, "admin")
+        await _organization_role(session, org_admin, "org_admin")
+        await _organization_role(session, second, "org_admin")
+        await session.commit()
+        user_id = org_admin.id
+
+    workspaces = [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        assert await deletion.refusal(session, user, workspaces) is None
+        await deletion.delete(session, user, workspaces)
+
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is None
+        admins = await session.scalars(
+            select(TenantMember.user_id).where(
+                TenantMember.tenant_id == TENANT_ZERO_ID, TenantMember.role == "admin"
+            )
+        )
+        assert list(admins) == [workspace_admin.id]
 
 
 async def _organization_role(session: AsyncSession, user: User, role: str) -> None:
