@@ -6,8 +6,9 @@
 > complete until Switch can read identity through MCP. Live connection and
 > grant-removal verification are still pending.
 
-Agents can read and update tasks and projects in their owners' Asana
-workspaces once the server's operator registers an Asana MCP app. Each
+Agents can read and update tasks and projects in the Asana workspace their
+owner selects when authorizing the connection, within that owner's Asana
+permissions, once the server's operator registers an Asana MCP app. Each
 person then connects their own Asana account from Switch Console and turns
 Asana on for the agents they choose. How it works is in
 [`docs/design/service-connections-v2.md`](../design/service-connections-v2.md).
@@ -51,8 +52,10 @@ In Asana's [developer console](https://app.asana.com/0/my-apps), choose
 
 There are no permission scopes to pick. Asana's integration guide permits
 `default` or an omitted scope and says every authorization may use every
-tool the server offers, within each person's own Asana permissions. Its
-troubleshooting guidance recommends omitting `scope` if it is rejected;
+tool the server offers, within the selected workspace and the person's own
+Asana permissions. [Asana's tool reference](https://developers.asana.com/docs/mcp-tools-reference)
+says each MCP session is scoped to one workspace selected at authorization.
+The integration guide recommends omitting `scope` if it is rejected;
 the current Switch connector sends `default`.
 
 ## Give Switch the client
@@ -127,6 +130,11 @@ agents' next token requests:
 
 ## Limits worth knowing
 
+- A user-only identity does not distinguish two Asana workspaces selected
+  by the same person. Switch keeps existing agent grants on a reconnect to
+  the same account. Until Switch can detect a change of Asana workspace,
+  remove the existing agent grants before reconnecting to another Asana
+  workspace and grant them again only after checking the new connection.
 - Asana documents one-hour access tokens and a long-lived reusable refresh
   token. Refresh behavior has not been measured with this V2 MCP app. The
   adapter stores a replacement refresh token if the server returns one, and

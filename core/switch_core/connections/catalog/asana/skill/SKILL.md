@@ -15,15 +15,15 @@ Your owner granted this agent their Asana connection. Its tools are on the
   shows there as done by them.
 - **Every tool the server offers.** Asana does not split this connection
   into read and write: a connection reaches all of the server's tools,
-  narrowed only by your owner's own Asana permissions and by which
-  workspaces the server's app is allowed into. Never describe this
+  narrowed by your owner's Asana permissions and the workspace selected
+  when they authorized the connection. Never describe this
   connection as read-only, and do not promise the user a change is safe
   because it "only reads".
-- **Their workspaces, as the app allows.** The server's operator registered
-  the app your owner connected through, and chose which workspaces it may
-  reach. A workspace outside that choice is refused by Asana itself; if a
-  whole workspace seems missing, tell the user it is the app's distribution
-  setting, which only the operator can change.
+- **One selected workspace.** Asana scopes each MCP session to the workspace
+  selected at authorization. The server operator also chooses which
+  workspaces may authorize the app; a workspace outside that choice is
+  refused by Asana. Do not assume the connection can search every workspace
+  your owner belongs to.
 - When a tool is refused, tell the user what you could not do. If Switch
   says the grant was removed or the connection must be reconnected, your
   owner has to do that.
