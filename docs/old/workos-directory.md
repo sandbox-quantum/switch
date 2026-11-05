@@ -10,7 +10,10 @@ off by default; this page says what works today and what does not yet.
 
 - `ORGANIZATION_DIRECTORY=workos`
 - `WORKOS_API_KEY`: an API key of the WorkOS environment (`WORKOS_API_URL`
-  defaults to `https://api.workos.com`).
+  defaults to `https://api.workos.com`). With changes made from Switch (below),
+  create it under the AuthKit application in `WORKOS_CLIENT_ID`: WorkOS
+  exchanges an application's sign-ins only with that application's own key,
+  and the same key reads organizations, memberships, users and events.
 - The gateway's OIDC sign-in (`GATEWAY_OIDC_*`, see
   [`GATEWAY_OIDC_SETUP.md`](GATEWAY_OIDC_SETUP.md)) set up against an AuthKit
   application of the same environment. The sign-in's subject is the person's
