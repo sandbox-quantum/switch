@@ -76,6 +76,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_room,
     tenant_of_server_connector,
     tenants_inviting_email,
+    tenants_of_organization,
     tenants_of_user,
     tenants_open_to_domain,
 )
@@ -113,6 +114,7 @@ _ADDED_SINCE = {
     "all_organization_ids": "10f6d02ac5bc",
     "directory_organizations_of_user": "f2b8d6c1a4e9",
     "directory_organizations": "a7c3e9f15b20",
+    "tenants_of_organization": "c3d9a1f7b246",
 }
 
 # A third kind of change, and the quietest: a lookup whose body a later
@@ -392,6 +394,25 @@ class TestWhatTheyAnswer:
         fixture = await _two_populated_tenants(rls_harness)
         found = await all_tenant_ids(rls_harness.restricted)
         assert {fixture.tenant_a, fixture.tenant_b} <= set(found)
+
+    async def test_tenants_of_organization_sees_only_its_workspaces(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        fixture = await _two_populated_tenants(rls_harness)
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with rls_harness.owner() as session:
+            session.add(
+                Organization(id=organization_id, slug=organization_id, name="O")
+            )
+            await session.flush()
+            tenant_a = await session.get(Tenant, fixture.tenant_a)
+            assert tenant_a is not None
+            tenant_a.organization_id = organization_id
+            await session.commit()
+
+        assert await tenants_of_organization(
+            rls_harness.restricted, organization_id
+        ) == [fixture.tenant_a]
 
     async def test_all_organization_ids_sees_every_organization(
         self, rls_harness: RLSHarness

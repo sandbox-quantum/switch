@@ -30,7 +30,9 @@ under the local directory, and that is what a new organization is until then.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -92,16 +94,35 @@ def switch_role(workos_role: str) -> str:
 
 
 class WorkOSRefused(DirectoryUnavailable):
-    """WorkOS answered, with something other than 200."""
+    """WorkOS answered, with something other than 200. `detail` is what it
+    said, as it said it, for the log and for telling one refusal from
+    another."""
 
-    def __init__(self, message: str, status_code: int) -> None:
+    def __init__(self, message: str, status_code: int, detail: str) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.detail = detail
 
 
 class EventCursorRejected(DirectoryUnavailable):
     """WorkOS refused where the events were asked from: an event id or a
     start time it no longer keeps."""
+
+
+# A refusal of where the events are read from names the parameter it refused;
+# one of the request itself (an event type, how the list is sent) does not,
+# and starting again from now would not cure it.
+_NAMES_THE_CURSOR = re.compile(r"\b(after|range_start)\b")
+# Enough of a refusal to say what it was, not a page of it in the log.
+_DETAIL_LIMIT = 500
+
+
+def _refusal_detail(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text[:_DETAIL_LIMIT]
+    return json.dumps(body)[:_DETAIL_LIMIT]
 
 
 def _unreadable(what: str) -> DirectoryUnavailable:
@@ -138,9 +159,11 @@ class WorkOSDirectory:
                 f"WorkOS could not be reached ({type(error).__name__})."
             ) from error
         if response.status_code != 200:
+            detail = _refusal_detail(response)
             raise WorkOSRefused(
-                f"WorkOS answered {response.status_code} for {path}.",
+                f"WorkOS answered {response.status_code} for {path}: {detail}",
                 response.status_code,
+                detail,
             )
         try:
             body = response.json()
@@ -271,7 +294,9 @@ class WorkOSDirectory:
         try:
             page = await self._get("/events", params)
         except WorkOSRefused as error:
-            if error.status_code in (400, 404, 422):
+            if error.status_code in (400, 404, 422) and _NAMES_THE_CURSOR.search(
+                error.detail
+            ):
                 raise EventCursorRejected(error.message) from error
             raise
         data = page.get("data")

@@ -33,6 +33,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_invitation,
     tenants_bindable_by_user,
     tenants_inviting_email,
+    tenants_of_organization,
     tenants_of_user,
     tenants_open_to_domain,
 )
@@ -389,16 +390,20 @@ async def _in_organization(
     return found
 
 
-async def tenants_bindable_or_any(
+async def organization_candidates(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: str,
+    organization_id: str,
     *,
     is_operator: bool,
 ) -> list[str]:
-    """`tenants_bindable_by`, or every tenant for the platform operator, who
-    may bind any."""
+    """Where to look for `organization_id`'s workspaces: its own, for the
+    platform operator, who may bind any workspace and holds no membership to
+    narrow by (`tenants_of_organization`); those `user_id` may bind,
+    otherwise. Either way a caller keeps only those still in the
+    organization when it reads them."""
     if is_operator:
-        return await all_tenant_ids(session_factory)
+        return await tenants_of_organization(session_factory, organization_id)
     return await tenants_bindable_by(session_factory, user_id)
 
 
@@ -524,8 +529,8 @@ async def organization_workspaces_bindable_by(
     `platform_access` gives them. Each candidate is read on its own short
     session, and only those in the organization are described further.
     """
-    candidates = await tenants_bindable_or_any(
-        session_factory, user_id, is_operator=is_operator
+    candidates = await organization_candidates(
+        session_factory, user_id, organization_id, is_operator=is_operator
     )
     found: list[TenantMembershipResponse] = []
     for tenant in await _in_organization(session_factory, candidates, organization_id):

@@ -362,6 +362,29 @@ async def oidc_callback(
     iss = claims.get("iss") or config.gateway_oidc_issuer_url
     if not iss:
         raise HTTPException(status_code=401, detail="OIDC token missing issuer")
+    # Under the WorkOS directory every other reader of these identities (the
+    # mirror, the organization sign-in, `switch-link-workos`) looks them up
+    # under the issuer as configured. An identity stored under another
+    # spelling of it would match none of them, so a mismatch is a
+    # configuration mistake to name, not a sign-in to let through.
+    if (
+        config.organization_directory == "workos"
+        and iss != config.gateway_oidc_issuer_url
+    ):
+        logger.error(
+            "OIDC sign-in refused: the token's issuer %r is not "
+            "GATEWAY_OIDC_ISSUER_URL %r exactly, which the WorkOS directory "
+            "looks identities up under; set it to the token's issuer",
+            iss,
+            config.gateway_oidc_issuer_url,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Sign-in is misconfigured: the identity provider's issuer "
+                "does not match this server's configuration"
+            ),
+        )
     # A first sign-in provisions the account just in time. Where it lands is
     # `gateway_signup_mode`'s decision. Under "default_tenant" it joins tenant
     # zero, named here rather than left to `TenantScoped`'s fallback, which

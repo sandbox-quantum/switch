@@ -404,6 +404,43 @@ class TestRecovering:
 
         assert await _roles(owner, organization_id) == {ada: "member"}
 
+    async def test_a_page_with_no_event_to_move_past_is_left_to_the_next_pass(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Asking again from the same place would get the same page back, and
+        again: the pass ends instead of spinning on it."""
+        owner = rls_harness.owner
+        _, workos_id = await _linked(owner)
+        await _person(owner, "user_ADA")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        workos.change("user_ADA", workos_id, "member")
+        await mirror.poll_once()
+        workos.log.append({"event": "organization_membership.updated"})
+        asked = len(workos.asked)
+
+        assert await mirror.poll_once() == 0
+
+        assert len(workos.asked) == asked + 1
+
+    async def test_an_organization_linked_since_the_last_pass_is_checked_in_full(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """An operator links it from another process, with no event to say
+        so: its members don't wait for the daily check."""
+        owner = rls_harness.owner
+        ada = await _person(owner, "user_ADA")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        organization_id, workos_id = await _linked(owner)
+        workos.memberships[("user_ADA", workos_id)] = "org_admin"
+
+        await mirror.poll_once()
+
+        assert await _roles(owner, organization_id) == {ada: "org_admin"}
+
     async def test_an_empty_pass_moves_the_start_forward(
         self, rls_harness: RLSHarness
     ) -> None:

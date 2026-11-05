@@ -493,21 +493,50 @@ class TestWhatTheMirrorReads:
 
     @pytest.mark.parametrize("status", [400, 404, 422])
     async def test_a_refused_cursor_says_so(self, status: int) -> None:
-        directory = _directory(lambda request: httpx.Response(status))
+        directory = _directory(
+            lambda request: httpx.Response(
+                status,
+                json={
+                    "code": "invalid_request_parameters",
+                    "errors": [{"field": "after", "code": "not_found"}],
+                },
+            )
+        )
 
         with pytest.raises(EventCursorRejected):
             await directory.events(
                 ("organization.deleted",), after="event_old", range_start="x"
             )
 
-    async def test_other_refusals_are_not_the_cursor(self) -> None:
-        directory = _directory(lambda request: httpx.Response(401))
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (401, {"message": "Unauthorized"}),
+            (
+                400,
+                {
+                    "code": "invalid_request_parameters",
+                    "errors": [{"field": "events", "code": "invalid_enum_value"}],
+                },
+            ),
+        ],
+    )
+    async def test_other_refusals_are_not_the_cursor_and_say_what_they_were(
+        self, status: int, body: dict
+    ) -> None:
+        """A refusal of the request itself would come back however far the
+        events were read from: starting again from now would not cure it."""
+        directory = _directory(lambda request: httpx.Response(status, json=body))
 
         with pytest.raises(DirectoryUnavailable) as refused:
             await directory.events(
                 ("organization.deleted",), after="event_1", range_start="x"
             )
         assert not isinstance(refused.value, EventCursorRejected)
+        assert str(status) in refused.value.message
+        assert (
+            next(iter(body.values())) if status == 401 else "invalid_enum_value"
+        ) in refused.value.message
 
     async def test_one_membership_is_read_as_it_is_now(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

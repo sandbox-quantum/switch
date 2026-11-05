@@ -14,7 +14,10 @@ off by default; this page says what works today and what does not yet.
 - The gateway's OIDC sign-in (`GATEWAY_OIDC_*`, see
   [`GATEWAY_OIDC_SETUP.md`](GATEWAY_OIDC_SETUP.md)) set up against an AuthKit
   application of the same environment. The sign-in's subject is the person's
-  WorkOS user id.
+  WorkOS user id. `GATEWAY_OIDC_ISSUER_URL` must be exactly the issuer the
+  tokens name, trailing slash included: Switch looks people's WorkOS
+  identities up under it, so a sign-in whose token names another issuer is
+  refused, and the log says which one it named.
 - `GATEWAY_SIGNUP_MODE=invite_only`. Organizations cannot be created in WorkOS
   from Switch yet, so nobody but the operator creates one; the server refuses
   to start with any other mode.

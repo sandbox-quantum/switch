@@ -4,7 +4,7 @@
 events, one row per directory. A global table: no tenant column and no
 row-level security policy (`db/rls_ddl.py`'s `GLOBAL_TABLES`).
 
-`directory_organizations` is the sixteenth lookup in the exemption from
+`directory_organizations` is the seventeenth lookup in the exemption from
 row-level security: every organization that follows one in the directory.
 See `db/tenant_lookup.py` for what it discloses. Its DDL is a verbatim copy
 of `switch_core/db/tenant_lookup.py` as it stood when this migration was

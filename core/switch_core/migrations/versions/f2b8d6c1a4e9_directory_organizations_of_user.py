@@ -3,7 +3,7 @@
 Under the WorkOS directory a sign-in names the WorkOS organizations the
 person belongs to, and which Switch organizations follow those, and which
 ones following WorkOS the person is already in, has to be read before
-anything is bound. This adds the fifteenth lookup to the exemption from
+anything is bound. This adds the sixteenth lookup to the exemption from
 row-level security. See `db/tenant_lookup.py` for what it discloses.
 
 The DDL below is a verbatim copy of `switch_core/db/tenant_lookup.py` as it

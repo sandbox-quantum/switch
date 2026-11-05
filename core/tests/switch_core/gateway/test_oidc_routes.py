@@ -232,6 +232,31 @@ class TestSigningInWithADirectory:
         assert refused.value.status_code == 409
         assert "administrator" in refused.value.detail
 
+    async def test_an_issuer_other_than_the_configured_one_is_refused(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Stored under another spelling of the issuer, the identity would
+        match nothing the directory looks up, so nothing is stored."""
+        token = {"userinfo": {**self._TOKEN["userinfo"], "iss": "https://idp.example/"}}
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as refused:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                    config=self._config(),
+                    session=session,
+                    session_factory=session_factory,
+                    user_store=UserStore(),
+                    organization_directory=_Directory([]),  # type: ignore[arg-type]
+                )
+            stored = await UserStore().get_by_email(session, "dana@example.com")
+
+        assert refused.value.status_code == 503
+        assert stored is None
+
 
 class TestOidcCallback:
     async def test_provisions_user_and_sets_session_cookie(

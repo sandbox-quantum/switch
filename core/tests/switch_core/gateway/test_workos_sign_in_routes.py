@@ -296,6 +296,24 @@ class TestChangingMembers:
         for who in (cy, eli, fay):
             assert await _role(session_factory, organization_id, who) == "member"
 
+    async def test_demoting_the_last_org_admin_is_refused_before_any_sign_in(
+        self, session_factory
+    ) -> None:
+        ada = _name("ada")
+        tenant_id, organization_id = await _linked(
+            session_factory, {ada: ("owner", "org_admin")}
+        )
+        workos = _WorkOS({f"user_{ada}": ("om_ada", "org_admin")})
+
+        async with _client(_with(session_factory, workos), ada, tenant_id) as client:
+            refused = await client.patch(
+                f"/organizations/current/members/{ada}", json={"role": "member"}
+            )
+
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == "Cannot demote the last organization admin"
+        assert await _role(session_factory, organization_id, ada) == "org_admin"
+
     async def test_a_removal_refused_for_its_workspaces_asks_for_no_sign_in(
         self, session_factory
     ) -> None:

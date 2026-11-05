@@ -2647,7 +2647,8 @@ class DirectoryEventCursor(Base):
     `after` is the last event applied, null until the first; until then the
     events are read from `started_at`, when the mirror first ran. Applying
     an event re-reads the membership it names, so reading one twice changes
-    nothing, and the row needs no fence against a holder taken over.
+    nothing. The row is written only while the mirror's ownership fence holds
+    (`WorkOSMirror._write_cursor`), so a holder taken over can't move it.
 
     Not tenant-scoped: one directory's events reach every organization.
     """

@@ -56,9 +56,9 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
+    organization_candidates,
     organization_workspaces_bindable_by,
     organizations_bindable_by,
-    tenants_bindable_or_any,
     workspaces_in_organization,
     workspaces_reached_through_organization,
 )
@@ -438,8 +438,11 @@ async def list_organization_issues(
         user_store,
         organization_id=access.organization_id,
         admins=admins,
-        candidates=await tenants_bindable_or_any(
-            session_factory, user.id, is_operator=access.platform_access
+        candidates=await organization_candidates(
+            session_factory,
+            user.id,
+            access.organization_id,
+            is_operator=access.platform_access,
         ),
     )
     return [
@@ -554,6 +557,8 @@ async def _member_change(
     subject = await directory_subject(
         session, user_store, organization_directory, user_id
     )
+    # Let go of the request's connection while the directory is asked.
+    await session.commit()
     try:
         return await organization_directory.prepare_change(
             organization, subject, role, access_token
@@ -658,6 +663,14 @@ async def update_organization_member_role(
     demoting = (
         member.role == ORGANIZATION_ADMIN_ROLE and req.role != ORGANIZATION_ADMIN_ROLE
     )
+    last_admin = HTTPException(
+        status_code=409, detail="Cannot demote the last organization admin"
+    )
+    if (
+        demoting
+        and await organization_store.count_admins(session, organization_id) <= 1
+    ):
+        raise last_admin
     organization = await _organization(session, organization_id)
     member_change = (
         await _member_change(
@@ -673,14 +686,6 @@ async def update_organization_member_role(
         if member.role != req.role
         else NO_DIRECTORY_CHANGE
     )
-    last_admin = HTTPException(
-        status_code=409, detail="Cannot demote the last organization admin"
-    )
-    if (
-        demoting
-        and await organization_store.count_admins(session, organization_id) <= 1
-    ):
-        raise last_admin
 
     warning = None
     if demoting:
@@ -817,7 +822,6 @@ async def remove_organization_member(
         user_id,
         None,
     )
-    await session.commit()
     warning = None
     if was_admin:
         try:

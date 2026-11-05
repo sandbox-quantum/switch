@@ -116,14 +116,18 @@ class WorkOSMirror:
         self._attempts: dict[str, int] = {}
         # Organizations to check in full on every pass until that succeeds.
         self._recheck: set[str] = set()
+        # The linked organizations as of the last pass, and the WorkOS
+        # organization each follows, read again only when they change.
+        self._linked_now: dict[str, str] | None = None
 
     async def poll_once(self, fence: Fence) -> int:
         """Re-check what is due, then apply the events since the cursor, page
         by page, moving the cursor past each one. Returns how many events
         were read."""
         cursor = await self._cursor()
+        linked = await self._linked()
         if self._recheck:
-            await self._check_all(fence, await self._linked(), only=set(self._recheck))
+            await self._check_all(fence, linked, only=set(self._recheck))
         polled_at = datetime.now(UTC)
         try:
             events = await self._directory.events(
@@ -140,11 +144,11 @@ class WorkOSMirror:
                     fence, started_at=polled_at - _START_OVERLAP, after=None
                 )
             return 0
-        linked = await self._linked()
         following = {workos: own for own, workos in linked.items()}
         read = 0
         after = cursor.after
         while events:
+            page_from = after
             for event in events:
                 event_id = event.get("id")
                 if not isinstance(event_id, str):
@@ -156,7 +160,9 @@ class WorkOSMirror:
                 await self._write_cursor(fence, started_at=None, after=event_id)
                 after = event_id
                 read += 1
-            if after is None:
+            # A page with no event to move past would be asked for again,
+            # and again: leave it to the next pass.
+            if after is None or after == page_from:
                 return read
             events = await self._directory.events(
                 EVENT_TYPES, after=after, range_start=cursor.started_at.isoformat()
@@ -409,9 +415,19 @@ class WorkOSMirror:
         self._recheck |= set(await self._linked())
 
     async def _linked(self) -> dict[str, str]:
-        """Each linked organization's WorkOS organization, by its id."""
+        """Each linked organization's WorkOS organization, by its id. Which
+        organizations are linked is read on every pass, in one lookup; each
+        one's WorkOS organization only when that list changes, one short
+        session each, since an organization is readable only bound to it (a
+        link is never changed in place: `workos_linking.py` refuses). An
+        organization linked since the last pass is checked in full: an
+        operator links it from another process, and its members would
+        otherwise wait for the daily check."""
+        ids = await directory_organizations(self._session_factory)
+        if self._linked_now is not None and set(ids) == set(self._linked_now):
+            return self._linked_now
         linked: dict[str, str] = {}
-        for organization_id in await directory_organizations(self._session_factory):
+        for organization_id in ids:
             async with organization_session(
                 self._session_factory, organization_id
             ) as session:
@@ -422,6 +438,9 @@ class WorkOSMirror:
                 )
             if workos_organization_id is not None:
                 linked[organization_id] = workos_organization_id
+        if self._linked_now is not None:
+            self._recheck |= set(linked) - set(self._linked_now)
+        self._linked_now = linked
         return linked
 
     async def _users_of(self, subjects: list[str]) -> dict[str, str]:
