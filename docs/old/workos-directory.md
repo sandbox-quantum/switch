@@ -149,7 +149,10 @@ in as, or to another organization, is refused. Switch's own checks still run
 first; the service may refuse by its own rules, and its reason is shown. If
 the token runs out after a demotion or removal has already taken away the
 person's workspace access, the dashboard says so before sending the admin to
-sign in again to finish. A platform operator restoring an Org Admin can't
+sign in again to finish. If the service refuses a token that has not run
+out, it is not set up to accept this AuthKit application's tokens: Switch
+answers 503, says to make the change in the account settings, and logs an
+error, rather than sending the admin to sign in again. A platform operator restoring an Org Admin can't
 sign in there: unless WorkOS already has that person as `org_admin`, they are
 told to have someone made one in the organization's account settings.
 
