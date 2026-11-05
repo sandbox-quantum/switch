@@ -22,6 +22,13 @@ off by default; this page says what works today and what does not yet.
   from Switch yet, so nobody but the operator creates one; the server refuses
   to start with any other mode.
 
+With the Helm chart (`deploy/remote/helm/switch`), set
+`switchCore.organizationDirectory.mode: workos` and `secrets.workosApiKey`
+(or `WORKOS_API_KEY` in `secrets.existingSecret`), next to `switchCore.oidc`
+and `switchCore.signup.mode: invite_only`; the settings for changes made from
+Switch (below) are under `switchCore.organizationDirectory` too. The render
+fails on a combination the server would refuse.
+
 ## Linking
 
 Nothing is linked automatically. An operator links each Switch organization to

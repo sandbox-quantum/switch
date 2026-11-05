@@ -78,6 +78,9 @@ MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .V
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
 {{- end }}
+{{- if eq .Values.switchCore.organizationDirectory.mode "workos" }}
+WORKOS_API_KEY: {{ required "secrets.workosApiKey is required when switchCore.organizationDirectory.mode is workos" .Values.secrets.workosApiKey | b64enc | quote }}
+{{- end }}
 {{- if and .Values.switchCore.smtp.enabled (or .Values.switchCore.smtp.username .Values.switchCore.smtp.usernameFromSecret) }}
 GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when an SMTP username is set" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
 {{- end }}
@@ -888,6 +891,7 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ $signupMode | quote }}
 - name: GATEWAY_MAX_WORKSPACES_PER_USER
   value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
+{{- include "switch.organizationDirectoryEnv" . }}
 - name: GATEWAY_TENANT_CHOICE_ENABLED
   value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
 {{- $outboundHosts := .Values.switchCore.outbound.allowedPrivateHosts }}
@@ -1291,5 +1295,46 @@ HF_TOKEN env entry from decision.modelServer.hfTokenSecret, or nothing.
     secretKeyRef:
       name: {{ . }}
       key: {{ $.Values.decision.modelServer.hfTokenSecret.key }}
+{{- end }}
+{{- end }}
+
+{{/*
+switch-core's organization directory settings. The checks mirror the ones
+switch-core makes at startup (config.py), so a bad combination fails the
+render instead of a pod.
+*/}}
+{{- define "switch.organizationDirectoryEnv" -}}
+{{- $directory := .Values.switchCore.organizationDirectory }}
+{{- $changes := list $directory.membersServiceUrl $directory.workosClientId $directory.workosRedirectUrl | compact }}
+{{- if not (has $directory.mode (list "local" "workos")) }}
+{{- fail (printf "switchCore.organizationDirectory.mode must be local or workos. Got %q." $directory.mode) }}
+{{- end }}
+{{- if eq $directory.mode "workos" }}
+{{- if not .Values.switchCore.oidc.enabled }}
+{{- fail "switchCore.organizationDirectory.mode workos needs switchCore.oidc.enabled, against the same WorkOS environment: the sign-in is what names the person there." }}
+{{- end }}
+{{- if ne .Values.switchCore.signup.mode "invite_only" }}
+{{- fail "switchCore.organizationDirectory.mode workos needs switchCore.signup.mode invite_only: a customer's organization is linked by an operator, not created by whoever signs up." }}
+{{- end }}
+{{- if and $changes (lt (len $changes) 3) }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are set together, or not at all." }}
+{{- end }}
+- name: ORGANIZATION_DIRECTORY
+  value: "workos"
+- name: WORKOS_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: WORKOS_API_KEY
+{{- if $changes }}
+- name: MEMBERS_SERVICE_URL
+  value: {{ $directory.membersServiceUrl | quote }}
+- name: WORKOS_CLIENT_ID
+  value: {{ $directory.workosClientId | quote }}
+- name: WORKOS_REDIRECT_URL
+  value: {{ $directory.workosRedirectUrl | quote }}
+{{- end }}
+{{- else if $changes }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are for mode workos." }}
 {{- end }}
 {{- end }}
