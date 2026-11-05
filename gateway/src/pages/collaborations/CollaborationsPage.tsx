@@ -199,7 +199,7 @@ export default function CollaborationsPage() {
         width: 140,
         valueFormatter: (value) => formatDate(value as string),
       },
-      ...(rows.some((row) => row.can_manage || row.can_delete || row.held_by_install !== null)
+      ...(rows.some((row) => row.can_manage || row.can_delete)
         ? [
             {
               field: "actions" as const,
@@ -237,7 +237,7 @@ export default function CollaborationsPage() {
                       </IconButton>
                     </Tooltip>
                   )}
-                  {row.can_delete ? (
+                  {row.can_delete && (
                     <IconButton
                       size="small"
                       onClick={() => setDeleteTarget(row)}
@@ -245,17 +245,7 @@ export default function CollaborationsPage() {
                     >
                       <DeleteOutline fontSize="small" />
                     </IconButton>
-                  ) : row.can_manage && row.held_by_install === "oauth" ? (
-                    // An app installed by OAuth holds the connection: it goes
-                    // when the install is disconnected, below.
-                    <Tooltip title="Installed from the platform: disconnect it under Installed apps">
-                      <span>
-                        <IconButton size="small" disabled aria-label={`Delete ${row.display_name}`}>
-                          <DeleteOutline fontSize="small" />
-                        </IconButton>
-                      </span>
-                    </Tooltip>
-                  ) : null}
+                  )}
                 </Stack>
               ),
             },

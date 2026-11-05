@@ -17,7 +17,6 @@ const bridge: BridgeDetail = {
   team_placement_supported: true,
   can_manage: true,
   can_delete: true,
-  held_by_install: null,
 };
 
 function placements(

@@ -71,7 +71,6 @@ function bridge(overrides: Partial<BridgeDetail> = {}): BridgeDetail {
     team_placement_supported: false,
     can_manage: true,
     can_delete: true,
-    held_by_install: null,
     ...overrides,
   };
 }
@@ -302,26 +301,6 @@ describe("CollaborationsPage", () => {
 
     expect(screen.getByRole("button", { name: "Delete Deletable" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Delete Kept" })).toBeNull();
-  });
-
-  it("shows delete disabled on a connection an OAuth install holds, pointing at the install", () => {
-    setup({
-      bridges: [
-        bridge({
-          bridge_id: "b1",
-          display_name: "Installed",
-          can_delete: false,
-          held_by_install: "oauth",
-        }),
-      ],
-    });
-    render(<CollaborationsPage />);
-
-    const remove = screen.getByRole("button", { name: "Delete Installed" });
-    expect((remove as HTMLButtonElement).disabled).toBe(true);
-    expect(
-      screen.getByLabelText("Installed from the platform: disconnect it under Installed apps"),
-    ).toBeTruthy();
   });
 
   it("lets someone who may not change a connection see it, with nothing to act on", () => {

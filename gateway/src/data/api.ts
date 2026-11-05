@@ -192,12 +192,10 @@ export interface BridgeDetail {
   // connection's app is in (the distributed Teams app). False while the
   // bridge is not running.
   team_placement_supported: boolean;
-  // What the caller may do to the connection: change it, and delete it.
+  // What the caller may do to the connection: change it, and delete it. A
+  // connection an install holds is refused at the time, with the reason.
   can_manage: boolean;
   can_delete: boolean;
-  // The install that holds the connection, which is ended rather than the
-  // connection deleted: an OAuth install, or chats claimed one by one.
-  held_by_install: "oauth" | "claim" | null;
 }
 
 export interface ExternalUserSummary {
