@@ -29,7 +29,8 @@ import {
   updateAgentOptions,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { useAgent, useKnownAgentTypes } from "../../data/hooks";
+import { useAgent, useHostedV2, useKnownAgentTypes } from "../../data/hooks";
+import { useCloudView } from "../../data/hostedCloud";
 import {
   EM_DASH,
   MONO_SX,
@@ -38,6 +39,7 @@ import {
 } from "../../theme/hootFormat";
 import AddressingPolicySection from "./AddressingPolicySection";
 import AgentManagementSection from "./AgentManagementSection";
+import { CloudAgentSection, CloudRenameDialog } from "./cloud/CloudAgentControls";
 import ServiceAccessSection from "./ServiceAccessSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 import { sessionPlace, sessionRunner } from "./sessionLabels";
@@ -80,6 +82,14 @@ export default function AgentDetailPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
+  // With hosted agents v2 on: the person's box, so an agent on it gets the
+  // cloud start, stop, restart, rename and delete. Nothing is read with it off.
+  const hostedV2 = useHostedV2() === true;
+  const cloud = useCloudView(hostedV2);
+  const boxController =
+    hostedV2 && agentId && cloud.machine?.controller_id && cloud.machine.agents.includes(agentId)
+      ? cloud.machine.controller_id
+      : null;
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
     severity: "success" | "warning";
@@ -150,20 +160,45 @@ export default function AgentDetailPage() {
         </Alert>
       )}
 
-      <RenameAgentDialog
-        open={renameOpen}
-        agent={agent}
-        onClose={() => setRenameOpen(false)}
-        onRenamed={(lines, severity) => {
-          setRenameOpen(false);
-          setRenameNotice({ lines, severity });
-          refetch();
-        }}
-      />
+      {boxController ? (
+        <CloudRenameDialog
+          open={renameOpen}
+          agentId={agent.id}
+          name={agent.name}
+          displayName={agent.display_name}
+          onClose={() => setRenameOpen(false)}
+          onRenamed={(line) => {
+            setRenameOpen(false);
+            setRenameNotice({ lines: [line], severity: "success" });
+            refetch();
+          }}
+        />
+      ) : (
+        <RenameAgentDialog
+          open={renameOpen}
+          agent={agent}
+          onClose={() => setRenameOpen(false)}
+          onRenamed={(lines, severity) => {
+            setRenameOpen(false);
+            setRenameNotice({ lines, severity });
+            refetch();
+          }}
+        />
+      )}
 
       <Stack spacing={4}>
         <InfoSection agent={agent} />
         <Divider />
+        {isOwner && boxController && (
+          <>
+            <CloudAgentSection
+              agent={{ id: agent.id, name: agent.display_name || agent.name }}
+              controllerId={boxController}
+              onDeleted={() => navigate("/agents")}
+            />
+            <Divider />
+          </>
+        )}
         <CapabilitiesSection agent={agent} />
         {agent.known_agent_type && (
           <>

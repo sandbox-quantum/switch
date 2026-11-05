@@ -18,6 +18,7 @@ vi.mock("../../data/AuthContext", () => ({
 vi.mock("../../data/hooks", () => ({
   useAgent: vi.fn(),
   useKnownAgentTypes: vi.fn(),
+  useHostedV2: () => false,
 }));
 
 vi.mock("../../data/api", async (importOriginal) => {
