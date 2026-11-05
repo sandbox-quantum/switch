@@ -186,6 +186,7 @@ export class AcpAdapter implements ProviderAdapter {
       binaryPath,
       cwd,
       env: input.env,
+      runtimeMode: input.runtimeMode,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
@@ -531,6 +532,16 @@ export class AcpAdapter implements ProviderAdapter {
     const vendor = this.hooks.permission?.(context, request);
     if (vendor) return await vendor;
     const { toolCall } = request;
+    // The request's tool call updates one the agent announced and may name
+    // nothing but its id: what it leaves out is the announced call's.
+    const announced = state.items.get(toolCall.toolCallId);
+    const kind =
+      toolCall.kind ??
+      (announced?.type === 'command_execution'
+        ? 'execute'
+        : announced?.type === 'file_change'
+          ? 'edit'
+          : undefined);
     const once = request.options.find((option) => option.kind === 'allow_once');
     const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
     // In auto mode whatever automatic review the agent has ran before it
@@ -539,7 +550,7 @@ export class AcpAdapter implements ProviderAdapter {
       once &&
       ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
         state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
+        (state.runtimeMode === 'auto-accept-edits' && kind === 'edit'))
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
@@ -570,12 +581,16 @@ export class AcpAdapter implements ProviderAdapter {
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : kind === 'execute'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
-      title: toolCall.title ?? `${this.hooks.label} needs permission`,
+      title:
+        this.hooks.toolTitle?.(toolCall) ??
+        toolCall.title ??
+        announced?.title ??
+        `${this.hooks.label} needs permission`,
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
@@ -660,7 +675,11 @@ export class AcpAdapter implements ProviderAdapter {
             : update.kind === 'edit'
               ? 'file_change'
               : 'tool_call'),
-      title: update.title ?? old?.title ?? 'Tool',
+      // A later update repeating the bare tool name keeps the hook's title.
+      title:
+        this.hooks.toolTitle?.(update) ??
+        (this.hooks.toolTitle && old ? old.title : (update.title ?? old?.title)) ??
+        'Tool',
       status: outputFailed
         ? 'failed'
         : update.status === 'completed'
