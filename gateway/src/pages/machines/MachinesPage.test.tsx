@@ -172,6 +172,20 @@ describe("MachinesPage", () => {
     expect(screen.queryByRole("button", { name: "Stop managing their-agent" })).toBeNull();
   });
 
+  it("says why an agent on no machine cannot be started", async () => {
+    mockManagement({
+      "GET /controllers": [200, []],
+      "GET /agents": [200, [{ ...pmAgent, controller_id: null, controller_state: null }]],
+      "GET /operations": [200, []],
+    });
+    render(<MachinesPage />);
+    const start = await screen.findByRole("button", { name: "Stop pm-agent" });
+    expect((start as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      screen.getByLabelText("Not on a machine: move it to one to start or stop it"),
+    ).toBeTruthy();
+  });
+
   it("shows the controller's version against the release Switch names", async () => {
     const wanted = { wanted: "0.31.0", running: "0.1.0", current: false };
     const machines: Controller[] = [

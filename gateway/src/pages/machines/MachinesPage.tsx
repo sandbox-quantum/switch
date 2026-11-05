@@ -536,7 +536,15 @@ export default function MachinesPage() {
             <>
               {row.can_edit && (
                 <>
-                  <Tooltip title={running ? "Stop" : "Start"}>
+                  <Tooltip
+                    title={
+                      row.controller_id === null
+                        ? "Not on a machine: move it to one to start or stop it"
+                        : running
+                          ? "Stop"
+                          : "Start"
+                    }
+                  >
                     <span>
                       <IconButton
                         size="small"
@@ -558,7 +566,13 @@ export default function MachinesPage() {
                       </IconButton>
                     </span>
                   </Tooltip>
-                  <Tooltip title="Restart">
+                  <Tooltip
+                    title={
+                      row.controller_id === null
+                        ? "Not on a machine: move it to one to restart it"
+                        : "Restart"
+                    }
+                  >
                     <span>
                       <IconButton
                         size="small"
