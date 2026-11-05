@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { FileText, Library, Link2, Plus } from 'lucide-react';
+import { FileText, Library, Link2, Package, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -42,6 +42,7 @@ const LibraryTitlebar = observer(function LibraryTitlebar() {
 const KINDS = [
   { value: 'references', label: 'References', icon: Link2 },
   { value: 'documents', label: 'Documents', icon: FileText },
+  { value: 'packages', label: 'Packages', icon: Package },
 ] as const satisfies readonly { value: LibraryKind; label: string; icon: typeof Link2 }[];
 
 const SCOPES = [
@@ -112,7 +113,7 @@ const LibraryPanel = observer(function LibraryPanel() {
       ) : (
         <div className="flex flex-col gap-4">
           <SegmentedControl
-            ariaLabel="References or documents"
+            ariaLabel="References, documents or packages"
             value={kind}
             onChange={setKind}
             options={KINDS}

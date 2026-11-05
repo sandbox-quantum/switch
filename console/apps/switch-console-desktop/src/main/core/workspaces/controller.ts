@@ -112,6 +112,9 @@ import {
   fetchLibraryItems,
   fetchReferenceTypes,
   updateLibraryItem,
+  addPackageMember,
+  fetchPackageMembers,
+  removePackageMember,
 } from '@main/core/switch-servers/library-client';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
@@ -149,6 +152,8 @@ import type {
   LibraryItemInput,
   LibraryItemRoom,
   LibraryKind,
+  PackageMemberKind,
+  PackageMemberRemoval,
   ReferenceTypeOption,
 } from '@shared/core/switch-servers/library';
 import type {
@@ -1153,6 +1158,37 @@ export const workspacesController = createRPCController({
   }): Promise<LibraryItemRoom[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchLibraryItemRooms(server, params.kind, params.itemId)
+    ),
+
+  /** The references or documents a package holds. */
+  listPackageMembers: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+  }): Promise<LibraryItem[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchPackageMembers(server, params.packageId, params.kind)
+    ),
+
+  /** Put a reference or document in a package, or take it out. Refusals propagate in the gateway's words. */
+  addPackageMember: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+    memberId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addPackageMember(server, params.packageId, params.kind, params.memberId)
+    ),
+
+  removePackageMember: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+    memberId: string;
+  }): Promise<PackageMemberRemoval> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      removePackageMember(server, params.packageId, params.kind, params.memberId)
     ),
 
   /** The types a new reference may be given. */

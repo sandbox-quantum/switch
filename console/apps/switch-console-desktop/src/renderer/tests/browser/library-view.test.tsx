@@ -20,7 +20,7 @@ vi.hoisted(() => {
 
 const state = vi.hoisted(() => ({
   params: {} as Record<string, unknown>,
-  items: { references: [] as unknown[], documents: [] as unknown[] },
+  items: { references: [] as unknown[], documents: [] as unknown[], packages: [] as unknown[] },
   item: null as unknown,
   rooms: [] as { roomId: string; roomName: string }[],
   admin: false,
@@ -34,6 +34,9 @@ const rpcMock = vi.hoisted(() => ({
   listLibrary: vi.fn(),
   deleteLibraryItem: vi.fn(),
   setRoomResourceAttached: vi.fn(),
+  listPackageMembers: vi.fn(),
+  addPackageMember: vi.fn(),
+  removePackageMember: vi.fn(),
 }));
 const showModal = vi.hoisted(() => vi.fn());
 const navigate = vi.hoisted(() => vi.fn());
@@ -100,6 +103,8 @@ function item(over: Partial<LibraryItem>): LibraryItem {
     urls: ['https://github.com/acme/switch'],
     attachedRoomsCount: 1,
     packageIds: [],
+    referencesCount: 0,
+    documentsCount: 0,
     createdAt: '2026-11-01',
     ...over,
   };
@@ -126,11 +131,23 @@ beforeEach(() => {
     documents: [
       item({ id: 'doc-1', kind: 'documents', name: 'Style guide', type: null, typeLabel: null }),
     ],
+    packages: [
+      item({
+        id: 'pkg-1',
+        kind: 'packages',
+        name: 'Onboarding',
+        type: null,
+        typeLabel: null,
+        urls: [],
+        referencesCount: 2,
+        documentsCount: 1,
+      }),
+    ],
   };
   state.rooms = [{ roomId: 'room-1', roomName: 'design' }];
   for (const fn of Object.values(rpcMock)) fn.mockReset();
   rpcMock.listLibraryItems.mockImplementation(
-    async ({ kind }: { kind: 'references' | 'documents' }) => state.items[kind]
+    async ({ kind }: { kind: 'references' | 'documents' | 'packages' }) => state.items[kind]
   );
   rpcMock.getLibraryItem.mockImplementation(async () => state.item);
   rpcMock.listLibraryItemRooms.mockImplementation(async () => state.rooms);
@@ -147,6 +164,14 @@ beforeEach(() => {
   rpcMock.deleteLibraryItem.mockResolvedValue({ detachedRoomIds: [], affectedPackageIds: [] });
   rpcMock.updateLibraryItem.mockResolvedValue({});
   rpcMock.setRoomResourceAttached.mockResolvedValue(undefined);
+  rpcMock.listPackageMembers.mockImplementation(async ({ kind }: { kind: string }) =>
+    kind === 'references' ? [state.items.references[0]] : []
+  );
+  rpcMock.addPackageMember.mockResolvedValue(undefined);
+  rpcMock.removePackageMember.mockResolvedValue({
+    affectedRoomNames: ['design'],
+    hiddenAffectedRoomsCount: 1,
+  });
   showModal.mockReset();
   navigate.mockReset();
 });
@@ -450,5 +475,71 @@ describe('deleting', () => {
     state.rooms = [];
     await renderDelete({ hiddenRoomsCount: 1 });
     expect(dialogText()).toContain('It is removed from 1 private room you can’t open.');
+  });
+});
+
+describe('a package', () => {
+  beforeEach(() => {
+    state.params = { serverId: 'srv', kind: 'packages', itemId: 'pkg-1' };
+    state.item = state.items.packages[0];
+  });
+
+  it('shows on the Packages tab with what it holds', async () => {
+    state.params = { serverId: 'srv' };
+    await render(libraryView.MainPanel);
+    await act(async () => button('Packages')!.click());
+    await settle();
+    expect(cardFor('Onboarding').textContent).toContain('2 references · 1 document');
+  });
+
+  it('lists what it holds and adds more from the library', async () => {
+    await render(libraryItemView.MainPanel);
+    expect(container.querySelector('[aria-label="References"]')?.textContent).toContain(
+      'Switch repo'
+    );
+    await act(async () => button('Add reference')!.click());
+    await settle();
+    const dialog = document.querySelector('[data-slot="dialog-content"]')!;
+    // Switch repo is already in it; Tracker is not.
+    expect(dialog.textContent).toContain('Tracker');
+    expect(dialog.textContent).not.toContain('Switch repo');
+    const add = [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Add')!;
+    await act(async () => add.click());
+    await settle();
+    expect(rpcMock.addPackageMember).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      packageId: 'pkg-1',
+      kind: 'references',
+      memberId: 'ref-2',
+    });
+  });
+
+  it('asks before removing, then says which rooms lost it', async () => {
+    await render(libraryItemView.MainPanel);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Remove Switch repo from the package"]')!
+        .click()
+    );
+    expect(rpcMock.removePackageMember).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      'Rooms that have it only through this package lose it.'
+    );
+    await act(async () => button('Remove')!.click());
+    await settle();
+    expect(rpcMock.removePackageMember).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      packageId: 'pkg-1',
+      kind: 'references',
+      memberId: 'ref-1',
+    });
+    expect(container.textContent).toContain('design, 1 private room you can’t open');
+  });
+
+  it('offers no adding or removing to someone who may not change it', async () => {
+    state.item = { ...(state.items.packages[0] as object), ownerId: 'bob' };
+    await render(libraryItemView.MainPanel);
+    expect(button('Add reference')).toBeUndefined();
+    expect(container.querySelector('[aria-label^="Remove "]')).toBeNull();
   });
 });
