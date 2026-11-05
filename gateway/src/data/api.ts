@@ -2292,8 +2292,8 @@ export interface CurrentTenant {
   slug: string;
   name: string;
   role: string;
-  // Whether the caller may manage the workspace: an owner or admin
-  // membership, or the operator bit.
+  // Whether the caller may manage the workspace: an admin membership,
+  // `org_admin` of its organization, or the operator bit.
   administers: boolean;
 }
 

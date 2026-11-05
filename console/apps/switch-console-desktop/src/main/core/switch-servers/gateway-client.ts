@@ -601,7 +601,7 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
 
 /**
  * Delete the signed-in account on this server, confirmed by its email. A
- * refusal (the only owner of a shared workspace, the server's own admin, …) is
+ * refusal (the only admin of a shared workspace, the server's own admin, …) is
  * raised with the server's own reason, which says what to do first.
  */
 export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
