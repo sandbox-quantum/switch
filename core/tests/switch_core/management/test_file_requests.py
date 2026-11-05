@@ -251,3 +251,44 @@ def test_the_agent_name_rule_matches_cores_own(name: str) -> None:
     assert bool(re.fullmatch(AGENT_NAME_PATTERN, name)) == bool(
         VALID_AGENT_NAME_RE.match(name)
     )
+
+
+@pytest.mark.parametrize("agent", ["-x", ".x", "a b", "a/b", "Scout", "a\x00b", ""])
+async def test_an_agent_key_that_isnt_an_agent_name_fails_the_request(
+    agent: str,
+) -> None:
+    requests, _ = _held()
+    request = requests.open("c-1", "list", "")
+    entry = {
+        "name": "a",
+        "kind": "folder",
+        "size": 0,
+        "mtime": 1,
+        "label": "A",
+        "agent": agent,
+    }
+
+    requests.deliver("c-1", _reply(request.id, entries=[entry]))
+
+    with pytest.raises(BadReply):
+        await request.reply(timeout=1)
+
+
+async def test_a_long_agent_name_is_accepted_up_to_one_path_part() -> None:
+    """Core's agent names have no length limit, so 64 must not cap it."""
+    requests, _ = _held()
+    request = requests.open("c-1", "list", "")
+    name = "a" * 255
+    entry = {
+        "name": name,
+        "kind": "folder",
+        "size": 0,
+        "mtime": 1,
+        "label": "A",
+        "agent": name,
+    }
+
+    requests.deliver("c-1", _reply(request.id, entries=[entry]))
+
+    reply = await request.reply(timeout=1)
+    assert reply.entries is not None and reply.entries[0].agent == name

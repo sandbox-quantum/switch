@@ -15,14 +15,18 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import func, select
 
 from switch_core.db.models import (
     AgentController,
     CloudMachine,
+    MachineWorkspace,
     TenantMember,
+    TenantUsage,
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.gateway import cloud_files
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
@@ -31,7 +35,11 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
 )
 from switch_core.management.file_requests import file_requests
-from tests.switch_core.hosted_machine_helpers import link_controller, seed_machine
+from tests.switch_core.hosted_machine_helpers import (
+    add_tenant,
+    link_controller,
+    seed_machine,
+)
 
 HTML = b"<html><script>alert(document.cookie)</script></html>"
 BIG = bytes(range(256)) * 800  # 204,800 bytes: two chunks
@@ -484,3 +492,42 @@ async def test_a_long_zip_keeps_the_box_awake_pull_by_pull(
     assert got.status_code == 200
     # Once when the request is served, then before each of the two pulls.
     assert marked == [box.machine_id] * 3
+
+
+async def test_browsing_adds_no_awake_time_to_the_budget(box: Box) -> None:
+    """Awake time is counted from the box's status reports of awake agent
+    sessions (`visibility/awake_usage.py`), never from browsing: a file request
+    keeps the box itself from idling, but writes no usage of its own."""
+    await _set_machine(box, active_at=datetime(2026, 1, 1, tzinfo=UTC))
+    for path in ("", "agent-a"):
+        listed = await box.client.get("/cloud-files/list", params={"path": path})
+        assert listed.status_code == 200
+    zipped = await box.client.get("/cloud-files/zip", params={"path": "agent-a"})
+    assert zipped.status_code == 200
+
+    async with tenant_session(box.factory, require_tenant_id()) as session:
+        rows = await session.scalar(select(func.count()).select_from(TenantUsage))
+    assert rows == 0
+
+
+async def test_a_box_not_serving_the_current_workspace_gives_no_files(box: Box) -> None:
+    """Bound to the workspace the request is in (security's LOW): the user's
+    box is found, but only its row for this workspace counts."""
+    async with box.factory() as session:
+        await add_tenant(session, "elsewhere")
+        rows = (
+            await session.scalars(
+                select(MachineWorkspace).where(
+                    MachineWorkspace.machine_id == box.machine_id
+                )
+            )
+        ).all()
+        for row in rows:
+            row.controller_id = None
+            row.tenant_id = "elsewhere"
+        await session.commit()
+
+    got = await box.client.get("/cloud-files/list")
+
+    assert (got.status_code, got.json()["detail"]["code"]) == (404, "no_files")
+    assert box.requests_sent() == []
