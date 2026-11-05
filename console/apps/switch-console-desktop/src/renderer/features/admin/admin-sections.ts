@@ -46,11 +46,7 @@ export function adminGroups(person: {
     {
       scope: 'workspace',
       items: person.administers
-        ? [
-            'messaging-apps',
-            ...(serviceConnections ? (['connectors'] as const) : []),
-            'decision',
-          ]
+        ? ['messaging-apps', ...(serviceConnections ? (['connectors'] as const) : []), 'decision']
         : [],
     },
     {
