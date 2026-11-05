@@ -33,6 +33,8 @@ def _config(**overrides: object) -> EmailConnectionConfig:
         "smtp_username": "switch@example.test",
         "smtp_password": "smtp-secret",
         "from_address": "switch@example.test",
+        "allowed_senders": "mina@example.test",
+        "authentication_server": "mx.google.com",
     }
     values.update(overrides)
     return EmailConnectionConfig(**values)
@@ -45,12 +47,26 @@ def _message(
     message_id: str = "<root@example.test>",
     body: str = "Hello Switch",
     references: str | None = None,
+    authentication_results: str | None = (
+        "mx.google.com; dmarc=pass header.from=example.test"
+    ),
+    auto_submitted: str | None = None,
+    list_id: str | None = None,
+    return_path: str | None = None,
 ) -> bytes:
     message = EmailMessage()
     message["From"] = sender
     message["To"] = "switch@example.test"
     message["Subject"] = subject
     message["Message-ID"] = message_id
+    if authentication_results is not None:
+        message["Authentication-Results"] = authentication_results
+    if auto_submitted is not None:
+        message["Auto-Submitted"] = auto_submitted
+    if list_id is not None:
+        message["List-Id"] = list_id
+    if return_path is not None:
+        message["Return-Path"] = return_path
     if references:
         message["References"] = references
         message["In-Reply-To"] = references.split()[-1]
@@ -74,6 +90,10 @@ def test_config_masks_passwords_and_rejects_invalid_sender_address() -> None:
     assert "password" in schema["properties"]["smtp_password"]["title"].lower()
     with pytest.raises(ValueError, match="valid email address"):
         _config(from_address="not-an-address")
+    with pytest.raises(ValueError, match="valid email addresses"):
+        _config(allowed_senders="")
+    with pytest.raises(ValueError, match="valid server identifier"):
+        _config(authentication_server="mx.google.com; dmarc=pass")
     assert config.imap_security == "ssl"
     assert config.smtp_security == "starttls"
 
@@ -90,9 +110,8 @@ def test_email_threads_use_message_id_and_references() -> None:
     assert _thread_headers(root) is None
     assert _thread_headers(reply) == "<root@example.test>"
     assert _normal_subject("Re: Fwd: Project update") == "Project update"
-    assert _channel_id("Mina@example.test", "Re: Project update") == _channel_id(
-        "mina@example.test", "Project update"
-    )
+    assert _channel_id("Mina@example.test") == _channel_id("mina@example.test")
+    assert _channel_id("mina@example.test") != _channel_id("other@example.test")
     assert _decode_thread_ref(
         _thread_ref("<root@example.test>", "mina@example.test", "Project")
     ) == {
@@ -172,14 +191,19 @@ async def test_email_dispatch_maps_thread_and_attachments_to_room_message() -> N
             references="<root@example.test>",
         ),
     )
-    await adapter._dispatch_email("7", "44", _message(body="New answer"))
+    await adapter._dispatch_email(
+        "7",
+        "44",
+        _message(subject="Different topic", body="Another root"),
+    )
     assert received[0].channel_id == received[1].channel_id
+    assert received[0].channel_id == received[2].channel_id
     assert received[0].root_id is None
     assert received[1].root_id is not None
     assert received[0].content == "New answer"
     assert received[1].content == "Follow up"
     assert received[0].sender_id == "mina@example.test"
-    assert received[0].message_ref == received[2].message_ref
+    assert received[0].message_ref != received[2].message_ref
     await adapter.stop()
 
 
@@ -245,6 +269,168 @@ async def test_email_commands_are_dispatched_as_switch_commands() -> None:
 
 
 @pytest.mark.asyncio
+async def test_email_rejects_missing_or_untrusted_sender_authentication() -> None:
+    adapter = EmailAdapter(config=_config())
+    adapter.set_listening(False)
+    received = []
+
+    async def on_message(value):
+        received.append(value)
+
+    async def unused(_):
+        pytest.fail("unexpected callback")
+
+    await adapter.start(on_message, unused, unused, unused, unused)
+    await adapter._dispatch_email(
+        "7",
+        "42",
+        _message(authentication_results=None),
+    )
+    await adapter._dispatch_email(
+        "7",
+        "43",
+        _message(authentication_results="attacker.example; dmarc=pass"),
+    )
+    await adapter._dispatch_email(
+        "7",
+        "44",
+        _message(
+            authentication_results=(
+                "attacker.example; dmarc=pass, mx.google.com; dmarc=pass"
+            )
+        ),
+    )
+    await adapter._dispatch_email(
+        "7",
+        "45",
+        _message(authentication_results="mx.google.com; dkim=pass header.d=other.test"),
+    )
+    await adapter._dispatch_email(
+        "7",
+        "46",
+        _message(
+            sender="Other <other@example.test>",
+            authentication_results=(
+                "mx.google.com; dmarc=pass header.from=example.test"
+            ),
+        ),
+    )
+    await adapter._dispatch_email(
+        "7",
+        "48",
+        _message(
+            authentication_results="mx.google.com; dkim=pass header.d=example.test"
+        ),
+    )
+    await adapter._dispatch_email(
+        "7",
+        "49",
+        _message(
+            authentication_results=(
+                "mx.google.com; spf=pass smtp.mailfrom=mina@example.test"
+            )
+        ),
+    )
+    assert len(received) == 2
+    await adapter.stop()
+
+    adapter = EmailAdapter(
+        config=_config(require_authenticated_senders=False, authentication_server=None)
+    )
+    adapter.set_listening(False)
+    received.clear()
+    await adapter.start(on_message, unused, unused, unused, unused)
+    await adapter._dispatch_email(
+        "7",
+        "47",
+        _message(authentication_results=None),
+    )
+    assert len(received) == 1
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_email_ignores_automated_mail_and_marks_outbound_replies(
+    monkeypatch,
+) -> None:
+    received = []
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ehlo(self):
+            return None
+
+        def starttls(self, **kwargs):
+            return None
+
+        def login(self, username, password):
+            return None
+
+        def send_message(self, message):
+            sent.append(message)
+            return {}
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.email.adapter.smtplib.SMTP", FakeSMTP
+    )
+    adapter = EmailAdapter(config=_config())
+    adapter.set_listening(False)
+
+    async def on_message(value):
+        received.append(value)
+
+    async def unused(_):
+        pytest.fail("unexpected callback")
+
+    await adapter.start(on_message, unused, unused, unused, unused)
+    await adapter._dispatch_email(
+        "7",
+        "42",
+        _message(
+            message_id="<auto@example.test>",
+            body="Automatic reply",
+            auto_submitted="auto-replied",
+        ),
+    )
+    await adapter._dispatch_email(
+        "7",
+        "43",
+        _message(
+            message_id="<list@example.test>",
+            body="Mailing list message",
+            list_id="Switch updates <updates.example.test>",
+        ),
+    )
+    await adapter._dispatch_email(
+        "7",
+        "44",
+        _message(
+            message_id="<bounce@example.test>",
+            body="Delivery failed",
+            return_path="<>",
+        ),
+    )
+    assert received == []
+
+    adapter._send_email(
+        _channel_id("switch@example.test"),
+        "Avery",
+        "Here is the answer.",
+        None,
+        [],
+    )
+    assert sent[0]["Auto-Submitted"] == "auto-generated"
+    assert sent[0]["X-Switch-Email-Bridge"] == "1"
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
 async def test_quiet_pod_does_not_start_the_imap_poller() -> None:
     adapter = EmailAdapter(config=_config())
 
@@ -288,7 +474,7 @@ def test_email_reply_uses_smtp_from_agent_and_sets_thread_headers(
     adapter = EmailAdapter(config=_config())
     root = _thread_ref("<root@example.test>", "mina@example.test", "Project update")
     adapter._send_email(
-        _channel_id("mina@example.test", "Project update"),
+        _channel_id("switch@example.test"),
         "Avery",
         "Here is the **answer**.",
         root,
@@ -297,6 +483,8 @@ def test_email_reply_uses_smtp_from_agent_and_sets_thread_headers(
     message = sent[0]
     assert message["To"] == "mina@example.test"
     assert message["From"] == "Avery <switch@example.test>"
+    assert message["Auto-Submitted"] == "auto-generated"
+    assert message["X-Switch-Email-Bridge"] == "1"
     assert message["In-Reply-To"] == "<root@example.test>"
     assert message["References"] == "<root@example.test>"
     plain_part = message.get_body(preferencelist=("plain",))
@@ -345,11 +533,11 @@ async def test_long_email_replies_are_split_and_follow_the_first_part_thread(
     adapter = EmailAdapter(config=_config())
     content = "\n\n".join(f"Paragraph {index}. " + "x" * 6000 for index in range(4))
     first_id = await adapter.send_message(
-        _channel_id("mina@example.test", "Project update"), "Avery", content
+        _channel_id("switch@example.test"), "Avery", content
     )
     assert len(sent) > 1
     assert sent[0]["Message-ID"] == first_id
-    assert sent[0]["Subject"] == "Project update"
+    assert sent[0]["Subject"].startswith("Paragraph 0.")
     assert sent[1]["In-Reply-To"] == first_id
     assert sent[1]["References"] == first_id
     assert (

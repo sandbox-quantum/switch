@@ -67,8 +67,15 @@ class EmailConnectionConfig(BridgeConnectionConfig):
         min_length=3, description="Email address replies are sent from"
     )
     allowed_senders: str = Field(
-        default="",
-        description="Optional comma-separated sender allowlist. Empty accepts any sender reaching this mailbox.",
+        description="Required comma-separated sender address allowlist",
+    )
+    require_authenticated_senders: bool = Field(
+        default=True,
+        description="Reject mail unless the receiving server verifies the sender",
+    )
+    authentication_server: str | None = Field(
+        default="mx.google.com",
+        description="Trusted Authentication-Results server identifier; empty trusts the topmost header",
     )
     poll_interval_seconds: int = Field(default=30, ge=10, le=300)
 
@@ -79,6 +86,27 @@ class EmailConnectionConfig(BridgeConnectionConfig):
         if not address or "@" not in address:
             raise ValueError("from_address must be a valid email address")
         return address
+
+    @field_validator("allowed_senders")
+    @classmethod
+    def _valid_allowed_senders(cls, value: str) -> str:
+        senders = _allowed_senders(value)
+        if not senders or any(
+            parseaddr(sender)[1].lower() != sender or sender.count("@") != 1
+            for sender in senders
+        ):
+            raise ValueError("allowed_senders must contain valid email addresses")
+        return ", ".join(sorted(senders))
+
+    @field_validator("authentication_server")
+    @classmethod
+    def _valid_authentication_server(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        server = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9.-]+", server):
+            raise ValueError("authentication_server must be a valid server identifier")
+        return server
 
 
 def _decode_header(value: str | None) -> str:
@@ -106,16 +134,16 @@ def _thread_headers(message: Message) -> str | None:
     if references:
         ids = re.findall(r"<[^>]+>", " ".join(str(item) for item in references))
         if ids:
-            return ids[0]
+            return str(ids[0])
     reply = message.get("In-Reply-To")
     if reply:
         ids = re.findall(r"<[^>]+>", str(reply))
-        return ids[0] if ids else str(reply).strip()
+        return str(ids[0]) if ids else str(reply).strip()
     return None
 
 
-def _channel_id(sender: str, subject: str) -> str:
-    return f"email:{quote(sender.lower(), safe='')}:{quote(_normal_subject(subject), safe='')}"
+def _channel_id(mailbox: str) -> str:
+    return f"email:{quote(mailbox.lower(), safe='')}"
 
 
 def _thread_ref(message_id: str, sender: str, subject: str) -> str:
@@ -132,13 +160,13 @@ def _thread_ref(message_id: str, sender: str, subject: str) -> str:
     )
 
 
-def _decode_channel_id(value: str) -> tuple[str, str]:
+def _decode_channel_id(value: str) -> str:
     if not value.startswith("email:"):
         raise BridgeOperationError("The email room reference is malformed.")
-    recipient, separator, subject = value[6:].partition(":")
-    if not separator:
-        raise BridgeOperationError("The email room has no recipient address.")
-    return unquote(recipient), unquote(subject)
+    mailbox = unquote(value[6:]).lower()
+    if "@" not in mailbox:
+        raise BridgeOperationError("The email room has no mailbox address.")
+    return mailbox
 
 
 def _decode_thread_ref(value: str | None) -> dict[str, str] | None:
@@ -291,8 +319,8 @@ def _body_parts(
         filename = _decode_header(part.get_filename())
         disposition = part.get_content_disposition()
         content_type = part.get_content_type().lower()
-        payload = part.get_payload(decode=True)
-        payload = payload or b""
+        decoded_payload = part.get_payload(decode=True)
+        payload = decoded_payload if isinstance(decoded_payload, bytes) else b""
         if filename or disposition == "attachment":
             name = filename or "attachment"
             if len(payload) > max_attachment_bytes:
@@ -322,6 +350,78 @@ def _body_parts(
 def _allowed_senders(raw: str) -> frozenset[str]:
     values = (part.strip().lower() for part in raw.split(","))
     return frozenset(value for value in values if value)
+
+
+def _is_automated_email(message: Message) -> bool:
+    auto_submitted = message.get("Auto-Submitted")
+    if (
+        auto_submitted is not None
+        and str(auto_submitted).split(";", 1)[0].strip().lower() != "no"
+    ):
+        return True
+    if message.get("X-Switch-Email-Bridge") is not None:
+        return True
+    if str(message.get("Return-Path", "")).strip() == "<>":
+        return True
+    if message.get("List-Id") is not None:
+        return True
+    precedence = str(message.get("Precedence", "")).strip().lower()
+    if precedence in {"bulk", "list", "junk"}:
+        return True
+    return any(
+        message.get(header) is not None for header in ("X-Autoreply", "X-Autorespond")
+    )
+
+
+def _authentication_domain(value: str) -> str:
+    domain = value.strip().strip("\"'<>(),").lower()
+    return domain.rsplit("@", 1)[-1].rstrip(".")
+
+
+def _sender_authenticated(
+    message: Message, sender_address: str, authentication_server: str | None
+) -> bool:
+    sender_domain = _authentication_domain(sender_address.rsplit("@", 1)[-1])
+    if not sender_domain:
+        return False
+    headers = message.get_all("Authentication-Results", [])
+    if not headers:
+        return False
+    authserv_id, separator, results = str(headers[0]).partition(";")
+    authserv_parts = authserv_id.strip().split()
+    if (
+        not separator
+        or not authserv_parts
+        or (
+            authentication_server is not None
+            and authserv_parts[0].lower() != authentication_server
+        )
+    ):
+        return False
+    if re.search(r"(?:^|;)\s*dmarc\s*=\s*pass\b", results, re.IGNORECASE):
+        return True
+    for method, domain_field in (
+        ("dkim", r"(?:header\.d|header\.i)"),
+        ("spf", r"smtp\.mailfrom"),
+    ):
+        match = re.search(
+            rf"(?:^|;)\s*{method}\s*=\s*pass\b([^;]*)",
+            results,
+            re.IGNORECASE,
+        )
+        if match is None:
+            continue
+        domain = re.search(
+            rf"\b{domain_field}\s*=\s*([^\s;]+)",
+            match.group(1),
+            re.IGNORECASE,
+        )
+        if (
+            domain is not None
+            and _authentication_domain(domain.group(1)) == sender_domain
+        ):
+            return True
+    return False
 
 
 def _imap_connect(config: EmailConnectionConfig) -> imaplib.IMAP4:
@@ -480,7 +580,7 @@ class EmailAdapter(PlatformAdapter):
                 )
             _, validity_data = client.response("UIDVALIDITY")
             uidvalidity = (validity_data or [b"unknown"])[0].decode(errors="replace")
-            status, data = client.uid("SEARCH", None, "UNSEEN")
+            status, data = client.uid("SEARCH", "UNSEEN")
             if status != "OK":
                 raise BridgeOperationError("IMAP could not search for unread messages.")
             uids = data[0].split() if data and data[0] else []
@@ -536,9 +636,20 @@ class EmailAdapter(PlatformAdapter):
         if not sender_address:
             logger.warning("Ignoring email UID %s without a usable From address", uid)
             return
+        if _is_automated_email(message):
+            logger.info("Ignoring automated email UID %s", uid)
+            return
         allowed = _allowed_senders(self._config.allowed_senders)
-        if allowed and sender_address not in allowed:
+        if sender_address not in allowed:
             logger.info("Ignoring email from sender outside the configured allowlist")
+            return
+        if self._config.require_authenticated_senders and not _sender_authenticated(
+            message, sender_address, self._config.authentication_server
+        ):
+            logger.warning(
+                "Ignoring email UID %s: sender authentication did not pass",
+                uid,
+            )
             return
         subject = _normal_subject(_decode_header(message.get("Subject")))
         message_id = str(
@@ -554,8 +665,8 @@ class EmailAdapter(PlatformAdapter):
         )
         if attachments or failures:
             content = f"{content}\n\nEmail attachments: {len(attachments) + len(failures)}".strip()
-        channel_id = _channel_id(sender_address, subject)
-        channel_name = subject
+        channel_id = _channel_id(self._config.from_address)
+        channel_name = self._config.from_address
         display_sender = _decode_header(sender_name) or sender_address
         if content.startswith(_COMMAND_PREFIX):
             match = re.match(r"^!([\w-]+)(?:\s+(.*))?$", content, re.DOTALL)
@@ -600,7 +711,9 @@ class EmailAdapter(PlatformAdapter):
         room_wide_mention: bool = False,
     ) -> str | None:
         chunks = _split_outbound_body(content)
-        recipient, subject = _decode_channel_id(channel_id)
+        recipients, subject = self._outbound_audience(
+            channel_id, thread_root_id, content, sender_name
+        )
         root_ref = thread_root_id
         first_message_id: str | None = None
         for index, chunk in enumerate(chunks, start=1):
@@ -613,12 +726,48 @@ class EmailAdapter(PlatformAdapter):
                 chunk,
                 root_ref,
                 [],
+                subject,
             )
             if first_message_id is None:
                 first_message_id = message_id
                 if root_ref is None and len(chunks) > 1:
-                    root_ref = _thread_ref(first_message_id, recipient, subject)
+                    root_ref = _thread_ref(first_message_id, recipients[0], subject)
         return first_message_id
+
+    def _outbound_audience(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        content: str,
+        sender_name: str,
+    ) -> tuple[list[str], str]:
+        if _decode_channel_id(channel_id) != self._config.from_address.lower():
+            raise BridgeOperationError(
+                "The email room does not match the connected mailbox."
+            )
+        allowed = _allowed_senders(self._config.allowed_senders)
+        thread = _decode_thread_ref(thread_root_id)
+        if thread is not None:
+            recipient = str(thread.get("sender", "")).lower()
+            if recipient not in allowed:
+                raise BridgeOperationError(
+                    "The email thread's sender is not on the configured allowlist."
+                )
+            recipients = [recipient]
+            subject = _normal_subject(str(thread.get("subject", "")))
+        else:
+            recipients = sorted(allowed)
+            if not recipients:
+                raise BridgeOperationError(
+                    "No allowed sender is configured to receive email replies."
+                )
+            first_line = next(
+                (line.strip() for line in content.splitlines() if line.strip()), ""
+            )
+            subject = _normal_subject(
+                first_line[:120] if first_line else f"Message from {sender_name}"
+            )
+        return recipients, subject
 
     async def admin_message(
         self,
@@ -638,15 +787,21 @@ class EmailAdapter(PlatformAdapter):
         content: str,
         thread_root_id: str | None,
         files: list[tuple[str, str, bytes]],
+        subject_override: str | None = None,
     ) -> str:
-        recipient, subject = _decode_channel_id(channel_id)
+        recipients, subject = self._outbound_audience(
+            channel_id, thread_root_id, content, sender_name
+        )
+        subject = subject_override or subject
         thread = _decode_thread_ref(thread_root_id)
         message = EmailMessage()
         message["From"] = formataddr((sender_name, self._config.from_address))
-        message["To"] = recipient
+        message["To"] = ", ".join(recipients)
         message["Subject"] = f"Re: {subject}" if thread else subject
         message_id = make_msgid(domain=self._config.from_address.rsplit("@", 1)[-1])
         message["Message-ID"] = message_id
+        message["Auto-Submitted"] = "auto-generated"
+        message["X-Switch-Email-Bridge"] = "1"
         if thread and thread.get("message_id", "").startswith("<"):
             message["In-Reply-To"] = thread["message_id"]
             message["References"] = thread["message_id"]
@@ -664,10 +819,13 @@ class EmailAdapter(PlatformAdapter):
         try:
             refused = client.send_message(message)
             if refused:
-                raise BridgeOperationError(f"SMTP refused delivery to {recipient}.")
+                refused_recipients = ", ".join(sorted(refused))
+                raise BridgeOperationError(
+                    f"SMTP refused delivery to: {refused_recipients}."
+                )
         except (smtplib.SMTPException, OSError) as exc:
             raise BridgeOperationError(
-                f"SMTP could not send email to {recipient}: {exc}"
+                f"SMTP could not send email to {', '.join(recipients)}: {exc}"
             ) from exc
         finally:
             try:

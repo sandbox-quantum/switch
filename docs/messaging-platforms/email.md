@@ -15,17 +15,24 @@ started only by the switch-core pod holding the bridge lease.
 3. In Switch Console, create an Email connection and enter the IMAP and SMTP
    hostnames, ports, usernames, passwords, and sender address. Password fields
    are stored as connection secrets.
-4. Optionally enter a comma-separated `allowed_senders` list. When it is empty,
-   any address that can deliver to the mailbox can send messages to Switch.
-5. Connect the mailbox. Switch checks both IMAP and SMTP credentials before
+4. Enter a comma-separated `allowed_senders` list of exact email addresses
+   allowed to start conversations.
+5. Keep sender authentication enabled and set `authentication_server` to the
+   trusted `Authentication-Results` identifier from your provider. For Gmail,
+   use `mx.google.com`.
+6. Connect the mailbox. Switch checks both IMAP and SMTP credentials before
    saving the connection.
-6. Send a test email to the mailbox. Switch creates a room for the sender and
-   normalized subject, then agents can reply from that room.
+7. Send a test email to the mailbox. The mailbox maps to one private Switch
+   room, and email replies map to threads within that room.
 
-Use a dedicated mailbox or alias for Switch. Anyone allowed to send to it can
-start an agent conversation unless `allowed_senders` restricts access. Email
-sender addresses can be forged, so an allowlist is only as trustworthy as the
-mail provider's authentication and filtering.
+Use a dedicated mailbox or alias for Switch. A message is accepted only when
+its sender is on the allowlist and the first `Authentication-Results` header
+is from the configured authentication server and reports DMARC pass, or
+aligned DKIM/SPF pass. Configure the identifier used by the provider that
+receives the mail; do not trust a sender-controlled authentication header.
+If the receiving server adds no `Authentication-Results` header, you can turn
+off `require_authenticated_senders`; this explicitly disables protection
+against forged `From` addresses.
 
 ## Connection fields
 
@@ -39,7 +46,9 @@ mail provider's authentication and filtering.
 | `smtp_username`, `smtp_password` | SMTP login credentials. |
 | `smtp_security` | `ssl` or `starttls`. |
 | `from_address` | Address used for agent replies. It may be an alias the mailbox is allowed to send as. |
-| `allowed_senders` | Optional comma-separated sender address allowlist. Empty accepts all senders reaching the mailbox. |
+| `allowed_senders` | Required comma-separated allowlist of exact sender addresses. |
+| `require_authenticated_senders` | Defaults to true; only disable for a receiving server that adds no authentication results. |
+| `authentication_server` | Trusted `Authentication-Results` identifier (for Gmail, `mx.google.com`). Empty trusts the topmost header. |
 | `poll_interval_seconds` | How often Switch checks for unread messages. Defaults to 30 seconds. |
 
 Switch checks the configured mail hosts against the deployment's outbound
@@ -47,15 +56,16 @@ network policy when the connection is created and started.
 
 ## Rooms, threads, and message formatting
 
-- Each sender and normalized subject pair maps to a private Switch room. `Re:`
-  and `Fwd:` prefixes are removed when deriving the room name and identity.
+- One mailbox maps to one private Switch room. `Re:` and `Fwd:` prefixes are
+  removed when deriving email thread subjects.
 - New email starts a root message in the room. Replies carrying RFC 5322
   `References` or `In-Reply-To` headers map to a Switch thread under that root.
   Outbound replies set `In-Reply-To` and `References` to the email thread root,
-  and preserve the normalized subject.
-- Replies are sent to the sender of the inbound email, not to all original
-  recipients. The configured `from_address` is shown with the agent's name as
-  the display name.
+  and preserve the normalized subject. Replies go to the thread's original
+  sender, if that address remains allowlisted.
+- A new outbound message without an email thread is sent to every exact address
+  in `allowed_senders`; keep that list limited to intended recipients. The
+  configured `from_address` is shown with the agent's name as the display name.
 - Plain text is preferred. If only HTML is present, tags are converted to
   text. Outbound mail contains a plain-text part and a sanitized HTML part with
   Markdown formatting. Replies longer than 18,000 characters are split at
@@ -63,6 +73,10 @@ network policy when the connection is created and started.
 - Common quoted history markers, `>` quote lines, and the standard `-- ` email
   signature delimiter are removed. Provider-specific quote layouts may not be
   recognized.
+- Auto-replies, list mail, mail marked with `Auto-Submitted` other than `no`,
+  and mail carrying `X-Switch-Email-Bridge` are ignored to prevent loops and
+  unsolicited broadcasts. Replies sent by Switch carry
+  `Auto-Submitted: auto-generated` and `X-Switch-Email-Bridge`.
 - `!commands` are routed to Switch. Approval and question prompts use Switch's
   text format and are answerable by replying in the email thread. Use the
   handle and answer form printed in the prompt, for example `A7 1`, `A7 yes`,
@@ -95,6 +109,6 @@ to distinguish that case from a message the server never accepted, so
 exactly-once outbound delivery cannot be guaranteed for every user-provided
 mail server.
 
-The mailbox and sender/subject identifiers are carried by the room and thread
+The mailbox and email thread identifiers are carried by the room and thread
 references rather than process-local maps, so replies continue to route after
 a restart or lease handoff.
