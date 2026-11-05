@@ -9,6 +9,7 @@ import type {
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 import type {
+  AcpAgentCapabilities,
   AcpInitializeResult,
   AcpPermissionRequest,
   AcpPromptCapabilities,
@@ -149,6 +150,11 @@ export interface AcpProviderHooks {
    * advertises in `initialize` is always honoured as well.
    */
   promptCapabilities?: AcpPromptCapabilities;
+  /**
+   * MCP transports the agent accepts whether or not it advertises them. What
+   * it advertises in `initialize` is always honoured as well.
+   */
+  mcpCapabilities?: AcpAgentCapabilities['mcpCapabilities'];
   /**
    * The ACP mode to put a new session in for Switch's runtime mode, given the
    * modes the session advertised. Omit, or return undefined, to leave the

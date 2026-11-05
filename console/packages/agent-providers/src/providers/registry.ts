@@ -10,6 +10,7 @@ import { copilotAcp } from '../copilot/copilot-acp';
 import { cursorAcp } from '../cursor/cursor-adapter';
 import { deepseekHarnessAcp } from '../deepseek-harness/deepseek-harness-acp';
 import { kiroAcp } from '../kiro/kiro-acp';
+import { mistralVibeAcp } from '../mistral-vibe/mistral-vibe-acp';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
 import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
 import { createPiAdapter } from '../pi/pi-adapter';
@@ -114,6 +115,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   acpProviderRuntime(cursorAcp),
   acpProviderRuntime(deepseekHarnessAcp),
   acpProviderRuntime(kiroAcp),
+  acpProviderRuntime(mistralVibeAcp),
   {
     id: 'pi',
     loginCommand: PI_LOGIN,

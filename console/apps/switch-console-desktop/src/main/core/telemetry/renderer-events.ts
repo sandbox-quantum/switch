@@ -94,6 +94,7 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'pi',
       'copilot',
       'kiro',
+      'mistral-vibe',
       'none',
     ]),
   }),

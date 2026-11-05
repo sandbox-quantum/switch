@@ -10,6 +10,7 @@ import { provider as copilot } from './impl/copilot';
 import { provider as cursor } from './impl/cursor';
 import { provider as deepseekHarness } from './impl/deepseek-harness';
 import { provider as kiro } from './impl/kiro';
+import { provider as mistralVibe } from './impl/mistral-vibe';
 import { provider as opencode } from './impl/opencode';
 import { provider as pi } from './impl/pi';
 
@@ -26,6 +27,7 @@ for (const p of [
   opencode,
   deepseekHarness,
   pi,
+  mistralVibe,
 ]) {
   pluginRegistry.register(p);
 }

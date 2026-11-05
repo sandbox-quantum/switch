@@ -239,7 +239,11 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      requireHttpMcp(
+        hooks.label,
+        input.mcpServers,
+        agent.mcpCapabilities?.http || hooks.mcpCapabilities?.http
+      );
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -576,7 +580,7 @@ export class AcpAdapter implements ProviderAdapter {
       if (
         !decision ||
         options.some((offered) => offered.decision === decision) ||
-        /future|permanent/i.test(option.name)
+        /future|permanent/i.test(`${option.optionId} ${option.name}`)
       )
         continue;
       options.push({
