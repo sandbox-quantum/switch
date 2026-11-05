@@ -1,6 +1,7 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, win32 } from 'node:path';
+import type { Logger } from './log';
 
 const MARKER = '__SWITCH_LOGIN_PATH__';
 
@@ -84,15 +85,86 @@ function merged(shellPath: string, current: string): string | null {
 /**
  * `path` with the folders provider installers put CLIs in that it lacks, added
  * after it: `~/.local/bin`, where Claude Code's and OpenCode's installers
- * write, is often missing from a shell profile. Switch Console adds the same
- * folder to its own PATH, so what it installed is found here too.
+ * write, is often missing from a shell profile, and on Windows is only on the
+ * PATH of processes started after the installer ran. Switch Console adds the
+ * same folder to its own PATH, so what it installed is found here too.
  */
-export function withUserBinDirs(path: string, home: string): string {
-  const entries = path.split(delimiter).filter(Boolean);
-  const additions = [join(home, '.local', 'bin')].filter(
-    (dir) => !entries.includes(dir) && isDirectory(dir)
+export function withUserBinDirs(path: string, home: string, platform: NodeJS.Platform): string {
+  const sep = platform === 'win32' ? win32.delimiter : delimiter;
+  const dir = join(home, '.local', 'bin');
+  const entries = path.split(sep).filter(Boolean);
+  const present = platform === 'win32' ? sameWindowsEntry : (a: string, b: string) => a === b;
+  if (entries.some((entry) => present(entry, dir)) || !isDirectory(dir)) return entries.join(sep);
+  return [...entries, dir].join(sep);
+}
+
+function sameWindowsEntry(a: string, b: string): boolean {
+  const norm = (entry: string) => entry.replace(/[\\/]+$/, '').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+const WINDOWS_PATH_KEYS = [
+  'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
+  'HKCU\\Environment',
+];
+
+/**
+ * The PATH Windows gives a process started now: the machine's then the
+ * user's, as installers write them to the registry, with `%VAR%` expanded
+ * from `env`. A process keeps the PATH it was started with, so a CLI whose
+ * installer added its folder since is otherwise not found until a restart.
+ * Null when neither could be read.
+ */
+export async function windowsRegistryPath(
+  env: NodeJS.ProcessEnv,
+  query: (key: string) => Promise<string> = regQueryPath
+): Promise<string | null> {
+  const values = await Promise.all(
+    WINDOWS_PATH_KEYS.map((key) =>
+      query(key).then(
+        (stdout) => parseRegPath(stdout),
+        () => null
+      )
+    )
   );
-  return [...entries, ...additions].join(delimiter);
+  if (values.every((value) => value === null)) return null;
+  return values
+    .filter((value): value is string => value !== null)
+    .map((value) => expandWindowsVars(value, env))
+    .join(win32.delimiter);
+}
+
+function regQueryPath(key: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'reg',
+      ['query', key, '/v', 'Path'],
+      { timeout: 5_000, windowsHide: true },
+      (error, stdout) => (error ? reject(error) : resolve(stdout))
+    );
+  });
+}
+
+/** The `Path` value in `reg query <key> /v Path` output, or null when it has none. */
+export function parseRegPath(stdout: string): string | null {
+  const match = stdout.match(/^\s+Path\s+REG_(?:EXPAND_)?SZ\s+(.*?)\s*$/im);
+  return match ? match[1]! : null;
+}
+
+function expandWindowsVars(value: string, env: NodeJS.ProcessEnv): string {
+  const lookup = new Map(Object.entries(env).map(([key, val]) => [key.toUpperCase(), val]));
+  return value.replace(
+    /%([^%]+)%/g,
+    (whole, name: string) => lookup.get(name.toUpperCase()) ?? whole
+  );
+}
+
+/** `current` with the entries of `registry` it lacks added after it, compared as Windows does. */
+export function mergeWindowsPath(registry: string, current: string): string {
+  const entries = current.split(win32.delimiter).filter(Boolean);
+  for (const entry of registry.split(win32.delimiter).filter(Boolean))
+    if (!entries.some((existing) => sameWindowsEntry(existing, entry))) entries.push(entry);
+  return entries.join(win32.delimiter);
 }
 
 function isDirectory(path: string): boolean {
@@ -101,4 +173,41 @@ function isDirectory(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Puts the login shell's PATH (on Windows, the registry's), and the user's own
+ * bin folders, on `env`: a controller started by a service or an app has
+ * neither, and would not find the provider CLIs a person installed.
+ */
+export function pathRefresher(deps: {
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+  home: string;
+  log: Pick<Logger, 'warn'>;
+  windowsPath: (env: NodeJS.ProcessEnv) => Promise<string | null>;
+}): () => Promise<void> {
+  const { env, log, platform } = deps;
+  return async () => {
+    const current = env.PATH ?? '';
+    if (platform === 'win32') {
+      const registry = await deps.windowsPath(env);
+      if (registry === null)
+        log.warn(
+          "Could not read PATH from the Windows registry; provider CLIs, git and gh are looked for on this process's own",
+          { path: current }
+        );
+      const path = registry === null ? current : mergeWindowsPath(registry, current);
+      env.PATH = withUserBinDirs(path, deps.home, platform);
+      return;
+    }
+    const shell = env.SHELL ?? (platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
+    const path = await loginShellPath(shell, current);
+    if (path === null)
+      log.warn(
+        "Could not read the login shell's PATH; provider CLIs, git and gh are looked for on this process's own",
+        { shell, path: current }
+      );
+    env.PATH = withUserBinDirs(path ?? current, deps.home, platform);
+  };
 }
