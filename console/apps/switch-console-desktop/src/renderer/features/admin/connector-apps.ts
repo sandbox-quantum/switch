@@ -191,7 +191,10 @@ export function actionLabel(app: ConnectorApp, action: CardAction): string {
 
 /** The ⋯ menu: changes split by what they do to the people connected. */
 export function menuActions(app: ConnectorApp): MenuAction[] {
-  if (app.source === 'saved') return ['update_secret', 'switch_app', 'remove'];
+  if (app.source === 'saved')
+    return secretFields(app).length === 0
+      ? ['switch_app', 'remove']
+      : ['update_secret', 'switch_app', 'remove'];
   // Saved, but unusable: it can be entered again, or removed.
   if (app.source === 'none' && app.saved_client_id !== null) return ['remove'];
   return [];
@@ -218,11 +221,15 @@ export function configuredSentence(app: ConnectorApp): string {
   return from;
 }
 
-export function secretFields(app: Pick<ConnectorApp, 'kind'>): SecretField[] {
-  const secret: SecretField = { name: 'client_secret', label: 'Client secret', file: false };
-  return app.kind === 'github_app'
-    ? [secret, { name: 'private_key', label: 'Private key', file: true }]
-    : [secret];
+export function secretFields(app: Pick<ConnectorApp, 'kind' | 'secrets'>): SecretField[] {
+  // The server lists exactly the secrets this app requires. Public OAuth
+  // clients have none; never demand a made-up secret to enable their save.
+  const fields: SecretField[] = [];
+  if ('client_secret' in app.secrets)
+    fields.push({ name: 'client_secret', label: 'Client secret', file: false });
+  if (app.kind === 'github_app' && 'private_key' in app.secrets)
+    fields.push({ name: 'private_key', label: 'Private key', file: true });
+  return fields;
 }
 
 /** "ends in ab12", or a key's fingerprint. */
