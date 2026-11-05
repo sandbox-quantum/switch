@@ -2186,3 +2186,146 @@ describe('retrying a room message', () => {
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
 });
+
+describe('correcting a message the agent has not picked up', () => {
+  function said(commandId: string, text: string): Command {
+    return {
+      ...message(commandId),
+      body: { type: 'message.send', delivery: 'queue', text, attachments: [] },
+    };
+  }
+  function revise(commandId: string, turnId: string, text: string): Command {
+    return { ...message(commandId), body: { type: 'turn.revise', turnId, text } };
+  }
+  /** A host with one turn running and a second waiting behind it. */
+  async function queued(waiting: string) {
+    const fixture = await start('claude');
+    await fixture.host.command(said('running', 'Running'));
+    await until(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledTimes(1));
+    await fixture.host.command(said('waiting', waiting));
+    return fixture;
+  }
+  const sent = (adapter: ProviderAdapter, call: number) =>
+    vi.mocked(adapter.sendTurn).mock.calls[call][0];
+
+  it('hands the provider the text a queued turn was accepted with', async () => {
+    const { host, adapter, emit } = await queued('Waiting');
+    expect(host.snapshot().items.find((item) => item.itemId === 'user-waiting')).toMatchObject({
+      revision: 1,
+      text: 'Waiting',
+    });
+    emit({ type: 'turn.completed', turnId: 'running', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(sent(adapter, 1)).toMatchObject({ turnId: 'waiting', text: 'Waiting' });
+  });
+
+  it('gives the provider the corrected text while the turn is still waiting', async () => {
+    const { host, adapter, emit } = await queued('Deploy to prod');
+    expect((await host.command(revise('edit', 'waiting', 'Deploy to staging'))).status).toBe(
+      'applied'
+    );
+    expect(host.snapshot().items.find((item) => item.itemId === 'user-waiting')).toMatchObject({
+      revision: 2,
+      text: 'Deploy to staging',
+    });
+    emit({ type: 'turn.completed', turnId: 'running', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(sent(adapter, 1)).toMatchObject({ turnId: 'waiting', text: 'Deploy to staging' });
+  });
+
+  it('leaves a turn the provider already has exactly as it was given it', async () => {
+    const { host, adapter } = await start('claude');
+    await host.command(said('turn', 'Original'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+    await expect(host.command(revise('edit', 'turn', 'Too late'))).rejects.toThrow(
+      'TURN_ALREADY_STARTED'
+    );
+    expect(sent(adapter, 0)).toMatchObject({ text: 'Original' });
+    // Nothing was accepted, so nothing is published about it either.
+    expect(host.snapshot().commandStatuses.some((entry) => entry.commandId === 'edit')).toBe(false);
+    expect(host.snapshot().items.find((item) => item.itemId === 'user-turn')).toMatchObject({
+      revision: 1,
+      text: 'Original',
+    });
+  });
+
+  it('refuses a correction naming a turn this session never queued', async () => {
+    const { host } = await start('claude');
+    await expect(host.command(revise('edit', 'nobody', 'Corrected'))).rejects.toThrow('NOT_FOUND');
+  });
+
+  it('applies a second correction as readily as the first, under its own id', async () => {
+    const { host, adapter, emit } = await queued('Once');
+    await host.command(revise('edit-1', 'waiting', 'Twice'));
+    await host.command(revise('edit-2', 'waiting', 'Three times'));
+    expect(host.snapshot().items.find((item) => item.itemId === 'user-waiting')).toMatchObject({
+      revision: 3,
+      text: 'Three times',
+    });
+    // Why each correction has to arrive under an id of its own: one reusing
+    // another's is the same command asked again, and the host holds it to
+    // what that id was accepted as rather than applying it.
+    await expect(host.command(revise('edit-2', 'waiting', 'Four times'))).rejects.toThrow(
+      'IDEMPOTENCY_CONFLICT'
+    );
+    emit({ type: 'turn.completed', turnId: 'running', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(sent(adapter, 1)).toMatchObject({ text: 'Three times' });
+  });
+
+  it('runs the corrected words again, not the ones they replaced', async () => {
+    const fromRoom = (commandId: string, text: string, messageId: string): Command => ({
+      ...said(commandId, text),
+      origin: {
+        actorId: 'user',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: null,
+        messageId,
+      },
+    });
+    const { host, adapter, emit } = await start('claude');
+    await host.command(fromRoom('running', 'Running', 'm0'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+    await host.command(fromRoom('waiting', 'Deploy to prod', 'm1'));
+    await host.command(revise('edit', 'waiting', 'Deploy to staging'));
+    emit({ type: 'turn.completed', turnId: 'running', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    emit({ type: 'turn.completed', turnId: 'waiting', outcome: 'error', usage: [] });
+    await until(() => expect(host.snapshot().turns[1]?.status).toBe('error'));
+
+    await host.command({
+      ...message('again'),
+      origin: {
+        actorId: 'user',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: null,
+        messageId: null,
+      },
+      body: { type: 'message.retry', messageId: 'm1' },
+    });
+
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+    expect(sent(adapter, 2)).toMatchObject({ text: 'Deploy to staging' });
+  });
+
+  it('resolves a correction racing the start of its turn one way only', async () => {
+    const { host, adapter, emit } = await queued('Typo');
+    const correction = host
+      .command(revise('edit', 'waiting', 'Corrected'))
+      .then((status) => status.status, String);
+    emit({ type: 'turn.completed', turnId: 'running', outcome: 'completed', usage: [] });
+    const outcome = await correction;
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    // Either the correction landed before the turn was handed over or it did
+    // not land at all. There is no third answer, and no half-corrected prompt.
+    expect(sent(adapter, 1)).toMatchObject({
+      turnId: 'waiting',
+      text: outcome === 'applied' ? 'Corrected' : 'Typo',
+    });
+    expect(host.snapshot().items.find((item) => item.itemId === 'user-waiting')).toMatchObject({
+      text: outcome === 'applied' ? 'Corrected' : 'Typo',
+    });
+  });
+});

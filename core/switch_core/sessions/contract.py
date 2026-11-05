@@ -371,6 +371,19 @@ class TurnInterrupt(_Model):
     turn_id: Id
 
 
+class TurnRevise(_Model):
+    """Replace the text of a turn that is still queued.
+
+    For a message corrected before the agent picked it up. Refused once the
+    turn has been handed to the provider: a turn under way is never steered
+    from here.
+    """
+
+    type: Literal["turn.revise"]
+    turn_id: Id
+    text: str
+
+
 class SessionStop(_Model):
     type: Literal["session.stop"]
 
@@ -400,6 +413,7 @@ CommandBody = Annotated[
     MessageSend
     | RequestAnswer
     | TurnInterrupt
+    | TurnRevise
     | SessionStop
     | SessionReset
     | SessionCompact

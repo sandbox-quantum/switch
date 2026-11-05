@@ -436,6 +436,25 @@ it('retains the verified actor for cancellation and clears an unrelated reservat
   }
 });
 
+it('reads a correction to a queued turn, and nothing that leaves its text open', () => {
+  const revise = (body: unknown) => ({ ...examples.platformAnswer, body });
+  expect(
+    commandSchema.parse(revise({ type: 'turn.revise', turnId: 'turn-demo', text: 'Corrected' }))
+      .body
+  ).toEqual({ type: 'turn.revise', turnId: 'turn-demo', text: 'Corrected' });
+  // An empty correction is still a correction: someone cleared what they typed.
+  expect(() =>
+    commandSchema.parse(revise({ type: 'turn.revise', turnId: 'turn-demo', text: '' }))
+  ).not.toThrow();
+  for (const body of [
+    { type: 'turn.revise', turnId: 'turn-demo' },
+    { type: 'turn.revise', text: 'Corrected' },
+    { type: 'turn.revise', turnId: 'turn-demo', text: 'Corrected', attachments: [] },
+    { type: 'turn.revise', turnId: 'turn-demo', text: 7 },
+  ])
+    expect(() => commandSchema.parse(revise(body))).toThrow();
+});
+
 it('validates the bridge question and activity recordings with the SDK reader', () => {
   parseHostEvent(questions.hostQuestions);
   commandSchema.parse(questions.platformFormAnswer);

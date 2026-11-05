@@ -144,6 +144,12 @@ export type CommandBody =
       answer: { kind: 'approval'; optionId: Id } | { kind: 'questions'; answers: Answer[] };
     }
   | { type: 'turn.interrupt'; turnId: Id }
+  /**
+   * Replace the text of a turn that is still queued, for a message corrected
+   * before the agent picked it up. Refused once the turn has been handed to
+   * the provider: a turn under way is never steered from here.
+   */
+  | { type: 'turn.revise'; turnId: Id; text: string }
   | { type: 'session.stop' }
   | { type: 'session.reset' }
   | { type: 'session.compact' }
