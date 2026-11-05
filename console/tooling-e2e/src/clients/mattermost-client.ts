@@ -275,6 +275,11 @@ export class MattermostClient {
     });
   }
 
+  /** Rewords a post of this user's, as the Mattermost client's edit does. */
+  async editPost(postId: string, message: string): Promise<MattermostPost> {
+    return this.request<MattermostPost>('PUT', `/posts/${postId}/patch`, { message });
+  }
+
   /**
    * `GET /api/v4/channels/{id}/posts?since=<ms>` — posts created or updated at
    * or after `sinceMs`, returned oldest-first here (Mattermost hands back an

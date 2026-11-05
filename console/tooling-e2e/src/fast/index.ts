@@ -5,6 +5,7 @@ import { clientMistakes } from "./client-mistakes.ts";
 import { endSessions, memberErasure, retentionWindow } from "./data-protection.ts";
 import { followUps } from "./follow-ups.ts";
 import { addressedDelivery, unaddressedHistory } from "./agent-messaging.ts";
+import { mattermostEdit } from "./mattermost-edit.ts";
 import { mattermostRoundtrip } from "./mattermost-roundtrip.ts";
 import { operationsFrontDoor } from "./operations.ts";
 import { organizationMembers } from "./organization-members.ts";
@@ -19,6 +20,7 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   unaddressedHistory,
   operationsFrontDoor,
   mattermostRoundtrip,
+  mattermostEdit,
   agentIdentity,
   roomGroupPaths,
   attachmentNames,
