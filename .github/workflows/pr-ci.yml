@@ -117,7 +117,8 @@ jobs:
               - 'gateway/**'
             # The step of the local-server bundle that builds the gateway's
             # pages. The bundle itself is only built at release, so the console
-            # jobs below run this step alone when it, or what it installs, changes.
+            # jobs below run (with this step) when it, or what it installs,
+            # changes, even where nothing else in console/ did.
             local_server_bundle:
               - *shared
               - 'console/apps/switch-console-desktop/scripts/build-gateway-ui.mjs'
@@ -249,7 +250,7 @@ jobs:
   console:
     name: Switch Console
     needs: changes
-    if: ${{ needs.changes.outputs.console == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ needs.changes.outputs.console == 'true' || needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -318,7 +319,7 @@ jobs:
   console-windows:
     name: Switch Console (Windows)
     needs: changes
-    if: ${{ needs.changes.outputs.console == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ needs.changes.outputs.console == 'true' || needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
     defaults:
       run:

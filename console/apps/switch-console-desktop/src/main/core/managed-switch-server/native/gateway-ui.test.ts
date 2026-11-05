@@ -9,7 +9,6 @@ import { buildNativeCoreSettings } from './core-settings';
 import {
   buildGatewayUi,
   checkoutGatewayUi,
-  downloadedGatewayUiWouldBuild,
   GATEWAY_UI_ENV,
   gatewayUiBuildFailed,
   gatewayUiFailedMarker,
@@ -18,7 +17,7 @@ import {
   runningServesAdminPages,
 } from './gateway-ui';
 import { nativeLayout } from './native-paths';
-import { installSwitchCore } from './switch-core-install';
+import { downloadedInstallWouldServePages, installSwitchCore } from './switch-core-install';
 import { BUNDLE_FORMAT } from './toolchain-pins';
 
 vi.mock('@main/lib/logger', () => ({
@@ -175,13 +174,15 @@ describe('building the pages from source', () => {
 
   /** Puts an `npm` on PATH that records its arguments and, on `run build`,
    * writes a build (or fails, with `fail`). */
-  async function fakeNpm(fail = false): Promise<string> {
+  async function fakeNpm(fail: false | 'build' | 'ci' = false): Promise<string> {
     const bin = path.join(root, 'bin');
     const calls = path.join(root, 'npm-calls');
     await writeExecutable(path.join(bin, 'npm'), [
       `echo "$@ NODE_ENV=$NODE_ENV" >> "${calls}"`,
-      'if [ "$1" = ci ]; then mkdir -p node_modules; fi',
-      fail
+      fail === 'ci'
+        ? 'if [ "$1" = ci ]; then echo "npm ERR! network ETIMEDOUT" >&2; exit 1; fi'
+        : 'if [ "$1" = ci ]; then mkdir -p node_modules; fi',
+      fail === 'build'
         ? 'if [ "$1" = run ]; then echo "vite: build failed" >&2; exit 1; fi'
         : 'if [ "$1" = run ]; then mkdir -p dist && echo ok > dist/index.html; fi',
       'exit 0',
@@ -221,7 +222,7 @@ describe('building the pages from source', () => {
   });
 
   unix('reports a failed build and carries on without the pages', async () => {
-    await fakeNpm(true);
+    await fakeNpm('build');
     const src = await source();
     const messages: string[] = [];
     const built = await buildGatewayUi({
@@ -242,16 +243,47 @@ describe('building the pages from source', () => {
     expect(messages.at(-1)).toContain(gatewayUiFailedMarker(path.join(root, 'gateway-ui')));
   });
 
+  unix('tries again next start after a failure that may not repeat', async () => {
+    await fakeNpm('ci');
+    const src = await source();
+    const messages: string[] = [];
+    const destination = path.join(root, 'gateway-ui');
+    expect(
+      await buildGatewayUi({
+        layout: nativeLayout(root),
+        sourceRoot: src,
+        destination,
+        onMessage: (message) => messages.push(message),
+      })
+    ).toBeNull();
+    expect(await gatewayUiBuildFailed(destination)).toBe(false);
+    expect(messages.at(-1)).toMatch(/next start tries again/);
+  });
+
+  it('offers no restart for an install from a bundle that shipped no pages', async () => {
+    const layout = nativeLayout(path.join(root, 'server'));
+    const dir = path.join(layout.switchCore, '0.31.0');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, 'installed.json'),
+      JSON.stringify({ version: '0.31.0', source: 'bundle' })
+    );
+    // Reused as it is by a dev build with no bundle, and never built for.
+    expect(await downloadedInstallWouldServePages(layout, '0.31.0')).toBe(false);
+    await writeBuild(path.join(dir, 'gateway-ui'));
+    expect(await downloadedInstallWouldServePages(layout, '0.31.0')).toBe(true);
+  });
+
   it('stops offering a restart for a version whose build failed', async () => {
     const layout = nativeLayout(path.join(root, 'server'));
     // A dev build with no bundle or checkout builds the pages on its next start…
-    expect(await downloadedGatewayUiWouldBuild(layout, '0.31.0')).toBe(true);
+    expect(await downloadedInstallWouldServePages(layout, '0.31.0')).toBe(true);
     // …unless that build already failed for this version: a restart would not retry it.
     const pages = path.join(layout.switchCore, '0.31.0', 'gateway-ui');
     await mkdir(path.dirname(pages), { recursive: true });
     await writeFile(gatewayUiFailedMarker(pages), 'failed');
-    expect(await downloadedGatewayUiWouldBuild(layout, '0.31.0')).toBe(false);
-    expect(await downloadedGatewayUiWouldBuild(layout, '0.32.0')).toBe(true);
+    expect(await downloadedInstallWouldServePages(layout, '0.31.0')).toBe(false);
+    expect(await downloadedInstallWouldServePages(layout, '0.32.0')).toBe(true);
   });
 
   it('has nothing to build from a source without the gateway', async () => {

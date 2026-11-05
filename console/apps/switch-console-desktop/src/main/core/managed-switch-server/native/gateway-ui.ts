@@ -27,22 +27,13 @@ export const GATEWAY_UI_ENV = 'GATEWAY_UI_DIR';
 const BUILD_TIMEOUT_MS = 15 * 60 * 1000;
 
 /**
- * Left beside an install's pages when building them failed, so later starts
- * of that version do not run the same failing build again (and Settings does
- * not offer a restart that would). A new install of the version clears it;
- * deleting it by hand asks for another try.
+ * Left beside an install's pages when building them failed in a way that
+ * would repeat, so later starts of that version do not run the same failing
+ * build again (and Settings does not offer a restart that would). A new
+ * install of the version clears it; deleting it by hand asks for another try.
  */
 export function gatewayUiFailedMarker(destination: string): string {
   return `${destination}.failed`;
-}
-
-/** Whether a dev build's next start of downloaded switch-core `version`
- * would build the pages: not when building them for it already failed. */
-export async function downloadedGatewayUiWouldBuild(
-  layout: NativeLayout,
-  version: string
-): Promise<boolean> {
-  return !(await gatewayUiBuildFailed(path.join(layout.switchCore, version, GATEWAY_UI_DIR_NAME)));
 }
 
 /** Whether building the pages into `destination` failed before. */
@@ -121,20 +112,29 @@ export async function buildGatewayUi(opts: {
       timeoutMs: BUILD_TIMEOUT_MS,
     });
   };
+  // Only the build itself failing is recorded: it fails the same way on the
+  // same source every time. Installing the packages offline or against a
+  // registry error, npm missing from PATH, or a timeout may well pass next
+  // time, so the next start tries again.
+  let building = false;
   try {
     await appendFile(buildLog, `\n# build ${project} (${new Date().toISOString()})\n`);
     await run(['ci', '--no-audit', '--no-fund']);
+    building = true;
     await run(['run', 'build']);
     await rm(destination, { recursive: true, force: true });
     await rename(path.join(project, 'dist'), destination);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     log.warn('local-switch-server: could not build the admin pages', { error: reason });
+    const repeats = building && /failed \(exit \d+\)/.test(reason);
     const failed = gatewayUiFailedMarker(destination);
-    await writeFile(failed, `${new Date().toISOString()} ${reason}\n`).catch(() => undefined);
+    if (repeats) {
+      await writeFile(failed, `${new Date().toISOString()} ${reason}\n`).catch(() => undefined);
+    }
     onMessage(
       `Could not build the admin pages, so the server starts without them (${buildLog}). ` +
-        `Delete ${failed} and restart to try again.`
+        (repeats ? `Delete ${failed} and restart to try again.` : 'The next start tries again.')
     );
     return null;
   } finally {

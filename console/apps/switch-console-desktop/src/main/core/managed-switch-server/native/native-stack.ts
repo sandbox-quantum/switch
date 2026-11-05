@@ -51,7 +51,7 @@ import {
   waitForCoreHealth,
 } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
-import { checkoutGatewayUi, downloadedGatewayUiWouldBuild, nativeAdminPages } from './gateway-ui';
+import { checkoutGatewayUi, nativeAdminPages } from './gateway-ui';
 import {
   mattermostCallbackBaseUrl,
   pullMattermostImage,
@@ -76,6 +76,7 @@ import {
   writeClusterConfig,
 } from './postgres-cluster';
 import {
+  downloadedInstallWouldServePages,
   existingSwitchCoreInstall,
   installSwitchCore,
   pruneSwitchCoreInstalls,
@@ -614,8 +615,8 @@ export function nativeServerTelemetryEndpoint(): string {
 /**
  * Whether a start now would hand switch-core the gateway's pages: the
  * checkout has a build of them, this build's bundle ships them, or (dev
- * builds) a downloaded install would build them — unless building them for
- * that version already failed, which a restart would not retry.
+ * builds) the install a start would use would have them built (see
+ * `downloadedInstallWouldServePages`).
  */
 export async function nativeAdminPagesOnRestart(
   layout: NativeLayout,
@@ -626,7 +627,7 @@ export async function nativeAdminPagesOnRestart(
   const version = managedSwitchVersion();
   const bundle = await readLocalServerBundle(bundleRoot, version);
   if (bundle !== null) return bundle.gatewayUi !== null;
-  return import.meta.env.DEV && (await downloadedGatewayUiWouldBuild(layout, version));
+  return import.meta.env.DEV && (await downloadedInstallWouldServePages(layout, version));
 }
 
 /** What the running native server's admin pages are doing, for its page to

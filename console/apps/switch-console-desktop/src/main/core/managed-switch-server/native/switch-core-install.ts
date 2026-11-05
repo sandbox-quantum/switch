@@ -106,6 +106,27 @@ async function readMarker(dir: string): Promise<Marker | null> {
   }
 }
 
+/**
+ * Whether a dev build with no bundle, starting switch-core `version`, would
+ * hand it the gateway's pages. An install of that version already there is
+ * reused as it is (see `markerMatches`): one made from a bundle has whatever
+ * the bundle shipped and is never built for, having no gateway source. A
+ * downloaded one, or none yet, gets its pages built, unless building them for
+ * it already failed in a way that would repeat.
+ */
+export async function downloadedInstallWouldServePages(
+  layout: NativeLayout,
+  version: string
+): Promise<boolean> {
+  const dir = path.join(layout.switchCore, version);
+  const gatewayUi = path.join(dir, GATEWAY_UI_DIR_NAME);
+  const marker = await readMarker(dir);
+  if (marker?.version === version && marker.source === 'bundle') {
+    return (await gatewayUiOrNull(gatewayUi)) !== null;
+  }
+  return !(await gatewayUiBuildFailed(gatewayUi));
+}
+
 /** Whether an install made from `marker` serves `version` from `bundle`: one
  * made from another copy of the bundle is redone, so old copies can go. */
 function markerMatches(
