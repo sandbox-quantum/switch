@@ -145,7 +145,9 @@ def test_a_night_that_stopped_early_is_not_complete():
     assert not v["ok"] and not v["complete"]
     result = {"build": "b", "pods": 12, "nodes": 4, "rows": rows, "verdict": v}
     result["failures"] = ["stopped early: deadline"]
-    assert "staging: stopped early: deadline" in report_text(result, cfg, [])
+    assert "staging, 1,000 agents: stopped early: deadline" in report_text(
+        result, cfg, []
+    )
 
 
 def test_the_report_fits_discord_and_has_no_em_dash():
@@ -163,10 +165,65 @@ def test_the_report_fits_discord_and_has_no_em_dash():
     result["verdict"] = verdict(rows, cfg, [])
     text = report_text(result, cfg, ["3 earlier night(s) on record"])
     assert text.startswith(
-        "✅ Switch nightly load test on staging: held 400 msg/s, broke at 450"
+        "✅ Switch nightly load test on staging, 10,000 agents: held 400 msg/s, "
+        "broke at 450"
     )
     assert len(text) < 2000 and "—" not in text
     assert "every 3 min" in text and cfg.dashboard_url in text
+    assert "were connected" not in text
+
+
+def test_the_report_says_when_agents_were_not_all_connected():
+    cfg = _cfg(WORKERS="2", AGENTS="2000", CONTROLLERS="100")
+    short = _worker(cfg)
+    short[2] = {**short[2], "agents_connected_min": 940}
+    rows = combine(cfg, [_worker(cfg), short])
+    result = {"build": "b", "pods": 12, "nodes": 4, "rows": rows}
+    result["verdict"] = verdict(rows, cfg, [])
+    text = report_text(result, cfg, [])
+    assert "⚠️ as few as 1,940 of the 2,000 agents were connected in a step" in text
+
+
+def test_the_report_goes_to_the_switch_room_as_its_agent(monkeypatch, capsys):
+    posts = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            pass
+
+    def post(url, json, headers, timeout):
+        posts.append((url, json, headers))
+        return Response()
+
+    monkeypatch.setattr(nightly.httpx, "post", post)
+    nightly.post_switch(_cfg(), "report")
+    assert posts == [] and "no Switch room set" in capsys.readouterr().out
+
+    with pytest.raises(ValueError, match="LOADTEST_SWITCH_TOKEN not set"):
+        nightly.post_switch(
+            _cfg(
+                SWITCH_URL="https://switch.example",
+                SWITCH_AGENT_ID="a1",
+                SWITCH_ROOM_ID="r1",
+            ),
+            "report",
+        )
+
+    cfg = _cfg(
+        SWITCH_URL="https://switch.example/",
+        SWITCH_AGENT_ID="a1",
+        SWITCH_ROOM_ID="r1",
+        SWITCH_TOKEN="t1",
+    )
+    nightly.post_switch(cfg, "report")
+    assert posts == [
+        (
+            "https://switch.example/agents/a1/message",
+            {"room_id": "r1", "content": "report"},
+            {"Authorization": "Bearer t1"},
+        )
+    ]
+    assert "t1" not in repr(cfg)
 
 
 def test_comparison_needs_three_nights_and_flags_a_drop():

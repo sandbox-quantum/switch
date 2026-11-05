@@ -9,8 +9,8 @@ Three commands, each one CronJob of napoleon's switch-loadtest chart:
          when they are missing), an idle window, the realistic steps (one
          message per agent every so many minutes), then the ramp until a step
          breaks. Adds the workers' numbers up, stores the night in S3, sends
-         the numbers to Datadog and the report to the webhook, then puts
-         staging back to its day size.
+         the numbers to Datadog and the report to the webhook and the Switch
+         room, then puts staging back to its day size.
   down   The safety net, after the run's deadline: the day sizes again,
          whatever happened, and a report for a night that left no result.
 
@@ -109,6 +109,12 @@ class Config:
     dd_api_key: str = field(repr=False, default="")
     dd_site: str = "datadoghq.com"
     webhook_url: str = field(repr=False, default="")
+    # A Switch room the report also goes to, posted by an agent in that room
+    # with its own token. Empty, no post.
+    switch_url: str = ""
+    switch_agent_id: str = ""
+    switch_room_id: str = ""
+    switch_token: str = field(repr=False, default="")
     dashboard_url: str = ""
 
     @classmethod
@@ -153,6 +159,10 @@ class Config:
             dd_api_key=e.get("DD_API_KEY", ""),
             dd_site=e.get("DD_SITE", "datadoghq.com"),
             webhook_url=get("WEBHOOK_URL", ""),
+            switch_url=get("SWITCH_URL", ""),
+            switch_agent_id=get("SWITCH_AGENT_ID", ""),
+            switch_room_id=get("SWITCH_ROOM_ID", ""),
+            switch_token=get("SWITCH_TOKEN", ""),
             dashboard_url=get("DASHBOARD_URL", ""),
         )
         cfg.check()
@@ -376,10 +386,12 @@ def _pct(v) -> str:
 
 
 def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
-    """The message for the webhook: under Discord's 2,000 characters."""
+    """The message for the webhook and the room: under Discord's 2,000
+    characters."""
     v = result["verdict"]
+    night = f"Switch nightly load test on {cfg.environment}, {cfg.agents:,} agents"
     if not result["rows"]:
-        head = f"❌ Switch nightly load test on {cfg.environment}: no numbers tonight"
+        head = f"❌ {night}: no numbers tonight"
     elif v["ok"]:
         held = (
             f"held {v['held_per_s']:g} msg/s"
@@ -391,7 +403,7 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
             if v["broke_at_per_s"]
             else ", every ramp step held"
         )
-        head = f"✅ Switch nightly load test on {cfg.environment}: {held}{broke}"
+        head = f"✅ {night}: {held}{broke}"
     else:
         failures = result.get("failures") or []
         if failures:
@@ -400,14 +412,20 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
             why = "realistic load did not run clean"
         else:
             why = "the run did not finish"
-        head = f"❌ Switch nightly load test on {cfg.environment}: {why}"
+        head = f"❌ {night}: {why}"
     lines = [
         head,
         f"build {result['build']} · {result['pods']} pods on {result['nodes']} nodes · "
-        f"{cfg.agents:,} agents behind {cfg.controllers} controllers"
+        f"{cfg.controllers} controllers"
         + (" · agents made tonight" if result.get("seeded") else ""),
     ]
     lines += [f"❌ {f}" for f in (result.get("failures") or [])[1:]]
+    fewest = min((r["agents_connected_min"] for r in result["rows"]), default=None)
+    if fewest is not None and fewest < cfg.agents:
+        lines.append(
+            f"⚠️ as few as {fewest:,} of the {cfg.agents:,} agents were connected "
+            "in a step"
+        )
     lines += result.get("notes", [])
     if result["rows"]:
         table = [
@@ -444,6 +462,28 @@ def post_webhook(url: str, text: str) -> None:
         else {"text": text}
     )
     httpx.post(url, json=body, timeout=30).raise_for_status()
+
+
+def post_switch(cfg: Config, text: str) -> None:
+    """The report into the Switch room, as the agent the token belongs to."""
+    settings = {
+        "SWITCH_URL": cfg.switch_url,
+        "SWITCH_AGENT_ID": cfg.switch_agent_id,
+        "SWITCH_ROOM_ID": cfg.switch_room_id,
+        "SWITCH_TOKEN": cfg.switch_token,
+    }
+    if not any(settings.values()):
+        print("no Switch room set; report not posted there", flush=True)
+        return
+    missing = [f"LOADTEST_{k}" for k, v in settings.items() if not v]
+    if missing:
+        raise ValueError(f"{', '.join(missing)} not set")
+    httpx.post(
+        f"{cfg.switch_url.rstrip('/')}/agents/{cfg.switch_agent_id}/message",
+        json={"room_id": cfg.switch_room_id, "content": text},
+        headers={"Authorization": f"Bearer {cfg.switch_token}"},
+        timeout=30,
+    ).raise_for_status()
 
 
 def datadog_series(result: dict, cfg: Config, now: float) -> list[dict]:
@@ -1193,8 +1233,8 @@ def cmd_run(cfg: Config) -> int:
 
 
 def report(cfg: Config, result: dict, workers: list[Worker], out: Path) -> None:
-    """The night to S3, Datadog and the webhook; each is tried whatever the
-    others do."""
+    """The night to S3, Datadog, the webhook and the Switch room; each is
+    tried whatever the others do."""
     try:
         comparison = compare(result, history(cfg, before=result["night"]))
     except Exception as exc:  # noqa: BLE001
@@ -1205,6 +1245,7 @@ def report(cfg: Config, result: dict, workers: list[Worker], out: Path) -> None:
         ("S3", lambda: _store(cfg, result, workers, out)),
         ("Datadog", lambda: send_datadog(result, cfg, text)),
         ("webhook", lambda: post_webhook(cfg.webhook_url, text)),
+        ("Switch", lambda: post_switch(cfg, text)),
     ):
         try:
             action()
@@ -1289,7 +1330,10 @@ def cmd_down(cfg: Config) -> int:
         )
     text = "\n".join(lines)
     print(text, flush=True)
-    actions = [lambda: post_webhook(cfg.webhook_url, text)]
+    actions = [
+        lambda: post_webhook(cfg.webhook_url, text),
+        lambda: post_switch(cfg, text),
+    ]
     # A night that left a result has sent Datadog its numbers already.
     if found is None:
         result = {"build": "unknown", "pods": 0, "rows": [], "verdict": {"ok": False}}
