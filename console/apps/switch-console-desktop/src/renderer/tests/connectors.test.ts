@@ -71,6 +71,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     pass_through: true,
     token_lifetime: 3600,
     loopback_ports: null,
+    loopback_callback_path: null,
     key: null,
     external_identity: null,
     consent: null,

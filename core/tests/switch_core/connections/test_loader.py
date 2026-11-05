@@ -580,6 +580,8 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.auth.oauth is not None
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
+    # The server's default applies when the entry says nothing of its own.
+    assert definition.auth.oauth.loopback_callback_path is None
     assert definition.auth.identity is not None
     assert definition.auth.identity.account_id == "account.id"
     assert definition.token is not None
@@ -587,6 +589,18 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_loads_a_custom_loopback_callback_path(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /callback\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None and oauth.loopback_callback_path == "/callback"
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -709,6 +723,47 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    loopback_ports: [80]\n",
             "loopback_ports",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [core]\n    loopback_callback_path: /callback\n",
+            "loopback_callback_path is for a loopback redirect",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: callback\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /call?back\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /call#back\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: //callback\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    loopback_callback_path: https://evil.example/callback\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /../callback\n",
+            "loopback_callback_path may not contain a . or .. segment",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /./callback\n",
+            "loopback_callback_path may not contain a . or .. segment",
         ),
         (
             "    redirect: [loopback, core]\n",

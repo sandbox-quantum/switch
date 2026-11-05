@@ -47,8 +47,8 @@ def core_callback(public_url: str, service: str) -> str:
     )
 
 
-def loopback_redirect(port: int) -> str:
-    return f"http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}"
+def loopback_redirect(port: int, path: str = LOOPBACK_CALLBACK_PATH) -> str:
+    return f"http://127.0.0.1:{port}{path}"
 
 
 def redirect_uris(
@@ -56,17 +56,20 @@ def redirect_uris(
     modes: list[RedirectMode],
     public_url: str | None,
     loopback_ports: list[int] | None,
+    loopback_callback_path: str | None,
 ) -> list[str]:
     """Every redirect a registration lists, for the modes this server can use:
     one per loopback port where the vendor matches the port too, or one with
-    no port, which RFC 8252 lets a native client use on any."""
+    no port, which RFC 8252 lets a native client use on any. `loopback_callback_path`
+    is the catalog entry's own path, in place of the server's default."""
+    path = loopback_callback_path or LOOPBACK_CALLBACK_PATH
     uris = []
     for mode in modes:
         if mode == "loopback":
             if loopback_ports is None:
-                uris.append(LOOPBACK_REDIRECT_URI)
+                uris.append(f"http://127.0.0.1{path}")
             else:
-                uris.extend(loopback_redirect(port) for port in loopback_ports)
+                uris.extend(loopback_redirect(port, path) for port in loopback_ports)
         elif public_url is not None:
             uris.append(core_callback(public_url, service))
     return uris
