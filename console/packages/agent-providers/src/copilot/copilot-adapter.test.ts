@@ -83,6 +83,8 @@ it('recognises token and bring-your-own-key sign-ins in the environment', () => 
   expect(copilotEnvSignIn({ COPILOT_GITHUB_TOKEN: 'x' })).toBe(true);
   expect(copilotEnvSignIn({ GITHUB_TOKEN: 'x' })).toBe(true);
   expect(copilotEnvSignIn({ COPILOT_PROVIDERS_CONFIG: '{}' })).toBe(true);
+  expect(copilotEnvSignIn({ COPILOT_PROVIDERS_CONFIG: '{"providers": [],}' })).toBe(true);
+  expect(copilotEnvSignIn({ COPILOT_PROVIDERS_CONFIG: '{not-json' })).toBe(false);
   expect(copilotEnvSignIn({ COPILOT_PROVIDER_TYPE: 'openai' })).toBe(false);
   expect(
     copilotEnvSignIn({
@@ -105,7 +107,7 @@ async function copilotHome(config: string | null): Promise<string> {
 }
 
 it('reads the saved login out of the commented config file', async () => {
-  const signedIn = await copilotHome('// managed\n{\n  "loggedInUsers": [{"login": "octo"}]\n}');
+  const signedIn = await copilotHome('// managed\n{\n  "loggedInUsers": [{"login": "octo"}],\n}');
   expect(await copilotSignedIn({ COPILOT_HOME: signedIn })).toBe(true);
   const signedOut = await copilotHome('{\n  "firstLaunchAt": "2026-01-01"\n}');
   expect(await copilotSignedIn({ COPILOT_HOME: signedOut })).toBe(false);

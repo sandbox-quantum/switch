@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { parse, type ParseError } from 'jsonc-parser/lib/esm/main.js';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
 import { readiness, signInWith, type ProviderReadiness } from '../readiness';
@@ -19,7 +20,13 @@ export function copilotEnvSignIn(env: Record<string, string>): boolean {
   if (env.COPILOT_GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim()) {
     return true;
   }
-  if (env.COPILOT_PROVIDERS_CONFIG?.trim()) return true;
+  const providersConfig = env.COPILOT_PROVIDERS_CONFIG?.trim();
+  if (providersConfig) {
+    const errors: ParseError[] = [];
+    const parsed = parse(providersConfig, errors, { allowTrailingComma: true });
+    if (!errors.length && parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      return true;
+  }
   // A provider type by itself does not authenticate anything. The inline
   // provider form needs an endpoint and a credential (or a credential command).
   const endpoint = env.COPILOT_PROVIDER_BASE_URL?.trim();
@@ -41,9 +48,12 @@ export async function copilotSignedIn(env: Record<string, string>): Promise<bool
   const home = env.COPILOT_HOME || join(env.HOME || homedir(), '.copilot');
   try {
     const raw = await readFile(join(home, 'config.json'), 'utf8');
-    const firstBrace = raw.indexOf('{');
-    if (firstBrace === -1) return false;
-    const config = JSON.parse(raw.slice(firstBrace)) as { loggedInUsers?: unknown };
+    const errors: ParseError[] = [];
+    const config = parse(raw, errors, { allowTrailingComma: true }) as {
+      loggedInUsers?: unknown;
+    };
+    if (errors.length || !config || typeof config !== 'object' || Array.isArray(config))
+      return false;
     return Array.isArray(config.loggedInUsers) && config.loggedInUsers.length > 0;
   } catch {
     return false;
