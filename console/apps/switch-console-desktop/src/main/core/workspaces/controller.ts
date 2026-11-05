@@ -26,12 +26,14 @@ import {
   beginChatClaim,
   changeTemplateRun,
   createRoomFromTemplate,
+  createRoomSchedule,
   runTemplateDocument,
   runTemplateWithAgents,
   type TemplateRunAgent,
   type TemplateRunResult,
   createTemplate,
   deleteRoom,
+  deleteRoomSchedule,
   deleteTemplate,
   disconnectChat,
   exportRoomYaml,
@@ -55,6 +57,7 @@ import {
   fetchRoomGroups,
   fetchRoomRoles,
   fetchRooms,
+  fetchRoomSchedules,
   fetchTemplateDetail,
   fetchTemplateRuns,
   fetchTemplates,
@@ -88,6 +91,7 @@ import {
   updateAgentIcon,
   syncRoomName,
   updateRoom,
+  updateRoomSchedule,
   updateTemplate,
   addLinkedRoom,
   fetchLibrary,
@@ -201,20 +205,29 @@ import type {
   RemoteRoomDetail,
   RemoteRoomGroup,
   RemoteRoomRole,
+  RemoteRoomSchedule,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
+<<<<<<< HEAD
   RoomRoleInput,
+=======
+  RoomScheduleDraft,
+>>>>>>> 5f36e6b12 (Schedule messages to a room's agents (#771))
   SwitchServer,
   TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
   SyncRoomNameParams,
   UpdateRoomParams,
+<<<<<<< HEAD
   LinkedRoom,
   RoomDocumentContent,
   RoomResource,
   RoomResourceKind,
+=======
+  UpdateRoomScheduleChanges,
+>>>>>>> 5f36e6b12 (Schedule messages to a room's agents (#771))
 } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
@@ -991,6 +1004,44 @@ export const workspacesController = createRPCController({
       })
     ),
 
+  /** A room's scheduled messages, for its configuration page. */
+  listRoomSchedules: (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RemoteRoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  /** Schedule a message in a room. The gateway's refusal (no write access, an
+   * agent not in the room, unusable timing) propagates for the form to show. */
+  createRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params.draft)
+    ),
+
+  updateRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    changes: UpdateRoomScheduleChanges;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params.changes)
+    ),
+
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
+    ),
+
+<<<<<<< HEAD
   /** File a room under a group, or take it out of one (null). */
   setRoomGroup: (params: {
     workspaceId: string;
@@ -1258,6 +1309,43 @@ export const workspacesController = createRPCController({
   listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchBridgeUserNames(server, params.bridgeId)
+=======
+  /** A room's scheduled messages, for its configuration page. */
+  listRoomSchedules: (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RemoteRoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  /** Schedule a message in a room. The gateway's refusal (no write access, an
+   * agent not in the room, unusable timing) propagates for the form to show. */
+  createRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params.draft)
+    ),
+
+  updateRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    changes: UpdateRoomScheduleChanges;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params.changes)
+    ),
+
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
+>>>>>>> 5f36e6b12 (Schedule messages to a room's agents (#771))
     ),
 
   /**
