@@ -1450,6 +1450,11 @@ class CollaborationBridgeLifecycleService:
                 await workspace_consumer.start(cursors)
             except Exception as exc:
                 logger.exception("Bridge %s crashed", bridge_id)
+                # Read before the pop below. A task already stopped (and
+                # perhaps replaced) that raised as it was being cancelled is
+                # no longer the bridge, and starting it again would undo the
+                # stop.
+                still_the_bridge = self._tasks.get(bridge_id) is asyncio.current_task()
                 self._bridges.pop(bridge_id, None)
                 self._tasks.pop(bridge_id, None)
                 self._held_resources.pop(bridge_id, None)
@@ -1502,6 +1507,8 @@ class CollaborationBridgeLifecycleService:
                     and time.monotonic() - connected_at >= CRASH_RETRY_RESET_SECONDS
                 ):
                     self._crash_streaks.pop(bridge_id, None)
+                if not still_the_bridge:
+                    return
                 if reason in _NOT_RETRIED_AFTER_CRASH:
                     logger.error(
                         "Bridge %s stays down until it is edited or restarted: "

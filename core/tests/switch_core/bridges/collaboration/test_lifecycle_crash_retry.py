@@ -186,3 +186,19 @@ async def test_the_backoff_doubles_up_to_its_cap(
     service._schedule_crash_retry(BRIDGE)
     await asyncio.sleep(0)
     assert delays[-1] == 2.0
+
+
+async def test_a_task_that_crashes_after_it_was_stopped_is_not_started_again() -> None:
+    """A stop cancels the bridge's task without waiting on a quiet copy's.
+    One that raises as it unwinds is no longer the bridge's task, and its
+    crash must not schedule a start the stop has just ruled out."""
+    service, attempts = _flaky_service(failures=1)
+    core = _FlakyCore(attempts, 1, ConnectionError("connection refused"))
+    service._started.add(BRIDGE)
+    service._started_rows[BRIDGE] = "row"
+    # Not registered in `_tasks`: the stop has already taken it out.
+    await service._run_bridge(BRIDGE, "tenant", core, None)  # type: ignore[arg-type]
+
+    assert attempts == [1]
+    assert BRIDGE not in service._crash_retries
+    assert BRIDGE not in service._crash_streaks
