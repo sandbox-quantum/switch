@@ -50,8 +50,11 @@ spec:
       {{- if eq $kind "llamacpp" }}
       {{- $llama := $ms.llamacpp }}
       initContainers:
-        # Downloads the weights into the volume unless they are already there,
-        # resuming a download a restart interrupted.
+        # Downloads the weights into the volume unless they are already there
+        # and pass their checksum, resuming a download a restart interrupted.
+        # A file that fails the checksum is deleted: one already on the volume
+        # is downloaded again at once; a fresh download that fails exits
+        # non-zero, and the next start downloads it again.
         - name: download-model
           image: {{ $llama.model.downloaderImage }}
           command: ["sh", "-c"]
@@ -59,19 +62,28 @@ spec:
             - |
               set -eu
               target="/models/$MODEL_FILE"
+              verify() {
+                [ -z "$MODEL_SHA256" ] || echo "$MODEL_SHA256  $target" | sha256sum -c -
+              }
               if [ -s "$target" ]; then
-                echo "have $MODEL_FILE"
-              else
-                echo "downloading $MODEL_URL"
-                set -- -fsSL --retry 5 --retry-delay 10 -C - -o "$target.partial"
-                if [ -n "${HF_TOKEN:-}" ]; then
-                  set -- "$@" -H "Authorization: Bearer $HF_TOKEN"
+                if verify; then
+                  echo "have $MODEL_FILE"
+                  exit 0
                 fi
-                curl "$@" "$MODEL_URL"
-                mv "$target.partial" "$target"
+                echo "$MODEL_FILE on the volume fails its checksum; deleting it and downloading it again" >&2
+                rm -f "$target"
               fi
-              if [ -n "$MODEL_SHA256" ]; then
-                echo "$MODEL_SHA256  $target" | sha256sum -c -
+              echo "downloading $MODEL_URL"
+              set -- -fsSL --retry 5 --retry-delay 10 -C - -o "$target.partial"
+              if [ -n "${HF_TOKEN:-}" ]; then
+                set -- "$@" -H "Authorization: Bearer $HF_TOKEN"
+              fi
+              curl "$@" "$MODEL_URL"
+              mv "$target.partial" "$target"
+              if ! verify; then
+                echo "the downloaded $MODEL_FILE fails its checksum; deleted it, so the next start downloads it again" >&2
+                rm -f "$target"
+                exit 1
               fi
           env:
             - name: MODEL_URL
@@ -177,8 +189,14 @@ spec:
           env:
             - name: STRANDS_CHECKPOINT
               value: {{ required "decision.modelServer.strands.checkpoint is required" $st.checkpoint | quote }}
+            - name: STRANDS_REVISION
+              value: {{ required "decision.modelServer.strands.revision is required: the checkpoint's commit on Hugging Face" $st.revision | quote }}
+            - name: STRANDS_BASE_REVISION
+              value: {{ required "decision.modelServer.strands.baseRevision is required: the base model's commit the checkpoint records" $st.baseRevision | quote }}
             - name: STRANDS_MODEL_NAME
               value: {{ required "decision.modelServer.strands.modelName is required" $st.modelName | quote }}
+            - name: STRANDS_PORT
+              value: {{ $st.port | quote }}
             {{- with include "switch.decisionHfToken" . }}
             {{- . | trim | nindent 12 }}
             {{- end }}

@@ -11,7 +11,8 @@
 #
 # No weights in the image. The checkpoint and its base model download from
 # Hugging Face on the first start into HF_HOME=/models, which is meant to be a
-# volume, so later starts only load them. The E4B checkpoint is built on
+# volume, so later starts only load them. Both are pinned to commits
+# (STRANDS_REVISION, STRANDS_BASE_REVISION; serve.py). The E4B checkpoint is built on
 # google/gemma-4-E4B-it (about 16 GB in bf16), whose Gemma terms apply; the
 # weights are fetched by whoever deploys, never redistributed in this image.
 # Set HF_TOKEN for a gated checkpoint or higher Hub rate limits.
@@ -51,6 +52,8 @@ ENV PATH="/opt/strands/bin:$PATH" \
     HF_HOME=/models \
     HF_HUB_DISABLE_TELEMETRY=1 \
     STRANDS_CHECKPOINT=StrandsAgents/strands-decider-E4B-gemma4-v1-2610 \
+    STRANDS_REVISION=1344d44397c457f3be34b8ff15c593b41248c6bf \
+    STRANDS_BASE_REVISION=ee0ef6023621cff504d758262d4e04895a5af4a2 \
     STRANDS_MODEL_NAME=strands-decider-E4B
 USER 10001:10001
 WORKDIR /home/decision

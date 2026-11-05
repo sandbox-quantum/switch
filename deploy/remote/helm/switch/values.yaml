@@ -939,6 +939,14 @@ decision:
       # first start with its base model (google/gemma-4-E4B-it, about 16 GB,
       # under the Gemma terms). Later starts only load it.
       checkpoint: StrandsAgents/strands-decider-E4B-gemma4-v1-2610
+      # The commits of the checkpoint (STRANDS_REVISION) and of its base model
+      # (STRANDS_BASE_REVISION) to download, so a new push to either repo
+      # changes nothing here. The base revision must be the one the checkpoint
+      # records in its provenance.json (the one it was trained on): the server
+      # refuses to start otherwise. Bump both together, from the checkpoint's
+      # Hugging Face page.
+      revision: 1344d44397c457f3be34b8ff15c593b41248c6bf
+      baseRevision: ee0ef6023621cff504d758262d4e04895a5af4a2
       # The name the server answers as, and DECISION_MODEL unless `model`
       # above is set.
       modelName: strands-decider-E4B
@@ -982,13 +990,15 @@ decision:
         - "4"
         - --jinja
       # The weights, downloaded into the PVC by an init container when the
-      # file is not there yet. Changing them downloads the new file on the
-      # next start.
+      # file is not there yet, from a fixed Hugging Face commit. A file that
+      # fails its checksum is deleted and downloaded again; a download that
+      # fails it is deleted and the pod restarts, so a bad file never sticks.
+      # To change model, set url, file and sha256 together.
       model:
-        url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
+        url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf
         file: Qwen3.5-4B-Q4_K_M.gguf
-        # Optional hex SHA-256 of the file, checked after the download.
-        sha256: ""
+        # Hex SHA-256 of the file. Empty skips the check (not recommended).
+        sha256: 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
         downloaderImage: curlimages/curl:8.11.1
       # llama.cpp's /health is 503 until the model is loaded (seconds).
       startupProbe:

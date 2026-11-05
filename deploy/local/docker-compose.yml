@@ -158,9 +158,15 @@ services:
     profiles: ["decision", "decision-gpu"]
     # The fresh named volume is root's.
     user: "0:0"
+    # Pinned to a Hugging Face commit and checked against its SHA-256, as in
+    # the Helm chart. A file that fails the check is deleted (and, if it was
+    # already on the volume, downloaded again), so a bad file never sticks.
+    # To try another model, set DECISION_MODEL_URL, _FILE and _SHA256
+    # together (an empty _SHA256 skips the check).
     environment:
-      MODEL_URL: ${DECISION_MODEL_URL:-https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf}
+      MODEL_URL: ${DECISION_MODEL_URL:-https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf}
       MODEL_FILE: ${DECISION_MODEL_FILE:-Qwen3.5-4B-Q4_K_M.gguf}
+      MODEL_SHA256: ${DECISION_MODEL_SHA256-00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4}
       # Only for a gated model (one whose licence your Hugging Face account
       # has accepted).
       HF_TOKEN: ${HF_TOKEN:-}
@@ -170,12 +176,22 @@ services:
       - |
         set -eu
         target="/models/$$MODEL_FILE"
-        if [ -s "$$target" ]; then echo "have $$MODEL_FILE"; exit 0; fi
+        verify() { [ -z "$$MODEL_SHA256" ] || echo "$$MODEL_SHA256  $$target" | sha256sum -c -; }
+        if [ -s "$$target" ]; then
+          if verify; then echo "have $$MODEL_FILE"; exit 0; fi
+          echo "$$MODEL_FILE on the volume fails its checksum; deleting it and downloading it again" >&2
+          rm -f "$$target"
+        fi
         echo "downloading $$MODEL_URL"
         set -- -fsSL --retry 5 --retry-delay 10 -C - -o "$$target.partial"
         if [ -n "$$HF_TOKEN" ]; then set -- "$$@" -H "Authorization: Bearer $$HF_TOKEN"; fi
         curl "$$@" "$$MODEL_URL"
         mv "$$target.partial" "$$target"
+        if ! verify; then
+          echo "the downloaded $$MODEL_FILE fails its checksum; deleted it, so the next start downloads it again" >&2
+          rm -f "$$target"
+          exit 1
+        fi
     volumes:
       - decision-models:/models
 
@@ -258,6 +274,10 @@ services:
     profiles: ["decision-strands-gpu"]
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
+      # The checkpoint's and its base model's Hugging Face commits, as in the
+      # Helm chart (decision.modelServer.strands.revision / baseRevision).
+      STRANDS_REVISION: 1344d44397c457f3be34b8ff15c593b41248c6bf
+      STRANDS_BASE_REVISION: ee0ef6023621cff504d758262d4e04895a5af4a2
     volumes:
       - decision-hf:/models
     deploy:
