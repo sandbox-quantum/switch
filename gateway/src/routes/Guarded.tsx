@@ -14,8 +14,9 @@ export function Guarded({ access, children }: { access: Rule; children: ReactNod
 }
 
 /** `to` with `:name` filled from this route's parameters, keeping the query
- * and the fragment, so a moved page's old links land on the same thing. The
- * target's own query wins over one carried across. */
+ * and the fragment, so a moved page's old links land on the same thing. What
+ * the target names itself, a query parameter or a fragment, wins over what is
+ * carried across. */
 export function RedirectTo({ to }: { to: string }) {
   const params = useParams();
   const { search, hash } = useLocation();
@@ -32,7 +33,7 @@ export function RedirectTo({ to }: { to: string }) {
       to={{
         pathname: target.pathname,
         search: merged === "" ? "" : `?${merged}`,
-        hash: hash !== "" ? hash : target.hash,
+        hash: target.hash !== "" ? target.hash : hash,
       }}
     />
   );

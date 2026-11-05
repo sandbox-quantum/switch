@@ -418,7 +418,7 @@ describe("the new layout (gateway_v2)", () => {
       ["/registration-keys", "/settings/api-keys"],
       ["/workspace", "/settings/users"],
       ["/resources/templates/tpl-1", "/templates/tpl-1"],
-      ["/resources?tab=templates", "/templates"],
+      ["/resources?tab=templates&q=ci#top", "/templates?q=ci#top"],
     ];
     for (const [from, to] of moves) {
       mockFetch(signedInAs("workspace_admin", { flags: V2 }));
@@ -530,6 +530,13 @@ describe("the new layout (gateway_v2)", () => {
       renderAt("/settings");
       await landsOn("/settings/api-keys");
       expect(window.sessionStorage.getItem("switch.settings.afterSwitch")).toBeNull();
+    });
+
+    it("carries an organization settings page across to an organization admin", async () => {
+      window.sessionStorage.setItem("switch.settings.afterSwitch", "/settings/org/users");
+      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      renderAt("/settings");
+      await landsOn("/settings/org/users");
     });
 
     it("lands on General after a switch to a workspace where the page may not be opened", async () => {
@@ -657,14 +664,62 @@ describe("a page that falls behind the server", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
+  function comeBackToTheTab() {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+
+  it("reads the session once when a restore and a tab coming back arrive together", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    await railLabels();
+    mockFetch(signedInAs("member"));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    comeBackToTheTab();
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const sessionReads = vi
+      .mocked(fetch)
+      .mock.calls.filter(([input]) => String(input).endsWith("/auth/session"));
+    expect(sessionReads).toHaveLength(1);
+  });
+
+  it("warns, keeping the page, when the session cannot be read on coming back to the tab", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    await railLabels();
+    mockFetch({ ...signedInAs("member"), "/auth/session": [503, { detail: "server restarting" }] });
+    comeBackToTheTab();
+    expect(
+      await screen.findByText(/Could not check your session with the server: server restarting/),
+    ).toBeTruthy();
+    expect(await railLabels()).toContain("Rooms");
+
+    mockFetch(signedInAs("member"));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(screen.queryByText(/Could not check your session with the server/)).toBeNull(),
+    );
+  });
+
+  it("fails loud when a restored page cannot be checked, since it may be another workspace's", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    await railLabels();
+    mockFetch({ ...signedInAs("member"), "/auth/session": [503, { detail: "server restarting" }] });
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    expect(
+      await screen.findByText(/Could not load your session: server restarting/),
+    ).toBeTruthy();
+  });
+
   it("follows a change of role when the tab comes back", async () => {
     mockFetch(signedInAs("member"));
     renderAt("/rooms");
     expect(await railLabels()).not.toContain("Usage");
 
     mockFetch(signedInAs("workspace_admin"));
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
-    document.dispatchEvent(new Event("visibilitychange"));
+    comeBackToTheTab();
 
     await waitFor(async () => expect(await railLabels()).toContain("Usage"));
     expect(reload).not.toHaveBeenCalled();

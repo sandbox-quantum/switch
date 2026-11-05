@@ -26,6 +26,10 @@ interface AuthState {
   isOperator: boolean;
   canAdminTenant: boolean;
   capabilities: Capabilities;
+  // Set when the session could not be read again on coming back to the tab:
+  // what the page shows may be out of date, and it says so.
+  staleError: string | null;
+  recheck: () => void;
   refresh: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -62,11 +66,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loaded, setLoaded] = useState<Loaded>({ session: null, tenant: null, flags: ALL_OFF });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [staleError, setStaleError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       setLoaded(await loadAll());
       setLoadError(null);
+      setStaleError(null);
     } catch (err) {
       setLoadError(errorMessage(err));
     }
@@ -83,17 +89,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // makes would name that workspace: reload it. A role can change while the
   // page sits in a background tab, so it is read again whenever the tab comes
   // back, and the route guards and rail follow what the server now says.
+  //
+  // One read at a time: a restore fires both events at once. Not being able
+  // to read it is loud for a restored page, which may belong to another
+  // workspace, and a warning for a tab coming back, which holds this one's.
   const held = useRef<Session | null>(null);
   useEffect(() => {
     held.current = loaded.session;
   }, [loaded.session]);
-  useEffect(() => {
-    const revalidate = async () => {
+  const reading = useRef<Promise<void> | null>(null);
+  const restoredWhileReading = useRef(false);
+  const revalidate = useCallback((restored: boolean) => {
+    restoredWhileReading.current ||= restored;
+    if (reading.current !== null) return;
+    reading.current = (async () => {
       let current: Loaded;
       try {
         current = await loadAll();
       } catch (err) {
-        setLoadError(errorMessage(err));
+        if (restoredWhileReading.current) setLoadError(errorMessage(err));
+        else setStaleError(errorMessage(err));
         return;
       }
       const before = held.current;
@@ -104,13 +119,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         window.location.reload();
         return;
       }
+      setStaleError(null);
       setLoaded(current);
-    };
+    })().finally(() => {
+      reading.current = null;
+      restoredWhileReading.current = false;
+    });
+  }, []);
+  useEffect(() => {
     const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted) void revalidate();
+      if (event.persisted) revalidate(true);
     };
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void revalidate();
+      if (document.visibilityState === "visible") revalidate(false);
     };
     window.addEventListener("pageshow", onPageShow);
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -118,7 +139,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("pageshow", onPageShow);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [revalidate]);
+  const recheck = useCallback(() => revalidate(false), [revalidate]);
 
   const login = useCallback(
     async (email: string, password: string) => {
@@ -156,6 +178,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isOperator: capabilities.isOperator,
     canAdminTenant: capabilities.administersWorkspace,
     capabilities,
+    staleError,
+    recheck,
     refresh,
     login,
     logout,

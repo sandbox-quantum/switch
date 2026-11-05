@@ -33,6 +33,8 @@ function authState(canAdminTenant: boolean) {
       canDeleteWorkspace: false,
       features: ALL_OFF,
     },
+    staleError: null,
+    recheck: vi.fn(),
     refresh: vi.fn(async () => {}),
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),

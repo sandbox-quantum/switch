@@ -1,7 +1,7 @@
 import AddIcon from "@mui/icons-material/Add";
 import { Box, Button, Stack, Tab, Tabs, Typography } from "@mui/material";
 import { useState } from "react";
-import { Navigate, useNavigate, useSearchParams } from "react-router";
+import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router";
 import CreateDocumentDialog from "./CreateDocumentDialog";
 import CreatePackageDialog from "./CreatePackageDialog";
 import CreateReferenceDialog from "./CreateReferenceDialog";
@@ -32,6 +32,7 @@ type ResourceTab = (typeof TABS)[number]["value"];
 export default function ResourcesPage({ withTemplates }: { withTemplates: boolean }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { hash } = useLocation();
   const tabParam = searchParams.get("tab");
   const tabs = TABS.filter((t) => withTemplates || t.value !== "templates");
   const active = tabs.find((t) => t.value === tabParam) ?? tabs[0];
@@ -74,7 +75,17 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
     setRefreshKey((k) => k + 1);
   };
 
-  if (!withTemplates && tabParam === "templates") return <Navigate to="/templates" replace />;
+  if (!withTemplates && tabParam === "templates") {
+    const rest = new URLSearchParams(searchParams);
+    rest.delete("tab");
+    const search = rest.toString();
+    return (
+      <Navigate
+        to={{ pathname: "/templates", search: search === "" ? "" : `?${search}`, hash }}
+        replace
+      />
+    );
+  }
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>

@@ -1,5 +1,6 @@
-import { Box, Stack } from "@mui/material";
+import { Alert, Box, Button, Stack } from "@mui/material";
 import { Outlet } from "react-router";
+import { useAuth } from "../data/AuthContext";
 import type { Layout } from "../routes/routeTable";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
@@ -33,9 +34,30 @@ export default function PageShell({ layout }: { layout: Layout }) {
             p: 4,
           }}
         >
+          <StaleSessionBanner />
           <Outlet />
         </Stack>
       </Stack>
     </Box>
+  );
+}
+
+/** Says so when the session could not be read again on coming back to the
+ * tab, rather than carrying on as if what the page shows were current. */
+function StaleSessionBanner() {
+  const { staleError, recheck } = useAuth();
+  if (staleError === null) return null;
+  return (
+    <Alert
+      severity="warning"
+      sx={{ mb: 2 }}
+      action={
+        <Button color="inherit" size="small" onClick={recheck}>
+          Retry
+        </Button>
+      }
+    >
+      Could not check your session with the server: {staleError}. This page may be out of date.
+    </Alert>
   );
 }
