@@ -19,6 +19,7 @@ from switch_core.authz import (
     ORGANIZATION_ADMIN_TENANT_ROLE,
     Action,
     Principal,
+    can_unlink_from_room,
     require,
 )
 from switch_core.config import SwitchConfig
@@ -1196,11 +1197,87 @@ async def require_room_access(
     in their workspace, private ones included. See the phase 2 design note on
     what that grant covers.
     """
+    return await authorize_room(
+        session, room_store, room_id, Principal(user.id, is_admin), action
+    )
+
+
+async def authorize_room(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room_id: str,
+    principal: Principal,
+    action: Action,
+) -> Room:
+    """`require_room_access` for a caller who already holds a `Principal`: the
+    one place a room's access rule is applied, for every gateway route."""
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     try:
-        require(Principal(user.id, is_admin), action, room)
+        require(principal, action, room)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
+        # Whoever takes part in a room may read it, as its listing shows them.
+        if action != "read" or not await takes_part_in_room(
+            session, room_store, room.id, principal.id
+        ):
+            raise HTTPException(status_code=403, detail=str(e)) from e
     return room
+
+
+async def require_room_unlink(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room_id: str,
+    user: User,
+    is_admin: bool,
+) -> Room:
+    """Load a room and authorize unlinking a reference, document or package
+    from it (`authz.can_unlink_from_room`): raise HTTP 403 unless `user`
+    takes part in it or is a tenant admin. Both may read it, so there is no
+    separate read check."""
+    room = await room_store.get(session, room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    await ensure_may_unlink(session, room_store, room, Principal(user.id, is_admin))
+    return room
+
+
+async def ensure_may_unlink(
+    session: AsyncSession, room_store: RoomStore, room: Room, principal: Principal
+) -> None:
+    """Raise HTTP 403 unless `principal` may unlink from `room`."""
+    # An admin may whether or not they take part, so is spared the query.
+    takes_part = not principal.is_admin and await takes_part_in_room(
+        session, room_store, room.id, principal.id
+    )
+    if not can_unlink_from_room(principal, takes_part=takes_part):
+        raise HTTPException(
+            status_code=403,
+            detail="Only those taking part in the room and admins can unlink from it",
+        )
+
+
+async def takes_part_in_room(
+    session: AsyncSession, room_store: RoomStore, room_id: str, user_id: str | None
+) -> bool:
+    """Whether the user owns the room, is in it (in Switch Console or through a
+    platform account they claimed), or owns an agent in it. A caller with no
+    user (an agent nobody owns) takes part in nothing."""
+    if user_id is None:
+        return False
+    return bool(await room_store.involved_room_ids(session, user_id, [room_id]))
+
+
+async def readable_room_ids(
+    session: AsyncSession, room_store: RoomStore, user: User, is_admin: bool
+) -> set[str]:
+    """Ids of every room `user` may read, archived ones included.
+
+    For endpoints that list rooms reached through something else (a document,
+    a package, a reference) so they do not name rooms the caller cannot see.
+    """
+    rooms = await room_store.list_readable(
+        session, user.id, is_admin=is_admin, include_archived=True
+    )
+    return {r.id for r in rooms}

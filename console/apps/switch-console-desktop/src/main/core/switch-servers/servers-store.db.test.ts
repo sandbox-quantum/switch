@@ -308,6 +308,7 @@ describe('servers-store: rename & delete', () => {
       expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_added', {
         server_kind: 'local',
         outcome: 'success',
+        failure_reason: 'none',
       });
     });
 
@@ -325,6 +326,7 @@ describe('servers-store: rename & delete', () => {
       expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_added', {
         server_kind: 'remote_managed',
         outcome: 'success',
+        failure_reason: 'none',
       });
     });
 
@@ -373,6 +375,22 @@ describe('servers-store: rename & delete', () => {
 
       expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_removed', {
         server_kind: 'external',
+      });
+    });
+
+    it('reports Switch Cloud as its own kind', async () => {
+      vi.stubEnv('SWITCH_CLOUD_URL', 'https://cloud.example.com');
+      await fixture.db.insert(switchServers).values({
+        id: 'srv-cloud',
+        name: 'Switch Cloud',
+        url: 'https://cloud.example.com/',
+      });
+
+      await removeServer('srv-cloud');
+      vi.unstubAllEnvs();
+
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_removed', {
+        server_kind: 'cloud',
       });
     });
 

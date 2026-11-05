@@ -19,7 +19,11 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Agent
-from switch_core.telemetry.deployment import claim_milestone, prune_claims
+from switch_core.telemetry.deployment import (
+    SESSION_START_CLAIM_PREFIX,
+    claim_milestone,
+    prune_claims,
+)
 from switch_core.telemetry.service import TelemetryService, emit_safely
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 
@@ -30,7 +34,7 @@ StartSource = Literal["user", "room", "automation", "unknown"]
 # The claims share `telemetry_milestones` with the once-ever milestones and the
 # per-connector claims, which are never pruned; the prefix is what tells them
 # apart.
-CLAIM_PREFIX = "session_started:"
+CLAIM_PREFIX = SESSION_START_CLAIM_PREFIX
 
 # How long a claim is kept. It exists only so a retried report counts once, and
 # a host retries within seconds while Switch answers, or the next time a
@@ -123,13 +127,16 @@ async def report_session_started(
         session_factory, f"{CLAIM_PREFIX}{agent.id}:{session_id}"
     ):
         return False
+    known_agent_type = normalise_known_agent_type(agent.metadata_)
     emit_safely(
         telemetry,
         "session_started",
-        {
-            "start_source": start_source,
-            "known_agent_type": normalise_known_agent_type(agent.metadata_),
-        },
+        {"start_source": start_source, "known_agent_type": known_agent_type},
+    )
+    await telemetry.emit_milestone(
+        "first_agent_session",
+        known_agent_type=known_agent_type,
+        start_source=start_source,
     )
     return True
 

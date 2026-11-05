@@ -211,9 +211,23 @@ function roomCreateFailureReason(result: CreateRoomResult): TelemetryRoomCreateF
       return 'bridge_unavailable';
     case 'invalid':
       return 'invalid';
-    default:
-      return 'error';
+    case 'error':
+      // The one generic result: the request never reached the server.
+      return 'network';
   }
+}
+
+/**
+ * A room create that threw, by the server's answer: the failures with no
+ * result of their own. `error` is one with no answer to read.
+ */
+function roomCreateErrorReason(error: unknown): TelemetryRoomCreateFailure {
+  if (!(error instanceof GatewayError) || error.kind !== 'http') return 'error';
+  if (error.status === 403) return 'forbidden';
+  if (error.status === 404) return 'not_found';
+  if (error.status === 409) return 'conflict';
+  if (error.status !== undefined && error.status >= 500) return 'server_error';
+  return 'error';
 }
 
 /**
@@ -746,7 +760,7 @@ export const workspacesController = createRPCController({
         })
       );
     } catch (error) {
-      report('error');
+      report(roomCreateErrorReason(error));
       throw error;
     }
 
