@@ -7,8 +7,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
  * under what they reach, and a workspace admin's switch for each service,
  * drawn as tiles. A switch asks before it reaches other people, shows what
  * the server says rather than what was asked, and keeps its place when it
- * flips. The server's operator also has the apps connectors sign in
- * through, under Server, each opening to its own profile. Someone who
+ * flips. Whoever runs a Switch with no web gateway also has the apps
+ * connectors sign in through, under Server, each opening to its own profile. Someone who
  * administers nothing is told whom to ask.
  */
 import { page as browserPage } from 'vitest/browser';
@@ -37,7 +37,7 @@ const switchServers = vi.hoisted(() => ({
   saveConnectorApp: vi.fn(),
   getConnectorAppImpact: vi.fn(),
 }));
-const admin = vi.hoisted(() => ({ administers: true, operator: false }));
+const admin = vi.hoisted(() => ({ administers: true, operator: false, servesGateway: false }));
 /** The dialogs asked for, by id; each is answered by the test. */
 const modals = vi.hoisted(
   () =>
@@ -70,6 +70,11 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { servers: [{ id: 'server', name: 'Dev Server' }] },
 }));
 
+// Connector apps are in the web gateway; Admin keeps them for a Switch without one.
+vi.mock('@renderer/features/switch-servers/server-gateway', () => ({
+  servesWebGateway: () => admin.servesGateway,
+}));
+
 vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   administersWorkspaceInScope: () => admin.administers || admin.operator,
   operatesServer: () => admin.operator,
@@ -77,7 +82,8 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
 
 /** Stands in for the app's navigation: a tile opens its profile by navigating. */
 const navigation = vi.hoisted(() => {
-  let params: Record<string, string | undefined> = { serverId: 'server' };
+  // Opened on the connector switches, which these tests are about.
+  let params: Record<string, string | undefined> = { serverId: 'server', section: 'connectors' };
   const listeners = new Set<() => void>();
   return {
     params: () => params,
@@ -92,7 +98,7 @@ const navigation = vi.hoisted(() => {
       };
     },
     reset: () => {
-      params = { serverId: 'server' };
+      params = { serverId: 'server', section: 'connectors' };
     },
   };
 });
@@ -143,6 +149,7 @@ beforeEach(() => {
   navigation.reset();
   admin.administers = true;
   admin.operator = false;
+  admin.servesGateway = false;
   modals.length = 0;
   for (const mock of Object.values(workspaces)) mock.mockReset();
   for (const mock of Object.values(switchServers)) mock.mockReset();
@@ -188,7 +195,7 @@ it('lists its sections under what they reach, and each service as a tile with wh
   expect(workspaces.getWorkspaceServices).toHaveBeenCalledWith('workspace');
   expect(page.textContent).toContain('Choose which services people in Acme can connect');
   const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
-  expect(workspace.textContent).toBe('Workspace · AcmeConnectors');
+  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsConnectors');
   expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Connectors');
   expect(page.querySelector('nav [role="group"][aria-label="Server"]')).toBeNull();
   expect(tiles(page)!.textContent).toContain('3 members connected · 2 agents use it');
@@ -345,7 +352,7 @@ it("gives the server's operator Connector apps under Server, the app needing set
   await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
 
   const server = page.querySelector('nav [role="group"][aria-label="Server"]')!;
-  expect(server.textContent).toBe('Server · Dev ServerConnector apps');
+  expect(server.textContent).toBe('Server · Dev ServerSwitch TrustConnector apps');
   await act(async () => button(/^Connector apps$/, server)!.click());
   expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps' });
   await vi.waitFor(() => expect(appTiles(page)).not.toBeNull());
@@ -368,6 +375,18 @@ it("gives the server's operator Connector apps under Server, the app needing set
     mode: 'set_up',
     app: { slug: 'github' },
   });
+});
+
+it('leaves the apps to the web gateway where the server serves one', async () => {
+  admin.operator = true;
+  admin.servesGateway = true;
+  workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
+  const page = await render();
+  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
+
+  const server = page.querySelector('nav [role="group"][aria-label="Server"]')!;
+  expect(server.textContent).toBe('Server · Dev ServerSwitch Trust');
+  expect(switchServers.getConnectorApps).not.toHaveBeenCalled();
 });
 
 it('keeps the apps from a workspace admin who does not run the server', async () => {

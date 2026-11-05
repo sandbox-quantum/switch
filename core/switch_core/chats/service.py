@@ -1001,6 +1001,12 @@ class ChatService:
             raise ChatError(422, "NOT_A_PERSON", "That account can't join chats.")
         return user
 
+    async def require_can_join(self, tenant_id: str, user_id: str) -> None:
+        """Raise the ChatError `add_member` would refuse this person with, for
+        a caller that must know before it makes the room."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            await self._require_tenant_member(session, tenant_id, user_id)
+
     async def _make_group(self, session: AsyncSession, room: Room) -> None:
         """Turn a Switch Console direct chat into a group, for good.
 
@@ -1473,11 +1479,15 @@ class ChatService:
                         "NOT_AGENT_OWNER",
                         "Only the agent's owner can give it a greeting.",
                     )
-                user_names = (
-                    [await self._linked_username(session, user.id, bridge_id)]
+                linked = (
+                    await self._linked_account(session, user.id, bridge_id)
                     if bridge_id is not None
                     else None
                 )
+                if bridge_id is not None and name is None:
+                    bridge = await session.get(CollaborationBridge, bridge_id)
+                    assert bridge is not None  # _linked_account found it
+                    name = f"{agents[0].display_name or agents[0].name} · {bridge.display_name}"
                 if operation is None:
                     claimed = await self._claim(
                         session,
@@ -1524,7 +1534,8 @@ class ChatService:
                                 channel_type="direct" if direct else "channel_private",
                                 internal_only=bridge_id is None,
                                 bridge_id=bridge_id,
-                                user_names=user_names,
+                                user_names=[linked[0]] if linked else None,
+                                user_external_id=linked[1] if linked else None,
                                 created_by=user.id,
                                 owner_id=user.id,
                                 read_visibility="private",
@@ -1544,7 +1555,17 @@ class ChatService:
                     room = created.room
                 else:
                     room = found
-                    await self._room_service.reconcile_room(room, user_names)
+                    opened_for = (room.metadata_ or {}).get("user_external_id")
+                    if linked and opened_for is not None and opened_for != linked[1]:
+                        raise ChatError(
+                            409,
+                            "LINKED_ACCOUNT_CHANGED",
+                            "This chat was started with a different linked "
+                            "account than the one now linked. Start a new chat.",
+                        )
+                    await self._room_service.reconcile_room(
+                        room, [linked[1]] if linked else []
+                    )
             for joiner in [user, *members]:
                 client = await self.member_actor(tenant_id, joiner)
                 await self._join(tenant_id, room, client)
@@ -1584,11 +1605,11 @@ class ChatService:
                 await session.execute(select(func.pg_advisory_unlock(key)))
 
     @staticmethod
-    async def _linked_username(
+    async def _linked_account(
         session: AsyncSession, user_id: str, bridge_id: str
-    ) -> str:
-        """The user's own account name on the bridge, from the identity they
-        linked there; never one the client names."""
+    ) -> tuple[str, str]:
+        """The user's own account on the bridge as (username, external user
+        id), from the identity they linked there; never one the client names."""
         bridge = await session.get(CollaborationBridge, bridge_id)
         if bridge is None or bridge.tenant_id != require_tenant_id():
             raise ChatError(404, "BRIDGE_NOT_FOUND", "No such bridge.")
@@ -1605,7 +1626,16 @@ class ChatService:
                 f"{bridge.display_name}. Link it in your Switch settings, then "
                 "try again.",
             )
-        return linked[0].external_username
+        if len(linked) > 1:
+            # Which one opens the DM must not depend on row order, here or on a retry.
+            raise ChatError(
+                409,
+                "ACCOUNTS_AMBIGUOUS",
+                f"Your Switch account is linked to {len(linked)} accounts on "
+                f"{bridge.display_name}. Unlink the ones you no longer use in "
+                "your Switch settings, then try again.",
+            )
+        return linked[0].external_username, linked[0].external_user_id
 
     async def _room_of_operation(
         self, session: AsyncSession, operation_id: str

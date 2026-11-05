@@ -102,7 +102,7 @@ class TestSeedingRepairsTheAdmin:
 
         user_id = await _admin_id(session_factory)
         assert await _memberships(session_factory, user_id) == [
-            (TENANT_ZERO_ID, "owner")
+            (TENANT_ZERO_ID, "admin")
         ]
 
     async def test_a_stranded_admin_is_rejoined_on_the_next_boot(
@@ -118,7 +118,7 @@ class TestSeedingRepairsTheAdmin:
         await _seed_admin_user(session_factory, UserStore(), _config())
 
         assert await _memberships(session_factory, user_id) == [
-            (TENANT_ZERO_ID, "owner")
+            (TENANT_ZERO_ID, "admin")
         ]
 
     async def test_the_repair_is_reported_loudly(
@@ -155,7 +155,7 @@ class TestSeedingRepairsTheAdmin:
         await _seed_admin_user(session_factory, UserStore(), _config())
 
         assert await _memberships(session_factory, user_id) == [
-            (TENANT_ZERO_ID, "owner")
+            (TENANT_ZERO_ID, "admin")
         ]
 
 

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
@@ -34,16 +34,22 @@ import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { CreateRoomOptions, RoomChannelField } from './create-room-options';
 import { MessagingAppSelector, SWITCH_CONSOLE } from './messaging-app-selector';
+import { optionsForBridge } from './room-channel-choices';
 import {
   CreateRequestIds,
   canCreate,
+  DEFAULT_ROOM_OPTIONS,
   dropsStartingAgent,
+  type RoomCreateOptions,
   roomCreateRequest,
+  roomOptionsReady,
   startingAgentResolution,
 } from './room-create-request';
 import { RoomNameInput } from './room-name-input';
 import { switchServersStore } from './switch-servers-store';
+import { administersWorkspaceById } from './workspace-admin';
 
 type CreateRoomModalArgs = {
   /** Create on this server instead of the active one — for callers that are not
@@ -81,6 +87,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const [description, setDescription] = useState('');
   const [instructions, setInstructions] = useState('');
   const [where, setWhere] = useState(SWITCH_CONSOLE);
+  const [options, setOptions] = useState<RoomCreateOptions>(DEFAULT_ROOM_OPTIONS);
   const [picked, setPicked] = useState<Participant[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +125,16 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const selectedBridge =
     bridges.find((b) => b.id === where) ?? (consoleOffered ? null : (bridges[0] ?? null));
   const nowhere = !consoleOffered && selectedBridge === null && !bridgesQuery.isLoading;
+  // A channel, and above all a typed id, belongs to the app it was chosen for:
+  // when the app the room would go to changes, however it changed, the choice
+  // starts again from a new public channel. Picking the app already shown keeps it.
+  const resolvedBridgeId = selectedBridge?.id ?? null;
+  const channelBridgeId = useRef(resolvedBridgeId);
+  useEffect(() => {
+    if (channelBridgeId.current === resolvedBridgeId) return;
+    channelBridgeId.current = resolvedBridgeId;
+    setOptions((now) => ({ ...now, channel: DEFAULT_ROOM_OPTIONS.channel }));
+  }, [resolvedBridgeId]);
 
   const managedProviders = new Map(
     (managedQuery.data ?? []).map((managed) => [managed.agentId, managed.definition.provider])
@@ -162,6 +179,12 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     if (dropsStartingAgent(startChip, next)) setStartDropped(true);
     setPicked(next);
   };
+  // A choice the chosen app does not offer (a private channel on Teams, say)
+  // falls back to a new public channel rather than being sent and refused.
+  const administers = workspaceId !== null && administersWorkspaceById(workspaceId);
+  // Only an admin files a room in a group; for anyone else it is made with none.
+  const bridgeOptions = optionsForBridge(options, selectedBridge);
+  const roomOptions = administers ? bridgeOptions : { ...bridgeOptions, groupId: null };
   const agentIds = shownPicked.filter((each) => each.kind === 'agent').map((each) => each.id);
   const memberUserIds = shownPicked.filter((each) => each.kind === 'person').map((each) => each.id);
 
@@ -184,6 +207,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     startingAgentState !== 'pending' &&
     !nowhere &&
     canCreate({ name }) &&
+    (selectedBridge === null || roomOptionsReady(roomOptions, selectedBridge.type)) &&
     !isSubmitting;
 
   async function handleSubmit() {
@@ -198,12 +222,14 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         serverId,
         workspaceId: workspaceId as string,
         bridgeId,
+        bridgeType: selectedBridge?.type ?? null,
         name,
         description,
         instructions,
         agentIds,
         memberUserIds,
         requestId: requestIds.for({ bridgeId, name, agentIds, memberUserIds }),
+        options: roomOptions,
       });
       if (request.kind === 'chat') {
         const chat = await rpc.chats.create(request.params);
@@ -279,9 +305,9 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             />
             {/* What the name becomes, where it becomes it: a bridged room is a
                 channel of the same name in its app. */}
-            {trimmedName !== '' && selectedBridge && (
+            {trimmedName !== '' && selectedBridge && roomOptions.channel.kind === 'new' && (
               <span className="text-xs text-foreground-muted">
-                Created as #{trimmedName} in {selectedBridge.displayName}.
+                {`Created as ${roomOptions.channel.private ? 'private ' : ''}#${trimmedName} in ${selectedBridge.displayName}.`}
               </span>
             )}
           </Field>
@@ -318,6 +344,18 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             )}
           </Field>
 
+          {/* Where a bridged room lives is decided now: Console cannot move it later. */}
+          {selectedBridge && (
+            <RoomChannelField
+              bridge={selectedBridge}
+              value={roomOptions}
+              onChange={(next) => {
+                setOptions(next);
+                setError(null);
+              }}
+            />
+          )}
+
           {/* A bridged room's own settings; a Switch Console room has none to start with. */}
           {selectedBridge && (
             <>
@@ -343,6 +381,15 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                   rows={3}
                 />
               </Field>
+              <CreateRoomOptions
+                workspaceId={workspaceId}
+                administersWorkspace={administers}
+                value={roomOptions}
+                onChange={(next) => {
+                  setOptions(next);
+                  setError(null);
+                }}
+              />
             </>
           )}
 
@@ -371,9 +418,15 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               {failureText(bridgesQuery.error, 'Could not load messaging apps.')}
             </p>
           )}
-          {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
       </DialogContentArea>
+      {/* Outside the scrolling form, beside the button that caused it, so a
+          refusal is never scrolled out of sight under a long form. */}
+      {error && (
+        <p role="alert" className="px-6 pb-2 text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <DialogFooter className="sm:justify-between">
         <MessagingAppSelector
           bridges={bridges}

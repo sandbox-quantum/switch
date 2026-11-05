@@ -1,14 +1,10 @@
-import { ArrowUpRight, BookOpen, FolderInput, Settings } from 'lucide-react';
+import { FolderInput } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React from 'react';
 import { SidebarOnboardingChecklist } from '@renderer/features/onboarding/sidebar-onboarding-checklist';
-import { isCurrentView, useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
-import { openExternalUrl } from '@renderer/lib/open-external';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
-import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { cn } from '@renderer/utils/utils';
-import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { FROZEN, isFrozenServer } from '../switch-servers/managed-server-state';
 import { switchServersStore } from '../switch-servers/switch-servers-store';
 import { WorkspaceSwitcher } from '../switch-servers/workspace-switcher';
@@ -19,13 +15,10 @@ import { SidebarGroupedList, useAgentManagementMode } from './sidebar-grouped-li
 import {
   SidebarContainer,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarMenu,
-  SidebarMenuButton,
 } from './sidebar-primitives';
-import { SidebarSearchTrigger } from './sidebar-search-trigger';
 import { SidebarSpace } from './sidebar-space';
 import { UpdateSection } from './update-section';
 import { useSidebarDrop } from './use-sidebar-drop';
@@ -33,7 +26,6 @@ import { WorkspaceNav } from './workspace-nav';
 
 export const LeftSidebar: React.FC = observer(function LeftSidebar() {
   const { navigate } = useNavigate();
-  const { currentView } = useWorkspaceSlots();
 
   const { isDragOver, onDragOver, onDragEnter, onDragLeave, onDrop } = useSidebarDrop();
   const managementMode = useAgentManagementMode();
@@ -84,38 +76,6 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
           </SidebarGroup>
         </SidebarContent>
         <SidebarOnboardingChecklist />
-        <SidebarFooter>
-          <SidebarMenu>
-            <SidebarSearchTrigger />
-            <SidebarMenuButton
-              isActive={
-                isCurrentView(currentView, 'settings') || isCurrentView(currentView, 'remoteHost')
-              }
-              onClick={() => navigate('settings')}
-              aria-label="Settings"
-              className="w-full justify-between"
-            >
-              <span className="flex items-center gap-2">
-                <Settings className="h-5 w-5 sm:h-4 sm:w-4" />
-                Settings
-              </span>
-              <BoundShortcut settingsKey="settings" />
-            </SidebarMenuButton>
-            <SidebarMenuButton
-              onClick={() =>
-                openExternalUrl(SWITCH_CONSOLE_DOCS_URL, 'Could not open the documentation')
-              }
-              aria-label="Docs"
-              className="w-full justify-between"
-            >
-              <span className="flex items-center gap-2">
-                <BookOpen className="h-5 w-5 sm:h-4 sm:w-4" />
-                Docs
-              </span>
-              <ArrowUpRight className="size-3 text-foreground-muted" />
-            </SidebarMenuButton>
-          </SidebarMenu>
-        </SidebarFooter>
         <div className="flex items-center justify-between gap-2 px-3 py-2">
           {/* The mark doubles as the way back to the welcome screen — the one
               view with no other entry point once you have navigated away. */}
