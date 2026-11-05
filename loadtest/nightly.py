@@ -665,12 +665,14 @@ def scale_core(cfg: Config, replicas: int) -> None:
 
 
 def wait_core(cfg: Config, replicas: int, seconds: float) -> dict:
-    """Wait until switch-core runs `replicas` ready pods of one template."""
+    """Wait until switch-core runs `replicas` ready pods of one template.
+    Not for a newer build waiting to roll out: at the night's size there is
+    no room for the rollout's extra pod, so it would only wait out the time."""
     t = time.monotonic()
     while True:
         s = core_state(cfg)
         if (
-            s["ready"] == replicas == s["updated"]
+            s["ready"] == replicas
             and len(s["pod_template_hash"]) == 1
             and s["generation_seen"]
         ):

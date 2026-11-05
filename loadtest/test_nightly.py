@@ -571,3 +571,27 @@ def test_a_pod_being_stopped_leaves_the_half_made_batches_to_the_next_night(
         nightly.seed_population(cfg, "n1", tmp_path)
     pop = s3_get(cfg, "population.json")
     assert removed == [] and pop["batches"] == 1 and not pop["complete"]
+
+
+def test_the_wait_ends_with_every_pod_ready_on_one_build_though_a_newer_one_waits(
+    monkeypatch,
+):
+    states = iter(
+        [
+            {
+                "ready": 11,
+                "updated": 0,
+                "pod_template_hash": ["h1"],
+                "generation_seen": True,
+            },
+            {
+                "ready": 12,
+                "updated": 0,
+                "pod_template_hash": ["h1"],
+                "generation_seen": True,
+            },
+        ]
+    )
+    monkeypatch.setattr(nightly, "core_state", lambda cfg: next(states))
+    monkeypatch.setattr(nightly.time, "sleep", lambda s: None)
+    assert nightly.wait_core(_cfg(), 12, 1500)["ready"] == 12
