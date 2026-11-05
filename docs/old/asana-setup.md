@@ -127,10 +127,10 @@ agents' next token requests:
 
 ## Limits worth knowing
 
-- Access tokens last an hour (Asana documents this; Switch has not
-  measured it). The refresh token is long-lived and survives its use, so
-  a connection renews itself until the person disconnects or removes the
-  app in Asana.
+- Asana documents one-hour access tokens and a long-lived reusable refresh
+  token. Refresh behavior has not been measured with this V2 MCP app. The
+  adapter stores a replacement refresh token if the server returns one, and
+  retains the existing token if it does not.
 - A granted agent's token is its owner's own, shared by every agent they
   grant; it cannot be narrowed or revoked per agent. Turning an agent off
   stops its sessions within an hour; disconnecting stops every agent at
@@ -145,9 +145,11 @@ agents' next token requests:
   plan it is refused, and agents fall back to the basic task and project
   tools.
 - The current OAuth adapter sends the MCP endpoint URL as the `resource`
-  parameter. Asana's integration guide instead names
-  `https://mcp.asana.com/v2` for the standard server. This difference has
-  not been verified with a real app and may prevent authorization.
+  parameter. The server's protected-resource metadata identifies
+  `https://mcp.asana.com/v2/mcp` as its resource, while Asana's integration
+  guide gives `https://mcp.asana.com/v2` as an optional resource example.
+  Acceptance of the adapter's resource value by this PR has not been
+  verified with a real app and may prevent authorization.
 
 ## An organization's own Asana app
 

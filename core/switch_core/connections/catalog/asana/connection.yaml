@@ -6,9 +6,9 @@ enabled: true
 adapter: oauth
 auth:
   type: oauth
-  # Asana's refresh token is long-lived and survives its use: a refresh
-  # answers a new access token and no new refresh token, and it can be
-  # repeated for as long as the person keeps the app authorized.
+  # Asana's OAuth guide describes a long-lived reusable refresh token. The
+  # V2 MCP app's refresh response has not been measured for this entry.
+  # The adapter stores a replacement if the server supplies one.
   refresh: reusable
   oauth:
     # Each server's operator registers an Asana MCP app and names its
