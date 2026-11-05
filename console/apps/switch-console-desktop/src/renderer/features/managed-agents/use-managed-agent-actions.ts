@@ -1,13 +1,15 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useAnsweredFlags } from '@renderer/features/switch-buddy/use-this-computer';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { deleteDescription } from './delete-description';
 import { managedAgentLabel } from './managed-agent-state';
-import { MANAGED_AGENTS_KEY } from './use-managed-agents';
+import { MANAGED_AGENTS_KEY, useManagedAgents } from './use-managed-agents';
 
 /** Starting, stopping and deleting a managed agent, each confirmed or reported as a toast. */
 export function useManagedAgentActions(agent: ManagedAgentView) {
@@ -16,6 +18,8 @@ export function useManagedAgentActions(agent: ManagedAgentView) {
   const { navigate } = useNavigate();
   const confirm = useShowModal('confirmActionModal');
   const [busy, setBusy] = useState(false);
+  const hostedV2 = useAnsweredFlags(agent.serverId).hostedV2 === true;
+  const agents = useManagedAgents(hostedV2 ? agent.serverId : null).data;
 
   const act = async (fallback: string, run: () => Promise<void>) => {
     setBusy(true);
@@ -44,7 +48,7 @@ export function useManagedAgentActions(agent: ManagedAgentView) {
   const remove = () =>
     confirm({
       title: `Delete ${label}?`,
-      description: `Its machine stops it and it is deleted from Switch, for every room it is in.`,
+      description: deleteDescription(agent, agents, hostedV2),
       confirmLabel: 'Delete',
       onSuccess: () =>
         void act(`${label} could not be deleted.`, async () => {

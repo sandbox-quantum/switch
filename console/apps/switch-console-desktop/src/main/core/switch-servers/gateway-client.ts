@@ -4265,6 +4265,27 @@ export async function withdrawMachineLogin(
   );
 }
 
+/** The providers a machine holds a login for (`GET /controllers/{id}/provider-logins`), never the logins. */
+export async function fetchMachineLoginProviders(
+  server: SwitchServer,
+  controllerId: string
+): Promise<string[]> {
+  const res = await managementFetch(
+    server,
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins`,
+    { authenticated: true }
+  );
+  const listed = (await res.json()) as unknown;
+  if (!Array.isArray(listed)) return [];
+  return listed.flatMap((login) =>
+    login &&
+    typeof login === 'object' &&
+    typeof (login as { provider?: unknown }).provider === 'string'
+      ? [(login as { provider: string }).provider]
+      : []
+  );
+}
+
 /** One of a machine's operations as its owner sees it, by id; null when the server lists none by it. */
 export async function fetchMachineOperation(
   server: SwitchServer,
