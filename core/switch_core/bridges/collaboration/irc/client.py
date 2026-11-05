@@ -119,6 +119,11 @@ class IrcClient:
         """Whether the client currently has a writer for the IRC server."""
         return self._writer is not None
 
+    def force_reconnect(self) -> None:
+        """Close a live socket so the connection loop can establish a fresh one."""
+        if self._writer is not None:
+            self._writer.close()
+
     async def start(self) -> None:
         self._ready = asyncio.get_running_loop().create_future()
         self._ready.add_done_callback(_observe_failure)

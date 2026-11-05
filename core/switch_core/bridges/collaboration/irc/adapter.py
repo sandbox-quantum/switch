@@ -8,7 +8,7 @@ import os
 import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
-from typing import ClassVar
+from typing import ClassVar, cast
 from uuid import uuid4
 
 from switch_core.bridges.collaboration.adapter import (
@@ -72,6 +72,7 @@ class IrcAdapter(PlatformAdapter):
         self._relay_worker: asyncio.Task[None] | None = None
         self._creating: set[str] = set()
         self._unusable_channels: set[str] = set()
+        self._channel_types: dict[str, ChannelType] = {}
         self._rendered_states: OrderedDict[str, str] = OrderedDict()
 
     @classmethod
@@ -163,6 +164,9 @@ class IrcAdapter(PlatformAdapter):
         client = self.client
         assert client is not None
         if isinstance(event, ChannelTypeChanged):
+            self._channel_types[event.channel] = (
+                "channel_private" if event.private else "channel_public"
+            )
             if self._on_channel_type_learned:
                 await self._on_channel_type_learned(
                     event.channel,
@@ -360,10 +364,14 @@ class IrcAdapter(PlatformAdapter):
             request = await self._relay_queue.get()
             try:
                 await self._relayed(request)
-            except BridgeOperationError:
-                if self.client is None or not self.client.connected:
+            except BridgeOperationError as error:
+                client = self.client
+                uncertain = "delivery is uncertain" in str(error).lower()
+                if client is None or not client.connected or uncertain:
                     # Keep transient transport failures in the holder's queue.
                     # The next reconnect can finish the same request in order.
+                    if client is not None and client.connected:
+                        client.force_reconnect()
                     await self._relay_queue.put(dict(request))
                     await asyncio.sleep(RELAY_RETRY_SECONDS)
                 else:
@@ -403,7 +411,9 @@ class IrcAdapter(PlatformAdapter):
         if not is_channel(channel_id):
             raise ChannelNotBindable("Enter an IRC channel name beginning with # or &")
         if self.client is None:
-            return "channel_private"
+            return self._channel_types.get(
+                self.canonical(channel_id), "channel_private"
+            )
         return (
             "channel_private" if self.client.private(channel_id) else "channel_public"
         )
@@ -419,6 +429,7 @@ class IrcAdapter(PlatformAdapter):
     ) -> None:
         for channel, channel_type in channels:
             if is_channel(channel):
+                self._channel_types[self.canonical(channel)] = cast(ChannelType, channel_type)
                 if self.client:
                     await self.client.join(channel)
                     if channel_type == "channel_private":

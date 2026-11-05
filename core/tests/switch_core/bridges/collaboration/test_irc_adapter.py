@@ -173,6 +173,17 @@ async def test_quiet_pod_relays_create_and_send_in_order(wire):
         await holder.stop()
 
 
+async def test_quiet_pod_uses_saved_channel_type(wire):
+    quiet, _ = await start_adapter(wire, listening=False, channels="")
+    relayed = []
+    quiet.set_holder_relay(relayed.append)
+    try:
+        await quiet.ensure_channel_subscriptions([("#room", "channel_public")])
+        assert await quiet.get_channel_type("#room") == "channel_public"
+    finally:
+        await quiet.stop()
+
+
 async def test_registration_saves_server_case_mapping_for_quiet_pods(wire):
     wire.mapping = "rfc1459"
     config = {"server": "127.0.0.1", "port": wire.port, "tls": False, "nick": "switch"}
