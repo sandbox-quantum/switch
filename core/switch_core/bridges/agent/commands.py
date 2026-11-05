@@ -526,10 +526,15 @@ async def _manages_room(
     room_id: str,
     sender: str,
     command: str,
+    *,
+    resolver: AddressingResolver | None = None,
 ) -> bool:
     """Whether the Switch user behind `sender` owns the room or administers
-    the tenant. `command` names the chat command in the admin audit record."""
-    principal = await client._addressing.resolve_sender(session, sender)
+    the tenant. `command` names the chat command in the admin audit record.
+    `resolver` resolves the sender; an agent's own recipient has one, and the
+    Switch app's command consumer passes `_command_resolver(host)`."""
+    resolve = resolver if resolver is not None else client._addressing
+    principal = await resolve.resolve_sender(session, sender)
     if principal is None or principal.kind != "user":
         return False
     room = await session.get(Room, room_id)
@@ -1032,8 +1037,14 @@ async def _auto_route_fallback(
         if len(args) > 1:
             await _reply(client, room, event, _AUTO_ROUTE_USAGE)
             return
+        host = cast("CommandConsumer", client)
         if not await _manages_room(
-            client, session, room_id, event.user_id, "auto-route fallback"
+            client,
+            session,
+            room_id,
+            event.user_id,
+            "auto-route fallback",
+            resolver=_command_resolver(host),
         ):
             await _reply(client, room, event, _AUTO_ROUTE_FALLBACK_REFUSED)
             return
@@ -1475,6 +1486,19 @@ async def _cmd_remove_agent(
     await _reply(client, room, event, f"Removed **{_label(target)}** from this room.")
 
 
+def _command_resolver(host: CommandConsumer) -> AddressingResolver:
+    """Who sent a command, for the Switch app's command consumer, which has
+    no addressing resolver of its own (an agent's recipient does)."""
+    return AddressingResolver(
+        room_store=host._room_store,
+        room_role_store=host._room_role_store,
+        client_store=host.client_store,
+        agent_store=host._agent_store,
+        external_user_store=host._external_user_store,
+        live_connection_ids=host._connections.live_connection_ids,
+    )
+
+
 async def _may_remove_agent(
     host: CommandConsumer,
     session: AsyncSession,
@@ -1487,14 +1511,7 @@ async def _may_remove_agent(
     Anyone the agent would take instructions from may; so may a workspace
     admin, and an agent that manages agents for the target's owner.
     """
-    resolver = AddressingResolver(
-        room_store=host._room_store,
-        room_role_store=host._room_role_store,
-        client_store=host.client_store,
-        agent_store=host._agent_store,
-        external_user_store=host._external_user_store,
-        live_connection_ids=host._connections.live_connection_ids,
-    )
+    resolver = _command_resolver(host)
     decision = await resolver.permitted(
         session, agent=target, room_id=room_id, sender=event.user_id
     )
