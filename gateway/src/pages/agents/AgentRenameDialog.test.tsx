@@ -27,6 +27,7 @@ vi.mock("../../data/api", async (importOriginal) => {
 
 // The page's other sections fetch on their own; they are not under test here.
 vi.mock("./AddressingPolicySection", () => ({ default: () => null }));
+vi.mock("../files/useCloudFiles", () => ({ useCloudFilesBox: () => null }));
 vi.mock("./AgentManagementSection", () => ({ default: () => null }));
 vi.mock("./ServiceAccessSection", () => ({ default: () => null }));
 

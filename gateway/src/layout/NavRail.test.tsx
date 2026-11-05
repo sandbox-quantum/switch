@@ -11,6 +11,8 @@ vi.mock("../data/hooks", () => ({
   useHostedV2: () => hostedV2.value,
 }));
 vi.mock("../data/management", () => ({ fetchManagementAvailable: async () => false }));
+const cloudFiles = vi.hoisted(() => ({ value: false as boolean | null }));
+vi.mock("../pages/files/useCloudFiles", () => ({ useCloudFilesShown: () => cloudFiles.value }));
 
 function renderAs(flags: { isOperator: boolean; isHostedOperator: boolean }) {
   vi.mocked(useAuth).mockReturnValue({
@@ -59,5 +61,27 @@ describe("the nav rail's Hosted entry", () => {
     hostedV2.value = null;
     renderAs({ isOperator: false, isHostedOperator: true });
     expect(screen.queryByRole("link", { name: /Hosted/ })).toBeNull();
+  });
+});
+
+describe("the nav rail's Your cloud files entry", () => {
+  afterEach(() => {
+    cleanup();
+    cloudFiles.value = false;
+  });
+
+  it("shows where Your cloud files shows", () => {
+    cloudFiles.value = true;
+    renderAs({ isOperator: false, isHostedOperator: false });
+    expect(screen.getByRole("link", { name: /Your cloud files/ }).getAttribute("href")).toBe("/files");
+  });
+
+  it("doesn't show where it doesn't, or while it's still being found out", () => {
+    for (const value of [false, null]) {
+      cloudFiles.value = value;
+      renderAs({ isOperator: false, isHostedOperator: false });
+      expect(screen.queryByRole("link", { name: /Your cloud files/ })).toBeNull();
+      cleanup();
+    }
   });
 });
