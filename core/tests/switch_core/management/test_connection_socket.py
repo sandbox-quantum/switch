@@ -336,6 +336,8 @@ async def test_an_answer_goes_out_before_the_frames_waiting() -> None:
         "agent.event",
     ]
     assert await outbox.get(timeout=0.01) is None
+
+
 async def test_a_decision_request_goes_out_before_answers_and_frames() -> None:
     outbox = controller_routes._Outbox(2)
     await outbox.put_frame({"event": "agent.event", "data": {"n": 1}})
