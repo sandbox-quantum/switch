@@ -169,13 +169,22 @@ class RealtimeConnection:
                 self._failure = exc
                 self._ready.set()
                 return
-            except (OSError, ConnectionClosed, TimeoutError, ValueError) as exc:
+            except (OSError, ConnectionClosed, TimeoutError) as exc:
                 logger.warning(
                     "Rocket.Chat realtime connection dropped (%s); trying again in "
                     "%.0fs",
                     exc,
                     delay,
                 )
+            except Exception as exc:
+                # Nothing a retry can mend on a first connection, such as an
+                # address the outbound policy refuses, so it goes to whoever
+                # started this. Later on, nobody is waiting to be told.
+                if not self._ready.is_set():
+                    self._failure = exc
+                    self._ready.set()
+                    return
+                logger.exception("Rocket.Chat realtime connection failed")
             # Waiting for the server to come back is what a first connection
             # does as well, so `start` is released rather than held up by it.
             self._ready.set()
@@ -227,7 +236,7 @@ class RealtimeConnection:
                 socket, lambda f: f.get("msg") in {"ready", "nosub"}
             )
             if frame.get("msg") == "nosub":
-                raise ValueError(f"the server refused a subscription: {frame}")
+                raise ConnectionError(f"the server refused a subscription: {frame}")
             waiting -= set(frame.get("subs") or [])
 
     async def _expect(

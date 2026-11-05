@@ -12,6 +12,10 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import ServerConnection, serve
 
 from switch_core.bridges.collaboration.rocketchat import realtime
+from switch_core.bridges.collaboration.rocketchat.adapter import (
+    RocketChatAdapter,
+    RocketChatConnectionConfig,
+)
 from switch_core.bridges.collaboration.rocketchat.realtime import (
     RealtimeConnection,
     RealtimeEvent,
@@ -21,6 +25,7 @@ from switch_core.bridges.collaboration.rocketchat.realtime import (
     parse_event,
     websocket_url,
 )
+from switch_core.outbound import OutboundPolicy, OutboundURLRefused
 
 BOT = "bot-id"
 TOKEN = "good-token"
@@ -325,3 +330,56 @@ class TestConnection:
                 await listener.wait()
         await connection.stop()
         assert attempts == 2
+
+    async def test_a_failure_nothing_can_mend_is_raised_from_start(
+        self, ddp: tuple[Ddp, str]
+    ) -> None:
+        _, url = ddp
+
+        async def refused(_: str) -> ClientConnection:
+            raise OutboundURLRefused("that address is not allowed")
+
+        listener = Listener()
+        connection = RealtimeConnection(
+            url=url,
+            token=TOKEN,
+            bot_id=BOT,
+            on_event=listener.on_event,
+            on_connected=listener.on_connected,
+            dial=refused,
+        )
+        async with asyncio.timeout(3):
+            with pytest.raises(OutboundURLRefused):
+                await connection.start()
+
+
+class TestDialling:
+    def _adapter(self, url: str, policy: str) -> RocketChatAdapter:
+        adapter = RocketChatAdapter(
+            config=RocketChatConnectionConfig.model_validate(
+                {"server_url": url, "user_id": BOT, "access_token": TOKEN}
+            )
+        )
+        adapter.set_outbound_policy(OutboundPolicy.parse(policy))
+        return adapter
+
+    async def test_every_address_of_a_name_is_tried(
+        self, ddp: tuple[Ddp, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, url = ddp
+        port = url.rsplit(":", 1)[1].split("/")[0]
+        policy = OutboundPolicy.parse("localhost")
+        adapter = self._adapter(f"http://localhost:{port}", "localhost")
+
+        async def both_stacks(_: OutboundPolicy, host: str, port: int) -> list[str]:
+            return ["::1", "127.0.0.1"]
+
+        monkeypatch.setattr(OutboundPolicy, "resolve", both_stacks)
+        adapter.set_outbound_policy(policy)
+        socket = await adapter._dial(f"ws://localhost:{port}/websocket")
+        await socket.close()
+
+    async def test_an_address_the_policy_refuses_is_not_dialled(self) -> None:
+        adapter = self._adapter("http://127.0.0.1:1", "")
+        with pytest.raises(OutboundURLRefused):
+            await adapter._dial("ws://127.0.0.1:1/websocket")

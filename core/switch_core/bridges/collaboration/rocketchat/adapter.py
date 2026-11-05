@@ -329,16 +329,23 @@ class RocketChatAdapter(PlatformAdapter):
         host = parts.hostname or ""
         port = parts.port or (443 if secure else 80)
         addresses = await self.outbound_policy.resolve(host, port)
-        return await connect(
-            url,
-            host=addresses[0],
-            port=port,
-            ssl=ssl.create_default_context() if secure else None,
-            server_hostname=host if secure else None,
-            ping_interval=None,
-            max_size=2**24,
-            proxy=None,
-        )
+        failure: OSError | None = None
+        for address in addresses:
+            try:
+                return await connect(
+                    url,
+                    host=address,
+                    port=port,
+                    ssl=ssl.create_default_context() if secure else None,
+                    server_hostname=host if secure else None,
+                    ping_interval=None,
+                    max_size=2**24,
+                    proxy=None,
+                )
+            except OSError as exc:
+                failure = exc
+        assert failure is not None
+        raise failure
 
     async def stop(self) -> None:
         if self._realtime is not None:
