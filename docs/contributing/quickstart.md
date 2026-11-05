@@ -29,8 +29,13 @@ Install these first. The versions are the ones the repository pins.
 | Node.js | 24.14.0 | `console/.nvmrc` |
 | pnpm | 10.28.2 | `packageManager` in `console/package.json` |
 
-You do not need to install Python yourself — uv fetches a matching interpreter
-when it creates the environment.
+You do not need to install Python yourself — uv uses a suitable interpreter if
+your machine has one and fetches a matching one if it does not.
+
+Install `just` before you start, and check it with `just --version`. Nothing
+below warns you about it in order: `uv sync --project core` is not a `just`
+recipe, so it succeeds, and you only find out at `just gateway-install`, which
+stops with `bash: just: command not found`.
 
 Node 24.14.0 covers both frontends: Switch Console needs it, and the gateway
 accepts it (`engines` in `gateway/package.json`). Switch Console uses pnpm; the
@@ -119,9 +124,24 @@ Which address is which:
 | `http://localhost:5173` | The operator dashboard. Open this in a browser. | `just gateway-dev` |
 | `http://localhost:8000` | switch-core: the Agent Bridge API, the MCP server, and the gateway management API under `/gateway/*`. JSON, not a UI. | `just run` |
 | `http://localhost:8065` | Mattermost, seeded as the local messaging app. | `just up` |
+| `127.0.0.1:8081` | Not a page: where the Mattermost bridge takes callbacks. Nothing else may hold this port. | `just run` |
 
 Going to `http://localhost:8000` in a browser expecting a dashboard gets you
 raw JSON. That is a development default, not how a deployed server works.
+
+**Port 8081 has to be free**, and nothing tells you so until the bridge dies.
+If something else on your machine already has it, `just run` still starts and
+answers on `:8000`, but the bridge crashes behind it:
+
+```
+OSError: [Errno 48] error while attempting to bind on address ('0.0.0.0', 8081)
+```
+
+and agents never see anything you type in Mattermost. Either free the port, or
+put `COLLABORATION_CALLBACK_PORT=8091` in your `.env` and restart `just run`.
+Moving it costs you the buttons on approval cards — the address Mattermost
+calls back on is fixed at `8081` in `deploy/local/docker-compose.yml` — but
+mentions and replies, which is what this page needs, work either way.
 
 ## 4. Build and run Switch Console
 
@@ -138,11 +158,25 @@ pnpm run dev
 builds and the Electron app together. The first run takes a while; later ones
 do not.
 
-When the app opens, add a server, choose **Connect to an existing server**, and
-enter `http://localhost:8000` — switch-core's address, not the dashboard's. If
-you paste `http://localhost:5173` by mistake, Console refuses it when you save,
+Run it from a terminal you are sitting at, not through `nohup` or a detached
+shell. On macOS, Console stores your session in the system keychain, and a
+process the window server does not own cannot create that keychain item or
+raise the dialog that asks you to allow it.
+
+The first screen asks **How do you want to run Switch?**, with **On this
+computer** already selected. Do not take it: that installs a second server and
+leaves the one you just started with `just up` and `just run` unused. Choose
+**Join an existing server**, select **Continue**, and enter
+`http://localhost:8000` — switch-core's address, not the dashboard's. If you
+paste `http://localhost:5173` by mistake, Console refuses it when you save,
 because that address answers with a web page rather than the API. Sign in with
 the same gateway admin login you used in step 3.
+
+If the sign-in button appears to do nothing, look for a macOS keychain prompt
+behind the window and allow it. Console signs you in and then stores the
+session, so the server accepts the login (`POST /gateway/auth/login` returns
+200 in `just run`'s log) while the app shows you nothing. The failure is
+`Secure secret storage is unavailable on this system.`
 
 ## 5. Create an agent and a room, and get a reply
 
