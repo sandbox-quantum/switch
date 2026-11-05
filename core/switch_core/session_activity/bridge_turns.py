@@ -107,6 +107,11 @@ def status_state(
     counts, so a queued turn's message stops offering to stop a turn that
     has ended. So does the platform having closed the message on its own,
     since closing it changed what it shows.
+
+    What the person said counts through its revision alone. The words are
+    never drawn, but a queued turn whose message was corrected says so in its
+    state line, and a revision that did not count here would leave that line
+    waiting for some other change to carry it out.
     """
     clock = (
         str(int(elapsed_seconds // RUNNING_CLOCK_SECONDS))
@@ -118,5 +123,12 @@ def status_state(
         for item in view.items
         if item.kind == "tool-activity"
     )
+    asked = ",".join(
+        f"{item.item_id}:{item.revision}"
+        for item in view.items
+        if item.kind == "user-message"
+    )
     closed = ":closed" if closed_by_platform else ""
-    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"
+    return (
+        f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}/{asked}{closed}"
+    )

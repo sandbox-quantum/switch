@@ -38,6 +38,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
     PrivateNoticeDelivery,
@@ -656,6 +657,12 @@ class PlatformAdapter(ABC):
         # `keeps_quiet_unless_listening`. Set by the lifecycle before `start`.
         self._listening = True
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
+        # Set by set_message_edit_handler. Called when someone corrects a post
+        # this bridge already relayed. Left unset on a platform that does not
+        # report edits, which is every one but Slack today.
+        self._on_message_edit: (
+            Callable[[InboundMessageEdit], Awaitable[None]] | None
+        ) = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
         self._on_agent_joined: Callable[[InboundAgentJoin], Awaitable[None]] | None = (
             None
@@ -2012,6 +2019,16 @@ class PlatformAdapter(ABC):
         platforms with interactive message controls ever call it, and an adapter
         that never does needs no change to go on working."""
         self._on_interaction = handler
+
+    def set_message_edit_handler(
+        self, handler: Callable[[InboundMessageEdit], Awaitable[None]]
+    ) -> None:
+        """Install the callback for a post this bridge relayed being corrected.
+
+        A setter rather than another argument to `start` because only the
+        platforms that report edits ever call it, and an adapter that never
+        does needs no change to go on working."""
+        self._on_message_edit = handler
 
     def set_activity_resolver(
         self, resolver: Callable[[str, str], Awaitable[ActivitySnapshot | None]]

@@ -890,10 +890,37 @@ export class HostedSession {
       .at(-1);
     if (!original || original.body.type !== 'message.send')
       throw new Error('NOT_FOUND: this session has no turn for that message to run again.');
-    const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
+    const snapshot = this.snapshot();
+    const turn = snapshot.turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    // The item, not the command, is the record of what the turn was asked:
+    // a correction to a message still queued replaces it there, and running
+    // the command again would otherwise run words the room has corrected.
+    const asked = snapshot.items.find((each) => each.itemId === `user-${original.commandId}`);
+    return {
+      ...command,
+      origin: original.origin,
+      body: { ...original.body, text: asked ? asked.text : original.body.text },
+    };
+  }
+
+  /**
+   * Where in the queue the turn a revise names is still waiting.
+   *
+   * Asked twice — once as the command is accepted, once as it is applied —
+   * because `runNext` shifts the queue synchronously while the accept is
+   * away at its journal. A turn that started in between is refused here
+   * rather than revised after the provider has been handed its text.
+   */
+  private revisable(turnId: string): number {
+    if (turnId === this.activeTurn || this.dispatched.has(turnId))
+      throw new Error('TURN_ALREADY_STARTED: the agent already has that message.');
+    const index = this.queue.findIndex(
+      (queued) => queued.commandId === turnId && queued.body.type === 'message.send'
+    );
+    if (index < 0) throw new Error('NOT_FOUND: no queued turn for that message.');
+    return index;
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
@@ -936,6 +963,7 @@ export class HostedSession {
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
+      body.type !== 'turn.revise' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
       body.type !== 'session.compact' &&
@@ -943,6 +971,7 @@ export class HostedSession {
       body.type !== 'request.answer'
     )
       throw new Error('UNSUPPORTED_CAPABILITY');
+    if (body.type === 'turn.revise') this.revisable(body.turnId);
     if (
       body.type === 'session.reset' ||
       body.type === 'session.model.set' ||
@@ -1135,6 +1164,22 @@ export class HostedSession {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
         await this.adapter.interruptTurn(session.sessionId);
+      } else if (body.type === 'turn.revise') {
+        const index = this.revisable(body.turnId);
+        const queued = this.queue[index];
+        if (queued.body.type !== 'message.send')
+          throw new Error('NOT_FOUND: no queued turn for that message.');
+        // A new command rather than a write through the queued one: that
+        // object is the accepted command, and what it was accepted as is what
+        // a replay of it is held to.
+        this.queue[index] = { ...queued, body: { ...queued.body, text: body.text } };
+        const itemId = `user-${body.turnId}`;
+        const item = this.snapshot().items.find((each) => each.itemId === itemId);
+        if (!item) throw new Error(`NOT_FOUND: ${itemId} was never published.`);
+        await this.publish({
+          type: 'item.upsert',
+          item: { ...item, revision: item.revision + 1, text: body.text },
+        });
       } else if (body.type === 'session.stop') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);

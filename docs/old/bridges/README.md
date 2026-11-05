@@ -97,6 +97,14 @@ form lists the live set and the fields each one requires.
   on Telegram because `/` is the platform's own convention, and on Teams
   because a manifest command list only *types* the command into the compose box
   for the bot to parse.
+- **Correcting a message.** Editing a message you have already sent reaches the
+  agent **on Slack only**. If the agent has not started that message yet, the
+  correction replaces the words it will run — same turn, same place in the
+  queue — and it says so: *"Updated that message — I hadn't started it yet."*
+  If it has already started, the turn is left exactly as it is and you are told
+  that instead; send a new message, or `!interrupt @agent`. Mattermost,
+  Discord, Teams and Telegram do not report edits to Switch at all, so there an
+  edit changes nothing and the agent acts on the message as first sent.
 - **"Open in Switch Console" links.** Agents surface a `switchdash://…` deeplink with
   their runtime status. Platforms that only render `http(s)` links (Discord,
   Telegram and Teams) need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to

@@ -8,7 +8,11 @@ import pytest
 from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.collaboration_core import _no_agents_notice
-from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
+from switch_core.bridges.collaboration.models import (
+    InboundCommand,
+    InboundMessage,
+    InboundMessageEdit,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -358,6 +362,165 @@ def test_message_changed_subtype_is_skipped() -> None:
     _run(adapter._handle_message_event(event))
 
     assert captured == []
+
+
+def _capture_edits(adapter: SlackAdapter) -> list[InboundMessageEdit]:
+    captured: list[InboundMessageEdit] = []
+
+    async def on_edit(edit: InboundMessageEdit) -> None:
+        captured.append(edit)
+
+    adapter._on_message_edit = on_edit
+    adapter._channel_name_cache["C123"] = "general"
+    return captured
+
+
+def _changed(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "channel": "C123",
+        "ts": "500.5",
+        "channel_type": "channel",
+        "subtype": "message_changed",
+        "message": message,
+    }
+
+
+def test_a_corrected_post_reaches_the_edit_path_and_not_the_post_path() -> None:
+    adapter = _adapter()
+    posts = _capture_messages(adapter)
+    edits = _capture_edits(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            _changed(
+                {
+                    "type": "message",
+                    "user": "U1",
+                    "text": "deploy to staging",
+                    "ts": "400.4",
+                    "thread_ts": "100.1",
+                    "edited": {"user": "U1", "ts": "500.5"},
+                }
+            )
+        )
+    )
+
+    assert posts == []
+    assert len(edits) == 1
+    assert edits[0].message_ref == "C123:400.4"
+    assert edits[0].root_id == "C123:100.1"
+    assert edits[0].revision == "500.5"
+    assert edits[0].content == "deploy to staging"
+    assert edits[0].sender_id == "U1"
+
+
+def test_each_correction_of_one_post_carries_its_own_revision() -> None:
+    adapter = _adapter()
+    edits = _capture_edits(adapter)
+
+    for at in ("500.5", "600.6"):
+        _run(
+            adapter._handle_message_event(
+                {
+                    **_changed(
+                        {
+                            "type": "message",
+                            "user": "U1",
+                            "text": f"attempt {at}",
+                            "ts": "400.4",
+                            "edited": {"user": "U1", "ts": at},
+                        }
+                    ),
+                    "ts": at,
+                }
+            )
+        )
+
+    assert [edit.revision for edit in edits] == ["500.5", "600.6"]
+
+
+def test_a_message_changed_that_is_not_an_edit_is_still_ignored() -> None:
+    """Slack reports a link unfurling, and a file finishing its upload, under
+    the same subtype. Neither changed a word of what was said, and only an
+    edit carries `edited`."""
+    adapter = _adapter()
+    posts = _capture_messages(adapter)
+    edits = _capture_edits(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            _changed(
+                {
+                    "type": "message",
+                    "user": "U1",
+                    "text": "see https://example.com",
+                    "ts": "400.4",
+                    "attachments": [{"title": "Example"}],
+                }
+            )
+        )
+    )
+
+    assert posts == []
+    assert edits == []
+
+
+def test_a_third_party_app_correcting_its_own_post_is_named_as_the_post_was() -> None:
+    """An app's post is keyed on its bot_id and named from its profile. Its
+    correction has to resolve to the same sender, or it would be refused as
+    somebody else rewriting the post."""
+    adapter = _adapter()
+    adapter._bot_user_id = "UBOT"
+    adapter._bot_id = "BSELF"
+    edits = _capture_edits(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            _changed(
+                {
+                    "type": "message",
+                    "bot_id": "BDOG",
+                    "bot_profile": {"name": "Datadog"},
+                    "text": "resolved",
+                    "ts": "400.4",
+                    "edited": {"user": "BDOG", "ts": "500.5"},
+                }
+            )
+        )
+    )
+
+    assert [(e.sender_id, e.sender_name, e.content) for e in edits] == [
+        ("BDOG", "Datadog", "resolved")
+    ]
+
+
+def test_the_bridges_own_card_edits_are_not_corrections() -> None:
+    """Every redraw of an activity card is a `message_changed` whose identity
+    is on the inner message, not on the envelope the post path checks."""
+    adapter = _adapter()
+    adapter._bot_user_id = "UBOT"
+    adapter._bot_id = "BSELF"
+    edits = _capture_edits(adapter)
+
+    for own in (
+        {"user": "UBOT", "bot_id": "BSELF"},
+        {"bot_id": "BSELF"},
+    ):
+        _run(
+            adapter._handle_message_event(
+                _changed(
+                    {
+                        "type": "message",
+                        "text": "Working…",
+                        "ts": "400.4",
+                        "edited": {"user": "UBOT", "ts": "500.5"},
+                        **own,
+                    }
+                )
+            )
+        )
+
+    assert edits == []
 
 
 def test_third_party_bot_message_is_bridged() -> None:

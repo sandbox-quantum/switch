@@ -117,6 +117,39 @@ def test_rejects_raw_data_reasoning_items_unsafe_counters_and_oversized_events()
         )
 
 
+def test_reads_a_correction_to_a_queued_turn() -> None:
+    """The Python half of the TypeScript case of the same name. A bridge mints
+    one of these for a post somebody edited, so what this reader accepts and
+    what the host's reader accepts have to be the same thing."""
+
+    def revise(body: dict[str, Any]) -> dict[str, Any]:
+        return {**EXAMPLES["platformAnswer"], "body": body}
+
+    command = parse_command(
+        revise({"type": "turn.revise", "turnId": "turn-demo", "text": "Corrected"})
+    )
+    assert command.body.model_dump(by_alias=True) == {
+        "type": "turn.revise",
+        "turnId": "turn-demo",
+        "text": "Corrected",
+    }
+    # An empty correction is still a correction: someone cleared what they typed.
+    parse_command(revise({"type": "turn.revise", "turnId": "turn-demo", "text": ""}))
+    for body in (
+        {"type": "turn.revise", "turnId": "turn-demo"},
+        {"type": "turn.revise", "text": "Corrected"},
+        {
+            "type": "turn.revise",
+            "turnId": "turn-demo",
+            "text": "Corrected",
+            "attachments": [],
+        },
+        {"type": "turn.revise", "turnId": "turn-demo", "text": 7},
+    ):
+        with pytest.raises(ValueError):
+            parse_command(revise(body))
+
+
 def test_the_size_cap_counts_the_bytes_the_host_counted() -> None:
     """No TypeScript counterpart: it is Python's defaults that differ.
 
