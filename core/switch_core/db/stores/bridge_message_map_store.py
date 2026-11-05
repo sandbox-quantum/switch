@@ -41,6 +41,7 @@ class BridgeMessageMapStore:
                 },
                 where=(
                     BridgeMessageMap.external_post_id.is_(None)
+                    & BridgeMessageMap.outbound_uncertain.is_(False)
                     & (BridgeMessageMap.created_at < func.now() - unposted_after)
                 ),
             ).returning(BridgeMessageMap.id)
@@ -63,7 +64,11 @@ class BridgeMessageMapStore:
                 BridgeMessageMap.transport_event_id == transport_event_id,
                 BridgeMessageMap.external_post_id.is_(None),
             )
-            .values(external_post_id=external_post_id)
+            .values(
+                external_post_id=external_post_id,
+                outbound_attempts={},
+                outbound_uncertain=False,
+            )
         )
 
     async def release_claim(
@@ -75,8 +80,60 @@ class BridgeMessageMapStore:
                 BridgeMessageMap.bridge_id == bridge_id,
                 BridgeMessageMap.transport_event_id == transport_event_id,
                 BridgeMessageMap.external_post_id.is_(None),
+                BridgeMessageMap.outbound_uncertain.is_(False),
             )
         )
+        await session.flush()
+
+    async def get_outbound_attempts(
+        self, session: AsyncSession, bridge_id: str, transport_event_id: str
+    ) -> dict[str, dict[str, str]]:
+        result = await session.execute(
+            select(BridgeMessageMap.outbound_attempts).where(
+                BridgeMessageMap.bridge_id == bridge_id,
+                BridgeMessageMap.transport_event_id == transport_event_id,
+            )
+        )
+        attempts = result.scalar_one_or_none()
+        if not isinstance(attempts, dict):
+            return {}
+        return {
+            key: {"status": value["status"], "message_id": value["message_id"]}
+            for key, value in attempts.items()
+            if isinstance(key, str)
+            and isinstance(value, dict)
+            and value.get("status") in {"attempting", "sent"}
+            and isinstance(value.get("message_id"), str)
+        }
+
+    async def set_outbound_attempts(
+        self,
+        session: AsyncSession,
+        *,
+        bridge_id: str,
+        transport_event_id: str,
+        attempts: dict[str, dict[str, str]],
+        uncertain: bool,
+    ) -> None:
+        result = await session.execute(
+            update(BridgeMessageMap)
+            .where(
+                BridgeMessageMap.bridge_id == bridge_id,
+                BridgeMessageMap.transport_event_id == transport_event_id,
+                BridgeMessageMap.external_post_id.is_(None),
+            )
+            .values(
+                outbound_attempts=attempts,
+                outbound_uncertain=uncertain,
+                created_at=func.now(),
+            )
+            .returning(BridgeMessageMap.id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise ValueError(
+                "Outbound attempt has no active bridge message claim: "
+                f"{transport_event_id}"
+            )
 
     async def create(
         self, session: AsyncSession, mapping: BridgeMessageMap

@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    OutboundDeliveryUncertain,
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
 from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
@@ -264,6 +265,10 @@ class CollaborationCore:
         self._bridge_type = bridge_type
         self._bridge_display_name = bridge_display_name
         self._adapter = adapter
+        self._adapter.set_outbound_attempt_store(
+            self._load_outbound_attempts,
+            self._persist_outbound_attempts,
+        )
         self._room_store = room_store
         self._external_user_store = external_user_store
         self._bridge_message_map_store = bridge_message_map_store
@@ -2701,6 +2706,8 @@ class CollaborationCore:
                 admin_marker=admin_marker if is_system else None,
                 is_system=is_system,
             )
+        except OutboundDeliveryUncertain:
+            raise
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -2737,7 +2744,8 @@ class CollaborationCore:
                 and person.label not in body
             ):
                 body = f"On behalf of {person.label}:\n\n{body}"
-            return await self._adapter.admin_message(
+            return await self._adapter.admin_message_with_idempotency_key(
+                event.event_id,
                 channel_id,
                 body,
                 thread_root_ref,
@@ -2747,7 +2755,8 @@ class CollaborationCore:
         # Only the marker pages a channel. An `@channel` an agent wrote
         # itself is defused by `translate_outbound` like any other text.
         room_wide = is_room_wide_mention(event_content)
-        return await self._adapter.send_message(
+        return await self._adapter.send_message_with_idempotency_key(
+            event.event_id,
             channel_id,
             sender_name,
             (
@@ -2925,14 +2934,16 @@ class CollaborationCore:
                     )
                 note = f"_sent an attachment that couldn't be relayed: {filename}_"
                 body = f"{caption}\n{note}" if caption else note
-                message_ref = await self._adapter.send_message(
+                message_ref = await self._adapter.send_message_with_idempotency_key(
+                    event.event_id,
                     channel_id,
                     sender_name,
                     self._adapter.translate_outbound(body),
                     thread_root_id=thread_root_ref,
                 )
             else:
-                message_ref = await self._adapter.send_attachment(
+                message_ref = await self._adapter.send_attachment_with_idempotency_key(
+                    event.event_id,
                     channel_id,
                     sender_name,
                     filename,
@@ -2941,6 +2952,8 @@ class CollaborationCore:
                     caption=caption,
                     thread_root_id=thread_root_ref,
                 )
+        except OutboundDeliveryUncertain:
+            raise
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -3064,13 +3077,16 @@ class CollaborationCore:
         if not await self._claim_outbound(channel_id, claim_event_id):
             return
         try:
-            message_ref = await self._adapter.send_attachments(
+            message_ref = await self._adapter.send_attachments_with_idempotency_key(
+                claim_event_id,
                 channel_id,
                 sender_name,
                 [pending.parts[i] for i in sorted(pending.parts)],
                 caption=pending.caption,
                 thread_root_id=thread_root_ref,
             )
+        except OutboundDeliveryUncertain:
+            raise
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(claim_event_id))
             raise
@@ -3158,12 +3174,12 @@ class CollaborationCore:
         hand-over between processes from posting a message twice.
 
         A post that fails, or is cancelled because the bridge stopped before
-        it finished, lets its claim go, so whoever holds the bridge next posts
-        it; one the platform took just before the cancel then shows twice. A
-        process that dies between the claim and the post leaves the claim,
-        which the next holder claims again once it is
-        `_UNPOSTED_CLAIM_LAPSES_AFTER` old and posts the message, twice if the
-        platform had taken it before the death."""
+        it finished, normally lets its claim go. Adapters can retain an
+        uncertain claim when a platform may have accepted the post, preventing
+        an automatic retry. A process that dies between the claim and the post
+        leaves the claim, which the next holder claims again once it is
+        `_UNPOSTED_CLAIM_LAPSES_AFTER` old; an accepted post whose confirmation
+        was lost can therefore still appear twice."""
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -3200,6 +3216,34 @@ class CollaborationCore:
                 bridge_id=self._bridge_id,
                 transport_event_id=transport_event_id,
                 external_post_id=external_post_id,
+            )
+            await session.commit()
+
+    async def _load_outbound_attempts(
+        self, transport_event_id: str
+    ) -> dict[str, dict[str, str]]:
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            return await self._bridge_message_map_store.get_outbound_attempts(
+                session, self._bridge_id, transport_event_id
+            )
+
+    async def _persist_outbound_attempts(
+        self,
+        transport_event_id: str,
+        attempts: dict[str, dict[str, str]],
+        uncertain: bool,
+    ) -> None:
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            await self._bridge_message_map_store.set_outbound_attempts(
+                session,
+                bridge_id=self._bridge_id,
+                transport_event_id=transport_event_id,
+                attempts=attempts,
+                uncertain=uncertain,
             )
             await session.commit()
 

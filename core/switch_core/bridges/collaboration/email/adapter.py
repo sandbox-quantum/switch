@@ -9,6 +9,7 @@ import re
 import smtplib
 import ssl
 import threading
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from email.header import decode_header, make_header
@@ -26,7 +27,11 @@ from imapclient.exceptions import IMAPClientError, LoginError
 from pydantic import Field, field_validator
 from pydantic.json_schema import SkipJsonSchema
 
-from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
+from switch_core.bridges.collaboration.adapter import (
+    AgentIdentity,
+    OutboundAttachment,
+    PlatformAdapter,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -41,6 +46,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundMessage,
     InboundUserJoin,
+    OutboundDeliveryUncertain,
 )
 
 logger = logging.getLogger(__name__)
@@ -553,6 +559,90 @@ class EmailAdapter(PlatformAdapter):
         self._client: IMAPClient | None = None
         self._stopping = threading.Event()
         self._stop_signal = asyncio.Event()
+        self._outbound_lock = asyncio.Lock()
+
+    async def _send_email_with_idempotency_key(
+        self,
+        transport_event_id: str,
+        part_key: str,
+        channel_id: str,
+        sender_name: str,
+        content: str,
+        thread_root_id: str | None,
+        files: list[tuple[str, str, bytes]],
+        subject_override: str | None = None,
+    ) -> str:
+        async with self._outbound_lock:
+            attempts = await self.load_outbound_attempts(transport_event_id)
+            previous = attempts.get(part_key)
+            if previous is not None:
+                if previous["status"] == "sent":
+                    return previous["message_id"]
+                raise OutboundDeliveryUncertain(
+                    "This email's SMTP outcome is uncertain. Switch will not "
+                    "resend it automatically; check the recipient's mailbox "
+                    "before manually retrying."
+                )
+
+            message, _ = self._build_email(
+                channel_id,
+                sender_name,
+                content,
+                thread_root_id,
+                files,
+                subject_override,
+            )
+            message_id = str(message["Message-ID"])
+            client = await asyncio.to_thread(_smtp_connect, self._config)
+            attempts[part_key] = {
+                "status": "attempting",
+                "message_id": message_id,
+            }
+            try:
+                await self.persist_outbound_attempts(
+                    transport_event_id, attempts, uncertain=True
+                )
+            except Exception:
+                try:
+                    await asyncio.to_thread(client.quit)
+                except (smtplib.SMTPException, OSError):
+                    pass
+                raise
+
+            try:
+                refused = await asyncio.to_thread(client.send_message, message)
+                if refused:
+                    refused_recipients = ", ".join(sorted(refused))
+                    raise OutboundDeliveryUncertain(
+                        "SMTP accepted an uncertain subset of recipients and "
+                        f"refused: {refused_recipients}. Switch will not retry "
+                        "automatically; check delivery before manually retrying."
+                    )
+            except OutboundDeliveryUncertain:
+                raise
+            except Exception as exc:
+                raise OutboundDeliveryUncertain(
+                    "SMTP did not confirm whether it accepted this email. "
+                    "Switch will not resend it automatically; check the "
+                    "recipient's mailbox before manually retrying."
+                ) from exc
+            else:
+                attempts[part_key]["status"] = "sent"
+                try:
+                    await self.persist_outbound_attempts(
+                        transport_event_id, attempts, uncertain=False
+                    )
+                except Exception as exc:
+                    raise OutboundDeliveryUncertain(
+                        "SMTP accepted the email, but Switch could not persist "
+                        "that confirmation. It will not resend automatically."
+                    ) from exc
+                return message_id
+            finally:
+                try:
+                    await asyncio.to_thread(client.quit)
+                except (smtplib.SMTPException, OSError):
+                    pass
 
     @classmethod
     async def prepare_config(
@@ -848,6 +938,25 @@ class EmailAdapter(PlatformAdapter):
         *,
         room_wide_mention: bool = False,
     ) -> str | None:
+        return await self.send_message_with_idempotency_key(
+            uuid.uuid4().hex,
+            channel_id,
+            sender_name,
+            content,
+            thread_root_id,
+            room_wide_mention=room_wide_mention,
+        )
+
+    async def send_message_with_idempotency_key(
+        self,
+        idempotency_key: str,
+        channel_id: str,
+        sender_name: str,
+        content: str,
+        thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
+    ) -> str | None:
         chunks = _split_outbound_body(content)
         recipients, subject = self._outbound_audience(
             channel_id, thread_root_id, content, sender_name
@@ -857,8 +966,10 @@ class EmailAdapter(PlatformAdapter):
         for index, chunk in enumerate(chunks, start=1):
             if len(chunks) > 1:
                 chunk = f"Part {index} of {len(chunks)}\n\n{chunk}"
-            message_id = await asyncio.to_thread(
-                self._send_email,
+            part_key = f"message:{index}" if len(chunks) > 1 else "message"
+            message_id = await self._send_email_with_idempotency_key(
+                idempotency_key,
+                part_key,
                 channel_id,
                 sender_name,
                 chunk,
@@ -918,6 +1029,26 @@ class EmailAdapter(PlatformAdapter):
     ) -> str | None:
         return await self.send_message(channel_id, "Switch", content, thread_root_id)
 
+    async def admin_message_with_idempotency_key(
+        self,
+        idempotency_key: str,
+        channel_id: str,
+        content: str,
+        thread_root_id: str | None = None,
+        *,
+        message_type: str | None = None,
+        drawn: str | None = None,
+    ) -> str | None:
+        del message_type
+        rendered = self._admin_body(self.translate_outbound(content), drawn)
+        return await self.send_message_with_idempotency_key(
+            idempotency_key,
+            channel_id,
+            "Switch",
+            rendered,
+            thread_root_id,
+        )
+
     def _send_email(
         self,
         channel_id: str,
@@ -927,6 +1058,42 @@ class EmailAdapter(PlatformAdapter):
         files: list[tuple[str, str, bytes]],
         subject_override: str | None = None,
     ) -> str:
+        message, recipients = self._build_email(
+            channel_id,
+            sender_name,
+            content,
+            thread_root_id,
+            files,
+            subject_override,
+        )
+        client = _smtp_connect(self._config)
+        try:
+            refused = client.send_message(message)
+            if refused:
+                refused_recipients = ", ".join(sorted(refused))
+                raise BridgeOperationError(
+                    f"SMTP refused delivery to: {refused_recipients}."
+                )
+        except (smtplib.SMTPException, OSError) as exc:
+            raise BridgeOperationError(
+                f"SMTP could not send email to {', '.join(recipients)}: {exc}"
+            ) from exc
+        finally:
+            try:
+                client.quit()
+            except (smtplib.SMTPException, OSError):
+                pass
+        return str(message["Message-ID"])
+
+    def _build_email(
+        self,
+        channel_id: str,
+        sender_name: str,
+        content: str,
+        thread_root_id: str | None,
+        files: list[tuple[str, str, bytes]],
+        subject_override: str | None = None,
+    ) -> tuple[EmailMessage, list[str]]:
         recipients, subject = self._outbound_audience(
             channel_id, thread_root_id, content, sender_name
         )
@@ -953,24 +1120,7 @@ class EmailAdapter(PlatformAdapter):
                 subtype=subtype or "octet-stream",
                 filename=filename,
             )
-        client = _smtp_connect(self._config)
-        try:
-            refused = client.send_message(message)
-            if refused:
-                refused_recipients = ", ".join(sorted(refused))
-                raise BridgeOperationError(
-                    f"SMTP refused delivery to: {refused_recipients}."
-                )
-        except (smtplib.SMTPException, OSError) as exc:
-            raise BridgeOperationError(
-                f"SMTP could not send email to {', '.join(recipients)}: {exc}"
-            ) from exc
-        finally:
-            try:
-                client.quit()
-            except (smtplib.SMTPException, OSError):
-                pass
-        return message_id
+        return message, recipients
 
     async def send_attachment(
         self,
@@ -982,21 +1132,80 @@ class EmailAdapter(PlatformAdapter):
         caption: str | None = None,
         thread_root_id: str | None = None,
     ) -> str | None:
+        return await self.send_attachment_with_idempotency_key(
+            uuid.uuid4().hex,
+            channel_id,
+            sender_name,
+            filename,
+            mimetype,
+            data,
+            caption=caption,
+            thread_root_id=thread_root_id,
+        )
+
+    async def send_attachment_with_idempotency_key(
+        self,
+        idempotency_key: str,
+        channel_id: str,
+        sender_name: str,
+        filename: str,
+        mimetype: str,
+        data: bytes,
+        caption: str | None = None,
+        thread_root_id: str | None = None,
+        *,
+        part_key: str = "attachment",
+    ) -> str | None:
         if len(data) > min(self._max_attachment_bytes, _MAX_ATTACHMENT_BYTES):
             note = (
                 f"{sender_name} could not attach {filename}: email attachments are limited to "
                 f"{min(self._max_attachment_bytes, _MAX_ATTACHMENT_BYTES)} bytes."
             )
-            return await self.send_message(channel_id, "Switch", note, thread_root_id)
+            return await self._send_email_with_idempotency_key(
+                idempotency_key,
+                part_key,
+                channel_id,
+                "Switch",
+                note,
+                thread_root_id,
+                [],
+            )
         content = caption or f"{sender_name} shared {filename}"
-        return await asyncio.to_thread(
-            self._send_email,
+        return await self._send_email_with_idempotency_key(
+            idempotency_key,
+            part_key,
             channel_id,
             sender_name,
             content,
             thread_root_id,
             [(filename, mimetype, data)],
         )
+
+    async def send_attachments_with_idempotency_key(
+        self,
+        idempotency_key: str,
+        channel_id: str,
+        sender_name: str,
+        files: list[OutboundAttachment],
+        caption: str | None = None,
+        thread_root_id: str | None = None,
+    ) -> str | None:
+        first_message_id: str | None = None
+        for index, file in enumerate(files):
+            message_id = await self.send_attachment_with_idempotency_key(
+                idempotency_key,
+                channel_id,
+                sender_name,
+                file.filename,
+                file.mimetype,
+                file.data,
+                caption=caption if index == 0 else None,
+                thread_root_id=thread_root_id,
+                part_key=f"attachment:{index + 1}",
+            )
+            if first_message_id is None:
+                first_message_id = message_id
+        return first_message_id
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str

@@ -294,3 +294,12 @@ class BridgeOperationError(RuntimeError):
     A ``RuntimeError`` so that callers already distinguishing "the request was
     wrong" (``ValueError``) from "the attempt failed" keep working unchanged.
     """
+
+
+class OutboundDeliveryUncertain(BridgeOperationError):
+    """A platform may have accepted an outbound post, so it must not be retried.
+
+    The bridge keeps its durable claim rather than releasing it to the normal
+    retry path. An operator can inspect the platform and explicitly resend if
+    delivery did not happen.
+    """

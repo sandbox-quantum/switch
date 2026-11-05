@@ -167,3 +167,105 @@ class TestBridgeMessageMapStore:
         async with session_factory() as session:
             posted = await store.get_by_external_post_id(session, bridge_id, "post1")
         assert posted is not None and posted.external_channel_id == "chan-2"
+
+    async def test_an_uncertain_outbound_attempt_keeps_its_claim_after_timeout(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        unposted_after = timedelta(seconds=10)
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            assert await store.claim(
+                session,
+                bridge_id=bridge_id,
+                external_channel_id="email:mailbox",
+                transport_event_id="$email-event",
+                unposted_after=unposted_after,
+            )
+            attempts = {
+                "message": {
+                    "status": "attempting",
+                    "message_id": "<switch@example.test>",
+                }
+            }
+            await store.set_outbound_attempts(
+                session,
+                bridge_id=bridge_id,
+                transport_event_id="$email-event",
+                attempts=attempts,
+                uncertain=True,
+            )
+            await session.execute(
+                update(BridgeMessageMap)
+                .where(
+                    BridgeMessageMap.bridge_id == bridge_id,
+                    BridgeMessageMap.transport_event_id == "$email-event",
+                )
+                .values(created_at=func.now() - timedelta(seconds=30))
+            )
+            await session.commit()
+
+            assert not await store.claim(
+                session,
+                bridge_id=bridge_id,
+                external_channel_id="email:mailbox",
+                transport_event_id="$email-event",
+                unposted_after=unposted_after,
+            )
+            await store.release_claim(
+                session, bridge_id=bridge_id, transport_event_id="$email-event"
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            row = await store.get_by_transport_event_id(
+                session, bridge_id, "$email-event"
+            )
+            attempts = await store.get_outbound_attempts(
+                session, bridge_id, "$email-event"
+            )
+        assert row is not None and row.outbound_uncertain is True
+        assert attempts["message"]["status"] == "attempting"
+
+    async def test_filling_a_sent_email_mapping_clears_its_attempt_journal(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            assert await store.claim(
+                session,
+                bridge_id=bridge_id,
+                external_channel_id="email:mailbox",
+                transport_event_id="$email-event",
+                unposted_after=timedelta(seconds=10),
+            )
+            await store.set_outbound_attempts(
+                session,
+                bridge_id=bridge_id,
+                transport_event_id="$email-event",
+                attempts={
+                    "message": {
+                        "status": "sent",
+                        "message_id": "<switch@example.test>",
+                    }
+                },
+                uncertain=False,
+            )
+            await store.fill(
+                session,
+                bridge_id=bridge_id,
+                transport_event_id="$email-event",
+                external_post_id="<switch@example.test>",
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            row = await store.get_by_transport_event_id(
+                session, bridge_id, "$email-event"
+            )
+            attempts = await store.get_outbound_attempts(
+                session, bridge_id, "$email-event"
+            )
+        assert row is not None and row.outbound_uncertain is False
+        assert attempts == {}

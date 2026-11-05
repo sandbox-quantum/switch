@@ -2475,6 +2475,14 @@ class BridgeMessageMap(TenantScoped, Base):
     # answers, so a second process handling the same message finds the claim
     # and does not post it again (`CollaborationCore._claim_outbound`).
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outbound_attempts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        server_default=text("'{}'::jsonb"),
+        nullable=False,
+    )
+    outbound_uncertain: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

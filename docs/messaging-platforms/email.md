@@ -111,11 +111,16 @@ happens after the room write but before the keyword is set, transport event IDs
 deduplicate the retry without duplicating room messages or attachments.
 
 SMTP does not provide an idempotency key. If an SMTP server accepts an email
-but its response is lost before Switch records the sent message ID, a retry
-after a process failure can send a duplicate. Generic SMTP offers no safe way
-to distinguish that case from a message the server never accepted, so
-exactly-once outbound delivery cannot be guaranteed for every user-provided
-mail server.
+but its response is lost, generic SMTP offers no safe way to distinguish that
+case from a message the server never accepted. Before submission, Switch
+durably records the transport event and each email part. Confirmed parts are
+reused after a restart rather than sent again. If SMTP's outcome is uncertain,
+Switch holds the event and will not automatically retry it. Check the
+recipient's mailbox before manually posting the reply again as a new message;
+if SMTP had accepted it, a manual retry could still duplicate it. This
+fail-closed behavior avoids automatic duplicates but cannot guarantee that an
+ambiguously accepted message was delivered. Exactly-once outbound delivery
+cannot be guaranteed for every user-provided SMTP server.
 
 The mailbox and email thread identifiers are carried by the room and thread
 references rather than process-local maps, so replies continue to route after

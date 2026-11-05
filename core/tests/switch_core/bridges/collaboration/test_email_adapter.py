@@ -22,7 +22,10 @@ from switch_core.bridges.collaboration.email.adapter import (
     _thread_headers,
     _thread_ref,
 )
-from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
+from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
+    ChannelCreationUnsupported,
+)
 from switch_core.bridges.collaboration.platforms import PLATFORMS
 from switch_core.bridges.collaboration.session.text import parse_text_answer
 
@@ -687,6 +690,146 @@ def test_email_reply_uses_smtp_from_agent_and_sets_thread_headers(
     assert plain_part.get_content().strip() == "Here is the **answer**."
     html_part = message.get_body(preferencelist=("html",))
     assert "<strong>answer</strong>" in html_part.get_content()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_smtp_send_is_persisted_and_never_automatically_retried(
+    monkeypatch,
+) -> None:
+    submitted = []
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ehlo(self):
+            return None
+
+        def starttls(self, **kwargs):
+            return None
+
+        def login(self, username, password):
+            return None
+
+        def send_message(self, message):
+            submitted.append(message)
+            raise OSError("connection dropped after submission")
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.email.adapter.smtplib.SMTP", FakeSMTP
+    )
+
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.email.adapter.asyncio.to_thread",
+        run_inline,
+    )
+
+    persisted: dict[str, dict[str, dict[str, str]]] = {}
+    uncertain: dict[str, bool] = {}
+
+    async def load(event_id):
+        return persisted.get(event_id, {})
+
+    async def save(event_id, attempts, is_uncertain):
+        persisted[event_id] = attempts
+        uncertain[event_id] = is_uncertain
+
+    adapter = EmailAdapter(config=_config())
+    adapter.set_outbound_attempt_store(load, save)
+    key = "$transport-event-1"
+    args = (
+        key,
+        _channel_id("switch@example.test"),
+        "Avery",
+        "A reply that may already have reached SMTP.",
+        _thread_ref("<root@example.test>", "mina@example.test", "Project update"),
+    )
+
+    with pytest.raises(BridgeOperationError, match="will not resend it automatically"):
+        await adapter.send_message_with_idempotency_key(*args)
+
+    restarted = EmailAdapter(config=_config())
+    restarted.set_outbound_attempt_store(load, save)
+    with pytest.raises(BridgeOperationError, match="outcome is uncertain"):
+        await restarted.send_message_with_idempotency_key(*args)
+
+    assert len(submitted) == 1
+    assert persisted[key]["message"]["status"] == "attempting"
+    assert uncertain[key] is True
+
+
+@pytest.mark.asyncio
+async def test_confirmed_email_is_reused_after_restart_until_transport_settles_it(
+    monkeypatch,
+) -> None:
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ehlo(self):
+            return None
+
+        def starttls(self, **kwargs):
+            return None
+
+        def login(self, username, password):
+            return None
+
+        def send_message(self, message):
+            sent.append(message)
+            return {}
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.email.adapter.smtplib.SMTP", FakeSMTP
+    )
+
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.email.adapter.asyncio.to_thread",
+        run_inline,
+    )
+
+    persisted: dict[str, dict[str, dict[str, str]]] = {}
+    uncertain: dict[str, bool] = {}
+
+    async def load(event_id):
+        return persisted.get(event_id, {})
+
+    async def save(event_id, attempts, is_uncertain):
+        persisted[event_id] = attempts
+        uncertain[event_id] = is_uncertain
+
+    adapter = EmailAdapter(config=_config())
+    adapter.set_outbound_attempt_store(load, save)
+    args = (
+        "$transport-event-2",
+        _channel_id("switch@example.test"),
+        "Avery",
+        "A confirmed reply.",
+        _thread_ref("<root@example.test>", "mina@example.test", "Project update"),
+    )
+    message_id = await adapter.send_message_with_idempotency_key(*args)
+    assert message_id is not None
+    assert persisted[args[0]]["message"]["status"] == "sent"
+    assert uncertain[args[0]] is False
+
+    restarted = EmailAdapter(config=_config())
+    restarted.set_outbound_attempt_store(load, save)
+    assert await restarted.send_message_with_idempotency_key(*args) == message_id
+    assert len(sent) == 1
 
 
 @pytest.mark.asyncio
