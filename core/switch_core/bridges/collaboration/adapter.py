@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -646,6 +647,9 @@ class PlatformAdapter(ABC):
         self._on_interaction: Callable[[InboundInteraction], Awaitable[None]] | None = (
             None
         )
+        # Set by set_edit_handler. Called when someone edits a post on a
+        # platform that reports edits; left unset elsewhere.
+        self._on_edit: Callable[[InboundEdit], Awaitable[None]] | None = None
         # Set by set_activity_resolver. Asked what turn is being shown in the
         # message at (channel, reference), for a platform that offers a reader
         # the activity behind a status rather than printing it. None is the
@@ -1990,6 +1994,15 @@ class PlatformAdapter(ABC):
         platforms with interactive message controls ever call it, and an adapter
         that never does needs no change to go on working."""
         self._on_interaction = handler
+
+    def set_edit_handler(
+        self, handler: Callable[[InboundEdit], Awaitable[None]]
+    ) -> None:
+        """Install the callback for a post being edited on the platform.
+
+        A setter, like `set_interaction_handler`, because only the platforms
+        that report edits ever call it."""
+        self._on_edit = handler
 
     def set_activity_resolver(
         self, resolver: Callable[[str, str], Awaitable[ActivitySnapshot | None]]
