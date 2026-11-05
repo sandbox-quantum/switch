@@ -482,7 +482,7 @@ class WebexAdapter(PlatformAdapter):
             try:
                 recent = await self._client.recent_messages(
                     channel_id,
-                    mentioning_me=channel_type != "lobby",
+                    mentioning_me=channel_type != "direct",
                     limit=_CATCH_UP_MESSAGES,
                 )
             except (WebexAPIError, httpx.TransportError) as exc:
@@ -608,19 +608,18 @@ class WebexAdapter(PlatformAdapter):
                 root_id=root_id,
                 attachments=attachments,
                 attachment_failures=failures,
-                self_mention_token=self._self_mention(channel_type, content),
+                self_mention_token=self._self_mention(content),
             )
         )
 
-    def _self_mention(self, channel_type: ChannelType, content: str) -> str | None:
-        """The bot's handle, where the mention that delivered a message is all
-        that says who it is for.
+    def _self_mention(self, content: str) -> str | None:
+        """The bot's handle, where nothing else says who a message is for.
 
-        Nothing but the bot can be mentioned for real in Webex, and every group
-        message that arrives mentions it, so `@Bot why did this fail?` is how a
-        person addresses a room's agent. A message that also names an agent
-        says who it is for already; a 1:1 space needs no mention at all."""
-        if channel_type == "lobby" or _OUTBOUND_MENTION.search(content):
+        Nothing but the bot can be mentioned for real in Webex, and every
+        message that arrives was sent to it, so `@Bot why did this fail?` is
+        how a person addresses a room's agent. A message that also names an
+        agent says who it is for already."""
+        if _OUTBOUND_MENTION.search(content):
             return None
         return self._bot_handle or None
 
@@ -1348,8 +1347,8 @@ def _as_rich_failure(
 
 
 def _channel_type(room_type: object) -> ChannelType:
-    """A 1:1 space with the bot is the lobby; every group space is invite-only."""
-    return "lobby" if room_type == "direct" else "channel_private"
+    """A 1:1 space is a direct conversation; every group space is invite-only."""
+    return "direct" if room_type == "direct" else "channel_private"
 
 
 def _parse_command(text: str) -> tuple[str, str] | None:

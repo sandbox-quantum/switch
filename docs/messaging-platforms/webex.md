@@ -53,7 +53,8 @@ for this connection, and anything not signed with it is refused.
 
 In Webex, open a space and add the bot by its username (**People** → **Add
 people**). Switch creates a room for the space as soon as the bot joins. You
-can also message the bot directly; that 1:1 space is the bot's lobby.
+can also message the bot directly, and Switch creates a room for that 1:1 space
+in the same way. Bring an agent into either with `!invite-agent claude`.
 
 To talk to an agent in a group space, **mention the bot**. In a room with one
 agent, that's all it takes:

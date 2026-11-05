@@ -430,14 +430,16 @@ class TestInbound:
         assert message.message_ref == "msg-1"
         assert message.root_id == "root-1"
 
-    async def test_a_direct_space_is_the_lobby(self, webex: FakeWebex) -> None:
+    async def test_a_direct_space_is_a_direct_conversation(
+        self, webex: FakeWebex
+    ) -> None:
         adapter, received = await _started(webex)
         _serve_message(webex, _message(roomType="direct", text="hello"))
         await adapter.dispatch_event(
             envelope_type="messages:created",
             payload=_delivery("messages", "created", id="msg-1", personId="person-1"),
         )
-        assert received.messages[0].channel_type == "lobby"
+        assert received.messages[0].channel_type == "direct"
 
     async def test_the_bots_own_messages_are_ignored(self, webex: FakeWebex) -> None:
         adapter, received = await _started(webex)
@@ -508,14 +510,16 @@ class TestInbound:
         )
         assert received.messages[0].self_mention_token is None
 
-    async def test_a_direct_message_needs_no_mention(self, webex: FakeWebex) -> None:
+    async def test_a_direct_message_is_for_the_rooms_agent_too(
+        self, webex: FakeWebex
+    ) -> None:
         adapter, received = await _started(webex)
         _serve_message(webex, _message(roomType="direct", text="hello"))
         await adapter.dispatch_event(
             envelope_type="messages:created",
             payload={"data": {"id": "msg-1", "personId": "person-1"}},
         )
-        assert received.messages[0].self_mention_token is None
+        assert received.messages[0].self_mention_token == "switch-bot"
 
     async def test_a_file_is_relayed(self, webex: FakeWebex) -> None:
         adapter, received = await _started(webex)
