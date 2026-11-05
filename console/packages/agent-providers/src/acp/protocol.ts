@@ -24,6 +24,7 @@ export interface AcpInitializeResult {
   agentInfo?: { name?: string; version?: string };
   agentCapabilities?: AcpAgentCapabilities;
   authMethods?: Array<{ id?: string; name?: string }>;
+  meta?: Record<string, unknown>;
 }
 
 export interface AcpConfigChoice {
