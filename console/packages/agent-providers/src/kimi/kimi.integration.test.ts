@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { describeConformance, echoMcpServerSpec } from '../testing/index';
-import { createKimiAdapter } from './kimi-acp';
+import { checkKimiSignIn, createKimiAdapter } from './kimi-acp';
 
 // The harness hands the CLI a minimal environment, so pass through what Kimi
 // reads to find its home or to sign in without one.
@@ -21,7 +21,10 @@ describeConformance('kimi', {
     createKimiAdapter(process.env.KIMI_BIN ? { binaryPath: process.env.KIMI_BIN } : {}),
   unavailableReason: async () => {
     const probe = spawnSync('kimi', ['--version'], { encoding: 'utf8' });
-    return probe.error || probe.status !== 0 ? 'the kimi binary is not on PATH' : null;
+    if (probe.error || probe.status !== 0) return 'the kimi binary is not on PATH';
+    return (await checkKimiSignIn(env)).status === 'authenticated'
+      ? null
+      : 'Kimi Code is not signed in (run kimi login)';
   },
   mcpServers: { echo: echoMcpServerSpec() },
   ...(Object.keys(env).length > 0 ? { env } : {}),
