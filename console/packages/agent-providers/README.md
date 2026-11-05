@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These six providers are the only Console session runtime.
 
 ## Shape
 
@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `antigravity-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection through a `model` config option, MCP registration, approvals and questions. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `copilot` | `copilot --acp --stdio`, ACP over stdio, on the generic ACP adapter | Native sessions, model selection, MCP registration and Switch permission handling. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -67,11 +68,12 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| copilot (ACP) | 1.0.105 | 10 skipped: signed out (2026-11-04) | Live-model conformance needs GitHub credentials with Copilot access or a configured BYOK provider. Structured user input is unsupported by this integration. A separate protocol suite uses the real CLI with mocked local inference; it does not establish live-model conformance. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Copilot run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -108,3 +110,51 @@ call id starts with `interaction_`. Native session ids are stored with an
 `acp:` prefix; a conversation saved by the retired `agy` runtime starts fresh.
 Its sign-in check reads `authMethods` from the handshake and never calls
 `authenticate`, which would open a browser.
+
+**Copilot** uses the supported [ACP stdio launch mode](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server).
+Install with `npm install -g @github/copilot`, then run `copilot login` on
+the execution machine, or configure the CLI's BYOK environment. Console and
+headless hosts pass through the declared Copilot profile, token, GitHub host
+and BYOK variables. Readiness opens an empty ACP session, never calls
+`authenticate` or sends a prompt, and disposes the process. Copilot may keep
+an empty history entry. This checks session access, not inference quota.
+The CLI advertises `copilot-login` even when BYOK session access succeeds,
+so the handshake alone cannot determine readiness.
+
+Copilot 1.0.105 rejects ACP stdio MCP entries, so its conformance fixture uses
+HTTP, the same transport as Switch's room tools. MCP tool-start titles name
+the server (`server-tool`), while permission titles contain only the tool.
+The hook identifies an unambiguous registered server from the earlier event;
+the adapter remembers it for the permission request. Ambiguous or missing
+identities still ask, and connector servers retain their approval boundary.
+
+Model choices come from ACP session metadata and are applied through
+`session/set_config_option` or `session/set_model`. In the tested BYOK mode
+the CLI advertises no model catalogue; its configured
+`COPILOT_PROVIDER_MODEL_ID` / `COPILOT_PROVIDER_WIRE_MODEL` selects the model.
+GitHub account model selection still needs live account verification.
+
+Switch does not pass `--yolo` or select Copilot's autonomous workflow mode.
+It answers ACP permission requests according to the shared policy above.
+Although `--yolo` was reported ineffective in earlier ACP versions, the
+1.0.105 probe set `allow_all=on` and executed a temporary shell write without
+a permission request. With the provider's normal launch the same write
+waited for permission; denial prevented it. Full access approved it through
+Switch, while edit-only auto approval still required shell approval.
+
+To reproduce these checks without credentials:
+
+```bash
+pnpm exec vitest run src/copilot/copilot.protocol.integration.test.ts
+```
+
+This separate suite runs the installed Copilot CLI and its real shell tools
+against a deterministic local OpenAI-compatible inference server, with an
+isolated profile and offline mode. It covers readiness, approvals, tool
+activity, registered HTTP MCP calls and connector denial, configured wire model,
+auto approval, cancellation, queued turns,
+context recovery and permissions after restart, plus the native `--yolo`
+probe. It skips explicitly when the CLI is absent. The live-model suite is
+`src/copilot/copilot.integration.test.ts`; run it with real credentials
+before recording the Console creation, model choice and room interaction
+video required for a provider PR.

@@ -113,4 +113,35 @@ describe('a provider added as a plugin and a runtime', () => {
 
     expect(options).toContainEqual({ id: 'dummy', name: 'Dummy', ready: true, problem: null });
   });
+
+  it.each(['missing', 'available'] as const)(
+    'offers Copilot in Console with CLI status %s',
+    async (status) => {
+      mocks.probe.mockResolvedValue({ status });
+      expect(requireProvider('copilot')).toMatchObject({
+        id: 'copilot',
+        name: 'GitHub Copilot',
+        cliLabel: 'GitHub Copilot CLI',
+        loginCommand: 'copilot login',
+        knownAgentType: 'copilot',
+      });
+      const types = await listRemoteAgentTypeAvailability('example-host');
+      expect(types).toContainEqual(
+        status === 'available'
+          ? { agentId: 'copilot', available: true, blockedReason: null, blockedKind: null }
+          : {
+              agentId: 'copilot',
+              available: false,
+              blockedReason: 'Install GitHub Copilot CLI on example-host.',
+              blockedKind: 'not-installed',
+            }
+      );
+      expect(buildAgentGroups(['copilot']).flatMap((group) => group.items)).toContainEqual({
+        value: 'copilot',
+        label: 'GitHub Copilot',
+        agentId: 'copilot',
+        disabled: false,
+      });
+    }
+  );
 });
