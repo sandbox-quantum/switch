@@ -22,10 +22,11 @@ import {
   SERVICE_ACCOUNT_KEY_FIXTURE,
   vertexCredentialFixture,
 } from '@switch-console/agent-providers/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { silentLogger } from './log';
 import { dataLayout } from './paths';
 import {
+  alive,
   InProcessRuntime,
   isInside,
   LaunchedBundle,
@@ -385,5 +386,37 @@ describe('isInside', () => {
     expect(isInside('/data/workspaces', '/data/workspaces/../x')).toBe(false);
     expect(isInside('/data/workspaces', '/data/workspaces-other/x')).toBe(false);
     expect(isInside('/data/workspaces', '/data/workspaces/..scout')).toBe(true);
+  });
+});
+
+describe('alive', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const killThrowing = (code: string) =>
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error(`kill ${code}`), { code });
+    });
+
+  it('reports a process the probe reaches as alive', () => {
+    vi.spyOn(process, 'kill').mockReturnValue(true);
+    expect(alive(1234)).toBe(true);
+  });
+
+  it('reports a process that answers ESRCH as gone', () => {
+    killThrowing('ESRCH');
+    expect(alive(1234)).toBe(false);
+  });
+
+  it('reports a process that answers EPERM as alive, not an error', () => {
+    // Windows answers EPERM for a process the caller may not signal — one at a
+    // different elevation or session. It exists, so it is alive; rethrowing it
+    // is what made the embedded controller's status report fail every nudge.
+    killThrowing('EPERM');
+    expect(alive(1234)).toBe(true);
+  });
+
+  it('rethrows any other error', () => {
+    killThrowing('EINVAL');
+    expect(() => alive(1234)).toThrow(/EINVAL/);
   });
 });

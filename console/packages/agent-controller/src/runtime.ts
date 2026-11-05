@@ -273,7 +273,14 @@ export function alive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    // ESRCH is the only answer that means the process is gone. On Windows a
+    // process the caller may not signal — one started at a different elevation
+    // or in another session — answers EPERM, which means it exists, so it is
+    // alive. Rethrowing EPERM here is what broke the embedded controller's
+    // status report and outdated-host restart on Windows.
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
     throw error;
   }
 }

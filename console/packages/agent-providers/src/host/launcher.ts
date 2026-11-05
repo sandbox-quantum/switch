@@ -42,8 +42,13 @@ export async function connectHost(
     try {
       process.kill(pid, 0);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-      await unlink(ownerPath);
+      const code = (error as NodeJS.ErrnoException).code;
+      // Only ESRCH means the owner is gone and its stale lock can be cleared.
+      // On Windows a live owner at a different elevation or session answers
+      // EPERM; it still holds the lock, so leave it be, exactly as a successful
+      // probe would.
+      if (code === 'ESRCH') await unlink(ownerPath);
+      else if (code !== 'EPERM') throw error;
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
