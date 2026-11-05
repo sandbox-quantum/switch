@@ -1,6 +1,6 @@
 """What the server tells the Gateway the caller may do.
 
-The Gateway offers a room's, an agent's and a package's controls from flags the
+The Gateway offers a room's, an agent's and a resource's controls from flags the
 server works out with `switch_core.authz`, so the rules live in one place. These
 pin the flags against those rules: owner, workspace admin, and a member who
 only has what the resource's visibility gives everyone.
@@ -8,6 +8,7 @@ only has what the resource's visibility gives everyone.
 
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -18,13 +19,15 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     agent_facing_summary,
     list_agent_summaries,
 )
-from switch_core.db.models import Package, User
+from switch_core.db.models import Document, Package, Reference, ReferenceType, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agents import get_agent_detail, list_agents
-from switch_core.gateway.packages import list_room_packages
+from switch_core.gateway.documents import get_document
+from switch_core.gateway.packages import get_package, list_room_packages
+from switch_core.gateway.references import get_reference, list_owned_reference_types
 from switch_core.gateway.rooms import get_room
 from switch_core.gateway.schemas import (
     AgentDetail,
@@ -215,3 +218,208 @@ class TestRoomPackagePermissions:
 
             assert await readable(member) == {"shared": True, "private": False}
             assert await readable(owner) == {"shared": True, "private": True}
+
+
+# Who reads a resource, whether its write visibility lets everyone change it,
+# and the (can_edit, can_manage) the server must report: what visibility gives
+# a member is editing, never deleting, transferring or changing who may see it.
+_RESOURCE_CASES = [
+    ("owner", "private", True, True),
+    ("admin", "private", True, True),
+    ("member", "public", True, False),
+    ("member", "private", False, False),
+]
+
+
+def _visible(owner: User, write_visibility: str) -> dict[str, object]:
+    return {
+        "owner_id": owner.id,
+        "read_visibility": "public",
+        "write_visibility": write_visibility,
+        "name": f"r-{uuid.uuid4().hex[:6]}",
+        "description": "",
+        "instructions": "",
+    }
+
+
+class TestResourcePermissions:
+    @pytest.mark.parametrize(
+        ("caller", "write_visibility", "can_edit", "can_manage"), _RESOURCE_CASES
+    )
+    async def test_a_reference_says_what_the_caller_may_do(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caller: str,
+        write_visibility: str,
+        can_edit: bool,
+        can_manage: bool,
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            member = await add_user(session, name="member")
+            reference = Reference(
+                **_visible(owner, write_visibility),
+                type="url",
+                value={"urls": ["https://example.test"]},
+            )
+            session.add(reference)
+            await session.flush()
+
+            detail = await get_reference(
+                reference.id,
+                session,
+                _svc(session_factory),
+                _USER_STORE,
+                owner if caller == "owner" else member,
+                caller == "admin",
+            )
+
+            assert (detail.can_edit, detail.can_manage) == (can_edit, can_manage)
+
+    @pytest.mark.parametrize(
+        ("caller", "write_visibility", "can_edit", "can_manage"), _RESOURCE_CASES
+    )
+    async def test_a_document_says_what_the_caller_may_do(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caller: str,
+        write_visibility: str,
+        can_edit: bool,
+        can_manage: bool,
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            member = await add_user(session, name="member")
+            document = Document(**_visible(owner, write_visibility), content="")
+            session.add(document)
+            await session.flush()
+
+            detail = await get_document(
+                document.id,
+                session,
+                _svc(session_factory),
+                _USER_STORE,
+                AgentStore(),
+                owner if caller == "owner" else member,
+                caller == "admin",
+            )
+
+            assert (detail.can_edit, detail.can_manage, detail.can_transfer) == (
+                can_edit,
+                can_manage,
+                can_manage,
+            )
+
+    @pytest.mark.parametrize(
+        ("caller", "write_visibility", "can_edit", "can_manage"), _RESOURCE_CASES
+    )
+    async def test_a_package_says_what_the_caller_may_do(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caller: str,
+        write_visibility: str,
+        can_edit: bool,
+        can_manage: bool,
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            member = await add_user(session, name="member")
+            package = Package(**_visible(owner, write_visibility))
+            session.add(package)
+            await session.flush()
+
+            detail = await get_package(
+                package.id,
+                session,
+                _svc(session_factory),
+                _USER_STORE,
+                owner if caller == "owner" else member,
+                caller == "admin",
+            )
+
+            assert (detail.can_edit, detail.can_manage) == (can_edit, can_manage)
+
+    @pytest.mark.parametrize("caller", ["owner", "admin"])
+    async def test_a_managed_reference_type_says_it_may_be_changed(
+        self, session_factory: async_sessionmaker[AsyncSession], caller: str
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            member = await add_user(session, name="member")
+            session.add(
+                ReferenceType(
+                    type="notion",
+                    owner_id=owner.id,
+                    read_visibility="public",
+                    write_visibility="private",
+                    display_name="Notion",
+                    instructions="",
+                    value_hint="",
+                )
+            )
+            await session.flush()
+
+            [listed] = await list_owned_reference_types(
+                session,
+                _svc(session_factory),
+                _USER_STORE,
+                owner if caller == "owner" else member,
+                caller == "admin",
+            )
+
+            assert (listed.can_edit, listed.can_manage) == (True, True)
+
+    async def test_a_rooms_own_document_cannot_be_transferred(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            room = await _add_room(session, name="r1", owner_id=owner.id)
+            document = Document(
+                **_visible(owner, "private"), content="", room_id=room.id
+            )
+            session.add(document)
+            await session.flush()
+
+            detail = await get_document(
+                document.id,
+                session,
+                _svc(session_factory),
+                _USER_STORE,
+                AgentStore(),
+                owner,
+                False,
+            )
+
+            assert (detail.can_manage, detail.can_transfer) == (True, False)
+
+
+class TestRoomTransfer:
+    @pytest.mark.parametrize(
+        ("metadata", "can_transfer"),
+        [(None, True), ({"chat_operation_id": "op-1"}, False)],
+    )
+    async def test_a_room_says_whether_it_can_be_transferred(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        metadata: dict[str, str] | None,
+        can_transfer: bool,
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            room = await _add_room(session, name="r1", owner_id=owner.id)
+            room.metadata_ = metadata
+            await session.flush()
+
+            detail = await get_room(
+                room.id,
+                session,
+                _ROOM_STORE,
+                None,  # type: ignore[arg-type]  # bridge_store: the room has no bridge
+                None,  # type: ignore[arg-type]  # external_user_store
+                _protocol(),
+                owner,
+                False,
+            )
+
+            assert (detail.can_manage, detail.can_transfer) == (True, can_transfer)

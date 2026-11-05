@@ -96,10 +96,12 @@ class RoomSummary(BaseModel):
     # participants, links and attaching resources; `can_manage` (owner or
     # tenant admin) covers its access, deleting it and taking the platform
     # channel's name; `can_unlink` (taking part in it, or tenant admin) covers
-    # unlinking a reference, document or package from it.
+    # unlinking a reference, document or package from it; `can_transfer` is
+    # `can_manage` for anything but a chat, which stays with its people.
     can_write: bool
     can_manage: bool
     can_unlink: bool
+    can_transfer: bool
 
 
 class RoomDetail(RoomSummary):
@@ -1460,6 +1462,12 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
+    # What the caller may do with it (`switch_core.authz`). `can_edit`: change
+    # it — its owner, an admin, or anyone when it is publicly writable.
+    # `can_manage`: delete it, change who may see or edit it, transfer it — its
+    # owner or an admin.
+    can_edit: bool
+    can_manage: bool
 
 
 class ReferenceCreateRequest(BaseModel):
@@ -1521,6 +1529,10 @@ class ReferenceTypeDetail(BaseModel):
     write_visibility: str
     shadowed_by_builtin: bool
     created_at: str
+    # As on `ReferenceDetail`. A built-in is never listed here, so never
+    # offered for editing.
+    can_edit: bool
+    can_manage: bool
 
 
 class ReferenceTypeCreateRequest(BaseModel):
@@ -1663,6 +1675,11 @@ class DocumentDetail(BaseModel):
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+    # As on `ReferenceDetail`, and `can_transfer`: `can_manage`, for a library
+    # document only — a room's own document stays with the room.
+    can_edit: bool
+    can_manage: bool
+    can_transfer: bool
 
 
 # Whether the caller may remove a document from a room it is in: delete it if
@@ -1696,6 +1713,10 @@ class DocumentSummary(BaseModel):
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+    # As on `DocumentDetail`.
+    can_edit: bool
+    can_manage: bool
+    can_transfer: bool
 
 
 class RoomDocumentSummary(DocumentSummary):
@@ -1753,6 +1774,9 @@ class PackageDetail(BaseModel):
     # package its owner attached is listed to every reader of the room, and the
     # Gateway shows that one without a link.
     can_read: bool
+    # As on `ReferenceDetail`.
+    can_edit: bool
+    can_manage: bool
 
 
 class PackageCreateRequest(BaseModel):

@@ -9,11 +9,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.accounts.transfer import kind_refusal
 from switch_core.agent_templates import plan_template
 from switch_core.authz import (
     Action,
     Principal,
     can,
+    can_manage,
     can_unlink_from_room,
 )
 from switch_core.bridges.agent.operations.agent_management import management_port
@@ -246,7 +248,14 @@ async def _build_room_detail(
         can_write=can(principal, "write", room),
         can_manage=can(principal, "delete", room),
         can_unlink=can_unlink_from_room(principal, takes_part=takes_part),
+        can_transfer=_can_transfer(principal, room),
     )
+
+
+def _can_transfer(principal: Principal, room: Room) -> bool:
+    """Whether `principal` may hand `room` to another member, as
+    `POST /ownership/transfer` decides it."""
+    return can_manage(principal, room.owner_id) and kind_refusal(room) is None
 
 
 async def _list_room_role_details(
@@ -393,6 +402,7 @@ async def list_rooms(
                 can_unlink=can_unlink_from_room(
                     principal, takes_part=room.id in involved
                 ),
+                can_transfer=_can_transfer(principal, room),
             )
         )
 

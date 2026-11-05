@@ -262,6 +262,20 @@ async def _refuse_agent(
         raise TransferRefused(409, refusal)
 
 
+def kind_refusal(resource: Room | Document) -> str | None:
+    """Why a room or a document can't change owner, whoever would receive it;
+    None when it can. A chat stays with the people in it, and a room's own
+    document with its room."""
+    if isinstance(resource, Room) and "chat_operation_id" in (resource.metadata_ or {}):
+        return "A chat can't be transferred."
+    if isinstance(resource, Document) and resource.room_id is not None:
+        return (
+            "This document belongs to a room. Only library documents can be "
+            "transferred."
+        )
+    return None
+
+
 async def _refuse(
     session: AsyncSession,
     tenant_id: str,
@@ -274,16 +288,10 @@ async def _refuse(
         await _refuse_agent(
             session, tenant_id, resource, to_owner=owns(caller, resource.owner_id)
         )
-    elif isinstance(resource, Room):
-        if resource.metadata_ is not None and "chat_operation_id" in resource.metadata_:
-            raise TransferRefused(409, "A chat can't be transferred.")
-    elif isinstance(resource, Document):
-        if resource.room_id is not None:
-            raise TransferRefused(
-                409,
-                "This document belongs to a room. Only library documents can be "
-                "transferred.",
-            )
+    elif isinstance(resource, Room | Document):
+        refusal = kind_refusal(resource)
+        if refusal is not None:
+            raise TransferRefused(409, refusal)
     elif isinstance(resource, Template):
         clash = await session.scalar(
             select(Template.id).where(

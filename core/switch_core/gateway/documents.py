@@ -5,9 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.accounts.transfer import kind_refusal
 from switch_core.authz import (
     Principal,
+    can,
     can_delete_room_document,
+    can_manage,
     can_unlink_from_room,
 )
 from switch_core.bridges.resource.service import ResourceService
@@ -46,6 +49,7 @@ router = APIRouter()
 
 def _to_detail(
     doc: Document,
+    reader: Principal,
     *,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
@@ -71,11 +75,13 @@ def _to_detail(
         created_by_agent_id=doc.created_by_agent_id,
         created_by_agent_name=created_by_agent_name,
         created_at=str(doc.created_at),
+        **_capabilities(reader, doc),
     )
 
 
 def _to_summary(
     doc: Document,
+    reader: Principal,
     *,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
@@ -100,7 +106,18 @@ def _to_summary(
         created_by_agent_id=doc.created_by_agent_id,
         created_by_agent_name=created_by_agent_name,
         created_at=str(doc.created_at),
+        **_capabilities(reader, doc),
     )
+
+
+def _capabilities(reader: Principal, doc: Document) -> dict[str, bool]:
+    """What `reader` may do with `doc`, for its detail or summary."""
+    manage = can_manage(reader, doc.owner_id)
+    return {
+        "can_edit": can(reader, "write", doc),
+        "can_manage": manage,
+        "can_transfer": manage and kind_refusal(doc) is None,
+    }
 
 
 def _can_remove(
@@ -146,6 +163,7 @@ async def _enrich_summaries(
     return [
         _to_summary(
             d,
+            reader,
             owner_name=owners.get(d.owner_id) if d.owner_id else None,
             attached_rooms_count=counts[d.id].attached,
             hidden_rooms_count=counts[d.id].hidden,
@@ -180,6 +198,7 @@ async def _enrich_detail(
     )
     return _to_detail(
         doc,
+        reader,
         owner_name=owner.name if owner else None,
         attached_rooms_count=counts[doc.id].attached,
         hidden_rooms_count=counts[doc.id].hidden,
