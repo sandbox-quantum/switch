@@ -39,8 +39,8 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-function dialog(provider = "claude", label = "Claude") {
-  return render(<CloudLoginDialog open provider={provider} providerLabel={label} onClose={() => {}} onDone={() => {}} />);
+function dialog(provider = "claude", label = "Claude", onClose = () => {}) {
+  return render(<CloudLoginDialog open provider={provider} providerLabel={label} onClose={onClose} onDone={() => {}} />);
 }
 
 function noMarkerAnywhere(marker: string) {
@@ -65,12 +65,39 @@ describe("a pasted API key or setup token", () => {
     noMarkerAnywhere(MARKER);
   });
 
-  it("says plainly when the box couldn't sign in with it, in Switch's own fixed words", async () => {
+  it("once signed in, shows only the outcome and a single Done, with no key field to give again", async () => {
+    const onClose = vi.fn();
+    dialog("claude", "Claude", onClose);
+    fireEvent.change(await screen.findByLabelText("Setup token", { selector: "input" }), { target: { value: MARKER } });
+    fireEvent.click(screen.getByRole("button", { name: "Give login" }));
+    await waitFor(() => expect(screen.getByText(OUTCOME_TEXT.succeeded)).toBeTruthy());
+    expect(screen.queryByLabelText("Setup token", { selector: "input" })).toBeNull();
+    expect(screen.queryByLabelText("Login")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Give login" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("says plainly when the box couldn't sign in with it, in Switch's own fixed words, and lets them try again", async () => {
     vi.mocked(logins.waitForOperation).mockResolvedValue("failed");
     dialog();
     fireEvent.change(await screen.findByLabelText("Setup token", { selector: "input" }), { target: { value: MARKER } });
     fireEvent.click(screen.getByRole("button", { name: "Give login" }));
     await waitFor(() => expect(screen.getByText(OUTCOME_TEXT.failed)).toBeTruthy());
+    expect(screen.getByLabelText("Setup token", { selector: "input" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Give login" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
+  });
+
+  it("keeps the fields while the box is still checking, since it hasn't signed in yet", async () => {
+    vi.mocked(logins.waitForOperation).mockResolvedValue(null);
+    dialog();
+    fireEvent.change(await screen.findByLabelText("Setup token", { selector: "input" }), { target: { value: MARKER } });
+    fireEvent.click(screen.getByRole("button", { name: "Give login" }));
+    await waitFor(() => expect(screen.getByText(OUTCOME_TEXT.waiting)).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Give login" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
   });
 
   it("offers Codex only an API key", async () => {

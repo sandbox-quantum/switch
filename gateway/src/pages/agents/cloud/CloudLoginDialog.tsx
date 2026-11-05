@@ -132,61 +132,69 @@ export default function CloudLoginDialog({
     }
   };
 
+  // Signed in: only the outcome and Done are left, so nobody is offered an
+  // empty key field to give the same login again.
+  const signedIn = outcome === OUTCOME_TEXT.succeeded;
+
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="sm" fullWidth>
       <DialogTitle>{providerLabel} login for your cloud</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
-          <Alert severity="info">
-            Your login is locked to your cloud in this page before it's sent, so Switch only ever holds
-            the locked copy. Switch Console is the stronger place to add it, because its locking code
-            comes with the app rather than with each page load.
-          </Alert>
-          {sealable === false && (
-            <Alert severity="warning">This browser can't lock a login. Use Switch Console to add it.</Alert>
-          )}
-          {error && <Alert severity="error">{error}</Alert>}
-          {outcome && <Alert severity={outcome === OUTCOME_TEXT.succeeded ? "success" : "info"}>{outcome}</Alert>}
-          <TextField
-            select
-            label="Login"
-            value={kind}
-            onChange={(e) => setKind(e.target.value as Kind)}
-            disabled={busy}
-          >
-            {kinds.map((k) => (
-              <MenuItem key={k} value={k}>
-                {KIND_LABEL[k]}
-              </MenuItem>
-            ))}
-          </TextField>
-          {kind === "vertex" ? (
+          {signedIn ? (
+            <Alert severity="success">{outcome}</Alert>
+          ) : (
             <>
-              <Typography variant="body2" color="text.secondary">
-                Choose the JSON key file of a service account that can use only Vertex AI
-                (roles/aiplatform.user). A Google sign-in file isn't accepted here; use Switch Console for that.
-              </Typography>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="application/json,.json"
-                aria-label="Service account key file"
-                disabled={busy}
-              />
+              <Alert severity="info">
+                Your login is locked to your cloud in this page before it's sent, so Switch only ever holds
+                the locked copy. Switch Console is the stronger place to add it, because its locking code
+                comes with the app rather than with each page load.
+              </Alert>
+              {sealable === false && (
+                <Alert severity="warning">This browser can't lock a login. Use Switch Console to add it.</Alert>
+              )}
+              {error && <Alert severity="error">{error}</Alert>}
+              {outcome && <Alert severity="info">{outcome}</Alert>}
               <TextField
-                label="Google Cloud project"
-                value={project}
-                onChange={(e) => setProject(e.target.value)}
+                select
+                label="Login"
+                value={kind}
+                onChange={(e) => setKind(e.target.value as Kind)}
                 disabled={busy}
-                required
-              />
-              <TextField
-                label="Region"
-                value={region}
-                onChange={(e) => setRegion(e.target.value)}
-                disabled={busy}
-                helperText="global, or a region such as us-east5."
-              />
+              >
+                {kinds.map((k) => (
+                  <MenuItem key={k} value={k}>
+                    {KIND_LABEL[k]}
+                  </MenuItem>
+                ))}
+              </TextField>
+              {kind === "vertex" ? (
+                <>
+                  <Typography variant="body2" color="text.secondary">
+                    Choose the JSON key file of a service account that can use only Vertex AI
+                    (roles/aiplatform.user). A Google sign-in file isn't accepted here; use Switch Console for that.
+                  </Typography>
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    accept="application/json,.json"
+                    aria-label="Service account key file"
+                    disabled={busy}
+                  />
+                  <TextField
+                    label="Google Cloud project"
+                    value={project}
+                    onChange={(e) => setProject(e.target.value)}
+                    disabled={busy}
+                    required
+                  />
+                  <TextField
+                    label="Region"
+                    value={region}
+                    onChange={(e) => setRegion(e.target.value)}
+                    disabled={busy}
+                    helperText="global, or a region such as us-east5."
+                  />
             </>
           ) : (
             <TextField
@@ -203,20 +211,30 @@ export default function CloudLoginDialog({
               slotProps={{ htmlInput: { spellCheck: false, autoCapitalize: "off", "data-1p-ignore": true } }}
             />
           )}
+            </>
+          )}
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose} disabled={busy}>
-          Close
-        </Button>
-        <Button
-          variant="contained"
-          onClick={give}
-          disabled={busy || sealable === false || kinds.length === 0}
-          startIcon={busy ? <CircularProgress size={16} /> : undefined}
-        >
-          Give login
-        </Button>
+        {signedIn ? (
+          <Button variant="contained" onClick={onClose}>
+            Done
+          </Button>
+        ) : (
+          <>
+            <Button onClick={onClose} disabled={busy}>
+              Close
+            </Button>
+            <Button
+              variant="contained"
+              onClick={give}
+              disabled={busy || sealable === false || kinds.length === 0}
+              startIcon={busy ? <CircularProgress size={16} /> : undefined}
+            >
+              Give login
+            </Button>
+          </>
+        )}
       </DialogActions>
     </Dialog>
   );

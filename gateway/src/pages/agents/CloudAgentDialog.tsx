@@ -167,7 +167,7 @@ export default function CloudAgentDialog({
             value={form.name}
             onChange={(e) => set("name", e.target.value)}
             error={form.name !== "" && !AGENT_NAME_PATTERN.test(form.name)}
-            helperText="Lowercase letters, digits, '.', '-' and '_'. How the agent is addressed in rooms."
+            helperText="Lowercase letters, digits, '.', '-' and '_'. How the agent is addressed in rooms. This can't be changed later."
             required
             autoFocus
           />

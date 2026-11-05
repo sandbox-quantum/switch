@@ -97,6 +97,13 @@ function fill() {
 }
 
 describe("Add agent on Switch cloud", () => {
+  it("says the name can't be changed later, since it's the agent's folder and how it's addressed", () => {
+    render(<CloudAgentDialog open onClose={() => {}} onCreated={() => {}} />);
+    const name = screen.getByLabelText(/Name/);
+    const help = document.getElementById(name.getAttribute("aria-describedby") ?? "");
+    expect(help?.textContent).toContain("This can't be changed later.");
+  });
+
   it("asks for the box once, waits until its own controller is online, then creates the agent there", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const onCreated = vi.fn();

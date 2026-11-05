@@ -50,8 +50,14 @@ describe("AI logins on your cloud", () => {
 
   it("withdraws after asking, then says the box is waiting for a new login", async () => {
     render(<CloudLoginsSection controllerId="box-ctl" askFor={null} onAsked={() => {}} />);
-    fireEvent.click(within(await screen.findByTestId("login-claude")).getByRole("button", { name: "Withdraw" }));
+    const button = within(await screen.findByTestId("login-claude")).getByRole("button", { name: "Withdraw" });
+    // A destructive button, not low-contrast text: it cuts off the provider's agents.
+    expect(button.className).toContain("MuiButton-containedError");
+    fireEvent.click(button);
     expect(logins.withdrawCloudLogin).not.toHaveBeenCalled();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Withdraw" }).className).toContain(
+      "MuiButton-containedError",
+    );
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Withdraw" }));
     await waitFor(() => expect(screen.getByText(WITHDRAW_TEXT.done)).toBeTruthy());
     expect(logins.withdrawCloudLogin).toHaveBeenCalledWith("claude");

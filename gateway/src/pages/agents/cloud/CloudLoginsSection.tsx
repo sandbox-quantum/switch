@@ -133,7 +133,7 @@ export default function CloudLoginsSection({
                 {login ? "Change" : "Give login"}
               </Button>
               {login && (
-                <Button size="small" color="warning" onClick={() => setWithdrawing(provider)}>
+                <Button size="small" color="error" variant="contained" onClick={() => setWithdrawing(provider)}>
                   Withdraw
                 </Button>
               )}
@@ -163,7 +163,7 @@ export default function CloudLoginsSection({
             Cancel
           </Button>
           <Button
-            color="warning"
+            color="error"
             variant="contained"
             onClick={withdraw}
             disabled={busy}
