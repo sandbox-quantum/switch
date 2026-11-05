@@ -1587,7 +1587,13 @@ class SlackAdapter(PlatformAdapter):
                 self._stream_failed(error, message_ref, drawn.title)
             for block in moved:
                 stream.blocks[block["block_id"]] = block
-        if content.turn.status in TURN_ENDED:
+        # A background child can outlive the parent turn. Keep its existing
+        # stream editable until the child settles: after closing, Slack cannot
+        # redraw a message containing more than one plan section.
+        if content.turn.status in TURN_ENDED and not any(
+            item.subagent is not None and item.status == "in-progress"
+            for item in content.items
+        ):
             await self._close_stream(client, stream, message_ref, drawn.title)
 
     async def _close_stream(

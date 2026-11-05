@@ -92,12 +92,50 @@ def turn_state(
     unfinished = sum(
         1
         for item in items
-        if item.kind == "tool-activity" and item.status == "in-progress"
+        if item.kind == "tool-activity"
+        and item.status == "in-progress"
+        and item.subagent is None
     )
-    if not unfinished:
-        return state
-    step = "step" if unfinished == 1 else "steps"
-    return f"{state} {unfinished} {step} left unfinished."
+    if unfinished:
+        step = "step" if unfinished == 1 else "steps"
+        state += f" {unfinished} {step} left unfinished."
+    running = sum(
+        1
+        for item in items
+        if item.subagent is not None and item.status == "in-progress"
+    )
+    if running:
+        child = "subagent" if running == 1 else "subagents"
+        state += f" {running} {child} still running."
+    return state
+
+
+def subagent_label(item: Item) -> str:
+    """A child's lifecycle and short task, never its transcript or launch payload."""
+    status = {
+        "in-progress": "running",
+        "completed": "completed",
+        "failed": "failed",
+        "declined": "declined",
+    }
+    title = " ".join(item.title.split()) or "Untitled task"
+    return f"Subagent {status[item.status]}: {title}"
+
+
+def activity_order(items: list[Item]) -> list[Item]:
+    """Keep live children visible when a bounded card drops old activity.
+
+    Background work can outlive hundreds of later tool calls. The log retains
+    its ordinary order, with running children grouped at the live end; the
+    platform's existing row limit still bounds the card.
+    """
+
+    def running(item: Item) -> bool:
+        return item.subagent is not None and item.status == "in-progress"
+
+    return [item for item in items if not running(item)] + [
+        item for item in items if running(item)
+    ]
 
 
 def _worked_for(elapsed_seconds: float, items: list[Item], *, tool_detail: bool) -> str:

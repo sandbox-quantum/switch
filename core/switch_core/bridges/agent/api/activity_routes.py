@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -39,6 +39,7 @@ from switch_core.session_activity.service import (
     QuestionOption,
     TokenSpend,
 )
+from switch_core.sessions.contract import Subagent
 from switch_core.telemetry import TelemetryService
 from switch_core.telemetry.session_start import (
     SessionStartLimiter,
@@ -75,6 +76,11 @@ class TokenUsageIn(BaseModel):
     cache_write_tokens: int = Field(ge=0, le=MAX_TOKENS)
 
 
+class SubagentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    child_id: _Id | None
+
+
 class ActivityReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     turn_id: _Id
@@ -95,6 +101,13 @@ class ActivityReport(BaseModel):
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
     )
+    subagent: SubagentIn | None = None
+
+    @model_validator(mode="after")
+    def subagent_is_tool_activity(self) -> "ActivityReport":
+        if self.subagent is not None and self.kind != "tool-activity":
+            raise ValueError("Only tool activity carries subagent metadata.")
+        return self
 
 
 class OptionIn(BaseModel):
@@ -214,6 +227,9 @@ async def report_activity(
         thread_id=body.thread_id,
         message_id=body.message_id,
         occurred_at=body.occurred_at,
+        subagent=Subagent(child_id=body.subagent.child_id)
+        if body.subagent is not None
+        else None,
         usage=[
             TokenSpend(
                 model=u.model,

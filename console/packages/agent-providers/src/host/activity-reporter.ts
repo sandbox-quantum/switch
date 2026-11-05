@@ -36,6 +36,8 @@ export type ActivityRow = {
    * there is nothing to say, so a server that predates it takes the row.
    */
   usage?: UsageRow[];
+  /** Safe child identity on a tool-activity row, not its transcript. */
+  subagent?: { child_id: string | null };
 };
 
 export type UsageRow = {
@@ -164,6 +166,9 @@ export class ActivityReporter {
               status: item.status,
               title: truncate(item.title, MAX_TITLE),
               text: truncate(item.text, MAX_TEXT),
+              ...(item.kind === 'tool-activity' && item.subagent
+                ? { subagent: { child_id: item.subagent.childId } }
+                : {}),
               command_id: null,
               ...place(item.turnId),
               occurred_at: event.occurredAt,

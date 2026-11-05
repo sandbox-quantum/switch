@@ -14,6 +14,7 @@ import {
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
+import { ActivityReporter, type ActivityRow } from './activity-reporter';
 import { Redactions } from './redaction';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
@@ -1004,6 +1005,111 @@ it('reports what an ended turn spent on its row, and the row alone to a server t
     await host.stop();
   }
 }, 20000);
+
+it.each([false, true])(
+  'retries optional metadata together; failed fallback retains the cursor (%s)',
+  async (rejectStripped) => {
+    const host = await start({ rooms: true });
+    const attempted: ActivityRow[] = [];
+    const originalFetch = globalThis.fetch;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const row = typeof init?.body === 'string' ? (JSON.parse(init.body) as ActivityRow) : null;
+      if (String(input).endsWith('/activity') && row?.kind === 'tool-activity') {
+        attempted.push(row);
+        changed();
+        if (row.subagent)
+          return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
+        if (rejectStripped) return Response.json({ detail: 'row refused' }, { status: 422 });
+      }
+      return originalFetch(input, init);
+    });
+    // Exercise a row carrying both optional extensions: the fallback must not
+    // require two rejections to reach the older server's original row shape.
+    const originalReports = ActivityReporter.prototype.reports;
+    vi.spyOn(ActivityReporter.prototype, 'reports').mockImplementation(function (
+      this: ActivityReporter,
+      ...args
+    ) {
+      return originalReports.apply(this, args).map((report) =>
+        report.kind === 'activity' && report.row.subagent
+          ? {
+              ...report,
+              row: {
+                ...report.row,
+                usage: [
+                  {
+                    model: 'test-model',
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                  },
+                ],
+              },
+            }
+          : report
+      );
+    });
+    try {
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Delegate an inspection') });
+      await until(() => expect(host.turns).toHaveLength(1));
+      host.emit({
+        type: 'item.completed',
+        turnId: host.turns[0]!.turnId,
+        item: {
+          id: 'child-task',
+          type: 'subagent',
+          nativeChildId: 'native-child',
+          title: 'Inspect files',
+          status: 'completed',
+          text: 'private child transcript',
+        },
+      });
+      await until(() => expect(attempted.length).toBeGreaterThanOrEqual(2));
+      expect(attempted[0]).toMatchObject({
+        subagent: { child_id: 'native-child' },
+        usage: [{ model: 'test-model' }],
+      });
+      const { usage: _usage, subagent: _subagent, ...legacy } = attempted[0]!;
+      expect(attempted[1]).toEqual(legacy);
+      expect(attempted[1]!.text).toBe('');
+      const event = host.parent.sent.find((message) => {
+        const body = (
+          message.event as { body?: { type: string; item?: { subagent?: unknown } } } | undefined
+        )?.body;
+        return body?.type === 'item.upsert' && !!body.item?.subagent;
+      })!.event!;
+      if (rejectStripped) {
+        expect((await ActivityReporter.load(host.root)).cursor).toBeLessThan(event.sequence);
+        await host.stop();
+        const reopened = await ActivityReporter.load(host.root);
+        expect(reopened.cursor).toBeLessThan(event.sequence);
+        const journal = (await readFile(join(host.root, 'events.jsonl'), 'utf8'))
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        expect(
+          journal.some(
+            (entry) =>
+              entry.sequence > reopened.cursor &&
+              entry.body.type === 'item.upsert' &&
+              entry.body.item.subagent?.childId === 'native-child'
+          )
+        ).toBe(true);
+      } else {
+        await poll(async () =>
+          expect((await ActivityReporter.load(host.root)).cursor).toBeGreaterThanOrEqual(
+            event.sequence
+          )
+        );
+      }
+      // One original request and one fallback, even if that fallback is refused.
+      expect(attempted).toHaveLength(2);
+    } finally {
+      await host.stop();
+    }
+  }
+);
 
 it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
   const host = await start({ resettable: true });

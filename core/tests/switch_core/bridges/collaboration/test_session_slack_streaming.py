@@ -51,7 +51,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
-from switch_core.sessions.contract import Item, TurnUpsert
+from switch_core.sessions.contract import Item, Subagent, TurnUpsert
 
 from .slack_fakes import FakeResponse, FakeWebClient
 
@@ -562,6 +562,42 @@ async def test_a_finished_turn_stops_the_stream_and_leaves_the_message() -> None
     assert (
         _chunks(client)[-1][0]["blocks"][0]["title"] == "Worked for 30s. 1 tool call."
     )
+
+
+@pytest.mark.parametrize("child_status", ["completed", "failed"])
+async def test_a_background_child_keeps_a_multisection_stream_open_after_the_parent_ends(
+    child_status: str,
+) -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    items = [_tool(f"t{i}", f"Tool {i}", "completed") for i in range(50)]
+    child = _tool("child-call", "Inspect tests").model_copy(
+        update={"subagent": Subagent(child_id="child-1")}
+    )
+    items.append(child)
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity(items, _turn(), 1.0), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity(items, _turn("completed"), 4.0), THREAD
+    )
+    assert len(_pages(client)) == 2
+    assert ref in adapter._streams
+    assert ref not in adapter._unredrawable
+    assert client.stopped == []
+    assert _steps(client)[-1]["status"] == "in_progress"
+
+    items[-1] = child.model_copy(update={"revision": 2, "status": child_status})
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity(items, _turn("completed"), 4.0), THREAD
+    )
+    assert len(_pages(client)) == 2
+    assert _steps(client)[-1]["status"] == (
+        "complete" if child_status == "completed" else "error"
+    )
+    assert client.stopped == [{"channel": CHANNEL, "ts": "1.0"}]
+    assert client.updated == []
+    assert ref not in adapter._streams
 
 
 async def test_an_unfinished_step_is_named_rather_than_left_spinning() -> None:

@@ -33,6 +33,36 @@ provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;
 its initial prompt is not automatically sent again.
 
+## Subagents on room activity cards
+
+Provider child tasks appear as tool activity with an optional `subagent` field,
+not a separate item kind. Slack plans and Mattermost status messages show the
+short task description and whether the child is running, completed, failed or
+declined. A stopped Claude child is a failed task labeled `(stopped)`. Plain-text fallback carries the same summary; child transcripts and
+launch payloads are not published. Running children remain visible at the live
+end of bounded Slack activity lists. Mattermost shows up to four children,
+prioritizing running work, and discloses the number omitted.
+
+Claude background Agent launches stay in progress after their initial tool
+result and the parent turn's completion. The SDK's `task_started.tool_use_id`
+correlates the child with the original tool row; `task_notification` settles
+that same row even if another turn has started. Slack keeps the stream open
+until those children settle. Slack's existing ten-minute stream lifetime and
+fallback limits still apply. Other providers report the child lifecycle their
+adapter supplies; this does not infer children from ordinary tool text.
+
+The session contract uses `subagent: { childId: string | null }`; HTTP activity
+reports use `subagent: { child_id: string | null }`. A null child ID means the
+provider identified a child task without supplying its native ID. An older
+Core rejecting optional metadata with HTTP 422 gets one retry without
+`subagent` or `usage`; it can still display generic tool activity. Failed retry
+leaves the durable reporting cursor unchanged. Apply the Core migration before
+running the updated service. On host restart, previously running children are
+settled with an explicit unknown-outcome warning rather than left spinning or
+resent. A bridge restart resynchronizes active children even when their parent
+completed more than fifteen minutes earlier. There is no individual-child stop
+control.
+
 ## Server isolation
 
 SDK sessions, transcript events, commands and attachments are scoped to the

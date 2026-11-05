@@ -19,7 +19,7 @@ from datetime import datetime
 from switch_core.bridges.collaboration.session.renderers import RUNNING_CLOCK_SECONDS
 from switch_core.db.models import AgentSessionActivityItem
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
-from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
+from switch_core.sessions.contract import TURN_ENDED, Item, Subagent, TurnUpsert
 
 _ITEM_KINDS = frozenset({"user-message", "assistant-message", "tool-activity"})
 
@@ -72,6 +72,11 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
             text=step.text,
             attachments=[],
             origin=None,
+            **(
+                {"subagent": Subagent.model_validate(step.subagent)}
+                if step.subagent is not None
+                else {}
+            ),
         )
         for step in steps
     ]

@@ -49,6 +49,7 @@ from switch_core.sessions.contract import (
     ApprovalResult,
     QuestionsResult,
     RequestResult,
+    Subagent,
 )
 from switch_core.sessions.errors import SessionError
 
@@ -199,6 +200,7 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        subagent: Subagent | None = None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
@@ -223,6 +225,18 @@ class AgentSessionActivityService:
         if command_id is not None and kind != "turn":
             raise SessionError(
                 "INVALID_EVENT", "Only the turn's own row carries a command id."
+            )
+        if subagent is not None and kind != "tool-activity":
+            raise SessionError(
+                "INVALID_EVENT", "Only tool activity carries subagent metadata."
+            )
+        if (
+            subagent is not None
+            and subagent.child_id is not None
+            and len(subagent.child_id) > 200
+        ):
+            raise SessionError(
+                "INVALID_EVENT", "A subagent child id is at most 200 characters."
             )
         if revision < 0:
             raise SessionError("INVALID_EVENT", "A revision is never negative.")
@@ -260,6 +274,7 @@ class AgentSessionActivityService:
                     status=status,
                     title=title,
                     text=text,
+                    subagent=subagent.model_dump() if subagent is not None else None,
                     command_id=command_id,
                     room_id=room_id,
                     thread_id=thread_id,
