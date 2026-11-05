@@ -8,6 +8,7 @@ import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
@@ -186,7 +187,12 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             room={room}
             readOnly={!permissions.canWrite}
           />
-          <AccessAndGroupFields workspaceId={workspaceId} room={room} permissions={permissions} />
+          <AccessAndGroupFields
+            workspaceId={workspaceId}
+            room={room}
+            permissions={permissions}
+            administersWorkspace={administersWorkspaceById(workspaceId)}
+          />
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
           <RoomInfoSection room={room} />
           <section

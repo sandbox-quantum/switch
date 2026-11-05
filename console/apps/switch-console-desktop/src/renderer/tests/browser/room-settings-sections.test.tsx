@@ -12,6 +12,8 @@ const setRoomAgentJoinEvents = vi.hoisted(() => vi.fn());
 const createRoomRole = vi.hoisted(() => vi.fn());
 const setRoomArchived = vi.hoisted(() => vi.fn());
 const permissions = vi.hoisted(() => ({ value: { canWrite: true, canManage: true } }));
+const admin = vi.hoisted(() => ({ value: true }));
+const setRoomGroup = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -34,7 +36,8 @@ vi.mock('@renderer/lib/ipc', () => ({
       listAgents: vi.fn(() =>
         Promise.resolve([{ id: 'a-1', name: 'reviewer-bot', iconUrl: null, knownAgentType: null }])
       ),
-      listRoomGroups: vi.fn(() => Promise.resolve([])),
+      listRoomGroups: vi.fn(() => Promise.resolve([{ id: 'g-1', name: 'Design' }])),
+      setRoomGroup,
     },
     agents: { getAgents: vi.fn(() => Promise.resolve([])) },
   },
@@ -53,6 +56,12 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
 vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
   refreshSidebarRoomState: vi.fn(async () => {}),
   refreshSidebarRoomStateAfterOnboarding: vi.fn(),
+}));
+
+vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
+  administersWorkspaceById: () => admin.value,
+  administersWorkspaceInScope: () => admin.value,
+  operatesServer: () => false,
 }));
 
 vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useFeatureFlags: () => ({}) }));
@@ -119,6 +128,11 @@ beforeEach(() => {
     Promise.resolve({ ...ROOM, archived: params.archived })
   );
   permissions.value = { canWrite: true, canManage: true };
+  admin.value = true;
+  setRoomGroup.mockReset();
+  setRoomGroup.mockImplementation(() =>
+    Promise.resolve({ ...ROOM, groupId: null, groupName: null })
+  );
 });
 
 afterEach(async () => {
@@ -265,6 +279,36 @@ describe('room settings for someone who may write to the room', () => {
       archived: true,
     });
     expect(el.textContent).toContain('This room is archived');
+  });
+});
+
+describe('putting a room in a group', () => {
+  it('offers the group picker to a workspace admin', async () => {
+    const el = await renderPanel();
+    expect(el.querySelector('[aria-label="Group"]')).not.toBeNull();
+  });
+
+  it('shows anyone else who may change the room its group, and lets them take it out', async () => {
+    admin.value = false;
+    permissions.value = { canWrite: true, canManage: false };
+    getRoomDetail.mockResolvedValue({ ...ROOM, groupId: 'g-1', groupName: 'Design' });
+    const el = await renderPanel();
+    expect(el.querySelector('[aria-label="Group"]')).toBeNull();
+    expect(el.textContent).toContain('Design');
+    expect(el.textContent).toContain('A workspace admin puts rooms in groups');
+    await click(button(el, /^Remove from group$/)!);
+    expect(setRoomGroup).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      groupId: null,
+    });
+  });
+
+  it('names a group the server does not, without offering to change it', async () => {
+    admin.value = false;
+    getRoomDetail.mockResolvedValue({ ...ROOM, groupId: 'g-9', groupName: null });
+    const el = await renderPanel();
+    expect(el.textContent).toContain('A group not in your list');
   });
 });
 

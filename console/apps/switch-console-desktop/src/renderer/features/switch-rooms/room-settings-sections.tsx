@@ -68,19 +68,37 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
   workspaceId,
   room,
   permissions,
+  administersWorkspace,
 }: {
   workspaceId: string;
   room: RemoteRoomDetail;
   permissions: RoomPermissions;
+  /**
+   * Whether the viewer administers the room's workspace. Putting a room in a
+   * group is theirs alone: a group can decide who may address an agent.
+   * Taking it out needs only write access to the room.
+   */
+  administersWorkspace: boolean;
 }) {
   const queryClient = useQueryClient();
   const [accessState, setAccessState] = useState<WriteState>({ phase: 'idle' });
   const [groupState, setGroupState] = useState<WriteState>({ phase: 'idle' });
+  const picksGroup = permissions.canWrite && administersWorkspace;
   const groups = useQuery({
     queryKey: ['room-groups', workspaceId],
     queryFn: () => rpc.workspaces.listRoomGroups(workspaceId),
-    enabled: permissions.canWrite,
+    enabled: picksGroup,
   });
+  // The server names the room's group; one it does not name is still a group.
+  const groupText = room.groupName ?? (room.groupId ? 'A group not in your list' : 'No group');
+  const setGroup = (groupId: string | null) =>
+    void write(
+      setGroupState,
+      () => rpc.workspaces.setRoomGroup({ workspaceId, roomId: room.id, groupId }),
+      groupId === null
+        ? 'Could not take the room out of its group.'
+        : 'Could not change the room’s group.'
+    );
   const access = roomAccessOf(room.readVisibility, room.writeVisibility);
 
   async function write(
@@ -148,21 +166,17 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
 
       <div className="flex flex-col gap-1.5">
         <span className="text-sm text-foreground-muted">Group</span>
-        {permissions.canWrite ? (
+        {picksGroup ? (
           <Select
             value={room.groupId ?? NO_GROUP}
             onValueChange={(next) => {
               const groupId = next === NO_GROUP ? null : (next as string);
               if (groupId === room.groupId) return;
-              void write(
-                setGroupState,
-                () => rpc.workspaces.setRoomGroup({ workspaceId, roomId: room.id, groupId }),
-                'Could not change the room’s group.'
-              );
+              setGroup(groupId);
             }}
           >
             <SelectTrigger className="w-full" aria-label="Group">
-              <SelectValue>{room.groupName ?? 'No group'}</SelectValue>
+              <SelectValue>{groupText}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={NO_GROUP}>No group</SelectItem>
@@ -174,12 +188,26 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
             </SelectContent>
           </Select>
         ) : (
-          <span className="text-sm text-foreground">{room.groupName ?? 'No group'}</span>
+          <span className="flex min-h-8 items-center gap-2 text-sm text-foreground">
+            {groupText}
+            {permissions.canWrite && room.groupId !== null && (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={groupState.phase === 'saving'}
+                onClick={() => setGroup(null)}
+              >
+                Remove from group
+              </Button>
+            )}
+          </span>
         )}
         <span className="min-h-4 text-xs text-foreground-muted">
           {groupState.phase === 'idle' ? (
             groups.isError ? (
               failureText(groups.error, 'Could not list the groups.')
+            ) : permissions.canWrite && !administersWorkspace ? (
+              'A workspace admin puts rooms in groups, since a group can decide who may talk to an agent.'
             ) : (
               'Groups organise rooms and can scope who may talk to an agent.'
             )
