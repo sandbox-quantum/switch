@@ -23,7 +23,7 @@ from seed import SeededAgent  # noqa: E402
 
 
 def _args(*extra: str):
-    return parse_args(["--namespace", "switch-dev-abel", "--steps", "300", *extra])
+    return parse_args(["--namespace", "switch-test", "--steps", "300", *extra])
 
 
 def test_each_rate_gets_a_steady_window_of_its_own():
@@ -100,11 +100,11 @@ def test_a_window_is_broken_when_deliveries_are_lost_slow_or_failing(summary, wh
 def test_keeping_or_reusing_needs_controllers():
     for flag in (["--keep"], ["--reuse", "20261102t104605w1"]):
         with pytest.raises(SystemExit):
-            parse_args(["--namespace", "switch-dev-abel", "--steps", "10", *flag])
+            parse_args(["--namespace", "switch-test", "--steps", "10", *flag])
     a = parse_args(
         [
             "--namespace",
-            "switch-dev-abel",
+            "switch-test",
             "--steps",
             "10",
             "--controllers",
@@ -124,7 +124,7 @@ def test_a_kept_run_records_ids_and_no_credential():
     a = parse_args(
         [
             "--namespace",
-            "switch-dev-abel",
+            "switch-test",
             "--steps",
             "10",
             "--controllers",
@@ -144,7 +144,7 @@ def test_a_later_run_takes_the_agents_over_only_with_the_same_rooms():
     a = parse_args(
         [
             "--namespace",
-            "switch-dev-abel",
+            "switch-test",
             "--steps",
             "10",
             "--controllers",
@@ -161,7 +161,7 @@ def test_a_later_run_takes_the_agents_over_only_with_the_same_rooms():
     other = parse_args(
         [
             "--namespace",
-            "switch-dev-abel",
+            "switch-test",
             "--steps",
             "10",
             "--controllers",
@@ -183,44 +183,42 @@ class _Release:
         return "https://dev.example.com", "https://dev.example.com"
 
     def ingress_hosts(self) -> set[str]:
-        return {"dev-gateway.tail.ts.net", "dev-api.tail.ts.net"}
+        return {"qa-gateway.tail.ts.net", "qa-api.tail.ts.net"}
 
     def service_hosts(self) -> set[str]:
-        return {"switch-dev-switch-core.switch-dev.svc"}
+        return {"switch-qa-switch-core.switch-qa.svc"}
 
 
 def test_urls_default_to_the_release_and_may_be_its_ingresses() -> None:
-    a = parse_args(["--namespace", "switch-dev"])
+    a = parse_args(["--namespace", "switch-qa"])
     resolve_urls(a, _Release())  # type: ignore[arg-type]
     assert (a.gateway_url, a.api_url) == ("https://dev.example.com",) * 2
 
     a = parse_args(
         [
             "--namespace",
-            "switch-dev",
+            "switch-qa",
             "--gateway-url",
-            "https://dev-gateway.tail.ts.net/",
+            "https://qa-gateway.tail.ts.net/",
             "--api-url",
-            "https://dev-api.tail.ts.net",
+            "https://qa-api.tail.ts.net",
         ]
     )
     resolve_urls(a, _Release())  # type: ignore[arg-type]
-    assert a.gateway_url == "https://dev-gateway.tail.ts.net"
-    assert a.api_url == "https://dev-api.tail.ts.net"
+    assert a.gateway_url == "https://qa-gateway.tail.ts.net"
+    assert a.api_url == "https://qa-api.tail.ts.net"
 
 
 def test_from_inside_the_cluster_the_urls_may_be_its_services() -> None:
-    url = "http://switch-dev-switch-core.switch-dev.svc:8000"
-    a = parse_args(
-        ["--namespace", "switch-dev", "--api-url", url, "--gateway-url", url]
-    )
+    url = "http://switch-qa-switch-core.switch-qa.svc:8000"
+    a = parse_args(["--namespace", "switch-qa", "--api-url", url, "--gateway-url", url])
     resolve_urls(a, _Release())  # type: ignore[arg-type]
     assert (a.gateway_url, a.api_url) == (url, url)
 
 
 def test_urls_of_another_environment_are_refused() -> None:
     a = parse_args(
-        ["--namespace", "switch-dev", "--api-url", "https://staging-api.tail.ts.net"]
+        ["--namespace", "switch-qa", "--api-url", "https://other-api.tail.ts.net"]
     )
     with pytest.raises(Refused, match="--api-url"):
         resolve_urls(a, _Release())  # type: ignore[arg-type]
@@ -234,20 +232,20 @@ class _ReleaseWithoutUrls(_Release):
 
 
 def test_without_the_release_s_urls_a_given_url_must_still_be_its_own() -> None:
-    gw = ["--gateway-url", "https://dev-gateway.tail.ts.net"]
+    gw = ["--gateway-url", "https://qa-gateway.tail.ts.net"]
     a = parse_args(
-        ["--namespace", "switch-dev", *gw, "--api-url", "https://dev-api.tail.ts.net"]
+        ["--namespace", "switch-qa", *gw, "--api-url", "https://qa-api.tail.ts.net"]
     )
     resolve_urls(a, _ReleaseWithoutUrls())  # type: ignore[arg-type]
-    assert a.api_url == "https://dev-api.tail.ts.net"
+    assert a.api_url == "https://qa-api.tail.ts.net"
 
     a = parse_args(
         [
             "--namespace",
-            "switch-dev",
+            "switch-qa",
             *gw,
             "--api-url",
-            "https://staging-api.tail.ts.net",
+            "https://other-api.tail.ts.net",
         ]
     )
     with pytest.raises(Refused, match="the release names none"):
@@ -267,18 +265,18 @@ def test_without_the_release_s_urls_a_given_url_must_still_be_its_own() -> None:
 )
 def test_repeated_steps_and_run_ids_outside_runs_are_refused(flags, why, capsys):
     with pytest.raises(SystemExit):
-        parse_args(["--namespace", "switch-dev", *flags])
+        parse_args(["--namespace", "switch-qa", *flags])
     assert why in capsys.readouterr().err
 
 
 def test_run_ids_as_the_nightly_makes_them_are_taken():
-    a = parse_args(["--namespace", "switch-dev", "--run-id", "n20261104t0942w1"])
+    a = parse_args(["--namespace", "switch-qa", "--run-id", "n20261104t0942w1"])
     assert a.run_id == "n20261104t0942w1"
-    assert parse_args(["--namespace", "switch-dev", "--cleanup", "*"]).cleanup == "*"
+    assert parse_args(["--namespace", "switch-qa", "--cleanup", "*"]).cleanup == "*"
 
 
 def test_seed_only_keeps_what_it_makes_and_reuses_nothing() -> None:
-    base = ["--namespace", "switch-dev", "--controllers", "2"]
+    base = ["--namespace", "switch-qa", "--controllers", "2"]
     with pytest.raises(SystemExit):
         parse_args([*base, "--seed-only"])
     with pytest.raises(SystemExit):

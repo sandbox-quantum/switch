@@ -1,14 +1,14 @@
 """Load test switch-core in a non-pilot environment, and publish the numbers.
 
-    uv run --project core python loadtest/run.py --namespace switch-staging \\
+    uv run --project core python loadtest/run.py --namespace <namespace> \\
         --scenarios idle,steady,burst --steps 50,100,200 --rate 5 --duration 120
 
     # a message-rate sweep: one idle window, then 90 s at each rate until one breaks
-    uv run --project core python loadtest/run.py --namespace switch-dev-abel \\
+    uv run --project core python loadtest/run.py --namespace <namespace> \\
         --scenarios idle --steps 300 --rates 10,15,20,25
 
     # the same agents behind 25 fake controllers, as most real agents connect
-    uv run --project core python loadtest/run.py --namespace switch-dev-abel \\
+    uv run --project core python loadtest/run.py --namespace <namespace> \\
         --controllers 25 --scenarios idle,steady --steps 500,1000 --rate 2
 
 Seeds its own agents and rooms, runs the scenarios at each step, samples
@@ -74,7 +74,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     t.add_argument(
         "--namespace",
         required=True,
-        help="e.g. switch-staging; never switch (pilot) or prod",
+        help="the release's namespace; the pilot's and prod's are refused",
     )
     t.add_argument(
         "--kube-context",
@@ -213,7 +213,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     o.add_argument("--sample-interval", type=float, default=1.0)
     o.add_argument(
         "--rds-instance",
-        help="RDS instance to read CPU from in CloudWatch, e.g. switch-staging",
+        help="RDS instance to read CPU from in CloudWatch",
     )
     o.add_argument(
         "--aws-profile",
@@ -221,7 +221,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="default: the credentials already in the environment, such as a "
         "pod's service account role",
     )
-    o.add_argument("--aws-region", default="eu-west-3")
+    o.add_argument(
+        "--aws-region",
+        default=os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION", ""),
+        help="the RDS instance's region; default: AWS_REGION, else the AWS CLI's own",
+    )
     o.add_argument(
         "--plan", action="store_true", help="print the workload and exit; no requests"
     )
@@ -452,7 +457,8 @@ def rds_cpu(a: argparse.Namespace, start: float, end: float) -> dict | None:
                 "--start-time", datetime.fromtimestamp(start - 60, UTC).isoformat(),
                 "--end-time", datetime.fromtimestamp(end + 60, UTC).isoformat(),
                 "--period", "60", "--statistics", "Average", "Maximum",
-                "--region", a.aws_region, "--output", "json",
+                *(["--region", a.aws_region] if a.aws_region else []),
+                "--output", "json",
             ],
             capture_output=True, text=True, timeout=60, env=env,
         )  # fmt: skip
@@ -578,7 +584,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
         window. Errors in the meantime still count for `name`."""
         t = time.monotonic()
         while time.monotonic() - t < a.drain:
-            sent = [m for m in stats.messages.values() if m.phase == name]
+            sent = stats.by_phase.get(name, [])
             if all(m.status != 200 or len(m.latencies) >= m.expected for m in sent):
                 return True
             if await wait(stop, 1.0):
@@ -678,7 +684,13 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
             taken_over = True
         else:
             seeded, room_ids = await seed(
-                admin, a.api_url, run_id, max(a.steps), membership, state
+                admin,
+                a.api_url,
+                run_id,
+                max(a.steps),
+                membership,
+                state,
+                concurrency=a.concurrency,
             )
             made = []
         for c in made:
@@ -807,7 +819,10 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 phases[-1]["rate"] = r
                 why = broken(
                     phase_summary(
-                        phases[-1], stats, sampler.samples, connected_log.get(name, [])
+                        phases[-1],
+                        stats,
+                        sampler.by_phase.get(name, []),
+                        connected_log.get(name, []),
                     )
                 )
                 if why:
@@ -871,7 +886,12 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     for p in phases:
         p["rds"] = await asyncio.to_thread(rds_cpu, a, p["start"], p["end"])
     summaries = [
-        phase_summary(p, stats, sampler.samples, connected_log.get(p["name"], []))
+        phase_summary(
+            p,
+            stats,
+            sampler.by_phase.get(p["name"], []),
+            connected_log.get(p["name"], []),
+        )
         for p in phases
     ]
     _write_jsonl(out / "samples.jsonl", sampler.samples)

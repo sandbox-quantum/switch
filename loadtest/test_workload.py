@@ -91,10 +91,10 @@ def test_payload_sizes_and_token():
     [
         ("switch", ""),
         ("switch-prod", ""),
-        ("switch-staging", "https://switch-api.tail.ts.net"),
-        ("switch-staging", "https://switch-gateway.tail.ts.net"),
-        ("switch-staging", "https://switch-prod-api.example.com"),
-        ("switch-staging", "http://switch-switch-core.switch.svc:8000"),
+        ("switch-test", "https://switch-api.tail.ts.net"),
+        ("switch-test", "https://switch-gateway.tail.ts.net"),
+        ("switch-test", "https://switch-prod-api.example.com"),
+        ("switch-test", "http://switch-switch-core.switch.svc:8000"),
     ],
 )
 def test_refuses_pilot_and_prod(ns, url):
@@ -102,10 +102,10 @@ def test_refuses_pilot_and_prod(ns, url):
         guard_target(ns, url)
 
 
-def test_allows_staging_and_dev_abel():
-    guard_target("switch-staging", "https://switch-staging-api.tail.ts.net")
-    guard_target("switch-dev-abel", "https://switch-dev-abel-gateway.tail.ts.net")
+def test_allows_other_namespaces():
+    guard_target("switch-test", "https://switch-test-api.tail.ts.net")
+    guard_target("switch-qa", "https://switch-qa-gateway.tail.ts.net")
     guard_target(
-        "switch-staging",
-        "http://switch-staging-switch-core.switch-staging.svc.cluster.local:8000",
+        "switch-test",
+        "http://switch-test-switch-core.switch-test.svc.cluster.local:8000",
     )

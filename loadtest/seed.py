@@ -165,7 +165,8 @@ async def seed(
     n_agents: int,
     membership: list[list[int]],
     state: dict,
-    concurrency: int = 8,
+    *,
+    concurrency: int,
 ) -> tuple[list[SeededAgent], list[str]]:
     """Create the key, the agents and the rooms. Records each id in `state`
     as it is made, so a failure part way still tears down what exists."""
@@ -222,7 +223,8 @@ async def seed_managed(
     n_controllers: int,
     membership: list[list[int]],
     state: dict,
-    concurrency: int = 8,
+    *,
+    concurrency: int,
 ) -> tuple[list[SeededAgent], list[str], list[SeededController]]:
     """Create the controllers, the agents they will run and the rooms, through
     the gateway's management routes, as Switch Console does. The agents are

@@ -31,13 +31,13 @@ def phase_summary(
     """The numbers for one measured window (`phase` has its name, scenario,
     length in seconds and the target agent count)."""
     name, secs = phase["name"], phase["seconds"]
-    msgs = [m for m in stats.messages.values() if m.phase == name]
+    msgs = stats.by_phase.get(name, [])
     ok = [m for m in msgs if m.status == 200]
     lat = [x for m in ok for x in m.latencies]
     send = [m.acked - m.sent for m in ok if m.acked is not None]
     expected = sum(m.expected for m in ok)
     got = sum(min(len(m.latencies), m.expected) for m in ok)
-    ev = [e for e in stats.events if e["phase"] == name]
+    ev = stats.events_by_phase.get(name, [])
     count = defaultdict(int)
     for e in ev:
         count[e["kind"]] += 1
@@ -61,6 +61,7 @@ def phase_summary(
         + stats.read_errors.get(name, 0)
         + count["refused"]
         + count["drop"]
+        + count["controller_drop"]
         + count["connect_failed"]
         + count["evicted"]
     )
@@ -97,6 +98,8 @@ def phase_summary(
         # over), and controller sockets that dropped or were refused.
         "stood_down": count["stood_down"],
         "controller_drops": count["controller_drop"],
+        # Agents a dropped controller socket took offline with it.
+        "detached": count["detached"],
         "controller_connect_failures": count["controller_connect_failed"],
         "errors": errors,
         "harness_lag_ms_max": round(stats.lag_max.get(name, 0.0) * 1000, 1),

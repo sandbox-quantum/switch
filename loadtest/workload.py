@@ -71,14 +71,15 @@ def _payload_size(rng: random.Random, lo: int, hi: int) -> int:
 
 
 def _pick(
-    rng: random.Random, rooms: list[list[int]], active: int, hot_room: int | None
+    rng: random.Random,
+    rooms: list[list[int]],
+    live: list[int],
+    active: int,
+    hot_room: int | None,
 ) -> tuple[int, int]:
-    """A room with at least two connected members, and a connected sender in it."""
-    if hot_room is not None:
-        room = hot_room
-    else:
-        live = [j for j, members in enumerate(rooms) if _live(members, active) >= 2]
-        room = rng.choice(live)
+    """A room with at least two connected members (`live`, the same for a
+    whole schedule), and a connected sender in it."""
+    room = hot_room if hot_room is not None else rng.choice(live)
     senders = [a for a in rooms[room] if a < active]
     return room, rng.choice(senders)
 
@@ -121,7 +122,8 @@ def build_schedule(
     if scenario == "idle":
         return []
     rng = rng_for(seed, "schedule", scenario, step)
-    if not any(_live(m, active) >= 2 for m in rooms):
+    live = [j for j, members in enumerate(rooms) if _live(members, active) >= 2]
+    if not live:
         raise ValueError(f"no room has two connected members at {active} agents")
     sends: list[Send] = []
     t = 0.0
@@ -129,7 +131,7 @@ def build_schedule(
         t += rng.expovariate(rate)
         if t >= duration:
             break
-        room, sender = _pick(rng, rooms, active, None)
+        room, sender = _pick(rng, rooms, live, active, None)
         sends.append(
             Send(t, room, sender, _payload_size(rng, payload_min, payload_max))
         )
@@ -145,7 +147,7 @@ def build_schedule(
                 at = start + rng.random() * burst_window
                 if at >= duration:
                     continue
-                room, sender = _pick(rng, rooms, active, hot)
+                room, sender = _pick(rng, rooms, live, active, hot)
                 sends.append(
                     Send(at, room, sender, _payload_size(rng, payload_min, payload_max))
                 )

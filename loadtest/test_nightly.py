@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import signal
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,12 +32,13 @@ from nightly import (  # noqa: E402
 from run import parse_args  # noqa: E402
 
 ENV = {
-    "LOADTEST_NAMESPACE": "switch-staging",
-    "LOADTEST_DEPLOYMENT": "switch-staging-switch-core",
-    "LOADTEST_API_URL": "http://switch-staging-switch-core.switch-staging.svc:8000",
-    "LOADTEST_CLUSTER": "switch",
-    "LOADTEST_CORE_NODEGROUP": "staging-",
-    "LOADTEST_HARNESS_NODEGROUP": "loadtest-harness-",
+    "LOADTEST_NAMESPACE": "switch-test",
+    "LOADTEST_DEPLOYMENT": "switch-test-switch-core",
+    "LOADTEST_API_URL": "http://switch-test-switch-core.switch-test.svc:8000",
+    "LOADTEST_CLUSTER": "test-cluster",
+    "LOADTEST_CORE_NODEGROUP": "core-",
+    "LOADTEST_HARNESS_NODEGROUP": "harness-",
+    "AWS_REGION": "us-east-1",
     "LOADTEST_BUCKET": "bucket",
 }
 
@@ -93,7 +96,7 @@ def test_the_harness_takes_the_nightly_rates_and_durations():
     cfg = _cfg()
     a = parse_args(
         [
-            "--namespace", "switch-staging", "--steps", "1000", "--controllers", "50",
+            "--namespace", "switch-test", "--steps", "1000", "--controllers", "50",
             "--rates", ",".join(f"{r:g}" for r in cfg.worker_rates()),
             "--rate-duration", ",".join(f"{d:g}" for d in cfg.durations()),
         ]
@@ -114,6 +117,17 @@ def test_the_harness_takes_the_nightly_rates_and_durations():
 def test_settings_that_cannot_run_are_refused(env, why):
     with pytest.raises(SystemExit, match=why):
         _cfg(**env)
+
+
+def test_the_region_comes_from_the_environment_and_is_needed():
+    assert _cfg().region == "us-east-1"
+    env = {k: v for k, v in ENV.items() if k != "AWS_REGION"}
+    assert (
+        Config.from_env({**env, "AWS_DEFAULT_REGION": "eu-north-1"}).region
+        == "eu-north-1"
+    )
+    with pytest.raises(SystemExit, match="AWS_REGION is not set"):
+        Config.from_env(env)
 
 
 def test_workers_add_up_by_position_and_the_first_broken_step_is_named():
@@ -341,7 +355,7 @@ def test_day_sizes_try_every_step_and_say_which_failed(monkeypatch):
         nightly, "size_nodegroup", lambda cfg, prefix, n: sized.append((prefix, n))
     )
     left = nightly.day_sizes(_cfg())
-    assert sized == [("staging-", 1), ("loadtest-harness-", 0)]
+    assert sized == [("core-", 1), ("harness-", 0)]
     assert left == ["switch-core: RuntimeError: the server is unreachable"]
 
 
@@ -362,3 +376,198 @@ def test_down_says_so_when_staging_stays_at_its_night_size(monkeypatch):
         "⚠️ staging may still be at its night size: putting it back failed for "
         "switch-core's nodes: AccessDenied"
     ]
+
+
+def _pod(hash_: str, build: str, ready: bool = True, node: str = "n1") -> dict:
+    return {
+        "metadata": {
+            "labels": {"pod-template-hash": hash_, "helm.sh/chart": f"switch-{build}"}
+        },
+        "spec": {
+            "nodeName": node if ready else None,
+            "containers": [{"name": "switch-core", "image": f"core:{build}"}],
+        },
+        "status": {"containerStatuses": [{"ready": True, "restartCount": 0}]}
+        if ready
+        else {},
+    }
+
+
+def test_the_build_is_what_the_ready_pods_run_not_the_template(monkeypatch):
+    # A rollout to b2 that cannot find room for its first pod: the pods still
+    # run b1, and the Pending one is no part of what the night measures.
+    deployment = {
+        "metadata": {"labels": {"helm.sh/chart": "switch-b2"}, "generation": 3},
+        "spec": {
+            "replicas": 2,
+            "selector": {"matchLabels": {"c": "core"}},
+            "template": {
+                "spec": {"containers": [{"name": "switch-core", "image": "core:b2"}]}
+            },
+        },
+        "status": {"updatedReplicas": 1, "observedGeneration": 3},
+    }
+    pods = {
+        "items": [
+            _pod("h1", "b1"),
+            _pod("h1", "b1", node="n2"),
+            _pod("h2", "b2", ready=False),
+        ]
+    }
+
+    def kubectl(cfg, *args):
+        return json.dumps(deployment if args[1] == "deployment" else pods)
+
+    monkeypatch.setattr(nightly, "kubectl", kubectl)
+    s = nightly.core_state(_cfg())
+    assert s["build"] == "b1" and s["image"] == "core:b1"
+    assert s["ready"] == 2 and s["pod_template_hash"] == ["h1"]
+    assert s["updated"] == 1 and s["by_node"] == {"n1": 1, "n2": 1}
+
+
+class _Proc:
+    """A worker process that has exited with `code`, or runs until signalled."""
+
+    def __init__(self, code: int | None = None) -> None:
+        self.returncode = code
+        self.signals: list[int] = []
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self) -> int | None:
+        return self.returncode
+
+    def send_signal(self, sig: int) -> None:
+        self.signals.append(sig)
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
+def _fake_workers(
+    monkeypatch, tmp_path, logs: dict[int, str], codes: dict[int, int | None]
+):
+    started = []
+
+    def start(cfg, run_id, seed, extra, out):
+        log = tmp_path / f"{run_id}.log"
+        log.write_text(logs.get(seed, ""))
+        w = nightly.Worker(seed, run_id, log, _Proc(codes.get(seed)))
+        started.append(w)
+        return w
+
+    monkeypatch.setattr(nightly, "start", start)
+    monkeypatch.setattr(nightly.time, "sleep", lambda s: None)
+    return started
+
+
+def test_a_worker_that_crashes_after_its_rates_stops_the_night_and_is_named(
+    monkeypatch, tmp_path
+):
+    cfg = _cfg(WORKERS="2", AGENTS="2000", CONTROLLERS="100")
+    ready = "step 1: 1000/1000 agents connected\nwaiting for the go\n"
+    started = _fake_workers(monkeypatch, tmp_path, {1: ready, 2: ready}, {})
+
+    def sleep(seconds):
+        # Worker 2 fails once the rates have started.
+        w = started[1] if len(started) > 1 else None
+        if w and (tmp_path / "rates.go").exists() and w.proc.returncode is None:
+            w.log.write_text(ready + "run failed: RuntimeError: socket gone\n")
+            w.proc.returncode = 1
+
+    monkeypatch.setattr(nightly.time, "sleep", sleep)
+    workers: list = []
+    until = datetime.now(UTC) + timedelta(hours=1)
+    stopped, rates_started = nightly.run_workers(
+        cfg, {"base": "p"}, "n1", tmp_path, until, workers
+    )
+    assert rates_started and workers == started and len(workers) == 2
+    assert stopped == "worker 2: run failed: RuntimeError: socket gone"
+    assert workers[0].proc.signals  # the other one was stopped
+
+
+def test_a_worker_that_exits_unclean_after_a_break_fails_the_night(
+    monkeypatch, tmp_path
+):
+    cfg = _cfg(WORKERS="2", AGENTS="2000", CONTROLLERS="100")
+    ready = "step 1: 1000/1000 agents connected\nwaiting for the go\n"
+    _fake_workers(
+        monkeypatch,
+        tmp_path,
+        {
+            1: ready + "  steady150 broke (p99 25 s); not stepping higher\n",
+            2: ready + "teardown failed\n",
+        },
+        {1: 0, 2: 1},
+    )
+    workers: list = []
+    until = datetime.now(UTC) + timedelta(hours=1)
+    stopped, _ = nightly.run_workers(cfg, {"base": "p"}, "n1", tmp_path, until, workers)
+    assert stopped == "worker 2: exited 1: teardown failed"
+
+
+def test_a_seeder_still_running_is_stopped_before_its_batch_is_removed(
+    monkeypatch, tmp_path
+):
+    cfg = _cfg(
+        WORKERS="2", AGENTS="2000", CONTROLLERS="100", BUCKET=f"file://{tmp_path}"
+    )
+    seeders = []
+
+    class Stopped(Exception):
+        pass
+
+    def start(cfg, run_id, seed, extra, out):
+        proc = _Proc()
+
+        def wait():
+            raise Stopped  # the pod's SIGTERM, arriving while it makes agents
+
+        proc.wait = wait
+        w = nightly.Worker(seed, run_id, tmp_path / f"{run_id}.log", proc)
+        seeders.append(w)
+        return w
+
+    removed = []
+    monkeypatch.setattr(nightly, "start", start)
+    monkeypatch.setattr(nightly.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        nightly,
+        "remove_population",
+        lambda cfg, pop, out: removed.append(
+            (dict(pop), list(seeders[0].proc.signals))
+        ),
+    )
+    with pytest.raises(Stopped):
+        nightly.seed_population(cfg, "n1", tmp_path)
+    # Stopped first, then removed, with the batch it was making counted.
+    assert removed == [({**removed[0][0], "batches": 1}, [signal.SIGINT])]
+    assert s3_get(cfg, "population.json")["batches"] == 1
+
+
+def test_a_pod_being_stopped_leaves_the_half_made_batches_to_the_next_night(
+    monkeypatch, tmp_path
+):
+    cfg = _cfg(
+        WORKERS="2", AGENTS="2000", CONTROLLERS="100", BUCKET=f"file://{tmp_path}"
+    )
+
+    def start(cfg, run_id, seed, extra, out):
+        proc = _Proc()
+
+        def wait():
+            raise nightly.Interrupted("the pod was stopped (SIGTERM)")
+
+        proc.wait = wait
+        return nightly.Worker(seed, run_id, tmp_path / f"{run_id}.log", proc)
+
+    removed = []
+    monkeypatch.setattr(nightly, "start", start)
+    monkeypatch.setattr(nightly.time, "sleep", lambda s: None)
+    monkeypatch.setattr(nightly, "remove_population", lambda *a: removed.append(a))
+    with pytest.raises(nightly.Interrupted):
+        nightly.seed_population(cfg, "n1", tmp_path)
+    pop = s3_get(cfg, "population.json")
+    assert removed == [] and pop["batches"] == 1 and not pop["complete"]

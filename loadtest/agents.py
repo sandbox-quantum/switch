@@ -64,17 +64,29 @@ class Message:
 class Stats:
     phase: str = "setup"
     messages: dict[str, Message] = field(default_factory=dict)
+    # The same messages and events by window, so reading one window's never
+    # goes through every window before it.
+    by_phase: dict[str, list[Message]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
     seen: set[tuple[str, str]] = field(default_factory=set)
     send_errors: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     reads: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
     read_errors: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     events: list[dict] = field(default_factory=list)  # connects, drops, refusals, gaps
+    events_by_phase: dict[str, list[dict]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
     lag_max: dict[str, float] = field(default_factory=lambda: defaultdict(float))
 
+    def add(self, msg: Message) -> None:
+        self.messages[msg.token] = msg
+        self.by_phase[msg.phase].append(msg)
+
     def event(self, kind: str, agent: str, **kw) -> None:
-        self.events.append(
-            {"t": time.time(), "phase": self.phase, "kind": kind, "agent": agent, **kw}
-        )
+        e = {"t": time.time(), "phase": self.phase, "kind": kind, "agent": agent, **kw}
+        self.events.append(e)
+        self.events_by_phase[self.phase].append(e)
 
 
 class Agent:
@@ -389,7 +401,7 @@ async def _post(
         time.monotonic(),
         expected,
     )
-    stats.messages[token] = msg
+    stats.add(msg)
     content = payload(token, send.size)
     if sender.mentions_receivers:
         names = (

@@ -10,12 +10,14 @@
 #                            lock waits, and transactions per second. Connects
 #                            with the pod's own DB_* environment.
 #
-# Standard library only in `pod` mode; `db` mode uses asyncpg, which the
-# switch-core image already has.
+# asyncpg is for `db` mode; the switch-core image already has it.
+import asyncio
 import json
 import os
 import sys
 import time
+
+import asyncpg
 
 
 def _read(path):
@@ -51,10 +53,6 @@ def pod(interval):
 
 
 async def db(interval):
-    import asyncio
-
-    import asyncpg
-
     conn = await asyncpg.connect(
         host=os.environ["DB_HOST"],
         port=int(os.environ.get("DB_PORT") or 5432),
@@ -100,8 +98,6 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "pod"
     every = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
     if mode == "db":
-        import asyncio
-
         asyncio.run(db(every))
     else:
         pod(every)

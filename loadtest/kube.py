@@ -19,6 +19,7 @@ import re
 import subprocess
 import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -137,7 +138,7 @@ class Kube:
 
     def public_urls(self) -> tuple[str | None, str | None]:
         """The gateway and API URLs this release was deployed with
-        (FRONTEND_BASE_URL and GATEWAY_PUBLIC_URL, from napoleon's values)."""
+        (FRONTEND_BASE_URL and GATEWAY_PUBLIC_URL, from the release's values)."""
         env = self.core_env()
         gw = env.get("FRONTEND_BASE_URL", {}).get("value")
         api = env.get("GATEWAY_PUBLIC_URL", {}).get("value")
@@ -182,6 +183,8 @@ class Sampler:
     rediscover: float = 10.0
     phase: str = "setup"
     samples: list[dict] = field(default_factory=list)
+    # The same samples by window, as each line is tagged with one.
+    by_phase: dict[str, list[dict]] = field(default_factory=lambda: defaultdict(list))
     pods_seen: dict[str, dict] = field(default_factory=dict)
     _procs: dict[tuple[str, str], asyncio.subprocess.Process] = field(
         default_factory=dict
@@ -250,6 +253,7 @@ class Sampler:
             d["pod"] = pod
             d["phase"] = self.phase
             self.samples.append(d)
+            self.by_phase[self.phase].append(d)
         await proc.wait()
         # Ended on its own (pod gone, exec dropped): forget it, so the next
         # discovery starts it again if the pod is still there.

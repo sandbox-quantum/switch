@@ -54,6 +54,9 @@ INITIAL_BACKOFF_S = 1.0
 MAX_BACKOFF_S = 8.0
 # Exchanged again this long before the access token (an hour) runs out.
 TOKEN_MARGIN_S = 300.0
+# A call on the socket the server has not answered by then is a failed send,
+# as an HTTP call is after its client's timeout.
+CALL_TIMEOUT_S = 60.0
 
 
 def _now() -> str:
@@ -229,7 +232,9 @@ class FakeController:
         now = time.monotonic()
         for a in self.agents.values():
             if a.connected.is_set():
-                self.stats.event("drop", a.s.name, why=why)
+                # Not a "drop": the socket's own controller_drop is the error,
+                # counted once however many agents it carried.
+                self.stats.event("detached", a.s.name, why=why)
                 a.connected.clear()
                 a.waiting_since = now
 
@@ -327,7 +332,8 @@ class FakeController:
     ) -> tuple[int, object]:
         """One of its agents' operations as a call on the socket: the status and
         body it is answered with. Raises ConnectionError when the socket is
-        not open or takes no calls, or ends before the answer."""
+        not open or takes no calls, ends before the answer, or gives none
+        within CALL_TIMEOUT_S."""
         ws = self._ws
         if ws is None or not self.takes_calls:
             raise ConnectionError("no socket that takes calls")
@@ -348,9 +354,11 @@ class FakeController:
                     }
                 )
             )
-            return await answer
+            return await asyncio.wait_for(answer, CALL_TIMEOUT_S)
         except websockets.ConnectionClosed as exc:
             raise ConnectionError(type(exc).__name__) from exc
+        except TimeoutError as exc:
+            raise ConnectionError(f"no answer in {CALL_TIMEOUT_S:g}s") from exc
         finally:
             self._answers.pop(id_, None)
 
