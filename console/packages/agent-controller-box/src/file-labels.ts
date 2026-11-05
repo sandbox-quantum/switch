@@ -11,6 +11,14 @@ export type LabelledAgent = {
   directory: string | null;
 };
 
+/**
+ * What Core takes as an agent's name in a listing (`VALID_AGENT_NAME_RE`, at
+ * most 255 characters). A name outside it is left out of the entry, never sent:
+ * one odd name must not fail a whole listing in Core.
+ */
+const AGENT_KEY = /^[a-z0-9][a-z0-9._-]*$/;
+const AGENT_KEY_MAX = 255;
+
 /** The label for every top-level folder that isn't exactly one agent's working folder. */
 export const SHARED_LABEL = 'Shared';
 
@@ -56,7 +64,10 @@ export function agentFor(
   labels: ReadonlyMap<string, FolderLabel>,
   folder: string
 ): string | undefined {
-  return labels.get(folder)?.agent;
+  const agent = labels.get(folder)?.agent;
+  return agent !== undefined && agent.length <= AGENT_KEY_MAX && AGENT_KEY.test(agent)
+    ? agent
+    : undefined;
 }
 
 /** The top-level folder name an agent works in, if its working folder is exactly one level under the root. */

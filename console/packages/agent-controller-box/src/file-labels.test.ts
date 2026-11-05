@@ -68,4 +68,18 @@ describe('topLevelLabels', () => {
     expect(agentFor(labels, 'common')).toBeUndefined();
     expect(agentFor(labels, 'downloads')).toBeUndefined();
   });
+
+  it('leaves the agent key out, keeping the label, when the name isn’t one Core takes', () => {
+    const long = 'a'.repeat(256);
+    const labels = topLevelLabels(ROOT, [
+      { name: long, directory: `${ROOT}/long-one` },
+      { name: 'Upper_Case', directory: `${ROOT}/odd-one` },
+      { name: 'b'.repeat(255), directory: `${ROOT}/max-one` },
+    ]);
+    expect(agentFor(labels, 'long-one')).toBeUndefined();
+    expect(labelFor(labels, 'long-one')).toBe(long);
+    expect(agentFor(labels, 'odd-one')).toBeUndefined();
+    expect(labelFor(labels, 'odd-one')).toBe('Upper_Case');
+    expect(agentFor(labels, 'max-one')).toBe('b'.repeat(255));
+  });
 });
