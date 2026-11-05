@@ -59,6 +59,7 @@ from switch_core.db.models import (
     MachineWorkspace,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
+from switch_core.db.standing import StandingLost, require_standing
 from switch_core.db.stores.agent_controller_operation_store import (
     AgentControllerOperationStore,
 )
@@ -201,6 +202,14 @@ class ManagementService:
             type=key_type,
         )
         await self.api_keys.create(session, key)
+        # Every controller credential and enrollment code is minted here, and
+        # each is a bearer credential: the write waited for any removal of the
+        # owner under way, so ask whether they still stand here
+        # (`db/standing.py`).
+        try:
+            await require_standing(session, key.tenant_id, owner_id)
+        except StandingLost as lost:
+            raise ManagementError(403, reason_codes.FORBIDDEN, str(lost)) from lost
         return key, secret
 
     async def create_controller(
