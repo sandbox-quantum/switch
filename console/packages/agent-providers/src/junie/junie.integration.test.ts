@@ -35,9 +35,10 @@ it('discovers and reselects the configured free custom model without a model pro
       mcpServers: {}, connectorMcpServers: [],
     })
     const models = await adapter.listModels('model-metadata')
-    console.info('Junie advertised model IDs:', JSON.stringify(models.map((model) => model.id)))
-    expect(models.some((model) => model.id === env.JUNIE_MODEL)).toBe(true)
-    await adapter.setModel('model-metadata', { id: env.JUNIE_MODEL })
+    // Junie advertises versioned ACP IDs rather than CLI model selectors.
+    const freeModels = models.filter((model) => model.id.endsWith(':custom:custom:openrouter-free'))
+    expect(freeModels).toHaveLength(1)
+    await adapter.setModel('model-metadata', { id: freeModels[0]!.id })
   } finally {
     await adapter.stopAll()
     await rm(cwd, { recursive: true, force: true })
