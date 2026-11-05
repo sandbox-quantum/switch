@@ -47,6 +47,10 @@ vi.mock('@renderer/features/chats/stores/chats', async () => {
       unlisted: new Set<string>(),
       archived: new Map<string, unknown>(),
       archivedError: null,
+      unreadCounts: new Map<string, number>(),
+      unread(roomId: string) {
+        return this.unreadCounts.get(roomId) ?? 0;
+      },
     }),
   };
 });
@@ -287,6 +291,38 @@ it('says so when the archived chats cannot be listed', async () => {
   await render();
   await act(async () => toggle('Archived')!.click());
   expect(container.textContent).toContain('Your archived chats could not be listed.');
+});
+
+it('lists your own archived room under Mine even when the server says nothing of membership', async () => {
+  archivedRooms.list = [room('my-old-room', { ownerId: 'me', archived: true })];
+  await render();
+  await settle();
+  await act(async () => toggle('Archived')!.click());
+  await settle();
+  expect(names()).toEqual(['my-old-room']);
+});
+
+it('does not claim there are no archived rooms beside an error listing them', async () => {
+  runInAction(() => {
+    chatsStore.archivedError = 'Your archived chats could not be listed.';
+  });
+  await render();
+  await settle();
+  await act(async () => toggle('Archived')!.click());
+  await settle();
+  expect(container.textContent).not.toContain('No archived rooms.');
+});
+
+it('labels your unread messages on a room’s card as unread', async () => {
+  runInAction(() => {
+    (chatsStore as unknown as { unreadCounts: Map<string, number> }).unreadCounts.set(
+      'bobs-chat',
+      3
+    );
+  });
+  await render();
+  expect(cardFor('bobs-chat').textContent).toContain('3 unread');
+  expect(cardFor('yaml-room').textContent).not.toContain('unread');
 });
 
 it('archives a room from its menu only once you confirm', async () => {

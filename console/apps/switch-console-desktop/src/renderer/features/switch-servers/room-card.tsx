@@ -39,11 +39,14 @@ export function AppMark({ bridgeType, size = 14 }: { bridgeType: string | null; 
  */
 export function RoomCard({
   card,
+  unread,
   showYours,
   onOpen,
   onArchive,
 }: {
   card: RoomCardData;
+  /** Messages here you have not read, as the sidebar counts them; 0 for none. */
+  unread: number;
   /** Marks your rooms "Yours": in All rooms, where they sit among everyone's. */
   showYours: boolean;
   onOpen: () => void;
@@ -117,6 +120,22 @@ export function RoomCard({
                 {countText(card.peopleCount, 'person', 'people')}
               </span>
             )}
+            {unread > 0 && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="pointer-events-auto relative ml-auto rounded-full bg-primary-button-background px-2 py-0.5 text-[11px] leading-none font-medium text-primary-button-foreground tabular-nums">
+                      {unreadText(unread)}
+                    </span>
+                  }
+                />
+                <TooltipContent>
+                  {unread === 1
+                    ? '1 message you haven’t read'
+                    : `${unread} messages you haven’t read`}
+                </TooltipContent>
+              </Tooltip>
+            )}
           </span>
         </div>
       </div>
@@ -150,4 +169,9 @@ export function RoomCard({
       )}
     </div>
   );
+}
+
+/** "3 unread", or "99+ unread" past that: the word says what the number counts. */
+export function unreadText(count: number): string {
+  return `${count > 99 ? '99+' : count} unread`;
 }

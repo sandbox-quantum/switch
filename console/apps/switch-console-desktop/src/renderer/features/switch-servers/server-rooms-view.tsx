@@ -7,6 +7,7 @@ import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { useArchiveRoomConfirm } from '@renderer/features/switch-rooms/archive-room-confirm';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
+import { roomDetailKey } from '@renderer/features/switch-rooms/room-participants';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -118,7 +119,8 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
     const chat = room.isConsoleChat
       ? (chatsStore.chats.get(room.id) ?? chatsStore.archived.get(room.id))
       : undefined;
-    return chat ? { ...card, peopleCount: chat.memberCount } : card;
+    // An older server reports no members as 0, which is not known rather than none.
+    return chat ? { ...card, peopleCount: chat.memberCount > 0 ? chat.memberCount : null } : card;
   };
   const activeCards = all.map(toCard);
   const archivedCards = [
@@ -139,9 +141,10 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
     state === 'archived' &&
     (archivedRoomsQuery.isError || (chatsHere && chatsStore.archivedError !== null));
 
-  const archivedSummary = (card: RoomCardData) =>
-    (archivedRoomsQuery.data ?? []).find((each) => each.id === card.id) ??
-    all.find((each) => each.id === card.id);
+  const summaries = new Map(
+    [...all, ...(archivedRoomsQuery.data ?? [])].map((room) => [room.id, room] as const)
+  );
+  const archivedSummary = (card: RoomCardData) => summaries.get(card.id);
   const mayArchive = (card: RoomCardData): boolean => {
     if (card.isConsoleChat)
       return (
@@ -161,7 +164,13 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
         if (archived) await chatsStore.archive(serverId, card.id);
         else await chatsStore.unarchive(serverId, card.id);
       } else {
-        await rpc.workspaces.setRoomArchived({ workspaceId, roomId: card.id, archived });
+        const updated = await rpc.workspaces.setRoomArchived({
+          workspaceId,
+          roomId: card.id,
+          archived,
+        });
+        // The room's page reads its detail from the cache: give it the answer, as its own Archive does.
+        queryClient.setQueryData(roomDetailKey(workspaceId, card.id), updated);
         await queryClient.invalidateQueries({ queryKey: ['archived-rooms', workspaceId] });
         await switchRoomsStore.refreshRoomState();
       }
@@ -269,9 +278,14 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
             </p>
           )}
           {shown.length === 0 ? (
-            <p className="py-2 text-sm text-foreground-muted">
-              {emptyText({ rooms: cards.length, scope, state, query: filter.query })}
-            </p>
+            // While the archived rooms load, or after they failed, "none" would be a claim.
+            state === 'archived' && archivedRoomsQuery.isPending && !signedOut ? (
+              <p className="py-2 text-sm text-foreground-muted">Loading archived rooms…</p>
+            ) : archivedError ? null : (
+              <p className="py-2 text-sm text-foreground-muted">
+                {emptyText({ rooms: cards.length, scope, state, query: filter.query })}
+              </p>
+            )
           ) : (
             <div
               role="list"
@@ -282,6 +296,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
                 <div role="listitem" key={card.id}>
                   <RoomCard
                     card={card}
+                    unread={chatsStore.unread(card.id)}
                     showYours={scope === 'all'}
                     onOpen={() => void openRoom(card.id)}
                     onArchive={

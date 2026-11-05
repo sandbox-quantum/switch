@@ -86,7 +86,12 @@ export function roomCard(
     // app always reads 0 whoever is in it: not known, rather than none.
     peopleCount: bridged ? (room.connectedUserCount ?? null) : null,
     createdAt: room.createdAt,
-    mine: room.viewerIsMember || (viewer.listedIds?.has(room.id) ?? false),
+    // Yours as the sidebar counts it, owned or taken part in, plus what it lists as
+    // yours on a server that does not say: an archived room is in no sidebar.
+    mine:
+      (viewer.id !== null && room.ownerId === viewer.id) ||
+      room.viewerIsMember ||
+      (viewer.listedIds?.has(room.id) ?? false),
     archived: room.archived,
   };
 }

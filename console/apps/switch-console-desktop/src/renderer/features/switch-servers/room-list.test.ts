@@ -97,6 +97,11 @@ describe('a room as the Rooms page shows it', () => {
     expect(roomCard(room({}), VIEWER).mine).toBe(false);
   });
 
+  it('counts a room you own as yours, archived or not, whatever the server says of membership', () => {
+    expect(roomCard(room({ ownerId: 'u-1', archived: true }), VIEWER).mine).toBe(true);
+    expect(roomCard(room({ ownerId: 'u-1' }), { id: null }).mine).toBe(false);
+  });
+
   it('counts in words', () => {
     expect(countText(1, 'agent', 'agents')).toBe('1 agent');
     expect(countText(0, 'person', 'people')).toBe('0 people');

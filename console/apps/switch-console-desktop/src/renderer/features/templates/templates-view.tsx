@@ -204,7 +204,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [kind, setKind] = useState<KindFilter>(initialKind ?? 'all');
   // Navigating here without the param, as the sidebar does, shows every kind.
   useEffect(() => setKind(initialKind ?? 'all'), [initialKind]);
-  const [onlyMine, setOnlyMine] = useState(false);
+  const [mineChosen, setOnlyMine] = useState(false);
+  // With nobody signed in there is no Mine to show, nor a control to leave it: All it is.
+  const onlyMine = mineChosen && meId !== null;
   const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
