@@ -557,6 +557,7 @@ export class AcpAdapter implements ProviderAdapter {
     // nothing but its id: what it leaves out is the announced call's.
     const announced = state.items.get(toolCall.toolCallId);
     const kind =
+      this.hooks.toolKind?.(toolCall) ??
       toolCall.kind ??
       (announced?.type === 'command_execution'
         ? 'execute'
@@ -673,6 +674,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
+    const kind = this.hooks.toolKind?.(update) ?? update.kind;
     const server = this.hooks.mcpServerOf?.(update, state.mcpNames);
     if (server !== undefined) state.mcpToolCalls.set(update.toolCallId, update);
     const text = (update.content ?? [])
@@ -696,9 +698,9 @@ export class AcpAdapter implements ProviderAdapter {
         this.hooks.itemType?.(update) ??
         (server !== undefined || update.toolCallId.startsWith('mcp_')
           ? 'mcp_tool_call'
-          : update.kind === 'execute'
+          : kind === 'execute'
             ? 'command_execution'
-            : update.kind === 'edit'
+            : kind === 'edit'
               ? 'file_change'
               : 'tool_call'),
       // A later update repeating the bare tool name keeps the hook's title.

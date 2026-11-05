@@ -256,6 +256,12 @@ cached credentials first.
 `session/new`, so its `launch` writes the session's servers to a private
 temporary `cline_mcp_settings.json` and points `CLINE_MCP_SETTINGS_PATH` at
 it; the file is removed when the process exits, and the person's own Cline
-settings are not touched. Its sign-in check reads the sign-in Cline saved
+settings are not touched. `cline --acp` runs its sessions in a hub daemon that
+outlives it and reads `CLINE_MCP_SETTINGS_PATH` once, when it starts, so each
+session gets a daemon of its own (`CLINE_HUB_DISCOVERY_PATH` in the same
+folder), stopped with `cline hub stop` when the session ends. On Windows Cline
+starts a stdio server through the shell, so a command or argument with a space
+is quoted. Its sign-in check reads the sign-in Cline saved
 (`providers.json`) and never calls `authenticate`. Tool calls are titled
-`<tool>: <input>`, and an MCP tool is named `<server>__<tool>`.
+`<tool>: <input>`, and an MCP tool is named `<server>__<tool>`. Cline reports
+`apply_patch` as kind `other`, so `toolKind` names it an edit.

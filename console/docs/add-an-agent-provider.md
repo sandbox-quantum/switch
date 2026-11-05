@@ -106,6 +106,7 @@ Add hooks only for what really differs:
 | `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…), as one of the registered server names it is given. Without it, tools on registered servers still ask for permission. |
 | `itemType` | Vendor typing for tool calls, such as subagents. |
 | `toolTitle` | A title for tool calls the agent titles only with the tool's name (DeepSeek Harness): the command, the file. |
+| `toolKind` | The ACP `kind` of a tool the agent leaves unlabelled (Cline reports `apply_patch` as `other`). It decides the approval a call needs, such as whether `auto-accept-edits` lets it through, and the card it shows as. |
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
 | `clientCapabilities` | Client capabilities to announce in `initialize` beyond the protocol's own, for requests your `extensions` answer. An agent that asks its questions as ACP form elicitations needs only `FORM_ELICITATION_CAPABILITIES` here and `answerFormElicitations` as `extensions`, both from `src/acp/elicitation.ts`, as Antigravity and Mistral Vibe use them. |
