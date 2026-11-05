@@ -21,14 +21,19 @@ import { useAgents } from "../../data/hooks";
  * gets undecided messages while the decision service is failing. Shows what
  * the server says: the toggle never flips before the server has answered,
  * and where auto-route cannot work here it says why, in the server's words.
+ * Anyone who may write to the room may turn it on or off (`can_write`);
+ * naming the triage agent takes the room's owner or a workspace admin
+ * (`can_manage`). What the viewer may not change is held, with the reason.
  */
 export default function RoomAutoRouteSection({
   room,
   autoRoute,
+  canWrite,
   canManage,
 }: {
   room: RoomDetail;
   autoRoute: RoomAutoRoute;
+  canWrite: boolean;
   canManage: boolean;
 }) {
   const { data: allAgents } = useAgents();
@@ -82,11 +87,16 @@ export default function RoomAutoRouteSection({
             checked={state.on}
             onChange={(e) => save({ on: e.target.checked })}
             // Turning it off stays possible where it cannot work.
-            disabled={!canManage || saving || (!state.available && !state.on)}
+            disabled={!canWrite || saving || (!state.available && !state.on)}
           />
         }
         label={state.on ? "On" : "Off"}
       />
+      {!canWrite && (
+        <Typography variant="caption" color="text.secondary">
+          Turning auto-route on or off needs write access to this room.
+        </Typography>
+      )}
       <TextField
         select
         size="small"
@@ -98,7 +108,7 @@ export default function RoomAutoRouteSection({
         helperText={
           canManage
             ? "Gets the messages auto-route could not decide while the decision service is failing. Off by default."
-            : "Only the room's owner or a workspace admin can change auto-route."
+            : "Only the room's owner or a workspace admin can change this."
         }
       >
         <MenuItem value="">None</MenuItem>
