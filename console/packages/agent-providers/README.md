@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These adapters are the only Console session runtime.
 
 ## Shape
 
@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `antigravity-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection through a `model` config option, MCP registration, approvals and questions. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `kiro` | `kiro-cli acp`, ACP over stdio, on the generic ACP adapter | Native sessions and `session/load`, model selection through a `model` config option, MCP registration, approvals, and questions asked as permission requests. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -67,11 +68,12 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| kiro (ACP) | 3.0.0 | 9/10 (2026-11-04) | Kiro runs Switch's sessions on its V3 engine (it recognises the client); the run with the engine forced to V3 by flag matched. `user-input` is skipped: Kiro offers its `user_input` tool only in its spec workflows, so in the default `vibe` mode (and V2's default agent) it asks in prose and ends the turn. Once, the first session after a controller started was refused `session/set_model` (its `session/new` named no `model` option yet); the host's retry started it, and six more starts with a model did not repeat it. The suite skips itself until `kiro-cli whoami` says signed in; set `KIRO_API_KEY` in the shell to run it with a key, which the test passes through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Kiro run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -85,7 +87,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/kiro/kiro-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -108,3 +111,40 @@ call id starts with `interaction_`. Native session ids are stored with an
 `acp:` prefix; a conversation saved by the retired `agy` runtime starts fresh.
 Its sign-in check reads `authMethods` from the handshake and never calls
 `authenticate`, which would open a browser.
+
+**Kiro** runs `kiro-cli acp` with no flags. Kiro 3.0 picks the engine itself:
+its `acp.agentEngine` setting (V2 by default), except for a client it knows,
+and it knows Switch Console by the `clientInfo` name the adapter sends, so
+Switch sessions run on the V3 engine whatever that setting says. The V3 engine
+refuses V2's `--agent`, `--model` and `--trust-all-tools`, and none is needed:
+what a session can do is read from the handshake on either engine. Both
+advertise `loadSession`, images and HTTP MCP in `initialize`; V3 also lists
+its `_kiro/…` extension methods and session `close`/`fork`, and puts the model
+in a `model` config option beside its `mode` and `autopilot` options. V2's
+modes are its agents (`kiro_default`, `kiro_planner`), V3's are workflows
+(`vibe`, `spec`, `plan`…); neither is a permission level, so no mode is set and
+the runtime mode is applied to permission requests. V3 logs that it refreshes
+its access token through its host (`_kiro/auth/getAccessToken`), but
+`kiro-cli` answers that itself from its own login: no token request reaches
+Switch.
+
+Signed out, `kiro-cli acp` answers `initialize` itself, on every engine, with
+the single auth method `kiro-login`, and refuses `session/new` with "run
+`kiro-cli login`". The sign-in check reads `kiro-cli whoami --format json`
+(`{"account":null}` and exit 1 signed out, an `accountType` signed in,
+`ApiKey` for a `KIRO_API_KEY`) and falls back to that handshake when it cannot
+read the answer; it never sends `authenticate`. `KIRO_API_KEY` is passed
+through from the machine.
+
+V3's permission requests name the tool under the request's `_meta.kiro`
+(`toolId`, `command`, `mcpTool`) and leave the tool call's `kind` out, so the
+hooks copy the kind and the MCP server onto the tool call before the adapter
+reads them. Its "Always allow" without a scope is a rule for this session
+only, so it is offered as allow for this session; "Always deny" is not offered.
+When it does ask a structured question (only in its spec workflows), a
+client that does not declare Kiro's own question method gets it as a
+permission request whose options are all `allow_once` and which names no
+tool; that is asked as a question. On V2 the model list is the session's
+`models` list, set with
+`session/set_model`; on V3 it is the `model` config option. Sub-agent tasks are tool calls with
+`_meta.kiro.kind` set to `agent-subtask`.
