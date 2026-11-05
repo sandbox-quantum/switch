@@ -1,7 +1,11 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
+import {
+  generateSealingKeyPair,
+  PROVIDER_RUNTIMES,
+  sealProviderLogin,
+} from '@switch-console/agent-providers';
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -307,20 +311,22 @@ describe('ProviderStatuses', () => {
       onChange: () => changes++,
     });
     expect(statuses.snapshot()).toEqual([]);
+    // Every provider is reported; all but the missing one are probed.
+    const providers = PROVIDER_RUNTIMES.length;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(providers - 1);
+    expect(changes).toBe(providers);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(providers - 1);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(2 * (providers - 1));
+    expect(changes).toBe(providers);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(providers + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -425,7 +431,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(PROVIDER_RUNTIMES.length - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 

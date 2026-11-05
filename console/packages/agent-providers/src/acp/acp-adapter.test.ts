@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import type * as fs from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError } from '../adapter';
@@ -130,6 +132,235 @@ it('selects models through the model config option, refusing one it does not off
     value: 'deep',
   });
   expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
+});
+
+it('hands an agent that cannot take HTTP MCP each HTTP server as a stdio relay, and removes it after', async () => {
+  agent.capabilities = { mcpCapabilities: { http: true } };
+  const { adapter, server } = await start(
+    { ...dummy, httpMcpOverStdio: true },
+    {
+      mcpServers: {
+        switch: {
+          transport: 'http',
+          url: 'http://127.0.0.1:9/mcp',
+          headers: { Authorization: 'Bearer placeholder-token' },
+        },
+        echo: { transport: 'stdio', command: 'node', args: ['echo.js'] },
+      },
+    }
+  );
+  const sent = server.received.find((m) => m.method === 'session/new')?.params as {
+    mcpServers: Array<{ name: string; command?: string; args?: string[]; type?: string }>;
+  };
+  const relayed = sent.mcpServers.find((s) => s.name === 'switch')!;
+  expect(relayed.type).toBeUndefined();
+  expect(relayed.command).toBe(process.execPath);
+  expect(relayed.args?.[1]).toBe('http://127.0.0.1:9/mcp');
+  expect(JSON.stringify(sent)).not.toContain('placeholder-token');
+  expect(sent.mcpServers.find((s) => s.name === 'echo')).toMatchObject({ command: 'node' });
+  const relayDir = dirname(relayed.args![0]!);
+  expect(existsSync(relayDir)).toBe(true);
+  await adapter.stopSession('s');
+  await vi.waitFor(() => expect(existsSync(relayDir)).toBe(false));
+});
+
+it('resumes an agent that resumes at launch by launching it with the conversation and starting it new', async () => {
+  agent.capabilities = { loadSession: true };
+  const launched: Array<string | undefined> = [];
+  const atLaunch: AcpProviderHooks = {
+    ...dummy,
+    resumesAtLaunch: async () => true,
+    launch: ({ binaryPath, env, resume }) => {
+      launched.push(resume);
+      return { command: binaryPath, args: ['--acp'], env };
+    },
+  };
+  const { server, session } = await start(atLaunch, { resume: { nativeSessionId: 'native' } });
+  expect(launched).toEqual(['native']);
+  expect(session.nativeSessionId).toBe('native');
+  expect(server.received.map((m) => m.method)).toEqual(['initialize', 'session/new']);
+  expect(server.received.find((m) => m.method === 'session/new')?.params).not.toHaveProperty(
+    'sessionId'
+  );
+  await start(atLaunch);
+  expect(launched).toEqual(['native', undefined]);
+  await expect(
+    start(
+      { ...atLaunch, resumesAtLaunch: async () => false },
+      { resume: { nativeSessionId: 'gone' } }
+    )
+  ).rejects.toBeInstanceOf(ProviderConversationUnavailableError);
+  expect(launched).toEqual(['native', undefined]);
+});
+
+it('fails a resume the agent answered with another conversation, and removes its relays', async () => {
+  agent.capabilities = { mcpCapabilities: { http: true } };
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    resumesAtLaunch: async () => true,
+    httpMcpOverStdio: true,
+  };
+  await expect(
+    start(hooks, {
+      resume: { nativeSessionId: 'saved' },
+      mcpServers: { switch: { transport: 'http', url: 'http://127.0.0.1:9/mcp' } },
+    })
+  ).rejects.toThrow('Dummy ACP started conversation native when asked to resume saved.');
+  const sent = servers.at(-1)!.received.find((m) => m.method === 'session/new')?.params as {
+    mcpServers: Array<{ args: string[] }>;
+  };
+  expect(existsSync(dirname(sent.mcpServers[0]!.args[0]!))).toBe(false);
+});
+
+it('lists the model an agent runs from its own settings, never sending set_model for it', async () => {
+  agent.session = { models: { availableModels: [{ modelId: 'advertised', name: 'Advertised' }] } };
+  const seen: Array<Record<string, string>> = [];
+  const settings: AcpProviderHooks = {
+    ...dummy,
+    settingsModel: async (env) => {
+      seen.push(env);
+      return 'deep';
+    },
+  };
+  const { adapter, server } = await start(settings, { env: { HOME: '/h' }, model: { id: 'deep' } });
+  expect(seen).toEqual([{ HOME: '/h' }]);
+  expect(await adapter.listModels('s')).toEqual([{ id: 'deep', label: 'deep', options: {} }]);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'hi', model: { id: 'deep' } });
+  await server.waitFor('session/prompt');
+  expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
+});
+
+it('says, once, that another model asked for is not the one an agent runs from its settings', async () => {
+  const settings: AcpProviderHooks = { ...dummy, settingsModel: async () => 'deep' };
+  const { adapter, events, server } = await start(settings, { model: { id: 'fast' } });
+  await adapter.setModel('s', { id: 'fast' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'hi', model: { id: 'fast' } });
+  await server.waitFor('session/prompt');
+  expect(events.filter((e) => e.type === 'runtime.warning')).toEqual([
+    expect.objectContaining({
+      message:
+        "Dummy ACP runs the model in its own settings, so this session uses deep, not fast. To use fast, choose it in Dummy ACP's settings and start a new session.",
+    }),
+  ]);
+  expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
+  const unset = await start({ ...dummy, settingsModel: async () => null });
+  expect(await unset.adapter.listModels('s')).toEqual([]);
+  await unset.adapter.setModel('s', { id: 'fast' });
+  expect(unset.events.filter((e) => e.type === 'runtime.warning')).toEqual([
+    expect.objectContaining({
+      message: expect.stringContaining('which name none, so fast is not used'),
+    }),
+  ]);
+});
+
+const toolCall = (
+  toolCallId: string,
+  kind: string,
+  title: string,
+  meta?: Record<string, unknown>
+) => ({
+  method: 'session/update',
+  params: {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId,
+      kind,
+      title,
+      status: 'in_progress',
+      ...(meta ? { _meta: meta } : {}),
+    },
+  },
+});
+const confirmAll = (id: number) => ({
+  id,
+  method: 'session/request_permission',
+  params: {
+    sessionId: 'native',
+    toolCall: { toolCallId: 'confirmation-native', kind: 'other', title: 'Confirm Agent Actions' },
+    options: [
+      { optionId: 'accept', name: 'Yes, proceed', kind: 'allow_once' },
+      { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+    ],
+  },
+});
+const batched: AcpProviderHooks = {
+  ...dummy,
+  confirmsOpenToolCalls: (request) => request.toolCall.toolCallId.startsWith('confirmation-'),
+  mcpServerOf: (call) => call._meta?.server as string | undefined,
+};
+
+it('describes a confirmation of every open tool call by those calls, not by its own title', async () => {
+  const { adapter, events, server } = await start(batched);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send(toolCall('a', 'execute', 'Run the tests'));
+  server.send(toolCall('b', 'execute', 'Commit the fix'));
+  server.send(confirmAll(80));
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.requestType).toBe('command_execution_approval');
+  expect(opened.title).toBe('Dummy ACP asks to run 2 actions');
+  expect(opened.detail).toBe('- Run the tests\n- Commit the fix');
+});
+
+it('names the one call a confirmation covers, and forgets calls that have finished', async () => {
+  const { adapter, events, server } = await start(batched);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send(toolCall('a', 'execute', 'Run the tests'));
+  server.send({
+    method: 'session/update',
+    params: {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call_update', toolCallId: 'a', status: 'completed' },
+    },
+  });
+  server.send(toolCall('b', 'edit', 'Fix the typo'));
+  server.send(confirmAll(81));
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.requestType).toBe('file_change_approval');
+  expect(opened.title).toBe('Fix the typo');
+});
+
+it('allows a confirmation without asking only when every call it covers may run without asking', async () => {
+  const mcpServers = { echo: { transport: 'stdio' as const, command: 'node', args: ['echo.js'] } };
+  for (const [calls, prompted] of [
+    [[['a', 'other', 'Echo', { server: 'echo' }]], 0],
+    [
+      [
+        ['a', 'other', 'Echo', { server: 'echo' }],
+        ['b', 'execute', 'Run rm'],
+      ],
+      1,
+    ],
+    [[['a', 'other', 'Somebody else', undefined]], 1],
+  ] as const) {
+    const { adapter, events, server } = await start(batched, {
+      mcpServers,
+      connectorMcpServers: [],
+    });
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    for (const [id, kind, title, meta] of calls) server.send(toolCall(id, kind, title, meta));
+    server.send(confirmAll(82));
+    await flush();
+    expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(prompted);
+    if (!prompted)
+      expect(server.received.find((m) => m.id === 82)?.result).toEqual({
+        outcome: { outcome: 'selected', optionId: 'accept' },
+      });
+  }
+});
+
+it('allows a confirmation of edits alone in auto-accept-edits', async () => {
+  const { adapter, events, server } = await start(batched, { runtimeMode: 'auto-accept-edits' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send(toolCall('a', 'edit', 'Fix the typo'));
+  server.send(toolCall('b', 'edit', 'Fix another'));
+  server.send(confirmAll(83));
+  await flush();
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(0);
 });
 
 it('sends attachments as the agent advertises it can take them, else as resource links', async () => {

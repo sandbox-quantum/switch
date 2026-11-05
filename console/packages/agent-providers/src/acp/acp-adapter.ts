@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath, rm } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { ModelChoice } from '@switch-console/shared/session-v1';
@@ -30,8 +30,10 @@ import type {
   AcpProviderHooks,
   AcpSelectedAnswer,
   AcpSessionContext,
+  AcpToolCallSession,
 } from './hooks';
 import { acpMcpServers, requireHttpMcp } from './mcp';
+import { relayHttpMcpServers } from './mcp-relay';
 import {
   ACP_CANCELLED,
   modelConfigOption,
@@ -115,6 +117,18 @@ interface State {
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
+  /**
+   * For an agent that runs the model in its own settings: that model, or null
+   * when they name none. Undefined for every other agent.
+   */
+  settingsModel: string | null | undefined;
+  /** Models asked for that the settings model stood in for, each warned about once. */
+  modelsWarned: Set<string>;
+  /** The turn's tool calls as the agent announced them, until each finishes. */
+  openToolCalls: Map<string, AcpToolCall>;
+  /** Where this session's MCP relays and their headers are written, if anywhere. */
+  relayDir: string | null;
+  toolCallSession: AcpToolCallSession;
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -163,10 +177,18 @@ export class AcpAdapter implements ProviderAdapter {
         input.sessionId,
         prefix.legacyMessage
       );
+    const resumeId = input.resume?.nativeSessionId.slice(prefix?.prefix.length ?? 0);
+    if (resumeId && hooks.resumesAtLaunch && !(await hooks.resumesAtLaunch(resumeId, input.env)))
+      throw new ProviderConversationUnavailableError(
+        hooks.provider,
+        input.sessionId,
+        `${hooks.label} has no saved conversation ${resumeId} to resume.`
+      );
     const launch = await hooks.launch({
       binaryPath: this.options.binaryPath ?? hooks.defaultBinary,
       cwd,
       env: input.env,
+      ...(hooks.resumesAtLaunch && resumeId ? { resume: resumeId } : {}),
     });
     const client = new StdioJsonRpcClient({
       ...launch,
@@ -197,6 +219,11 @@ export class AcpAdapter implements ProviderAdapter {
       prompt: {},
       configOptions: [],
       models: [],
+      settingsModel: undefined,
+      modelsWarned: new Set(),
+      openToolCalls: new Map(),
+      relayDir: null,
+      toolCallSession: { mcpServers: new Set(Object.keys(input.mcpServers)), env: input.env },
     };
     this.sessions.set(state.id, state);
     const context = this.context(state);
@@ -215,7 +242,13 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      let sessionMcp = input.mcpServers;
+      if (hooks.httpMcpOverStdio) {
+        const relay = await relayHttpMcpServers(input.mcpServers);
+        sessionMcp = relay.servers;
+        state.relayDir = relay.dir;
+      }
+      requireHttpMcp(hooks.label, sessionMcp, agent.mcpCapabilities?.http);
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -228,33 +261,45 @@ export class AcpAdapter implements ProviderAdapter {
       // checks stop at the handshake above.
       const authMethodId = hooks.authMethodId?.(input.env);
       if (authMethodId) await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = acpMcpServers(sessionMcp, input.env);
       let method = 'session/new';
-      if (input.resume) {
-        method = agent.loadSession
-          ? 'session/load'
-          : agent.sessionCapabilities?.resume
-            ? 'session/resume'
-            : '';
+      if (resumeId) {
+        method = hooks.resumesAtLaunch
+          ? 'session/new'
+          : agent.loadSession
+            ? 'session/load'
+            : agent.sessionCapabilities?.resume
+              ? 'session/resume'
+              : '';
         if (!method)
           throw new ProviderConversationUnavailableError(
             hooks.provider,
             input.sessionId,
             `This ${hooks.label} cannot resume saved conversations.`
           );
-        state.nativeId = input.resume.nativeSessionId.slice(prefix?.prefix.length ?? 0);
+        state.nativeId = resumeId;
       }
       const result = await client.request<AcpSessionResult>(method, {
         cwd,
         mcpServers,
-        ...(input.resume ? { sessionId: state.nativeId } : {}),
+        ...(resumeId && method !== 'session/new' ? { sessionId: state.nativeId } : {}),
       });
+      if (resumeId && hooks.resumesAtLaunch && result.sessionId !== resumeId)
+        throw new Error(
+          `${hooks.label} started conversation ${String(result.sessionId)} when asked to resume ${resumeId}.`
+        );
       state.nativeId = result.sessionId ?? state.nativeId;
       if (!state.nativeId) throw new Error(`${hooks.label} returned no session ID.`);
       state.configOptions = result.configOptions ?? [];
       state.models = modelConfigOption(state.configOptions)
         ? modelsFromConfig(state.configOptions)
         : modelsFromList(result.models);
+      if (hooks.settingsModel) {
+        state.settingsModel = await hooks.settingsModel(input.env);
+        state.models = state.settingsModel
+          ? [{ id: state.settingsModel, label: state.settingsModel, options: {} }]
+          : [];
+      }
       const mode = hooks.sessionMode?.(input.runtimeMode);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
@@ -266,6 +311,7 @@ export class AcpAdapter implements ProviderAdapter {
     } catch (cause) {
       await client.dispose();
       this.sessions.delete(state.id);
+      if (state.relayDir) await rm(state.relayDir, { recursive: true, force: true });
       if (cause instanceof ProviderConversationUnavailableError) throw cause;
       const details =
         cause instanceof JsonRpcError &&
@@ -299,6 +345,7 @@ export class AcpAdapter implements ProviderAdapter {
     state.messageId = randomUUID();
     state.items.clear();
     state.toolServers.clear();
+    state.openToolCalls.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
     void this.run(state, input).then(
@@ -383,6 +430,17 @@ export class AcpAdapter implements ProviderAdapter {
 
   async setModel(id: string, model: ModelSelection): Promise<void> {
     const state = this.require(id);
+    if (state.settingsModel !== undefined) {
+      if (model.id === state.settingsModel || state.modelsWarned.has(model.id)) return;
+      state.modelsWarned.add(model.id);
+      this.emit(state, {
+        type: 'runtime.warning',
+        message: state.settingsModel
+          ? `${this.hooks.label} runs the model in its own settings, so this session uses ${state.settingsModel}, not ${model.id}. To use ${model.id}, choose it in ${this.hooks.label}'s settings and start a new session.`
+          : `${this.hooks.label} runs the model in its own settings, which name none, so ${model.id} is not used. Choose it in ${this.hooks.label}'s settings and start a new session.`,
+      });
+      return;
+    }
     if (!modelConfigOption(state.configOptions)) {
       await state.client.request('session/set_model', {
         sessionId: state.nativeId,
@@ -495,15 +553,26 @@ export class AcpAdapter implements ProviderAdapter {
     const vendor = this.hooks.permission?.(context, request);
     if (vendor) return await vendor;
     const { toolCall } = request;
+    const batch = this.hooks.confirmsOpenToolCalls?.(request) ?? false;
+    const covered = batch ? [...state.openToolCalls.values()] : [toolCall];
     const once = request.options.find((option) => option.kind === 'allow_once');
-    const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    const servers = covered.map(
+      (call) =>
+        this.hooks.mcpServerOf?.(call, state.toolCallSession) ??
+        state.toolServers.get(call.toolCallId)
+    );
+    const server = servers.length === 1 ? servers[0] : undefined;
+    const kind = covered.every((call) => call.kind === covered[0]?.kind)
+      ? covered[0]?.kind
+      : undefined;
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
     if (
       once &&
-      ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
+      ((covered.length > 0 &&
+        servers.every((name) => name !== undefined && state.autoApprovedMcpNames.has(name))) ||
         state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
+        (state.runtimeMode === 'auto-accept-edits' && covered.length > 0 && kind === 'edit'))
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
@@ -531,15 +600,24 @@ export class AcpAdapter implements ProviderAdapter {
     }
     options.push({ decision: 'cancel', label: 'Cancel', response: ACP_CANCELLED });
     const mcp = server !== undefined && state.mcpNames.has(server);
+    const titles = covered.map((call) => call.title || 'Tool');
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : kind === 'execute'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
-      title: toolCall.title ?? `${this.hooks.label} needs permission`,
+      title:
+        batch && titles.length === 1
+          ? titles[0]!
+          : batch && titles.length > 1
+            ? `${this.hooks.label} asks to run ${titles.length} actions`
+            : (toolCall.title ?? `${this.hooks.label} needs permission`),
+      ...(batch && titles.length > 1
+        ? { detail: titles.map((title) => `- ${title}`).join('\n') }
+        : {}),
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
@@ -596,7 +674,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
-    const server = this.hooks.mcpServerOf?.(update);
+    const server = this.hooks.mcpServerOf?.(update, state.toolCallSession);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
     const text = (update.content ?? [])
       .map((part) =>
@@ -635,6 +713,12 @@ export class AcpAdapter implements ProviderAdapter {
       ...(toolText || old?.text ? { text: toolText || old?.text } : {}),
     };
     state.items.set(item.id, item);
+    if (item.status === 'in_progress')
+      state.openToolCalls.set(update.toolCallId, {
+        ...state.openToolCalls.get(update.toolCallId),
+        ...update,
+      });
+    else state.openToolCalls.delete(update.toolCallId);
     this.emit(state, {
       type:
         item.status === 'completed' || item.status === 'failed'
@@ -746,6 +830,13 @@ export class AcpAdapter implements ProviderAdapter {
         usage: [],
       });
     this.sessions.delete(id);
+    if (state.relayDir)
+      void rm(state.relayDir, { recursive: true, force: true }).catch((error: unknown) =>
+        this.logger.warn('Could not remove the MCP relay directory', {
+          path: state.relayDir,
+          error: String(error),
+        })
+      );
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });
     this.emit(state, { type: 'session.exited', reason });
   }

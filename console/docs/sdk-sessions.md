@@ -289,6 +289,11 @@ host; an existing `agy` login is not reused. The runtime supports Apple Silicon
 macOS and Linux x64/ARM64. Approvals, offered-answer questions and cancellation
 use ACP. Saved conversations from the older CLI runtime cannot be resumed by ACP;
 reset the conversation to start fresh while preserving its transcript.
+OpenHands runs `openhands acp` with the LLM chosen in its own settings
+(`openhands`, then `/settings`, on the execution host); a session runs that
+model, and says so when another is chosen, since the CLI ignores model changes over ACP. It
+runs on Linux and macOS, installed with `uv tool install openhands --python 3.12`
+(its single-file binary cannot be run this way); on Windows, run the agent in WSL.
 Other capability limits remain explicit
 in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
 are the only session runtime. Lifecycle scripts use noninteractive commands.

@@ -33,6 +33,11 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /**
+   * The conversation to resume, given only to an agent that resumes at
+   * launch (`resumesAtLaunch`) when the session resumes one.
+   */
+  resume?: string;
 }
 
 /** One answered question: the option values chosen, already checked against what was offered. */
@@ -99,6 +104,36 @@ export interface AcpProviderHooks {
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /**
+   * For an agent that runs the model in its own settings and ignores
+   * `session/set_model` (OpenHands): that model, or null when the settings
+   * name none. The session lists it as its only model, and asking for another
+   * says, as a warning, that the session still runs this one.
+   */
+  settingsModel?(env: Record<string, string>): Promise<string | null>;
+  /**
+   * Whether a permission request confirms every tool call the agent has
+   * announced and not yet run, rather than the one it names (OpenHands asks
+   * once, as "Confirm Agent Actions", for the actions it has queued). The
+   * request is then described and decided by those tool calls.
+   */
+  confirmsOpenToolCalls?(request: AcpPermissionRequest): boolean;
+  /**
+   * The agent cannot use the HTTP MCP servers it says it takes (OpenHands
+   * 1.16 drops their headers, so it never reaches the Switch tools). Each
+   * one is then handed to it as a stdio relay to that server, with the
+   * headers in a file only the owner can read, never in its configuration.
+   */
+  httpMcpOverStdio?: boolean;
+  /**
+   * For an agent that resumes a conversation it is launched with, through
+   * `session/new`, because its `session/load` drops the session's MCP
+   * servers (OpenHands 1.16): whether it has `conversation` saved. `launch`
+   * is then given the conversation, and `session/new` stands in for
+   * `session/load`; one it has not saved is reported unavailable, so the
+   * host starts a fresh one.
+   */
+  resumesAtLaunch?(conversation: string, env: Record<string, string>): Promise<boolean>;
+  /**
    * Environment variables the CLI reads (an API key, an endpoint) that a
    * session host should pass through from the machine's environment. The
    * common vendor keys are already passed through for every provider.
@@ -133,8 +168,11 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
-  /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  /**
+   * The MCP server a tool call belongs to, when the agent says so, or when
+   * it can only be one of the servers the session registered.
+   */
+  mcpServerOf?(toolCall: AcpToolCall, session: AcpToolCallSession): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**
@@ -147,6 +185,14 @@ export interface AcpProviderHooks {
   ): Promise<unknown> | undefined;
   /** Register vendor-specific requests and notifications for a session. */
   extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
+}
+
+/** What `mcpServerOf` may know of the session a tool call is in. */
+export interface AcpToolCallSession {
+  /** The MCP servers the session registered. */
+  mcpServers: ReadonlySet<string>;
+  /** The session's environment, as the agent was launched with it. */
+  env: Record<string, string>;
 }
 
 export interface AcpSignInInput extends SignInCheckInput {
