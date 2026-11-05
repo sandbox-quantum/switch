@@ -54,12 +54,38 @@ export type LibraryDocument = LibraryItem & { content: string };
 export type ReferenceTypeOption = {
   type: string;
   displayName: string;
+  /** What every reference of this type tells agents about using it. */
+  instructions: string;
   /** What the links should point at, as the type describes it. */
   valueHint: string;
   isBuiltin: boolean;
   /** Who wrote a type of their own; null for a built-in one. */
   ownerName: string | null;
+  ownerId: string | null;
 };
+
+/** A type the viewer may change (theirs, or any for an admin), with its settings. */
+export type ManagedReferenceType = ReferenceTypeOption & {
+  ownerId: string;
+  readVisibility: LibraryVisibility;
+  writeVisibility: LibraryVisibility;
+  /** A built-in with the same slug hides it: references of that slug use the built-in. */
+  shadowedByBuiltin: boolean;
+  createdAt: string;
+};
+
+/** What a new reference type is made of. The slug cannot change afterwards. */
+export type ReferenceTypeInput = {
+  type: string;
+  displayName: string;
+  instructions: string;
+  valueHint: string;
+  readVisibility: LibraryVisibility;
+  writeVisibility: LibraryVisibility;
+};
+
+/** The fields of a reference type to change; anything left out stays as it is. */
+export type ReferenceTypeChanges = Partial<Omit<ReferenceTypeInput, 'type'>>;
 
 /** What a new library item is made of. */
 export type LibraryItemInput = {

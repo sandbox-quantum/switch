@@ -8,7 +8,10 @@ import type {
   LibraryKind,
   LibraryVisibility,
   PackageMemberKind,
+  ManagedReferenceType,
   PackageMemberRemoval,
+  ReferenceTypeChanges,
+  ReferenceTypeInput,
   ReferenceTypeOption,
 } from '@shared/core/switch-servers/library';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -178,28 +181,107 @@ export async function fetchLibraryItemRooms(
   );
 }
 
+type ReferenceTypeJson = {
+  type: string;
+  display_name: string;
+  instructions?: string;
+  value_hint?: string | null;
+  is_builtin?: boolean;
+  owner_id?: string | null;
+  owner_name?: string | null;
+  read_visibility?: string;
+  write_visibility?: string;
+  shadowed_by_builtin?: boolean;
+  created_at?: string;
+};
+
+function mapReferenceType(t: ReferenceTypeJson): ReferenceTypeOption {
+  return {
+    type: t.type,
+    displayName: t.display_name,
+    instructions: t.instructions ?? '',
+    valueHint: t.value_hint ?? '',
+    isBuiltin: t.is_builtin ?? false,
+    ownerName: t.owner_name ?? null,
+    ownerId: t.owner_id ?? null,
+  };
+}
+
+function mapManagedReferenceType(t: ReferenceTypeJson): ManagedReferenceType {
+  return {
+    ...mapReferenceType(t),
+    ownerId: t.owner_id ?? '',
+    readVisibility: visibility(t.read_visibility ?? 'private'),
+    writeVisibility: visibility(t.write_visibility ?? 'private'),
+    shadowedByBuiltin: t.shadowed_by_builtin ?? false,
+    createdAt: t.created_at ?? '',
+  };
+}
+
 /** The types a new reference may be given: Switch's own, then those people wrote. */
 export async function fetchReferenceTypes(server: SwitchServer): Promise<ReferenceTypeOption[]> {
   const res = await gatewayFetch(server, '/references/reference-types', { authenticated: true });
-  const json = (await res.json()) as {
-    type: string;
-    display_name: string;
-    value_hint?: string | null;
-    is_builtin?: boolean;
-    owner_name?: string | null;
-  }[];
-  return json
-    .map((t) => ({
-      type: t.type,
-      displayName: t.display_name,
-      valueHint: t.value_hint ?? '',
-      isBuiltin: t.is_builtin ?? false,
-      ownerName: t.owner_name ?? null,
-    }))
+  return ((await res.json()) as ReferenceTypeJson[])
+    .map(mapReferenceType)
     .sort(
       (a, b) =>
         Number(b.isBuiltin) - Number(a.isBuiltin) || a.displayName.localeCompare(b.displayName)
     );
+}
+
+/** The types the viewer may change: their own, or every one for an admin. */
+export async function fetchManagedReferenceTypes(
+  server: SwitchServer
+): Promise<ManagedReferenceType[]> {
+  const res = await gatewayFetch(server, '/references/reference-types/owned', {
+    authenticated: true,
+  });
+  return ((await res.json()) as ReferenceTypeJson[]).map(mapManagedReferenceType);
+}
+
+function typeBody(input: ReferenceTypeChanges & { type?: string }) {
+  return {
+    ...(input.type !== undefined ? { type: input.type } : {}),
+    ...(input.displayName !== undefined ? { display_name: input.displayName } : {}),
+    ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
+    ...(input.valueHint !== undefined ? { value_hint: input.valueHint } : {}),
+    ...(input.readVisibility !== undefined ? { read_visibility: input.readVisibility } : {}),
+    ...(input.writeVisibility !== undefined ? { write_visibility: input.writeVisibility } : {}),
+  };
+}
+
+const typePath = (type: string) => `/references/reference-types/${encodeURIComponent(type)}`;
+
+/** Add a reference type. Refusals (a slug in use, a built-in's slug) propagate in the gateway's words. */
+export async function createReferenceType(
+  server: SwitchServer,
+  input: ReferenceTypeInput
+): Promise<ManagedReferenceType> {
+  const res = await gatewayFetch(server, '/references/reference-types', {
+    authenticated: true,
+    method: 'POST',
+    body: typeBody(input),
+  });
+  return mapManagedReferenceType((await res.json()) as ReferenceTypeJson);
+}
+
+/** Change a reference type; its slug stays. */
+export async function updateReferenceType(
+  server: SwitchServer,
+  type: string,
+  changes: ReferenceTypeChanges
+): Promise<ManagedReferenceType> {
+  const res = await gatewayFetch(server, typePath(type), {
+    authenticated: true,
+    method: 'PATCH',
+    body: typeBody(changes),
+  });
+  return mapManagedReferenceType((await res.json()) as ReferenceTypeJson);
+}
+
+/** Delete a reference type. The server refuses (409) while references still use it. */
+export async function deleteReferenceType(server: SwitchServer, type: string): Promise<void> {
+  await gatewayFetch(server, typePath(type), { authenticated: true, method: 'DELETE' });
 }
 
 /** The references or documents a package holds (`GET /packages/{id}/{kind}`). */

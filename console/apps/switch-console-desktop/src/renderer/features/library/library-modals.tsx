@@ -24,6 +24,7 @@ import {
   libraryRoomsKey,
   referenceTypesKey,
 } from './library-queries';
+import { ReferenceTypeModal } from './reference-types';
 
 type NewProps = BaseModalProps<LibraryItem> & { workspaceId: string; kind: LibraryKind };
 
@@ -40,6 +41,8 @@ export function NewLibraryItemModal({ workspaceId, kind, onSuccess, onClose }: N
   });
   const text = KIND_TEXT[kind];
   const problem = formProblem(kind, form);
+  // A new type is made in this same window (one modal at a time), then picked.
+  const [addingType, setAddingType] = useState(false);
 
   const save = async () => {
     setSaving(true);
@@ -58,6 +61,20 @@ export function NewLibraryItemModal({ workspaceId, kind, onSuccess, onClose }: N
       setSaving(false);
     }
   };
+
+  if (addingType) {
+    return (
+      <ReferenceTypeModal
+        workspaceId={workspaceId}
+        editing={null}
+        onSuccess={(created) => {
+          setForm((now) => ({ ...now, type: created.type }));
+          setAddingType(false);
+        }}
+        onClose={() => setAddingType(false)}
+      />
+    );
+  }
 
   return (
     <ModalLayout
@@ -94,6 +111,7 @@ export function NewLibraryItemModal({ workspaceId, kind, onSuccess, onClose }: N
             onChange={setForm}
             types={types.data ?? []}
             autoFocus
+            onNewType={kind === 'references' ? () => setAddingType(true) : null}
           />
         )}
         {error && (

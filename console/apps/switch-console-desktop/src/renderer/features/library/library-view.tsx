@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { FileText, Library, Link2, Package, Plus } from 'lucide-react';
+import { FileText, Library, Link2, Package, Plus, Shapes } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -28,6 +28,7 @@ import {
   typeOptions,
 } from './library-model';
 import { libraryItemsKey } from './library-queries';
+import { ReferenceTypesPanel } from './reference-types';
 
 function useViewParams() {
   return useParams('library').params;
@@ -43,7 +44,11 @@ const KINDS = [
   { value: 'references', label: 'References', icon: Link2 },
   { value: 'documents', label: 'Documents', icon: FileText },
   { value: 'packages', label: 'Packages', icon: Package },
-] as const satisfies readonly { value: LibraryKind; label: string; icon: typeof Link2 }[];
+  { value: 'types', label: 'Reference types', icon: Shapes },
+] as const satisfies readonly { value: LibraryTab; label: string; icon: typeof Link2 }[];
+
+/** The page's tabs: each kind of item, and the types references take. */
+type LibraryTab = LibraryKind | 'types';
 
 const SCOPES = [
   { value: 'all', label: 'All' },
@@ -61,11 +66,15 @@ const LibraryPanel = observer(function LibraryPanel() {
   const { navigate } = useNavigate();
   const showNew = useShowModal('newLibraryItemModal');
   const showDelete = useShowModal('deleteLibraryItemModal');
-  const [kind, setKind] = useState<LibraryKind>(initialKind ?? 'references');
+  const showType = useShowModal('referenceTypeModal');
+  const [tab, setTab] = useState<LibraryTab>(initialKind ?? 'references');
   // Coming back from an item's page lands on that item's kind.
   useEffect(() => {
-    if (initialKind) setKind(initialKind);
+    if (initialKind) setTab(initialKind);
   }, [initialKind]);
+  const onTypes = tab === 'types';
+  // The items query and its words follow the tab; the types tab reads its own.
+  const kind: LibraryKind = onTypes ? 'references' : tab;
   const [filter, setFilter] = useState(NO_LIBRARY_FILTER);
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const viewer = {
@@ -75,7 +84,7 @@ const LibraryPanel = observer(function LibraryPanel() {
   const items = useQuery({
     queryKey: libraryItemsKey(workspaceId ?? '', kind),
     queryFn: () => rpc.workspaces.listLibraryItems({ workspaceId: workspaceId as string, kind }),
-    enabled: workspaceId !== null,
+    enabled: workspaceId !== null && !onTypes,
   });
   const text = KIND_TEXT[kind];
   const all = items.data ?? [];
@@ -91,8 +100,10 @@ const LibraryPanel = observer(function LibraryPanel() {
     navigate('libraryItem', { serverId, kind: item.kind, itemId: item.id });
   const create = () => {
     if (workspaceId === null) return;
-    showNew({ workspaceId, kind, onSuccess: (created: LibraryItem) => open(created) });
+    if (onTypes) showType({ workspaceId, editing: null });
+    else showNew({ workspaceId, kind, onSuccess: (created: LibraryItem) => open(created) });
   };
+  const listLabel = onTypes ? 'reference types' : text.title.toLowerCase();
 
   return (
     <ServerPage
@@ -102,7 +113,7 @@ const LibraryPanel = observer(function LibraryPanel() {
       action={
         <Button size="sm" disabled={workspaceId === null} onClick={create}>
           <Plus className="size-4" />
-          New {text.noun}
+          {onTypes ? 'New reference type' : `New ${text.noun}`}
         </Button>
       }
     >
@@ -113,9 +124,9 @@ const LibraryPanel = observer(function LibraryPanel() {
       ) : (
         <div className="flex flex-col gap-4">
           <SegmentedControl
-            ariaLabel="References, documents or packages"
-            value={kind}
-            onChange={setKind}
+            ariaLabel="References, documents, packages or reference types"
+            value={tab}
+            onChange={setTab}
             options={KINDS}
             className="w-max"
           />
@@ -123,7 +134,7 @@ const LibraryPanel = observer(function LibraryPanel() {
             scope={
               viewer.id !== null && (
                 <SegmentedControl
-                  ariaLabel={`Whose ${text.title.toLowerCase()}`}
+                  ariaLabel={`Whose ${listLabel}`}
                   value={filter.mineOnly ? 'mine' : 'all'}
                   onChange={(next) => setFilter({ ...filter, mineOnly: next === 'mine' })}
                   options={SCOPES}
@@ -136,12 +147,12 @@ const LibraryPanel = observer(function LibraryPanel() {
                 className="h-8"
                 value={filter.query}
                 onChange={(e) => setFilter({ ...filter, query: e.target.value })}
-                placeholder={`Search ${text.title.toLowerCase()}…`}
-                aria-label={`Search ${text.title.toLowerCase()} by name and description`}
+                placeholder={`Search ${listLabel}…`}
+                aria-label={`Search ${listLabel} by name and description`}
               />
             }
             filters={
-              kind === 'references' &&
+              tab === 'references' &&
               types.length > 0 && (
                 <FilterSelect
                   label="Type"
@@ -153,7 +164,7 @@ const LibraryPanel = observer(function LibraryPanel() {
               )
             }
           />
-          {kind === 'documents' && (
+          {tab === 'documents' && (
             // The server keeps an agent's room documents out of this list, which
             // surprises someone who knows one exists: say where it is.
             <p className="text-xs text-foreground-muted">
@@ -161,7 +172,9 @@ const LibraryPanel = observer(function LibraryPanel() {
               Find them in the room’s Resources tab.
             </p>
           )}
-          {items.isPending ? (
+          {onTypes ? (
+            <ReferenceTypesPanel workspaceId={workspaceId} viewerId={viewer.id} filter={filter} />
+          ) : items.isPending ? (
             <p className="py-2 text-sm text-foreground-muted">Loading…</p>
           ) : items.isError ? (
             <div className="flex flex-col items-start gap-2 rounded-[11px] border border-border px-4 py-4">

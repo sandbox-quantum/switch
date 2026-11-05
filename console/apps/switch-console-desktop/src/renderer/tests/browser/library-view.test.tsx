@@ -37,6 +37,10 @@ const rpcMock = vi.hoisted(() => ({
   listPackageMembers: vi.fn(),
   addPackageMember: vi.fn(),
   removePackageMember: vi.fn(),
+  listManagedReferenceTypes: vi.fn(),
+  createReferenceType: vi.fn(),
+  updateReferenceType: vi.fn(),
+  deleteReferenceType: vi.fn(),
 }));
 const showModal = vi.hoisted(() => vi.fn());
 const navigate = vi.hoisted(() => vi.fn());
@@ -83,8 +87,12 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
 }));
 
 import { libraryItemView } from '@renderer/features/library/library-item-view';
-import { DeleteLibraryItemModal } from '@renderer/features/library/library-modals';
+import {
+  DeleteLibraryItemModal,
+  NewLibraryItemModal,
+} from '@renderer/features/library/library-modals';
 import { libraryView } from '@renderer/features/library/library-view';
+import { ReferenceTypeModal } from '@renderer/features/library/reference-types';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 
 function item(over: Partial<LibraryItem>): LibraryItem {
@@ -173,6 +181,78 @@ beforeEach(() => {
     hiddenAffectedRoomsCount: 1,
   });
   showModal.mockReset();
+  rpcMock.listReferenceTypes.mockResolvedValue([
+    {
+      type: 'github',
+      displayName: 'GitHub',
+      instructions: '',
+      valueHint: 'Repositories',
+      isBuiltin: true,
+      ownerName: null,
+      ownerId: null,
+    },
+    {
+      type: 'linear',
+      displayName: 'Linear',
+      instructions: 'Use the Linear connector.',
+      valueHint: 'Issue links',
+      isBuiltin: false,
+      ownerName: 'Me',
+      ownerId: 'me',
+    },
+    {
+      type: 'wiki',
+      displayName: 'Wiki',
+      instructions: '',
+      valueHint: 'Pages',
+      isBuiltin: false,
+      ownerName: 'Bob',
+      ownerId: 'bob',
+    },
+  ]);
+  rpcMock.listManagedReferenceTypes.mockResolvedValue([
+    {
+      type: 'linear',
+      displayName: 'Linear',
+      instructions: 'Use the Linear connector.',
+      valueHint: 'Issue links',
+      isBuiltin: false,
+      ownerName: 'Me',
+      ownerId: 'me',
+      readVisibility: 'public',
+      writeVisibility: 'private',
+      shadowedByBuiltin: false,
+      createdAt: '',
+    },
+    {
+      type: 'jira',
+      displayName: 'Old Jira',
+      instructions: '',
+      valueHint: '',
+      isBuiltin: false,
+      ownerName: 'Me',
+      ownerId: 'me',
+      readVisibility: 'private',
+      writeVisibility: 'private',
+      shadowedByBuiltin: true,
+      createdAt: '',
+    },
+  ]);
+  rpcMock.createReferenceType.mockImplementation(
+    async ({ input }: { input: { type: string; displayName: string } }) => ({
+      ...input,
+      instructions: '',
+      valueHint: '',
+      isBuiltin: false,
+      ownerName: 'Me',
+      ownerId: 'me',
+      readVisibility: 'public',
+      writeVisibility: 'private',
+      shadowedByBuiltin: false,
+      createdAt: '',
+    })
+  );
+  rpcMock.updateReferenceType.mockResolvedValue({});
   navigate.mockReset();
 });
 
@@ -541,5 +621,126 @@ describe('a package', () => {
     await render(libraryItemView.MainPanel);
     expect(button('Add reference')).toBeUndefined();
     expect(container.querySelector('[aria-label^="Remove "]')).toBeNull();
+  });
+});
+
+describe('reference types', () => {
+  beforeEach(() => {
+    state.params = { serverId: 'srv' };
+  });
+
+  const typeCard = (slug: string) =>
+    container.querySelector<HTMLElement>(`[data-reference-type-card="${slug}"]`);
+
+  it('lists Switch’s types, read-only, beside people’s, and one hidden by a built-in', async () => {
+    await render(libraryView.MainPanel);
+    await act(async () => button('Reference types')!.click());
+    await settle();
+    expect(typeCard('github')!.textContent).toContain('Built-in');
+    expect(typeCard('github')!.querySelector('[aria-label$=" actions"]')).toBeNull();
+    expect(typeCard('linear')!.textContent).toContain('Owned by you');
+    expect(typeCard('linear')!.querySelector('[aria-label="Linear actions"]')).not.toBeNull();
+    // Bob's type: shown, not offered for changing.
+    expect(typeCard('wiki')!.querySelector('[aria-label$=" actions"]')).toBeNull();
+    expect(typeCard('jira')!.textContent).toContain('Hidden by a built-in');
+    expect(button('New reference type')).toBeDefined();
+  });
+
+  const renderTypeModal = (editing: unknown) =>
+    render(() => (
+      <Dialog open>
+        <DialogContent>
+          <ReferenceTypeModal
+            workspaceId="ws"
+            editing={editing as never}
+            onSuccess={() => {}}
+            onClose={() => {}}
+          />
+        </DialogContent>
+      </Dialog>
+    ));
+  const dialog = () => document.querySelector<HTMLElement>('[data-slot="dialog-content"]')!;
+  const input = (placeholder: string) =>
+    dialog().querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`)!;
+  const type = async (field: HTMLInputElement, value: string) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, value);
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  const dialogButton = (label: string) =>
+    [...dialog().querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
+
+  it('fills the slug from the name, and makes the type', async () => {
+    await renderTypeModal(null);
+    await type(input('Linear issues'), 'Notion Pages');
+    expect(input('linear_issues').value).toBe('notion_pages');
+    expect(dialog().textContent).toContain('Stored on every reference of this type');
+    await act(async () => dialogButton('Add type')!.click());
+    await settle();
+    expect(rpcMock.createReferenceType).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      input: expect.objectContaining({ type: 'notion_pages', displayName: 'Notion Pages' }),
+    });
+  });
+
+  it('lowercases a typed slug and says in words what is wrong with it', async () => {
+    await renderTypeModal(null);
+    await type(input('Linear issues'), 'Anything');
+    await type(input('linear_issues'), 'My Type!');
+    expect(input('linear_issues').value).toBe('my_type!');
+    expect(dialog().textContent).toContain('Use only letters, digits and underscores.');
+    expect(dialogButton('Add type')!.disabled).toBe(true);
+    await type(input('linear_issues'), 'Linear');
+    expect(dialog().textContent).toContain('Another type already uses this slug.');
+    await type(input('linear_issues'), 'GitHub');
+    expect(dialog().textContent).toContain('Switch already has a built-in type with this slug.');
+  });
+
+  it('keeps the slug as it is when editing, and sends only what changed', async () => {
+    await renderTypeModal({
+      type: 'linear',
+      displayName: 'Linear',
+      instructions: 'Use the Linear connector.',
+      valueHint: 'Issue links',
+      isBuiltin: false,
+      ownerName: 'Me',
+      ownerId: 'me',
+      readVisibility: 'public',
+      writeVisibility: 'private',
+      shadowedByBuiltin: false,
+      createdAt: '',
+    });
+    expect(input('linear_issues').disabled).toBe(true);
+    await type(input('Linear issues'), 'Linear tickets');
+    await act(async () => dialogButton('Save')!.click());
+    await settle();
+    expect(rpcMock.updateReferenceType).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      type: 'linear',
+      changes: { displayName: 'Linear tickets' },
+    });
+  });
+
+  it('makes a new type from New reference, then picks it', async () => {
+    await render(() => (
+      <Dialog open>
+        <DialogContent>
+          <NewLibraryItemModal
+            workspaceId="ws"
+            kind="references"
+            onSuccess={() => {}}
+            onClose={() => {}}
+          />
+        </DialogContent>
+      </Dialog>
+    ));
+    await act(async () => dialogButton('None fit? New type…')!.click());
+    expect(dialog().textContent).toContain('New reference type');
+    await type(input('Linear issues'), 'Figma files');
+    await act(async () => dialogButton('Add type')!.click());
+    await settle();
+    expect(dialog().textContent).toContain('New reference');
+    expect(dialog().querySelector('[aria-label="Type"]')?.textContent).toContain('figma_files');
   });
 });

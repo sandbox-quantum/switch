@@ -27,6 +27,7 @@ export function LibraryItemFields({
   typeLocked = false,
   canChangeAccess = true,
   autoFocus = false,
+  onNewType = null,
 }: {
   kind: LibraryKind;
   form: LibraryForm;
@@ -36,6 +37,8 @@ export function LibraryItemFields({
   typeLocked?: boolean;
   canChangeAccess?: boolean;
   autoFocus?: boolean;
+  /** Makes a new type to pick, where the type is still being chosen. */
+  onNewType?: (() => void) | null;
 }) {
   const id = useId();
   const set = (patch: Partial<LibraryForm>) => onChange({ ...form, ...patch });
@@ -50,7 +53,10 @@ export function LibraryItemFields({
           ) : (
             <Select value={form.type || null} onValueChange={(next) => set({ type: String(next) })}>
               <SelectTrigger id={`${id}-type`} aria-label="Type" className="w-full">
-                <SelectValue>{type ? type.displayName : 'Pick a type'}</SelectValue>
+                <SelectValue>
+                  {/* A type just made shows by its slug until the list has it. */}
+                  {type ? type.displayName : form.type || 'Pick a type'}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {types.map((t) => (
@@ -63,6 +69,15 @@ export function LibraryItemFields({
                 ))}
               </SelectContent>
             </Select>
+          )}
+          {!typeLocked && onNewType && (
+            <button
+              type="button"
+              className="cursor-pointer self-start text-xs text-foreground-muted underline-offset-2 hover:text-foreground hover:underline"
+              onClick={onNewType}
+            >
+              None fit? New type…
+            </button>
           )}
         </Field>
       )}
