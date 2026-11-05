@@ -360,8 +360,11 @@ class TestFailures:
             outcome = await _decide(_client(session_factory, http, stub.url))
 
         assert isinstance(outcome, Failed) and outcome.reason == "error_status"
-        assert f"answered {status}" in caplog.text
-        assert "model server unreachable" in caplog.text
+        assert f"answered with status {status}" in caplog.text
+        assert f"answered with status {status}" in outcome.message
+        # The endpoint's own words are never echoed into the log.
+        assert "model server unreachable" not in caplog.text
+        assert "model server unreachable" not in outcome.message
 
     @pytest.mark.parametrize(
         "body",
@@ -689,6 +692,30 @@ class TestTheTestButton:
 
         assert not outcome.ok and outcome.error_code == code
         assert outcome.error_message
+        assert body.decode() not in outcome.error_message
+        if status != 200:
+            assert f"status {status}" in outcome.error_message
+
+    async def test_an_error_page_is_not_echoed_into_the_log_or_the_result(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        stub.status = 500
+        stub.body = b"<html><body>internal-detail-Xq7 stack trace</body></html>"
+
+        with caplog.at_level(logging.DEBUG):
+            outcome = await _client(session_factory, http, None).test(
+                backend="endpoint", endpoint=stub.url, api_key=None, threshold=None
+            )
+
+        assert outcome.error_code == "bad_answer"
+        assert outcome.error_message is not None
+        assert "status 500" in outcome.error_message
+        assert "internal-detail-Xq7" not in outcome.error_message
+        assert "internal-detail-Xq7" not in caplog.text
 
     async def test_haiku_without_a_server_service_or_key(
         self,

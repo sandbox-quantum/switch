@@ -140,6 +140,23 @@ FailureReason = Literal[
 BackendLabel = Literal["server_default", "endpoint", "haiku_anthropic", "haiku_bedrock"]
 
 
+# What an error answer's body said, classified as it arrives. The body itself
+# is never kept: a workspace's endpoint chooses it, so it stays out of the log
+# and out of what Test shows.
+ErrorSignal = Literal["backend_unavailable", "auth"]
+
+_AUTH_WORDS = ("401", "auth", "api key", "api_key", "x-api-key")
+
+
+def _error_signal(body: str) -> ErrorSignal | None:
+    text = body.lower()
+    if "backend_unavailable" in text:
+        return "backend_unavailable"
+    if any(word in text for word in _AUTH_WORDS):
+        return "auth"
+    return None
+
+
 class DecisionServiceError(Exception):
     """The service gave no usable answer: it could not be reached, did not
     answer in time, answered with an error, or answered something else than
@@ -151,12 +168,12 @@ class DecisionServiceError(Exception):
         message: str,
         *,
         status: int | None = None,
-        body: str | None = None,
+        signal: ErrorSignal | None = None,
     ) -> None:
         super().__init__(message)
         self.reason: FailureReason = reason
         self.status = status
-        self.body = body
+        self.signal: ErrorSignal | None = signal
 
 
 @dataclass(frozen=True)
@@ -281,9 +298,9 @@ async def post_decision(
     if response.status_code != 200:
         raise DecisionServiceError(
             "error_status",
-            f"POST {url} answered {response.status_code}: {response.text[:200]}",
+            f"POST {url} answered with status {response.status_code}",
             status=response.status_code,
-            body=response.text[:2000],
+            signal=_error_signal(response.text[:2000]),
         )
     try:
         return DecisionAnswer.model_validate_json(response.content)
@@ -634,18 +651,11 @@ def _test_error_code(
     if failure.reason in ("timeout", "unreachable", "bad_answer"):
         return failure.reason
     status = failure.status
-    body = (failure.body or "").lower()
     if status in (401, 403):
         return "unauthorized"
-    if status == 400 and "backend_unavailable" in body:
+    if status == 400 and failure.signal == "backend_unavailable":
         return "backend_unavailable"
-    if (
-        backend == "haiku_anthropic"
-        and status == 502
-        and any(
-            word in body for word in ("401", "auth", "api key", "api_key", "x-api-key")
-        )
-    ):
+    if backend == "haiku_anthropic" and status == 502 and failure.signal == "auth":
         return "key_refused"
     return "bad_answer"
 
