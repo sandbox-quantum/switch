@@ -179,6 +179,28 @@ describe('the form', () => {
     expect(formProblem({ ...base, choice: 'none' }, settings())).toBeNull();
   });
 
+  it('asks for a key when the saved endpoint moves to another URL', () => {
+    const own: DecisionSettings['workspace'] = {
+      ...OWN_HAIKU!,
+      backend: 'endpoint',
+      endpoint: 'https://d.example/decide',
+    };
+    const saved = settings({ workspace: own });
+    const moved = {
+      ...formFor(saved),
+      choice: 'endpoint' as const,
+      endpoint: 'https://e.example/decide',
+    };
+
+    expect(formProblem(moved, saved)).toBe(
+      'The endpoint changed: enter its key, or remove the stored key to call it without one.'
+    );
+    expect(formProblem({ ...moved, apiKey: 'fake-key-NewA' }, saved)).toBeNull();
+    expect(formProblem({ ...moved, clearApiKey: true }, saved)).toBeNull();
+    expect(formProblem({ ...moved, endpoint: 'https://d.example/decide' }, saved)).toBeNull();
+    expect(formProblem(moved, settings({ workspace: { ...own!, hasApiKey: false } }))).toBeNull();
+  });
+
   it('sends only the fields a backend takes, keeping the stored key when none is typed', () => {
     const base = formFor(settings());
     expect(inputFor(base)).toBeNull();

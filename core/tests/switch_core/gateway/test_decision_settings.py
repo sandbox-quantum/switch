@@ -290,6 +290,59 @@ async def test_haiku_needs_a_key_new_or_kept_for_the_same_backend(
     assert cleared.status_code == 422
 
 
+ENDPOINT_A = "http://10.9.0.5/decide"
+ENDPOINT_B = "http://10.9.0.6/decide"
+
+
+async def test_an_endpoint_key_is_kept_only_for_the_same_url(
+    session_factory: async_sessionmaker[AsyncSession], service: _Service
+) -> None:
+    admin = await _person(session_factory, "ada", role="admin")
+    async with _as(_app(session_factory, service), admin) as client:
+        await client.put(
+            "/decision-settings",
+            json={
+                "backend": "endpoint",
+                "endpoint": ENDPOINT_A,
+                "api_key": "fake-key-EndA",
+            },
+        )
+        same_url = await client.put(
+            "/decision-settings",
+            json={"backend": "endpoint", "endpoint": ENDPOINT_A, "threshold": 0.5},
+        )
+        moved = await client.put(
+            "/decision-settings", json={"backend": "endpoint", "endpoint": ENDPOINT_B}
+        )
+        after_moved = await _row(session_factory, TENANT_ZERO_ID)
+        moved_keyless = await client.put(
+            "/decision-settings",
+            json={"backend": "endpoint", "endpoint": ENDPOINT_B, "clear_api_key": True},
+        )
+        moved_with_key = await client.put(
+            "/decision-settings",
+            json={
+                "backend": "endpoint",
+                "endpoint": ENDPOINT_A,
+                "api_key": "fake-key-NewA",
+            },
+        )
+
+    assert same_url.status_code == 200
+    assert same_url.json()["workspace"]["api_key_last4"] == "EndA"
+    assert moved.status_code == 422
+    assert "endpoint changed" in moved.json()["detail"]
+    assert after_moved is not None
+    assert after_moved.endpoint == ENDPOINT_A
+    assert KEYRING.decrypt(after_moved.api_key_encrypted or "") == "fake-key-EndA"
+    assert moved_keyless.status_code == 200
+    assert moved_keyless.json()["workspace"]["endpoint"] == ENDPOINT_B
+    assert moved_keyless.json()["workspace"]["has_api_key"] is False
+    assert moved_with_key.status_code == 200
+    assert moved_with_key.json()["workspace"]["api_key_last4"] == "NewA"
+    assert service.calls == []
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -469,6 +522,66 @@ class TestTheTestButton:
         assert url == SERVER_URL
         assert headers["x-decision-backend"] == "anthropic"
         assert headers["x-decision-anthropic-key"] == "fake-key-SAVD"
+
+    async def test_the_stored_endpoint_key_is_used_for_its_own_url(
+        self, session_factory: async_sessionmaker[AsyncSession], service: _Service
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        async with _as(_app(session_factory, service), admin) as client:
+            await client.put(
+                "/decision-settings",
+                json={
+                    "backend": "endpoint",
+                    "endpoint": ENDPOINT_A,
+                    "api_key": "fake-key-EndA",
+                },
+            )
+            tried = await client.post(
+                "/decision-settings/test",
+                json={"backend": "endpoint", "endpoint": ENDPOINT_A},
+            )
+
+        assert tried.json()["ok"] is True
+        [(url, headers, _)] = service.calls
+        assert url == ENDPOINT_A
+        assert headers["authorization"] == "Bearer fake-key-EndA"
+
+    async def test_another_url_asks_for_a_key_and_sends_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession], service: _Service
+    ) -> None:
+        admin = await _person(session_factory, "ada", role="admin")
+        async with _as(_app(session_factory, service), admin) as client:
+            await client.put(
+                "/decision-settings",
+                json={
+                    "backend": "endpoint",
+                    "endpoint": ENDPOINT_A,
+                    "api_key": "fake-key-EndA",
+                },
+            )
+            moved = await client.post(
+                "/decision-settings/test",
+                json={"backend": "endpoint", "endpoint": ENDPOINT_B},
+            )
+            keyless = await client.post(
+                "/decision-settings/test",
+                json={
+                    "backend": "endpoint",
+                    "endpoint": ENDPOINT_B,
+                    "clear_api_key": True,
+                },
+            )
+
+        assert moved.status_code == 200
+        assert moved.json()["ok"] is False
+        assert moved.json()["error"]["code"] == "not_configured"
+        assert "Enter the new endpoint's key" in moved.json()["error"]["message"]
+        # Only the keyless try reached the new URL, and it carried no key.
+        [(url, headers, _)] = service.calls
+        assert keyless.json()["ok"] is True
+        assert url == ENDPOINT_B
+        assert "authorization" not in headers
+        assert "fake-key-EndA" not in json.dumps(headers)
 
     async def test_default_uses_the_servers_key_never_the_workspaces(
         self, session_factory: async_sessionmaker[AsyncSession], service: _Service
