@@ -43,8 +43,8 @@ function recoverableResultText(result: { kind: string; message?: string }): stri
 }
 
 /**
- * Switch Trust's one server-global guardrails settings, inline on the
- * server's Home page between Messaging apps and the admin interface link.
+ * Switch Trust's one server-global guardrails settings, in Admin under
+ * Server. Here until the web gateway has a page for them; then this goes.
  *
  * Admin-only (a deployment operator, not a workspace admin) — one policy
  * covers the whole deployment, not a workspace, so `switchServersStore`'s
@@ -56,9 +56,12 @@ function recoverableResultText(result: { kind: string; message?: string }): stri
 export const GuardrailsSection = observer(function GuardrailsSection({
   serverId,
   className,
+  initiallyOpen = false,
 }: {
   serverId: string;
   className?: string;
+  /** Open on arrival, where the settings are the page rather than one row of it. */
+  initiallyOpen?: boolean;
 }) {
   const isOperator = switchServersStore.statusFor(serverId)?.user?.role === 'admin';
 
@@ -69,7 +72,7 @@ export const GuardrailsSection = observer(function GuardrailsSection({
   const [saving, setSaving] = useState(false);
   const [confirmingOff, setConfirmingOff] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
 
   useEffect(() => {
     if (!isOperator) return;

@@ -4,7 +4,7 @@ Everything they own goes, and everything that only names them stops naming
 them, so the `users` row can be deleted without any foreign key holding it
 back. What other people depend on is handed over or kept: rooms they created
 stay, with no owner, for the workspace's admins to manage, and the invitations,
-join domains and messaging installs they set up pass to another owner of the
+join domains and messaging installs they set up pass to another admin of the
 workspace.
 
 Nothing is deleted until every refusal has been checked, so a refused deletion
@@ -13,7 +13,7 @@ ahead would strand something nobody else could reach:
 
 - the server's own administrator account, which the server recreates on every
   start anyway;
-- a workspace with other people in it whose only owner is this person;
+- a workspace with other people in it whose only admin is this person;
 - an organization with other people in it whose only `org_admin` is this
   person;
 - a cloud machine, whose teardown is driven from its row;
@@ -221,12 +221,12 @@ class AccountDeletion:
             if (
                 not alone
                 and await self.users.tenant_role(session, workspace.id, user.id)
-                == "owner"
-                and await self.users.count_owners(session) <= 1
+                == "admin"
+                and await self.users.lock_admins(session) <= 1
             ):
                 return (
-                    f"You're the only owner of {workspace.name}, which has other "
-                    "members. Make one of them an owner first."
+                    f"You're the only admin of {workspace.name}, which has other "
+                    "members. Make one of them an admin first."
                 )
             if alone:
                 platform = await session.scalar(
@@ -303,7 +303,9 @@ class AccountDeletion:
         write that could leave an organization without an `org_admin` takes
         (`OrganizationStore.lock_admins`), so `refusal` holds against another
         admin stepping down at the same moment. Every check runs before any
-        row goes."""
+        row goes. Only Switch's rows go: a membership in a directory kept
+        outside Switch (`organization_directory.py`) is the person's beyond
+        Switch, and stays there."""
         organizations: dict[str, str] = {}
         for workspace in workspaces:
             async with tenant_session(self.session_factory, workspace.id) as session:
@@ -420,6 +422,7 @@ class AccountDeletion:
             await self._revoke_controllers(tenant_id, user_id, controller_ids)
 
         async with tenant_session(self.session_factory, tenant_id) as session:
+            await self._still_not_the_last_admin(session, user_id, workspace)
             successor = await self._successor(session, user_id)
             try:
                 removed_services = await self.broker.remove_connections(
@@ -479,18 +482,42 @@ class AccountDeletion:
                     warning,
                 )
 
+    async def _still_not_the_last_admin(
+        self, session: AsyncSession, user_id: str, workspace: Workspace
+    ) -> None:
+        """Check `refusal`'s last-admin rule again, in the transaction that
+        removes the membership and with the admin rows locked: another admin
+        may have been demoted or removed since `refusal` read them.
+
+        Their own membership row decides, not `workspace.role`: that is the
+        role they act with, which is `admin` for the organization's
+        `org_admin` whatever their row says, and only an `admin` row counts
+        towards keeping the workspace one."""
+        if await self.users.tenant_role(session, workspace.id, user_id) != "admin":
+            return
+        members = await self.users.list_tenant_members(session)
+        if all(member.id == user_id for member, _ in members):
+            return
+        if await self.users.lock_admins(session) <= 1:
+            raise RuntimeError(
+                f"Stopped deleting user {user_id} part-way: they became the only "
+                f"admin of workspace {workspace.id}, which has other members, after "
+                "the deletion was checked. Their agents there are already deleted; "
+                "make another member an admin and delete the account again."
+            )
+
     async def _successor(self, session: AsyncSession, user_id: str) -> str | None:
         """Who takes over what the workspace still needs from this person: an
-        owner, else an admin, else nobody when they are alone in it."""
+        admin, else nobody when no other admin is in it."""
         ranked = sorted(
             (
                 (membership.role, member.id)
                 for member, membership in await self.users.list_tenant_members(session)
                 if member.id != user_id
             ),
-            key=lambda entry: {"owner": 0, "admin": 1}.get(entry[0], 2),
+            key=lambda entry: 0 if entry[0] == "admin" else 1,
         )
-        if not ranked or ranked[0][0] not in {"owner", "admin"}:
+        if not ranked or ranked[0][0] != "admin":
             return None
         return ranked[0][1]
 

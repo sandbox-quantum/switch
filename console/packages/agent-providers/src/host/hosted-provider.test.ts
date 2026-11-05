@@ -69,21 +69,41 @@ it('does not follow an authentication directory symlink', async () => {
 });
 
 it('keeps the different providers in their native authentication locations', async () => {
-  for (const [provider, variable, relative] of [
-    ['opencode', 'XDG_DATA_HOME', 'opencode/auth.json'],
-    ['antigravity', 'GEMINI_HOME', 'antigravity-acp/acp_token.json'],
+  for (const [provider, variable, relative, binaryPath] of [
+    ['opencode', 'XDG_DATA_HOME', 'opencode/auth.json', 'fixture-cli'],
+    [
+      'antigravity',
+      'GEMINI_HOME',
+      'antigravity-acp/acp_token.json',
+      '/home/u/.local/bin/antigravity-acp',
+    ],
   ] as const) {
     const env: Record<string, string> = {};
     await materializeHostedProvider(
       root,
       env,
       { ...credential('{"fixture":true}'), provider },
-      'fixture-cli'
+      binaryPath
     );
     expect(JSON.parse(await readFile(join(env[variable]!, relative), 'utf8'))).toEqual({
       fixture: true,
     });
   }
+});
+
+it('refuses an Antigravity ACP token for agy, which would never read it', async () => {
+  const env: Record<string, string> = {};
+  for (const binaryPath of ['agy', 'C:\\Users\\u\\AppData\\Local\\agy\\bin\\agy.exe'])
+    await expect(
+      materializeHostedProvider(
+        root,
+        env,
+        { ...credential('{"fixture":true}'), provider: 'antigravity' },
+        binaryPath
+      )
+    ).rejects.toThrow('agy acp --login');
+  expect(env.GEMINI_HOME).toBeUndefined();
+  await expect(stat(join(root, 'provider-home'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('keeps the prepared Codex home and refreshes its auth before provider startup', async () => {

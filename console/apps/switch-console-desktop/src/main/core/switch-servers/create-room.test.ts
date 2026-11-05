@@ -32,6 +32,9 @@ const PARAMS = {
   description: 'Where design gets reviewed',
   bridgeId: 'bridge-1',
   agentIds: ['agent-1'],
+  channel: null,
+  groupId: null,
+  access: null,
 };
 
 /** A far-from-expiry JWT, so no renewal path is exercised here. */
@@ -148,6 +151,45 @@ describe('createRoomOnServer', () => {
     fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
 
     await expect(createRoomOnServer(SERVER, PARAMS)).resolves.toMatchObject({ kind: 'error' });
+  });
+
+  it('says the messaging app refused when the server reports a bridge operation failure', async () => {
+    fetchMock.mockResolvedValue(response(502, { detail: 'channel_not_found' }));
+
+    await expect(createRoomOnServer(SERVER, PARAMS)).resolves.toEqual({
+      kind: 'error',
+      message: 'The messaging app could not make the room: channel_not_found',
+    });
+  });
+
+  it('explains a fault on an existing channel in terms of the id that was typed', async () => {
+    fetchMock.mockResolvedValue(response(500, 'Internal Server Error'));
+
+    const result = await createRoomOnServer(SERVER, {
+      ...PARAMS,
+      channel: { kind: 'existing', externalChannelId: 'C0123ABCD' },
+    });
+    expect(result).toMatchObject({ kind: 'invalid' });
+    expect(result.kind === 'invalid' && result.message).toMatch(/Check the id/);
+  });
+
+  it('does not blame the messaging app for a proxy’s 502', async () => {
+    fetchMock.mockResolvedValue(response(502, '<html>Bad Gateway</html>'));
+
+    const result = await createRoomOnServer(SERVER, PARAMS);
+    expect(result).toMatchObject({ kind: 'error' });
+    expect(result.kind === 'error' && result.message).not.toMatch(/messaging app/);
+  });
+
+  it('rethrows a 500 the server sent on purpose, even for an existing channel', async () => {
+    fetchMock.mockResolvedValue(response(500, { detail: 'Room missing after create' }));
+
+    await expect(
+      createRoomOnServer(SERVER, {
+        ...PARAMS,
+        channel: { kind: 'existing', externalChannelId: 'C0123ABCD' },
+      })
+    ).rejects.toMatchObject({ status: 500 });
   });
 
   it('rethrows a server fault rather than flattening it into a form error', async () => {
