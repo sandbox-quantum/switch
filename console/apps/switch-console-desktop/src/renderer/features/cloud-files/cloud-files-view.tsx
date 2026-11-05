@@ -32,9 +32,13 @@ import {
   childPath,
   entryTitle,
   formatChanged,
+  formatChangedFull,
   formatSize,
+  NO_SIZE,
+  parentPath,
   pathCrumbs,
   sortEntries,
+  zipLabel,
 } from './cloud-files-format';
 import { FileMarkdown, FileText } from './file-markdown';
 import { type CloudFolderState, useCloudFilesVisible, useCloudFolder } from './use-cloud-files';
@@ -58,7 +62,7 @@ export function openablePath(path: unknown): string | null {
 }
 
 const DESCRIPTION =
-  'What your agents have made in your cloud. Browse, preview and download; nothing here changes a file.';
+  'What your agents have made in your cloud. Browse, preview and download. Nothing here changes a file.';
 
 function useServerId(): string {
   return useParams('cloudFiles').params.serverId;
@@ -139,6 +143,11 @@ function CloudFilesPanel() {
                   serverId={serverId}
                   path={file.path}
                   entry={file.entry}
+                  rootEntries={root.state.entries}
+                  onOpenFolder={(path) => {
+                    setFolder(path);
+                    setFile(null);
+                  }}
                   onClose={() => setFile(null)}
                 />
               ) : (
@@ -387,7 +396,7 @@ function FolderList({
           </label>
           <Button variant="outline" size="sm" disabled={zipping} onClick={() => void zip()}>
             {zipping ? <Spinner /> : <FolderArchive className="size-3.5" aria-hidden />}
-            Download as zip
+            {zipLabel(path)}
           </Button>
         </div>
       </header>
@@ -458,9 +467,12 @@ function FolderList({
                       )}
                     </td>
                     <td className="px-3 py-1.5 text-right text-foreground-muted">
-                      {entry.kind === 'file' ? formatSize(entry.size) : ''}
+                      {entry.kind === 'file' ? formatSize(entry.size) : NO_SIZE}
                     </td>
-                    <td className="px-3 py-1.5 text-right text-foreground-muted">
+                    <td
+                      className="px-3 py-1.5 text-right text-foreground-muted"
+                      title={formatChangedFull(entry.mtime)}
+                    >
                       {formatChanged(entry.mtime)}
                     </td>
                   </tr>
@@ -484,14 +496,17 @@ function FolderList({
   );
 }
 
+/** Where you are: All files, then each folder (each opens it), then the open file's name if a file is open. */
 function Breadcrumb({
   path,
   rootEntries,
   onOpen,
+  fileName,
 }: {
   path: string;
   rootEntries: readonly CloudFileEntry[];
   onOpen: (path: string) => void;
+  fileName?: string;
 }) {
   const crumbs = pathCrumbs(path);
   const top = rootEntries.find((entry) => entry.name === crumbs[0]?.name);
@@ -511,7 +526,7 @@ function Breadcrumb({
             type="button"
             className={cn(
               'truncate',
-              index === crumbs.length - 1
+              index === crumbs.length - 1 && fileName === undefined
                 ? 'text-foreground'
                 : 'text-foreground-muted hover:text-foreground'
             )}
@@ -521,6 +536,14 @@ function Breadcrumb({
           </button>
         </span>
       ))}
+      {fileName !== undefined && (
+        <span className="flex min-w-0 items-center gap-1">
+          <ChevronRight className="size-3 shrink-0 text-foreground-muted" aria-hidden />
+          <span className="truncate font-medium text-foreground" aria-current="page">
+            {fileName}
+          </span>
+        </span>
+      )}
     </nav>
   );
 }
@@ -541,11 +564,15 @@ function FilePreview({
   serverId,
   path,
   entry,
+  rootEntries,
+  onOpenFolder,
   onClose,
 }: {
   serverId: string;
   path: string;
   entry: CloudFileEntry;
+  rootEntries: readonly CloudFileEntry[];
+  onOpenFolder: (path: string) => void;
   onClose: () => void;
 }) {
   const [preview, setPreview] = useState<Preview>({ kind: 'loading' });
@@ -587,9 +614,15 @@ function FilePreview({
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-foreground">{entry.name}</p>
+          <Breadcrumb
+            path={parentPath(path)}
+            rootEntries={rootEntries}
+            onOpen={onOpenFolder}
+            fileName={entry.name}
+          />
           <p className="text-xs text-foreground-muted">
-            {formatSize(entry.size)} · changed {formatChanged(entry.mtime)}
+            {formatSize(entry.size)} · changed{' '}
+            <span title={formatChangedFull(entry.mtime)}>{formatChanged(entry.mtime)}</span>
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">

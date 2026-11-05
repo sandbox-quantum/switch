@@ -218,6 +218,54 @@ describe('Your cloud files', () => {
     view.done();
   });
 
+  it('the zip button says all at the top level and folder inside one', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockImplementation(async ({ path }: { path: string }) =>
+      path === '' ? { ok: true, value: { entries: TOP } } : { ok: true, value: { entries: [] } }
+    );
+    const view = await open();
+    expect(button(view.host, 'Download all as zip')).toBeDefined();
+    await click(button(view.host, 'Shared'));
+    expect(button(view.host, 'Download folder as zip')).toBeDefined();
+    expect(button(view.host, 'Download all as zip')).toBeUndefined();
+    view.done();
+  });
+
+  it('a folder’s size is a dash, and a change shows how long ago with the full date on hover', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: [folder('menus'), file('menu.csv')] } });
+    const view = await open();
+    const rows = [...view.host.querySelectorAll('tbody tr')].map((row) => [
+      ...row.querySelectorAll('td'),
+    ]);
+    expect(rows[0]![1]!.textContent).toBe('—');
+    expect(rows[1]![1]!.textContent).toBe('10 B');
+    expect(rows[1]![2]!.getAttribute('title')).toMatch(/^\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} [AP]M$/);
+    view.done();
+  });
+
+  it('a preview keeps the path, ending in the file, and a folder in it goes back there', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared/sample-bakery' };
+    list.mockImplementation(async ({ path }: { path: string }) =>
+      path === ''
+        ? { ok: true, value: { entries: TOP } }
+        : { ok: true, value: { entries: [file('README.md')] } }
+    );
+    preview.mockResolvedValue({ ok: true, value: { kind: 'markdown', text: '# Hello' } });
+    const view = await open();
+    await click(button(view.host, 'README.md'));
+    const crumbs = view.host.querySelector('section nav[aria-label="Folder path"]');
+    expect(crumbs?.textContent).toBe('All filesSharedsample-bakeryREADME.md');
+    expect(crumbs?.querySelector('[aria-current="page"]')?.textContent).toBe('README.md');
+    await click(
+      [...(crumbs?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'sample-bakery')
+    );
+    expect(view.host.querySelector('[aria-label="Close preview"]')).toBeNull();
+    expect(button(view.host, 'README.md')).toBeDefined();
+    view.done();
+  });
+
   it('with hosted_cloud_files off, nothing is listed and it points to Your Agents', async () => {
     flagsState.set('s1', on('s1', false));
     const view = await open();

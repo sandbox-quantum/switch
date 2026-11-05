@@ -182,6 +182,17 @@ export function childPath(parent: string, name: string): string {
   return parent ? `${parent}/${name}` : name;
 }
 
+/** The folder a path sits in; '' for the top level. */
+export function parentPath(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash);
+}
+
+/** The zip button's words: everything at the top level, otherwise the open folder. */
+export function zipLabel(path: string): string {
+  return path === "" ? "Download all as zip" : "Download folder as zip";
+}
+
 /** The folders on the way to `path`, for the breadcrumb. */
 export function pathCrumbs(path: string): { name: string; path: string }[] {
   if (!path) return [];

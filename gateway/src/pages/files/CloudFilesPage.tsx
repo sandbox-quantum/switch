@@ -45,10 +45,12 @@ import {
   formatSize,
   looksLikeText,
   openablePath,
+  parentPath,
   pathCrumbs,
   previewKind,
   safeSuggestedName,
   sortEntries,
+  zipLabel,
 } from "./cloudFiles";
 import { type FolderState, useCloudFilesShown, useFolder } from "./useCloudFiles";
 
@@ -105,7 +107,7 @@ export default function CloudFilesPage() {
           Your cloud files
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          What your agents have made in your cloud. Browse, preview and download; nothing here changes a file.
+          What your agents have made in your cloud. Browse, preview and download. Nothing here changes a file.
         </Typography>
         <Typography variant="caption" color="text.secondary">
           These are your agents’ files, so take care when sharing screenshots. On a shared computer, downloads stay
@@ -159,7 +161,16 @@ export default function CloudFilesPage() {
             </Box>
             <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
               {file ? (
-                <FilePreview path={file.path} entry={file.entry} onClose={() => setFile(null)} />
+                <FilePreview
+                  path={file.path}
+                  entry={file.entry}
+                  rootEntries={root.state.entries}
+                  onOpenFolder={(path) => {
+                    setFolder(path);
+                    setFile(null);
+                  }}
+                  onClose={() => setFile(null)}
+                />
               ) : (
                 folder !== null && (
                   <FolderList
@@ -235,9 +246,6 @@ function FolderList({
   const state: FolderState = path === "" ? { kind: "ready", entries: [...rootEntries], more: false } : folder.state;
   const [asking, setAsking] = useState<string | null>(null);
   const [caches, setCaches] = useState(false);
-  const crumbs = pathCrumbs(path);
-  const top = rootEntries.find((entry) => entry.name === crumbs[0]?.name);
-
   return (
     <Stack sx={{ flex: 1, minHeight: 0 }}>
       <Stack
@@ -247,19 +255,7 @@ function FolderList({
         spacing={1}
         sx={{ px: 2, py: 1, borderBottom: 1, borderColor: "divider" }}
       >
-        <Stack direction="row" alignItems="center" spacing={0.5} component="nav" aria-label="Folder path" sx={{ minWidth: 0 }}>
-          <Link component="button" underline="hover" onClick={() => onOpenFolder("")}>
-            All files
-          </Link>
-          {crumbs.map((crumb, index) => (
-            <Stack key={crumb.path} direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0 }}>
-              <ChevronRight fontSize="small" color="action" />
-              <Link component="button" underline="hover" noWrap onClick={() => onOpenFolder(crumb.path)}>
-                {index === 0 && top ? entryTitle(top) : crumb.name}
-              </Link>
-            </Stack>
-          ))}
-        </Stack>
+        <PathCrumbs path={path} rootEntries={rootEntries} onOpen={onOpenFolder} />
         <Stack direction="row" alignItems="center" spacing={1} sx={{ flexShrink: 0 }}>
           <FormControlLabel
             control={<Checkbox size="small" checked={caches} onChange={(event) => setCaches(event.target.checked)} />}
@@ -267,7 +263,7 @@ function FolderList({
           />
           {/* Already `attachment` from Core, so plain navigation saves it and nothing opens as a page. */}
           <Button size="small" variant="outlined" startIcon={<FolderZipOutlined />} href={zipUrl(path, caches)} download>
-            Download as zip
+            {zipLabel(path)}
           </Button>
         </Stack>
       </Stack>
@@ -371,6 +367,45 @@ function FolderList({
 /** How long a download's Blob address is kept after the click. */
 export const DOWNLOAD_REVOKE_MS = 5_000;
 
+/** Where you are: All files, then each folder (each opens it), then the open file's name if a file is open. */
+function PathCrumbs({
+  path,
+  rootEntries,
+  onOpen,
+  fileName,
+}: {
+  path: string;
+  rootEntries: readonly CloudFileEntry[];
+  onOpen: (path: string) => void;
+  fileName?: string;
+}) {
+  const crumbs = pathCrumbs(path);
+  const top = rootEntries.find((entry) => entry.name === crumbs[0]?.name);
+  return (
+    <Stack direction="row" alignItems="center" spacing={0.5} component="nav" aria-label="Folder path" sx={{ minWidth: 0 }}>
+      <Link component="button" underline="hover" onClick={() => onOpen("")}>
+        All files
+      </Link>
+      {crumbs.map((crumb, index) => (
+        <Stack key={crumb.path} direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0 }}>
+          <ChevronRight fontSize="small" color="action" />
+          <Link component="button" underline="hover" noWrap onClick={() => onOpen(crumb.path)}>
+            {index === 0 && top ? entryTitle(top) : crumb.name}
+          </Link>
+        </Stack>
+      ))}
+      {fileName !== undefined && (
+        <Stack direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0 }}>
+          <ChevronRight fontSize="small" color="action" />
+          <Typography variant="subtitle2" noWrap aria-current="page">
+            {fileName}
+          </Typography>
+        </Stack>
+      )}
+    </Stack>
+  );
+}
+
 type Preview =
   | { kind: "loading" }
   | { kind: "image"; url: string }
@@ -383,7 +418,19 @@ type Preview =
  * `blobType`), text and Markdown as plain text, anything else download only.
  * A download goes through a temporary `<a download>`; nothing opens as a page.
  */
-function FilePreview({ path, entry, onClose }: { path: string; entry: CloudFileEntry; onClose: () => void }) {
+function FilePreview({
+  path,
+  entry,
+  rootEntries,
+  onOpenFolder,
+  onClose,
+}: {
+  path: string;
+  entry: CloudFileEntry;
+  rootEntries: readonly CloudFileEntry[];
+  onOpenFolder: (path: string) => void;
+  onClose: () => void;
+}) {
   const [preview, setPreview] = useState<Preview>({ kind: "loading" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -449,11 +496,12 @@ function FilePreview({ path, entry, onClose }: { path: string; entry: CloudFileE
         sx={{ px: 2, py: 1, borderBottom: 1, borderColor: "divider" }}
       >
         <Box sx={{ minWidth: 0 }}>
-          <Typography variant="subtitle2" noWrap>
-            {entry.name}
-          </Typography>
+          <PathCrumbs path={parentPath(path)} rootEntries={rootEntries} onOpen={onOpenFolder} fileName={entry.name} />
           <Typography variant="caption" color="text.secondary">
-            {formatSize(entry.size)} · changed {formatRelative(new Date(entry.mtime).toISOString())}
+            {formatSize(entry.size)} · changed{" "}
+            <span title={absoluteTitle(new Date(entry.mtime).toISOString())}>
+              {formatRelative(new Date(entry.mtime).toISOString())}
+            </span>
           </Typography>
         </Box>
         <Stack direction="row" spacing={1} alignItems="center">

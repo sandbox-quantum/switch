@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import CloudFilesPage, { DOWNLOAD_REVOKE_MS } from "./CloudFilesPage";
@@ -109,6 +109,37 @@ describe("Your cloud files (Switch web)", () => {
     expect(listedPaths()).not.toContain("node_modules");
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     await waitFor(() => expect(listedPaths()).toContain("node_modules"));
+  });
+
+  it("the zip link says all at the top level and folder inside one", async () => {
+    routes = [boxWithAgent, listing({ "": TOP, shared: [] })];
+    open();
+    expect(await screen.findByRole("link", { name: /Download all as zip/ })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Shared$/ })[0]!);
+    expect(await screen.findByRole("link", { name: /Download folder as zip/ })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Download all as zip/ })).toBeNull();
+  });
+
+  it("a preview keeps the path, ending in the file, and a folder in it goes back there", async () => {
+    routes = [
+      boxWithAgent,
+      listing({ "": TOP, "shared/sample-bakery": [file("menu.csv")] }),
+      (url) =>
+        url.pathname === "/gateway/cloud-files/content"
+          ? new Response(new TextEncoder().encode("item,price\n"), { status: 206, headers: { "content-range": "bytes 0-10/11" } })
+          : undefined,
+    ];
+    open("?path=shared%2Fsample-bakery");
+    fireEvent.click(await screen.findByRole("button", { name: /menu\.csv/ }));
+    const crumbs = await screen.findByRole("navigation", { name: "Folder path" });
+    await waitFor(() => expect(crumbs.textContent).toBe("All filesSharedsample-bakerymenu.csv"));
+    expect(crumbs.querySelector('[aria-current="page"]')?.textContent).toBe("menu.csv");
+    expect(screen.getByText(/ago|Just now|\d{4}-\d{2}-\d{2}/, { selector: "span[title]" }).getAttribute("title")).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} [AP]M$/,
+    );
+    fireEvent.click(within(crumbs).getByRole("button", { name: "sample-bakery" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Close preview" })).toBeNull());
+    expect(screen.getByRole("button", { name: /menu\.csv/ })).toBeTruthy();
   });
 
   it("a resting box offers Wake it and asks nothing more until clicked", async () => {

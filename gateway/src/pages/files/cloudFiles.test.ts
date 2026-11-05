@@ -7,9 +7,11 @@ import {
   hasHostedAgent,
   looksLikeText,
   openablePath,
+  parentPath,
   previewKind,
   safeSuggestedName,
   sortEntries,
+  zipLabel,
   type CloudFileEntry,
 } from "./cloudFiles";
 
@@ -117,5 +119,14 @@ describe("cloudFilesMessage", () => {
       expect(cloudFilesMessage(code).length).toBeGreaterThan(5);
       expect(cloudFilesMessage(code)).not.toMatch(/\/|workspaces/);
     }
+  });
+});
+
+describe("parentPath and zipLabel", () => {
+  it("climbs one folder, and names the zip by where you are", () => {
+    expect(parentPath("shared/sample-bakery/menu.csv")).toBe("shared/sample-bakery");
+    expect(parentPath("README.md")).toBe("");
+    expect(zipLabel("")).toBe("Download all as zip");
+    expect(zipLabel("shared")).toBe("Download folder as zip");
   });
 });

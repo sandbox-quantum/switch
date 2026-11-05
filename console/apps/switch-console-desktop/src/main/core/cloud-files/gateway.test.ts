@@ -81,13 +81,13 @@ describe('listCloudFiles', () => {
     };
     fetchMock.mockResolvedValueOnce(json({ entries: [entry], cursor: 'c2' }));
     fetchMock.mockResolvedValueOnce(json({ entries: [], cursor: null }));
-    expect(await listCloudFiles(SERVER, 'shared/crumb-and-co')).toEqual({
+    expect(await listCloudFiles(SERVER, 'shared/sample-bakery')).toEqual({
       entries: [entry],
       cursor: 'c2',
     });
-    expect(await listCloudFiles(SERVER, 'shared/crumb-and-co', 'c2')).toEqual({ entries: [] });
+    expect(await listCloudFiles(SERVER, 'shared/sample-bakery', 'c2')).toEqual({ entries: [] });
     expect(urlOf(0).pathname).toBe('/gateway/cloud-files/list');
-    expect(urlOf(0).searchParams.get('path')).toBe('shared/crumb-and-co');
+    expect(urlOf(0).searchParams.get('path')).toBe('shared/sample-bakery');
     expect(urlOf(1).searchParams.get('cursor')).toBe('c2');
   });
 

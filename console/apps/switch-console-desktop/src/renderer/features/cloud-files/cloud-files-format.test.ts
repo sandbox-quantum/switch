@@ -4,10 +4,12 @@ import {
   childPath,
   entryTitle,
   formatChanged,
+  formatChangedFull,
   formatSize,
   parentPath,
   pathCrumbs,
   sortEntries,
+  zipLabel,
 } from './cloud-files-format';
 
 const folder = (name: string, over: Partial<CloudFileEntry> = {}): CloudFileEntry => ({
@@ -22,13 +24,13 @@ const file = (name: string): CloudFileEntry => ({ name, kind: 'file', size: 1, m
 describe('paths', () => {
   it('joins, climbs and crumbs box-relative paths', () => {
     expect(childPath('', 'shared')).toBe('shared');
-    expect(childPath('shared', 'crumb-and-co')).toBe('shared/crumb-and-co');
-    expect(parentPath('shared/crumb-and-co/dist')).toBe('shared/crumb-and-co');
+    expect(childPath('shared', 'sample-bakery')).toBe('shared/sample-bakery');
+    expect(parentPath('shared/sample-bakery/dist')).toBe('shared/sample-bakery');
     expect(parentPath('shared')).toBe('');
     expect(pathCrumbs('')).toEqual([]);
-    expect(pathCrumbs('shared/crumb-and-co')).toEqual([
+    expect(pathCrumbs('shared/sample-bakery')).toEqual([
       { name: 'shared', path: 'shared' },
-      { name: 'crumb-and-co', path: 'shared/crumb-and-co' },
+      { name: 'sample-bakery', path: 'shared/sample-bakery' },
     ]);
   });
 });
@@ -44,11 +46,29 @@ describe('formatSize', () => {
 
 describe('formatChanged', () => {
   const now = new Date(2026, 10, 5, 15, 0).getTime();
+  const ago = (ms: number) => formatChanged(now - ms, now);
 
-  it('shows a time for today, a day and month for this year, a full date before', () => {
-    expect(formatChanged(new Date(2026, 10, 5, 9, 30).getTime(), now)).toMatch(/09.?30|9:30/);
-    expect(formatChanged(new Date(2026, 2, 1).getTime(), now)).not.toMatch(/2026/);
-    expect(formatChanged(new Date(2025, 2, 1).getTime(), now)).toMatch(/2025/);
+  it('says how long ago, the same way Switch web does, then the date after a week', () => {
+    expect(ago(20_000)).toBe('Just now');
+    expect(ago(5 * 60_000)).toBe('5 min ago');
+    expect(ago(2 * 3_600_000)).toBe('2 hr ago');
+    expect(ago(26 * 3_600_000)).toBe('1 day ago');
+    expect(ago(7 * 86_400_000)).toBe('7 days ago');
+    expect(formatChanged(new Date(2026, 9, 1).getTime(), now)).toBe('2026-10-01');
+    expect(formatChanged(now + 60_000, now)).toBe('2026-11-05');
+  });
+
+  it('gives the full date and time for the hover', () => {
+    expect(formatChangedFull(new Date(2026, 6, 2, 9, 5).getTime())).toBe('2026-07-02 9:05 AM');
+    expect(formatChangedFull(new Date(2026, 6, 2, 0, 30).getTime())).toBe('2026-07-02 12:30 AM');
+    expect(formatChangedFull(new Date(2026, 6, 2, 13, 30).getTime())).toBe('2026-07-02 1:30 PM');
+  });
+});
+
+describe('zipLabel', () => {
+  it('says all at the top level and folder inside one', () => {
+    expect(zipLabel('')).toBe('Download all as zip');
+    expect(zipLabel('shared/sample-bakery')).toBe('Download folder as zip');
   });
 });
 

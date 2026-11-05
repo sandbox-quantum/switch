@@ -23,7 +23,7 @@ describe('a plain name', () => {
 });
 
 describe('a files path', () => {
-  it.each(['', 'agent-a', 'shared/crumb-and-co/site/index.html'])('accepts %j', (path) => {
+  it.each(['', 'agent-a', 'shared/sample-bakery/site/index.html'])('accepts %j', (path) => {
     expect(filesPath.safeParse(path).success).toBe(true);
   });
 

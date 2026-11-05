@@ -38,6 +38,23 @@ const HOSTILE = [
 ].join('\n\n');
 
 describe('FileMarkdown', () => {
+  it('reads like a document: sized headings, paragraph gaps and padded table cells', async () => {
+    const table = ['| Item | Price |', '| --- | --- |', '| Lemon drizzle slice | £3.20 |'].join(
+      '\n'
+    );
+    const text = ['# Menu', 'Fresh every morning.', 'Order by ten.', table].join('\n\n');
+    const view = await show(createElement(FileMarkdown, { text }));
+    expect(view.host.querySelector('h1')?.className).toContain('text-2xl');
+    const paragraphs = [...view.host.querySelectorAll('p')];
+    expect(paragraphs).toHaveLength(2);
+    for (const p of paragraphs) expect(p.className).toContain('mb-3');
+    const cells = [...view.host.querySelectorAll('td')];
+    expect(cells.map((cell) => cell.textContent)).toEqual(['Lemon drizzle slice', '£3.20']);
+    for (const cell of [...cells, ...view.host.querySelectorAll('th')])
+      expect(cell.className).toMatch(/\bpx-3\b.*\bpy-2\b|\bpy-2\b.*\bpx-3\b/);
+    view.done();
+  });
+
   it('renders no raw HTML: no script, iframe or img element, and nothing runs', async () => {
     const view = await show(createElement(FileMarkdown, { text: HOSTILE }));
     expect(view.host.querySelector('h1')?.textContent).toBe('Readme');
