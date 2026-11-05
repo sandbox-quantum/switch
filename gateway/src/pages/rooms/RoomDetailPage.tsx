@@ -575,8 +575,7 @@ function EditableFieldsSection({
     try {
       await updateRoom(room.id, {
         name: name !== room.name ? name : undefined,
-        description:
-          !isBridged && description !== room.description ? description : undefined,
+        description: description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
         ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
@@ -587,7 +586,7 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
+  }, [room, name, description, instructions, access, canManage, onSaved]);
 
   return (
     <Stack spacing={2}>
@@ -619,7 +618,6 @@ function EditableFieldsSection({
         disabled={!canWrite || saving}
         multiline
         rows={2}
-        slotProps={{ input: { readOnly: isBridged } }}
       />
       <TextField
         label="Instructions"

@@ -162,6 +162,20 @@ describe("RoomDetailPage permissions", () => {
     expect(sent).not.toHaveProperty("write_visibility");
   });
 
+  it("lets someone who may write edit a bridged room's description like any other room's", async () => {
+    viewAs({ can_write: true, can_manage: false, can_unlink: false });
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Retro and planning" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateRoom).mock.calls[0][1]).toMatchObject({
+      description: "Retro and planning",
+    });
+  });
+
   it("lets someone who may manage the room change its access and delete it", async () => {
     viewAs({ can_write: true, can_manage: true, can_unlink: false });
 

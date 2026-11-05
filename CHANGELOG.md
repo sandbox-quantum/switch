@@ -634,7 +634,9 @@ version of their own to them without also giving them a release of their own.
   not an admin member of, and was refused. Anyone may edit a publicly
   writable reference, document or package, but only its owner and admins
   were offered the fields. An agent that cannot be handed over now says why
-  beside a disabled Transfer. Agent management, connectors and organization connector apps are read
+  beside a disabled Transfer. A bridged room's description was locked,
+  though nothing sets it from the channel; whoever may write to the room can
+  now edit it, as on any other room. Agent management, connectors and organization connector apps are read
   from the server's feature flags, not guessed from a missing page; if the
   flags cannot be read, the dashboard says so rather than hiding pages.
 - **A file that names nobody now follows the conversation like text does.**
