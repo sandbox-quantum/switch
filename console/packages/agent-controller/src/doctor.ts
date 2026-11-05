@@ -242,10 +242,22 @@ export function formatChecks(checks: Check[]): string {
 }
 
 export function checksAsJson(checks: Check[]): string {
+  const fail = checks.filter((check) => check.status === 'fail').length;
   const summary = {
     ok: checks.filter((check) => check.status === 'ok').length,
     warn: checks.filter((check) => check.status === 'warn').length,
-    fail: checks.filter((check) => check.status === 'fail').length,
+    fail,
   };
-  return JSON.stringify({ checks, summary }, null, 2);
+  return JSON.stringify(
+    {
+      schemaVersion: 1,
+      command: 'doctor',
+      ok: fail === 0,
+      exitCode: fail === 0 ? 0 : 1,
+      checks,
+      summary,
+    },
+    null,
+    2
+  );
 }

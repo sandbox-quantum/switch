@@ -158,7 +158,7 @@ Commands:
       Rename this machine and/or change its description on the server, with
       this controller's own credential. Either or both; --description ""
       clears the description. The same limits as at enrollment.
-  status [--data-dir <dir>] [--shared-host-bundle <path>]
+  status [--data-dir <dir>] [--shared-host-bundle <path>] [--json]
       Show this controller's identity and its agents, from local state only.
       --json prints a stable machine-readable report instead of the text view.
   install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
@@ -188,7 +188,7 @@ Commands:
   uninstall-service --separate-users [--user <name>]
       As root: stop the controller and its agents, and remove what the setup
       made. The agents' directories are kept.
-  doctor [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>]
+  doctor [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>] [--json]
       Check this machine can run agents: Node, enrollment, the credential, the
       server, the provider CLIs and their sign-in, the service, and updates.
       --json prints checks and ok/warn/fail counts for scripts.
@@ -729,6 +729,10 @@ async function statusCommand(args: string[]): Promise<number> {
       : null;
     const out: string[] = [`Data directory: ${dataDir}`];
     const report: Record<string, unknown> = {
+      schemaVersion: 1,
+      command: 'status',
+      ok: false,
+      exitCode: 1,
       dataDirectory: dataDir,
       separateUsers: separateUsers
         ? {
@@ -769,14 +773,18 @@ async function statusCommand(args: string[]): Promise<number> {
     out.push(
       `Relay:          ${relayPort === null ? 'never started' : `http://127.0.0.1:${relayPort} (where agents were last pointed)`}`
     );
-    if (revokedAt) out.push(`Revoked at:     ${revokedAt}`);
-    else if (!(await secrets.get(CONTROLLER_CREDENTIAL))) {
+    if (revokedAt) {
+      out.push(`Revoked at:     ${revokedAt}`);
+      report.credential = 'not-checked-revoked';
+    } else if (!(await secrets.get(CONTROLLER_CREDENTIAL))) {
       out.push('Credential:     not in this data directory (missing, or handed over at run time)');
       report.credential = 'missing';
     } else report.credential = 'present';
     const cached = store.cachedAssignment();
     if (cached.kind === 'none') {
       out.push('Assignment:     not pulled yet');
+      report.ok = true;
+      report.exitCode = 0;
       report.assignment = { state: 'none' };
       process.stdout.write(json ? `${JSON.stringify(report, null, 2)}\n` : `${out.join('\n')}\n`);
       return 0;
@@ -785,7 +793,9 @@ async function statusCommand(args: string[]): Promise<number> {
       out.push(
         `Assignment:     saved by an earlier version and not readable by this one (${cached.detail}); pulled again when the controller next runs`
       );
-      report.assignment = { state: 'unreadable', detail: cached.detail };
+      report.ok = true;
+      report.exitCode = 0;
+      report.assignment = { state: 'unreadable', detailAvailable: true };
       process.stdout.write(json ? `${JSON.stringify(report, null, 2)}\n` : `${out.join('\n')}\n`);
       return 0;
     }
@@ -830,11 +840,13 @@ async function statusCommand(args: string[]): Promise<number> {
         appliedRevision: row?.appliedRevision ?? null,
         process: mapped.process,
         ...(mapped.reason ? { reason: mapped.reason } : {}),
-        ...(mapped.detail ? { detail: mapped.detail } : {}),
-        ...(unreadable ? { observationError: unreadable } : {}),
+        ...(mapped.detail ? { detailAvailable: true } : {}),
+        ...(unreadable ? { observationError: true } : {}),
       });
     }
     report.assignment = { state: 'saved', revision: cached.assignment.revision, agents };
+    report.ok = true;
+    report.exitCode = 0;
     process.stdout.write(json ? `${JSON.stringify(report, null, 2)}\n` : `${out.join('\n')}\n`);
     return 0;
   } finally {

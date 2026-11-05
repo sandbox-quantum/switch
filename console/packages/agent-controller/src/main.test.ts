@@ -75,6 +75,10 @@ describe('main', () => {
     expect(await main(['status', '--data-dir', dir, '--json'])).toBe(EXIT_OK);
     const report = JSON.parse(stdout.join('')) as Record<string, unknown>;
     expect(report).toMatchObject({
+      schemaVersion: 1,
+      command: 'status',
+      ok: true,
+      exitCode: 0,
       dataDirectory: dir,
       identity: {
         controllerId: 'controller-1',
@@ -84,6 +88,57 @@ describe('main', () => {
       assignment: { state: 'none' },
       credential: 'present',
     });
+    expect(stdout.join('')).not.toContain('swcc_secret');
+  });
+
+  it('does not copy agent failure details into JSON status', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'build-box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.saveAssignment(
+      {
+        revision: 1,
+        agents: [
+          {
+            agent_id: 'agent-1',
+            revision: 1,
+            desired_state: 'running',
+            definition: {
+              name: 'scout',
+              display_name: null,
+              icon_url: null,
+              provider: 'claude',
+              model: null,
+              advanced_config: {},
+              instructions: '',
+              auto_approve: false,
+              auto_mode: false,
+              directory: null,
+              isolation: 'shared',
+            },
+          },
+        ],
+      },
+      null,
+      '2026-01-01T00:00:00.000Z'
+    );
+    store.recordFailure(
+      'agent-1',
+      { revision: 1, reason: 'internal', detail: 'provider stderr token=swcc_secret' },
+      '2026-01-01T00:00:00.000Z'
+    );
+    store.close();
+
+    expect(await main(['status', '--data-dir', dir, '--json'])).toBe(EXIT_OK);
+    const report = JSON.parse(stdout.join('')) as {
+      assignment: { agents: { detailAvailable?: boolean; detail?: string }[] };
+    };
+    expect(report.assignment.agents[0]).toMatchObject({ detailAvailable: true });
+    expect(report.assignment.agents[0]).not.toHaveProperty('detail');
     expect(stdout.join('')).not.toContain('swcc_secret');
   });
 

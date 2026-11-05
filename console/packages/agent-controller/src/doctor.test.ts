@@ -118,9 +118,14 @@ describe('doctor', () => {
   it('serializes checks with counts and stable fields for scripts', async () => {
     const checks = await runDoctor(inputs({ platform: 'freebsd' }));
     const parsed = JSON.parse(checksAsJson(checks)) as {
+      schemaVersion: number;
+      command: string;
+      ok: boolean;
+      exitCode: number;
       checks: { name: string; status: string; detail: string }[];
       summary: { ok: number; warn: number; fail: number };
     };
+    expect(parsed).toMatchObject({ schemaVersion: 1, command: 'doctor', ok: false, exitCode: 1 });
     expect(parsed.checks[0]).toEqual({ name: 'Node', status: 'ok', detail: 'v22.13.0' });
     expect(parsed.checks.find((check) => check.name === 'Platform')).toMatchObject({
       status: 'fail',
