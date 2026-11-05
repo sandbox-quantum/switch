@@ -2143,8 +2143,9 @@ class DecisionSettingsResponse(BaseModel):
 
 
 class DecisionSettingsUpdateRequest(BaseModel):
-    """`api_key` omitted keeps the stored key when the backend stays the
-    same; `clear_api_key` drops it. A key is the bearer token for an
+    """`api_key` omitted keeps the stored key when the backend, and for an
+    `endpoint` its URL, stay the same; moving a keyed endpoint to another URL
+    needs a new key or `clear_api_key`, which drops it. A key is the bearer token for an
     `endpoint`, and the Anthropic key for `haiku_anthropic`."""
 
     backend: DecisionBackendName

@@ -139,15 +139,51 @@ async def _refuse_unreachable(endpoint: str, policy: OutboundPolicy) -> None:
         ) from refused
 
 
+_ENDPOINT_MOVED = (
+    "The endpoint changed, so the stored key isn't sent to it. Enter the new "
+    "endpoint's key, or remove the stored key to call it without one."
+)
+
+
+def _same_target(
+    req: DecisionSettingsUpdateRequest | DecisionSettingsTestRequest,
+    existing: DecisionSettings,
+) -> bool:
+    """Whether a request names the backend, and for an endpoint the URL, the
+    stored key was saved for."""
+    if existing.backend != req.backend:
+        return False
+    return req.backend != "endpoint" or existing.endpoint == req.endpoint
+
+
 def _kept_key(
     req: DecisionSettingsUpdateRequest | DecisionSettingsTestRequest,
     existing: DecisionSettings | None,
 ) -> str | None:
-    """The stored key a request leaves in place: only when it names the same
-    backend, so an endpoint's token is never sent to Anthropic as a key."""
-    if req.clear_api_key or existing is None or existing.backend != req.backend:
+    """The stored key a request leaves in place: only for the same backend and
+    endpoint, so an endpoint's token is never sent to Anthropic as a key, nor
+    to a URL other than the one it was saved for."""
+    if req.clear_api_key or existing is None or not _same_target(req, existing):
         return None
     return existing.api_key_encrypted
+
+
+def _endpoint_moved(
+    req: DecisionSettingsUpdateRequest | DecisionSettingsTestRequest,
+    existing: DecisionSettings | None,
+) -> bool:
+    """Whether a request moves the saved endpoint to another URL without saying
+    what becomes of its key: neither a new key nor `clear_api_key`. Taken
+    silently as "no key", it would look as if the key had been kept."""
+    return (
+        req.backend == "endpoint"
+        and req.api_key is None
+        and not req.clear_api_key
+        and existing is not None
+        and existing.backend == "endpoint"
+        and existing.api_key_encrypted is not None
+        and existing.endpoint != req.endpoint
+    )
 
 
 @router.get("/decision-settings")
@@ -175,6 +211,8 @@ async def update_decision_settings(
         await _refuse_unreachable(req.endpoint, client.outbound_policy)
     tenant_id = require_tenant_id()
     existing = await _STORE.get_for_update(session, tenant_id)
+    if _endpoint_moved(req, existing):
+        raise HTTPException(status_code=422, detail=_ENDPOINT_MOVED)
     api_key_encrypted = (
         config.keyring.encrypt(req.api_key)
         if req.api_key is not None
@@ -223,10 +261,21 @@ async def test_decision_settings(
     """Run the sample decision against the values entered, saved or not; an
     omitted key means the stored one. `backend: "default"` tests the server
     default, with the server's own endpoint and key and never the
-    workspace's. Nothing is saved, and no room's data is sent."""
+    workspace's. The stored key is used only for the backend and endpoint it
+    was saved for. Nothing is saved, and no room's data is sent."""
     existing = await _STORE.get(session, require_tenant_id())
     # Not held across the call to the decision service.
     await session.commit()
+    if _endpoint_moved(req, existing):
+        return DecisionTestResponse(
+            ok=False,
+            agent=None,
+            model_choice=None,
+            confidence=None,
+            latency_ms=None,
+            backend=req.backend,
+            error=DecisionTestError(code="not_configured", message=_ENDPOINT_MOVED),
+        )
     api_key = req.api_key
     if api_key is None and req.backend != "default":
         stored = _kept_key(req, existing)

@@ -123,10 +123,30 @@ function parsedThreshold(text: string): number | null {
   return Number(trimmed);
 }
 
+/**
+ * Whether the form moves the saved endpoint to another URL with its key left
+ * blank. The server never sends the stored key to a URL other than the one it
+ * was saved for, so the form asks for a key, or for the stored one to go.
+ */
+function endpointMovedWithoutKey(form: DecisionForm, settings: DecisionSettings): boolean {
+  const own = settings.workspace;
+  return (
+    form.choice === 'endpoint' &&
+    own?.backend === 'endpoint' &&
+    own.hasApiKey &&
+    own.endpoint !== form.endpoint.trim() &&
+    form.apiKey.trim() === '' &&
+    !form.clearApiKey
+  );
+}
+
 /** What stops the form being saved or tested, in a sentence; null when nothing does. */
 export function formProblem(form: DecisionForm, settings: DecisionSettings): string | null {
   const fields = choiceFields(form.choice);
   if (fields.endpoint && form.endpoint.trim() === '') return 'Enter the endpoint’s URL.';
+  if (endpointMovedWithoutKey(form, settings)) {
+    return 'The endpoint changed: enter its key, or remove the stored key to call it without one.';
+  }
   if (form.choice === 'haiku_anthropic' && form.apiKey.trim() === '') {
     const own = settings.workspace;
     const usableKey = own?.hasApiKey && !own.apiKeyUnreadable && !form.clearApiKey;
