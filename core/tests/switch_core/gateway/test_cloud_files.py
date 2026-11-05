@@ -8,7 +8,7 @@ import base64
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -25,7 +25,11 @@ from switch_core.db.models import (
 )
 from switch_core.gateway import cloud_files
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_session,
+    get_session_factory,
+)
 from switch_core.management.file_requests import file_requests
 from tests.switch_core.hosted_machine_helpers import link_controller, seed_machine
 
@@ -174,6 +178,7 @@ async def box(session_factory) -> AsyncIterator[Box]:
 
     app.dependency_overrides[get_session] = session_dep
     app.dependency_overrides[get_config] = lambda: config
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_current_user] = lambda: ids[0]
     fake = FakeController(controller_id=ids[2])
     file_requests.socket_opened(ids[2], fake, fake.send)
@@ -459,3 +464,23 @@ async def test_a_resting_box_is_never_woken_by_a_file_request(box: Box) -> None:
         machine = await session.get(CloudMachine, box.machine_id)
         assert machine is not None
         assert (machine.state, machine.desired_state) == ("stopped", "stopped")
+
+
+async def test_a_long_zip_keeps_the_box_awake_pull_by_pull(
+    box: Box, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marked: list[str] = []
+    original = cloud_files._mark_active
+
+    async def spy(session, machine_id: str) -> None:
+        marked.append(machine_id)
+        await original(session, machine_id)
+
+    monkeypatch.setattr(cloud_files, "_mark_active", spy)
+    monkeypatch.setattr(cloud_files, "ACTIVE_EVERY", timedelta(0))
+
+    got = await box.client.get("/cloud-files/zip", params={"path": "agent-a"})
+
+    assert got.status_code == 200
+    # Once when the request is served, then before each of the two pulls.
+    assert marked == [box.machine_id] * 3

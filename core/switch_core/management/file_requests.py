@@ -52,7 +52,7 @@ MAX_ENTRIES = 1000
 # Files the controller works on at once; one more is answered `busy`.
 MAX_IN_FLIGHT_PER_CONTROLLER = 4
 # The launcher's fixed codes (`failed`: understood, but it couldn't do it),
-# and the controller's own two.
+# and the controller's own three (`bad_request`: a request it couldn't parse).
 ERRORS = frozenset(
     {
         "outside_root",
@@ -61,9 +61,9 @@ ERRORS = frozenset(
         "too_large",
         "not_regular",
         "failed",
+        "bad_request",
         "busy",
         "timeout",
-        "bad_request",
     }
 )
 

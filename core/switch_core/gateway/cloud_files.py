@@ -34,7 +34,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -52,7 +52,11 @@ from switch_core.db.stores.hosted_machine_store import (
     workspace_on,
 )
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_session,
+    get_session_factory,
+)
 from switch_core.hosted_v2 import hosted_v2_on
 from switch_core.management.file_requests import (
     BadReply,
@@ -356,6 +360,7 @@ async def folder_zip(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    factory: Annotated[Any, Depends(get_session_factory)],
     path: Annotated[str, Query(max_length=MAX_PATH_BYTES)] = "",
     caches: Annotated[int, Query(ge=0, le=1)] = 0,
 ) -> Response:
@@ -374,10 +379,12 @@ async def folder_zip(
         return _refusal(refused, retry=refused.code == "files_elsewhere")
 
     zipping = files
+    zip_machine = cast(str, machine_id)
 
     async def chunks() -> AsyncIterator[bytes]:
         sent, status, reply = 0, 200, first
         deadline = began + ZIP_TIMEOUT
+        marked = time.monotonic()
         try:
             while True:
                 data = reply.chunk()
@@ -388,6 +395,11 @@ async def folder_zip(
                 if await request.is_disconnected():
                     status = 499
                     return
+                if time.monotonic() - marked >= ACTIVE_EVERY.total_seconds():
+                    # A long zip keeps the box awake too, pull by pull.
+                    async with factory() as marking:
+                        await _mark_active(marking, zip_machine)
+                    marked = time.monotonic()
                 zipping.more()
                 try:
                     reply = await _first(
