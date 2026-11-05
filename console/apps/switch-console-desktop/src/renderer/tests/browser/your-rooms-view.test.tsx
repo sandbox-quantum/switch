@@ -194,10 +194,8 @@ async function render(): Promise<void> {
 
 const names = () =>
   [...container.querySelectorAll('[data-room-card] h3')].map((h) => h.textContent);
-const cardFor = (name: string) =>
-  [...container.querySelectorAll<HTMLElement>('[data-room-card]')].find(
-    (card) => card.querySelector('h3')?.textContent === name
-  )!;
+// Fixture rooms are named after their ids; a channel's card titles it `#name`.
+const cardFor = (id: string) => container.querySelector<HTMLElement>(`[data-room-card="${id}"]`)!;
 const toggle = (label: string) =>
   [...container.querySelectorAll('button')].find((b) => b.textContent === label);
 const settle = async () => {
@@ -214,9 +212,9 @@ it('lists your rooms by default, and drops a chat once you are removed from it',
 it('shows every room you can read under All rooms, never chats you are not in', async () => {
   await render();
   await act(async () => toggle('All rooms')!.click());
-  expect(names()).toEqual(['bobs-chat', 'private-tool-room', 'public-slack', 'yaml-room']);
+  expect(names()).toEqual(['bobs-chat', 'private-tool-room', '#public-slack', 'yaml-room']);
   await removeFromBobsChat();
-  expect(names()).toEqual(['private-tool-room', 'public-slack', 'yaml-room']);
+  expect(names()).toEqual(['private-tool-room', '#public-slack', 'yaml-room']);
 });
 
 it('keeps Mine to your rooms on a server Console runs, where the sidebar lists them all', async () => {
@@ -266,7 +264,7 @@ it('lists archived rooms under Archived, and brings one back from its menu', asy
   await settle();
   await act(async () => toggle('Archived')!.click());
   await settle();
-  expect(names()).toEqual(['old-slack']);
+  expect(names()).toEqual(['#old-slack']);
   await act(async () =>
     cardFor('old-slack')
       .querySelector<HTMLButtonElement>('[aria-label="old-slack actions"]')!

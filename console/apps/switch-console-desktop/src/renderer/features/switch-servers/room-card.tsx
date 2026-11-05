@@ -7,6 +7,7 @@ import {
   MoreVertical,
   User,
 } from 'lucide-react';
+import { roomTitle } from '@renderer/features/switch-rooms/room-labels';
 import { ACCESS_LABELS } from '@renderer/features/switch-rooms/room-settings-sections';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { Badge } from '@renderer/lib/ui/badge';
@@ -80,7 +81,10 @@ export function RoomCard({
               </span>
             )}
           </span>
-          <h3 className="min-w-0 truncate font-medium text-foreground">{card.name}</h3>
+          {/* A channel reads as one, `#name`, as it does in the sidebar and the room's title. */}
+          <h3 className="min-w-0 truncate font-medium text-foreground">
+            {roomTitle({ name: card.name, bridgeType: card.bridgeType })}
+          </h3>
           {showYours && card.mine && <Badge variant="secondary">Yours</Badge>}
         </div>
         <p className="line-clamp-2 text-sm text-foreground-muted">
