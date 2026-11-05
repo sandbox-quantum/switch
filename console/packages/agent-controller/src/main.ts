@@ -47,7 +47,7 @@ import {
   resolveSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage, type Logger } from './log';
-import { loginShellPath, withUserBinDirs } from './login-path';
+import { loginShellPath, withUserBinDirs, withWindowsUserBinDirs } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
@@ -397,7 +397,10 @@ async function setInfoCommand(args: string[]): Promise<number> {
  */
 function pathRefresher(log: Logger): () => Promise<void> {
   return async () => {
-    if (process.platform === 'win32') return;
+    if (process.platform === 'win32') {
+      process.env.PATH = withWindowsUserBinDirs(process.env.PATH ?? '', process.env.LOCALAPPDATA);
+      return;
+    }
     const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
     const path = await loginShellPath(shell, process.env.PATH ?? '');
     if (path === null)

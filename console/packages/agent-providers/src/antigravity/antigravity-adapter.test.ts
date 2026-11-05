@@ -11,9 +11,11 @@ vi.mock('node:fs/promises', async (original) => ({
 }));
 const servers: FakeAppServer[] = [];
 /** What the fake agent declares in `initialize`. */
-const acp = { http: true };
+const acp = { http: true, signedOut: false };
+const spawned: Array<{ command: string; args: string[] }> = [];
 vi.mock('node:child_process', () => ({
-  spawn: () => {
+  spawn: (command: string, args: string[]) => {
+    spawned.push({ command, args });
     const server = new FakeAppServer();
     server.replyAlways('initialize', () => ({
       agentCapabilities: {
@@ -22,12 +24,22 @@ vi.mock('node:child_process', () => ({
       },
     }));
     server.replyAlways('authenticate', () => ({}));
-    server.replyAlways('session/new', () => ({
-      sessionId: 'native',
-      configOptions: [
-        { id: 'model', type: 'select', options: [{ value: 'model-a', name: 'Model A' }] },
-      ],
-    }));
+    server.on('message', (message: { id?: number; method?: string }) => {
+      if (message.method !== 'session/new' || message.id === undefined) return;
+      server.send(
+        acp.signedOut
+          ? { id: message.id, error: { code: -32000, message: 'Authentication required' } }
+          : {
+              id: message.id,
+              result: {
+                sessionId: 'native',
+                configOptions: [
+                  { id: 'model', type: 'select', options: [{ value: 'model-a', name: 'Model A' }] },
+                ],
+              },
+            }
+      );
+    });
     server.replyAlways('session/resume', () => ({}));
     server.replyAlways('session/set_mode', () => ({}));
     server.replyAlways('session/set_config_option', () => ({}));
@@ -35,20 +47,27 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { antigravityAcp, createAntigravityAdapter } = await import('./antigravity-adapter');
+const { antigravityAcp, createAntigravityAdapter, elicitationAnswer, elicitationQuestions } =
+  await import('./antigravity-adapter');
 beforeEach(() => {
   servers.length = 0;
+  spawned.length = 0;
+  acp.signedOut = false;
   acp.http = true;
 });
-async function setup(resume = false, switchRegistered = true) {
-  const adapter = createAntigravityAdapter();
+async function setup(
+  resume = false,
+  switchRegistered = true,
+  { binaryPath, env = {} }: { binaryPath?: string; env?: Record<string, string> } = {}
+) {
+  const adapter = createAntigravityAdapter(binaryPath ? { binaryPath } : {});
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((e) => events.push(e));
   const session = await adapter.startSession({
     sessionId: 's',
     cwd: '/work',
     runtimeMode: 'approval-required',
-    env: {},
+    env,
     mcpServers: switchRegistered
       ? {
           switch: {
@@ -234,20 +253,60 @@ it('serializes turns submitted synchronously by completion listeners', async () 
   expect(events.at(-1)).toMatchObject({ type: 'session.state.changed', status: 'running' });
 });
 
-it('authenticates once on the session process before creating the session', async () => {
+it('runs Google’s agy as `agy acp`, signed in by agy itself', async () => {
   const { server } = await setup();
-  expect(servers).toHaveLength(1);
+  expect(spawned).toEqual([{ command: 'agy', args: ['acp'] }]);
+  expect(server.received.slice(0, 2).map((m) => m.method)).toEqual(['initialize', 'session/new']);
+});
+it('signs agy in with the Gemini API key the session environment carries', async () => {
+  const { server } = await setup(false, true, { env: { GEMINI_API_KEY: 'placeholder' } });
   expect(server.received.slice(0, 3).map((m) => m.method)).toEqual([
     'initialize',
     'authenticate',
     'session/new',
   ]);
+  expect(server.received[1]?.params).toEqual({ methodId: 'gemini-api-key' });
 });
-it('puts auto mode in auto-edit, Antigravity having no reviewer of its own', () => {
-  expect(antigravityAcp.sessionMode?.('approval-required')).toBe('default');
-  expect(antigravityAcp.sessionMode?.('auto-accept-edits')).toBe('auto_edit');
-  expect(antigravityAcp.sessionMode?.('auto')).toBe('auto_edit');
-  expect(antigravityAcp.sessionMode?.('full-access')).toBe('yolo');
+it('authenticates a legacy antigravity-acp install once before creating the session', async () => {
+  const { server } = await setup(false, true, { binaryPath: '/home/u/.local/bin/antigravity-acp' });
+  expect(spawned).toEqual([{ command: '/home/u/.local/bin/antigravity-acp', args: [] }]);
+  expect(server.received.slice(0, 3).map((m) => m.method)).toEqual([
+    'initialize',
+    'authenticate',
+    'session/new',
+  ]);
+  expect(server.received[1]?.params).toEqual({ methodId: 'oauth-personal' });
+});
+it('picks the session mode among the modes agy advertises', () => {
+  const agy = {
+    availableModes: [{ id: 'default' }, { id: 'accept-edits' }, { id: 'plan' }],
+  };
+  expect(antigravityAcp.sessionMode?.('approval-required', agy)).toBe('default');
+  expect(antigravityAcp.sessionMode?.('auto-accept-edits', agy)).toBe('accept-edits');
+  expect(antigravityAcp.sessionMode?.('auto', agy)).toBe('accept-edits');
+  // Full access is the adapter approving every request, in agy's default mode.
+  expect(antigravityAcp.sessionMode?.('full-access', agy)).toBe('default');
+});
+it('keeps the legacy runtime’s auto-edit and yolo modes', () => {
+  const legacy = { availableModes: [{ id: 'default' }, { id: 'auto_edit' }, { id: 'yolo' }] };
+  expect(antigravityAcp.sessionMode?.('approval-required', legacy)).toBe('default');
+  expect(antigravityAcp.sessionMode?.('auto-accept-edits', legacy)).toBe('auto_edit');
+  expect(antigravityAcp.sessionMode?.('auto', legacy)).toBe('auto_edit');
+  expect(antigravityAcp.sessionMode?.('full-access', legacy)).toBe('yolo');
+  expect(antigravityAcp.sessionMode?.('auto', undefined)).toBe('auto_edit');
+});
+it('tells a signed-out agy session how to sign in', async () => {
+  acp.signedOut = true;
+  await expect(
+    createAntigravityAdapter().startSession({
+      sessionId: 'signed-out',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: {},
+      mcpServers: {},
+      connectorMcpServers: [],
+    })
+  ).rejects.toThrow('Sign in on the execution machine with agy acp --login.');
 });
 it('refuses legacy CLI conversation IDs before starting a process', async () => {
   await expect(
@@ -295,6 +354,85 @@ it('answers native questions with the offered option ID', async () => {
   expect(server.received.find((m) => m.id === 99)?.result).toEqual({
     outcome: { outcome: 'selected', optionId: 'yes' },
   });
+});
+
+// What agy 1.5 sends for its ask_question tool, recorded from `agy acp`.
+const agyQuestion = {
+  sessionId: 'native',
+  toolCallId: 'call_1',
+  mode: 'form',
+  message: 'The agent has a question.',
+  requestedSchema: {
+    type: 'object',
+    properties: {
+      q1: {
+        type: 'string',
+        title: 'Which color?',
+        oneOf: [
+          { const: '1', title: 'red' },
+          { const: '2', title: 'green' },
+          { const: '3', title: 'blue' },
+        ],
+      },
+      q1_other: { type: 'string', title: 'Other', description: 'Optional free-form answer' },
+    },
+  },
+};
+it('announces form elicitation and answers agy questions through it', async () => {
+  const { adapter, server, events } = await setup();
+  expect(server.received[0]?.params).toMatchObject({
+    clientCapabilities: { elicitation: { form: {} } },
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'question' });
+  server.send({ id: 98, method: 'elicitation/create', params: agyQuestion });
+  await flush();
+  const event = events.find((e) => e.type === 'user-input.requested');
+  if (!event || event.type !== 'user-input.requested') throw new Error('Missing question');
+  expect(event.questions).toEqual([
+    {
+      id: 'q1',
+      question: 'Which color?',
+      options: [
+        { value: '1', label: 'red' },
+        { value: '2', label: 'green' },
+        { value: '3', label: 'blue' },
+      ],
+      multiSelect: false,
+      allowCustomAnswer: false,
+    },
+  ]);
+  await adapter.respondToUserInput('s', event.requestId, { q1: '2' });
+  await flush();
+  expect(server.received.find((m) => m.id === 98)?.result).toEqual({
+    action: 'accept',
+    content: { q1: '2' },
+  });
+});
+it('answers several choices for an array field', () => {
+  const questions = elicitationQuestions({
+    requestedSchema: {
+      properties: {
+        q1: { type: 'array', title: 'Which?', items: { anyOf: [{ const: 'a' }, { const: 'b' }] } },
+      },
+    },
+  });
+  expect(questions[0]).toMatchObject({
+    multiSelect: true,
+    options: [{ value: 'a' }, { value: 'b' }],
+  });
+  expect(elicitationAnswer(questions, [{ questionId: 'q1', values: ['a', 'b'] }])).toEqual({
+    action: 'accept',
+    content: { q1: ['a', 'b'] },
+  });
+});
+it('cancels an elicitation the turn ends before answering', async () => {
+  const { adapter, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'question' });
+  server.send({ id: 97, method: 'elicitation/create', params: agyQuestion });
+  await flush();
+  await adapter.interruptTurn('s');
+  await flush();
+  expect(server.received.find((m) => m.id === 97)?.result).toEqual({ action: 'cancel' });
 });
 
 it('auto-approves Switch MCP calls with bypass off using provider metadata', async () => {

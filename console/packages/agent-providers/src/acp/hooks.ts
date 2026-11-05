@@ -12,6 +12,7 @@ import type {
   AcpInitializeResult,
   AcpPermissionRequest,
   AcpPromptCapabilities,
+  AcpSessionModes,
   AcpToolCall,
 } from './protocol';
 
@@ -110,23 +111,27 @@ export interface AcpProviderHooks {
    * Whether the CLI is signed in, answered without signing it in: a check
    * must never be what changes its answer. `handshake` runs the agent and
    * returns its `initialize` answer. Without this hook the check runs the
-   * handshake and reports the sign-in as unknown.
+   * handshake and reports the sign-in as unknown. `request` asks the same
+   * process something more after the handshake.
    */
   checkSignIn?(input: AcpSignInInput): Promise<ProviderReadiness>;
   /**
    * `authenticate` method sent after `initialize` when a session starts with
    * this environment, which may open a browser; undefined sends none (the
    * session environment already signs it in, say). Omit for an agent that
-   * never needs a sign-in call.
+   * never needs a sign-in call. `binaryPath` is the executable the session runs.
    */
-  authMethodId?(env: Record<string, string>): string | undefined;
+  authMethodId?(env: Record<string, string>, binaryPath: string): string | undefined;
   /**
    * Prompt content the agent accepts whether or not it advertises it. What it
    * advertises in `initialize` is always honoured as well.
    */
   promptCapabilities?: AcpPromptCapabilities;
-  /** The ACP mode to put a new session in for Switch's runtime mode. Omit to leave the agent's default. */
-  sessionMode?(runtimeMode: RuntimeMode): string;
+  /**
+   * The ACP mode to put a new session in for Switch's runtime mode, given the
+   * modes the session advertised. Omit to leave the agent's default.
+   */
+  sessionMode?(runtimeMode: RuntimeMode, modes: AcpSessionModes | undefined): string;
   /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id
@@ -145,12 +150,19 @@ export interface AcpProviderHooks {
     context: AcpSessionContext,
     request: AcpPermissionRequest
   ): Promise<unknown> | undefined;
+  /**
+   * Client capabilities announced in `initialize` beyond the protocol's own,
+   * for requests the provider's `extensions` answer (`elicitation`, say).
+   */
+  clientCapabilities?: Record<string, unknown>;
   /** Register vendor-specific requests and notifications for a session. */
   extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
 }
 
 export interface AcpSignInInput extends SignInCheckInput {
   handshake(): Promise<AcpInitializeResult>;
+  /** A request to the process `handshake` started; fails when it has not run. */
+  request<T>(method: string, params: unknown): Promise<T>;
 }
 
 export interface AcpAdapterOptions {

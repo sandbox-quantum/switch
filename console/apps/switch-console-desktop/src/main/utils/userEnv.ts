@@ -98,6 +98,19 @@ export function ensureWindowsNpmGlobalBinInPath(
 }
 
 /**
+ * Adds the folders Windows provider installers write CLIs to without telling
+ * a running app: Google's Antigravity installer puts `agy.exe` in
+ * `%LOCALAPPDATA%\agy\bin` and adds it to the user's PATH, which an app
+ * started before the install does not see.
+ */
+export function ensureWindowsUserBinDirsInPath(env: NodeJS.ProcessEnv = process.env): string[] {
+  const localAppData = getWindowsEnvValue(env, 'LOCALAPPDATA');
+  if (!localAppData) return [];
+  const agyBin = path.win32.join(localAppData, 'agy', 'bin');
+  return prependWindowsPathEntry(env, agyBin) ? [agyBin] : [];
+}
+
+/**
  * Spawns `$SHELL -ilc 'env'` with a 5 s timeout. On any error (timeout,
  * missing shell, restricted environment) the function logs a warning and
  * returns — the app continues with whatever `process.env` already contains.
@@ -110,6 +123,7 @@ export async function resolveUserEnv(): Promise<void> {
   if (process.platform === 'win32') {
     // Windows PATH is managed differently; no login-shell capture needed.
     ensureWindowsNpmGlobalBinInPath();
+    ensureWindowsUserBinDirsInPath();
     return;
   }
 

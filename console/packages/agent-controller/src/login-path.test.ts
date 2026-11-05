@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loginShellPath, withUserBinDirs } from './login-path';
+import { loginShellPath, withUserBinDirs, withWindowsUserBinDirs } from './login-path';
 
 const dirs: string[] = [];
 
@@ -71,5 +71,20 @@ describe('withUserBinDirs', () => {
     expect(withUserBinDirs('/usr/bin', home)).toBe(['/usr/bin', bin].join(delimiter));
     const already = [bin, '/usr/bin'].join(delimiter);
     expect(withUserBinDirs(already, home)).toBe(already);
+  });
+});
+
+describe('withWindowsUserBinDirs', () => {
+  it('adds the folder Google’s agy installer writes to, once, after the PATH', () => {
+    const local = 'C:\\Users\\u\\AppData\\Local';
+    const agy = 'C:\\Users\\u\\AppData\\Local\\agy\\bin';
+    expect(withWindowsUserBinDirs('C:\\Windows\\System32', local)).toBe(
+      `C:\\Windows\\System32;${agy}`
+    );
+    const already = `${agy.toUpperCase()};C:\\Windows\\System32`;
+    expect(withWindowsUserBinDirs(already, local)).toBe(already);
+    expect(withWindowsUserBinDirs('C:\\Windows\\System32', undefined)).toBe(
+      'C:\\Windows\\System32'
+    );
   });
 });

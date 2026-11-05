@@ -18,7 +18,7 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
-import { readiness, type ProviderReadiness, type SignInCheckInput } from '../readiness';
+import { readiness, signInWith, type ProviderReadiness, type SignInCheckInput } from '../readiness';
 import {
   JsonRpcError,
   noopLogger,
@@ -49,11 +49,18 @@ import {
 export const ACP_CLIENT_INFO = { name: 'switch-console', version: '0.1.0' } as const;
 
 /** The `initialize` request every ACP session and sign-in check opens with. */
-export async function acpInitialize(client: StdioJsonRpcClient): Promise<AcpInitializeResult> {
+export async function acpInitialize(
+  client: StdioJsonRpcClient,
+  hooks: Pick<AcpProviderHooks, 'clientCapabilities'>
+): Promise<AcpInitializeResult> {
   return await client.request<AcpInitializeResult>('initialize', {
     protocolVersion: 1,
     clientInfo: ACP_CLIENT_INFO,
-    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+    clientCapabilities: {
+      fs: { readTextFile: false, writeTextFile: false },
+      terminal: false,
+      ...hooks.clientCapabilities,
+    },
   });
 }
 
@@ -70,10 +77,14 @@ export async function checkAcpSignIn(
       logger: noopLogger,
       onExit: () => {},
     });
-    return await acpInitialize(client);
+    return await acpInitialize(client, hooks);
+  };
+  const request = async <T>(method: string, params: unknown): Promise<T> => {
+    if (!client) throw new Error(`${hooks.label} was asked ${method} before its handshake.`);
+    return await client.request<T>(method, params);
   };
   try {
-    if (hooks.checkSignIn) return await hooks.checkSignIn({ ...input, handshake });
+    if (hooks.checkSignIn) return await hooks.checkSignIn({ ...input, handshake, request });
     await handshake();
     return readiness(
       'unknown',
@@ -163,8 +174,9 @@ export class AcpAdapter implements ProviderAdapter {
         input.sessionId,
         prefix.legacyMessage
       );
+    const binaryPath = this.options.binaryPath ?? hooks.defaultBinary;
     const launch = await hooks.launch({
-      binaryPath: this.options.binaryPath ?? hooks.defaultBinary,
+      binaryPath,
       cwd,
       env: input.env,
     });
@@ -213,7 +225,7 @@ export class AcpAdapter implements ProviderAdapter {
     });
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
     try {
-      const initialized = await acpInitialize(client);
+      const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
       requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
       state.prompt = {
@@ -226,7 +238,7 @@ export class AcpAdapter implements ProviderAdapter {
       // Signing in belongs here: starting a session is work the user asked
       // for, so a browser opening is an answer to something they did. Sign-in
       // checks stop at the handshake above.
-      const authMethodId = hooks.authMethodId?.(input.env);
+      const authMethodId = hooks.authMethodId?.(input.env, binaryPath);
       if (authMethodId) await client.request('authenticate', { methodId: authMethodId });
       const mcpServers = acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
@@ -255,7 +267,7 @@ export class AcpAdapter implements ProviderAdapter {
       state.models = modelConfigOption(state.configOptions)
         ? modelsFromConfig(state.configOptions)
         : modelsFromList(result.models);
-      const mode = hooks.sessionMode?.(input.runtimeMode);
+      const mode = hooks.sessionMode?.(input.runtimeMode, result.modes);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
       if (input.model) await this.setModel(state.id, input.model);
@@ -274,10 +286,14 @@ export class AcpAdapter implements ProviderAdapter {
         'details' in cause.data
           ? String(cause.data.details)
           : '';
+      const signIn =
+        cause instanceof JsonRpcError && cause.code === -32000 && /auth/i.test(cause.message)
+          ? `. ${signInWith(hooks.loginCommand)}`
+          : '';
       throw new ProviderSessionError(
         hooks.provider,
         state.id,
-        `Could not start ${hooks.label}: ${String(cause)}${details ? `: ${details}` : ''}${client.stderr ? `\n${client.stderr}` : ''}`,
+        `Could not start ${hooks.label}: ${String(cause)}${details ? `: ${details}` : ''}${signIn}${client.stderr ? `\n${client.stderr}` : ''}`,
         { cause }
       );
     }

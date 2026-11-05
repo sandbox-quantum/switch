@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, win32 } from 'node:path';
 
 const MARKER = '__SWITCH_LOGIN_PATH__';
 
@@ -93,6 +93,20 @@ export function withUserBinDirs(path: string, home: string): string {
     (dir) => !entries.includes(dir) && isDirectory(dir)
   );
   return [...entries, ...additions].join(delimiter);
+}
+
+/**
+ * A Windows `path` with the folders provider installers put CLIs in that it
+ * lacks, added after it: Google's Antigravity installer writes `agy.exe` to
+ * `%LOCALAPPDATA%\agy\bin` and adds that to the user's PATH, which a
+ * controller started before the install does not see.
+ */
+export function withWindowsUserBinDirs(path: string, localAppData: string | undefined): string {
+  const entries = path.split(win32.delimiter).filter(Boolean);
+  if (!localAppData) return entries.join(win32.delimiter);
+  const agyBin = win32.join(localAppData, 'agy', 'bin');
+  const present = entries.some((entry) => entry.toLowerCase() === agyBin.toLowerCase());
+  return [...entries, ...(present ? [] : [agyBin])].join(win32.delimiter);
 }
 
 function isDirectory(path: string): boolean {
