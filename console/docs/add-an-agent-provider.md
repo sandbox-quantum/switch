@@ -103,6 +103,10 @@ Add hooks only for what really differs:
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
+| `settingsModel` | The agent runs the model in its own settings and ignores `session/set_model` (OpenHands): the session lists that model alone, and another model asked for gets a warning. |
+| `confirmsOpenToolCalls` | The agent's permission request confirms every tool call it has queued rather than the one it names (OpenHands' "Confirm Agent Actions"): the request is described and decided by those calls. |
+| `httpMcpOverStdio` | The agent cannot really use the HTTP MCP servers it advertises: each is handed to it as a stdio relay, with its headers in an owner-only file. |
+| `resumesAtLaunch` | The agent's `session/load` drops the session's MCP servers, but it resumes a conversation it is launched with: `launch` gets the conversation, and `session/new` stands in for `session/load`. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:
 
