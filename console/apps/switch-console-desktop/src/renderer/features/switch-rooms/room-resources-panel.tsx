@@ -199,7 +199,7 @@ const ResourceSection = observer(function ResourceSection({
                       : kind === 'documents'
                         ? () => setReading(resource)
                         : // A package has nothing to read here: its page shows what it holds.
-                          serverId !== null
+                          kind === 'packages' && serverId !== null
                           ? () =>
                               navigate('libraryItem', {
                                 serverId,
