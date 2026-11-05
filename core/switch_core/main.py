@@ -177,7 +177,10 @@ from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
-from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.db.tenant_lookup import (
+    all_tenant_ids,
+    tenants_with_pending_decisions,
+)
 from switch_core.decision.setup import build_decision_client
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
@@ -185,6 +188,7 @@ from switch_core.delivery.router import (
     DECISION_SWEEP_SECONDS,
     GROUP_SWEEP_SECONDS,
     MessageRouter,
+    sweep_pending_decisions,
 )
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
@@ -359,25 +363,24 @@ async def _attachment_group_sweep_loop(
 
 
 async def _decision_sweep_loop(
-    session_factory: async_sessionmaker[AsyncSession], router: MessageRouter
+    session_factory: async_sessionmaker[AsyncSession],
+    router: MessageRouter,
+    concurrency: int,
 ) -> None:
-    """Decide the messages waiting for the decision service in every tenant:
-    the process that wrote one starts at once, and this is what decides one
-    whose process stopped first, or that a restart left behind. Every process
-    runs it; each message is claimed by one."""
+    """Decide the messages waiting for the decision service: the process that
+    wrote one starts at once, and this is what decides one whose process
+    stopped first, or that a restart left behind. Every process runs it; each
+    message is claimed by one. Only tenants with a message waiting are
+    visited, `concurrency` at a time."""
     with no_tenant():
         while True:
             await asyncio.sleep(DECISION_SWEEP_SECONDS)
             try:
-                tenants = await all_tenant_ids(session_factory)
+                tenants = await tenants_with_pending_decisions(session_factory)
             except Exception:
                 logger.exception("Decision sweep failed")
                 continue
-            for tenant_id in tenants:
-                try:
-                    await router.decide_pending(tenant_id)
-                except Exception:
-                    logger.exception("Decision sweep failed for tenant %s", tenant_id)
+            await sweep_pending_decisions(tenants, router.decide_pending, concurrency)
 
 
 async def _recheck_agent_rooms(
@@ -1597,7 +1600,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 _attachment_group_sweep_loop(session_factory, router)
             )
             decision_task = (
-                asyncio.create_task(_decision_sweep_loop(session_factory, router))
+                asyncio.create_task(
+                    _decision_sweep_loop(
+                        session_factory, router, config.decision_sweep_concurrency
+                    )
+                )
                 if config.decision_routing_enabled
                 else None
             )

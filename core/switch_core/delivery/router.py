@@ -180,6 +180,28 @@ DECISION_SWEEP_SECONDS = 5.0
 # The most rooms one pass decides at once, one message each.
 _DECISION_BATCH = 20
 
+
+async def sweep_pending_decisions(
+    tenant_ids: list[str],
+    decide: Callable[[str], Awaitable[int]],
+    concurrency: int,
+) -> None:
+    """Decide the waiting messages of each of `tenant_ids`, at most
+    `concurrency` tenants at a time, so a tenant with a slow or failing
+    backend holds up one slot rather than every tenant after it. A tenant
+    that fails is logged and leaves the others to finish."""
+    gate = asyncio.Semaphore(concurrency)
+
+    async def one(tenant_id: str) -> None:
+        async with gate:
+            try:
+                await decide(tenant_id)
+            except Exception:
+                logger.exception("Decision sweep failed for tenant %s", tenant_id)
+
+    await asyncio.gather(*(one(tenant_id) for tenant_id in tenant_ids))
+
+
 # The one custom event an agent can be part of. The rest (reports,
 # observations) are the platform's own bookkeeping and are nobody's own event.
 _COMMAND_EVENT = "com.switch.command"

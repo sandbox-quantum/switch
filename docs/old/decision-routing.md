@@ -27,6 +27,7 @@ has not chosen one:
 | `DECISION_TIMEOUT_SECONDS` | How long one decision may take (default 5), for every workspace's backend. |
 | `DECISION_BEDROCK_ENABLED` | Whether a workspace may choose Haiku on Amazon Bedrock (default off). Bedrock runs in the server's decision service on the server's own AWS credentials, which is why the operator has to allow it. |
 | `DECISION_PENDING_MAX_AGE_SECONDS` | How long a message may wait for a decision, across a restart or an outage, before it is dropped rather than answered late (default 120). |
+| `DECISION_SWEEP_CONCURRENCY` | How many workspaces' waiting decisions each process's sweep settles at once (default 4, 1 to 64). |
 
 With no `DECISION_ENDPOINT_URL`, there is no server default: auto-route is
 unavailable in every workspace until its admins choose a backend, and Haiku is
@@ -162,7 +163,10 @@ A message waiting for a decision is recorded with the message
 (`pending_decisions`) and decided by whichever process gets to it first: the
 one that wrote it at once, any other on its sweep every few seconds, or the
 same one after a restart. Each is delivered at most once. One still waiting
-after `DECISION_PENDING_MAX_AGE_SECONDS` is dropped and logged.
+after `DECISION_PENDING_MAX_AGE_SECONDS` is dropped and logged. The sweep
+visits only the workspaces with a message waiting (one query across
+workspaces), up to `DECISION_SWEEP_CONCURRENCY` of them at a time, so a
+workspace whose backend is slow or failing holds up only its own messages.
 
 ## What is reported
 
