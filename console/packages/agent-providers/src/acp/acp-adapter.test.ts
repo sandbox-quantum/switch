@@ -33,6 +33,8 @@ vi.mock('node:child_process', () => ({
   },
 }));
 const { createAcpAdapter } = await import('./acp-adapter');
+const { antigravityAcp } = await import('../antigravity/antigravity-adapter');
+const { cursorAcp } = await import('../cursor/cursor-adapter');
 
 /** The least a new ACP provider has to say about itself. */
 const dummy: AcpProviderHooks = {
@@ -214,6 +216,140 @@ it('auto-approves a tool the hooks place on any session-registered MCP server', 
   });
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
 });
+
+it('asks mcpServerOf about a request with its own call, then with the call as it was last placed', async () => {
+  const asked: Array<[string | undefined, string[], string | undefined]> = [];
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    // Copilot CLI's shape: a tool is announced as `<server>-<tool>` and
+    // requested as `<tool>`, so a request is placed only when the two agree.
+    mcpServerOf: (toolCall, servers, request) => {
+      if (request) asked.push([toolCall.title, [...servers], request.title]);
+      return [...servers].find(
+        (name) =>
+          toolCall.title?.startsWith(`${name}-`) &&
+          (!request || toolCall.title.slice(name.length + 1) === request.title)
+      );
+    },
+  };
+  const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.js'] };
+  const { adapter, events, server } = await start(hooks, {
+    mcpServers: { switch: stdio, acme: stdio },
+    connectorMcpServers: ['acme'],
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const update = (sessionUpdate: string, toolCallId: string, title?: string) =>
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: {
+        sessionUpdate,
+        toolCallId,
+        kind: 'other',
+        status: 'pending',
+        ...(title && { title }),
+      },
+    });
+  const ask = (id: number, toolCallId: string, title: string) =>
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId, title, kind: 'other' },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+  // Placed on Switch's server by an update, and kept through one naming nothing.
+  update('tool_call', 'call-1', 'lights');
+  update('tool_call_update', 'call-1', 'switch-lights');
+  update('tool_call_update', 'call-1');
+  ask(90, 'call-1', 'lights');
+  // Announced on the connector, with a tool whose own name starts `switch-`.
+  update('tool_call', 'call-2', 'acme-switch-lights');
+  ask(91, 'call-2', 'switch-lights');
+  await flush();
+  expect(server.received.find((m) => m.id === 90)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  expect(server.received.some((m) => m.id === 91 && 'result' in m)).toBe(false);
+  expect(events.filter((e) => e.type === 'request.opened')).toMatchObject([
+    { requestType: 'mcp_tool_approval', connector: 'acme' },
+  ]);
+  expect(asked).toEqual([
+    ['lights', ['switch', 'acme'], 'lights'],
+    ['switch-lights', ['switch', 'acme'], 'lights'],
+    ['switch-lights', ['switch', 'acme'], 'switch-lights'],
+    ['acme-switch-lights', ['switch', 'acme'], 'switch-lights'],
+  ]);
+});
+
+it.each([
+  [
+    'Cursor',
+    cursorAcp.mcpServerOf,
+    (server?: string) => ({ rawInput: server ? { providerIdentifier: server } : {} }),
+  ],
+  [
+    'Antigravity',
+    antigravityAcp.mcpServerOf,
+    (server?: string) => ({ _meta: server ? { is_mcp_tool_call: true, mcp: { server } } : {} }),
+  ],
+] as const)(
+  "places a %s request by the server only a later update of its call names, after the request's own",
+  async (_provider, mcpServerOf, naming) => {
+    const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.js'] };
+    const { adapter, events, server } = await start(
+      { ...dummy, mcpServerOf },
+      { mcpServers: { switch: stdio, gws: stdio }, connectorMcpServers: ['gws'] }
+    );
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    const update = (sessionUpdate: string, toolCallId: string, named?: string) =>
+      server.notify('session/update', {
+        sessionId: 'native',
+        update: {
+          sessionUpdate,
+          toolCallId,
+          title: 'search',
+          kind: 'other',
+          status: 'pending',
+          ...naming(named),
+        },
+      });
+    const ask = (id: number, toolCallId: string, named?: string) =>
+      server.send({
+        id,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'native',
+          toolCall: { toolCallId, title: 'search', kind: 'other', ...naming(named) },
+          options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+        },
+      });
+    // Each call is announced on no server, named by the next update, and the
+    // update after that names none again.
+    for (const [toolCallId, named] of [
+      ['call-1', 'switch'],
+      ['call-2', 'gws'],
+      ['call-3', 'gws'],
+    ] as const) {
+      update('tool_call', toolCallId);
+      update('tool_call_update', toolCallId, named);
+      update('tool_call_update', toolCallId);
+    }
+    ask(101, 'call-1');
+    ask(102, 'call-2');
+    // A server the request names itself comes first, as it always has.
+    ask(103, 'call-3', 'switch');
+    await flush();
+    const allowed = { outcome: { outcome: 'selected', optionId: 'once' } };
+    expect(server.received.find((m) => m.id === 101)?.result).toEqual(allowed);
+    expect(server.received.some((m) => m.id === 102 && 'result' in m)).toBe(false);
+    expect(server.received.find((m) => m.id === 103)?.result).toEqual(allowed);
+    expect(events.filter((e) => e.type === 'request.opened')).toMatchObject([
+      { requestType: 'mcp_tool_approval', connector: 'gws' },
+    ]);
+  }
+);
 
 it('offers allow-for-session, maps it to the agent option, and answers decline with cancelled when no reject is offered', async () => {
   const { adapter, events, server } = await start();
