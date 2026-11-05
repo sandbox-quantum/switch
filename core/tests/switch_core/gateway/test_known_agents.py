@@ -372,6 +372,12 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["shell", "read_file", "write", "str_replace", "grep", "glob"],
             [],
         ),
+        (
+            "copilot",
+            "GitHub Copilot CLI",
+            ["bash", "view", "create", "edit", "grep", "glob", "task"],
+            [],
+        ),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(
