@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from fastapi import Response
 
 from switch_core.db.models import User
-from switch_core.gateway.auth import decode_jwt
+from switch_core.gateway.auth import JWT_EXPIRY_HOURS, decode_jwt
 from switch_core.gateway.auth_routes import refresh
 from switch_core.keys import Keyring
 
@@ -86,6 +86,7 @@ async def test_refresh_cookie_is_httponly_and_respects_secure_flag() -> None:
     header = insecure.headers.get("set-cookie") or ""
     assert "httponly" in header.lower()
     assert "secure" not in header.lower()
+    assert f"max-age={JWT_EXPIRY_HOURS * 3600}" in header.lower()
 
     secure = Response()
     await refresh(
