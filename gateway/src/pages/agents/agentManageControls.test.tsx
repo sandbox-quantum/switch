@@ -2,6 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentDetail } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { ALL_OFF } from "../../data/featureFlags";
 import * as hooks from "../../data/hooks";
 import AgentDetailPage from "./AgentDetailPage";
 
@@ -51,6 +52,7 @@ const agent = {
 function showPageAs(userId: string, canManage: boolean) {
   vi.mocked(useAuth).mockReturnValue({
     user: { id: userId },
+    capabilities: { features: ALL_OFF },
   } as unknown as ReturnType<typeof useAuth>);
   vi.mocked(hooks.useAgent).mockReturnValue({
     data: { ...agent, can_manage: canManage },

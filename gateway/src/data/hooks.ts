@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  ApiError,
   type ConnectorAppScope,
   type ConnectorApps,
   fetchConnectorApps,
@@ -185,12 +184,8 @@ export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {
 }
 
 /** The connector apps of `scope`: the server's, which only its operator
- * reads, or the current organization's, which only its org admins do. A 404
- * is the routes not being mounted: `notEnabled` says so. */
-export function useConnectorApps(
-  scope: ConnectorAppScope,
-  notEnabled: string,
-): UseQueryResult<ConnectorApps> {
+ * reads, or the current organization's, which only its org admins do. */
+export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<ConnectorApps> {
   const [data, setData] = useState<ConnectorApps | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -209,20 +204,14 @@ export function useConnectorApps(
       },
       (err: unknown) => {
         if (cancelled) return;
-        setError(
-          err instanceof ApiError && err.status === 404
-            ? notEnabled
-            : err instanceof Error
-              ? err.message
-              : String(err),
-        );
+        setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [scope, notEnabled, tick]);
+  }, [scope, tick]);
 
   return { data, loading, error, refetch };
 }

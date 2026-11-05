@@ -14,6 +14,12 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/workspace", "Workspace"],
   ["/organization", "Organization"],
   ["/operator/workspaces", "All workspaces"],
+  // The new layout's own (`gateway_v2`).
+  ["/overview", "Overview"],
+  ["/templates", "Templates"],
+  ["/settings/org", "Organization settings"],
+  ["/settings", "Settings"],
+  ["/platform", "Platform"],
 ];
 
 const DOCS_URL = "https://docs.switchagents.ai/switch-rooms/getting-started";

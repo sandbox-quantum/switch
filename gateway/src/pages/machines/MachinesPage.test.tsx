@@ -238,14 +238,6 @@ describe("MachinesPage", () => {
     expect(text).toMatch(/stay placed, and offline, until you move them/);
   });
 
-  it("says when agent management is off instead of showing an empty page", async () => {
-    mockManagement({});
-    render(<MachinesPage />);
-    expect(
-      await screen.findByText(/Agent management is not enabled on this server/),
-    ).toBeTruthy();
-  });
-
   it("stops a running agent by changing what is wanted", async () => {
     const calls = mockManagement({
       "GET /controllers": [200, [laptop]],

@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { capabilitiesOf } from "../../data/capabilities";
+import { ALL_OFF, type FeatureFlags } from "../../data/featureFlags";
 import { app } from "../connector-apps/testFixtures";
 import OrganizationPage from "./OrganizationPage";
 
@@ -61,10 +63,22 @@ class Refusal {
   ) {}
 }
 
-function signedInAs(current: Session) {
+const CONNECTORS_ON: FeatureFlags = {
+  ...ALL_OFF,
+  service_connections: true,
+  organization_connector_apps: true,
+};
+
+function signedInAs(current: Session, features: FeatureFlags = CONNECTORS_ON) {
   const refresh = vi.fn();
+  const administers = current.tenant?.role === "admin" || current.user.is_operator;
   vi.mocked(useAuth).mockReturnValue({
     session: current,
+    capabilities: capabilitiesOf(
+      current,
+      { id: "t1", slug: "acme", name: "Acme", role: current.tenant?.role ?? "member", administers },
+      features,
+    ),
     switchTo: vi.fn(),
     refresh,
   } as unknown as ReturnType<typeof useAuth>);
@@ -204,8 +218,8 @@ describe("OrganizationPage", () => {
     );
   });
 
-  it("shows no connectors where the server keeps them to itself", async () => {
-    signedInAs(session("org_admin", true));
+  it("shows no connectors where the server keeps them to itself, and asks nothing of it", async () => {
+    signedInAs(session("org_admin", true), { ...ALL_OFF, service_connections: true });
     const fetchMock = answer({
       "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
@@ -217,15 +231,11 @@ describe("OrganizationPage", () => {
     render(<OrganizationPage />);
 
     expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/gateway/organizations/current/connector-apps",
-        expect.anything(),
-      ),
-    );
     await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
     expect(screen.queryByRole("heading", { name: "Connectors" })).toBeNull();
     expect(screen.queryByText(/unmocked/)).toBeNull();
+    const asked = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(asked.filter((path) => /connector-apps|\/services/.test(path))).toEqual([]);
   });
 
   it("shows what a demotion could not revoke at a vendor", async () => {

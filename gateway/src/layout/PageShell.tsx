@@ -1,12 +1,13 @@
 import { Box, Stack } from "@mui/material";
 import { Outlet } from "react-router";
+import type { Layout } from "../routes/routeTable";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
 
 /** Hoot's signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
  *  the content is the hero — an "app within a surface", not edge-to-edge chrome. */
-export default function PageShell() {
+export default function PageShell({ layout }: { layout: Layout }) {
   return (
     <Box
       sx={{
@@ -16,7 +17,7 @@ export default function PageShell() {
         backgroundColor: "var(--hoot-canvas)",
       }}
     >
-      <NavRail />
+      <NavRail layout={layout} />
       <Stack sx={{ flex: 1, minWidth: 0, overflow: "hidden", pr: "var(--surface-gutter)", pb: "var(--surface-gutter)" }}>
         <TopBar />
         <Stack

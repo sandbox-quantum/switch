@@ -1,3 +1,5 @@
+import { type FeatureFlagState, type FeatureFlags, featureFlagsFrom } from "./featureFlags";
+
 const BASE = "/gateway";
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T | null> {
@@ -2411,6 +2413,18 @@ export interface BudgetUpdate {
 
 export async function fetchCurrentTenant(): Promise<CurrentTenant | null> {
   return fetchJson<CurrentTenant>("/tenants/current");
+}
+
+/** The current workspace as the server sees the caller in it. Throws rather
+ * than answering null: what the dashboard lets someone open is worked out
+ * from it, so a failed read must not look like "not an admin". */
+export async function loadCurrentTenant(): Promise<CurrentTenant> {
+  return jsonRequest<CurrentTenant>("/tenants/current", "GET");
+}
+
+export async function fetchFeatureFlags(): Promise<FeatureFlags> {
+  const { flags } = await jsonRequest<{ flags: FeatureFlagState[] }>("/feature-flags", "GET");
+  return featureFlagsFrom(flags);
 }
 
 export async function fetchUsage(

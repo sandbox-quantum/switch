@@ -79,7 +79,7 @@ function StatusDot({ color, title }: { color: string; title?: string }) {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
-  const { user, canAdminTenant } = useAuth();
+  const { user, canAdminTenant, capabilities } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
@@ -192,7 +192,9 @@ export default function AgentDetailPage() {
           canEdit={isOwner}
           onUpdated={refetch}
         />
-        {isOwner && <ServiceAccessSection agent={agent} onAgentUpdated={refetch} />}
+        {isOwner && capabilities.features.service_connections && (
+          <ServiceAccessSection agent={agent} onAgentUpdated={refetch} />
+        )}
         {(isOwner || canAdminTenant) && (
           <>
             <Divider />
