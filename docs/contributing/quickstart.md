@@ -192,9 +192,10 @@ All of this is in Switch Console, against the server you just added.
    `.`, `-` and `_`, and must start with a letter or a digit; the convention is
    `provider.job.owner`, so `claude-code.quickstart.yourname` fits. A
    **Description** is required too. Leave everything else alone.
-3. **Create a room.** Select **Your Rooms**, then **Create room**. Choose the
-   Mattermost that `just up` started as the messaging app, name the room, and
-   add the agent you just created.
+3. **Create a room.** Select **Your Rooms**, then **+ New Room** in the list
+   below it. Choose the Mattermost that `just up` started as the messaging
+   app, name the room, add the agent you just created, and select **Create
+   room**.
 4. **Open the room in Mattermost.** Go to `http://localhost:8065` and sign in
    as the `MATTERMOST_USER` and `MATTERMOST_USER_PASSWORD` from your `.env`.
    That account is linked to the gateway admin by `just up`'s `setup`
