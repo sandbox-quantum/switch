@@ -56,6 +56,11 @@ access:
 tools: { mode: pass_through } # the vendor's tool list as it is, until classified
 ```
 
+An `oauth` entry whose vendor has no read-only scopes offers `write` alone,
+leaving out `read`: every sign-in then connects as writing, and one that
+grants less is refused rather than stored as reading. Every entry offers at
+least one level, and only an `oauth` entry may leave out `read`.
+
 The loader stays strict and refuses an entry whose fields contradict its
 adapter: a GitHub entry with MCP servers, a pass-through GitHub token, an
 `oauth` entry without its client, identity or tools, a minted token that
@@ -536,6 +541,67 @@ is in [`docs/old/airtable-setup.md`](../old/airtable-setup.md).
 To connect: Settings, Connections in Switch Console, then Airtable. To roll
 back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
+`enabled: false`.
+
+## Salesforce
+
+Measured against a Developer Edition org. Production orgs follow the same
+documentation but have not been tried. The operator's setup is in
+[`docs/old/salesforce-setup.md`](../old/salesforce-setup.md).
+
+- Salesforce has no dynamic registration for its hosted MCP servers, and
+  refuses Connected Apps, so each server's operator creates an External Client
+  App (`registration: static`). It comes back to Core's own callback. A client
+  secret is required, since Core is a server-side client.
+- `mcp_api` reaches every tool of every server the org activated, so no scope
+  makes a sign-in read-only. The entry offers the write level alone, so every
+  connection's consent is `write` and a grant is on or off, as with any other
+  pass-through entry. The entry connects
+  `sobject-mutations` only, never
+  `sobject-deletes` or `sobject-all`. Tools pass through.
+- The endpoints are named rather than discovered, the ones Salesforce documents
+  for MCP clients. Discovery would work, since the OpenID path answers, but
+  would send the server's address as OAuth's `resource`, which Salesforce's
+  guide for MCP clients does not send.
+- Hosted MCP servers take only JWT-based access tokens. Token responses carry
+  `expires_in`, on sign-in and on refresh, and it matched the JWT's `exp`.
+- A named user's JWT-based token lives for the org's session timeout, measured
+  at 7,200 s in a new Developer Edition org, unless the app sets its own,
+  from 1 minute to 12 hours. The setup sets 30 minutes, measured at 1,800 s and
+  in effect on the next refresh, so `max_lifetime` is 1,800. Core renews while
+  15 minutes remain, so a shorter timeout means a refresh on every ask.
+- New apps rotate refresh tokens, measured on a refresh, and expire them after
+  30 idle days. Neither can be turned off in the app.
+- `openid` is added to the scopes Salesforce documents, for the identity call
+  to `/services/oauth2/userinfo`. Measured with a real token issued for
+  `sobject-mutations`: it answers 200 at `login.salesforce.com`, and the account
+  is `user_id`, labelled by `email`. The answer, scrubbed, is
+  `core/tests/switch_core/connections/fixtures/salesforce/userinfo.json`.
+- One token passed `initialize` and `tools/list` on `sobject-reads` and
+  `sobject-mutations` alike. Measured again on 2026-11-05, `sobject-mutations`
+  lists nine tools: `getObjectSchema`, `soqlQuery`, `find`, `getRelatedRecords`,
+  `listRecentSobjectRecords` and `getUserInfo`, which only read, and
+  `createSobjectRecord`, `updateSobjectRecord` and `updateRelatedRecord`. None
+  deletes. The answer is
+  `core/tests/switch_core/connections/fixtures/salesforce/sobject-mutations-tools-list.json`,
+  and a test holds the skill to its tools and arguments.
+- A disconnect revokes the sign-in on the org's own host, the token response's
+  `instance_url`, held to `salesforce.com` by `revocation_domain`, since Switch
+  sends the refresh token there. Measured: `login.salesforce.com` answers a
+  revoke 302 and the token keeps working; the org's host answers 200 and the
+  next refresh is `invalid_grant`.
+- Saving a client asks `/services/oauth2/introspect`, because the token endpoint
+  answers `unknown_error` to a made-up code whatever the secret. Introspection
+  answers `unsupported_token_type` to a right client id and secret, and
+  `invalid_client` to anything else.
+- Refused, because the catalog fixes the URLs: sandboxes and scratch orgs
+  (`test.salesforce.com`), and orgs that block `login.salesforce.com`.
+- An External Client App belongs to its org. Connecting people from another org
+  needs the app packaged and installed there, which has not been tried.
+
+To connect: Settings, Connections in Switch Console, then Salesforce. To roll
+back, set `DISABLED_SERVICES` `{"salesforce": "<the reason people see>"}`, remove its client under
+Connector apps or unset `SALESFORCE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
 ## Google Workspace

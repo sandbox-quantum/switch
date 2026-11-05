@@ -3,7 +3,7 @@ import { z } from 'zod';
 /**
  * The apps the server's operator sets up for connectors to sign in through:
  * GitHub's App and the OAuth clients registered at a vendor (Google's,
- * Airtable's). One
+ * Airtable's, Salesforce's). One
  * app serves every workspace on the server, so every route behind these is
  * the operator's alone. No answer carries a secret: a client secret shows its
  * last four characters, a private key its fingerprint.

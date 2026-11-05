@@ -415,6 +415,19 @@ version of their own to them without also giving them a release of their own.
   and carries nothing else. Notices travel between replicas on the signal bus,
   so a change made through one pod reaches a Console connected to another
   (#717).
+- **A connector can offer write access alone.** An OAuth entry whose vendor
+  has no read-only scopes may leave out its `read` level, so a sign-in that
+  can write is never presented as reading. Such a sign-in connects as writing,
+  and one that grants less than the write level asks for is refused.
+- **The Salesforce connection.** A person connects Salesforce from Switch
+  Console, and a granted agent reads, creates and updates records, as that
+  person, through Salesforce's hosted SObject Mutations MCP server. Salesforce
+  has no read-only sign-in, so the connection is offered as writing; no tool it
+  is offered deletes a record. Each server's operator creates a Salesforce
+  External Client App and saves it under Connector apps, or names it in
+  `SALESFORCE_CLIENT_CONFIG_PATH` (Helm: `switchCore.salesforceClientSecret`);
+  see `docs/old/salesforce-setup.md`. Without it, Salesforce is listed as not
+  set up.
 - **The Airtable connection.** A person connects Airtable from Switch Console,
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that
@@ -2751,6 +2764,8 @@ version of their own to them without also giving them a release of their own.
   connection's menu on the server page. The connection restarts with it and
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
+- **Admin → Connector apps sets up Salesforce.** Its dialog walks creating the
+  External Client App, with the callback URL to copy and the scopes to add.
 - **Airtable's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks

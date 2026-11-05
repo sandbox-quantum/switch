@@ -228,6 +228,113 @@ class TestSignIn:
             await adapter.identify(secret.access_token or "")
 
 
+class TestNamedEndpoints:
+    async def test_sends_no_resource_to_bind_the_token_to_one_server(
+        self, vendor
+    ) -> None:
+        named = STATIC.replace(
+            "    registration: static\n",
+            "    registration: static\n"
+            f"    authorization_url: {ISSUER}/authorize\n"
+            f"    token_url: {ISSUER}/token\n"
+            f"    revocation_url: {ISSUER}/revoke\n",
+        )
+        adapter, _ = _adapter(vendor, named)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.refresh(secret)
+        assert [form.get("resource") for form in vendor.token_requests] == [None, None]
+        assert vendor.authorizations[-1].get("resource") is None
+
+
+NAMED_REVOKE = STATIC.replace(
+    "    registration: static\n",
+    f"    registration: static\n    revocation_url: {ISSUER}/revoke\n",
+)
+
+
+class TestRevocationDomain:
+    INSTANCE = "https://acme.my.example.test"
+    ENTRY = STATIC.replace(
+        "    registration: static\n",
+        "    registration: static\n"
+        f"    revocation_url: {ISSUER}/revoke\n"
+        "    revocation_domain: example.test\n",
+    )
+
+    async def test_revokes_on_the_customers_host(self, vendor) -> None:
+        vendor.instance_url = self.INSTANCE
+        adapter, _ = _adapter(vendor, self.ENTRY)
+        secret = await _sign_in(adapter, vendor)
+        assert secret.values["instance_url"] == self.INSTANCE
+        await adapter.revoke_connection(secret)
+        assert [r["token"] for r in vendor.revoked] == [secret.values["refresh_token"]]
+
+    async def test_keeps_the_host_through_a_refresh_that_names_none(
+        self, vendor
+    ) -> None:
+        vendor.instance_url = self.INSTANCE
+        adapter, _ = _adapter(vendor, self.ENTRY)
+        secret = await _sign_in(adapter, vendor)
+        vendor.instance_url = None
+        renewed = await adapter.refresh(secret)
+        assert renewed.values["instance_url"] == self.INSTANCE
+
+    @pytest.mark.parametrize(
+        ("instance", "says"),
+        [
+            ("https://attacker.test", "outside example.test"),
+            ("https://example.test.attacker.test", "outside example.test"),
+            ("http://acme.my.example.test", "not an https URL"),
+            ("https://attacker.test\\.example.test", "outside example.test"),
+            ("https://attacker.test%2F.example.test", "outside example.test"),
+        ],
+        ids=[
+            "another domain",
+            "the domain as a prefix",
+            "plain http",
+            "a backslash in the host",
+            "an escaped slash in the host",
+        ],
+    )
+    async def test_refuses_any_other_host_at_sign_in(
+        self, vendor, instance: str, says: str
+    ) -> None:
+        vendor.instance_url = instance
+        adapter, _ = _adapter(vendor, self.ENTRY)
+        with pytest.raises(ServiceAdapterError, match=says):
+            await _sign_in(adapter, vendor)
+
+    async def test_refuses_a_refresh_that_names_another_host(self, vendor) -> None:
+        vendor.instance_url = self.INSTANCE
+        adapter, _ = _adapter(vendor, self.ENTRY)
+        secret = await _sign_in(adapter, vendor)
+        vendor.instance_url = "https://attacker.test"
+        with pytest.raises(ServiceAdapterError, match="outside example.test"):
+            await adapter.refresh(secret)
+
+    async def test_sends_nothing_to_a_stored_host_outside_the_domain(
+        self, vendor
+    ) -> None:
+        vendor.instance_url = self.INSTANCE
+        adapter, _ = _adapter(vendor, self.ENTRY)
+        secret = await _sign_in(adapter, vendor)
+        tampered = ConnectionSecret(
+            {**secret.values, "instance_url": "https://attacker.test"}
+        )
+        with pytest.raises(ServiceAdapterError, match="outside example.test"):
+            await adapter.revoke_connection(tampered)
+        assert vendor.revoked == []
+
+    async def test_a_redirect_from_the_shared_host_is_not_a_revocation(
+        self, vendor
+    ) -> None:
+        vendor.instance_url = self.INSTANCE
+        adapter, _ = _adapter(vendor, NAMED_REVOKE)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="HTTP 302"):
+            await adapter.revoke_connection(secret)
+
+
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:
         adapter, _ = _adapter(vendor)

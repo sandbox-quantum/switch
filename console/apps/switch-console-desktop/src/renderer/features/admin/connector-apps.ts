@@ -55,6 +55,7 @@ export interface SecretField {
 
 const GOOGLE = 'google-workspace';
 const AIRTABLE = 'airtable';
+const SALESFORCE = 'salesforce';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -324,6 +325,52 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === SALESFORCE)
+    return [
+      {
+        text: 'In Salesforce Setup, under API Catalog, MCP Servers, activate SObject Mutations. Leave SObject Deletes and SObject All off.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'In Setup, open External Client App Manager, click New External Client App, fill in its basic information, and turn on Enable OAuth.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep('Under Callback URL, enter this one:', redirectUris(app)),
+      {
+        text: 'Under OAuth Scopes, add exactly these:',
+        copy: [],
+        link: null,
+        items: scopeRows(app.scopes),
+      },
+      {
+        text: 'Under Security, select Issue JSON Web Token (JWT)-based access tokens for named users, and Require Secret for Web Server Flow.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'Create the app. It can take up to 30 minutes to start working.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'Under Policies, click Edit, open OAuth Policies, and under Named User JWT-Based Access Token Settings choose Set app-specific token timeout and 30 Minutes. Save. Switch refuses a token that lasts longer.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'Under Settings, OAuth Settings, click Consumer Key and Secret, enter the code Salesforce emails you, and copy both.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === AIRTABLE)
     return [
       {
@@ -438,6 +485,7 @@ const HELM_VALUES: Record<string, string> = {
   github: 'switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath',
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
   [AIRTABLE]: 'switchCore.airtableClientSecret',
+  [SALESFORCE]: 'switchCore.salesforceClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */
@@ -467,6 +515,12 @@ export interface Confirmation {
 
 /** What the operator confirms before the check, because asking the vendor cannot show it. */
 export function confirmBeforeCheck(app: Pick<ConnectorApp, 'slug'>): Confirmation | null {
+  if (app.slug === SALESFORCE)
+    return {
+      label:
+        "I've activated SObject Mutations, turned on JWT-based access tokens and Require Secret, and set the 30-minute token timeout.",
+      why: "Salesforce can't be asked about any of them. Without the server, agents have no tools; without those tokens, connecting works but Salesforce's tools refuse the agent's token.",
+    };
   if (app.slug !== AIRTABLE) return null;
   return {
     label: "I've filled in its support details in Builder Hub.",

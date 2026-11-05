@@ -1,7 +1,10 @@
+import json
 import shutil
+from pathlib import Path
 
 import pytest
 
+from switch_core.connections.adapters.oauth import _path_value
 from switch_core.connections.loader import (
     CATALOG,
     CATALOG_ROOT,
@@ -10,6 +13,7 @@ from switch_core.connections.loader import (
     load_catalog,
     with_access_profiles,
 )
+from switch_core.connections.registry import every_scope
 
 PLACEHOLDERS = {
     "asana",
@@ -19,20 +23,20 @@ PLACEHOLDERS = {
     "new-relic",
     "notion",
     "linear",
-    "salesforce",
     "box",
     "canva",
     "vercel",
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_finished_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "salesforce",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,6 +44,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "salesforce",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
@@ -176,6 +181,150 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_salesforce_entry_signs_in_as_salesforce_documents():
+    definition = CATALOG["salesforce"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # No dynamic registration: each server's operator creates an External
+    # Client App, and it comes back to Core's own callback.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "SALESFORCE"
+    # Named, so no `resource` binds the token to one of the two servers.
+    assert oauth.authorization_url == (
+        "https://login.salesforce.com/services/oauth2/authorize"
+    )
+    assert oauth.token_url == "https://login.salesforce.com/services/oauth2/token"
+    assert oauth.revocation_url == "https://login.salesforce.com/services/oauth2/revoke"
+    assert oauth.revocation_domain == "salesforce.com"
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == (
+        "https://login.salesforce.com/services/oauth2/userinfo"
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        1800,
+    )
+
+
+def test_the_shipped_salesforce_entry_never_reaches_a_delete():
+    definition = CATALOG["salesforce"].definition
+    assert definition.mcp is not None
+    assert [
+        (server.name, server.url.rsplit("/", 1)[1]) for server in definition.mcp.servers
+    ] == [("salesforce", "sobject-mutations")]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+
+
+def test_every_salesforce_sign_in_is_offered_as_writing():
+    definition = CATALOG["salesforce"].definition
+    assert definition.access is not None
+    # No scope makes a Salesforce sign-in read-only, so it offers write alone.
+    assert definition.access.read is None
+    assert definition.access.write is not None
+    assert definition.access.write.scopes == ["mcp_api", "refresh_token", "openid"]
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "says"),
+    [
+        (
+            "    revocation_url: https://login.salesforce.com/services/oauth2/revoke\n",
+            "",
+            "revocation_domain needs a revocation_url",
+        ),
+        (
+            "revocation_domain: salesforce.com",
+            "revocation_domain: https://salesforce.com",
+            "revocation_domain",
+        ),
+    ],
+    ids=["revocation_domain alone", "a domain that is a URL"],
+)
+def test_rejects_a_salesforce_entry_that_misuses_its_oauth_fields(
+    catalog_copy, old: str, new: str, says: str
+):
+    path = catalog_copy / "salesforce" / "connection.yaml"
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new))
+    with pytest.raises(CatalogError, match=says):
+        load_catalog(catalog_copy)
+
+
+def test_an_oauth_entry_may_offer_write_alone(catalog_copy):
+    _write_example(
+        catalog_copy, OAUTH_ENTRY.replace('  read: { scopes: ["read:items"] }\n', "")
+    )
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.access is not None and definition.access.read is None
+    assert every_scope(definition) == ["read:items", "write:items"]
+
+
+def test_rejects_access_with_no_level(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            '  read: { scopes: ["read:items"] }\n'
+            '  write: { scopes: ["read:items", "write:items"] }\n',
+            "  {}\n",
+        ),
+    )
+    with pytest.raises(CatalogError, match="read level, a write level or both"):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_introspection_on_a_dynamic_client(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: dynamic\n"
+            "    introspection_url: https://auth.example.test/introspect\n",
+        ),
+    )
+    with pytest.raises(CatalogError, match="introspection_url checks a static client"):
+        load_catalog(catalog_copy)
+
+
+SALESFORCE_FIXTURES = Path(__file__).parent / "fixtures" / "salesforce"
+
+
+def test_salesforce_userinfo_names_the_account_for_an_mcp_token():
+    # Recorded from userinfo with a token issued for SObject Mutations, scrubbed.
+    userinfo = json.loads((SALESFORCE_FIXTURES / "userinfo.json").read_text())
+    identity = CATALOG["salesforce"].definition.auth.identity
+    assert identity is not None
+    assert _path_value(userinfo, identity.account_id) == "005000000000000AAA"
+    assert _path_value(userinfo, identity.label) == "ada@example.com"
+
+
+def test_the_salesforce_skill_matches_the_servers_recorded_tools():
+    # Recorded from tools/list on SObject Mutations.
+    recorded = json.loads(
+        (SALESFORCE_FIXTURES / "sobject-mutations-tools-list.json").read_text()
+    )["result"]["tools"]
+    skill = CATALOG["salesforce"].skill_files["SKILL.md"]
+    for tool in recorded:
+        assert f"`{tool['name']}`" in skill
+        for argument in tool["inputSchema"].get("properties", {}):
+            assert f"`{argument}`" in skill, (tool["name"], argument)
+    writes = {
+        tool["name"] for tool in recorded if not tool["annotations"]["readOnlyHint"]
+    }
+    assert writes == {
+        "createSobjectRecord",
+        "updateSobjectRecord",
+        "updateRelatedRecord",
+    }
+    assert not any("delete" in tool["name"].lower() for tool in recorded)
+    assert "No tool here deletes a record" in skill
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -476,7 +625,9 @@ def test_rejects_write_without_read(catalog_copy):
         "  read:\n    permissions: { contents: read, pull_requests: read }\n",
         "",
     )
-    with pytest.raises(CatalogError, match="github is invalid"):
+    with pytest.raises(
+        CatalogError, match="(?s)github is invalid.*only an oauth entry may offer"
+    ):
         load_catalog(catalog_copy)
 
 

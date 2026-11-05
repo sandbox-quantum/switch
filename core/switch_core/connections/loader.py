@@ -87,6 +87,13 @@ class OAuthClient(BaseModel):
     account through the same client then does not revoke the sign-in it
     replaces, as that would end the new one too.
 
+    `introspection_url`: where saving a static client asks whether its secret
+    is right, for a vendor whose token endpoint cannot say.
+
+    `revocation_domain`: for a vendor that revokes only on each customer's own
+    host. The token response's `instance_url`, which must be an https host
+    under this domain, then replaces the origin of `revocation_url`.
+
     `unchecked`: what a static client's operator must see to themselves,
     because asking the vendor about the client cannot show it; said with every
     check that passes.
@@ -119,6 +126,10 @@ class OAuthClient(BaseModel):
     authorization_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    introspection_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    revocation_domain: str | None = Field(
+        default=None, pattern=r"^[a-z0-9-]+(\.[a-z0-9-]+)+$"
+    )
     revocation_discovered: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
@@ -164,8 +175,14 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "revocation_ends_grant is for a vendor Switch revokes sign-ins at"
             )
+        if self.revocation_domain is not None and self.revocation_url is None:
+            raise ValueError("revocation_domain needs a revocation_url to adjust")
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
+        if self.introspection_url is not None and self.registration != "static":
+            raise ValueError(
+                "introspection_url checks a static client, which this is not"
+            )
         if (
             self.revocation_url is None
             and not self.revocation_discovered
@@ -525,9 +542,19 @@ class LevelAccess(BaseModel):
 
 
 class ConnectionAccess(BaseModel):
+    """The levels a grant may be given. An OAuth entry whose vendor has no
+    read-only scopes offers `write` alone, so no sign-in that can write is
+    presented as reading."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    read: LevelAccess
+    read: LevelAccess | None = None
     write: LevelAccess | None = None
+
+    @model_validator(mode="after")
+    def _a_level(self) -> "ConnectionAccess":
+        if self.read is None and self.write is None:
+            raise ValueError("access offers a read level, a write level or both")
+        return self
 
 
 class AccessProfile(BaseModel):
@@ -603,6 +630,12 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
+        if (
+            self.access is not None
+            and self.access.read is None
+            and self.adapter != "oauth"
+        ):
+            raise ValueError("only an oauth entry may offer a write level alone")
         if self.adapter == "github":
             self._check_github()
         elif self.adapter == "oauth":

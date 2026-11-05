@@ -77,16 +77,17 @@ def _world(
     disabled: dict[str, str] | None = None,
     workspace_gate: bool = False,
     organization_apps: object = None,
+    write_only: bool = False,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
-    _write_example(
-        root,
-        OAUTH_ENTRY.replace(
-            "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
-        ),
+    entry = OAUTH_ENTRY.replace(
+        "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
     )
+    if write_only:
+        entry = entry.replace('  read: { scopes: ["read:items"] }\n', "")
+    _write_example(root, entry)
     catalog = load_catalog(root)
     oauth = catalog["example"].definition.auth.oauth
     assert oauth is not None
@@ -411,6 +412,35 @@ class TestLoopback:
             assert connected.json()["consent"] == "read"
         connection = await _connection(session_factory, ada.id)
         assert connection is not None and connection.consent == "read"
+
+
+class TestWriteOnly:
+    """An entry whose vendor has no read-only scopes offers write alone."""
+
+    async def test_connects_as_writing(self, session_factory, tmp_path) -> None:
+        world = _world(session_factory, tmp_path / "catalog", write_only=True)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            connected = await _loopback_connect(world, Console(client, ada))
+            assert connected.json()["consent"] == "write"
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None and connection.consent == "write"
+
+    async def test_a_sign_in_granted_less_is_refused_rather_than_read(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", write_only=True)
+        ada = await add_member(session_factory, "ada")
+        mint = world.vendor.mint
+        world.vendor.mint = lambda scopes: mint(["read:items"])  # type: ignore[method-assign]
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            refused = await console.complete(await _loopback_code(world, console))
+            assert refused.status_code >= 400
+            status = (await console.status()).json()
+            assert status["status"] == "failed"
+            assert "needs to write" in status["error"]
+        assert await _connection(session_factory, ada.id) is None
 
 
 class TestLongCodes:
