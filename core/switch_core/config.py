@@ -386,8 +386,9 @@ class SwitchConfig(BaseSettings):
     # rooms. Unbounded self-service creation therefore buys steady-state work
     # in the deployment, not storage.
     #
-    # Counts `owner` memberships only, so being invited into someone else's
-    # workspace never spends an allowance the invitee cannot get back. Deployment
+    # Counts workspaces created (`users.workspaces_created`), so being invited
+    # into someone else's workspace never spends an allowance the invitee
+    # cannot get back. Deployment
     # operators (`users.role == "admin"`) are exempt, on the same grounds as
     # every other operator bypass in `authz.py`: this bounds self-service, and
     # an operator provisioning workspaces for other people is not that.

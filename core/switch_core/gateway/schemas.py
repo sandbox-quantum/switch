@@ -1046,8 +1046,8 @@ class OperatorWorkspaceResponse(BaseModel):
 
 class CurrentTenantResponse(TenantMembershipResponse):
     """The tenant this request is bound to. `administers` is whether the
-    caller may manage it — an `owner` or `admin` membership, or the operator
-    bit, which no membership role shows."""
+    caller may manage it — an `admin` membership, `org_admin` of its
+    organization, or the operator bit, which no membership role shows."""
 
     administers: bool
 
