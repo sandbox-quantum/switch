@@ -4891,6 +4891,7 @@ class RoomSchedule(TenantScoped, Base):
 class RoomScheduleTarget(TenantScoped, Base):
     __tablename__ = "room_schedule_targets"
     __table_args__ = (
+        Index("ix_room_schedule_targets_tenant_schedule", "tenant_id", "schedule_id"),
         ForeignKeyConstraint(
             ["tenant_id", "schedule_id"],
             ["room_schedules.tenant_id", "room_schedules.id"],
@@ -4911,6 +4912,7 @@ class RoomScheduleTarget(TenantScoped, Base):
 class RoomScheduleRun(TenantScoped, Base):
     __tablename__ = "room_schedule_runs"
     __table_args__ = (
+        Index("ix_room_schedule_runs_tenant_schedule", "tenant_id", "schedule_id"),
         ForeignKeyConstraint(
             ["tenant_id", "schedule_id"],
             ["room_schedules.tenant_id", "room_schedules.id"],

@@ -61,6 +61,9 @@ def upgrade() -> None:
         )
         """
     )
+    op.execute(
+        "CREATE INDEX ix_room_schedule_targets_tenant_schedule ON room_schedule_targets (tenant_id, schedule_id)"
+    )
     op.execute('ALTER TABLE "room_schedule_targets" ENABLE ROW LEVEL SECURITY')
     op.execute(
         """
@@ -84,6 +87,9 @@ def upgrade() -> None:
             CONSTRAINT fk_room_schedule_runs_tenant FOREIGN KEY(tenant_id) REFERENCES tenants (id)
         )
         """
+    )
+    op.execute(
+        "CREATE INDEX ix_room_schedule_runs_tenant_schedule ON room_schedule_runs (tenant_id, schedule_id)"
     )
     op.execute('ALTER TABLE "room_schedule_runs" ENABLE ROW LEVEL SECURITY')
     op.execute(
