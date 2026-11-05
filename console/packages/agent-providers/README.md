@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These adapters are the only Console session runtime.
 
 ## Shape
 
@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `openhands` | `openhands acp`, ACP over stdio, on the generic ACP adapter | Native sessions resumed through `--resume`, approvals through its confirmation modes, MCP servers relayed over stdio. It runs the model set in its own settings. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -68,13 +69,14 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| openhands (ACP) | 1.16.0 | 8/10 (2026-11-05) | Run with `gemini/gemini-flash-lite-latest` as its model. No model choice over ACP (`session/set_model` is accepted and ignored), so sessions run `llm.model` from `agent_settings.json` and a model chosen in Switch is refused. One unnamed "Confirm Agent Actions" request per step, and tool calls that do not name their MCP server, so the session's own MCP tools ask in `approval-required` and edits ask in `auto-accept-edits`: `mcp-registered` and `user-input` (no question tool) are skipped. It cannot take an HTTP MCP server over ACP (it passes the headers on as a list), so each is relayed over stdio, and its `session/load` drops the session's MCP servers, so it resumes through `--resume` and `session/new`. A cancel waits for the model call in flight. It takes a `cancelled` permission answer as a rejection and runs on, so an interrupt answers a pending confirmation with an error, and the next turn first asks again for the action it cut off. Every `session/new`, model listing included, saves a conversation under `~/.openhands/conversations`. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
-covers the protocol and chooses behaviour from what the agent advertises in
-`initialize` and `session/new`:
+Cursor, Antigravity and OpenHands run on one adapter, `src/acp/acp-adapter.ts`,
+which covers the protocol and chooses behaviour from what the agent advertises
+in `initialize` and `session/new`:
 
 - resume uses `session/load` when the agent advertises `loadSession`, else
   `session/resume` when it advertises `sessionCapabilities.resume`, else asks
@@ -90,10 +92,10 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
-binary and arguments, the `authenticate` method, the mode for each runtime
-mode, how a tool call names its MCP server, sign-in checks, and vendor
-extensions.
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/openhands/openhands-acp.ts`): binary and arguments, the `authenticate`
+method, the mode for each runtime mode, how a tool call names its MCP server,
+sign-in checks, and vendor extensions.
 
 Permission requests follow one policy for every ACP agent. A tool on an MCP
 server the session registered is allowed once without asking, as is

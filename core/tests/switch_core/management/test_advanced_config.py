@@ -16,7 +16,8 @@ def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
     with pytest.raises(ValidationError) as raised:
         DefinitionV1(provider="gemini")
     assert (
-        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
+        "unknown provider 'gemini'; "
+        "one of claude, codex, opencode, antigravity, cursor, openhands"
         in str(raised.value)
     )
 
@@ -30,6 +31,7 @@ def test_the_served_provider_list() -> None:
         ("opencode", "OpenCode"),
         ("antigravity", "Antigravity"),
         ("cursor", "Cursor CLI"),
+        ("openhands", "OpenHands"),
     ]
     by_id = {provider["id"]: provider for provider in providers}
     served = advanced_config_schema()["providers"]
@@ -41,7 +43,14 @@ def test_the_served_provider_list() -> None:
 def test_the_served_schema() -> None:
     providers = advanced_config_schema()["providers"]
 
-    assert set(providers) == {"claude", "codex", "opencode", "cursor", "antigravity"}
+    assert set(providers) == {
+        "claude",
+        "codex",
+        "opencode",
+        "cursor",
+        "antigravity",
+        "openhands",
+    }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
         "tools",
         "disallowedTools",
