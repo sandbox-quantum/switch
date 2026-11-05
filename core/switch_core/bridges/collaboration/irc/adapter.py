@@ -374,31 +374,28 @@ class IrcAdapter(PlatformAdapter):
                 self._relay_queue.task_done()
 
     async def _relayed(self, request: Mapping[str, str]) -> None:
-        try:
-            client = self.client
-            assert client is not None
-            action = request.get("action")
-            channel = request.get("channel", "")
-            if action == "send":
-                await self._send_text(channel, request["text"], request["prefix"])
-            elif action == "create" and is_channel(channel):
-                await self._create_exact(
-                    channel, request.get("topic", ""), request.get("private") == "yes"
-                )
-            elif action == "join" and is_channel(channel):
-                await client.join(channel)
-                if request.get("private") == "yes":
-                    await self._confirm_private(channel)
-            elif action == "part" and is_channel(channel):
-                await self.retire_channel(channel)
-            elif action == "invite" and is_channel(channel):
-                await self.add_users_to_channel(
-                    channel, [request["nick"]], [request["account"]]
-                )
-            else:
-                raise BridgeOperationError("Invalid relayed IRC operation")
-        except Exception:
-            logger.exception("Relayed IRC operation failed")
+        client = self.client
+        assert client is not None
+        action = request.get("action")
+        channel = request.get("channel", "")
+        if action == "send":
+            await self._send_text(channel, request["text"], request["prefix"])
+        elif action == "create" and is_channel(channel):
+            await self._create_exact(
+                channel, request.get("topic", ""), request.get("private") == "yes"
+            )
+        elif action == "join" and is_channel(channel):
+            await client.join(channel)
+            if request.get("private") == "yes":
+                await self._confirm_private(channel)
+        elif action == "part" and is_channel(channel):
+            await self.retire_channel(channel)
+        elif action == "invite" and is_channel(channel):
+            await self.add_users_to_channel(
+                channel, [request["nick"]], [request["account"]]
+            )
+        else:
+            raise BridgeOperationError("Invalid relayed IRC operation")
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if channel_id.startswith("dm:"):
@@ -486,25 +483,27 @@ class IrcAdapter(PlatformAdapter):
         assert self.client is not None
         key = self.canonical(channel)
         self._creating.add(key)
-        if private:
-            self._unusable_channels.add(key)
-        await self.client.join(channel)
-        if key not in self.client.created_channels:
-            raise BridgeOperationError(
-                "The IRC channel already exists. Bind it explicitly instead of creating a room over it."
-            )
-        if private:
-            await self._confirm_private(channel)
-        if topic:
-            await self.client.command(
-                "TOPIC",
-                channel,
-                plain(topic)
-                .replace("\n", " ")
-                .encode()[:200]
-                .decode("utf-8", errors="ignore"),
-            )
-        self._creating.discard(key)
+        try:
+            if private:
+                self._unusable_channels.add(key)
+            await self.client.join(channel)
+            if key not in self.client.created_channels:
+                raise BridgeOperationError(
+                    "The IRC channel already exists. Bind it explicitly instead of creating a room over it."
+                )
+            if private:
+                await self._confirm_private(channel)
+            if topic:
+                await self.client.command(
+                    "TOPIC",
+                    channel,
+                    plain(topic)
+                    .replace("\n", " ")
+                    .encode()[:200]
+                    .decode("utf-8", errors="ignore"),
+                )
+        finally:
+            self._creating.discard(key)
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]

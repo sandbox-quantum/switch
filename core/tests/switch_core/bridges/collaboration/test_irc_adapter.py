@@ -140,6 +140,7 @@ async def test_refused_private_modes_block_later_payloads(wire):
         with pytest.raises(BridgeOperationError, match="refused|did not confirm"):
             await adapter.create_channel("private", "", channel_type="channel_private")
         channel = next(iter(adapter.client.joined))
+        assert not adapter._creating
         with pytest.raises(BridgeOperationError, match="privacy"):
             await adapter.send_message(channel, "coder", "must not reach IRC")
         assert not any(line.command == "PRIVMSG" for line in wire.received)
@@ -515,13 +516,13 @@ async def test_holder_requeues_relayed_work_after_a_transient_disconnect(monkeyp
     }
     attempts = 0
 
-    async def relayed(_request):
+    async def send_text(_channel, _text, _prefix):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
             raise BridgeOperationError("IRC disconnected during the send")
 
-    adapter._relayed = relayed
+    adapter._send_text = send_text
     monkeypatch.setattr(irc_adapter_module, "RELAY_RETRY_SECONDS", 0)
     worker = asyncio.create_task(adapter._run_relay())
     try:
