@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
-import { type DoctorInputs, formatChecks, runDoctor } from './doctor';
+import { checksAsJson, type DoctorInputs, formatChecks, runDoctor } from './doctor';
 import { MemorySecretStore } from './secrets';
 
 function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {
@@ -113,5 +113,18 @@ describe('doctor', () => {
       })
     );
     expect(offline.find((check) => check.name === 'Version')?.detail).toMatch(/offline/);
+  });
+
+  it('serializes checks with counts and stable fields for scripts', async () => {
+    const checks = await runDoctor(inputs({ platform: 'freebsd' }));
+    const parsed = JSON.parse(checksAsJson(checks)) as {
+      checks: { name: string; status: string; detail: string }[];
+      summary: { ok: number; warn: number; fail: number };
+    };
+    expect(parsed.checks[0]).toEqual({ name: 'Node', status: 'ok', detail: 'v22.13.0' });
+    expect(parsed.checks.find((check) => check.name === 'Platform')).toMatchObject({
+      status: 'fail',
+    });
+    expect(parsed.summary).toEqual({ ok: 8, warn: 0, fail: 1 });
   });
 });

@@ -240,3 +240,12 @@ export function formatChecks(checks: Check[]): string {
     .map((check) => `${MARK[check.status]}  ${check.name.padEnd(width)}  ${check.detail}`)
     .join('\n');
 }
+
+export function checksAsJson(checks: Check[]): string {
+  const summary = {
+    ok: checks.filter((check) => check.status === 'ok').length,
+    warn: checks.filter((check) => check.status === 'warn').length,
+    fail: checks.filter((check) => check.status === 'fail').length,
+  };
+  return JSON.stringify({ checks, summary }, null, 2);
+}
