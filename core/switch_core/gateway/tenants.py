@@ -36,6 +36,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.standing import lock_for_ending_standing
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import (
@@ -1376,6 +1377,9 @@ async def remove_member(
     does not exist.
     """
     _require_bound_tenant(tenant_id)
+    # Before anything is read: nothing is made for them from here until the
+    # removal commits, so the agents and keys read below are all there are.
+    await lock_for_ending_standing(session, user_id)
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
         raise HTTPException(status_code=404, detail="Not a member of this tenant")

@@ -50,6 +50,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.standing import lock_for_ending_standing
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
@@ -415,7 +416,7 @@ async def _end_access_through_organization(
     broker: ServiceBroker,
     protocol: AgentCore,
     sign_in_flows: SignInFlows,
-) -> str | None:
+) -> _AccessEnded:
     """Take away what `user_id` holds in the workspaces they stand in only as
     the organization's `org_admin`, before they stop being one.
 
@@ -423,7 +424,8 @@ async def _end_access_through_organization(
     as removing a workspace member does. Otherwise removes their keys,
     service connections and sign-ins under way in each, one workspace at a
     time, each recorded in that workspace's audit log. Raises `ServiceError`
-    when a connection is busy. Returns a warning naming what could not be
+    when a connection is busy. Returns those workspaces, for
+    `_sweep_after_access_ended`, and a warning naming what could not be
     revoked at a vendor, or None.
     """
     reached = await workspaces_reached_through_organization(
@@ -446,6 +448,7 @@ async def _end_access_through_organization(
     warnings = []
     for tenant in reached:
         async with tenant_session(session_factory, tenant.id) as session:
+            await lock_for_ending_standing(session, user_id)
             revoked = await revoke_workspace_access(
                 session,
                 user_id,
@@ -462,6 +465,74 @@ async def _end_access_through_organization(
                 target_id=user_id,
                 details={
                     "reason": reason,
+                    "api_keys_deleted": len(revoked.key_hashes),
+                    "service_connections_deleted": len(revoked.removed_services),
+                },
+            )
+            await session.commit()
+            warning = await finish_revocation(
+                session, user_id, revoked, protocol=protocol, broker=broker
+            )
+        if warning:
+            warnings.append(f"{tenant.name}: {warning}")
+    return _AccessEnded(reached, " ".join(warnings) or None)
+
+
+class _AccessEnded(NamedTuple):
+    workspaces: list[Tenant]
+    warning: str | None
+
+
+async def _sweep_after_access_ended(
+    session_factory: async_sessionmaker[AsyncSession],
+    ended: _AccessEnded,
+    *,
+    user_id: str,
+    actor_id: str,
+    reason: str,
+    api_key_store: ApiKeyStore,
+    broker: ServiceBroker,
+    protocol: AgentCore,
+    sign_in_flows: SignInFlows,
+) -> str | None:
+    """Once the role is gone, take away anything made in those workspaces
+    since `_end_access_through_organization` went through them.
+
+    That pass calls each vendor as it goes, and the person stood in every
+    workspace until the role change committed: a key they made meanwhile in
+    one already done was left behind, live and with no standing to answer to.
+    Whatever is made from the role change on finds the standing gone
+    (`db/standing.py`), so this pass leaves nothing behind. Recorded only
+    where it found something. Returns the warnings, joined, or None: the role
+    has already changed, so a connection busy now is reported, not refused.
+    """
+    warnings = []
+    for tenant in ended.workspaces:
+        async with tenant_session(session_factory, tenant.id) as session:
+            await lock_for_ending_standing(session, user_id)
+            try:
+                revoked = await revoke_workspace_access(
+                    session,
+                    user_id,
+                    api_key_store=api_key_store,
+                    broker=broker,
+                    sign_in_flows=sign_in_flows,
+                )
+            except ServiceError as error:
+                warnings.append(f"{tenant.name}: {error.message}")
+                continue
+            if not (revoked.key_hashes or revoked.removed_services):
+                continue
+            await record_audit_event(
+                session,
+                tenant_id=tenant.id,
+                actor_user_id=actor_id,
+                action=AuditAction.ORGANIZATION_ADMIN_ACCESS_ENDED,
+                target_type="user",
+                target_id=user_id,
+                details={
+                    "reason": reason,
+                    "made_while_ending": True,
                     "api_keys_deleted": len(revoked.key_hashes),
                     "service_connections_deleted": len(revoked.removed_services),
                 },
@@ -520,12 +591,13 @@ async def update_organization_member_role(
         raise last_admin
 
     warning = None
+    ended: _AccessEnded | None = None
     if demoting:
         # Let go of the request's connection while each workspace is worked on
         # on a session of its own.
         await session.commit()
         try:
-            warning = await _end_access_through_organization(
+            ended = await _end_access_through_organization(
                 session_factory,
                 user_id=user_id,
                 organization_id=organization_id,
@@ -539,6 +611,11 @@ async def update_organization_member_role(
             )
         except ServiceError as error:
             return service_refusal(error)
+        warning = ended.warning
+        # Held until the role change commits, so whatever is made for them
+        # meanwhile either commits first, and is swept below, or finds the
+        # role gone.
+        await lock_for_ending_standing(session, user_id)
         if await organization_store.lock_admins(session, organization_id) <= 1:
             raise last_admin
         member = await session.get(
@@ -565,6 +642,19 @@ async def update_organization_member_role(
         )
     member.role = req.role
     await session.commit()
+    if ended is not None:
+        late = await _sweep_after_access_ended(
+            session_factory,
+            ended,
+            user_id=user_id,
+            actor_id=user.id,
+            reason="demoted",
+            api_key_store=api_key_store,
+            broker=broker,
+            protocol=protocol,
+            sign_in_flows=request.app.state.sign_in_flows,
+        )
+        warning = " ".join(w for w in (warning, late) if w) or None
 
     target = await user_store.get(session, user_id)
     assert target is not None
@@ -628,9 +718,10 @@ async def remove_organization_member(
         )
 
     warning = None
+    ended: _AccessEnded | None = None
     if was_admin:
         try:
-            warning = await _end_access_through_organization(
+            ended = await _end_access_through_organization(
                 session_factory,
                 user_id=user_id,
                 organization_id=organization_id,
@@ -644,6 +735,10 @@ async def remove_organization_member(
             )
         except ServiceError as error:
             return service_refusal(error)
+        warning = ended.warning
+        # As in `update_organization_member_role`: held until the removal
+        # commits, and swept after it.
+        await lock_for_ending_standing(session, user_id)
 
     admins = await organization_store.lock_admins(session, organization_id)
     member = await session.get(
@@ -670,4 +765,17 @@ async def remove_organization_member(
         details={"role": role, **_made_from(access)},
     )
     await session.commit()
+    if ended is not None:
+        late = await _sweep_after_access_ended(
+            session_factory,
+            ended,
+            user_id=user_id,
+            actor_id=user.id,
+            reason="removed",
+            api_key_store=api_key_store,
+            broker=broker,
+            protocol=protocol,
+            sign_in_flows=request.app.state.sign_in_flows,
+        )
+        warning = " ".join(w for w in (warning, late) if w) or None
     return {"ok": True, "warning": warning}

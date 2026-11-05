@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import HASH_ONLY_KEY_TYPES, ApiKey, User
+from switch_core.db.standing import StandingLost, require_standing
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
@@ -88,6 +89,13 @@ async def create_api_key(
         type="registration",
     )
     await api_key_store.create(session, key)
+    # Standing was checked as the request authenticated. A removal that
+    # committed since would not see this key, so ask again now it is written:
+    # the write waited for any removal under way (`db/standing.py`).
+    try:
+        await require_standing(session, key.tenant_id, user.id)
+    except StandingLost as lost:
+        raise HTTPException(status_code=403, detail=str(lost)) from lost
     await record_audit_event(
         session,
         tenant_id=key.tenant_id,
