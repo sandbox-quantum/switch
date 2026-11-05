@@ -1,8 +1,7 @@
 # Switch Helm chart
 
 Deploys Switch into a Kubernetes cluster: switch-core (the API and all bridge
-adapters), the gateway dashboard, Postgres, and
-optionally Mattermost.
+adapters), the gateway dashboard, and Postgres.
 
 ```bash
 helm install switch oci://ghcr.io/<owner>/charts/switch --version <version> -f my-values.yaml
@@ -39,10 +38,9 @@ back: a button press is delivered by the Mattermost server over HTTP, to an
 address Switch hands it when it draws the card. So it needs port 8081 reachable
 from Mattermost — usually a cluster-internal Service port and nothing public.
 Set `switchCore.collaborationCallback.enabled` and `helm install` prints the
-address to configure on the bridge; the bundled Mattermost is told to accept
-that address at the same time, which it will otherwise refuse as a private
-host. A Mattermost you run yourself needs the same entry adding by hand
-(`ServiceSettings.AllowedUntrustedInternalConnections`).
+address to configure on the bridge. The Mattermost server needs that address
+on its `ServiceSettings.AllowedUntrustedInternalConnections`, or it refuses to
+call it as a private host.
 
 A bridge with no `callback_base_url` draws no buttons and its requests are
 answered by typing, which is a reduced service and says so in the logs. A
@@ -155,6 +153,39 @@ Secret. If your controller configures TLS by annotation instead (AWS ALB, for
 example), leave `tls.enabled` false and annotate.
 
 ---
+
+## Upgrading from a release that deployed Mattermost
+
+The chart no longer deploys Mattermost or its setup Job. Upgrading removes the
+Mattermost Deployment and Service but leaves its data in place:
+
+- The `mattermost` database stays in Postgres; nothing drops it.
+- The `<release>-mattermost-data` volume is kept: `helm upgrade` finds it and
+  re-renders it annotated `helm.sh/resource-policy: keep`, so no later upgrade
+  or uninstall deletes it. Tools that render without cluster access
+  (`helm template`, Argo CD, Flux) cannot find it: set
+  `retainMattermostData: true` (and `retainedMattermostDataSize` to the old
+  `mattermost.persistence.size`) so they keep it too.
+
+Back both up before upgrading (see [`BACKUP.md`](BACKUP.md)). Once you no
+longer want them:
+
+```bash
+kubectl delete pvc <release>-mattermost-data
+kubectl exec <release>-postgresql-0 -- psql -U postgres -c 'DROP DATABASE mattermost;'   # managed mode; on an external DB, drop it there
+```
+
+On first boot switch-core retires the bridge the setup Job registered: it stops
+being the default, and each of its rooms moves to Switch Console with its owner
+or creator and the people whose Mattermost account there is linked to them. A
+room created afterwards with no bridge named is a Switch Console chat unless
+you set another default bridge. A Mattermost server you connected yourself is
+left alone. Console chat is always on: `agent_chats` and `group_chats` no
+longer need to be listed in `featureFlags.enabled`, and may stay listed.
+
+`secrets.mattermostAdminPassword` and `mattermostUserPassword` are gone; remove
+them from your values. A `secrets.existingSecret` may drop its `MATTERMOST_*`
+keys.
 
 ## Constraints you cannot configure away
 
@@ -398,25 +429,22 @@ Console. `switchCore.decision.timeoutSeconds` sets `DECISION_TIMEOUT_SECONDS`.
 ## Agent management
 
 Managed agents, and the agent controllers that run them on users' machines, are
-off by default. The `agent_management` feature flag turns them on:
+always on. The chart requires the secret that signs controllers' access tokens:
 
 ```yaml
-switchCore:
-  featureFlags:
-    enabled: ["agent_management"]
 secrets:
   controllerTokenSecret: "<openssl rand -hex 32>"
 ```
 
 With `secrets.existingSecret`, put the token secret in that Secret as
-`CONTROLLER_TOKEN_SECRET` instead. The chart sets `FEATURE_FLAGS_ENABLED`,
-`CONTROLLER_TOKEN_SECRET` and `CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core
-and its migration Job, so enabling it is one rollout. Controllers enroll and
-connect under `/v1`, which `ingress.agentApiPaths` routes to switch-core by default.
+`CONTROLLER_TOKEN_SECRET` instead. The chart sets `CONTROLLER_TOKEN_SECRET` and
+`CONTROLLER_STATUS_INTERVAL_SECONDS` on switch-core and its migration Job.
+Controllers enroll and connect under `/v1`, which `ingress.agentApiPaths` routes
+to switch-core by default.
 
-`switchCore.agentManagement.enabled` is gone: the chart refuses to render with it
-set to true, and switch-core refuses to start with `AGENT_MANAGEMENT_ENABLED=true`.
-Move it to the flag list instead.
+The `agent_management` feature flag is no longer needed; switch-core still
+accepts it. The chart ignores `switchCore.agentManagement.enabled`. switch-core
+refuses to start with `AGENT_MANAGEMENT_ENABLED=true`: remove it.
 
 A deployment that set these variables with `kubectl set env` should remove them
 before the first upgrade that renders them (`kubectl set env deployment/<release>-switch-core

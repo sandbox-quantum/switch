@@ -1,6 +1,6 @@
 """The room templates that come with Switch: one document each in
-official_templates/rooms/, each creating a room and its agents, served only
-with agent management and never revised."""
+official_templates/rooms/, each creating a room and its agents, and never
+revised."""
 
 from __future__ import annotations
 
@@ -37,12 +37,8 @@ _MACHINES = [
 ]
 
 
-def _rooms(agent_management: bool, switch_buddy: bool) -> list:
-    return [
-        t
-        for t in official_templates(agent_management, switch_buddy)
-        if t.kind == "room"
-    ]
+def _rooms(switch_buddy: bool) -> list:
+    return [t for t in official_templates(switch_buddy) if t.kind == "room"]
 
 
 def _inputs(params: dict) -> dict:
@@ -58,19 +54,18 @@ def _inputs(params: dict) -> dict:
     return inputs
 
 
-def test_the_34_room_templates_are_served_only_with_agent_management():
+def test_the_34_room_templates_are_served():
     for switch_buddy in (True, False):
-        rooms = _rooms(True, switch_buddy)
+        rooms = _rooms(switch_buddy)
         assert len(rooms) == 34 == len({t.id for t in rooms})
         assert all(t.removable for t in rooms)
         assert [t.id for t in rooms] == [f"official:{p.stem}" for p in _DOCUMENTS]
-        assert _rooms(False, switch_buddy) == []
-    agents = [t for t in official_templates(True, True) if t.kind == "agent"]
+    agents = [t for t in official_templates(True) if t.kind == "agent"]
     assert agents and not any(t.removable for t in agents)
 
 
 def test_every_room_template_plans_its_room_and_agents():
-    for template in _rooms(True, False):
+    for template in _rooms(False):
         assert template.name and template.description, template.id
         assert template.version == 1
         result = lint_template(template.content)
@@ -101,7 +96,7 @@ def test_every_room_template_plans_its_room_and_agents():
 def test_room_template_runs_without_bridge():
     """Templates with optional bridge param should plan successfully when bridge is omitted."""
     incident_template = next(
-        t for t in _rooms(True, False) if t.id == "official:incident-war-room"
+        t for t in _rooms(False) if t.id == "official:incident-war-room"
     )
 
     inputs = {

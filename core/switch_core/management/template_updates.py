@@ -123,14 +123,12 @@ class TemplateUpdates:
         session_factory: async_sessionmaker[AsyncSession],
         management: ManagementService,
         protocol: AgentCore,
-        agent_management: bool,
         switch_buddy: bool,
     ) -> None:
         self._engine = engine
         self._session_factory = session_factory
         self._management = management
         self._protocol = protocol
-        self._agent_management = agent_management
         self._switch_buddy = switch_buddy
         self._store = TemplateInstallStore()
 
@@ -155,9 +153,7 @@ class TemplateUpdates:
                         )
                         continue
                     await self.record_existing_buddies(tenant_id)
-                    for template in official_templates(
-                        self._agent_management, self._switch_buddy
-                    ):
+                    for template in official_templates(self._switch_buddy):
                         if template.kind == "agent":
                             await self.update_installs(tenant_id, template)
             except Exception:
@@ -201,7 +197,7 @@ class TemplateUpdates:
         ``switch-buddy-…``), and still carrying the buddy's icon or
         description from some revision. A name alone is anyone's to take.
         """
-        buddy = official_template(BUDDY_ID, self._agent_management, self._switch_buddy)
+        buddy = official_template(BUDDY_ID, self._switch_buddy)
         if buddy is None:
             return 0
         released = [

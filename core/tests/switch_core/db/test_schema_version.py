@@ -7,6 +7,7 @@ under test is the comparison against this build's heads, not the migrations.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from itertools import takewhile
 from pathlib import Path
 from shutil import copyfile
 from typing import Any
@@ -173,13 +174,26 @@ class TestAheadByExpandOnlyRevisions:
 
 
 def _run(connection: Connection, alembic_cfg: AlembicConfig, target: str) -> None:
-    """Upgrade or downgrade on an explicit connection, with the recorder the
-    repository's env.py installs, without loading env.py itself."""
+    """Upgrade to "head", or downgrade to `target`, on an explicit connection."""
+    _migrate(connection, alembic_cfg, target, upgrade=target == "head")
+
+
+def _upgrade_to(
+    connection: Connection, alembic_cfg: AlembicConfig, target: str
+) -> None:
+    _migrate(connection, alembic_cfg, target, upgrade=True)
+
+
+def _migrate(
+    connection: Connection, alembic_cfg: AlembicConfig, target: str, upgrade: bool
+) -> None:
+    """Migrate on an explicit connection, with the recorder the repository's
+    env.py installs, without loading env.py itself."""
     script = ScriptDirectory.from_config(alembic_cfg)
 
     def migrate(revision: Any, context: Any) -> Any:
-        if target == "head":
-            return script._upgrade_revs("head", revision)
+        if upgrade:
+            return script._upgrade_revs(target, revision)
         return script._downgrade_revs(target, revision)
 
     with EnvironmentContext(alembic_cfg, script, fn=migrate) as environment:
@@ -241,8 +255,15 @@ async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
     revision = script.get_revision("ab802e19c401")
     assert isinstance(revision.down_revision, str)
     # The previous build lacks this revision and everything chained after it.
-    newer = list(script.iterate_revisions("heads", revision.down_revision))
-    assert all(r.module.expand_only is True for r in newer)
+    newer = list(
+        reversed(list(script.iterate_revisions("heads", revision.down_revision)))
+    )
+    # It serves on this revision and the expand-only ones right after it; a later
+    # revision that is not expand-only is refused, as it should be.
+    accepted = list(
+        takewhile(lambda r: getattr(r.module, "expand_only", False) is True, newer)
+    )
+    assert accepted[0].revision == revision.revision
     newer_files = {Path(r.path).name for r in newer}
 
     old_scripts = tmp_path / "previous-build"
@@ -258,7 +279,7 @@ async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
     ]
 
     async with scratch_engine.begin() as connection:
-        await connection.run_sync(_run, alembic_cfg, "head")
+        await connection.run_sync(_upgrade_to, alembic_cfg, accepted[-1].revision)
     async with scratch_engine.connect() as connection:
         parent = await connection.scalar(
             text(

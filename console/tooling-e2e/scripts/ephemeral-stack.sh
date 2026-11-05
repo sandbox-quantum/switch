@@ -85,6 +85,7 @@ SECRETS="$WORK/secrets"
 
 cd "$REPO"
 COMPOSE=(docker compose -p switch-e2e-ephemeral -f deploy/local/docker-compose.yml
+         -f deploy/local/docker-compose.e2e-mattermost.yml
          --env-file "$ENV_FILE" --project-directory .)
 SERVER_PID=""
 CONTROLLER_PID=""
@@ -117,23 +118,17 @@ trap cleanup EXIT
 
 cp "$REPO/.env.example" "$ENV_FILE"
 "$REPO/deploy/local/generate-env-secrets.sh" "$ENV_FILE" e2e
-if [ "$NEEDS_CONTROLLER" = 1 ]; then
-  # Agent management, and the key controllers' access tokens are signed with.
-  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=agent_management|" \
-             -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
-  rm -f "$ENV_FILE.bak"
-elif [ "$LANE" = browser ]; then
+if [ "$LANE" = browser ]; then
   # Every flag a page of the role matrix (gateway/src/routes/roleMatrix.ts)
-  # needs, so every page is there to open: agent management (and the key it
-  # requires), connectors, the organization's connector apps, and the new
-  # layout when it is the one under test. Not follow-ups, nor their short
-  # window: only the fast lane's follow-ups scenario uses them.
-  FLAGS=agent_management,service_connections,organization_connector_apps
+  # needs, so every page is there to open: connectors, the organization's
+  # connector apps, and the new layout when it is the one under test. Not
+  # follow-ups, nor their short window: only the fast lane's follow-ups
+  # scenario uses them.
+  FLAGS=service_connections,organization_connector_apps
   [ "$GATEWAY_LAYOUT" = v2 ] && FLAGS="$FLAGS,gateway_v2"
-  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=$FLAGS|" \
-             -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
+  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=$FLAGS|" "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
-else
+elif [ "$NEEDS_CONTROLLER" = 0 ]; then
   # Follow-ups, with a window short enough for a scenario to wait out. Not on
   # the controller lanes: there an untagged answer to a request card, or an
   # agentic scenario's unaddressed setup message, would become a follow-up.
@@ -227,7 +222,7 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
              '{name: "e2e-controller", kind: "console", version: "e2e",
                platform: {os: $os, arch: $arch, os_version: $osv}}')" \
     http://localhost:8000/gateway/management/controllers)" \
-    || { echo "could not create an agent controller (is agent_management on?)" >&2; exit 1; }
+    || { echo "could not create an agent controller" >&2; exit 1; }
   rm -f "$JAR"
   CONTROLLER_ID="$(jq -r .controller_id <<<"$CONTROLLER")"
   remember_secrets "$(jq -r .credential <<<"$CONTROLLER")"

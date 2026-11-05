@@ -289,13 +289,12 @@ the agent it registers. There are two ways to provide one.
 The unattended way, and the one CI will use. `just e2e-provider` does
 everything `just e2e-fast` does, and also:
 
-1. turns on `agent_management` and sets `CONTROLLER_TOKEN_SECRET` for the stack;
-2. builds `console/packages` and starts the agent controller
+1. builds `console/packages` and starts the agent controller
    (`console/packages/agent-controller`) on the host. Its credential comes from
    `POST /gateway/management/controllers` and goes in on stdin, never to disk.
    The lane does not start until the controller has connected to Switch; if it
    exits or never connects, the run stops there and prints the controller log;
-3. runs the provider lane with `SWITCH_E2E_CONTROLLER_ID` set. Setup creates the
+2. runs the provider lane with `SWITCH_E2E_CONTROLLER_ID` set. Setup creates the
    agent on the controller as the admin (`POST /gateway/management/agents`,
    `auto_approve: false`), retrying only while the server answers that the
    controller is offline or has not reported the provider installed and signed

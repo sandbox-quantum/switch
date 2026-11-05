@@ -46,8 +46,7 @@ vi.mock('./secrets', () => ({
   clearSecrets: vi.fn(),
 }));
 vi.mock('./ports', () => ({
-  resolvePorts: () =>
-    Promise.resolve({ gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 }),
+  resolvePorts: () => Promise.resolve({ gateway: 3300, api: 8000, postgres: 5432 }),
   clearPorts: vi.fn(),
 }));
 vi.mock('./env-file', () => ({

@@ -102,7 +102,7 @@ export type ProjectContainer = {
 export type ProjectResources = {
   /** Every container of the stack's compose project, stopped ones included. */
   containers: ProjectContainer[];
-  /** The stack's own named volumes — Postgres and Mattermost data. */
+  /** The stack's own named volumes, its Postgres data among them. */
   dataVolumes: string[];
   stateVolume: boolean;
 };

@@ -38,9 +38,8 @@ relay accepts.
 - Each provider CLI the agents use, installed on `PATH` and signed in as the user
   the controller runs as (`claude`, `codex`, `opencode`, `agent`/`cursor-agent`,
   `agy`, `pi`, `kiro-cli`, `vibe-acp`, `junie`), or its API key in the `--env-file` the controller runs with.
-- A Switch server with the `agent_management` feature flag on
-  (`FEATURE_FLAGS_ENABLED=agent_management`). Behind a proxy or ingress,
-  `/v1` must reach switch-core (the Helm chart routes it).
+- A Switch server. Behind a proxy or ingress, `/v1` must reach switch-core
+  (the Helm chart routes it).
 
 ## Install
 

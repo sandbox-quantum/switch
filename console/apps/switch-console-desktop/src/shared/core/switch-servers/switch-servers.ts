@@ -614,9 +614,8 @@ export type RemoteBridge = {
   isDefault: boolean;
   /**
    * Whether the deployment registered this bridge itself rather than a person
-   * connecting it — on a local server, what marks its bundled Mattermost. Null
-   * on a server predating the field, where nothing says either way; read it
-   * through `bundledMattermostBridge`, not directly.
+   * connecting it. Null on a server predating the field, where nothing says
+   * either way.
    */
   preconfigured: boolean | null;
   /**
@@ -747,26 +746,6 @@ export type ConnectedChat = {
   externalId: string;
   connectedAt: string;
 };
-
-/**
- * How to sign in to a managed deployment's bundled Mattermost directly — in a
- * browser or the desktop Mattermost client, on the machine running it
- * (CHOO-1787). The stack publishes onto loopback, so nothing off that machine
- * can reach the URL.
- *
- * `unavailable` carries the reason in words a user can act on, and is the only
- * alternative to real values: the credentials are per-deployment and generated,
- * so a plausible-looking default would be worse than saying nothing.
- */
-export type BundledChatSignIn =
-  | {
-      kind: 'available';
-      /** Origin to paste into the Mattermost client's "server URL" field. */
-      url: string;
-      username: string;
-      password: string;
-    }
-  | { kind: 'unavailable'; reason: string };
 
 /**
  * One credential field a bridge type needs, projected from the JSON Schema the

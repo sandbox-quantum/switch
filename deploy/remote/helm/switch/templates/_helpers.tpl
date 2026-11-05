@@ -42,15 +42,11 @@ Secret of its own.
 
 {{/*
 "true" when GATEWAY_ADMIN_PASSWORD must be set: while password login is on
-(it is the seeded admin's credential), and with Mattermost, whose setup Job
-signs in as the admin with it. Empty otherwise: with OIDC-only sign-in the
-admin is seeded without a password.
+(it is the seeded admin's credential). Empty otherwise: with OIDC-only sign-in
+the admin is seeded without a password.
 */}}
 {{- define "switch.adminPasswordRequired" -}}
 {{- $passwordLogin := or (not .Values.switchCore.oidc.enabled) .Values.switchCore.oidc.passwordLoginEnabled }}
-{{- if and .Values.mattermost.enabled (not $passwordLogin) }}
-{{- fail "mattermost.enabled needs password login: its setup Job signs in as the admin with GATEWAY_ADMIN_PASSWORD. Keep switchCore.oidc.passwordLoginEnabled true or turn Mattermost off." }}
-{{- end }}
 {{- if $passwordLogin }}true{{ end }}
 {{- end }}
 
@@ -73,25 +69,16 @@ SECRET_KEYS: {{ required "secrets.secretKeys is required (\"<id>:<secret>\", see
 {{- with .Values.secrets.jwtSecretKey }}
 JWT_SECRET_KEY: {{ . | b64enc | quote }}
 {{- end }}
-{{- if .Values.switchCore.agentManagement.enabled }}
-{{- fail "switchCore.agentManagement.enabled has been replaced by a feature flag: remove it and add \"agent_management\" to switchCore.featureFlags.enabled." }}
-{{- end }}
-{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
-{{- $controllerSecret := required "secrets.controllerTokenSecret is required with the agent_management feature flag on" .Values.secrets.controllerTokenSecret }}
+{{- $controllerSecret := required "secrets.controllerTokenSecret is required (at least 32 characters, see values.yaml)" .Values.secrets.controllerTokenSecret }}
 {{- if lt (len $controllerSecret) 32 }}
 {{- fail "secrets.controllerTokenSecret must be at least 32 characters; switch-core refuses to start with a shorter one." }}
 {{- end }}
 CONTROLLER_TOKEN_SECRET: {{ $controllerSecret | b64enc | quote }}
-{{- end }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
 {{- if include "switch.adminPasswordRequired" . }}
 GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required while password login is enabled" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
 {{- else if .Values.secrets.gatewayAdminPassword }}
 GATEWAY_ADMIN_PASSWORD: {{ .Values.secrets.gatewayAdminPassword | b64enc | quote }}
-{{- end }}
-{{- if .Values.mattermost.enabled }}
-MATTERMOST_ADMIN_PASSWORD: {{ .Values.secrets.mattermostAdminPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
-MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
 {{- end }}
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
@@ -143,7 +130,7 @@ PostgreSQL connection details.
   mode: existing -> an operator-supplied external database (RDS / Cloud SQL /
                     Azure / self-run), configured under postgresql.external.
 
-Every consumer (switch-core, mattermost, the wait-for init containers) resolves
+Every consumer (switch-core, the wait-for init containers) resolves
 the host/port/user/database and the password secret through these helpers so the
 two modes stay in lockstep.
 */}}
@@ -173,8 +160,7 @@ policies apply to.
 
 In managed mode those two are genuinely different accounts. In existing mode
 they are the same value, because the chart does not manage that database and
-has only the one username to go on — so this helper is *not* what Mattermost
-should connect as there; see switch.mattermostDbUser.
+has only the one username to go on.
 */}}
 {{- define "switch.postgresSuperUser" -}}
 {{- if eq .Values.postgresql.mode "existing" -}}
@@ -323,66 +309,6 @@ callers must fall back to those directly rather than through this helper.
 {{- end }}
 
 {{/*
-The credentials Mattermost connects to its own "mattermost" database with,
-and the reason they are not switch.postgresUser's.
-
-Mattermost creates and migrates its own schema, so it needs an account with
-rights in that database. The runtime role has none: it is granted CRUD on the
-tables switch-core's own migration created, in switch-core's own database, and
-nothing anywhere else. There is no isolation argument for restricting
-Mattermost either — its schema carries no row-level security and no tenant
-column — so the administrative account is simply the right one.
-
-In managed mode that is the bootstrapped superuser, unchanged: initdb creates
-the "mattermost" database as "postgres" and postgresql.owner.username does not
-move it, so this deliberately does not follow that value there.
-
-Existing mode is the case this exists for. switch.postgresSuperUser and
-switch.postgresUser both resolve to postgresql.external.username there, so the
-moment an operator repoints external.username at a restricted role — which is
-exactly what docs/old/rds-migration.md asks them to do — Mattermost would
-follow it onto a role with no rights in its database and fail to start. When an
-owner is configured, use it; when one is not, this is a deployment that has not
-split its roles yet and external.username is still the administrative account,
-which is the behaviour it has always had.
-
-The three helpers below share one condition, so it is written once and the
-other two ask it. It answers with a non-empty string or nothing, which is what
-`if` reads — deliberately not "true"/"false", since an `include` returning the
-string "false" is still truthy and inviting a reader to compare against it
-would be inviting a bug.
-*/}}
-{{- define "switch.mattermostUsesOwner" -}}
-{{- if and (eq .Values.postgresql.mode "existing") .Values.postgresql.owner.username -}}
-owner
-{{- end -}}
-{{- end }}
-
-{{- define "switch.mattermostDbUser" -}}
-{{- if include "switch.mattermostUsesOwner" . -}}
-{{- .Values.postgresql.owner.username -}}
-{{- else -}}
-{{- include "switch.postgresSuperUser" . -}}
-{{- end -}}
-{{- end }}
-
-{{- define "switch.mattermostDbSecretName" -}}
-{{- if include "switch.mattermostUsesOwner" . -}}
-{{- include "switch.postgresOwnerSecretName" . -}}
-{{- else -}}
-{{- include "switch.postgresSecretName" . -}}
-{{- end -}}
-{{- end }}
-
-{{- define "switch.mattermostDbSecretKey" -}}
-{{- if include "switch.mattermostUsesOwner" . -}}
-{{- include "switch.postgresOwnerSecretKey" . -}}
-{{- else -}}
-{{- include "switch.postgresSecretKey" . -}}
-{{- end -}}
-{{- end }}
-
-{{/*
 Other service hostnames (used in env vars and init containers).
 */}}
 
@@ -392,10 +318,6 @@ Other service hostnames (used in env vars and init containers).
 
 {{- define "switch.gatewayHost" -}}
 {{- include "switch.fullname" . }}-gateway
-{{- end }}
-
-{{- define "switch.mattermostHost" -}}
-{{- include "switch.fullname" . }}-mattermost
 {{- end }}
 
 {{- define "switch.decisionHost" -}}
@@ -871,7 +793,6 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       name: {{ include "switch.secretName" . }}
       key: JWT_SECRET_KEY
       optional: true
-{{- if has "agent_management" .Values.switchCore.featureFlags.enabled }}
 - name: CONTROLLER_TOKEN_SECRET
   valueFrom:
     secretKeyRef:
@@ -879,7 +800,6 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       key: CONTROLLER_TOKEN_SECRET
 - name: CONTROLLER_STATUS_INTERVAL_SECONDS
   value: {{ .Values.switchCore.agentManagement.statusIntervalSeconds | quote }}
-{{- end }}
 {{- with .Values.switchCore.controllerRelease }}
 {{- if .version }}
 - name: CONTROLLER_RELEASE_VERSION
@@ -957,13 +877,9 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- include "switch.organizationDirectoryEnv" . }}
 - name: GATEWAY_TENANT_CHOICE_ENABLED
   value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
-{{- $outboundHosts := .Values.switchCore.outbound.allowedPrivateHosts }}
-{{- if .Values.mattermost.enabled }}
-{{- $outboundHosts = append $outboundHosts (include "switch.mattermostHost" .) }}
-{{- end }}
-{{- if $outboundHosts }}
+{{- with .Values.switchCore.outbound.allowedPrivateHosts }}
 - name: OUTBOUND_ALLOWED_PRIVATE_HOSTS
-  value: {{ join "," $outboundHosts | quote }}
+  value: {{ join "," . | quote }}
 {{- end }}
 {{- with .Values.switchCore.featureFlags.enabled }}
 - name: FEATURE_FLAGS_ENABLED

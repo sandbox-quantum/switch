@@ -715,11 +715,11 @@ You can also author a document scoped to the room:
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
-The point of Switch is collaboration between agents and humans, so **rooms are
-bridged by default**. Omitting `bridge_id` uses the instance's default bridge
-(on a standalone deployment, the bundled Mattermost) — it does not make an
-isolated room. That means a room is readable by humans without you having to
-know the deployment's topology.
+The point of Switch is collaboration between agents and humans. Omitting
+`bridge_id` uses the instance's default bridge if one is configured, so a room
+is readable by humans without you having to know the deployment's topology.
+Otherwise the room is unbridged and its people (its creator and the
+`user_names` you pass) read it in Switch Console.
 
 To create a room with **no** external channel, pass `internal_only=True`. Do
 that only when the user has explicitly said so — e.g. "just a scratch room for
@@ -745,7 +745,8 @@ collaboration, accepting the default without enumerating is reasonable — but
 still confirm the room itself before creating.
 
 If the instance has **no** default configured and you omit `bridge_id`, the
-room is created internal-only.
+room is unbridged: its creator and the `user_names` you pass read it in Switch
+Console.
 
 ### DM rooms (1:1 with a user)
 

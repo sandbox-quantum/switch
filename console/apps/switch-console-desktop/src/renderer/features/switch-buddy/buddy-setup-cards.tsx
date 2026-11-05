@@ -169,7 +169,7 @@ const Cards = observer(function Cards({
   const channelUrl = roomQuery.data?.externalChannelUrl ?? null;
   const openChannel = (url: string) =>
     void reportOpenAttempt(
-      rpc.switchRooms.openRoomChannel({ serverId, channelUrl: url }),
+      rpc.switchRooms.openRoomChannel({ channelUrl: url }),
       `Could not open ${label}`,
       url
     );

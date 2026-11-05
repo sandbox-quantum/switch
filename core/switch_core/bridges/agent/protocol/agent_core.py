@@ -438,9 +438,6 @@ class AgentCore:
     # Raises the ChatError `_member_adder` would refuse that person with:
     # (tenant_id, user_id). Wired with it.
     _member_join_check: Callable[[str, str], Awaitable[None]] | None = None
-    # Whether people can be in internal rooms as Switch Console chats (the
-    # `group_chats` flag), told with `_member_adder`.
-    _group_chats_enabled: bool = False
 
     def __init__(
         self,
@@ -891,12 +888,9 @@ class AgentCore:
         self,
         adder: Callable[[str, User, str, str], Awaitable[Room]],
         join_check: Callable[[str, str], Awaitable[None]],
-        *,
-        group_chats_enabled: bool,
     ) -> None:
         self._member_adder = adder
         self._member_join_check = join_check
-        self._group_chats_enabled = group_chats_enabled
 
     def set_agent_profile_listener(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -3495,7 +3489,6 @@ class AgentCore:
 
         console_rooms = (
             ConsoleRooms(
-                enabled=self._group_chats_enabled,
                 add_member=self._member_adder,
                 require_can_join=self._member_join_check,
             )

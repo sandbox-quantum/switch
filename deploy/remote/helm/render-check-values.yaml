@@ -7,3 +7,4 @@ secrets:
   secretKeys: "render-check:0000000000000000000000000000000000000000"
   gatewayAdminEmail: render-check@example.com
   gatewayAdminPassword: render-check
+  controllerTokenSecret: render-check-0000000000000000000000000000

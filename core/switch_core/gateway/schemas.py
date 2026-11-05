@@ -881,7 +881,7 @@ class BridgeCreateRequest(BaseModel):
     # for a platform that cannot, rather than storing a claim it cannot honour.
     channel_creation_enabled: bool = True
     # Registered by the deployment's own setup step rather than by a person.
-    # Set by the headless standalone bootstrap for the Mattermost it bundles,
+    # Set by a deployment's setup step for a connector it bundles,
     # so onboarding telemetry measures a person connecting their platform
     # rather than the deployment booting. Everyone else leaves it off.
     preconfigured: bool = False

@@ -671,15 +671,13 @@ claimed, so asking again costs nothing.
 | `is_first_connector` | boolean — the first connector a person added |
 | `failed_attempts_before_success` | number |
 
-**Preconfigured connectors.** The standalone stack, the Helm chart and every
-Console-managed local server run a setup step that registers the bundled
-Mattermost seconds after install. That connector reports `is_preconfigured:
-true`, is never `is_first_connector`, and never claims `first_connector_added`
-— so that milestone is the first connector a person added, not the deployment
-booting. Filter `connector_added` on `is_preconfigured = false` to measure
-onboarding. A bundled connector registered before the flag existed is marked
-on the setup step's next run; if it first connects before that, its one
-`connector_added` reports `false`.
+**Preconfigured connectors.** A deployment's own setup step, rather than a
+person, may register a connector; releases before the bundled Mattermost was
+removed did so seconds after install. Such a connector reports
+`is_preconfigured: true`, is never `is_first_connector`, and never claims
+`first_connector_added` — so that milestone is the first connector a person
+added, not the deployment booting. Filter `connector_added` on
+`is_preconfigured = false` to measure onboarding.
 
 **`connector_added` fires only for a first connect that was seen.** A
 connector's first connect is recorded whether telemetry is on or not, so one
@@ -1338,7 +1336,7 @@ connection registry
 - `connector_added` — the *first* successful connect for that bridge, ever.
   Restarting a working bridge correctly emits nothing.
 - `first_connector_added` — the first connector a person added on the
-  deployment. The bundled Mattermost the setup step registers never claims it.
+  deployment. A connector a setup step registers never claims it.
 - `bridge_disconnected` — stopping a bridge (`reason: shutdown`), restarting
   one (`restart`), or a live bridge crashing.
 - `connector_removed` — `DELETE /gateway/collaborations/{id}`. Check

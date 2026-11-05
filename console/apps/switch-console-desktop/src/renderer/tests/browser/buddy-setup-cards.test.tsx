@@ -278,7 +278,6 @@ describe('switch-buddy setup cards', () => {
     expect(el.textContent).toContain('#buddy-ada ready');
     await click(el, 'Open Slack');
     expect(openRoomChannel).toHaveBeenCalledWith({
-      serverId: 'srv-1',
       channelUrl: 'https://slack.example/archives/C123',
     });
     expect(handoffCalls()).toHaveLength(0);
@@ -668,7 +667,6 @@ describe('switch-buddy setup cards', () => {
     expect(el.textContent).toContain('#dm-ada-switch-buddy ready');
     await click(el, 'Open Discord');
     expect(openRoomChannel).toHaveBeenCalledWith({
-      serverId: 'srv-1',
       channelUrl: 'https://discord.com/channels/1/2',
     });
     await shot(el, 'x-discord-done');
