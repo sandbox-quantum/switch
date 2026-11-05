@@ -253,6 +253,23 @@ class TestWhichMessagesAreAsked:
         assert await room.reached(told) == set()
         assert service.requests == []
 
+    async def test_a_file_in_an_agents_thread_is_not_followed_or_asked_about(
+        self, room: Journey, service: DecisionService
+    ) -> None:
+        # A post of files follows the conversation as a text message does
+        # (CHOO-4067), so in an auto-route room the thread follow-up is off
+        # for it too. The decision service is asked about text alone.
+        root = await room.say("alice", "@helper which log do you need?", at=10)
+        answer = await room.post("helper", "The deploy log", at=20, thread=root)
+
+        told = await room.send_file(
+            "alice", "deploy.log", at=30, caption="here it is", thread=root
+        )
+
+        assert answer
+        assert await room.reached(told) == set()
+        assert service.requests == []
+
     async def test_a_room_without_auto_route_is_not_asked_about(
         self, room: Journey, service: DecisionService
     ) -> None:
