@@ -360,6 +360,14 @@ export type RemoteRoomSummary = {
   isConsoleChat: boolean;
   archived: boolean;
   createdAt: string;
+  /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */
+  writeVisibility?: RoomVisibility;
+  /**
+   * What the signed-in person may do with the room, as the server decides it
+   * by the rules its routes enforce. Absent from a server that does not say,
+   * where Console works it out the same way (`roomPermissionsFor`).
+   */
+  serverPermissions?: { canWrite: boolean; canManage: boolean; canUnlink: boolean };
 };
 
 /**
@@ -385,7 +393,61 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   channelOnDelete?: ChannelRetirement | null;
   /** The name of the platform channel the room is linked to, as Switch last saw it; null when it has not. */
   linkedChannelName: string | null;
+  /** Who may read the room and who may write to it (see `roomAccessOf`). */
+  readVisibility: RoomVisibility;
+  writeVisibility: RoomVisibility;
+  /** The group the room is filed under, or null for a standalone room. */
+  groupId: string | null;
+  groupName: string | null;
+  /** The owner's display name, or null when the room has no owner. */
+  ownerName: string | null;
+  /** The bridge the room is linked through; null for a room with no messaging app. */
+  bridgeId: string | null;
+  /** Each member agent's presence in this room, by agent id: `live`,
+   * `awaiting_manual_poll`, `disconnected` or `no_session`. An agent the server
+   * says nothing about is missing rather than guessed at. */
+  agentStatuses: Record<string, string>;
+  /** The room's assumable roles, with who holds each. */
+  roles: RemoteRoomRole[];
+  /** Ids of the member agents told when someone joins the room. */
+  joinEventListeners: string[];
+  /** The platform's own id for the linked channel; null when unbridged. */
+  externalChannelId: string | null;
+  /** The room's id on Switch's internal message bus. */
+  transportRoomId: string | null;
+  /** When the room was archived, or null while it is in use. */
+  archivedAt: string | null;
 };
+
+/** `public` lets every member of the workspace in; `private` only the owner and admins. */
+export type RoomVisibility = 'public' | 'private';
+
+/**
+ * A room's access, as the two visibility settings it is made of combine. The
+ * gateway offers the same three: anyone may post, anyone may read but only the
+ * owner posts, or the room is the owner's alone. A private room that is
+ * publicly writable is refused by the server, so it has no name here.
+ */
+export type RoomAccess = 'public' | 'read_only' | 'private';
+
+export function roomAccessOf(read: RoomVisibility, write: RoomVisibility): RoomAccess {
+  if (read === 'private') return 'private';
+  return write === 'public' ? 'public' : 'read_only';
+}
+
+export function visibilityForAccess(access: RoomAccess): {
+  readVisibility: RoomVisibility;
+  writeVisibility: RoomVisibility;
+} {
+  switch (access) {
+    case 'public':
+      return { readVisibility: 'public', writeVisibility: 'public' };
+    case 'read_only':
+      return { readVisibility: 'public', writeVisibility: 'private' };
+    case 'private':
+      return { readVisibility: 'private', writeVisibility: 'private' };
+  }
+}
 
 /** What deleting a room does to its platform channel when asked to retire it
  * and all goes to plan (mirrors the gateway's `ChannelRetirement`): archived on Slack and
@@ -412,7 +474,13 @@ export type UpdateRoomParams = {
   name?: string;
   description?: string;
   instructions?: string;
+  /** Changing either is for the room's owner or an admin; the server refuses anyone else. */
+  readVisibility?: RoomVisibility;
+  writeVisibility?: RoomVisibility;
 };
+
+/** A role's own fields, as a room defines it. The name is fixed once made. */
+export type RoomRoleInput = { name: string; instructions: string; exclusive: boolean };
 
 /**
  * A room a specific agent belongs to, with that agent's presence there (mirrors
@@ -1136,7 +1204,18 @@ export type CreateRoomParams = {
   /** Switch agent ids to add as members. May be empty — a room is valid with
    * no agents, and members can be invited later. */
   agentIds: string[];
+  /** The bridged room's channel: a new one, or an existing one by its id. Null for a new public one. */
+  channel: NewRoomChannel | null;
+  /** The group to file the room under, or null for none. */
+  groupId: string | null;
+  /** Who may see and change the room, or null for the server's default. */
+  access: RoomAccess | null;
 };
+
+/** A bridged room's channel, as the New room dialog asks for it. */
+export type NewRoomChannel =
+  | { kind: 'new'; private: boolean }
+  | { kind: 'existing'; externalChannelId: string };
 
 /**
  * Outcome of creating a room. `created` carries the new room; every other
@@ -1270,3 +1349,39 @@ export type MessagingAppInstall = {
   /** Null while the install is still active. */
   endedAt: string | null;
 };
+
+/** The kinds of library item a room can have attached. */
+export type RoomResourceKind = 'references' | 'documents' | 'packages';
+
+/** A library item as a room lists it, or as the library offers it for attaching. */
+export type RoomResource = {
+  id: string;
+  kind: RoomResourceKind;
+  name: string;
+  description: string;
+  /** A reference's type as people read it ("GitHub"); null for anything else. */
+  typeLabel: string | null;
+  /** A reference's links; empty for anything else. */
+  urls: string[];
+  /** A document written in the room by one of its agents, rather than one from the library. */
+  roomScoped: boolean;
+  /** The agent that wrote a room-scoped document, when the server says. */
+  createdByAgentName: string | null;
+  /** The packages this came in with, by id: attached through them rather than on its own. */
+  packageIds: string[];
+  /** Whether the viewer may delete this room-scoped document, when the server says. */
+  canRemove?: boolean;
+  /** A document's content, when the listing carried it (a room's documents do). */
+  content?: string;
+};
+
+/** A document read in full, through the room it is attached to. */
+export type RoomDocumentContent = {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+};
+
+/** Another room this room points at, and why. */
+export type LinkedRoom = { roomId: string; name: string; description: string; label: string };

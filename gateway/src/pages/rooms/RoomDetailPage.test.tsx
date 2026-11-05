@@ -10,6 +10,10 @@ vi.mock("react-router", () => ({
   useParams: () => ({ roomId: "r1" }),
 }));
 
+vi.mock("../../data/AuthContext", () => ({
+  useAuth: () => ({ canAdminTenant: false }),
+}));
+
 vi.mock("../../data/hooks", () => ({
   useAgents: vi.fn(),
   useBridgeUsers: vi.fn(),

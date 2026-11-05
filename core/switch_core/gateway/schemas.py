@@ -20,6 +20,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelRetirement,
     RetireOutcome,
 )
+from switch_core.db.audit import OrganizationIssueKind
 from switch_core.db.models import (
     MAX_BUDGET_AMOUNT,
     MAX_BUDGET_PERIOD_HOURS,
@@ -1067,12 +1068,29 @@ class OrganizationSummary(BaseModel):
 
 class CurrentOrganizationResponse(BaseModel):
     """The bound workspace's organization, and the caller's role in it: None
-    for the platform operator there on the operator flag alone."""
+    for the platform operator there on the operator flag alone.
+    `members_from_directory`: its members and `org_admin`s come from a
+    directory kept outside Switch (`OrganizationDirectory.keeps_members_of`);
+    `directory_takes_changes`: changes made here to them are made there too
+    (`OrganizationDirectory.sends_changes_for`)."""
 
     id: str
     slug: str
     name: str
     role: str | None
+    members_from_directory: bool
+    directory_takes_changes: bool
+
+
+class OrganizationIssueDetail(BaseModel):
+    """Something in the organization that needs an admin's attention now
+    (`organization_issues.py`): its kind, the workspace it is in (None for
+    the organization's own), and the agents it names, if any."""
+
+    kind: OrganizationIssueKind
+    workspace_id: str | None
+    workspace_name: str | None
+    agents: list[str]
 
 
 class OrganizationAuditEventDetail(BaseModel):

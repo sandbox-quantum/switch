@@ -719,12 +719,20 @@ groups nest under a parent to form a tree.
   (`member_rooms`), and its immediate `child_groups`.
 - **`create_room_group`** — provision a group. Only an agent whose owner is a
   workspace admin may: groups are shared by the whole workspace. Anyone else
-  is refused, so file the room under an existing group or ask an admin.
+  is refused; ask an admin.
   Required: `name`. Optional: `description`, `color`, `parent_group_name`
   (omit it for a top-level group). Creating a group does not move any rooms
   into it; file rooms under it later by passing `group_name` to
   `create_room`. Missing parents are not created for you: create each level
   first.
+- **Filing a room in a group** (`group_name` on `create_room`) also needs an
+  owner who is a workspace admin, because an agent's addressing policy can
+  admit everyone in a group's rooms. Without one, create the room standalone
+  and ask an admin to file it.
+- **Group templates** (a `group:` document, through `create_room_from_yaml`
+  or `run_template`) are refused for every agent, whoever its owner: a
+  template runs without your owner's admin reach. Nothing is created. Ask a
+  workspace admin to run it from the dashboard.
 
 Name a group by its **path**: the top-level group, then each child, separated
 by `/`, e.g. `Fraud/Incidents`. The `path` that `list_room_groups` returns
@@ -1114,7 +1122,7 @@ Every Switch tool you call in normal operation, one line each.
 - `list_room_groups` — the group tree rooms are organised into.
 - `get_room_group_detail` — one group's rooms and child groups.
 - `create_room_group` — provision a new room group (workspace admin agents only).
-- `create_room_from_yaml` — provision a room or group from a YAML template.
+- `create_room_from_yaml` — provision a room from a YAML template (group templates are refused).
 - `get_template_guide`: how to write a template, and the schema it is checked against.
 - `list_templates`: the saved templates you can use.
 - `get_template`: one template's document, inputs and agent slots.

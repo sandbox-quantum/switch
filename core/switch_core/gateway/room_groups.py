@@ -13,7 +13,11 @@ from switch_core.db.stores.room_group_store import (
     RoomGroupStore,
 )
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.auth import (
+    get_current_user,
+    get_tenant_is_admin,
+    require_group_filing_or_403,
+)
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_room_group_store,
@@ -154,8 +158,12 @@ async def assign_rooms_to_group(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomGroupAssignResponse:
-    """Bulk-assign rooms into a group. Requires write access to each room;
-    unknown room ids are skipped."""
+    """Bulk-assign rooms into a group. Requires a workspace admin (see
+    `require_group_filing`) and write access to each room; unknown room ids
+    are skipped."""
+    # Before the lookup: whether a group exists is not for someone who may
+    # not file into it.
+    require_group_filing_or_403(is_admin)
     if await room_group_store.get(session, group_id) is None:
         raise HTTPException(status_code=404, detail="Room group not found")
 
@@ -179,7 +187,9 @@ async def assign_rooms_to_group(
             detail=f"No write access to rooms: {', '.join(forbidden)}",
         )
 
-    assigned = await room_store.set_group_bulk(session, allowed, group_id)
+    assigned = await room_store.set_group_bulk(
+        session, allowed, group_id, acting_is_admin=is_admin
+    )
     await session.commit()
     return RoomGroupAssignResponse(assigned=assigned)
 

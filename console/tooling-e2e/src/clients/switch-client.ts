@@ -511,6 +511,13 @@ export class SwitchClient {
     return this.gateway("GET", "/organizations/current/audit-events");
   }
 
+  /** `GET /gateway/organizations/current/issues` — what the organization's admins have left to fix; organization admin only. */
+  async organizationIssues(): Promise<
+    { kind: string; workspace_id: string | null; workspace_name: string | null; agents: string[] }[]
+  > {
+    return this.gateway("GET", "/organizations/current/issues");
+  }
+
   /** `GET /gateway/organizations/current` — the current workspace's organization and the caller's role there. */
   async currentOrganization(): Promise<{
     id: string;

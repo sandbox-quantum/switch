@@ -20,3 +20,14 @@ export function administersWorkspaceInScope(serverId: string): boolean {
   const workspace = workspacesStore.onServerInScope(serverId);
   return workspace !== null && administersWorkspace(workspace);
 }
+
+/**
+ * Whether the signed-in account may manage the workspace `workspaceId` names:
+ * an owner or admin of it, or the operator running its server.
+ */
+export function administersWorkspaceById(workspaceId: string): boolean {
+  const serverId = workspacesStore.serverIdFor(workspaceId);
+  if (serverId !== null && operatesServer(serverId)) return true;
+  const workspace = workspacesStore.workspaces.find((each) => each.id === workspaceId) ?? null;
+  return workspace !== null && administersWorkspace(workspace);
+}

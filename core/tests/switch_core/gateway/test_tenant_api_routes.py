@@ -73,6 +73,7 @@ from switch_core.gateway.invite_mail import (
 )
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
+from switch_core.organization_directory import LocalDirectory
 from tests.ownership import NeverOwned
 from tests.switch_core.statement_counts import StatementCounts
 
@@ -158,6 +159,9 @@ def _app(
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    app.dependency_overrides[gw_deps.get_organization_directory] = lambda: (
+        LocalDirectory()
+    )
     app.dependency_overrides[gw_deps.get_agent_store] = lambda: AgentStore()
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     app.dependency_overrides[gw_deps.get_invitation_store] = lambda: InvitationStore()

@@ -273,6 +273,18 @@ class UserStore:
         await session.flush()
         return await session.get(User, identity.user_id)
 
+    async def oidc_subject(
+        self, session: AsyncSession, user_id: str, iss: str
+    ) -> str | None:
+        """The `sub` `user_id` signs in as at issuer `iss`, or None if they
+        have no identity there."""
+        subject: str | None = await session.scalar(
+            select(OidcIdentity.sub).where(
+                OidcIdentity.user_id == user_id, OidcIdentity.iss == iss
+            )
+        )
+        return subject
+
     async def get_or_create_oidc_user(
         self,
         session: AsyncSession,
@@ -283,9 +295,16 @@ class UserStore:
         sub: str,
         email_verified: bool,
         join_tenant: bool,
+        link_by_email: bool,
     ) -> OidcUser:
         """Resolve an OIDC identity to a gateway user, provisioning on first
         login (JIT). `created` says whether this call made the account.
+
+        `link_by_email` false refuses to link a new identity to an existing
+        account by email at all, verified or not: where the identity provider
+        is shared with other products (the WorkOS directory), its subject is
+        the only link, and an existing account is linked to it by an
+        administrator, never by a matching address.
 
         `join_tenant` decides whether an account this creates, or links, is
         given a membership in the tenant bound to the caller's context. With
@@ -328,6 +347,12 @@ class UserStore:
 
             existing = await self.get_by_email(session, email)
             if existing is not None:
+                if not link_by_email:
+                    raise OidcIdentityConflictError(
+                        f"An account with email {email!r} already exists here, "
+                        "and this sign-in is not linked to it. Ask your "
+                        "administrator to link it."
+                    )
                 if not email_verified:
                     raise OidcIdentityConflictError(
                         f"An account with email {email!r} already exists and "
@@ -377,6 +402,15 @@ class UserStore:
                 "OIDC identity resolution raced twice in a row; refusing to "
                 "guess a winner a third time."
             )
+
+    async def link_oidc_identity(
+        self, session: AsyncSession, *, user: User, iss: str, sub: str
+    ) -> None:
+        """Link `(iss, sub)` to `user`, as an operator does for an account that
+        signed in some other way before (`workos_linking.py`)."""
+        await self._link_identity(
+            session, user=user, iss=iss, sub=sub, join_tenant=False
+        )
 
     async def _link_identity(
         self,

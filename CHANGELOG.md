@@ -109,9 +109,19 @@ version of their own to them without also giving them a release of their own.
   whole workspace and have no owner, so any member could rename, move or
   delete one. Creating, changing and deleting a group, from the dashboard,
   the API or an agent's `create_room_group`, now needs a workspace admin (for
-  an agent, its owner). Anyone can still file a room they can write into an
-  existing group. Group room counts, and the rooms `get_room_group_detail`
-  lists, now leave out private rooms the caller cannot read.
+  an agent, its owner). Group room counts, and the rooms
+  `get_room_group_detail` lists, now leave out private rooms the caller
+  cannot read.
+- **Only a workspace admin puts a room in a room group.** A room's group can
+  decide who may address an agent, since an addressing policy can admit
+  everyone in a group's rooms, so any member who filed a room they could
+  write into a group could address that group's agents. Putting a room in a
+  group, whether when creating it, from the room's page, from the groups
+  page or through an agent's `create_room`, now needs a workspace admin (for
+  an agent, its owner). Running a template that makes a room group now
+  needs a workspace admin too, and an agent cannot run one, since it runs
+  templates without its owner's admin reach. Taking a room out of its group
+  still only needs write access to the room.
 
 #### Added
 - **The gateway says what the caller may change in a room.** Rooms, in the
@@ -134,6 +144,21 @@ version of their own to them without also giving them a release of their own.
   the agent's binding to it. The socket's first frame offers calls
   (`calls.max_in_flight`, 64); a call over that is answered 429
   `capacity_exceeded` without running, so the controller sends it over HTTP.
+- **Organizations can follow WorkOS (experimental, off by default).** With
+  `ORGANIZATION_DIRECTORY=workos`, an organization an operator links to a
+  WorkOS organization (`switch-link-workos`) takes its members, and who is
+  its Org Admin, from there: at sign-in, from WorkOS's events every 30
+  seconds, and in a full check once a day. A change from WorkOS is applied
+  even when it breaks a rule Switch keeps (the last Org Admin, agents left
+  without an owner who can act for them), and the Organization page tells
+  its admins what is left to fix. With a members service configured
+  (`MEMBERS_SERVICE_URL`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URL`), an Org
+  Admin's role changes and removals on the Organization page are made in
+  WorkOS too, with the admin's own WorkOS token, which the dashboard gets by
+  sending them through the organization's sign-in when needed. Without one,
+  making someone Org Admin is done in WorkOS, and taking it away in Switch
+  lasts only while WorkOS agrees. Adding someone new is done in WorkOS either
+  way. Setup and limits: `docs/old/workos-directory.md`.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
@@ -2536,6 +2561,16 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Antigravity runs Google's own `agy` CLI, on Windows too.** Switch Console
+  finds `agy` (including `%LOCALAPPDATA%\agy\bin` on Windows), installs it with
+  Google's installers, runs sessions with `agy acp`, and checks the sign-in you
+  made with `agy acp --login` or a `GEMINI_API_KEY`, instead of a separate
+  Antigravity ACP profile that a Google sign-in never reached. Antigravity's
+  questions now reach you, too, including typed answers. A machine that only
+  has the older `antigravity-acp` runtime keeps using it until `agy` is
+  installed, and Update installs `agy` there. An Antigravity sign-in Switch
+  holds for the older runtime cannot sign `agy` in: a session given one now
+  says how to sign in on the machine instead of starting signed out.
 - **Console no longer opens to a blank window on a database a newer build
   has changed.** Stable and Canary share one database, so after Canary added a
   migration, an older build found tables it was not written for, applied
