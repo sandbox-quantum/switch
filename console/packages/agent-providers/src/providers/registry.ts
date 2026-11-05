@@ -1,6 +1,6 @@
 import { checkAcpSignIn, createAcpAdapter } from '../acp/acp-adapter';
 import type { AcpProviderHooks } from '../acp/hooks';
-import type { ProviderAdapter } from '../adapter';
+import type { ProviderAdapter, StdioMcpServerSpec } from '../adapter';
 import { antigravityAcp } from '../antigravity/antigravity-adapter';
 import { createClaudeAdapter } from '../claude/claude-adapter';
 import { checkClaudeSignIn, CLAUDE_LOGIN } from '../claude/sign-in';
@@ -29,6 +29,11 @@ export interface ProviderRuntimeOptions {
    * (`prepareSharedConfig`).
    */
   serviceSkills: readonly { name: string; content: string }[];
+  /**
+   * How this host runs a stdio relay to an HTTP MCP server, for an ACP agent
+   * that takes MCP over stdio only (`AcpProviderHooks.httpMcpOverStdio`).
+   */
+  mcpRelay?: StdioMcpServerSpec;
 }
 
 /** What the execution host needs to run one provider. */
@@ -61,7 +66,8 @@ export function acpProviderRuntime(hooks: AcpProviderHooks): ProviderRuntime {
     ...(hooks.loginCommandFor ? { loginCommandFor: hooks.loginCommandFor } : {}),
     inheritEnv: hooks.inheritEnv ?? [],
     unsupportedPlatforms: hooks.unsupportedPlatforms ?? {},
-    createAdapter: ({ binaryPath, logger }) => createAcpAdapter(hooks, { binaryPath, logger }),
+    createAdapter: ({ binaryPath, logger, mcpRelay }) =>
+      createAcpAdapter(hooks, { binaryPath, logger, mcpRelay }),
     checkSignIn: (input) => checkAcpSignIn(hooks, input),
   };
 }

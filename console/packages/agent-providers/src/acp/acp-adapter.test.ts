@@ -4,7 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError } from '../adapter';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
-import type { AcpProviderHooks } from './hooks';
+import type { AcpAdapterOptions, AcpProviderHooks } from './hooks';
 
 vi.mock('node:fs/promises', async (original) => ({
   ...(await original<typeof fs>()),
@@ -59,9 +59,10 @@ beforeEach(() => {
 
 async function start(
   hooks: AcpProviderHooks = dummy,
-  input: Partial<Parameters<ReturnType<typeof createAcpAdapter>['startSession']>[0]> = {}
+  input: Partial<Parameters<ReturnType<typeof createAcpAdapter>['startSession']>[0]> = {},
+  options: AcpAdapterOptions = {}
 ) {
-  const adapter = createAcpAdapter(hooks, {});
+  const adapter = createAcpAdapter(hooks, options);
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((event) => events.push(event));
   const session = await adapter.startSession({
@@ -104,6 +105,60 @@ it('asks for a fresh conversation when the agent cannot resume', async () => {
   );
 });
 
+it('resumes through session/new an agent launched with its conversation, and no other one', async () => {
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    resumeOnLaunch: true,
+    launch: ({ binaryPath, env, resumeSessionId }) => ({
+      command: binaryPath,
+      args: resumeSessionId ? ['--resume', resumeSessionId] : [],
+      env,
+    }),
+  };
+  agent.capabilities = { loadSession: true };
+  agent.session = { sessionId: 'saved' };
+  const { server, session } = await start(hooks, { resume: { nativeSessionId: 'saved' } });
+  expect(spawned).toEqual([{ command: 'dummy-acp', args: ['--resume', 'saved'] }]);
+  expect(server.received.map((m) => m.method)).toEqual(['initialize', 'session/new']);
+  expect(server.received[1]?.params).not.toHaveProperty('sessionId');
+  expect(session.nativeSessionId).toBe('saved');
+  agent.session = {};
+  await expect(start(hooks, { resume: { nativeSessionId: 'saved' } })).rejects.toBeInstanceOf(
+    ProviderConversationUnavailableError
+  );
+});
+
+it('hands each HTTP MCP server as a stdio relay to an agent that cannot take one, and refuses without a relay', async () => {
+  const hooks: AcpProviderHooks = { ...dummy, httpMcpOverStdio: true };
+  const mcpServers = {
+    switch: {
+      transport: 'http' as const,
+      url: 'http://127.0.0.1:1/mcp',
+      headers: { Authorization: 'Bearer t' },
+    },
+    tools: { transport: 'stdio' as const, command: 'node', args: ['tools.js'] },
+  };
+  await expect(start(hooks, { mcpServers })).rejects.toThrow('cannot relay switch');
+  const relay = {
+    transport: 'stdio' as const,
+    command: '/node',
+    args: ['/host.mjs', '--mcp-relay'],
+  };
+  const { server } = await start(hooks, { mcpServers }, { mcpRelay: relay });
+  expect(server.received.find((m) => m.method === 'session/new')?.params?.mcpServers).toEqual([
+    {
+      name: 'switch',
+      command: '/node',
+      args: ['/host.mjs', '--mcp-relay'],
+      env: [
+        { name: 'SWITCH_MCP_RELAY_URL', value: 'http://127.0.0.1:1/mcp' },
+        { name: 'SWITCH_MCP_RELAY_HEADERS', value: '{"Authorization":"Bearer t"}' },
+      ],
+    },
+    { name: 'tools', command: 'node', args: ['tools.js'], env: [] },
+  ]);
+});
+
 it('selects models through the models list when the agent offers no model config option', async () => {
   agent.session = { models: { availableModels: [{ modelId: 'fast', name: 'Fast' }] } };
   const { adapter, server } = await start();
@@ -130,6 +185,27 @@ it('selects models through the model config option, refusing one it does not off
     value: 'deep',
   });
   expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
+});
+
+it('lists only the model an agent runs from its own settings, takes it, and refuses any other', async () => {
+  const hooks: AcpProviderHooks = { ...dummy, fixedModel: async (env) => env.SETTINGS_MODEL };
+  agent.session = { models: { availableModels: [{ modelId: 'listed', name: 'Listed' }] } };
+  const { adapter, server } = await start(hooks, {
+    env: { SETTINGS_MODEL: 'vendor/deep' },
+    model: { id: 'vendor/deep' },
+  });
+  expect(await adapter.listModels('s')).toEqual([
+    { id: 'vendor/deep', label: 'vendor/deep', options: {} },
+  ]);
+  await expect(adapter.setModel('s', { id: 'listed' })).rejects.toThrow(
+    'Dummy ACP runs vendor/deep, the model set in its own settings, and cannot run listed.'
+  );
+  expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
+  const unset = await start(hooks);
+  expect(await unset.adapter.listModels('s')).toEqual([]);
+  await expect(unset.adapter.setModel('s', { id: 'listed' })).rejects.toThrow(
+    'Dummy ACP has no model set in its own settings.'
+  );
 });
 
 it('sends attachments as the agent advertises it can take them, else as resource links', async () => {

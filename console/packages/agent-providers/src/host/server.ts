@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import type { AgentLaunchDefinition, ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import type {
+  AgentLaunchDefinition,
+  ProviderAdapter,
+  ProviderSessionStartInput,
+  StdioMcpServerSpec,
+} from '../adapter';
 import { isProviderRuntime, providerRuntime, providerRuntimeIds } from '../providers/registry';
 import { replaceFile } from './replace-file';
 import type { ServiceSkill } from './service-access';
@@ -71,18 +76,22 @@ const folder = (root: string, sessionId: string) =>
  * Codex takes it through its session home instead. `serviceSkills` are the
  * skills of the agent's service grants, which OpenCode loads the same way;
  * the other providers take them as system context (`prepareSharedConfig`).
+ * `mcpRelay` is how this host relays an HTTP MCP server over stdio, for an
+ * agent that takes MCP over stdio only.
  */
 export function adapterFor(
   provider: Session['provider'],
   binaryPath: string | undefined,
   skill: string,
-  serviceSkills: ServiceSkill[]
+  serviceSkills: ServiceSkill[],
+  mcpRelay?: StdioMcpServerSpec
 ): ProviderAdapter {
   return providerRuntime(provider).createAdapter({
     binaryPath,
     logger: undefined,
     skill,
     serviceSkills,
+    mcpRelay,
   });
 }
 

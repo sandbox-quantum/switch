@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, RuntimeMode } from '../adapter';
+import type { ProviderCapabilities, RuntimeMode, StdioMcpServerSpec } from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -34,6 +34,8 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /** The native id of the conversation to resume, for hooks with `resumeOnLaunch`. */
+  resumeSessionId?: string;
 }
 
 /**
@@ -117,6 +119,30 @@ export interface AcpProviderHooks {
   /** The platforms the agent cannot run on, each with the reason a person is told. */
   unsupportedPlatforms?: Partial<Record<NodeJS.Platform, string>>;
   /**
+   * The agent cannot take an MCP server over HTTP as ACP sends one, whatever it
+   * declares, so each is handed to it as a stdio server relaying to it
+   * (`AcpAdapterOptions.mcpRelay`).
+   */
+  httpMcpOverStdio?: boolean;
+  /**
+   * The agent resumes the conversation it is launched with
+   * (`AcpLaunchInput.resumeSessionId`) through `session/new`, because its
+   * `session/load` drops the session's MCP servers.
+   */
+  resumeOnLaunch?: boolean;
+  /**
+   * The model the agent runs, read from its own settings, for an agent that
+   * answers `session/set_model` without changing it. A session lists this
+   * model as its only one and refuses any other. Undefined when none is set.
+   */
+  fixedModel?(env: Record<string, string>): Promise<string | undefined>;
+  /**
+   * The agent takes ACP's `cancelled` answer to a permission request as a
+   * refusal and carries on with the turn, so a request an interrupt cuts off
+   * is answered with an error, which stops it.
+   */
+  interruptPermissionWithError?: boolean;
+  /**
    * Whether the CLI is signed in, answered without signing it in: a check
    * must never be what changes its answer. `handshake` runs the agent and
    * returns its `initialize` answer. Without this hook the check runs the
@@ -192,4 +218,6 @@ export interface AcpSignInInput extends SignInCheckInput {
 export interface AcpAdapterOptions {
   binaryPath?: string;
   logger?: ProviderLogger;
+  /** How this host runs a stdio relay to an HTTP MCP server, for hooks with `httpMcpOverStdio`. */
+  mcpRelay?: StdioMcpServerSpec;
 }

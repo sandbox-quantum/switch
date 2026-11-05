@@ -103,6 +103,10 @@ Add hooks only for what really differs:
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
+| `httpMcpOverStdio` | Only when the agent cannot take an MCP server over HTTP as ACP sends one (OpenHands passes the headers on as a list). Each is handed to it as a stdio relay. |
+| `resumeOnLaunch` | Only when the agent's `session/load` drops the session's MCP servers. `launch` is given the conversation to resume, and the session starts with `session/new` (OpenHands' `--resume`). |
+| `fixedModel` | Only when the agent runs the model in its own settings whatever `session/set_model` asks for (OpenHands accepts it and changes nothing). Return that model: the session lists it as its only one and refuses any other. |
+| `interruptPermissionWithError` | Only when the agent takes ACP's `cancelled` answer to a permission request as a refusal and carries on with the turn (OpenHands). A request an interrupt cuts off is answered with an error instead, which stops it. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:
 

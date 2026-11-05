@@ -78,10 +78,14 @@ covers the protocol and chooses behaviour from what the agent advertises in
 
 - resume uses `session/load` when the agent advertises `loadSession`, else
   `session/resume` when it advertises `sessionCapabilities.resume`, else asks
-  the host for a fresh conversation;
+  the host for a fresh conversation. Hooks with `resumeOnLaunch` resume
+  through `session/new` in a process launched with the conversation instead;
+- hooks with `httpMcpOverStdio` get each HTTP MCP server as a stdio relay to
+  it, which the session host runs as `--mcp-relay`;
 - a `model` select in the session's config options is set with
   `session/set_config_option`; otherwise `session/set_model` is used against
-  the session's `models` list;
+  the session's `models` list. Hooks with `fixedModel` list the one model the
+  agent's own settings make it run, and refuse any other;
 - attachments go as `image`, `audio` or embedded `resource` blocks only where
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
@@ -95,7 +99,9 @@ Permission requests follow one policy for every ACP agent. A tool on an MCP
 server the session registered is allowed once without asking, as is
 everything in `full-access` and edits in `auto-accept-edits`. Otherwise the
 person is offered allow once, allow for this session and reject; options
-naming a permanent or future policy are never offered.
+naming a permanent or future policy are never offered. An interrupt answers a
+pending request `cancelled`, or with an error for hooks with
+`interruptPermissionWithError`.
 
 **Cursor** extensions: `cursor/ask_question` (several questions, multi-select),
 `cursor/create_plan` (an approval with the plan as its detail),

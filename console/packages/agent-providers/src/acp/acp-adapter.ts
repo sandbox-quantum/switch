@@ -38,7 +38,7 @@ import type {
   AcpSelectedAnswer,
   AcpSessionContext,
 } from './hooks';
-import { acpMcpServers, requireHttpMcp } from './mcp';
+import { acpMcpServers, relayHttpMcp, requireHttpMcp } from './mcp';
 import {
   ACP_CANCELLED,
   modelConfigOption,
@@ -182,10 +182,12 @@ export class AcpAdapter implements ProviderAdapter {
         prefix.legacyMessage
       );
     const binaryPath = this.options.binaryPath ?? hooks.defaultBinary;
+    const resumeId = input.resume?.nativeSessionId.slice(prefix?.prefix.length ?? 0);
     const launch = await hooks.launch({
       binaryPath,
       cwd,
       env: input.env,
+      resumeSessionId: hooks.resumeOnLaunch ? resumeId : undefined,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
@@ -223,9 +225,12 @@ export class AcpAdapter implements ProviderAdapter {
       const payload = params as { sessionId: string; update: AcpSessionUpdate };
       if (payload.sessionId === state.nativeId) this.update(state, payload.update);
     });
-    client.onServerRequest('session/request_permission', (params) =>
-      this.permission(state, context, params as AcpPermissionRequest)
-    );
+    client.onServerRequest('session/request_permission', async (params) => {
+      const answer = await this.permission(state, context, params as AcpPermissionRequest);
+      if (answer === ACP_CANCELLED && state.interrupted && hooks.interruptPermissionWithError)
+        throw new Error('The turn was interrupted.');
+      return answer;
+    });
     hooks.extensions?.(context, {
       request: (method, handler) => client.onServerRequest(method, async (p) => handler(p)),
       notification: (method, handler) => client.onNotification(method, handler),
@@ -234,7 +239,10 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      const servers = hooks.httpMcpOverStdio
+        ? relayHttpMcp(hooks.label, input.mcpServers, this.options.mcpRelay)
+        : input.mcpServers;
+      requireHttpMcp(hooks.label, servers, agent.mcpCapabilities?.http);
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -255,9 +263,9 @@ export class AcpAdapter implements ProviderAdapter {
         }))
       )
         await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = acpMcpServers(servers, input.env);
       let method = 'session/new';
-      if (input.resume) {
+      if (resumeId !== undefined && !hooks.resumeOnLaunch) {
         method = agent.loadSession
           ? 'session/load'
           : agent.sessionCapabilities?.resume
@@ -269,19 +277,30 @@ export class AcpAdapter implements ProviderAdapter {
             input.sessionId,
             `This ${hooks.label} cannot resume saved conversations.`
           );
-        state.nativeId = input.resume.nativeSessionId.slice(prefix?.prefix.length ?? 0);
+        state.nativeId = resumeId;
       }
       const result = await client.request<AcpSessionResult>(method, {
         cwd,
         mcpServers,
-        ...(input.resume ? { sessionId: state.nativeId } : {}),
+        ...(method === 'session/new' ? {} : { sessionId: state.nativeId }),
       });
+      if (hooks.resumeOnLaunch && resumeId !== undefined && result.sessionId !== resumeId)
+        throw new ProviderConversationUnavailableError(
+          hooks.provider,
+          input.sessionId,
+          `${hooks.label} started a new conversation instead of resuming ${resumeId}.`
+        );
       state.nativeId = result.sessionId ?? state.nativeId;
       if (!state.nativeId) throw new Error(`${hooks.label} returned no session ID.`);
       state.configOptions = result.configOptions ?? [];
-      state.models = modelConfigOption(state.configOptions)
-        ? modelsFromConfig(state.configOptions)
-        : modelsFromList(result.models);
+      const fixedModel = hooks.fixedModel && (await hooks.fixedModel(input.env));
+      state.models = hooks.fixedModel
+        ? fixedModel
+          ? [{ id: fixedModel, label: fixedModel, options: {} }]
+          : []
+        : modelConfigOption(state.configOptions)
+          ? modelsFromConfig(state.configOptions)
+          : modelsFromList(result.models);
       const mode = hooks.sessionMode?.(input.runtimeMode, result.modes);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
@@ -416,6 +435,18 @@ export class AcpAdapter implements ProviderAdapter {
 
   async setModel(id: string, model: ModelSelection): Promise<void> {
     const state = this.require(id);
+    if (this.hooks.fixedModel) {
+      // It runs that model already, and `session/set_model` would change nothing.
+      if (state.models.some((choice) => choice.id === model.id)) return;
+      const fixed = state.models[0]?.id;
+      throw new ProviderSessionError(
+        this.provider,
+        id,
+        fixed
+          ? `${this.hooks.label} runs ${fixed}, the model set in its own settings, and cannot run ${model.id}. Choose ${model.id} in its settings, or leave the agent's model empty.`
+          : `${this.hooks.label} has no model set in its own settings.`
+      );
+    }
     if (!modelConfigOption(state.configOptions)) {
       await state.client.request('session/set_model', {
         sessionId: state.nativeId,
