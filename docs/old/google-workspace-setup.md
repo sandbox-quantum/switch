@@ -67,6 +67,55 @@ the app first. Switch cannot tell which a client is, and works with either.
   test users you list can connect, and their sign-ins lapse after seven days,
   so they reconnect every week.
 
+### An External app without the security assessment
+
+Of the scopes Switch asks for, only `drive` and `drive.readonly` are
+restricted; the Docs, Sheets, Slides and Calendar ones are sensitive, which
+Google reviews without a security assessment. To verify an External app
+against those alone, set
+
+```bash
+SERVICE_ACCESS_PROFILES='{"google-workspace": "drive-file"}'
+```
+
+and restart switch-core. Sign-ins then ask for `drive.file`, which is not
+sensitive, in place of `drive` and `drive.readonly`, so declare these scopes on
+the app's Data Access page:
+
+- `openid` and `userinfo.email`
+- `documents`, `spreadsheets`, `presentations` and their `.readonly` forms
+- `calendar.readonly` and `calendar.events`
+- `drive.file`
+
+What agents can do changes, and they are told so:
+
+- Docs, Sheets and Slides: every file the person can open, by its link, as
+  before.
+- Drive: only the files and folders agents created through the connection.
+  Agents cannot search or list the person's other files, or read PDFs,
+  uploaded Office files, images and other files they did not create; they ask
+  for a link instead.
+- Calendar: as before.
+
+The setting covers every Google sign-in on the server, through the server's
+client and through [an organization's own](#an-organizations-own-google-client).
+An organization whose own client is Internal, which Google does not review,
+also loses Drive search.
+
+Changing the setting, in either direction, makes everyone connected before the
+change reconnect. Their connection to Google Workspace shows as needing
+reconnection, and Switch refuses to give their agents a Google Workspace token
+or a new grant until they reconnect. Tell people before you change it. If you
+change it back, the connections nobody has remade yet work again.
+
+With the Helm chart, set `switchCore.serviceAccessProfiles`:
+
+```yaml
+switchCore:
+  serviceAccessProfiles:
+    google-workspace: drive-file
+```
+
 ## Give Switch the client
 
 In Switch Console, open **Admin** in the sidebar and **Connector apps** under
@@ -132,7 +181,8 @@ same client, so nobody reconnects.
    browser opens Google's consent page, then comes back through the server to
    Switch Console, which asks the person to confirm the account.
 2. Google lists what Switch asks for: reading and changing Drive files, Docs,
-   Sheets, Slides and calendar events, and the account's address. Unticking the
+   Sheets, Slides and calendar events, and the account's address (with
+   `drive-file`, only the Drive files Switch creates). Unticking the
    change permissions connects read-only, and Google then refuses every change
    an agent tries.
 3. On an agent's page (in Switch Console or the dashboard), the agent's owner
@@ -183,3 +233,6 @@ using the server's. If the organization's client stops working, its
 workspaces see Google Workspace as unavailable, with the reason, rather than falling
 back to the server's. Removing it sends them back to the server's client, and
 people connected through it reconnect once. The flag is off by default.
+`SERVICE_ACCESS_PROFILES` applies to an organization's client as it does to
+the server's (see
+[An External app without the security assessment](#an-external-app-without-the-security-assessment)).

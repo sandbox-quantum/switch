@@ -140,9 +140,9 @@ class OrganizationMember(Base):
     changing or removing a workspace membership leaves this row as it is. Only
     an organization's own `org_admin`s grant or revoke `org_admin`, through
     the organization's API. The one exception is migration `238c68b7306e`:
-    it made each existing workspace's owners `org_admin` of the organization
-    it created for that workspace alone, which gave them nothing they did not
-    already control.
+    it made each existing workspace's owners (a role since merged into
+    `admin`) `org_admin` of the organization it created for that workspace
+    alone, which gave them nothing they did not already control.
     """
 
     __tablename__ = "organization_members"
@@ -217,9 +217,7 @@ class TenantMember(Base):
 
     __tablename__ = "tenant_members"
     __table_args__ = (
-        CheckConstraint(
-            "role IN ('owner', 'admin', 'member')", name="ck_tenant_members_role"
-        ),
+        CheckConstraint("role IN ('admin', 'member')", name="ck_tenant_members_role"),
     )
 
     tenant_id: Mapped[str] = mapped_column(
@@ -371,8 +369,8 @@ class User(Base):
     )
     # Workspaces this person has created through self-service, which is what
     # `GATEWAY_MAX_WORKSPACES_PER_USER` bounds. A count of creations rather
-    # than of current ownership, so handing a workspace to someone else does
-    # not free an allowance to create another.
+    # than of workspaces administered now, so handing a workspace to another
+    # admin does not free an allowance to create another.
     workspaces_created: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
@@ -626,9 +624,7 @@ class Invitation(TenantScoped, Base):
     __tablename__ = "invitations"
     __table_args__ = (
         Index("ix_invitations_tenant_id", "tenant_id"),
-        CheckConstraint(
-            "role IN ('owner', 'admin', 'member')", name="ck_invitations_role"
-        ),
+        CheckConstraint("role IN ('admin', 'member')", name="ck_invitations_role"),
         CheckConstraint(
             "uses_remaining >= 0", name="ck_invitations_uses_remaining_not_negative"
         ),
@@ -2645,6 +2641,31 @@ class OwnershipLease(Base):
     )
     token: Mapped[int] = mapped_column(BigInteger, nullable=False)
     changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DirectoryEventCursor(Base):
+    """How far the directory mirror has read a directory's events
+    (`workos_mirror.py`). One row per directory (`source`, `"workos"`).
+
+    `after` is the last event applied, null until the first; until then the
+    events are read from `started_at`, when the mirror first ran. Applying
+    an event re-reads the membership it names, so reading one twice changes
+    nothing. The row is written only while the mirror's ownership fence holds
+    (`WorkOSMirror._write_cursor`), so a holder taken over can't move it.
+
+    Not tenant-scoped: one directory's events reach every organization.
+    """
+
+    __tablename__ = "directory_event_cursors"
+
+    source: Mapped[str] = mapped_column(Text, primary_key=True)
+    after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

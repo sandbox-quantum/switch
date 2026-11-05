@@ -195,6 +195,7 @@ GLOBAL_TABLES = frozenset(
         "telemetry_snapshot_watermark",
         "switch_core_processes",
         "ownership_leases",
+        "directory_event_cursors",
         "trust_settings",
         "service_oauth_clients",
         "schema_expand_only_revisions",

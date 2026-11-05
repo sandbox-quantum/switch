@@ -1,5 +1,5 @@
 """Nobody but a key's owner may list, reveal or delete it through the key
-routes: not a workspace owner or admin, and not the deployment operator.
+routes: not a workspace admin, and not the deployment operator.
 
 An admin's power over the workspace stops at the keys, because a key is a
 credential the owner can reveal and an admin who could reveal it could act as
@@ -19,7 +19,7 @@ from tests.switch_core.gateway.test_api_keys_hash_only import TEST_KEYRING, _app
 from tests.switch_core.management.harness import add_member, cookies_for
 
 
-@pytest.mark.parametrize("who", ["owner", "admin", "operator"])
+@pytest.mark.parametrize("who", ["admin", "operator"])
 async def test_an_admin_cannot_list_reveal_or_delete_a_members_key(
     session_factory: async_sessionmaker[AsyncSession], who: str
 ) -> None:

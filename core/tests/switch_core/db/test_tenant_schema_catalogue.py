@@ -122,6 +122,9 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # once: a process holds work for every tenant at once, and the row
             # names only which process runs which id.
             "ownership_leases",
+            # How far the directory mirror has read a directory's events: one
+            # row per directory, whose events reach every organization.
+            "directory_event_cursors",
             # Switch Trust's one guardrails policy for the whole deployment.
             # A policy that varied per tenant would be a new scoped table.
             "trust_settings",

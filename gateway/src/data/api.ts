@@ -35,6 +35,14 @@ export interface RoomSummary {
   write_visibility: "public" | "private";
   created_at: string;
   archived: boolean;
+  // What the viewer may do, as the server decides it. `can_write` covers the
+  // room's settings, roles, participants, links and attaching resources;
+  // `can_manage` (owner or workspace admin) covers its access and deleting it;
+  // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
+  // reference, document or package from it.
+  can_write: boolean;
+  can_manage: boolean;
+  can_unlink: boolean;
 }
 
 export interface AgentSummary {
@@ -55,6 +63,9 @@ export interface AgentSummary {
   parent_agent_id: string | null;
   known_agent_type: string | null;
   known_agent_options: Record<string, unknown> | null;
+  // Whether the caller may rename the agent and edit its options and who may
+  // address it, as the server decides it: its owner or a workspace admin.
+  can_manage: boolean;
 }
 
 export interface AgentToolSummary {
@@ -1128,7 +1139,7 @@ export interface AuthConfig {
 
 // ── Session and workspaces ──────────────────────────────────────────────────
 
-export type TenantRole = "owner" | "admin" | "member";
+export type TenantRole = "admin" | "member";
 
 export type OrganizationRole = "org_admin" | "member";
 
@@ -1292,6 +1303,12 @@ export interface CurrentOrganization {
   name: string;
   // Null for the platform operator there through operator access alone.
   role: OrganizationRole | null;
+  // Its members, and who is its Org Admin, come from a directory kept outside
+  // Switch: people are added and made Org Admin there, not here.
+  members_from_directory: boolean;
+  // Changes made here to those members are made in that directory too, so
+  // they last; the admin may first be sent to sign in there.
+  directory_takes_changes: boolean;
 }
 
 export interface OperatorWorkspace {
@@ -1390,6 +1407,28 @@ export async function removeOrganizationMember(
   );
 }
 
+// Mirrors `OrganizationIssueKind` in core/switch_core/db/audit.py, by hand.
+export type OrganizationIssueKind =
+  | "no_org_admin"
+  | "workspace_without_admin"
+  | "agents_without_acting_owner"
+  | "directory_organization_deleted";
+
+/** Something in the organization that needs an admin's attention now. Read
+ * from how things stand, so it is gone once fixed. */
+export interface OrganizationIssue {
+  kind: OrganizationIssueKind;
+  // Null for an issue of the organization's own.
+  workspace_id: string | null;
+  workspace_name: string | null;
+  agents: string[];
+}
+
+/** Its admins only, and the platform operator while it has none. */
+export async function fetchOrganizationIssues(): Promise<OrganizationIssue[]> {
+  return jsonRequest<OrganizationIssue[]>("/organizations/current/issues", "GET");
+}
+
 export const ORGANIZATION_AUDIT_PAGE = 50;
 
 /** One page of the organization's audit log, newest first: the most recent
@@ -1477,6 +1516,33 @@ export async function fetchAuthConfig(): Promise<AuthConfig | null> {
 // at the top level so cookies and the callback redirect work.
 export function oidcLoginUrl(): string {
   return `${BASE}/auth/oidc/login`;
+}
+
+/** Where an admin signs in to their organization's WorkOS account, for the
+ * token a change to its members needs, and comes back to `returnTo`. */
+// A dashboard path, and nothing that could leave it: no `//`, which a browser
+// reads as another host. The server checks the same.
+const DASHBOARD_PATH = /^\/(?!\/)[A-Za-z0-9/_.-]*$/;
+
+export function organizationSignInUrl(returnTo: string): string {
+  const path = DASHBOARD_PATH.test(returnTo) ? returnTo : "/organization";
+  return `${BASE}/auth/workos/organization?return_to=${encodeURIComponent(path)}`;
+}
+
+/** The server's answer when a change to a linked organization's members
+ * waits on the admin signing in to its WorkOS account. */
+export function needsOrganizationSignIn(err: unknown): boolean {
+  if (!(err instanceof ApiError) || !err.detail || typeof err.detail !== "object") return false;
+  return (err.detail as Record<string, unknown>).error === "directory_sign_in_required";
+}
+
+/** Whether the change that asked for a sign-in had already taken away the
+ * person's workspace access before it did. */
+export function signInAfterAccessEnded(err: unknown): boolean {
+  return (
+    needsOrganizationSignIn(err) &&
+    (err as ApiError & { detail: Record<string, unknown> }).detail.access_ended === true
+  );
 }
 
 export async function changePassword(
@@ -1575,6 +1641,9 @@ export interface ReferenceDetail {
   instructions: string;
   value: Record<string, unknown>;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   packages: string[];
   created_at: string;
   // Resolved server-side and unfiltered by the type's visibility. Null when
@@ -1611,6 +1680,9 @@ export interface DocumentSummary {
   description: string;
   instructions: string;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   packages: string[];
   scope: "global" | "room";
   room_id: string | null;
@@ -1621,6 +1693,20 @@ export interface DocumentSummary {
 
 export interface DocumentDetail extends DocumentSummary {
   content: string;
+}
+
+// Whether the viewer may remove a document from a room it is in: delete it if
+// it is room-scoped (its creator, the room's owner, a workspace admin), unlink
+// it if it is attached (those taking part in the room, a workspace admin).
+
+/** A document as listed in a room it is in. */
+export interface RoomDocumentSummary extends DocumentSummary {
+  can_remove: boolean;
+}
+
+/** A document as seen from a room it is in. */
+export interface RoomDocumentDetail extends DocumentDetail {
+  can_remove: boolean;
 }
 
 export interface DocumentCreateInput {
@@ -1644,6 +1730,9 @@ export interface DocumentUpdateInput {
 export interface ResourceRoom {
   room_id: string;
   room_name: string;
+  // Whether the viewer may unlink the resource from this room: they take part
+  // in it, or are a workspace admin.
+  can_unlink: boolean;
 }
 
 export interface ResourceDeleteResult {
@@ -1898,15 +1987,15 @@ export async function fetchDocumentRooms(id: string): Promise<ResourceRoom[] | n
 
 export async function fetchRoomDocuments(
   roomId: string,
-): Promise<DocumentSummary[] | null> {
-  return fetchJson<DocumentSummary[]>(`/rooms/${roomId}/documents`);
+): Promise<RoomDocumentSummary[] | null> {
+  return fetchJson<RoomDocumentSummary[]>(`/rooms/${roomId}/documents`);
 }
 
 export async function fetchRoomDocument(
   roomId: string,
   documentId: string,
-): Promise<DocumentDetail | null> {
-  return fetchJson<DocumentDetail>(`/rooms/${roomId}/documents/${documentId}`);
+): Promise<RoomDocumentDetail | null> {
+  return fetchJson<RoomDocumentDetail>(`/rooms/${roomId}/documents/${documentId}`);
 }
 
 export async function attachDocumentToRoom(
@@ -1947,7 +2036,13 @@ export interface PackageDetail {
   references_count: number;
   documents_count: number;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   created_at: string;
+  // Whether the caller may open the package. Only a room's package list
+  // includes packages the caller cannot read.
+  can_read: boolean;
 }
 
 export interface PackageCreateInput {
@@ -1969,8 +2064,11 @@ export interface PackageUpdateInput {
 export interface PackageMemberRemoveResult {
   package_id: string;
   member_id: string;
+  // The rooms that lost sight of the member, of those the viewer may read.
   affected_room_ids: string[];
   affected_room_names: string[];
+  // How many more did among rooms the viewer may not read, never named.
+  hidden_affected_rooms_count: number;
 }
 
 export async function fetchPackages(): Promise<PackageDetail[] | null> {
@@ -2237,8 +2335,8 @@ export interface CurrentTenant {
   slug: string;
   name: string;
   role: string;
-  // Whether the caller may manage the workspace: an owner or admin
-  // membership, or the operator bit.
+  // Whether the caller may manage the workspace: an admin membership,
+  // `org_admin` of its organization, or the operator bit.
   administers: boolean;
 }
 

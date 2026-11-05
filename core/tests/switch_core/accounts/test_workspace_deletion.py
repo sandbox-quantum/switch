@@ -77,7 +77,7 @@ async def _workspace(
         session.add(Tenant(id=tenant_id, slug=tenant_id, name="Doomed"))
         await session.flush()
         owner = await _user(session, "owner")
-        await _member(session, tenant_id, owner, "owner")
+        await _member(session, tenant_id, owner, "admin")
         await session.commit()
         return tenant_id, owner.id
 
@@ -267,7 +267,7 @@ async def test_a_workspace_deleted_meanwhile_is_not_found(
 ) -> None:
     """A second request for the same deletion, which the first finished while
     this one was being authorized."""
-    token = await _route_people(session_factory, "owner")
+    token = await _route_people(session_factory, "admin")
     tenant_role = UserStore.tenant_role
 
     async def deleted_meanwhile(
@@ -311,10 +311,10 @@ async def _route_people(
     return _token(user_id, f"ws-{role}@example.invalid", TENANT)
 
 
-async def test_the_owner_deletes_an_empty_workspace_by_typing_its_name(
+async def test_an_admin_deletes_an_empty_workspace_by_typing_its_name(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    token = await _route_people(session_factory, "owner")
+    token = await _route_people(session_factory, "admin")
     clients = _Clients()
     async with _client(_app(session_factory, client_lifecycle=clients), token) as c:
         wrong = await c.request("DELETE", f"/tenants/{TENANT}", json={"name": "nope"})
@@ -330,10 +330,10 @@ async def test_the_owner_deletes_an_empty_workspace_by_typing_its_name(
     assert event is not None and event.action == "workspace.deleted"
 
 
-async def test_an_admin_who_is_not_an_owner_is_refused(
+async def test_a_member_who_is_not_an_admin_is_refused(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    token = await _route_people(session_factory, "admin")
+    token = await _route_people(session_factory, "member")
     async with _client(_app(session_factory, client_lifecycle=_Clients()), token) as c:
         response = await c.request(
             "DELETE", f"/tenants/{TENANT}", json={"name": TENANT}
@@ -346,7 +346,7 @@ async def test_an_admin_who_is_not_an_owner_is_refused(
 async def test_a_workspace_with_others_in_it_is_refused_with_what_is_left(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    token = await _route_people(session_factory, "owner")
+    token = await _route_people(session_factory, "admin")
     await _make_member(session_factory, name="stays", tenant_id=TENANT, role="member")
     async with _client(_app(session_factory, client_lifecycle=_Clients()), token) as c:
         response = await c.request(

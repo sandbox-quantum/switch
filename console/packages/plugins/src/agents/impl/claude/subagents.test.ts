@@ -15,6 +15,7 @@ function fakeFs(files: Record<string, string>): PluginFs {
       store.delete(p);
       return Promise.resolve();
     },
+    protectSecret: (p) => Promise.resolve(store.has(p)),
     exists: (p) => Promise.resolve(store.has(p)),
     list: (dir) => {
       const prefix = dir.endsWith('/') ? dir : `${dir}/`;

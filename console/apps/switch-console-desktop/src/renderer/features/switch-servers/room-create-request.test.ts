@@ -3,7 +3,9 @@ import {
   CreateRequestIds,
   canCreate,
   dropsStartingAgent,
+  DEFAULT_ROOM_OPTIONS,
   roomCreateRequest,
+  roomOptionsReady,
   startingAgentResolution,
 } from './room-create-request';
 
@@ -16,6 +18,8 @@ const form = {
   agentIds: ['a1'],
   memberUserIds: ['u2'],
   requestId: 'req',
+  bridgeType: null,
+  options: DEFAULT_ROOM_OPTIONS,
 };
 
 describe('roomCreateRequest', () => {
@@ -55,8 +59,56 @@ describe('roomCreateRequest', () => {
         instructions: undefined,
         bridgeId: 'b1',
         agentIds: [],
+        // A new public channel and the server's default access, as before.
+        channel: { kind: 'new', private: false },
+        groupId: null,
+        access: null,
       },
     });
+  });
+
+  it('carries the More options: a private channel, a group and an access choice', () => {
+    const request = roomCreateRequest({
+      ...form,
+      bridgeId: 'b1',
+      options: { channel: { kind: 'new', private: true }, groupId: 'g1', access: 'read_only' },
+    });
+    expect(request.kind === 'room' && request.params).toMatchObject({
+      channel: { kind: 'new', private: true },
+      groupId: 'g1',
+      access: 'read_only',
+    });
+  });
+
+  it('binds an existing channel by its id, written as its app writes it', () => {
+    const request = roomCreateRequest({
+      ...form,
+      bridgeId: 'b1',
+      bridgeType: 'slack',
+      options: {
+        channel: { kind: 'existing', externalChannelId: ' c123 ' },
+        groupId: null,
+        access: null,
+      },
+    });
+    expect(request.kind === 'room' && request.params.channel).toEqual({
+      kind: 'existing',
+      externalChannelId: 'C123',
+    });
+  });
+});
+
+describe('roomOptionsReady', () => {
+  it('needs a channel id only when binding an existing channel', () => {
+    expect(roomOptionsReady(DEFAULT_ROOM_OPTIONS, 'slack')).toBe(true);
+    const existing = (id: string) => ({
+      ...DEFAULT_ROOM_OPTIONS,
+      channel: { kind: 'existing' as const, externalChannelId: id },
+    });
+    expect(roomOptionsReady(existing('  '), 'slack')).toBe(false);
+    expect(roomOptionsReady(existing('C0123ABCD'), 'slack')).toBe(true);
+    // An id not of the app's shape is held back, with the reason shown beside it.
+    expect(roomOptionsReady(existing('general'), 'slack')).toBe(false);
   });
 });
 

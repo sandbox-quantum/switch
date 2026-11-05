@@ -2804,16 +2804,26 @@ class MattermostAdapter(PlatformAdapter):
             raise RuntimeError("Cannot handle posted event: adapter not started")
 
         ws_loop = asyncio.get_event_loop()
+        user_is_bot = False
         try:
             user = await ws_loop.run_in_executor(
                 None, self._admin_driver.users.get_user, user_id
             )
             username: str = user.get("username", user_id)
+            user_is_bot = bool(user.get("is_bot", False))
         except Exception:
             logger.exception("Failed to resolve Mattermost user %s", user_id)
             username = user_id
         props = post.get("props") or {}
-        if str(props.get("from_webhook", "")).lower() == "true":
+        from_webhook = str(props.get("from_webhook", "")).lower() == "true"
+        # An integration rather than a person: an incoming webhook, or a bot
+        # account other than the bridge's own (those never reach here).
+        sender_is_app = (
+            from_webhook
+            or user_is_bot
+            or str(props.get("from_bot", "")).lower() == "true"
+        )
+        if from_webhook:
             # An incoming webhook's post (or a custom slash command's reply)
             # carries the user id of whoever set the integration up, though
             # anyone holding its URL may have sent it. It is the integration
@@ -2873,6 +2883,7 @@ class MattermostAdapter(PlatformAdapter):
                 channel_name=channel_name,
                 attachments=attachments,
                 attachment_failures=attachment_failures,
+                sender_is_app=sender_is_app,
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]

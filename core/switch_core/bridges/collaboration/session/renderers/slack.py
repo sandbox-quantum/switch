@@ -130,9 +130,6 @@ _MAX_ACTIVITY_LINES = 12
 # limit, and a card is read at a glance.
 _MAX_PLAN_TASKS = 50
 # What a section spends on the turn, the remaining row being the session card.
-# Fixed rather than widened when there is no session url to put in that card:
-# the url can arrive after the stream has opened, and a boundary that moved with
-# it would re-cut every page already drawn.
 _MAX_SECTION_ITEMS = _MAX_PLAN_TASKS - 1
 _MAX_PLAN_TITLE = 150
 _MAX_PLAN_TASK_TITLE = 200
@@ -1765,10 +1762,6 @@ def _fit_details(blocks: list[dict[str, Any]], limit: int) -> None:
     which is why running out of retreat here is an exception rather than a
     smaller cut: it would mean cards arriving from somewhere this was not
     written to bound.
-
-    So is the session card, whose detail is a link rather than prose. Cutting
-    its label would leave a link reading "Open in Cons…", and cutting two of
-    them buys back nothing worth having.
     """
     if _weigh(blocks) <= limit:
         return

@@ -1,8 +1,8 @@
 import { makeAutoObservable } from 'mobx';
 import { bridgeCanEmbed } from '@shared/core/switch-rooms/room-embed';
 
-/** The two things a room page can show. */
-export type RoomTab = 'chat' | 'configuration';
+/** The things a room page can show beside its participants. */
+export type RoomTab = 'chat' | 'resources' | 'configuration';
 
 /**
  * What a room shown inside another page opens on: its conversation when its

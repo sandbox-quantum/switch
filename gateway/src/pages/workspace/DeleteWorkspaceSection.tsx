@@ -22,7 +22,7 @@ interface Props {
   tenantName: string;
 }
 
-/** The owner deletes the workspace by typing its name. The server refuses
+/** An admin deletes the workspace by typing its name. The server refuses
  * one that still holds anything, and its message lists what. */
 export default function DeleteWorkspaceSection({ tenantId, tenantName }: Props) {
   const [open, setOpen] = useState(false);
