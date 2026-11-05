@@ -1,15 +1,15 @@
 """Keep subagent identity on tool activity rows.
 
 Revision ID: e8a2c9d04f16
-Revises: c3d9a1f7b246
+Revises: a3d9f6c2b871
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "e8a2c9d04f16"
-down_revision = "c3d9a1f7b246"
+revision: str = "e8a2c9d04f16"
+down_revision: str | None = "a3d9f6c2b871"
 branch_labels = None
 depends_on = None
 expand_only = True
