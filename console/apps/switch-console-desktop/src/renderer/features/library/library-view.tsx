@@ -98,7 +98,7 @@ const LibraryPanel = observer(function LibraryPanel() {
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Resources"
-      description="References and documents your agents can be given. Attach them to a room and every agent there can use them."
+      description="References, documents and packages of them that your agents can be given. Attach one to a room and every agent there can use it."
       action={
         <Button size="sm" disabled={workspaceId === null} onClick={create}>
           <Plus className="size-4" />
