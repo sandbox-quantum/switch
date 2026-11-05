@@ -79,6 +79,9 @@ class _FakeAdapter:
     def translate_inbound(self, content: str) -> str:
         return content
 
+    def unlinkable_account_reason(self, _external_user_id: str) -> str | None:
+        return None
+
     async def admin_message(
         self, channel_id: str, body: str, root_or_ref: str | None, *, message_type: str
     ) -> None:

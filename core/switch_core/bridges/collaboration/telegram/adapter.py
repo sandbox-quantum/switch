@@ -45,6 +45,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     ChannelNotBindable,
     PlatformAdapter,
+    PrivateNoticeRefused,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -1380,16 +1381,23 @@ class TelegramAdapter(PlatformAdapter):
         thread_root_id: str | None,
     ) -> None:
         """A message in the person's private chat with the bot, naming the
-        group the message was posted in. Telegram lets a bot write to someone
-        only after they have started a chat with it, and refuses otherwise;
-        that refusal is raised."""
+        group the message was posted in, split over several if it is past
+        Telegram's length cap. Telegram lets a bot write to someone only after
+        they have started a chat with it, and most members of a group never
+        have, so its refusal is raised as `PrivateNoticeRefused`."""
         where = f" in {html.escape(channel_name)}" if channel_name else ""
-        await self._require_bot().send_message(
-            chat_id=int(user_id),
-            text=f"About your message{where}:\n{self.translate_outbound(content)}",
-            parse_mode=ParseMode.HTML,
-            link_preview_options=_NO_PREVIEW,
-        )
+        bot = self._require_bot()
+        body = f"About your message{where}:\n{self.translate_outbound(content)}"
+        try:
+            for chunk in chunk_message(body):
+                await bot.send_message(
+                    chat_id=int(user_id),
+                    text=chunk,
+                    parse_mode=ParseMode.HTML,
+                    link_preview_options=_NO_PREVIEW,
+                )
+        except Forbidden as refused:
+            raise PrivateNoticeRefused(str(refused)) from refused
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str

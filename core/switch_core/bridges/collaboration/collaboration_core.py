@@ -23,6 +23,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
     PlatformAdapter,
+    PrivateNoticeRefused,
     SupportsSharedConnection,
     agent_identity,
 )
@@ -1427,12 +1428,27 @@ class CollaborationCore:
         private route, or the private one fails, the notice is posted in the
         channel and a warning says everyone there saw it: a sender left not
         knowing their message was blocked is worse than a notice others can
-        read. In a direct conversation the channel is already private. Never
-        lets a failed notice take the inbound message down with it, which
-        mirrors `AgentCore._post_trust_blocked_notice`."""
+        read. In a direct conversation the channel is already private. An
+        app's post, or one from an account many people share (Telegram's
+        stand-in for anonymous admins), has no one person to reach, so its
+        notice goes straight to the channel. Never lets a failed notice take
+        the inbound message down with it, which mirrors
+        `AgentCore._post_trust_blocked_notice`."""
         delivery = self._adapter.private_notice_delivery
-        if msg.channel_type not in ("direct", "lobby"):
-            if delivery == "in_channel":
+        no_one_to_reach = (
+            msg.sender_is_app
+            or self._adapter.unlinkable_account_reason(msg.sender_id) is not None
+        )
+        if msg.channel_type != "direct":
+            if no_one_to_reach:
+                logger.info(
+                    "The Switch Trust %s notice for %s goes in channel %s: an "
+                    "app or a shared account has no one person to tell",
+                    message_type.value,
+                    msg.sender_name,
+                    msg.channel_id,
+                )
+            elif delivery == "in_channel":
                 logger.warning(
                     "%s has no way to reach one person privately: posting the "
                     "Switch Trust %s notice for %s in channel %s, where "
@@ -1455,6 +1471,17 @@ class CollaborationCore:
                         thread_root_id=msg.root_id,
                     )
                     return
+                except PrivateNoticeRefused as refused:
+                    logger.warning(
+                        "%s would not let the bot reach %s privately (%s): "
+                        "posting the Switch Trust %s notice in channel %s "
+                        "instead, where everyone in it sees it",
+                        self._adapter.platform_name,
+                        msg.sender_name,
+                        refused,
+                        message_type.value,
+                        msg.channel_id,
+                    )
                 except Exception:
                     logger.warning(
                         "Could not send the Switch Trust %s notice to %s by %s: "

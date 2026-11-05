@@ -252,6 +252,13 @@ class RichContentFailed(Exception):
         self.text = text
 
 
+class PrivateNoticeRefused(Exception):
+    """The platform would not let the bot reach this person privately, as it
+    refuses for someone who never opened a chat with the bot, blocked it, or
+    takes no direct messages. Expected on those platforms, so the caller logs
+    it without a traceback and posts the notice in the channel instead."""
+
+
 class ChannelNotBindable(ValueError):
     """A room was asked to bind to a channel that is not this bridge's to bind.
 
@@ -2130,7 +2137,11 @@ class PlatformAdapter(ABC):
         is about.
 
         Raises when the notice cannot be delivered privately, so the caller
-        can post it in the channel instead and say so. The base has no private
+        can post it in the channel instead and say so: `PrivateNoticeRefused`
+        when the platform refuses to reach this person, which is expected,
+        anything else when it failed. A long `content` is split as
+        `admin_message` splits it, so its length never costs the private
+        route. The base has no private
         route and is never called for one: `private_notice_delivery` is
         `in_channel` here."""
         raise NotImplementedError(

@@ -26,6 +26,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     ChannelNotBindable,
     PlatformAdapter,
+    PrivateNoticeRefused,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -1202,16 +1203,25 @@ class DiscordAdapter(PlatformAdapter):
         thread_root_id: str | None,
     ) -> None:
         """A direct message from the bot, naming the channel the message was
-        posted in. Discord refuses it when the person does not accept direct
-        messages from members of the server, and that refusal is raised."""
+        posted in, split over several if it is past Discord's length cap.
+        Discord refuses it when the person does not accept direct messages
+        from members of the server, and that refusal is raised as
+        `PrivateNoticeRefused`."""
         client = self._require_client()
         user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
-        await user.send(
+        body = (
             f"About your message in <#{channel_id}>:\n"
-            f"{self.translate_outbound(content)}",
-            suppress_embeds=True,
-            allowed_mentions=NO_MASS_MENTIONS,
+            f"{self.translate_outbound(content)}"
         )
+        try:
+            for chunk in chunk_message(body):
+                await user.send(
+                    chunk,
+                    suppress_embeds=True,
+                    allowed_mentions=NO_MASS_MENTIONS,
+                )
+        except discord.Forbidden as refused:
+            raise PrivateNoticeRefused(str(refused)) from refused
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str

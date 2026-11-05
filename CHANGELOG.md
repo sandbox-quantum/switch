@@ -47,12 +47,15 @@ version of their own to them without also giving them a release of their own.
 #### Added
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
-  endpoint, and the media upload endpoint (for a caption) now carries a
-  `trust` field when Switch Trust did something: `{"outcome": "redacted",
-  "delivered": "<what the room received>"}` when parts were redacted, or
-  `alerted` / `errored` with the `note` posted under the message. A message
-  Switch Trust left alone has no `trust` field, so its result is as before.
-  Until now an agent whose words were redacted had no way to know.
+  endpoint, the status endpoint, and the media upload endpoint (for a caption
+  and the files) now carries a `trust` field when Switch Trust did something:
+  `{"outcome": "redacted", "delivered": "<what the room received>"}` when
+  parts were redacted, or `alerted` / `errored` with the `note` posted under
+  the message. A redaction that came with a flag or an incomplete check, say a
+  caption redacted beside a file that was flagged, also says `alert`:
+  `alerted` or `errored`. A message Switch Trust left alone has no `trust`
+  field, so its result is as before. Until now an agent whose words were
+  redacted had no way to know.
 
 #### Changed
 - **Switch Trust notices about a person's own message reach only that
@@ -60,11 +63,15 @@ version of their own to them without also giving them a release of their own.
   checked, the notice used to be posted in the channel, where everyone could
   see what they had tried to say. Now it goes to the sender alone: an
   ephemeral message on Slack and Mattermost, and a direct message from the bot
-  on Discord and Telegram. Microsoft Teams has no way for a bot to do either
-  unprompted, so there the notice is still posted in the channel, as it is
-  when a Discord or Telegram user does not accept direct messages from the
-  bot; switch-core logs a warning each time that happens. Notices about an
-  agent's message are still posted for the room.
+  on Discord and Telegram. A direct message only works for someone who
+  accepts one: on Discord, unless they turned off messages from server
+  members; on Telegram, only once they have started a chat with the bot, which
+  most members of a group never have, so there most notices are still posted
+  in the group. Microsoft Teams has no way for a bot to do either unprompted,
+  so there the notice is still posted in the channel, as it is for a post by
+  an app or by Telegram's anonymous group admins. switch-core logs a warning
+  each time a notice goes to the channel for want of a private route. Notices
+  about an agent's message are still posted for the room.
 
 #### Security
 - **Messages with files attached are checked by Switch Trust.** A message with
@@ -4816,6 +4823,10 @@ The Switch protocol client and MCP runtime
 ### [Unreleased]
 
 #### Added
+- **`send_attachment` tells the agent what Switch Trust did.** When Switch
+  Trust redacted the caption, or flagged or could not fully check a file, the
+  result has a `Switch Trust:` line with the same `trust` field `post_message`
+  returns. It used to say only that the files were sent.
 - **Waits its turn when Switch is busy opening connections.** A server
   pacing a reconnect storm refuses an open as `busy` with when to open again,
   which is this agent's place in its queue. The stream now waits that long,

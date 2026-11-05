@@ -1,7 +1,8 @@
 """A Switch Trust notice about a person's own message reaches that person
 alone: an ephemeral where the platform has one, a direct message where it has
-not, and the channel, with a warning, where it has neither or the private
-route fails (`CollaborationCore._post_trust_notice`)."""
+not, and the channel, with a warning, where it has neither, the private route
+fails, or there is no one person to reach
+(`CollaborationCore._post_trust_notice`)."""
 
 from __future__ import annotations
 
@@ -11,7 +12,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from telegram.error import Forbidden
 
+from switch_core.bridges.collaboration.adapter import PrivateNoticeRefused
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
@@ -54,6 +57,7 @@ def _message(
     sender_id: str = "U-alice",
     message_ref: str = "C1:111.0",
     root_id: str | None = None,
+    sender_is_app: bool = False,
 ) -> InboundMessage:
     return InboundMessage(
         channel_id="chan-1",
@@ -64,6 +68,7 @@ def _message(
         content="my email is alice@example.com",
         message_ref=message_ref,
         root_id=root_id,
+        sender_is_app=sender_is_app,
     )
 
 
@@ -181,24 +186,94 @@ async def test_discord_block_notice_is_a_direct_message_naming_the_channel() -> 
     assert "blocked by Switch Trust" in content
 
 
+async def test_a_long_telegram_notice_is_split_to_fit() -> None:
+    bot = _TelegramBot()
+    adapter = TelegramAdapter.__new__(TelegramAdapter)
+    adapter._bot = bot
+    adapter._gateway_public_url = None
+
+    await adapter.notify_privately(
+        channel_id="-100",
+        channel_name="general",
+        user_id="4242",
+        content="\n".join(f"line {n} " + "x" * 60 for n in range(200)),
+        thread_root_id=None,
+    )
+
+    assert len(bot.sent) > 1
+    assert all(len(sent["text"]) <= 4096 for sent in bot.sent)
+    assert all(sent["chat_id"] == 4242 for sent in bot.sent)
+
+
+async def test_telegrams_refusal_is_raised_as_expected() -> None:
+    class _RefusingBot:
+        async def send_message(self, **_kwargs: Any) -> None:
+            raise Forbidden("Forbidden: bot can't initiate conversation with a user")
+
+    adapter = TelegramAdapter.__new__(TelegramAdapter)
+    adapter._bot = _RefusingBot()
+    adapter._gateway_public_url = None
+
+    with pytest.raises(PrivateNoticeRefused):
+        await adapter.notify_privately(
+            channel_id="-100",
+            channel_name="general",
+            user_id="4242",
+            content="blocked",
+            thread_root_id=None,
+        )
+
+
+async def test_a_long_discord_notice_is_split_to_fit() -> None:
+    sent: list[str] = []
+
+    class _User:
+        async def send(self, content: str, **_kwargs: Any) -> None:
+            sent.append(content)
+
+    client = SimpleNamespace(get_user={4242: _User()}.get)
+    adapter = DiscordAdapter.__new__(DiscordAdapter)
+    adapter._connection = SimpleNamespace(client=client)  # type: ignore[assignment]
+    adapter._gateway_public_url = None
+
+    await adapter.notify_privately(
+        channel_id="chan-1",
+        channel_name="general",
+        user_id="4242",
+        content="\n".join(f"line {n} " + "x" * 60 for n in range(100)),
+        thread_root_id=None,
+    )
+
+    assert len(sent) > 1
+    assert all(len(content) <= 2000 for content in sent)
+
+
 class _NoticeAdapter:
     """A platform whose private route is declared but can be made to fail,
     recording what reached the channel instead."""
 
     platform_name = "Fake"
 
-    def __init__(self, delivery: str, *, private_fails: bool) -> None:
+    def __init__(
+        self, delivery: str, *, private_fails: bool, refused: bool = False
+    ) -> None:
         self.private_notice_delivery = delivery
         self._private_fails = private_fails
+        self._refused = refused
         self.private: list[dict[str, Any]] = []
         self.admin_messages: list[tuple[str, str, str | None, str]] = []
 
     def translate_inbound(self, content: str) -> str:
         return content
 
+    def unlinkable_account_reason(self, external_user_id: str) -> str | None:
+        return "a stand-in" if external_user_id == "stand-in" else None
+
     async def notify_privately(self, **kwargs: Any) -> None:
+        if self._refused:
+            raise PrivateNoticeRefused("Forbidden: bot can't initiate conversation")
         if self._private_fails:
-            raise RuntimeError("Forbidden: bot can't initiate conversation")
+            raise RuntimeError("the platform timed out")
         self.private.append(kwargs)
 
     async def admin_message(
@@ -223,7 +298,46 @@ async def test_a_refused_direct_message_falls_back_to_the_channel_with_a_warning
     assert root_or_ref == "C1:111.0"
     assert message_type == AdminMessageType.TRUST_BLOCKED.value
     assert "everyone in it sees it" in caplog.text
-    assert "Forbidden" in caplog.text
+    assert "timed out" in caplog.text
+
+
+async def test_a_refusal_the_platform_is_expected_to_give_is_logged_without_a_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Most members of a Telegram group never started a chat with the bot,
+    so its refusal is routine: one line, not a traceback per notice."""
+    adapter = _NoticeAdapter("direct_message", private_fails=False, refused=True)
+    bridge = _bridge(_FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING):
+        await CollaborationCore._handle_inbound_message(bridge, _message())
+
+    assert len(adapter.admin_messages) == 1
+    [record] = [r for r in caplog.records if "privately" in r.getMessage()]
+    assert "can't initiate conversation" in record.getMessage()
+    assert record.exc_info is None
+
+
+@pytest.mark.parametrize(
+    ("sender_id", "sender_is_app"), [("U-app", True), ("stand-in", False)]
+)
+async def test_an_app_or_a_shared_account_gets_its_notice_in_the_channel(
+    caplog: pytest.LogCaptureFixture, sender_id: str, sender_is_app: bool
+) -> None:
+    """Nobody is behind an app's post to reach privately, and a stand-in
+    account is many people, so the private route is not tried at all."""
+    adapter = _NoticeAdapter("direct_message", private_fails=True)
+    bridge = _bridge(_FakeHumanActor(), adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING):
+        await CollaborationCore._handle_inbound_message(
+            bridge, _message(sender_id=sender_id, sender_is_app=sender_is_app)
+        )
+
+    assert adapter.private == []
+    assert len(adapter.admin_messages) == 1
+    assert "privately" not in caplog.text
+    assert "everyone in it sees it" not in caplog.text
 
 
 async def test_a_platform_without_a_private_route_posts_in_channel_and_warns(
