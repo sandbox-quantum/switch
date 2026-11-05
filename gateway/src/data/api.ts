@@ -1264,6 +1264,12 @@ export interface CurrentOrganization {
   name: string;
   // Null for the platform operator there through operator access alone.
   role: OrganizationRole | null;
+  // Its members, and who is its Org Admin, come from a directory kept outside
+  // Switch: people are added and made Org Admin there, not here.
+  members_from_directory: boolean;
+  // Changes made here to those members are made in that directory too, so
+  // they last; the admin may first be sent to sign in there.
+  directory_takes_changes: boolean;
 }
 
 export interface OperatorWorkspace {
@@ -1362,6 +1368,28 @@ export async function removeOrganizationMember(
   );
 }
 
+// Mirrors `OrganizationIssueKind` in core/switch_core/db/audit.py, by hand.
+export type OrganizationIssueKind =
+  | "no_org_admin"
+  | "workspace_without_owner"
+  | "agents_without_acting_owner"
+  | "directory_organization_deleted";
+
+/** Something in the organization that needs an admin's attention now. Read
+ * from how things stand, so it is gone once fixed. */
+export interface OrganizationIssue {
+  kind: OrganizationIssueKind;
+  // Null for an issue of the organization's own.
+  workspace_id: string | null;
+  workspace_name: string | null;
+  agents: string[];
+}
+
+/** Its admins only, and the platform operator while it has none. */
+export async function fetchOrganizationIssues(): Promise<OrganizationIssue[]> {
+  return jsonRequest<OrganizationIssue[]>("/organizations/current/issues", "GET");
+}
+
 export const ORGANIZATION_AUDIT_PAGE = 50;
 
 /** One page of the organization's audit log, newest first: the most recent
@@ -1449,6 +1477,33 @@ export async function fetchAuthConfig(): Promise<AuthConfig | null> {
 // at the top level so cookies and the callback redirect work.
 export function oidcLoginUrl(): string {
   return `${BASE}/auth/oidc/login`;
+}
+
+/** Where an admin signs in to their organization's WorkOS account, for the
+ * token a change to its members needs, and comes back to `returnTo`. */
+// A dashboard path, and nothing that could leave it: no `//`, which a browser
+// reads as another host. The server checks the same.
+const DASHBOARD_PATH = /^\/(?!\/)[A-Za-z0-9/_.-]*$/;
+
+export function organizationSignInUrl(returnTo: string): string {
+  const path = DASHBOARD_PATH.test(returnTo) ? returnTo : "/organization";
+  return `${BASE}/auth/workos/organization?return_to=${encodeURIComponent(path)}`;
+}
+
+/** The server's answer when a change to a linked organization's members
+ * waits on the admin signing in to its WorkOS account. */
+export function needsOrganizationSignIn(err: unknown): boolean {
+  if (!(err instanceof ApiError) || !err.detail || typeof err.detail !== "object") return false;
+  return (err.detail as Record<string, unknown>).error === "directory_sign_in_required";
+}
+
+/** Whether the change that asked for a sign-in had already taken away the
+ * person's workspace access before it did. */
+export function signInAfterAccessEnded(err: unknown): boolean {
+  return (
+    needsOrganizationSignIn(err) &&
+    (err as ApiError & { detail: Record<string, unknown> }).detail.access_ended === true
+  );
 }
 
 export async function changePassword(

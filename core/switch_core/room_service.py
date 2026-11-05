@@ -23,7 +23,12 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_format, validate_alias_map
-from switch_core.authz import Principal, can, validate_visibility_pair
+from switch_core.authz import (
+    Principal,
+    can,
+    require_group_filing,
+    validate_visibility_pair,
+)
 from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelType,
@@ -555,8 +560,10 @@ class RoomService:
         for alias in (config.aliases or {}).values():
             validate_alias_format(alias)
         # Validate the group up front so a bad id fails before we provision a
-        # room / external channel.
+        # room / external channel. Filing a room in a group needs a workspace
+        # admin; checked first, so a refusal does not reveal which groups exist.
         if config.group_id is not None:
+            require_group_filing(config.acting_is_admin)
             async with self._session_factory() as session:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
@@ -691,7 +698,12 @@ class RoomService:
             async with self._session_factory() as session:
                 await self._room_store.create(session, room)
                 if config.group_id is not None:
-                    await self._room_store.set_group(session, room.id, config.group_id)
+                    await self._room_store.set_group(
+                        session,
+                        room.id,
+                        config.group_id,
+                        acting_is_admin=config.acting_is_admin,
+                    )
                 if agent_ids:
                     await self._room_store.add_agents(
                         session,

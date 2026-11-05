@@ -37,6 +37,7 @@ from switch_core.gateway.auth import (
     authorize_room,
     get_current_user,
     get_tenant_is_admin,
+    require_group_filing_or_403,
     takes_part_in_room,
 )
 from switch_core.gateway.dependencies import (
@@ -408,6 +409,8 @@ async def create_room(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     _validate_create(req)
+    if req.group_id is not None:
+        require_group_filing_or_403(is_admin)
     config = RoomCreateConfig(
         name=req.name,
         description=req.description,
@@ -424,6 +427,8 @@ async def create_room(
         group_id=req.group_id,
         created_by=user.id,
         owner_id=user.id,
+        acting_user_id=user.id,
+        acting_is_admin=is_admin,
         read_visibility=req.read_visibility,
         write_visibility=req.write_visibility,
         roles=([RoleSpec(**r.model_dump()) for r in req.roles] if req.roles else None),
@@ -1060,11 +1065,18 @@ async def put_room_group(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    """Assign the room to a group, or make it standalone (`group_id=null`)."""
+    """Assign the room to a group, or make it standalone (`group_id=null`).
+
+    Taking a room out of its group, or leaving it where it is, needs write
+    access to it; putting it in another one also needs a workspace admin."""
     principal = Principal(user.id, is_admin)
     await authorize_room(session, room_store, room_id, principal, "write")
     try:
-        await room_store.set_group(session, room_id, req.group_id)
+        await room_store.set_group(
+            session, room_id, req.group_id, acting_is_admin=is_admin
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         # Missing room → 404; missing group → 400.
         detail = str(e)

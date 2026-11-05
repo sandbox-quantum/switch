@@ -208,6 +208,19 @@ def can_delete_room_document(
     )
 
 
+def require_group_filing(is_admin: bool) -> None:
+    """Raise ``PermissionError`` unless a workspace admin is putting a room
+    into a room group.
+
+    A room's group is an input to agents' addressing policies (a rule can
+    admit every room in a group), so filing a room into one can open agents
+    to its members. Groups are admin-managed, and so is what goes in them.
+    Taking a room out of a group only needs write access to the room.
+    """
+    if not is_admin:
+        raise PermissionError("Only a workspace admin can put a room in a room group.")
+
+
 def validate_visibility_pair(read_visibility: str, write_visibility: str) -> None:
     """Validate a (read, write) visibility pair, raising ``ValueError`` if bad.
 

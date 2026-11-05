@@ -21,6 +21,7 @@ from switch_core.authz import (
     Principal,
     can_unlink_from_room,
     require,
+    require_group_filing,
 )
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -33,6 +34,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_invitation,
     tenants_bindable_by_user,
     tenants_inviting_email,
+    tenants_of_organization,
     tenants_of_user,
     tenants_open_to_domain,
 )
@@ -389,6 +391,23 @@ async def _in_organization(
     return found
 
 
+async def organization_candidates(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    organization_id: str,
+    *,
+    is_operator: bool,
+) -> list[str]:
+    """Where to look for `organization_id`'s workspaces: its own, for the
+    platform operator, who may bind any workspace and holds no membership to
+    narrow by (`tenants_of_organization`); those `user_id` may bind,
+    otherwise. Either way a caller keeps only those still in the
+    organization when it reads them."""
+    if is_operator:
+        return await tenants_of_organization(session_factory, organization_id)
+    return await tenants_bindable_by(session_factory, user_id)
+
+
 async def workspaces_in_organization(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: str,
@@ -511,10 +530,8 @@ async def organization_workspaces_bindable_by(
     `platform_access` gives them. Each candidate is read on its own short
     session, and only those in the organization are described further.
     """
-    candidates = (
-        await all_tenant_ids(session_factory)
-        if is_operator
-        else await tenants_bindable_by(session_factory, user_id)
+    candidates = await organization_candidates(
+        session_factory, user_id, organization_id, is_operator=is_operator
     )
     found: list[TenantMembershipResponse] = []
     for tenant in await _in_organization(session_factory, candidates, organization_id):
@@ -1281,3 +1298,11 @@ async def readable_room_ids(
         session, user.id, is_admin=is_admin, include_archived=True
     )
     return {r.id for r in rooms}
+
+
+def require_group_filing_or_403(is_admin: bool) -> None:
+    """`authz.require_group_filing` as HTTP 403, for gateway routes."""
+    try:
+        require_group_filing(is_admin)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e

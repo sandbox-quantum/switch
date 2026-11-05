@@ -412,7 +412,11 @@ async function loginToGive(
             'already signed in, its login is likely in the OS keyring, which cannot be given to ' +
             'another machine: unless your organization enforces the keyring, set ' +
             'cli_auth_credentials_store = "file" in the Codex config.toml and sign in again.'
-        : `This computer is not signed in to ${provider}. Sign in here first.`
+        : provider === 'antigravity'
+          ? 'This computer has no Antigravity sign-in to give. Google’s agy keeps its sign-in ' +
+            'in the OS keychain, which cannot be given to another machine: sign in there with ' +
+            'agy acp --login instead.'
+          : `This computer is not signed in to ${provider}. Sign in here first.`
     );
   return { kind: 'auth-json', credential };
 }

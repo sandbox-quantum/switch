@@ -19,7 +19,6 @@ import {
   Divider,
   FormControlLabel,
   IconButton,
-  MenuItem,
   Stack,
   Switch,
   TextField,
@@ -42,12 +41,12 @@ import {
   deleteRoomRole,
   removeRoomAgent,
   setRoomAgentJoinEvents,
-  setRoomGroup,
   unarchiveRoom,
   updateRoom,
   updateRoomRole,
 } from "../../data/api";
-import { useAgents, useBridgeUsers, useRoom, useRoomGroups } from "../../data/hooks";
+import { useAgents, useBridgeUsers, useRoom } from "../../data/hooks";
+import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
 import {
@@ -57,7 +56,7 @@ import {
   formatDateTime,
   titleCase,
 } from "../../theme/hootFormat";
-import { effectiveColor, buildGroupIndex, flattenTree } from "./groupTree";
+import RoomGroupSection from "./RoomGroupSection";
 import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
@@ -67,6 +66,7 @@ import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
+  const { canAdminTenant } = useAuth();
   const { data: room, loading, error, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -120,7 +120,12 @@ export default function RoomDetailPage() {
       <Stack spacing={4}>
         <RoomInfoSection room={room} />
         <Divider />
-        <GroupSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <RoomGroupSection
+          room={room}
+          canWrite={canWrite}
+          canFile={canAdminTenant}
+          onChanged={refetch}
+        />
         <Divider />
         <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
@@ -224,82 +229,6 @@ function InfoChip({
         </Box>
       )}
     </Typography>
-  );
-}
-
-// ── Group ─────────────────────────────────────────────────────────────────────
-
-function GroupSection({
-  room,
-  canWrite,
-  onChanged,
-}: {
-  room: RoomDetail;
-  canWrite: boolean;
-  onChanged: () => void;
-}) {
-  const { data: groups, refetch: refetchGroups } = useRoomGroups();
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const groupList = useMemo(() => groups ?? [], [groups]);
-  const byId = useMemo(() => buildGroupIndex(groupList), [groupList]);
-
-  const handleChange = useCallback(
-    async (value: string) => {
-      setSaving(true);
-      setError(null);
-      try {
-        await setRoomGroup(room.id, value || null);
-        refetchGroups();
-        onChanged();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to update group");
-      } finally {
-        setSaving(false);
-      }
-    },
-    [room.id, onChanged, refetchGroups],
-  );
-
-  return (
-    <Stack spacing={1.5}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-        Group
-      </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
-      <Stack direction="row" spacing={1.5} alignItems="center">
-        {room.group_id && (
-          <Box
-            sx={{
-              width: 12,
-              height: 12,
-              borderRadius: "50%",
-              bgcolor: effectiveColor(room.group_id, byId),
-              flexShrink: 0,
-            }}
-          />
-        )}
-        <TextField
-          select
-          size="small"
-          label="Group"
-          value={room.group_id ?? ""}
-          onChange={(e) => handleChange(e.target.value)}
-          disabled={saving || !canWrite}
-          sx={{ width: 320 }}
-          helperText="Groups organise rooms in the list and colour them in the graph."
-        >
-          <MenuItem value="">Standalone (no group)</MenuItem>
-          {flattenTree(groupList).map(({ group, depth }) => (
-            <MenuItem key={group.id} value={group.id}>
-              {"  ".repeat(depth)}
-              {group.name}
-            </MenuItem>
-          ))}
-        </TextField>
-      </Stack>
-    </Stack>
   );
 }
 
