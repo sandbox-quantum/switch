@@ -86,6 +86,13 @@ const FAILURE_LINES: Record<HostFailure | ReplyCode | 'bad_observation', string>
   failed: 'The launcher could not answer for this agent.',
   launcher_lost: 'The launcher in the agents container is not connected.',
   timed_out: 'The launcher did not answer in time.',
+  // The file explorer's refusals: never about a host, but every reply code has a line.
+  outside_root: 'The launcher refused a file request outside the workspaces.',
+  denied: 'The launcher refused a file request for something never readable.',
+  not_found: 'The launcher found nothing at a requested file path.',
+  too_large: 'A requested file or folder was over the size limit.',
+  not_regular: 'A requested path was not a regular file or folder.',
+  busy: 'The launcher had too many file requests at once.',
   bad_observation: 'The launcher’s answer about this agent could not be read.',
 };
 
