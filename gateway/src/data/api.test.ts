@@ -13,9 +13,7 @@ import {
 
 describe("errorText", () => {
   it("returns a string detail as is", () => {
-    expect(errorText("Only a workspace owner may grant ownership", "x")).toBe(
-      "Only a workspace owner may grant ownership",
-    );
+    expect(errorText("Cannot demote the last admin", "x")).toBe("Cannot demote the last admin");
   });
 
   it("joins validation messages", () => {

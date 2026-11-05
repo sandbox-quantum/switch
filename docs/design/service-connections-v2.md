@@ -283,7 +283,7 @@ disconnecting still works. A slug outside the catalog stops the server.
 ## Switching a service on for a workspace
 
 A workspace admin switches each catalog service on or off for the workspace
-(`GET` and `PUT /gateway/workspace/services[/{service}]`, admins and owners,
+(`GET` and `PUT /gateway/workspace/services[/{service}]`, admins only,
 and the operator in a workspace they belong to). A service with no setting
 takes the workspace's default, `tenants.services_on_by_default`: off for every
 workspace made since services started off, so a new workspace has none until

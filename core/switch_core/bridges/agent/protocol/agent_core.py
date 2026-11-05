@@ -7,12 +7,13 @@ import logging
 import re
 import secrets
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from switch_core.addressing import (
     AddressingPolicy,
@@ -33,7 +34,13 @@ from switch_core.agent_icon import (
 )
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.authz import Action, Principal, require, require_manage
+from switch_core.authz import (
+    Action,
+    Principal,
+    require,
+    require_group_filing,
+    require_manage,
+)
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.mediation import MediationService
@@ -74,6 +81,7 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
+from switch_core.chats.service import ChatError
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
@@ -366,6 +374,12 @@ class AgentCore:
     # Told (tenant_id, agent_id) after an agent's icon or display name changes,
     # so whatever shows them can refresh.
     _agent_profile_listener: Callable[[str, str], Awaitable[None]] | None = None
+    # Puts a person in a room as a Console member: (tenant_id, actor, room_id,
+    # target_user_id). Set by the process wiring to the chats service's.
+    _member_adder: Callable[[str, User, str, str], Awaitable[Room]] | None = None
+    # Raises the ChatError `_member_adder` would refuse that person with:
+    # (tenant_id, user_id). Wired with it.
+    _member_join_check: Callable[[str, str], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -811,6 +825,14 @@ class AgentCore:
         self, listener: Callable[[str, str], Awaitable[None]]
     ) -> None:
         self._room_agents_listener = listener
+
+    def set_member_adder(
+        self,
+        adder: Callable[[str, User, str, str], Awaitable[Room]],
+        join_check: Callable[[str, str], Awaitable[None]],
+    ) -> None:
+        self._member_adder = adder
+        self._member_join_check = join_check
 
     def set_agent_profile_listener(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -2912,9 +2934,15 @@ class AgentCore:
         join_event_listeners: list[str] | None = None,
         aliases: dict[str, str] | None = None,
         from_room_id: str | None = None,
+        *,
+        include_owner: bool,
     ) -> RoomCreateResult:
         """Create a room. The caller agent's owner_id is used as the acting
         user for attachment authorization and as the new room's owner.
+
+        `include_owner` also puts that owner in the room as a member, so it
+        is one of their Switch Console chats. Only for an internal-only room
+        that is not direct: a bridged room's people are its platform's.
 
         `from_room_id` is the room the agent is working in: the new room goes
         into that room's run (see `agent_runs`), and is refused if the run is
@@ -2933,8 +2961,36 @@ class AgentCore:
             agent, _owner_id, owner_is_admin = await self._resolve_acting_identity(
                 session, agent_id
             )
+            # Before resolving the name: the lookup's errors would map the
+            # group tree for an agent that may not file into any of it.
+            if group_name is not None:
+                require_group_filing(owner_is_admin)
             group_id = await self._resolve_group_name(session, group_name)
             owner = await session.get(User, agent.owner_id) if agent.owner_id else None
+        if include_owner:
+            if not internal_only or bridge_id is not None:
+                raise ValueError(
+                    "include_owner needs internal_only=True and no bridge_id: "
+                    "a room on a messaging app takes its people from there "
+                    "(user_names)"
+                )
+            if channel_type == "direct":
+                raise ValueError(
+                    "include_owner makes a group room with your owner; it "
+                    "cannot be channel_type='direct'"
+                )
+            if owner is None:
+                raise ValueError(
+                    f"Agent {agent_id} has no owner, so there is no one to include"
+                )
+            if self._member_adder is None or self._member_join_check is None:
+                raise RuntimeError("Adding people to rooms is not wired on this server")
+            try:
+                await self._member_join_check(agent.tenant_id, owner.id)
+            except ChatError as e:
+                raise ValueError(
+                    f"include_owner: your owner {owner.name} cannot join: {e.message}"
+                ) from e
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
                 f"Agent {agent_id} has no owner_id and cannot attach references "
@@ -2988,6 +3044,26 @@ class AgentCore:
                 raise PermissionError(str(e)) from e
             except RuntimeError as e:
                 raise RuntimeError(f"Room service error: {str(e)}") from e
+        if include_owner:
+            assert owner is not None and self._member_adder is not None
+            try:
+                await self._member_adder(
+                    result.room.tenant_id, owner, result.room.id, owner.id
+                )
+            except Exception as e:
+                # A room without the owner it was made for is not what was asked for.
+                try:
+                    await self.room_service.delete_room(
+                        result.room.id, retire_channel=False
+                    )
+                except Exception as cleanup:
+                    raise cleanup from e
+                if isinstance(e, ChatError):
+                    raise ValueError(
+                        f"Room not created: your owner {owner.name} could not be "
+                        f"added: {e.message}"
+                    ) from e
+                raise
         return result
 
     async def _resolve_group_name(
@@ -3698,10 +3774,12 @@ class AgentCore:
     ) -> dict[str, Any]:
         """Create a directed link from source_room_id → target_room_id.
 
-        Requires write access to the source room.
+        Requires write access to the source room and read access to the
+        target, whose name and description the link shows.
         """
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, source_room_id, "write")
+            await self._require_room_action(session, agent_id, target_room_id, "read")
             result = await self.resource_service.attach_linked_room(
                 session,
                 source_room_id=source_room_id,
@@ -3744,18 +3822,25 @@ class AgentCore:
         limit: int,
         cursor: str | None,
     ) -> tuple[list[Room], str | None]:
-        """One page of every room, oldest first, and the cursor for the next
-        page (None on the last). Archived rooms are excluded unless
+        """One page of the rooms the agent may see, oldest first, and the
+        cursor for the next page (None on the last): every room its owner may
+        read, plus those it is a member of. Archived rooms are excluded unless
         `include_archived` is set."""
         if not 1 <= limit <= LIST_ALL_ROOMS_MAX:
             raise ValueError(f"limit must be between 1 and {LIST_ALL_ROOMS_MAX}")
         async with self.session_factory() as session:
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
             rooms = await self.room_store.page_all(
                 session,
                 include_archived=include_archived,
                 name_contains=name_contains,
                 limit=limit + 1,
                 after=_decode_room_cursor(cursor) if cursor is not None else None,
+                reader_id=owner_id,
+                reader_is_admin=owner_is_admin,
+                member_agent_id=agent_id,
             )
         if len(rooms) <= limit:
             return rooms, None
@@ -3763,22 +3848,41 @@ class AgentCore:
         last = rooms[-1]
         return rooms, _encode_room_cursor(last.created_at, last.id)
 
+    async def rooms_visible_to(
+        self, session: AsyncSession, agent_id: str, *, include_archived: bool
+    ) -> list[Room]:
+        """The rooms the agent's owner may read, plus those the agent is in."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        return await self.room_store.list_visible_to_agent(
+            session,
+            reader_id=owner_id,
+            reader_is_admin=owner_is_admin,
+            member_agent_id=agent_id,
+            include_archived=include_archived,
+        )
+
+    async def _visible_room_ids(self, session: AsyncSession, agent_id: str) -> set[str]:
+        """Ids of `rooms_visible_to`, archived rooms included."""
+        rooms = await self.rooms_visible_to(session, agent_id, include_archived=True)
+        return {r.id for r in rooms}
+
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.
 
         Returns dicts of ``{id, name, description, parent_group_id, room_count,
         path}`` where `path` is the root-first ancestry (e.g. "Parent / Child")
-        and `room_count` is the number of rooms directly in that group.
+        and `room_count` is the number of rooms directly in that group that
+        the agent may see.
         """
         async with self.session_factory() as session:
             result = await session.execute(select(RoomGroup))
             groups = list(result.scalars().all())
-            count_rows = await session.execute(
-                select(Room.group_id, func.count(Room.id))
-                .where(Room.group_id.is_not(None))
-                .group_by(Room.group_id)
+            visible = await self.rooms_visible_to(
+                session, agent_id, include_archived=True
             )
-            counts = {gid: c for gid, c in count_rows.all() if gid is not None}
+        counts = Counter(r.group_id for r in visible if r.group_id is not None)
 
         by_id = {g.id: g for g in groups}
 
@@ -3837,9 +3941,18 @@ class AgentCore:
         (a path, bare name or id). Returns the new group's detail dict.
 
         Raises ValueError if `parent_group_name` is unknown or ambiguous, or if
-        the parent already has a group with this name.
+        the parent already has a group with this name, and PermissionError
+        unless the agent's owner administers the workspace: groups are shared
+        and have no owner of their own.
         """
         async with self.session_factory() as session:
+            _agent, _owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            if not owner_is_admin:
+                raise PermissionError(
+                    "Only a workspace admin's agent can create room groups."
+                )
             parent_group_id = await self._resolve_group_name(session, parent_group_name)
             group = await self.room_group_store.create(
                 session,
@@ -3866,7 +3979,7 @@ class AgentCore:
         self, agent_id: str, group_id: str
     ) -> dict[str, Any]:
         """Return one room group's detail: its fields, ancestry path, the rooms
-        directly in it, and its immediate child groups.
+        directly in it that the agent may see, and its immediate child groups.
 
         Raises ValueError if the group does not exist.
         """
@@ -3875,11 +3988,12 @@ class AgentCore:
             if group is None:
                 raise ValueError(f"Room group not found: {group_id}")
 
-            member_room_rows = await session.execute(
-                select(Room.id, Room.name).where(Room.group_id == group_id)
-            )
             member_rooms = [
-                {"id": rid, "name": rname} for rid, rname in member_room_rows.all()
+                {"id": r.id, "name": r.name}
+                for r in await self.rooms_visible_to(
+                    session, agent_id, include_archived=True
+                )
+                if r.group_id == group_id
             ]
 
             child_rows = await session.execute(
@@ -3942,6 +4056,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=agent,
+                visible_room_ids=await self._visible_room_ids(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4015,6 +4130,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,
+                visible_room_ids=await self._visible_room_ids(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,

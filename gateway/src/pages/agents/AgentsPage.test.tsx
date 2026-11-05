@@ -3,16 +3,11 @@ import type { GridColDef } from "@mui/x-data-grid";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary } from "../../data/api";
 import * as api from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
 import AgentsPage from "./AgentsPage";
 
 vi.mock("react-router", () => ({
   useNavigate: () => vi.fn(),
-}));
-
-vi.mock("../../data/AuthContext", () => ({
-  useAuth: vi.fn(),
 }));
 
 vi.mock("../../data/hooks", () => ({
@@ -57,6 +52,7 @@ const agent = {
   owner_name: "ada",
   created_at: "2026-10-01T00:00:00Z",
   parent_agent_id: null,
+  can_manage: true,
 } as unknown as AgentSummary;
 
 async function deleteTheAgent() {
@@ -68,10 +64,6 @@ async function deleteTheAgent() {
 
 describe("AgentsPage delete", () => {
   beforeEach(() => {
-    vi.mocked(useAuth).mockReturnValue({
-      user: { id: "u1" },
-      canAdminTenant: false,
-    } as unknown as ReturnType<typeof useAuth>);
     vi.mocked(hooks.useAgents).mockReturnValue({
       data: [agent],
       loading: false,

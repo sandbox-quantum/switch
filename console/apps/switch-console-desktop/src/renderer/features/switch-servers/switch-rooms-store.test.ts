@@ -35,7 +35,14 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: workspaces,
 }));
 vi.mock('./switch-servers-store', () => ({ switchServersStore: serversStore }));
-vi.mock('./local-server-store', () => ({ localServerStore: { isRunning: true } }));
+const localServer = vi.hoisted(() => ({
+  isRunning: true,
+  withoutPages: new Set<string>(),
+  lacksAdminPages(server: { id: string }) {
+    return this.withoutPages.has(server.id);
+  },
+}));
+vi.mock('./local-server-store', () => ({ localServerStore: localServer }));
 vi.mock('./remote-server-store', () => ({ remoteServerStore: { isRunning: () => true } }));
 
 const { SwitchRoomsStore } = await import('./switch-rooms-store');
@@ -696,5 +703,19 @@ describe('dashboard links', () => {
       'https://beta-gateway.example.com/agents/agent-1'
     );
     expect(store.gatewayAgentUrl('srv-unknown', 'agent-1')).toBeNull();
+  });
+
+  it('has no links into a server that serves no admin pages', async () => {
+    localServer.withoutPages.add('srv-a');
+    try {
+      const store = new SwitchRoomsStore();
+      await store.loadRoomNames();
+
+      expect(store.gatewayRoomUrl('room-a')).toBeNull();
+      expect(store.gatewayAgentUrl('srv-a', 'agent-1')).toBeNull();
+      expect(store.gatewayRoomUrl('room-b')).toBe('https://beta-gateway.example.com/rooms/room-b');
+    } finally {
+      localServer.withoutPages.clear();
+    }
   });
 });

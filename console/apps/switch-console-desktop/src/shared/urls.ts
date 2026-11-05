@@ -43,3 +43,6 @@ export const SWITCH_DOCS_ROOMS_URL = `${SWITCH_DOCS_BASE}/using/work-in-a-room`;
 
 export const SWITCH_CONSOLE_ISSUES_URL = `${SWITCH_CONSOLE_REPO_URL}/issues`;
 export const SWITCH_CONSOLE_ISSUES_NEW_URL = `${SWITCH_CONSOLE_REPO_URL}/issues/new/choose`;
+
+/** Switch Trust, the guardrails service, linked from the top bar for everyone. */
+export const SWITCH_TRUST_URL = 'https://app.switchagents.ai/';

@@ -30,18 +30,17 @@ interface Props {
   tenantId: string;
   selfId: string;
   canAdmin: boolean;
-  isOwner: boolean;
 }
 
-/** An admin may manage members and admins; only an owner may grant the owner
- * role or touch an existing owner. The server enforces the same, and refuses
- * the last owner — its message is shown as is.
+/** An admin may manage every member, other admins included. The server
+ * enforces the same, and refuses to demote or remove the last admin — its
+ * message is shown as is.
  *
  * An organization admin administers every workspace of the organization, so
  * their row here is read-only: the role comes from the organization, and is
  * changed on its page. One with no membership of their own here is listed
  * "via the organization". */
-export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: Props) {
+export default function MembersSection({ tenantId, selfId, canAdmin }: Props) {
   const load = useCallback(() => fetchMembers(tenantId), [tenantId]);
   const { data: members, error, loading, refetch } = useLoad(load);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -67,9 +66,8 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
   );
 
   const columns = useMemo<GridColDef<MemberRow>[]>(() => {
-    const mayManage = (row: MemberRow) =>
-      canAdmin && row.organization_role !== "org_admin" && (isOwner || row.role !== "owner");
-    const roles: TenantRole[] = isOwner ? ["owner", "admin", "member"] : ["admin", "member"];
+    const mayManage = (row: MemberRow) => canAdmin && row.organization_role !== "org_admin";
+    const roles: TenantRole[] = ["admin", "member"];
     return [
       {
         field: "name",
@@ -158,7 +156,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
           ) : null,
       },
     ];
-  }, [act, busy, canAdmin, isOwner, selfId, tenantId]);
+  }, [act, busy, canAdmin, selfId, tenantId]);
 
   return (
     <Stack spacing={1.5}>
