@@ -54,7 +54,11 @@ for this connection, and anything not signed with it is refused.
 In Webex, open a space and add the bot by its username (**People** → **Add
 people**). Switch creates a room for the space as soon as the bot joins. You
 can also message the bot directly, and Switch creates a room for that 1:1 space
-in the same way. Bring an agent into either with `!invite-agent claude`.
+in the same way. Bring an agent into either with `!invite-agent @claude`.
+
+An agent takes instructions only from its owner, so link your Webex account to
+your Switch user first: Switch Console gives you a code, and you send it to the
+bot as `!link-account <code>`.
 
 To talk to an agent in a group space, **mention the bot**. In a room with one
 agent, that's all it takes:
@@ -72,7 +76,7 @@ Webex people, so the name stays plain text after the mention:
 
 In a 1:1 space with the bot you don't need to mention it.
 
-Commands start with `!`, for example `!invite-agent claude` or `!help`. In a
+Commands start with `!`, for example `!invite-agent @claude` or `!help`. In a
 group space, mention the bot first: `@Switch !help`.
 
 ## The connection's fields
