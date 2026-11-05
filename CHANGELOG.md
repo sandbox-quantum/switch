@@ -633,20 +633,26 @@ version of their own to them without also giving them a release of their own.
   the agent, as documented, though the editor said it let in nobody:
   choosing Restricted now starts with an owner-only rule, the last rule
   cannot be removed, and a policy saved with no rules shows as Open.
-- **The dashboard opens and offers only what the server would allow.** A
-  page someone may not open no longer loads into a column of refusals: typing
-  its address says why instead, or that the server does not run it, and a
-  member can no longer open the operator's Users page. Every action follows
-  the server's own answer for that thing rather than the dashboard's guess
-  from someone's role or ownership. An organization admin was offered Delete workspace in a workspace they are
-  not an admin member of, and was refused. Anyone may edit a publicly
-  writable reference, document or package, but only its owner and admins
-  were offered the fields. An agent that cannot be handed over now says why
-  beside a disabled Transfer. A bridged room's description was locked,
-  though nothing sets it from the channel; whoever may write to the room can
-  now edit it, as on any other room. Agent management, connectors and organization connector apps are read
-  from the server's feature flags, not guessed from a missing page; if the
-  flags cannot be read, the dashboard says so rather than hiding pages.
+- **A dashboard page someone may not open says so instead of loading.**
+  Typing the address of a page they may not open, or one the server does
+  not run, loaded it into a column of refusals; it now says why. A member
+  could open the operator's Users page; it is refused now.
+- **The dashboard offers each action only where the server would allow it.**
+  Every action follows the server's own answer for that thing, rather than
+  the dashboard's guess from someone's role or ownership. An organization
+  admin was offered Delete workspace in a workspace they are not an admin
+  member of, and was refused. Anyone may edit a publicly writable
+  reference, document or package, but only its owner and admins were
+  offered the fields. An agent that cannot be handed over now says why
+  beside a disabled Transfer.
+- **A bridged room's description can be edited.** It was locked, though
+  nothing sets it from the channel; whoever may write to the room can now
+  edit it, as on any other room.
+- **The dashboard reads the server's feature flags instead of guessing.**
+  Agent management, connectors and organization connector apps were taken
+  to be off when a page answered "not found"; they are now read from the
+  server's flags, and if those cannot be read the dashboard says so rather
+  than hiding pages.
 - **A file that names nobody now follows the conversation like text does.**
   A post with one or more files and no mention never reached the room's
   assigned agent, the agent whose thread it was posted in, or the agent the

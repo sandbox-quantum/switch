@@ -128,7 +128,7 @@ describe("rules", () => {
       allowed: false,
       reason: "not_enabled",
       flag: "agent_management",
-      message: "Agent management isn't turned on on this server.",
+      message: "Agent management isn't turned on for this server.",
     });
     const on = capabilitiesOf(session(), tenant(false), { ...ALL_OFF, agent_management: true });
     expect(agentManagement(on).allowed).toBe(true);

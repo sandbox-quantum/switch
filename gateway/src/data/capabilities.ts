@@ -91,7 +91,7 @@ function feature(flag: FeatureFlagKey, what: string): Rule {
   return (caps) =>
     caps.features[flag]
       ? ALLOWED
-      : { allowed: false, reason: "not_enabled", flag, message: `${what} turned on on this server.` };
+      : { allowed: false, reason: "not_enabled", flag, message: `${what} turned on for this server.` };
 }
 
 export const agentManagement = feature(AGENT_MANAGEMENT, "Agent management isn't");

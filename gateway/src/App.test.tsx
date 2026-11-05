@@ -328,7 +328,7 @@ describe("today's layout", () => {
     mockFetch(signedInAs("operator"));
     renderAt("/machines");
     expect(await screen.findByText("Not turned on")).toBeTruthy();
-    expect(screen.getByText("Agent management isn't turned on on this server.")).toBeTruthy();
+    expect(screen.getByText("Agent management isn't turned on for this server.")).toBeTruthy();
     expect(
       screen.getByText("An operator turns it on by adding agent_management to FEATURE_FLAGS_ENABLED."),
     ).toBeTruthy();

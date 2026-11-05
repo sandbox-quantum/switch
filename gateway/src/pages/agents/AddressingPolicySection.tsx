@@ -312,8 +312,8 @@ export default function AddressingPolicySection({
 
       {savedEmpty && !restricted && (
         <Alert severity="info">
-          This agent&apos;s policy has no rules, so anyone can address it. Saving records it
-          as Open.
+          This agent&apos;s policy has no rules, so anyone can address it.
+          {canEdit && " Saving records it as Open."}
         </Alert>
       )}
 
