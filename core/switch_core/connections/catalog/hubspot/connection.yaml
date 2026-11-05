@@ -22,6 +22,11 @@ auth:
       Remove the Switch connected app from HubSpot account settings. Until
       then, Switch stops using the sign-in but HubSpot still recognizes it.
   identity:
+    # Switch calls this tool only if the server lists it, marks it read-only
+    # (readOnlyHint) and it takes no required arguments. Otherwise the connect
+    # fails with a fixed reason: tool_not_found, not_read_only or
+    # needs_arguments. Whether HubSpot advertises readOnlyHint on
+    # get_user_details is not live-verified.
     # Confirm these unpublished result paths with a live account before merge.
     mcp_tool: get_user_details
     account_id: user.id

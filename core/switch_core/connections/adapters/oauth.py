@@ -51,6 +51,30 @@ _IDENTITY_DIAGNOSTICS: ContextVar[bool] = ContextVar(
     "mcp_identity_diagnostics", default=False
 )
 
+# Why a vendor's identity tool was refused. A small fixed set: the message
+# carries only one of these codes, never vendor-supplied text or a response
+# body.
+_IdentityRejection = Literal["tool_not_found", "not_read_only", "needs_arguments"]
+
+
+class _IdentityToolRejected(Exception):
+    def __init__(self, reason: _IdentityRejection) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _check_identity_tool(tools: list[Any], name: str) -> None:
+    """Refuse an identity tool that is missing, may write, or needs arguments."""
+    tool = next((t for t in tools if t.name == name), None)
+    if tool is None:
+        raise _IdentityToolRejected("tool_not_found")
+    annotations = getattr(tool, "annotations", None)
+    if annotations is None or annotations.readOnlyHint is not True:
+        raise _IdentityToolRejected("not_read_only")
+    schema = tool.inputSchema or {}
+    if schema.get("required"):
+        raise _IdentityToolRejected("needs_arguments")
+
 
 class _IdentityDiagnosticFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -564,6 +588,7 @@ class OAuthAdapter:
     async def _mcp_identity(self, access_token: str) -> dict[str, Any]:
         if self._mcp_url is None or self._identity.mcp_tool is None:
             raise ServiceAdapterError(f"{self._name} has no MCP identity source.")
+        tool_name = self._identity.mcp_tool
         diagnostics = _IDENTITY_DIAGNOSTICS.set(True)
         try:
             async with asyncio.timeout(15):
@@ -573,7 +598,8 @@ class OAuthAdapter:
                     httpx_client_factory=_mcp_http_client,
                 )
                 async with Client(transport, timeout=15, init_timeout=15) as client:
-                    result = await client.call_tool_mcp(self._identity.mcp_tool, {})
+                    _check_identity_tool(await client.list_tools(), tool_name)
+                    result = await client.call_tool_mcp(tool_name, {})
             if (
                 result.isError
                 or len(result.model_dump_json().encode()) > MAX_METADATA_BYTES
@@ -588,6 +614,11 @@ class OAuthAdapter:
             if not isinstance(body, dict):
                 raise ValueError("identity result is not an object")
             return body
+        except _IdentityToolRejected as rejected:
+            raise ServiceAdapterError(
+                f"{self._name} could not identify the account through MCP "
+                f"({rejected.reason})."
+            ) from None
         except Exception:
             raise ServiceAdapterError(
                 f"{self._name} could not identify the account through MCP."
