@@ -922,7 +922,19 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ . | quote }}
 {{- end }}
 {{- if .Values.decision.enabled }}
+{{- if .Values.switchCore.decision.apiKey.existingSecret }}
+{{- fail "switchCore.decision.apiKey.existingSecret is the key for a decision service run elsewhere (switchCore.decision.endpointUrl); with decision.enabled the chart sends its own token. Clear it, or use decision.token.existingSecret." }}
+{{- end }}
 {{ include "switch.decisionTokenEnv" (dict "root" . "name" "DECISION_API_KEY") }}
+{{- else if .Values.switchCore.decision.apiKey.existingSecret }}
+{{- if not .Values.switchCore.decision.endpointUrl }}
+{{- fail "switchCore.decision.apiKey.existingSecret is set but switchCore.decision.endpointUrl is not: there is no endpoint to send the key to." }}
+{{- end }}
+- name: DECISION_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.switchCore.decision.apiKey.existingSecret }}
+      key: {{ .Values.switchCore.decision.apiKey.existingSecretKey }}
 {{- end }}
 {{- if include "switch.decisionBedrockEnabled" . }}
 - name: DECISION_BEDROCK_ENABLED
