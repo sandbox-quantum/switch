@@ -156,6 +156,12 @@ export async function readCloudFileRange(
       return { done: true, total: range.total };
     }
     if (!response.ok) throw await refusal(response);
+    // An empty file: Core answers 200 with no body and no range to name.
+    if (response.status === 200 && offset === 0 && !range) {
+      const body = new Uint8Array(await response.arrayBuffer());
+      if (body.byteLength === 0) return { done: true, total: 0 };
+      throw new CloudFilesError('bad_reply', 200);
+    }
     if (response.status !== 206 || !range || range.start !== offset) {
       await response.body?.cancel();
       throw new CloudFilesError('bad_reply', response.status);

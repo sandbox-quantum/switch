@@ -197,7 +197,9 @@ describe('reading a file', () => {
     expect(await readCloudFileRange(SERVER, 'a.txt', 5)).toEqual({ done: true, total: 5 });
   });
 
-  it('an empty file reads as nothing', async () => {
+  it('an empty file (Core: 200, no body, no range) reads as nothing', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+    expect((await readCloudFile(SERVER, 'empty.txt', 1024)).byteLength).toBe(0);
     fetchMock.mockResolvedValueOnce(pastEnd(0));
     expect((await readCloudFile(SERVER, 'empty.txt', 1024)).byteLength).toBe(0);
   });
