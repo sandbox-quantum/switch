@@ -25,6 +25,7 @@ import { embeddedControllerService } from './core/embedded-controller/embedded-c
 import { featureFlagsService } from './core/feature-flags/feature-flags';
 import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
+import { deleteUnusedLocations } from './core/locations/store';
 import { localServerService } from './core/managed-switch-server/local-server-service';
 import { remoteServerService } from './core/managed-switch-server/remote-server-service';
 import { serverVersionChoice } from './core/managed-switch-server/server-version';
@@ -40,6 +41,7 @@ import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { retireDashboardFallbacks } from './core/switch-servers/server-address';
+import { startActivationTracking } from './core/telemetry/activation';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
@@ -134,6 +136,11 @@ void app.whenReady().then(async () => {
     await initializeDatabase();
     searchService.initialize();
     try {
+      await deleteUnusedLocations();
+    } catch (e: unknown) {
+      log.warn('locations: failed to delete locations no agent uses', { error: e });
+    }
+    try {
       viewStateService.pruneOrphans();
     } catch (e: unknown) {
       log.warn('view-state: failed to prune orphaned entries', { error: e });
@@ -160,6 +167,7 @@ void app.whenReady().then(async () => {
   registerTelemetryListeners();
   telemetryService.setInternalSource(currentInternalFlag);
   void reportLaunch(readThisLaunch);
+  startActivationTracking();
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below

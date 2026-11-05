@@ -5,7 +5,11 @@ import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
-import type { AgentBridgeEvent, MessagePayload, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
+import type {
+  AgentBridgeEvent,
+  MessagePayload,
+  SwitchEventStreamDeps,
+} from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   MAX_HOST_RESTARTS,

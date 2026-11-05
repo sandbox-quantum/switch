@@ -80,6 +80,11 @@ const {
   fetchJoinableWorkspaces,
   fetchBridgeTeams,
   fetchMessagingAppInstalls,
+  fetchMyIdentities,
+  fetchMyPendingIdentities,
+  fetchUnconfirmedLinks,
+  requireLinkConfirmation,
+  searchBridgeDirectory,
   fetchTeamsPackage,
   joinWorkspaceByDomain,
   fetchJoinDomains,
@@ -117,6 +122,7 @@ const {
   updateManagementController,
   fetchManagementControllers,
   giveMachineLogin,
+  recheckMachineProvider,
   fetchMachineOperation,
   fetchAgentManagementAccess,
   updateCanManageAgents,
@@ -642,7 +648,15 @@ describe('room creation', () => {
       }) as never
     );
 
-    await createRoom(SERVER, { name: 'design', description: 'd', bridgeId: null, agentIds: [] });
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: null,
+      agentIds: [],
+      channel: null,
+      groupId: null,
+      access: null,
+    });
 
     expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({ bridge_id: null, internal_only: true });
   });
@@ -667,6 +681,9 @@ describe('room creation', () => {
       description: 'd',
       bridgeId: 'b1',
       agentIds: ['a1'],
+      channel: null,
+      groupId: null,
+      access: null,
     });
 
     const body = bodyOf(fetchMock.mock.calls[0]);
@@ -679,6 +696,69 @@ describe('room creation', () => {
     });
     expect(body).not.toHaveProperty('internal_only');
     expect(room.ownerId).toBe('u1');
+  });
+
+  it('asks for a private channel, a group and an access level when chosen', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_private',
+        agent_count: 0,
+        bridge_display_name: 'Slack',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: 'b1',
+      agentIds: [],
+      channel: { kind: 'new', private: true },
+      groupId: 'g1',
+      access: 'read_only',
+    });
+
+    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({
+      channel_type: 'channel_private',
+      group_id: 'g1',
+      read_visibility: 'public',
+      write_visibility: 'private',
+    });
+  });
+
+  it('binds an existing channel by id and leaves its type and access to the server', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_public',
+        agent_count: 0,
+        bridge_display_name: 'Slack',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: 'b1',
+      agentIds: [],
+      channel: { kind: 'existing', externalChannelId: 'C123' },
+      groupId: null,
+      access: null,
+    });
+
+    const body = bodyOf(fetchMock.mock.calls[0]);
+    expect(body).toMatchObject({ external_channel_id: 'C123' });
+    expect(body).not.toHaveProperty('channel_type');
+    expect(body).not.toHaveProperty('read_visibility');
+    expect(body).not.toHaveProperty('group_id');
   });
 
   it('sends blank instructions as null rather than an empty string', async () => {
@@ -701,6 +781,9 @@ describe('room creation', () => {
       instructions: '   ',
       bridgeId: 'b1',
       agentIds: [],
+      channel: null,
+      groupId: null,
+      access: null,
     });
 
     expect(bodyOf(fetchMock.mock.calls[0]).instructions).toBeNull();
@@ -710,7 +793,15 @@ describe('room creation', () => {
     fetchMock.mockResolvedValue(errorResponse(400, '{"detail":"Bridge not running: b1"}') as never);
 
     await expect(
-      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+      createRoom(SERVER, {
+        name: 'x',
+        description: 'y',
+        bridgeId: 'b1',
+        agentIds: [],
+        channel: null,
+        groupId: null,
+        access: null,
+      })
     ).rejects.toMatchObject({ status: 400, detail: 'Bridge not running: b1' });
   });
 
@@ -733,7 +824,15 @@ describe('room creation', () => {
     fetchMock.mockResolvedValue(errorResponse(502, '<html>bad gateway</html>') as never);
 
     await expect(
-      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+      createRoom(SERVER, {
+        name: 'x',
+        description: 'y',
+        bridgeId: 'b1',
+        agentIds: [],
+        channel: null,
+        groupId: null,
+        access: null,
+      })
     ).rejects.toMatchObject({ status: 502, detail: undefined });
   });
 });
@@ -2340,6 +2439,170 @@ describe('messaging-app installs', () => {
   });
 });
 
+/**
+ * Links have to be confirmed with a code posted from the account (CHOO-3881).
+ * A server from before that sends none of the new fields, and every link it
+ * reports counts — so a missing `verified` reads as confirmed and a missing
+ * pending route as nothing pending.
+ */
+describe('linked messaging accounts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const LINKED = {
+    id: 'eu-1',
+    bridge_id: 'b1',
+    bridge_display_name: 'Acme',
+    bridge_type: 'slack',
+    external_user_id: 'U1',
+    external_username: 'ada',
+  };
+
+  it('reads whether each link is confirmed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([{ ...LINKED, verified: false }]) as never);
+
+    await expect(fetchMyIdentities(SERVER)).resolves.toMatchObject([{ verified: false }]);
+  });
+
+  it('reads a link from a server that predates confirming as confirmed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([LINKED]) as never);
+
+    await expect(fetchMyIdentities(SERVER)).resolves.toMatchObject([{ verified: true }]);
+  });
+
+  it('lists the links waiting for a code', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        { ...LINKED, requested_by_name: 'Grace', code_expires_at: '2026-10-27T12:30:00Z' },
+      ]) as never
+    );
+
+    await expect(fetchMyPendingIdentities(SERVER)).resolves.toEqual([
+      {
+        id: 'eu-1',
+        bridgeId: 'b1',
+        bridgeDisplayName: 'Acme',
+        bridgeType: 'slack',
+        externalUserId: 'U1',
+        externalUsername: 'ada',
+        requestedByName: 'Grace',
+        codeExpiresAt: '2026-10-27T12:30:00Z',
+      },
+    ]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/auth/me/identities/pending');
+  });
+
+  it('reads a server without the pending route as having none pending', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchMyPendingIdentities(SERVER)).resolves.toEqual([]);
+  });
+
+  it('raises on any other failure to list them', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, '{"detail":"boom"}') as never);
+
+    await expect(fetchMyPendingIdentities(SERVER)).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('reads who has confirmed a directory entry, old servers as confirmed', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        users: [
+          {
+            external_user_id: 'U1',
+            username: 'ada',
+            display_name: 'Ada',
+            claimed_by: [
+              { user_id: 'u1', user_name: 'Ada', verified: false },
+              { user_id: 'u2', user_name: 'Grace' },
+            ],
+          },
+        ],
+      }) as never
+    );
+
+    const { users } = await searchBridgeDirectory(SERVER, 'b1', 'ada');
+
+    expect(users[0]!.claimedBy).toEqual([
+      { userId: 'u1', userName: 'Ada', verified: false },
+      { userId: 'u2', userName: 'Grace', verified: true },
+    ]);
+  });
+});
+
+/**
+ * An admin can stop trusting a messaging app's links made before links had to
+ * be confirmed (CHOO-3881). A server from before that has neither route.
+ */
+describe('older links an admin can require confirming', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists them for one app', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          id: 'eu-1',
+          external_user_id: 'U1',
+          external_username: 'ada',
+          user_id: 'u1',
+          user_name: 'Ada',
+        },
+      ]) as never
+    );
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).resolves.toEqual([
+      { id: 'eu-1', externalUserId: 'U1', externalUsername: 'ada', userId: 'u1', userName: 'Ada' },
+    ]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/identities/unconfirmed');
+  });
+
+  it('reads a server without the route as having none', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).resolves.toEqual([]);
+  });
+
+  it('raises when the caller may not see them', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admins only"}') as never);
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('requires confirming the links named, and says how many moved', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ moved: 1 }) as never);
+
+    await expect(
+      requireLinkConfirmation(SERVER, 'b1', [{ id: 'eu-1', userId: 'u-1' }])
+    ).resolves.toBe(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe(
+      'https://switch.example.com/gateway/collaborations/b1/identities/require-confirmation'
+    );
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ links: [{ id: 'eu-1', user_id: 'u-1' }] });
+  });
+});
+
 describe('organizations', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -2355,7 +2618,7 @@ describe('organizations', () => {
     id: 't1',
     slug: 'acme',
     name: 'Acme',
-    role: 'owner',
+    role: 'admin',
     organization_id: 'o1',
     organization_role: 'org_admin',
   };
@@ -2363,7 +2626,7 @@ describe('organizations', () => {
     id: 't1',
     slug: 'acme',
     name: 'Acme',
-    role: 'owner',
+    role: 'admin',
     organizationId: 'o1',
     organizationRole: 'org_admin',
   };
@@ -2442,7 +2705,7 @@ describe('organizations', () => {
       id: 't1',
       slug: 'acme',
       name: 'Acme',
-      role: 'owner',
+      role: 'admin',
       organizationId: null,
       organizationRole: null,
     });
@@ -3139,6 +3402,100 @@ describe('agent management calls', () => {
     expect(JSON.parse(String(init.body))).toEqual({ name: 'laptop', description: null });
   });
 
+  it('reads what a machine last reported, and tolerates a report missing parts', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          id: 'controller-1',
+          name: 'box',
+          description: null,
+          kind: 'daemon',
+          state: 'offline',
+          last_seen_at: '2026-10-01T10:30:00Z',
+          revoked_at: null,
+          platform: { os: 'linux', arch: 'x64', os_version: '6.8' },
+          version: '1.0.0',
+          release: { wanted: '1.1.0', running: '1.0.0', current: false },
+          connection: {
+            connected_at: '2026-10-01T10:00:00Z',
+            disconnected_at: '2026-10-01T11:00:00Z',
+            disconnect_reason: 'socket_closed',
+          },
+          created_at: '2026-09-01T00:00:00Z',
+          status: {
+            observed_at: '2026-10-01T10:30:00Z',
+            controller: { version: '1.0.0', updated_by: 'self' },
+            machine: { disk_free_bytes: 10, disk_total_bytes: 100, sessions_running: 1 },
+            update: { target: '1.1.0', state: 'waiting_idle' },
+            providers: [
+              {
+                provider: 'claude',
+                installed: true,
+                auth: 'ok',
+                auth_source: 'sealed',
+                version: '2.1.0',
+                checked_at: '2026-10-01T10:29:00Z',
+              },
+            ],
+            agents: [
+              { agent_id: 'a1', process: 'running', attached: true, sessions: { active: 2 } },
+              { process: 'running' },
+            ],
+          },
+        },
+        {
+          id: 'controller-2',
+          name: 'new',
+          description: null,
+          kind: 'daemon',
+          state: 'unknown',
+          last_seen_at: null,
+          revoked_at: null,
+        },
+      ])
+    );
+    const [reported, fresh] = await fetchManagementControllers(SERVER);
+    expect(reported?.platform).toEqual({ os: 'linux', arch: 'x64', osVersion: '6.8' });
+    expect(reported?.connection?.disconnectReason).toBe('socket_closed');
+    expect(reported?.release?.current).toBe(false);
+    expect(reported?.report).toEqual({
+      observedAt: '2026-10-01T10:30:00Z',
+      updatedBy: 'self',
+      update: { target: '1.1.0', state: 'waiting_idle', problem: null },
+      resources: {
+        diskFreeBytes: 10,
+        diskTotalBytes: 100,
+        memFreeBytes: 0,
+        memTotalBytes: 0,
+        sessionsRunning: 1,
+        sessionsMax: 0,
+      },
+      providerChecks: [
+        {
+          provider: 'claude',
+          version: '2.1.0',
+          authSource: 'sealed',
+          checkedAt: '2026-10-01T10:29:00Z',
+        },
+      ],
+      agents: [
+        {
+          agentId: 'a1',
+          process: 'running',
+          attached: true,
+          activeSessions: 2,
+          restarts10m: 0,
+          since: null,
+          reason: null,
+          detail: null,
+        },
+      ],
+    });
+    expect(fresh?.report).toBeNull();
+    expect(fresh?.connection).toBeNull();
+    expect(fresh?.version).toBeNull();
+  });
+
   it('reads the key a machine takes logins sealed to, and gives it one', async () => {
     fetchMock.mockImplementation(async () =>
       respond(200, [
@@ -3222,6 +3579,23 @@ describe('agent management calls', () => {
     await expect(fetchMachineOperation(SERVER, 'controller-1', 'op-1')).rejects.toThrow(
       /not a list/
     );
+  });
+
+  it('asks a machine to recheck one provider as a provider.recheck operation', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(201, { id: 'op-3', kind: 'provider.recheck', state: 'pending' })
+    );
+    expect(await recheckMachineProvider(SERVER, 'controller-1', 'codex')).toEqual({
+      operationId: 'op-3',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/operations');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({
+      controller_id: 'controller-1',
+      kind: 'provider.recheck',
+      params: { provider: 'codex' },
+    });
   });
 
   it("reads each machine's providers from its last status report, and invents none", async () => {
@@ -3686,5 +4060,31 @@ describe('fetchAgentIconChoices', () => {
       choices: ['https://example.com/a.png'],
       thirdPartyAvatarsEnabled: true,
     });
+  });
+});
+
+describe('fetchTenants', () => {
+  beforeEach(() => {
+    getSessionCookie.mockResolvedValue('switch_session=fresh');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads a workspace owner on a server from before the merge as an admin', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse([
+          { id: 't1', slug: 'acme', name: 'Acme', role: 'owner' },
+          { id: 't2', slug: 'beta', name: 'Beta', role: 'member' },
+        ])
+      )
+    );
+
+    const tenants = await fetchTenants(SERVER);
+
+    expect(tenants.map((t) => t.role)).toEqual(['admin', 'member']);
   });
 });

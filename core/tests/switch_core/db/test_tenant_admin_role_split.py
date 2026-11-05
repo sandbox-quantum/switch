@@ -2,13 +2,13 @@
 
 Before this change, `authz.Principal.is_admin` came from `users.role ==
 "admin"` alone — a global bit that `tenant_members.role` never fed into. So a
-workspace's `owner` membership row granted nothing: every admin-gated route
+workspace's `admin` membership row granted nothing: every admin-gated route
 checked the global bit, never the caller's role in the tenant the request is
 bound to.
 
 These tests pin the behavioural claims that split makes true:
 
-- a workspace `owner` can administer resources in *their own* tenant;
+- a workspace `admin` can administer resources in *their own* tenant;
 - the same person has no such power in a tenant they only hold a `member`
   row in — `UserStore.administers` must read the *bound* tenant's row, not
   any row belonging to the caller;
@@ -29,11 +29,14 @@ an actual resource decision is exercised end to end, not just the boolean.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import Principal, can
 from switch_core.db.models import TENANT_ZERO_ID, Room, Tenant, TenantMember, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.user_store import UserStore
 from switch_core.tenant_context import no_tenant, tenant_scope
 
@@ -64,19 +67,19 @@ async def _membership(
 
 
 class TestUserStoreAdministers:
-    async def test_owner_administers_their_own_tenant(
+    async def test_admin_administers_their_own_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         store = UserStore()
         async with session_factory() as session:
-            owner = await _make_user(session, "owner-of-zero")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "owner")
+            admin = await _make_user(session, "admin-of-zero")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
             await session.commit()
 
             # Ambient tenant is TENANT_ZERO_ID (see conftest.session_factory).
-            assert await store.administers(session, owner) is True
+            assert await store.administers(session, admin) is True
 
-    async def test_owner_has_no_power_in_a_tenant_they_only_belong_to_as_member(
+    async def test_admin_has_no_power_in_a_tenant_they_only_belong_to_as_member(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         # Two sessions, one per tenant: `TenantCheckedSession` stamps a
@@ -88,16 +91,16 @@ class TestUserStoreAdministers:
         store = UserStore()
         async with session_factory() as session:
             tenant_b = await _make_tenant(session, TENANT_B)
-            owner = await _make_user(session, "cross-tenant-owner")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "owner")
-            await _membership(session, tenant_b.id, owner.id, "member")
+            admin = await _make_user(session, "cross-tenant-admin")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
+            await _membership(session, tenant_b.id, admin.id, "member")
             await session.commit()
 
-            assert await store.administers(session, owner) is True
+            assert await store.administers(session, admin) is True
 
         with tenant_scope(tenant_b.id):
             async with session_factory() as session_b:
-                assert await store.administers(session_b, owner) is False
+                assert await store.administers(session_b, admin) is False
 
     async def test_admin_membership_role_also_administers(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -156,17 +159,17 @@ class TestUserStoreAdministers:
         # Answering here would mean answering a question that was not asked:
         # "may this person administer" has no deployment-wide form. The
         # tempting fallback — the operator bit alone — silently strips a
-        # workspace owner of their role, and the 403 that follows names no
+        # workspace admin of their role, and the 403 that follows names no
         # cause. Same call as the one #442 made for the bridge identities.
         store = UserStore()
         async with session_factory() as session:
-            owner = await _make_user(session, "unbound-owner")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "owner")
+            admin = await _make_user(session, "unbound-admin")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
             await session.commit()
 
             with no_tenant():
                 with pytest.raises(RuntimeError, match="requires a bound tenant"):
-                    await store.administers(session, owner)
+                    await store.administers(session, admin)
 
     async def test_unbound_is_refused_for_an_operator_too(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -190,14 +193,14 @@ class TestRoomAuthzThroughTenantRole:
     `Room` neither party personally owns, built from `UserStore.administers`
     the way `gateway/rooms.py` and `gateway/auth.py` build it."""
 
-    async def test_workspace_owner_can_delete_a_room_they_do_not_personally_own(
+    async def test_workspace_admin_can_delete_a_room_they_do_not_personally_own(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         store = UserStore()
         async with session_factory() as session:
-            owner = await _make_user(session, "room-admin-owner")
+            admin = await _make_user(session, "room-admin")
             someone_else = await _make_user(session, "room-creator")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "owner")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
             room = Room(
                 tenant_id=TENANT_ZERO_ID,
                 transport_room_id="!private-room:test",
@@ -210,19 +213,19 @@ class TestRoomAuthzThroughTenantRole:
             session.add(room)
             await session.commit()
 
-            principal = Principal(owner.id, await store.administers(session, owner))
+            principal = Principal(admin.id, await store.administers(session, admin))
             assert can(principal, "delete", room)
 
-    async def test_workspace_owner_cannot_delete_the_same_room_from_another_tenant(
+    async def test_workspace_admin_cannot_delete_the_same_room_from_another_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         store = UserStore()
         async with session_factory() as session:
             tenant_b = await _make_tenant(session, TENANT_B)
-            owner = await _make_user(session, "room-admin-owner-2")
+            admin = await _make_user(session, "room-admin-2")
             someone_else = await _make_user(session, "room-creator-2")
-            await _membership(session, TENANT_ZERO_ID, owner.id, "owner")
-            await _membership(session, tenant_b.id, owner.id, "member")
+            await _membership(session, TENANT_ZERO_ID, admin.id, "admin")
+            await _membership(session, tenant_b.id, admin.id, "member")
             room = Room(
                 tenant_id=TENANT_ZERO_ID,
                 transport_room_id="!private-room-2:test",
@@ -238,7 +241,7 @@ class TestRoomAuthzThroughTenantRole:
         with tenant_scope(tenant_b.id):
             async with session_factory() as session_b:
                 principal = Principal(
-                    owner.id, await store.administers(session_b, owner)
+                    admin.id, await store.administers(session_b, admin)
                 )
         assert not can(principal, "delete", room)
 
@@ -264,3 +267,37 @@ class TestRoomAuthzThroughTenantRole:
 
             principal = Principal(member.id, await store.administers(session, member))
             assert not can(principal, "delete", room)
+
+
+class TestLockAdmins:
+    """`lock_admins` is what keeps the last-admin guard true when two admins
+    act at once."""
+
+    async def test_a_second_count_waits_for_the_first_demotion(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            ada = await _make_user(session, "lock-ada")
+            bob = await _make_user(session, "lock-bob")
+            await _membership(session, TENANT_ZERO_ID, ada.id, "admin")
+            await _membership(session, TENANT_ZERO_ID, bob.id, "admin")
+            await session.commit()
+
+        store = UserStore()
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as first:
+            assert await store.lock_admins(first) == 2
+            membership = await first.get(TenantMember, (TENANT_ZERO_ID, bob.id))
+            assert membership is not None
+            membership.role = "member"
+            await first.flush()
+
+            async def second_count() -> int:
+                async with tenant_session(session_factory, TENANT_ZERO_ID) as second:
+                    return await store.lock_admins(second)
+
+            waiting = asyncio.create_task(second_count())
+            await asyncio.sleep(0.3)
+            assert not waiting.done()
+            await first.commit()
+
+        assert await asyncio.wait_for(waiting, 5) == 1

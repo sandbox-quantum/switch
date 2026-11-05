@@ -105,7 +105,7 @@ does, and there is no polling tool to call.
 
 - **Messages addressed to you** — `[Switch] <sender> addressed you in room
   <room> (message_id …[, thread_id …]):`, the sender named with their role in
-  the room's workspace when Switch knows it (`ada (workspace owner)`), read as
+  the room's workspace when Switch knows it (`ada (workspace admin)`), read as
   the message arrived, then the sender's own text between a
   matching `BEGIN SWITCH MESSAGE <nonce>` / `END SWITCH MESSAGE <nonce>` pair,
   then a parenthetical naming any downloaded attachments. Everything between
@@ -312,9 +312,10 @@ wrote.
 ## Questions and approvals
 
 Native question forms can be answered in the Console or from the room. The
-room presents one question at a time; each addressed reply answers that
-question. A form with several questions stays open until all questions have
-answers. Wait for the tool to return before acting on the answers.
+room shows the whole form as one card. A form of one single-choice question
+gets buttons on Slack and Discord; any other form is answered by typing the
+card's handle and an answer to every question in one reply, as the card shows.
+Wait for the tool to return before acting on the answers.
 
 Approvals reach the room on every host. Native question forms do not: Claude
 Code, OpenCode and Antigravity have them, while Codex and Cursor sessions
@@ -409,7 +410,8 @@ them. Each entry carries `target_room_id` (pass it to `connect_to_room`),
 rooms are related, and an `access` field — `"member"` means you may connect,
 `"not_member"` means the call will fail and you should ask the room's operator
 (the human user, typically) to add you rather than trying; such an entry also
-carries an `access_note` saying so.
+carries an `access_note` saying so. A link to a room you may not see (one
+your owner cannot read and you are not in) is left out.
 
 They are metadata, not access. Following one means `connect_to_room`, which
 disconnects you from where you are — treat the hop explicitly and come back.
@@ -424,9 +426,10 @@ none of it is needed to take part in a conversation.
 
 ### Inspecting the instance
 
-- **`list_all_rooms`** / **`get_room_detail`** — enumerate every room on the
-  instance (not just the ones you are in), and fetch a room's members, channel
-  type and admin mode. `list_all_rooms` answers a page at a time,
+- **`list_all_rooms`** / **`get_room_detail`** — enumerate the rooms on the
+  instance you may see (not just the ones you are in: every room your owner
+  can read, plus your own), and fetch a room's members, channel type and
+  admin mode. `list_all_rooms` answers a page at a time,
   `{rooms, next_cursor}`: pass `next_cursor` back as `cursor` for the next page
   (null on the last), `limit` for its size (default 100, at most 500), and
   `name_contains` to match a name in any case. `get_room_detail` also returns the room's assumable
@@ -439,7 +442,8 @@ none of it is needed to take part in a conversation.
   name.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
-  memberships, live sessions and child subagents. Readable by any agent.
+  memberships, live sessions and child subagents. Readable by any agent; a
+  room your owner cannot read is not named in it.
   `addressing` says who may address it: on yourself, the policy and its rules
   with the people, agents and rooms they name; on another agent, the policy
   alone.
@@ -494,6 +498,15 @@ none of it is needed to take part in a conversation.
   are commands for people: when someone asks you to rename or delete an agent
   in chat, point them at the command, or use `update_agent_detail` yourself
   for a rename once they confirm.
+
+  A person links their chat account to their Switch user in Switch Console,
+  which shows them a one-time code. The link counts only once they post
+  `!link-account CODE` from that chat account; Console says exactly how on each
+  platform (on Teams they @mention the Switch app with `link-account CODE`, on
+  Telegram they send `/link_account CODE`). `!unlink-account` lists the
+  Switch users a chat account is linked to, and `!unlink-account NAME` removes
+  one; both act only on the account that sends them. Never ask for a code or
+  post one yourself: it only works from the account it was issued for.
 - **`request_agent_deletion`** — ask for another of your owner's agents to be
   deleted. It deletes nothing: Switch posts the request in your connected
   room, and only the agent's owner or a workspace admin can carry it out by
@@ -520,12 +533,12 @@ carrying a display name addresses no one.
   so read it before offering: the chat is made on the platform, the Switch app
   added to it, and the room adopted from that.
 - **`create_room`** — provision a room. Required: `name`, `description`,
-  `agent_names`. Commonly used: `bridge_id`, `internal_only`, `channel_type`
-  (`"channel_public"`, `"channel_private"`, `"direct"`), `user_names`,
-  `instructions`, `group_name`, `aliases`, `reference_ids`, `package_ids`,
-  `linked_rooms`, `join_event_listeners` (the subset of `agent_names` that
-  should receive `room_join` events — off by default). You are not a member
-  unless your own name is in `agent_names`. Returns
+  `agent_names`. Commonly used: `bridge_id`, `internal_only`, `include_owner`,
+  `channel_type` (`"channel_public"`, `"channel_private"`, `"direct"`),
+  `user_names`, `instructions`, `group_name`, `aliases`, `reference_ids`,
+  `package_ids`, `linked_rooms`, `join_event_listeners` (the subset of
+  `agent_names` that should receive `room_join` events — off by default). You
+  are not a member unless your own name is in `agent_names`. Returns
   `{id, name, transport_room_id, caller_is_member, failed_attachments}`.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
@@ -625,6 +638,10 @@ To create a room with **no** external channel, pass `internal_only=True`. Do
 that only when the user has explicitly said so — e.g. "just a scratch room for
 agents to coordinate."
 
+Add `include_owner=True` (internal-only, not `direct`) to put your owner in the
+room too; it appears in their Switch Console chats as a group chat, where they
+@-mention an agent to reach it.
+
 **Do not guess a `bridge_id`.** When the user asks you to create a room:
 
 1. Call `list_bridges`.
@@ -679,7 +696,8 @@ Surface that error rather than retrying.
 
 `create_room` accepts `reference_ids`, `package_ids` and `linked_rooms` to
 seed a room at creation time. Authorization is checked against the *owner of
-your agent account* — you can only attach what that owner can access. Bad ids
+your agent account* — you can only attach what that owner can access, and
+link only to rooms that owner can read. Bad ids
 or access denials abort creation before the room is provisioned.
 
 Race-time attachment failures (rare) do not abort the room; they come back in
@@ -700,14 +718,26 @@ Room groups are a navigation layer: a room belongs to at most one group, and
 groups nest under a parent to form a tree.
 
 - **`list_room_groups`** — every group with its room count and root-first
-  `path`.
+  `path`. Its counts, and `get_room_group_detail`'s rooms, include only
+  rooms you may see.
 - **`get_room_group_detail`** — one group, the rooms directly in it
   (`member_rooms`), and its immediate `child_groups`.
-- **`create_room_group`** — provision a group. Required: `name`. Optional:
-  `description`, `color`, `parent_group_name` (omit it for a top-level
-  group). Creating a group does not move any rooms into it; file rooms under
-  it later by passing `group_name` to `create_room`. Missing parents are not
-  created for you: create each level first.
+- **`create_room_group`** — provision a group. Only an agent whose owner is a
+  workspace admin may: groups are shared by the whole workspace. Anyone else
+  is refused; ask an admin.
+  Required: `name`. Optional: `description`, `color`, `parent_group_name`
+  (omit it for a top-level group). Creating a group does not move any rooms
+  into it; file rooms under it later by passing `group_name` to
+  `create_room`. Missing parents are not created for you: create each level
+  first.
+- **Filing a room in a group** (`group_name` on `create_room`) also needs an
+  owner who is a workspace admin, because an agent's addressing policy can
+  admit everyone in a group's rooms. Without one, create the room standalone
+  and ask an admin to file it.
+- **Group templates** (a `group:` document, through `create_room_from_yaml`
+  or `run_template`) are refused for every agent, whoever its owner: a
+  template runs without your owner's admin reach. Nothing is created. Ask a
+  workspace admin to run it from the dashboard.
 
 Name a group by its **path**: the top-level group, then each child, separated
 by `/`, e.g. `Fraud/Incidents`. The `path` that `list_room_groups` returns
@@ -887,7 +917,9 @@ ui-avatars.com is not accepted.
     runs, or self-hosted;
   - the messaging apps, and how each platform would be added here: the official
     Switch app or an app they create themselves;
-  - whether their own chat account is linked, and their username on each app;
+  - whether their own chat account is linked (`your_account_link` says whether
+    it is confirmed or still waiting for its code), and their username on each
+    app;
   - the services they connected and which agents use them;
   - their agents and machines.
 
@@ -1076,7 +1108,7 @@ Every Switch tool you call in normal operation, one line each.
 - `edit_role` — change a role's instructions or exclusivity.
 - `delete_role` — remove a role and any lease on it.
 - `list_linked_rooms` — refresh this room's outbound pointers.
-- `list_all_rooms` — every room on the instance, not just yours, a page at a time.
+- `list_all_rooms` — every room your owner can read, not just yours, a page at a time.
 - `get_room_detail` — one room's members, channel type, roles, aliases.
 - `list_bridges` — the collaboration bridges available for new rooms.
 - `create_room` — provision a room. Confirm with the user first.
@@ -1094,8 +1126,8 @@ Every Switch tool you call in normal operation, one line each.
 - `unarchive_room` — reverse an archive.
 - `list_room_groups` — the group tree rooms are organised into.
 - `get_room_group_detail` — one group's rooms and child groups.
-- `create_room_group` — provision a new room group.
-- `create_room_from_yaml` — provision a room or group from a YAML template.
+- `create_room_group` — provision a new room group (workspace admin agents only).
+- `create_room_from_yaml` — provision a room from a YAML template (group templates are refused).
 - `get_template_guide`: how to write a template, and the schema it is checked against.
 - `list_templates`: the saved templates you can use.
 - `get_template`: one template's document, inputs and agent slots.

@@ -402,19 +402,21 @@ class TemplateAgents:
                 )
             )
         for connection in plan.connections:
-            unavailable = self._broker.availability(connection.service)
-            if unavailable is not None:
-                problems.append(
-                    Problem(
-                        plan.slot,
-                        "connection_unavailable",
-                        f"{connection.service}: {unavailable}",
-                    )
-                )
-                continue
             async with tenant_session(
                 self._protocol.session_factory, tenant_id
             ) as session:
+                unavailable = await self._broker.availability(
+                    session, connection.service
+                )
+                if unavailable is not None:
+                    problems.append(
+                        Problem(
+                            plan.slot,
+                            "connection_unavailable",
+                            f"{connection.service}: {unavailable}",
+                        )
+                    )
+                    continue
                 try:
                     grants.append(
                         await self._broker.check_grant_terms(

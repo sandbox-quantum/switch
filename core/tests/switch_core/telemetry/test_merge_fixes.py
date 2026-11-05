@@ -142,6 +142,7 @@ class TestASessionIsTheAgentNotTheConnection:
             version="1.0.0",
             telemetry_environment="prod",
             telemetry_internal=False,
+            deployment_kind="self_hosted",
         )
         reporter = SessionReporter(service, registry)
         registry.set_close_listener(reporter.on_close)
@@ -215,7 +216,7 @@ class TestASessionIsTheAgentNotTheConnection:
             await asyncio.sleep(0.01)  # well inside the grace period
         await _settle()
 
-        assert self._names(sink) == ["agent_session_started"]
+        assert self._names(sink) == ["agent_session_started", "agent_connected"]
 
     async def test_the_session_ends_once_the_agent_stays_away(
         self, monkeypatch: pytest.MonkeyPatch
@@ -231,8 +232,14 @@ class TestASessionIsTheAgentNotTheConnection:
         await asyncio.sleep(0.15)
         await _settle()
 
-        assert self._names(sink) == ["agent_session_started", "agent_session_ended"]
-        assert sink.sent[1].properties["reason"] == "heartbeat_lapsed"
+        assert self._names(sink) == [
+            "agent_session_started",
+            "agent_connected",
+            "agent_session_ended",
+            "agent_disconnected",
+        ]
+        assert sink.sent[2].properties["reason"] == "heartbeat_lapsed"
+        assert sink.sent[3].properties == sink.sent[2].properties
 
     async def test_the_duration_spans_the_whole_session(
         self, monkeypatch: pytest.MonkeyPatch
@@ -266,7 +273,7 @@ class TestASessionIsTheAgentNotTheConnection:
             await self._stream(reporter, registry, cid)
         await _settle()
 
-        assert self._names(sink) == ["agent_session_started"]
+        assert self._names(sink) == ["agent_session_started", "agent_connected"]
 
     async def test_closing_one_of_several_connections_ends_nothing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -284,7 +291,7 @@ class TestASessionIsTheAgentNotTheConnection:
         await asyncio.sleep(0.15)
         await _settle()
 
-        assert self._names(sink) == ["agent_session_started"]
+        assert self._names(sink) == ["agent_session_started", "agent_connected"]
 
     async def test_two_agents_are_two_sessions(self) -> None:
         registry = AgentConnectionRegistry()
@@ -298,7 +305,9 @@ class TestASessionIsTheAgentNotTheConnection:
 
         assert self._names(sink) == [
             "agent_session_started",
+            "agent_connected",
             "agent_session_started",
+            "agent_connected",
         ]
 
     async def test_shutdown_reports_no_ends(self) -> None:
@@ -313,7 +322,7 @@ class TestASessionIsTheAgentNotTheConnection:
         await reporter.aclose()
         await _settle()
 
-        assert self._names(sink) == ["agent_session_started"]
+        assert self._names(sink) == ["agent_session_started", "agent_connected"]
 
     def test_a_listener_that_raises_does_not_break_the_close(self) -> None:
         """The registry's contract — the connection is closed and handed back —

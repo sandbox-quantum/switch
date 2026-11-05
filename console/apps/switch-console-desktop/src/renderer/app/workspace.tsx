@@ -5,6 +5,7 @@ import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { OnboardingIntro } from '@renderer/features/onboarding/onboarding-intro';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
+import { WorkspaceTopBar } from '@renderer/features/sidebar/workspace-top-bar';
 import { BuddyIntroDialog } from '@renderer/features/switch-buddy/buddy-intro-dialog';
 import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
 import { FrozenBanner, frozenServer } from '@renderer/features/switch-servers/frozen-workspace';
@@ -138,6 +139,7 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
         <>
           <WorkspaceLayout
             leftSidebar={<LeftSidebar />}
+            topBar={<WorkspaceTopBar />}
             mainContent={mainContent}
             persistentLayer={<RoomEmbedLayer />}
             banner={frozen ? <FrozenBanner server={frozen} /> : null}

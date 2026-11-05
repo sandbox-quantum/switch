@@ -140,9 +140,9 @@ class OrganizationMember(Base):
     changing or removing a workspace membership leaves this row as it is. Only
     an organization's own `org_admin`s grant or revoke `org_admin`, through
     the organization's API. The one exception is migration `238c68b7306e`:
-    it made each existing workspace's owners `org_admin` of the organization
-    it created for that workspace alone, which gave them nothing they did not
-    already control.
+    it made each existing workspace's owners (a role since merged into
+    `admin`) `org_admin` of the organization it created for that workspace
+    alone, which gave them nothing they did not already control.
     """
 
     __tablename__ = "organization_members"
@@ -175,9 +175,10 @@ class OrganizationMember(Base):
 class Tenant(Base):
     """The top-level customer boundary every scoped table hangs off.
 
-    Deliberately minimal: no `plan`, `status` or `deleted_at`. A later phase
-    adds plans and deletion; a `deleted_at` that nothing honours yet would
-    read as a guarantee the code does not make.
+    Deliberately minimal: no `plan`, `status` or `deleted_at`. Deleting a
+    workspace deletes this row (`accounts/workspace_deletion.py`); a
+    `deleted_at` that nothing honours would read as a guarantee the code does
+    not make.
     """
 
     __tablename__ = "tenants"
@@ -216,9 +217,7 @@ class TenantMember(Base):
 
     __tablename__ = "tenant_members"
     __table_args__ = (
-        CheckConstraint(
-            "role IN ('owner', 'admin', 'member')", name="ck_tenant_members_role"
-        ),
+        CheckConstraint("role IN ('admin', 'member')", name="ck_tenant_members_role"),
     )
 
     tenant_id: Mapped[str] = mapped_column(
@@ -370,8 +369,8 @@ class User(Base):
     )
     # Workspaces this person has created through self-service, which is what
     # `GATEWAY_MAX_WORKSPACES_PER_USER` bounds. A count of creations rather
-    # than of current ownership, so handing a workspace to someone else does
-    # not free an allowance to create another.
+    # than of workspaces administered now, so handing a workspace to another
+    # admin does not free an allowance to create another.
     workspaces_created: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
@@ -625,9 +624,7 @@ class Invitation(TenantScoped, Base):
     __tablename__ = "invitations"
     __table_args__ = (
         Index("ix_invitations_tenant_id", "tenant_id"),
-        CheckConstraint(
-            "role IN ('owner', 'admin', 'member')", name="ck_invitations_role"
-        ),
+        CheckConstraint("role IN ('admin', 'member')", name="ck_invitations_role"),
         CheckConstraint(
             "uses_remaining >= 0", name="ck_invitations_uses_remaining_not_negative"
         ),
@@ -695,7 +692,7 @@ class TenantJoinDomain(TenantScoped, Base):
     )
 
 
-class AuditEvent(TenantScoped, Base):
+class AuditEvent(Base):
     """One security-relevant change in a tenant: who did what, to what, when.
 
     Written in the same transaction as the change it records wherever that
@@ -717,6 +714,11 @@ class AuditEvent(TenantScoped, Base):
     `occurred_at` defaults to `clock_timestamp()`, not `now()`: two events in
     one transaction would otherwise share a timestamp, and the read pages back
     by it.
+
+    `tenant_id` carries no foreign key either, for the same reason: deleting a
+    workspace leaves its history behind, readable by no member since none is
+    left, and the runtime role could not delete it anyway. It is still scoped
+    by the policy (`rls_ddl.HISTORY_TABLES`).
     """
 
     __tablename__ = "audit_events"
@@ -724,6 +726,9 @@ class AuditEvent(TenantScoped, Base):
         Index("ix_audit_events_tenant_occurred_at", "tenant_id", "occurred_at"),
     )
 
+    tenant_id: Mapped[str] = mapped_column(
+        Text, nullable=False, default=require_tenant_id
+    )
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
@@ -2125,6 +2130,11 @@ class ExternalUserClaim(TenantScoped, Base):
 
     An account with no claim at all satisfies no owner rule — unclaimed is
     not "trusted by default".
+
+    A claim is only ever written once the account itself has confirmed it
+    (`ExternalUserLinkRequest`), so every row here is trusted. `verified_at`
+    is null on the claims made before confirmation existed (CHOO-3881): they
+    keep working, and the claimant is asked to confirm them.
     """
 
     __tablename__ = "external_user_claims"
@@ -2146,6 +2156,66 @@ class ExternalUserClaim(TenantScoped, Base):
         primary_key=True,
     )
     created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ExternalUserLinkRequest(TenantScoped, Base):
+    """A link from a platform account to a Switch user, waiting for the account
+    to confirm it (CHOO-3881).
+
+    Kept out of `external_user_claims` on purpose: every reader of that table
+    treats a row as trusted, so a request living there would be trusted by any
+    reader that forgot to filter it out, including a release from before this
+    table existed.
+
+    The account confirms by posting `code` from itself, which proves the same
+    person holds the Switch user (only they are shown the code) and the
+    platform account (the platform says who posted it). Only a hash is
+    stored, and `code_hash` is null until the Switch user asks for a code: an
+    admin may start a link for someone else, and must not be the one who sees
+    it.
+    """
+
+    __tablename__ = "external_user_link_requests"
+    __table_args__ = (
+        Index("ix_external_user_link_requests_tenant_id", "tenant_id"),
+        Index("ix_external_user_link_requests_user_id", "user_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "external_user_id"],
+            ["external_users.tenant_id", "external_users.id"],
+            name="fk_external_user_link_requests_external_user",
+            ondelete="CASCADE",
+        ),
+    )
+
+    external_user_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            name="fk_external_user_link_requests_user",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            name="fk_external_user_link_requests_requested_by",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    code_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
@@ -2571,6 +2641,31 @@ class OwnershipLease(Base):
     )
     token: Mapped[int] = mapped_column(BigInteger, nullable=False)
     changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DirectoryEventCursor(Base):
+    """How far the directory mirror has read a directory's events
+    (`workos_mirror.py`). One row per directory (`source`, `"workos"`).
+
+    `after` is the last event applied, null until the first; until then the
+    events are read from `started_at`, when the mirror first ran. Applying
+    an event re-reads the membership it names, so reading one twice changes
+    nothing. The row is written only while the mirror's ownership fence holds
+    (`WorkOSMirror._write_cursor`), so a holder taken over can't move it.
+
+    Not tenant-scoped: one directory's events reach every organization.
+    """
+
+    __tablename__ = "directory_event_cursors"
+
+    source: Mapped[str] = mapped_column(Text, primary_key=True)
+    after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
@@ -4467,6 +4562,84 @@ class ServiceAppCredential(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class OrganizationAppCredential(OrganizationScoped, Base):
+    """The app an organization registered at a service's vendor, for every
+    workspace in it.
+
+    The organization's counterpart of `ServiceAppCredential`, in the same
+    shape: a GitHub App or a static OAuth client, `client_id` and `settings`
+    in the clear, every secret the kind has in `encrypted_secrets`. Where a
+    workspace's organization has one, the workspace signs in through it rather
+    than through the server's app.
+
+    `updated_by` is cleared when that account is deleted rather than handed
+    on: the person may have left every workspace of the organization by then,
+    and the organization's audit log keeps who made each change.
+    """
+
+    __tablename__ = "organization_app_credentials"
+    __table_args__ = (PrimaryKeyConstraint("organization_id", "service"),)
+
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    settings: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    encrypted_secrets: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_organization_app_credentials_updated_by",
+        ),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class OrganizationServiceSetting(OrganizationScoped, Base):
+    """An organization's admin switched a catalog service on or off for every
+    workspace in it.
+
+    Unlocked, it is what a workspace gets until its own admin touches the
+    switch. Locked, it overrides every workspace's setting, and an
+    organization's setting of off, locked, is how it keeps a service out of
+    all its workspaces. No row means the organization has no say. Stored
+    ahead of being applied: workspaces do not consult it yet. `updated_by`
+    is cleared when that account is deleted, for the reason
+    `OrganizationAppCredential` gives.
+    """
+
+    __tablename__ = "organization_service_settings"
+    __table_args__ = (PrimaryKeyConstraint("organization_id", "service"),)
+
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_organization_service_settings_updated_by",
+        ),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 

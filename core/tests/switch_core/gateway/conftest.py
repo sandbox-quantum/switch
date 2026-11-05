@@ -75,6 +75,9 @@ class _FakeLifecycle:
     def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
         return []
 
+    def get(self, client_id: str) -> None:
+        return None
+
 
 class _FakeListener:
     """Records subscriptions; a test rings a room by hand, or deliberately not."""
@@ -256,7 +259,7 @@ async def _user(session: AsyncSession, name: str, role: str | None) -> User:
             tenant_id="00000000-0000-0000-0000-000000000000",
             user_id=user.id,
             role=role,
-            organization_role="org_admin" if role in ("owner", "admin") else "member",
+            organization_role="org_admin" if role == "admin" else "member",
         )
     return user
 
@@ -308,6 +311,7 @@ def _chat_service(
         media_max_bytes=1024,
         agent_chats_enabled=True,
         group_chats_enabled=True,
+        buddy_slack_handoff_enabled=True,
         connections=connections,
     )
     room_service.on_room_agents_changed(service.sync_room)

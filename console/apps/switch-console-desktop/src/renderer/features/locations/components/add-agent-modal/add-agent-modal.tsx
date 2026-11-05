@@ -1,6 +1,7 @@
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { NewAgentForm } from './new-agent-form';
+import { machineRunLocation } from './server-run-locations';
 
 export type AddLocationModalProps = BaseModalProps<void> & {
   /**
@@ -9,16 +10,21 @@ export type AddLocationModalProps = BaseModalProps<void> & {
    * under the same heading as the ones that did not.
    */
   entryPoint: UiEntryPoint;
+  /**
+   * The machine the agent goes on, picked already, with the server it is on
+   * (which need not be the active one): null to start on this computer.
+   */
+  machine: { serverId: string; machineId: string } | null;
 };
 
-export function AddAgentModal({ onClose, entryPoint }: AddLocationModalProps) {
+export function AddAgentModal({ onClose, entryPoint, machine }: AddLocationModalProps) {
   return (
     <NewAgentForm
       onClose={onClose}
       onBack={null}
       entryPoint={entryPoint}
-      serverId={null}
-      initialRunLocation="local"
+      serverId={machine?.serverId ?? null}
+      initialRunLocation={machine ? machineRunLocation(machine.machineId) : 'local'}
     />
   );
 }
