@@ -32,6 +32,7 @@ import {
   type TemplateRunResult,
   createTemplate,
   deleteRoom,
+  deleteRoomSchedule,
   deleteTemplate,
   disconnectChat,
   exportRoomYaml,
@@ -55,15 +56,18 @@ import {
   fetchRoomGroups,
   fetchRoomRoles,
   fetchRooms,
+  fetchRoomSchedules,
   fetchTemplateDetail,
   fetchTemplateRuns,
   fetchTemplates,
   fetchTemplateSchema,
   GatewayError,
   ownsOwnerAddressedAgent,
+  pauseRoomSchedule,
   releaseBridgeIdentity,
   removeBridgeTeam,
   removeRoomAgent,
+  saveRoomSchedule,
   type StoredTemplateDetail,
   type StoredTemplateSummary,
   type ProvisionFromTemplateResult,
@@ -136,6 +140,7 @@ import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
+import type { RoomScheduleInput } from '@shared/core/switch-servers/room-schedules';
 import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
@@ -933,6 +938,35 @@ export const workspacesController = createRPCController({
 
   listRoomAgentIds: (params: { workspaceId: string; roomId: string }): Promise<string[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchRoomAgentIds(server, params.roomId)),
+
+  /** Durable scheduled work shown on the room's configuration page. */
+  listRoomSchedules: (params: { workspaceId: string; roomId: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  saveRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    input: RoomScheduleInput;
+    id?: string;
+  }) =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      saveRoomSchedule(server, params.roomId, params.input, params.id)
+    ),
+
+  pauseRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    id: string;
+    paused: boolean;
+  }) =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      pauseRoomSchedule(server, params.roomId, params.id, params.paused)
+    ),
+
+  deleteRoomSchedule: (params: { workspaceId: string; roomId: string; id: string }) =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.id)
+    ),
 
   /** One room in full, for its configuration page. */
   getRoomDetail: (params: { workspaceId: string; roomId: string }): Promise<RemoteRoomDetail> =>

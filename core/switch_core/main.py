@@ -212,6 +212,7 @@ from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
 from switch_core.room_service import RoomService
+from switch_core.scheduling.runner import RoomScheduler
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     own_maintenance as own_session_activity_maintenance,
@@ -357,6 +358,30 @@ async def _recheck_agent_rooms(
     with no_tenant():
         for tenant_id in await all_tenant_ids(session_factory):
             await router.recheck_agent_rooms(tenant_id)
+
+
+async def _room_schedule_loop(
+    session_factory: async_sessionmaker[AsyncSession], router: MessageRouter
+) -> None:
+    scheduler = RoomScheduler(session_factory, router)
+    with no_tenant():
+        while True:
+            await asyncio.sleep(5)
+            try:
+                tenants = await all_tenant_ids(session_factory)
+            except Exception:
+                logger.exception("Could not enumerate tenants for room schedules")
+                continue
+            for tenant_id in tenants:
+                try:
+                    # Bound work per tenant: a backlog cannot starve other tenants.
+                    for _ in range(25):
+                        if not await scheduler.fire_one(tenant_id):
+                            break
+                except Exception:
+                    logger.exception(
+                        "Room schedule firing failed for tenant %s", tenant_id
+                    )
 
 
 async def _runtime_state_sweep_loop(protocol: AgentCore) -> None:
@@ -1490,6 +1515,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
             )
+            room_schedule_task = asyncio.create_task(
+                _room_schedule_loop(session_factory, router)
+            )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
@@ -1538,6 +1566,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 sweep_task.cancel()
                 retention_task.cancel()
                 attachment_group_task.cancel()
+                room_schedule_task.cancel()
+                await asyncio.gather(room_schedule_task, return_exceptions=True)
                 router.close()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
