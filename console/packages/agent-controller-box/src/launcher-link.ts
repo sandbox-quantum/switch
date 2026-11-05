@@ -34,6 +34,15 @@ export type LinkState = 'waiting' | 'live' | 'quiet' | 'lost';
 
 export type Measurement = Extract<LauncherReport, { kind: 'measure' }>;
 type Reply = Extract<LauncherReport, { kind: 'reply' }>;
+/** What the launcher sends back for one file request: replies and `files_chunk`s, in order. */
+export type FileReport = Reply | Extract<LauncherReport, { kind: 'files_chunk' }>;
+type FileOrder = Extract<LauncherOrder, { kind: 'files_list' | 'files_read' | 'files_zip' }>;
+type FileFollowUp = Extract<LauncherOrder, { kind: 'files_more' | 'files_cancel' }>;
+type FileOrderWithoutId = FileOrder extends infer O
+  ? O extends FileOrder
+    ? Omit<O, 'id'>
+    : never
+  : never;
 type OrderWithoutId = LauncherOrder extends infer O
   ? O extends LauncherOrder
     ? Omit<O, 'id'>
@@ -80,6 +89,8 @@ export class LauncherLink {
     number,
     { resolve: (reply: Reply) => void; timer: NodeJS.Timeout }
   >();
+  /** File requests (the file explorer), by launcher id: each gets every report under its id until it ends. */
+  private readonly files = new Map<number, (report: FileReport) => void>();
   private lastMeasureAt: number | null = null;
   private lastBootId: string | null = null;
   /** Launchers greeted since this controller started (security: a box whose launcher keeps reconnecting shows). */
@@ -150,6 +161,7 @@ export class LauncherLink {
   async close(): Promise<void> {
     for (const { timer } of this.pending.values()) clearTimeout(timer);
     this.pending.clear();
+    this.files.clear();
     this.socket?.destroy();
     await new Promise<void>((resolve) =>
       this.server ? this.server.close(() => resolve()) : resolve()
@@ -186,6 +198,34 @@ export class LauncherLink {
       this.pending.set(id, { resolve, timer });
       this.socket!.write(encodeLine({ ...order, id } as LauncherOrder));
     });
+  }
+
+  /**
+   * Starts a file request (the file explorer): every `reply` and `files_chunk`
+   * under its id goes to `onReport`, in order, until `endFile`. Unlike `order`
+   * it has no deadline of its own: the file relay keeps the request's deadline.
+   * A lost link answers `launcher_lost` at once. Returns the launcher id.
+   */
+  startFile(order: FileOrderWithoutId, onReport: (report: FileReport) => void): number {
+    const id = this.nextId++;
+    if (!this.socket || this.state === 'lost' || this.state === 'waiting') {
+      queueMicrotask(() => onReport({ kind: 'reply', id, ok: false, code: 'launcher_lost' }));
+      return id;
+    }
+    this.files.set(id, onReport);
+    this.socket.write(encodeLine({ ...order, id } as LauncherOrder));
+    return id;
+  }
+
+  /** `files_more` or `files_cancel` for a file request still open; anything else is dropped. */
+  followFile(kind: FileFollowUp['kind'], id: number): void {
+    if (!this.files.has(id) || !this.socket) return;
+    this.socket.write(encodeLine({ kind, id }));
+  }
+
+  /** The file request is over: later reports under its id count as unmatched. */
+  endFile(id: number): void {
+    this.files.delete(id);
   }
 
   private accept(socket: Socket): void {
@@ -245,14 +285,21 @@ export class LauncherLink {
       case 'hello':
         this.deps.log('launcher_line_refused', { reason: 'second_hello' });
         return;
+      case 'files_chunk': {
+        const file = this.files.get(report.id);
+        if (file) file(report);
+        else this.unmatched();
+        return;
+      }
       case 'reply': {
+        const file = this.files.get(report.id);
+        if (file) {
+          file(report);
+          return;
+        }
         const waiting = this.pending.get(report.id);
         if (!waiting) {
-          // An answer to nothing asked (or asked too long ago): ignored and counted.
-          const count = ++this.unmatchedReplies;
-          // The first, then at powers of two: a flood costs a few lines.
-          if ((count & (count - 1)) === 0)
-            this.deps.log('launcher_line_refused', { reason: 'unmatched_reply', count });
+          this.unmatched();
           return;
         }
         clearTimeout(waiting.timer);
@@ -277,6 +324,14 @@ export class LauncherLink {
     }
   }
 
+  /** An answer to nothing asked (or asked too long ago): ignored and counted. */
+  private unmatched(): void {
+    const count = ++this.unmatchedReplies;
+    // The first, then at powers of two: a flood costs a few lines.
+    if ((count & (count - 1)) === 0)
+      this.deps.log('launcher_line_refused', { reason: 'unmatched_reply', count });
+  }
+
   private lose(reason: 'closed' | 'silent'): void {
     if (this.state !== 'lost') this.deps.log('launcher_lost', { reason });
     for (const [id, { resolve, timer }] of this.pending) {
@@ -284,6 +339,10 @@ export class LauncherLink {
       resolve({ kind: 'reply', id, ok: false, code: 'launcher_lost' });
     }
     this.pending.clear();
+    const files = [...this.files];
+    this.files.clear();
+    for (const [id, onReport] of files)
+      onReport({ kind: 'reply', id, ok: false, code: 'launcher_lost' });
     if (reason === 'silent') this.socket?.destroy();
     this.setState('lost');
   }

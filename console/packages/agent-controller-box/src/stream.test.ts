@@ -563,3 +563,117 @@ describe('runControllerStream against the controller routes', () => {
     expect(await ending).toBe('stopped');
   });
 });
+
+describe('runControllerStream: the file explorer’s frames', () => {
+  function channel() {
+    const frames: unknown[] = [];
+    let send: ((reply: never) => void) | null = null;
+    let detached = 0;
+    const files = {
+      attach: (s: (reply: never) => void) => {
+        send = s;
+      },
+      detach: () => {
+        detached++;
+        send = null;
+      },
+      frame: (frame: unknown) => void frames.push(frame),
+    };
+    return { files, frames, send: () => send, detached: () => detached };
+  }
+
+  it('hands checked file frames over at once, apart from agent frames, and drops bad ones', async () => {
+    const scripted = new ScriptedClient();
+    scripted.sockets = () =>
+      scriptedSocket(
+        [
+          state,
+          { event: 'files.request', data: { id: 'f-1', op: 'list', path: '' } },
+          { event: 'files.request', data: { id: 'f-2', op: 'list', path: '/etc' } },
+          { event: 'files.more', data: { id: 'f-1' } },
+          { event: 'files.cancel', data: { id: 'f-1', extra: 1 } },
+          { event: 'assignment.changed', data: { revision: 2 } },
+        ],
+        'open'
+      );
+    const c = channel();
+    const stop = new AbortController();
+    const { frames, ending } = run(scripted, stop.signal, { files: c.files as never });
+    await waitFor(() => frames.length === 1, 'the agent frame');
+    stop.abort();
+    await ending;
+    expect(c.frames).toEqual([
+      { type: 'files.request', data: { id: 'f-1', op: 'list', path: '' } },
+      { type: 'files.more', data: { id: 'f-1' } },
+    ]);
+    expect(frames.map((frame) => frame.type)).toEqual(['assignment.changed']);
+  });
+
+  it('answers a request that fails the check with bad_request when its id is valid, and stays silent otherwise', async () => {
+    const scripted = new ScriptedClient();
+    scripted.sockets = () =>
+      scriptedSocket(
+        [
+          state,
+          { event: 'files.request', data: { id: 'f-9', op: 'list', path: '/etc' } },
+          { event: 'files.request', data: { id: 'not an id!', op: 'list', path: '/etc' } },
+          { event: 'files.more', data: { id: 'f-9', extra: true } },
+          { event: 'assignment.changed', data: { revision: 2 } },
+        ],
+        'open'
+      );
+    const c = channel();
+    const stop = new AbortController();
+    const { frames, ending } = run(scripted, stop.signal, { files: c.files as never });
+    await waitFor(() => frames.length === 1, 'the agent frame');
+    stop.abort();
+    await ending;
+    const replies = scripted.opened[0]!.sent.filter(
+      (message) => (message as { type?: string }).type === 'files.reply'
+    );
+    expect(replies).toEqual([
+      { type: 'files.reply', id: 'f-9', seq: 0, last: true, error: 'bad_request' },
+    ]);
+    expect(c.frames).toEqual([]);
+  });
+
+  it('sends replies up the attached socket only, and detaches when it closes', async () => {
+    const scripted = new ScriptedClient();
+    scripted.sockets = () => scriptedSocket([state], 'open');
+    const c = channel();
+    const stop = new AbortController();
+    const { ending } = run(scripted, stop.signal, { files: c.files as never });
+    await waitFor(() => c.send() !== null && scripted.opened[0]?.readyState === 1, 'attach');
+    c.send()!({ type: 'files.reply', id: 'f-1', seq: 0, last: true, error: 'busy' } as never);
+    expect(scripted.opened[0]!.sent).toContainEqual({
+      type: 'files.reply',
+      id: 'f-1',
+      seq: 0,
+      last: true,
+      error: 'busy',
+    });
+    stop.abort();
+    await ending;
+    expect(c.detached()).toBeGreaterThan(0);
+    expect(c.send()).toBeNull();
+  });
+
+  it('ignores file frames when no channel is given, as any unknown frame', async () => {
+    const scripted = new ScriptedClient();
+    scripted.sockets = () =>
+      scriptedSocket(
+        [
+          state,
+          { event: 'files.request', data: { id: 'f-1', op: 'list', path: '' } },
+          { event: 'assignment.changed', data: { revision: 3 } },
+        ],
+        'open'
+      );
+    const stop = new AbortController();
+    const { frames, ending } = run(scripted, stop.signal);
+    await waitFor(() => frames.length === 1, 'the agent frame');
+    stop.abort();
+    await ending;
+    expect(frames.map((frame) => frame.type)).toEqual(['assignment.changed']);
+  });
+});
