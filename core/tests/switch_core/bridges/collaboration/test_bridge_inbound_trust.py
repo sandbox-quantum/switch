@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
-from switch_core.bridges.collaboration.models import InboundMessage
+import pytest
+
+from switch_core.bridges.collaboration.collaboration_core import (
+    CollaborationCore,
+    _EditTarget,
+)
+from switch_core.bridges.collaboration.models import InboundEdit, InboundMessage
 from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.trust.client import (
     GuardrailsCheckError,
@@ -336,3 +341,56 @@ async def test_trust_check_failure_fails_open_and_annotates_instead_of_blocking(
     _, body, _, message_type = adapter.admin_messages[0]
     assert "Switch Trust could not check" in body
     assert message_type == AdminMessageType.TRUST_ERRORED.value
+
+
+@pytest.mark.parametrize(("outcome", "edits_written"), [("blocked", 0), ("allowed", 1)])
+async def test_an_edit_cannot_admit_a_message_switch_trust_blocked(
+    outcome: str, edits_written: int
+) -> None:
+    """A blocked message leaves no post to find, so its edit finds nothing and
+    writes nothing: rewording it does not get it into the room. The allowed case
+    is the control, the same edit of a message that did get in."""
+    human_actor = _FakeHumanActor()
+    edits: list[str] = []
+
+    async def send_event(_room: str, event_type: str, _content: object) -> str:
+        edits.append(event_type)
+        return "$edit-1"
+
+    human_actor.send_event = send_event  # type: ignore[method-assign,attr-defined]
+    trust = _FixedTrustClient(
+        TrustCheckResult(outcome=outcome, policy_id=None, policy_name=None)  # type: ignore[arg-type]
+    )
+    bridge = _bridge(human_actor, _FakeAdapter(), trust)
+
+    async def find_target(edit: InboundEdit) -> _EditTarget | None:
+        found = next(
+            (event for event, post in bridge.relayed if post == edit.message_ref), None
+        )
+        if found is None:
+            return None
+        return _EditTarget(
+            event_id=found,
+            sender_id=human_actor.transport_user_id,
+            room_id="room-uuid",
+        )
+
+    bridge._find_edit_target = find_target
+    bridge._human_actors = {"ext-alice": human_actor.client_id}
+    bridge._client_lifecycle = SimpleNamespace(get=lambda _id: human_actor)
+
+    await CollaborationCore._handle_inbound_message(bridge, _message("Approve"))
+    await CollaborationCore._handle_inbound_edit(
+        bridge,
+        InboundEdit(
+            channel_id="chan-1",
+            sender_id="ext-alice",
+            message_ref="mm-post-1",
+            content="Decline",
+            revision=2,
+            timestamp=1234,
+        ),
+    )
+
+    assert len(edits) == edits_written
+    assert len(human_actor.sent) == (0 if outcome == "blocked" else 1)
