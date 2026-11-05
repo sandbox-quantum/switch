@@ -73,10 +73,10 @@ it('launches `kimi acp` with the update check off and sends no authenticate', as
 });
 
 it('maps runtime modes onto Kimi permission levels, keeping questions in full access', () => {
-  expect(kimiAcp.sessionMode?.('approval-required')).toBe('default');
-  expect(kimiAcp.sessionMode?.('auto-accept-edits')).toBe('default');
-  expect(kimiAcp.sessionMode?.('auto')).toBe('yolo');
-  expect(kimiAcp.sessionMode?.('full-access')).toBe('yolo');
+  expect(kimiAcp.sessionMode?.('approval-required', undefined)).toBe('default');
+  expect(kimiAcp.sessionMode?.('auto-accept-edits', undefined)).toBe('default');
+  expect(kimiAcp.sessionMode?.('auto', undefined)).toBe('yolo');
+  expect(kimiAcp.sessionMode?.('full-access', undefined)).toBe('yolo');
 });
 
 it('reads the MCP server from Kimi qualified tool names', () => {
@@ -239,6 +239,9 @@ it('treats a model defined in the environment as signed in without running the C
     cwd: '/work',
     env: { KIMI_MODEL_NAME: 'kimi-for-coding', KIMI_MODEL_API_KEY: 'k' },
     handshake: async () => {
+      throw new Error('not called');
+    },
+    request: async () => {
       throw new Error('not called');
     },
   });
