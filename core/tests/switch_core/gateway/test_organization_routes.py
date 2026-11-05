@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.middleware.sessions import SessionMiddleware
 
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
@@ -45,7 +46,11 @@ from switch_core.gateway import workspace_creation
 from switch_core.gateway.auth import create_jwt, decode_jwt
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
+from switch_core.gateway.workos_sign_in_routes import (
+    router as workos_sign_in_router,
+)
 from switch_core.keys import Keyring
+from switch_core.organization_directory import LocalDirectory
 from tests.telemetry_records import recording_telemetry
 
 _KEYRING = Keyring.parse(
@@ -87,6 +92,9 @@ def _app(
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    app.dependency_overrides[gw_deps.get_organization_directory] = lambda: (
+        LocalDirectory()
+    )
     app.dependency_overrides[gw_deps.get_organization_store] = lambda: (
         OrganizationStore()
     )
@@ -99,6 +107,11 @@ def _app(
         api_key_cache=SimpleNamespace(invalidate=lambda key_hash: None)
     )
     app.state.sign_in_flows = SignInFlows(session_factory, _KEYRING)
+    app.state.workos_sign_in = None
+    app.include_router(workos_sign_in_router)
+    # As the gateway has it: the sign-in cookie holds a WorkOS organization
+    # token (`workos_sign_in_routes.py`).
+    app.add_middleware(SessionMiddleware, secret_key="test-sign-in-cookie")
     app.state.service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=_KEYRING,
@@ -942,6 +955,7 @@ class TestTheCurrentOrganization:
         )
         assert as_operator.status_code == 200, as_operator.text
         assert as_operator.json()["role"] is None
+        assert as_member.json()["members_from_directory"] is False
 
 
 class TestNamesInTheOrganizationAuditLog:
@@ -1097,7 +1111,8 @@ async def _personal_key(
 
 async def _agent(
     session_factory: async_sessionmaker[AsyncSession], tenant_id: str, owner_id: str
-) -> None:
+) -> str:
+    name = f"agent-{uuid.uuid4().hex[:6]}"
     async with session_factory() as session:
         client = Client(
             tenant_id=tenant_id,
@@ -1120,7 +1135,7 @@ async def _agent(
         session.add(
             Agent(
                 tenant_id=tenant_id,
-                name=f"agent-{uuid.uuid4().hex[:6]}",
+                name=name,
                 description="test agent",
                 agent_type="other",
                 connector_type="claude-code",
@@ -1131,6 +1146,7 @@ async def _agent(
             )
         )
         await session.commit()
+    return name
 
 
 async def _key_exists(
@@ -1296,3 +1312,162 @@ class TestLosingOrgAdmin:
         assert first == 200 and second in (403, 409)
         async with session_factory() as session:
             assert await OrganizationStore().count_admins(session, organization_id) == 1
+
+
+async def _organization_of(
+    session_factory: async_sessionmaker[AsyncSession], tenant_id: str
+) -> str:
+    async with tenant_session(session_factory, tenant_id) as session:
+        tenant = await session.get(Tenant, tenant_id)
+        assert tenant is not None and tenant.organization_id is not None
+        return tenant.organization_id
+
+
+class TestIssues:
+    """What needs an organization admin's attention, read from how things
+    stand: an issue is gone once fixed."""
+
+    async def test_a_healthy_organization_has_none(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            response = await client.get("/organizations/current/issues")
+
+        assert response.status_code == 200, response.text
+        assert response.json() == []
+
+    async def test_a_workspace_without_an_owner_until_one_is_made(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
+        )
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            before = await client.get("/organizations/current/issues")
+            async with tenant_session(session_factory, tenant_id) as session:
+                member = await session.get(TenantMember, (tenant_id, bob))
+                assert member is not None
+                member.role = "owner"
+                await session.commit()
+            after = await client.get("/organizations/current/issues")
+
+        assert before.json() == [
+            {
+                "kind": "workspace_without_owner",
+                "workspace_id": tenant_id,
+                "workspace_name": "Acme",
+                "agents": [],
+            }
+        ]
+        assert after.json() == []
+
+    async def test_agents_whose_owner_can_no_longer_act_for_them(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Bob left the workspace and the organization; his agent stayed.
+        Ada's own agent, held as the organization's admin with no membership
+        row, is no issue, nor is one the platform operator made, who may act
+        in any workspace."""
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+        )
+        operator_id = await _operator(session_factory)
+        bobs_agent = await _agent(session_factory, tenant_id, bob)
+        await _agent(session_factory, tenant_id, ada)
+        await _agent(session_factory, tenant_id, operator_id)
+        organization_id = await _organization_of(session_factory, tenant_id)
+        async with tenant_session(session_factory, tenant_id) as session:
+            await session.delete(await session.get(TenantMember, (tenant_id, bob)))
+            await session.delete(await session.get(TenantMember, (tenant_id, ada)))
+            await session.delete(
+                await session.get(OrganizationMember, (organization_id, bob))
+            )
+            await session.commit()
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            response = await client.get("/organizations/current/issues")
+
+        [stranded] = [
+            issue
+            for issue in response.json()
+            if issue["kind"] == "agents_without_acting_owner"
+        ]
+        assert stranded["workspace_id"] == tenant_id
+        assert stranded["agents"] == [bobs_agent]
+
+    async def test_a_deleted_workos_organization_until_another_is_linked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Only a deletion of the WorkOS organization followed now counts,
+        whatever order the audit log has it in."""
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        organization_id = await _organization_of(session_factory, tenant_id)
+        deleted_id, other_id = _name("org_workos"), _name("org_workos")
+
+        async def follow(workos_organization_id: str) -> None:
+            async with session_factory() as session:
+                organization = await session.get(Organization, organization_id)
+                assert organization is not None
+                organization.workos_organization_id = workos_organization_id
+                await session.commit()
+
+        async with session_factory() as session:
+            for reported in (deleted_id, other_id):
+                session.add(
+                    OrganizationAuditEvent(
+                        organization_id=organization_id,
+                        actor_user_id=None,
+                        action=OrganizationAuditAction.DIRECTORY_CONFLICT,
+                        target_type="organization",
+                        target_id=organization_id,
+                        details={
+                            "kind": "directory_organization_deleted",
+                            "workos_organization_id": reported,
+                        },
+                    )
+                )
+            await session.commit()
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            await follow(deleted_id)
+            deleted = await client.get("/organizations/current/issues")
+            await follow(_name("org_workos"))
+            relinked = await client.get("/organizations/current/issues")
+
+        assert [issue["kind"] for issue in deleted.json()] == [
+            "directory_organization_deleted"
+        ]
+        assert relinked.json() == []
+
+    async def test_with_no_org_admin_the_operator_is_told(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bob = _name("bob")
+        tenant_id = await _workspace(session_factory, {bob: ("owner", "member")})
+        operator_id = await _operator(session_factory)
+
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
+            response = await client.get("/organizations/current/issues")
+
+        assert response.status_code == 200, response.text
+        assert [issue["kind"] for issue in response.json()] == ["no_org_admin"]
+
+    async def test_a_member_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+        )
+
+        async with _client(_app(session_factory), bob, tenant_id) as client:
+            response = await client.get("/organizations/current/issues")
+
+        assert response.status_code == 403

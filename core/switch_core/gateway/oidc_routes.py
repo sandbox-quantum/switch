@@ -15,6 +15,7 @@ import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import JSONResponse, RedirectResponse
 
@@ -29,10 +30,16 @@ from switch_core.gateway.auth import initial_tenant_claim, set_session_cookie
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_config,
+    get_organization_directory,
     get_session_factory,
     get_system_session,
     get_user_store,
 )
+from switch_core.organization_directory import (
+    DirectoryUnavailable,
+    OrganizationDirectory,
+)
+from switch_core.organization_mirror import bring_in_memberships
 from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 
@@ -221,6 +228,40 @@ async def oidc_login(
     return await client.authorize_redirect(request, redirect_uri, **params)
 
 
+async def _bring_in_organizations(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    user: User,
+    subject: str,
+) -> None:
+    """Bring the person's organization memberships up to date with a directory
+    kept outside Switch (`organization_mirror.py`). Neither a directory that
+    can't be read nor a failure writing Switch's rows stops the sign-in:
+    authorization reads Switch's rows, each organization's change commits on
+    its own, and an organization left behind is caught up at the next
+    sign-in. Both are logged."""
+    try:
+        memberships = await organization_directory.memberships_at_sign_in(subject)
+    except DirectoryUnavailable as error:
+        logger.warning(
+            "Could not read user %s's organizations at sign-in; Switch's are "
+            "left as they were: %s",
+            user.id,
+            error.message,
+        )
+        return
+    if memberships is None:
+        return
+    try:
+        await bring_in_memberships(session_factory, user.id, memberships)
+    except SQLAlchemyError:
+        logger.exception(
+            "Could not bring user %s's organizations up to date at sign-in; "
+            "some of Switch's may be behind the directory",
+            user.id,
+        )
+
+
 @router.get("/auth/oidc/callback", name="oidc_callback")
 async def oidc_callback(
     request: Request,
@@ -230,6 +271,9 @@ async def oidc_callback(
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
 ) -> RedirectResponse:
     # `get_system_session`: nobody is signed in yet, so there is no principal
     # to take a tenant from — the tenant this route writes into is chosen
@@ -318,6 +362,29 @@ async def oidc_callback(
     iss = claims.get("iss") or config.gateway_oidc_issuer_url
     if not iss:
         raise HTTPException(status_code=401, detail="OIDC token missing issuer")
+    # Under the WorkOS directory every other reader of these identities (the
+    # mirror, the organization sign-in, `switch-link-workos`) looks them up
+    # under the issuer as configured. An identity stored under another
+    # spelling of it would match none of them, so a mismatch is a
+    # configuration mistake to name, not a sign-in to let through.
+    if (
+        config.organization_directory == "workos"
+        and iss != config.gateway_oidc_issuer_url
+    ):
+        logger.error(
+            "OIDC sign-in refused: the token's issuer %r is not "
+            "GATEWAY_OIDC_ISSUER_URL %r exactly, which the WorkOS directory "
+            "looks identities up under; set it to the token's issuer",
+            iss,
+            config.gateway_oidc_issuer_url,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Sign-in is misconfigured: the identity provider's issuer "
+                "does not match this server's configuration"
+            ),
+        )
     # A first sign-in provisions the account just in time. Where it lands is
     # `gateway_signup_mode`'s decision. Under "default_tenant" it joins tenant
     # zero, named here rather than left to `TenantScoped`'s fallback, which
@@ -339,6 +406,7 @@ async def oidc_callback(
                 sub=sub,
                 email_verified=verified,
                 join_tenant=join_tenant,
+                link_by_email=config.organization_directory == "local",
             )
         except OidcIdentityConflictError as exc:
             logger.warning("OIDC identity conflict: %s", exc)
@@ -357,6 +425,7 @@ async def oidc_callback(
         await session.commit()
     if created:
         emit_safely(current_telemetry(), "account_created", {"method": "oidc"})
+    await _bring_in_organizations(session_factory, organization_directory, user, sub)
 
     # Verify-at-login only: we don't persist the IdP tokens.
     handoff = request.session.pop(_HANDOFF_SESSION_KEY, None)

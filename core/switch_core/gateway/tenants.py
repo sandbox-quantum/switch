@@ -28,6 +28,7 @@ from switch_core.connections.broker import (
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
     Invitation,
+    Organization,
     OrganizationMember,
     Tenant,
     TenantJoinDomain,
@@ -82,6 +83,7 @@ from switch_core.gateway.dependencies import (
     get_invitation_store,
     get_invite_mailer,
     get_join_domain_store,
+    get_organization_directory,
     get_organization_store,
     get_protocol,
     get_session,
@@ -122,11 +124,13 @@ from switch_core.gateway.schemas import (
     UsageTotalResponse,
 )
 from switch_core.gateway.service_connections import service_refusal
-from switch_core.gateway.workspace_access import (
-    finish_revocation,
-    revoke_workspace_access,
+from switch_core.gateway.workspace_creation import (
+    NOTHING_CHANGED,
+    create_organization_for,
+    directory_failed,
 )
-from switch_core.gateway.workspace_creation import create_organization_for
+from switch_core.organization_access import AccessRevocation, remove_membership
+from switch_core.organization_directory import DirectoryError, OrganizationDirectory
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
@@ -332,6 +336,9 @@ async def create_tenant(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
@@ -347,6 +354,7 @@ async def create_tenant(
         session_factory,
         user_store,
         organization_store,
+        organization_directory,
         client_lifecycle,
         config,
         name=req.name,
@@ -794,6 +802,9 @@ async def accept_invitation(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
     """Accept an invitation, joining its tenant, and switch the caller's
@@ -833,7 +844,12 @@ async def accept_invitation(
         _require_invitation_usable(invitation, caller.email)
 
         membership, user = await _join_through(
-            session, invitation, caller, user_store, invitation_store
+            session,
+            invitation,
+            caller,
+            user_store,
+            invitation_store,
+            organization_directory,
         )
 
     set_session_cookie(
@@ -842,12 +858,44 @@ async def accept_invitation(
     return membership
 
 
+async def _organization_to_join(
+    session: AsyncSession, tenant_id: str, user_id: str
+) -> Organization | None:
+    """`tenant_id`'s organization, if joining the workspace makes `user_id` a
+    new member of it, for the directory to be asked (`_join_in_directory`)."""
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise RuntimeError(f"Workspace {tenant_id} is not visible to this session")
+    if tenant.organization_id is None:
+        return None
+    if await session.get(OrganizationMember, (tenant.organization_id, user_id)):
+        return None
+    return await session.get(Organization, tenant.organization_id)
+
+
+async def _join_in_directory(
+    organization_directory: OrganizationDirectory,
+    organization: Organization | None,
+    user_id: str,
+) -> None:
+    """Ask the directory to make `user_id` a member of `organization`, after
+    every write of the join and before its commit (`organization_directory.py`).
+    A refusal is answered with its reason, and the join is rolled back."""
+    if organization is None:
+        return
+    try:
+        await organization_directory.join(organization, user_id, "member")
+    except DirectoryError as error:
+        raise directory_failed(error, NOTHING_CHANGED) from None
+
+
 async def _join_through(
     session: AsyncSession,
     invitation: Invitation,
     caller: AuthenticatedCaller,
     user_store: UserStore,
     invitation_store: InvitationStore,
+    organization_directory: OrganizationDirectory,
 ) -> tuple[TenantMembershipResponse, User]:
     """Make `caller` a member of the invitation's tenant, spending one use,
     select that tenant for them, and commit.
@@ -867,6 +915,7 @@ async def _join_through(
                 status_code=403, detail="This invitation has already been used"
             ) from exc
         role = invitation.role
+        joining = await _organization_to_join(session, tenant_id, caller.id)
         await user_store.add_membership(
             session,
             tenant_id=tenant_id,
@@ -892,6 +941,7 @@ async def _join_through(
             "invitation_accepted",
             {"age_hours": age_hours(invitation.created_at)},
         )
+        await _join_in_directory(organization_directory, joining, caller.id)
 
     return await _enter(session, tenant_id, caller, user_store)
 
@@ -994,6 +1044,9 @@ async def accept_my_invitation(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
     """Accept an invitation addressed to the caller, by id, without its token,
@@ -1017,7 +1070,12 @@ async def accept_my_invitation(
             raise HTTPException(status_code=404, detail="Invitation not found")
         _require_invitation_usable(invitation, caller.email)
         membership, user = await _join_through(
-            session, invitation, caller, user_store, invitation_store
+            session,
+            invitation,
+            caller,
+            user_store,
+            invitation_store,
+            organization_directory,
         )
 
     set_session_cookie(
@@ -1183,6 +1241,9 @@ async def join_tenant_by_domain(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     join_domain_store: Annotated[JoinDomainStore, Depends(get_join_domain_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
     """Join a workspace open to the domain of the caller's address, as a
@@ -1199,6 +1260,7 @@ async def join_tenant_by_domain(
         role = await user_store.tenant_role(session, tenant_id, caller.id)
         if role is None:
             role = "member"
+            joining = await _organization_to_join(session, tenant_id, caller.id)
             await user_store.add_membership(
                 session,
                 tenant_id=tenant_id,
@@ -1215,6 +1277,7 @@ async def join_tenant_by_domain(
                 target_id=caller.id,
                 details={"role": role, "domain": domain},
             )
+            await _join_in_directory(organization_directory, joining, caller.id)
         membership, user = await _enter(session, tenant_id, caller, user_store)
 
     set_session_cookie(
@@ -1397,34 +1460,25 @@ async def remove_member(
             ),
         )
 
+    revocation = AccessRevocation(
+        agent_store=agent_store,
+        api_key_store=api_key_store,
+        broker=broker,
+        protocol=protocol,
+        sign_in_flows=request.app.state.sign_in_flows,
+    )
     try:
-        revoked = await revoke_workspace_access(
+        revoked = await remove_membership(
             session,
-            user_id,
-            api_key_store=api_key_store,
-            broker=broker,
-            sign_in_flows=request.app.state.sign_in_flows,
+            revocation,
+            membership,
+            actor_id=admin.id,
+            details={},
+            keep_agent_keys=False,
         )
     except ServiceError as error:
         return service_refusal(error)
-
-    await record_audit_event(
-        session,
-        tenant_id=tenant_id,
-        actor_user_id=admin.id,
-        action=AuditAction.MEMBER_REMOVED,
-        target_type="user",
-        target_id=user_id,
-        details={
-            "role": membership.role,
-            "api_keys_deleted": len(revoked.key_hashes),
-            "service_connections_deleted": len(revoked.removed_services),
-        },
-    )
-    await session.delete(membership)
     await session.commit()
 
-    warning = await finish_revocation(
-        session, user_id, revoked, protocol=protocol, broker=broker
-    )
+    warning = await revocation.finish(session, user_id, revoked)
     return {"ok": True, "warning": warning}
