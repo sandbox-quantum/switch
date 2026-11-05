@@ -159,6 +159,19 @@ describe("how the box took it", () => {
     expect(await waitForOperation("box-ctl", { kind: "provider.recheck", provider: "codex", since }, { sleep })).toBe("succeeded");
   });
 
+  it("stops with null, asking nothing more, once its signal is aborted", async () => {
+    operations = [{ id: "op-1", kind: "provider.login", state: "pending", params: {}, created_at: new Date().toISOString() }];
+    const follow = new AbortController();
+    let polls = 0;
+    sleep.mockImplementation(async () => {
+      if (++polls === 1) follow.abort();
+    });
+    const asked = () => vi.mocked(globalThis.fetch).mock.calls.filter(([input]) => String(input).includes("/operations")).length;
+    const before = asked();
+    expect(await waitForOperation("box-ctl", { id: "op-1" }, { sleep, waitMs: 60_000, signal: follow.signal })).toBeNull();
+    expect(asked() - before).toBe(1);
+  });
+
   it("gives up with null when it doesn't end in time", async () => {
     operations = [{ id: "op-1", kind: "provider.login", state: "pending", params: {}, created_at: new Date().toISOString() }];
     expect(await waitForOperation("box-ctl", { id: "op-1" }, { sleep, waitMs: 0 })).toBeNull();

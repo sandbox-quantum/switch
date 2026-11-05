@@ -62,6 +62,7 @@ export default function CloudLoginDialog({
   const [error, setError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
   const [sealable, setSealable] = useState<boolean | null>(null);
+  const following = useRef<AbortController | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const secretInput = useRef<HTMLInputElement>(null);
 
@@ -76,6 +77,9 @@ export default function CloudLoginDialog({
     void canSeal().then((can) => live && setSealable(can));
     return () => {
       live = false;
+      // Closing the dialog stops following how the box took the login.
+      following.current?.abort();
+      following.current = null;
     };
     // Reset when it opens or the provider changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -104,10 +108,15 @@ export default function CloudLoginDialog({
       const { controllerId, operation } = await giveCloudLogin(provider, { kind, credential });
       credential = "";
       clearInputs();
-      const state = await waitForOperation(controllerId, { id: operation.id });
-      setOutcome(
-        state === "succeeded" ? OUTCOME_TEXT.succeeded : state === null ? OUTCOME_TEXT.waiting : OUTCOME_TEXT.failed,
-      );
+      following.current?.abort();
+      const follow = new AbortController();
+      following.current = follow;
+      const state = await waitForOperation(controllerId, { id: operation.id }, { signal: follow.signal });
+      // Closed meanwhile: no outcome to show, but the list still reads again.
+      if (!follow.signal.aborted)
+        setOutcome(
+          state === "succeeded" ? OUTCOME_TEXT.succeeded : state === null ? OUTCOME_TEXT.waiting : OUTCOME_TEXT.failed,
+        );
       onDone();
     } catch (caught) {
       clearInputs();
@@ -184,7 +193,7 @@ export default function CloudLoginDialog({
               inputRef={secretInput}
               type="password"
               label={KIND_LABEL[kind]}
-              autoComplete="off"
+              autoComplete="new-password"
               disabled={busy}
               helperText={
                 kind === "setup-token"

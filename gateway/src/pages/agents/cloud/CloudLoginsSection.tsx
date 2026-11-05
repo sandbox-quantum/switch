@@ -12,7 +12,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type CloudLogin, listCloudLogins, waitForOperation, withdrawCloudLogin } from "../../../data/cloudLogins";
 import { fetchProviders, type ProviderInfo } from "../../../data/management";
 import { cloudProviders } from "../cloudAgent";
@@ -46,6 +46,10 @@ export default function CloudLoginsSection({
   const [withdrawing, setWithdrawing] = useState<ProviderInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ severity: "success" | "info" | "error"; text: string } | null>(null);
+
+  // Leaving the page stops following a withdraw's recheck.
+  const following = useRef<AbortController | null>(null);
+  useEffect(() => () => following.current?.abort(), []);
 
   const load = useCallback(async () => {
     try {
@@ -83,7 +87,14 @@ export default function CloudLoginsSection({
     const since = Date.now();
     try {
       const { controllerId: id } = await withdrawCloudLogin(withdrawing.id);
-      const state = await waitForOperation(id, { kind: "provider.recheck", provider: withdrawing.id, since });
+      const follow = new AbortController();
+      following.current = follow;
+      const state = await waitForOperation(
+        id,
+        { kind: "provider.recheck", provider: withdrawing.id, since },
+        { signal: follow.signal },
+      );
+      if (follow.signal.aborted) return;
       setNotice({ severity: state === null ? "info" : "success", text: state === null ? WITHDRAW_TEXT.waiting : WITHDRAW_TEXT.done });
       setWithdrawing(null);
       await load();

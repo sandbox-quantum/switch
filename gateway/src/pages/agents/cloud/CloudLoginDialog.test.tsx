@@ -55,7 +55,7 @@ describe("a pasted API key or setup token", () => {
     dialog();
     const field = (await screen.findByLabelText("Setup token", { selector: "input" })) as HTMLInputElement;
     expect(field.type).toBe("password");
-    expect(field.getAttribute("autocomplete")).toBe("off");
+    expect(field.getAttribute("autocomplete")).toBe("new-password");
     expect(field.getAttribute("spellcheck")).toBe("false");
     fireEvent.change(field, { target: { value: MARKER } });
     fireEvent.click(screen.getByRole("button", { name: "Give login" }));

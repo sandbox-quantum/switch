@@ -118,12 +118,14 @@ const DONE = new Set(["succeeded", "failed", "cancelled", "expired"]);
 export async function waitForOperation(
   controllerId: string,
   match: { id: string } | { kind: string; provider: string; since: number },
-  options: { pollMs?: number; waitMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+  options: { pollMs?: number; waitMs?: number; sleep?: (ms: number) => Promise<void>; signal?: AbortSignal } = {},
 ): Promise<Operation["state"] | null> {
   const pollMs = options.pollMs ?? OPERATION_POLL_MS;
   const deadline = Date.now() + (options.waitMs ?? OPERATION_WAIT_MS);
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   for (;;) {
+    // Closed or gone: stop asking (the login or withdraw has already been sent).
+    if (options.signal?.aborted) return null;
     const operations = await call<Operation[]>(
       `/operations?controller_id=${encodeURIComponent(controllerId)}`,
       "GET",
