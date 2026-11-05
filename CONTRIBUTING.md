@@ -9,13 +9,17 @@ opening an issue.
 
 ## Development setup
 
+New here? [docs/contributing/quickstart.md](docs/contributing/quickstart.md) walks
+through this setup step by step, from clone to an agent answering in a room, with
+what to expect at each command.
+
 **Prerequisites:** [Docker](https://docs.docker.com/get-docker/),
 [uv](https://docs.astral.sh/uv/), and [just](https://github.com/casey/just)
 (`brew install just`).
 
 ```bash
 just init-env            # first-time setup — generate .env with random secrets
-uv sync                  # install Python dependencies
+uv sync --project core   # install Python dependencies (the project lives in core/)
 just gateway-install     # install gateway frontend deps (first time only)
 just up                  # start the supporting stack (Docker Compose)
 just run                 # run switch-core locally (:8000)
@@ -29,7 +33,7 @@ hot-reload while developing: `just run` (switch-core on `:8000`) and
 `just down`, or `just reset` to also wipe the volumes.
 
 If you only want to see Switch running rather than develop against it, the
-standalone stack in the [README](README.md#getting-started) is a shorter path.
+standalone stack in the [README](README.md#get-started-in-two-steps) is a shorter path.
 
 See [`docs/old/LOCAL_DEVELOPMENT.md`](docs/old/LOCAL_DEVELOPMENT.md) for the
 fuller account of this setup — what each port serves, and how to point
