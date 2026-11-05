@@ -51,18 +51,20 @@ const agent = {
 
 type AgentFlags = Pick<
   AgentDetail,
-  "can_manage" | "can_rename" | "can_transfer" | "transfer_blocked_reason"
+  "can_manage" | "can_rename" | "can_edit_options" | "can_transfer" | "transfer_blocked_reason"
 >;
 
 const MANAGER: AgentFlags = {
   can_manage: true,
   can_rename: true,
+  can_edit_options: true,
   can_transfer: true,
   transfer_blocked_reason: null,
 };
 const OUTSIDER: AgentFlags = {
   can_manage: false,
   can_rename: false,
+  can_edit_options: false,
   can_transfer: false,
   transfer_blocked_reason: null,
 };
@@ -126,6 +128,15 @@ describe("agent rename and options", () => {
 
     expect(screen.queryByRole("button", { name: "Rename agent" })).toBeNull();
     expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+});
+
+describe("agent options", () => {
+  it("are not offered where the server will not edit them, though the agent is managed", () => {
+    showPageWith({ ...MANAGER, can_edit_options: false });
+
+    expect(screen.getByRole("button", { name: "Rename agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 });
 

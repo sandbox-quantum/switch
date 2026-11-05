@@ -73,9 +73,13 @@ function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): 
  */
 export default function ServiceAccessSection({
   agent,
+  canGrant,
   onAgentUpdated,
 }: {
   agent: AgentDetail;
+  // Granting it more: refused for an agent not run from a known agent type.
+  // The grants it has can be seen and removed regardless.
+  canGrant: boolean;
   onAgentUpdated: () => void;
 }) {
   const [grants, setGrants] = useState<ServiceGrants | null>(null);
@@ -151,6 +155,12 @@ export default function ServiceAccessSection({
         {error && <Alert severity="error">{error}</Alert>}
         {notice && <Alert severity="info">{notice}</Alert>}
         {grants === null && !error && <CircularProgress size={20} />}
+        {grants !== null && !canGrant && (
+          <Alert severity="info">
+            New grants are only for an agent Switch Console runs from a known agent type. What it
+            has been granted can still be removed.
+          </Alert>
+        )}
 
         {grants?.addressing_open && grants.grants.length > 0 && (
           <Alert
@@ -189,7 +199,7 @@ export default function ServiceAccessSection({
                 variant="outlined"
                 label={grant.access === "write" ? "Read and write" : "Read"}
               />
-              {grant.service === "github" && (
+              {canGrant && grant.service === "github" && (
                 <Button size="small" disabled={busy} onClick={() => setEditing(true)}>
                   Change
                 </Button>
@@ -229,6 +239,7 @@ export default function ServiceAccessSection({
               grant={grants.grants.find((grant) => grant.service === service.slug) ?? null}
               agentName={agent.name}
               busy={busy}
+              canTurnOn={canGrant}
               canSetUp={isOperator}
               onTurnOn={() =>
                 void act(() => setServiceGrant(agent.id, service.slug, { access: null, resources: {} }))
@@ -237,7 +248,7 @@ export default function ServiceAccessSection({
             />
           ))}
 
-        {grants && (editing || !githubGrant) && (
+        {grants && canGrant && (editing || !githubGrant) && (
           <GitHubGrantForm
             github={github}
             githubError={githubError}
@@ -283,10 +294,17 @@ export function onOffGrantNote(
     : note;
 }
 
-/** The operator's way from a service that is not set up to where it is set up. */
+/** The operator's way from a service that is not set up to where it is set
+ * up: their server-wide connector apps, under Platform in the new layout. */
 function SetUpLink() {
+  const { capabilities } = useAuth();
   return (
-    <Button component={RouterLink} to="/connectors" size="small" sx={{ ml: 1 }}>
+    <Button
+      component={RouterLink}
+      to={capabilities.features.gateway_v2 ? "/platform/connectors" : "/connectors"}
+      size="small"
+      sx={{ ml: 1 }}
+    >
       Set up
     </Button>
   );
@@ -298,6 +316,7 @@ function OnOffGrant({
   grant,
   agentName,
   busy,
+  canTurnOn,
   canSetUp,
   onTurnOn,
   onTurnOff,
@@ -306,13 +325,15 @@ function OnOffGrant({
   grant: ServiceGrant | null;
   agentName: string;
   busy: boolean;
+  canTurnOn: boolean;
   canSetUp: boolean;
   onTurnOn: () => void;
   onTurnOff: () => void;
 }) {
   const connected = service.status === "active";
   // A grant can be turned off whatever the server's state; on needs a usable connection.
-  const blocked = grant === null && (!connected || service.unavailable_reason !== null);
+  const blocked =
+    grant === null && (!canTurnOn || !connected || service.unavailable_reason !== null);
   return (
     <Paper variant="outlined" sx={{ p: 1.5 }}>
       <Stack direction="row" alignItems="center" spacing={1}>

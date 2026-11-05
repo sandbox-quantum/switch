@@ -73,6 +73,9 @@ export interface AgentSummary {
   can_manage: boolean;
   // Renaming it: managing it, and neither a sub-agent nor a parent of one.
   can_rename: boolean;
+  // Editing its options: managing it, and Switch Console running it from an
+  // agent type it knows, which is where its options come from.
+  can_edit_options: boolean;
   can_transfer: boolean;
   // Why it cannot be handed to someone else, for whoever manages it; null
   // when it can, or when they could not anyway.
@@ -125,7 +128,9 @@ export interface AgentDetail extends AgentSummary {
    */
   can_manage_agents: boolean;
   // Its owner's alone: letting it manage their agents, and granting it their
-  // service connections (only where the server runs them).
+  // service connections (only where the server runs them, and only to an
+  // agent run from a known agent type). Seeing and removing the grants it
+  // has needs only ownership.
   can_change_manage_agents: boolean;
   can_grant_services: boolean;
 }

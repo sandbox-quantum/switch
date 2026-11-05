@@ -69,6 +69,7 @@ const agent: AgentDetail = {
   can_manage_agents: false,
   can_manage: true,
   can_rename: true,
+  can_edit_options: true,
   can_transfer: true,
   transfer_blocked_reason: null,
   can_change_manage_agents: true,

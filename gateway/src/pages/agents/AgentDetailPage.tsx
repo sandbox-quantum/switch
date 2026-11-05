@@ -36,6 +36,7 @@ import {
   formatDateTime,
   titleCase,
 } from "../../theme/hootFormat";
+import { useAuth } from "../../data/AuthContext";
 import AddressingPolicySection from "./AddressingPolicySection";
 import AgentManagementSection from "./AgentManagementSection";
 import ServiceAccessSection from "./ServiceAccessSection";
@@ -78,6 +79,7 @@ function StatusDot({ color, title }: { color: string; title?: string }) {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
+  const { capabilities } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
@@ -106,10 +108,12 @@ export default function AgentDetailPage() {
     );
   }
 
-  // Every control follows the server's answer for this agent. Editing its
-  // options is open to whoever may manage it (its owner or an admin); agent
+  // Every control follows the server's answer for this agent. Who may address
+  // it is open to whoever may manage it (its owner or an admin); agent
   // management and service access stay with the owner alone, because the
-  // agent then acts on the owner's own machines and credentials.
+  // agent then acts on the owner's own machines and credentials. Service
+  // access shows only to its owner: the server answers anyone else's request
+  // for its grants as not found.
   const canManage = agent.can_manage;
 
   return (
@@ -173,7 +177,7 @@ export default function AgentDetailPage() {
             <Divider />
             <OptionsSection
               agent={agent}
-              canEdit={canManage}
+              canEdit={agent.can_edit_options}
               onUpdated={refetch}
             />
           </>
@@ -189,8 +193,12 @@ export default function AgentDetailPage() {
           canEdit={agent.can_change_manage_agents}
           onUpdated={refetch}
         />
-        {agent.can_grant_services && (
-          <ServiceAccessSection agent={agent} onAgentUpdated={refetch} />
+        {capabilities.features.service_connections && (
+          <ServiceAccessSection
+            agent={agent}
+            canGrant={agent.can_grant_services}
+            onAgentUpdated={refetch}
+          />
         )}
         {(agent.can_transfer || agent.transfer_blocked_reason !== null) && (
           <>
