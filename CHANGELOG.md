@@ -124,6 +124,11 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **The server's administrator can delete someone's account.** The Users page
+  has a Delete action (`DELETE /users/{id}`) that removes the account in every
+  workspace, with the same refusals as deleting your own. Administrator
+  accounts and your own account are refused, and every attempt is recorded in
+  the server audit log with its outcome.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package

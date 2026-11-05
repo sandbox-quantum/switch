@@ -302,6 +302,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/users/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/workspace/services/{service}",
       "auth": "session",
       "flags": [
