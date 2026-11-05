@@ -129,12 +129,15 @@ export async function createChat(
     name: string | null;
     requestId: string;
     greeting: string | null;
+    bridgeId?: string | null;
     /** `group` makes a group even of one agent and nobody else. */
     kind?: 'group';
+    /** Only finish the create already made under `requestId`; none is a `NO_SUCH_OPERATION` 404. */
+    resumeOnly?: boolean;
   }
 ): Promise<ChatSummary> {
   const agentIds = input.agentIds ?? [];
-  const body: Record<string, string | string[]> = {
+  const body: Record<string, string | string[] | boolean> = {
     requestId: input.requestId,
   };
   if (agentIds.length === 1) body.agentId = agentIds[0];
@@ -142,7 +145,9 @@ export async function createChat(
   if (input.memberUserIds) body.memberUserIds = input.memberUserIds;
   if (input.name) body.name = input.name;
   if (input.greeting !== null) body.greeting = input.greeting;
+  if (input.bridgeId) body.bridgeId = input.bridgeId;
   if (input.kind) body.kind = input.kind;
+  if (input.resumeOnly) body.resumeOnly = true;
   return (await json(server, '/chats', chatCreatedSchema, { method: 'POST', body })).chat;
 }
 

@@ -5,10 +5,11 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { ChatSummary } from '@shared/core/chats/chats';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { firstNameOf } from './buddy-identity';
 import { buddyIntroStore } from './buddy-intro-store';
 import { buddyPerson } from './buddy-person';
-import { buddyWelcomeMessage } from './buddy-welcome-message';
+import { buddySlackOpener, buddyWelcomeMessage } from './buddy-welcome-message';
 
 /** What the buddy's first chat is called, as on the board; it keeps it. */
 export const BUDDY_CHAT_NAME = 'Welcome';
@@ -44,7 +45,11 @@ async function findOrMakeBuddyChat(
 ): Promise<ChatSummary> {
   const agentId = agent.agentId;
   const direct = (await rpc.chats.list(serverId)).filter(
-    (chat) => chat.channelType === 'direct' && chat.agents.some((member) => member.id === agentId)
+    (chat) =>
+      chat.channelType === 'direct' &&
+      // A chat continued in a messaging app is not the Welcome chat.
+      chat.bridgeType === null &&
+      chat.agents.some((member) => member.id === agentId)
   );
   const existing = direct.find((chat) => chat.name === BUDDY_CHAT_NAME) ?? direct[0];
   if (existing) return existing;
@@ -107,4 +112,74 @@ export async function openBuddyAfterOnboarding(
   }
   buddyIntroStore.skipped();
   appState.navigation.navigate('switchBuddy', { serverId });
+}
+
+/**
+ * The same for every attempt to continue with the buddy on one Slack
+ * connection, so a double click, a second window or a reopened Console all
+ * land on the one chat the server made for the first.
+ */
+export function buddyHandoffRequestId(agentId: string, bridgeId: string): string {
+  return `buddy-handoff:${agentId}:${bridgeId}`;
+}
+
+/** The handoffs under way, by request id: one at a time each. */
+const handingOff = new Map<string, Promise<ChatSummary>>();
+
+function buddyHandoff(serverId: string, agentId: string, bridgeId: string) {
+  return {
+    serverId,
+    agentIds: [agentId],
+    name: null,
+    bridgeId,
+    requestId: buddyHandoffRequestId(agentId, bridgeId),
+    greeting: buddySlackOpener(firstNameOf(buddyPerson(serverId).name)),
+  };
+}
+
+/** Makes the person's private Slack channel with their buddy, the buddy opening it. */
+export function continueBuddyInSlack(
+  serverId: string,
+  agent: { agentId: string },
+  bridgeId: string
+): Promise<ChatSummary> {
+  const params = buddyHandoff(serverId, agent.agentId, bridgeId);
+  const running = handingOff.get(params.requestId);
+  if (running) return running;
+  const made = rpc.chats
+    .create(params)
+    .then((chat) => {
+      chatsStore.add(serverId, chat);
+      return chat;
+    })
+    .finally(() => handingOff.delete(params.requestId));
+  handingOff.set(params.requestId, made);
+  return made;
+}
+
+/**
+ * The buddy's Slack channel on this connection when a hand-off was started
+ * there, finishing it if it was cut short; null when none was. Never makes one.
+ */
+export async function resumeBuddyInSlack(
+  serverId: string,
+  agentId: string,
+  bridgeId: string
+): Promise<ChatSummary | null> {
+  try {
+    const chat = await rpc.chats.create({
+      ...buddyHandoff(serverId, agentId, bridgeId),
+      resumeOnly: true,
+    });
+    chatsStore.add(serverId, chat);
+    return chat;
+  } catch (cause) {
+    if (
+      cause instanceof RpcError &&
+      cause.code === 'ChatApiError' &&
+      cause.stringField('apiCode') === 'NO_SUCH_OPERATION'
+    )
+      return null;
+    throw cause;
+  }
 }

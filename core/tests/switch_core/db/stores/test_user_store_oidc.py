@@ -23,7 +23,7 @@ class TestGetOrCreateOidcUser:
     ) -> None:
         store = UserStore()
         async with session_factory() as session:
-            user = await store.get_or_create_oidc_user(
+            user, created = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="new@example.com",
@@ -33,12 +33,24 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
             )
             await session.commit()
+            assert created is True
             assert user.role == "user"
             assert user.password_hash is None
             assert user.metadata_ is None
 
             again = await store.get_by_oidc_identity(session, iss=_ISS, sub="okta|9")
             assert again is not None and again.id == user.id
+
+            returning, created_again = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="new@example.com",
+                name="New",
+                sub="okta|9",
+                email_verified=True,
+                join_tenant=True,
+            )
+            assert (returning.id, created_again) == (user.id, False)
 
     async def test_new_user_email_is_stored_lowercase(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -48,7 +60,7 @@ class TestGetOrCreateOidcUser:
         # case-insensitive and would have caught a collision either way.
         store = UserStore()
         async with session_factory() as session:
-            user = await store.get_or_create_oidc_user(
+            user, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="New.Person@Example.com",
@@ -65,7 +77,7 @@ class TestGetOrCreateOidcUser:
     ) -> None:
         store = UserStore()
         async with session_factory() as session:
-            first = await store.get_or_create_oidc_user(
+            first, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="a@example.com",
@@ -78,7 +90,7 @@ class TestGetOrCreateOidcUser:
             first.role = "admin"
             await session.commit()
 
-            again = await store.get_or_create_oidc_user(
+            again, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="a@example.com",
@@ -107,7 +119,7 @@ class TestGetOrCreateOidcUser:
             await store.create(session, existing)
             await session.commit()
 
-            linked = await store.get_or_create_oidc_user(
+            linked, created = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="pat@example.com",
@@ -119,6 +131,8 @@ class TestGetOrCreateOidcUser:
             await session.commit()
 
             assert linked.id == existing.id
+            # Linking an account someone already had is not a new account.
+            assert created is False
             # Password login must not be weakened by the link.
             assert linked.password_hash == "bcrypt-hash"
 
@@ -143,7 +157,7 @@ class TestGetOrCreateOidcUser:
             await store.create(session, existing)
             await session.commit()
 
-            linked = await store.get_or_create_oidc_user(
+            linked, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="Pat@Example.com",
@@ -203,7 +217,7 @@ class TestGetOrCreateOidcUser:
         # both resolve back to the same account, never to each other.
         store = UserStore()
         async with session_factory() as session:
-            first = await store.get_or_create_oidc_user(
+            first, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="shared@example.com",
@@ -214,7 +228,7 @@ class TestGetOrCreateOidcUser:
             )
             await session.commit()
 
-            second = await store.get_or_create_oidc_user(
+            second, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="shared@example.com",
@@ -268,7 +282,7 @@ class TestGetOrCreateOidcUser:
         # the same subject can never move the identity to someone else's row.
         store = UserStore()
         async with session_factory() as session:
-            owner = await store.get_or_create_oidc_user(
+            owner, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="owner@example.com",
@@ -288,7 +302,7 @@ class TestGetOrCreateOidcUser:
             await store.create(session, other)
             await session.commit()
 
-            again = await store.get_or_create_oidc_user(
+            again, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="other@example.com",
@@ -317,7 +331,7 @@ class TestGetOrCreateOidcUser:
             session.add(OidcIdentity(user_id=legacy_user.id, iss=None, sub="okta|7"))
             await session.commit()
 
-            got = await store.get_or_create_oidc_user(
+            got, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="legacy@example.com",
@@ -355,7 +369,7 @@ class TestGetOrCreateOidcUser:
             session.add(OidcIdentity(user_id=legacy_admin.id, iss=None, sub="okta|8"))
             await session.commit()
 
-            got = await store.get_or_create_oidc_user(
+            got, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="admin-new@example.com",
@@ -378,7 +392,7 @@ class TestGetOrCreateOidcUser:
             logging.WARNING, logger="switch_core.db.stores.user_store"
         ):
             async with session_factory() as session:
-                user = await store.get_or_create_oidc_user(
+                user, _ = await store.get_or_create_oidc_user(
                     session,
                     iss=_ISS,
                     email="logged@example.com",
@@ -483,7 +497,7 @@ class TestGetOrCreateOidcUser:
         # row instead of surfacing that as a 500.
         store = UserStore()
         async with session_factory() as winner_session:
-            winner = await store.get_or_create_oidc_user(
+            winner, _ = await store.get_or_create_oidc_user(
                 winner_session,
                 iss=_ISS,
                 email="race@example.com",
@@ -508,7 +522,7 @@ class TestGetOrCreateOidcUser:
 
             monkeypatch.setattr(store, "get_by_oidc_identity", lookup_that_misses_once)
 
-            resolved = await store.get_or_create_oidc_user(
+            resolved, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="someone-else@example.com",
@@ -529,7 +543,7 @@ class TestGetOrCreateOidcUser:
         # the winner's row instead of surfacing that as a 500.
         store = UserStore()
         async with session_factory() as winner_session:
-            winner = await store.get_or_create_oidc_user(
+            winner, _ = await store.get_or_create_oidc_user(
                 winner_session,
                 iss=_ISS,
                 email="shared-new@example.com",
@@ -552,7 +566,7 @@ class TestGetOrCreateOidcUser:
 
             monkeypatch.setattr(store, "get_by_email", lookup_that_misses_once)
 
-            resolved = await store.get_or_create_oidc_user(
+            resolved, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="shared-new@example.com",
@@ -586,7 +600,7 @@ class TestProvisioningWithoutJoiningATenant:
     ) -> None:
         store = UserStore()
         async with session_factory() as session:
-            user = await store.get_or_create_oidc_user(
+            user, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="loose@example.com",
@@ -612,7 +626,7 @@ class TestProvisioningWithoutJoiningATenant:
             session.add(existing)
             await session.commit()
 
-            user = await store.get_or_create_oidc_user(
+            user, _ = await store.get_or_create_oidc_user(
                 session,
                 iss=_ISS,
                 email="prior@example.com",

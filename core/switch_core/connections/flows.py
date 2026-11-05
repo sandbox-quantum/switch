@@ -87,6 +87,10 @@ class ServiceFlow:
         return self.stored.service
 
     @property
+    def tenant_id(self) -> str:
+        return self.stored.tenant_id
+
+    @property
     def name(self) -> str:
         return str(self.stored.details["name"])
 
@@ -366,6 +370,13 @@ class ServiceFlows:
             expect=("checking",),
             to="connected",
             changes={"account_label": exchange.account.label, "warning": warning},
+        )
+
+    async def refused(self, flow: ServiceFlow, error: str) -> None:
+        """The browser could not be sent to the vendor: the flow ends with
+        why, for Console to show, rather than waiting until it expires."""
+        await self._flows.advance(
+            flow.stored, expect=("pending",), to="failed", changes={"error": error}
         )
 
     async def failed(self, flow: StoredFlow, error: str) -> None:

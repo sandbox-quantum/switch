@@ -75,7 +75,7 @@ class _FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         pass
 
-    def announce(self, tenant_id: str) -> None:
+    def announce(self, tenant_id: str, client_ids: object = None) -> None:
         return None
 
 

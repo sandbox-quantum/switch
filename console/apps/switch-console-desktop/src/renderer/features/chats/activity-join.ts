@@ -105,6 +105,19 @@ export function settleTurnsByNotices(
 }
 
 /**
+ * When a turn's first step happened, or null before it has one. Switch stores
+ * a step when the host reports it, which can be well after the step. The host
+ * stamps a step with its own clock, at its latest revision, so that time can
+ * be late too. The earliest of both holds up against either.
+ */
+function firstStepAt(turn: TurnActivity): number | null {
+  if (turn.items.length === 0) return null;
+  return Math.min(
+    ...turn.items.flatMap((item) => [Date.parse(item.occurredAt), Date.parse(item.createdAt)])
+  );
+}
+
+/**
  * Where one agent's turns show, by the message each shows under, in message
  * order. A turn shows under the message that started it, unless that message
  * was sent while the agent's previous turn still ran: the turn then runs after
@@ -136,7 +149,7 @@ export function placeTurns(
       const reply = messages.findIndex((each, index) => index > after && shown(each));
       anchor = Math.max(at, reply === -1 ? previous : reply);
     }
-    const firstStep = turn.items[0] ? Date.parse(turn.items[0].createdAt) : null;
+    const firstStep = firstStepAt(turn);
     for (let next = anchor + 1; firstStep !== null && next < messages.length; next++) {
       const each = messages[next];
       if (bound.has(each.messageId) || Date.parse(each.sentAt) >= firstStep) break;
@@ -176,7 +189,7 @@ export function foldTurnEndNotices(
           !claimed.has(each.turnId) &&
           // A notice from before the turn started is about an earlier run of its
           // message (the one a retry ran again), not this one.
-          !(each.items[0] && Date.parse(each.items[0].createdAt) > Date.parse(message.sentAt))
+          !((firstStepAt(each) ?? -Infinity) > Date.parse(message.sentAt))
       );
     if (!turn) return;
     claimed.add(turn.turnId);

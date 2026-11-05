@@ -1,10 +1,11 @@
 """The controller's connection over one WebSocket: the stream's frames down,
-pongs up as beats.
+pongs up as beats, and its agents' calls up and their answers down.
 
-What the stream carries, and what a beat does, are tested against Postgres in
-`test_stream.py` through the same `attach_stream` and `record_beat` the socket
-calls. These cover what is particular to the socket: framing, the ping the
-server drives, and how refusals and evictions are told.
+What the stream carries, what a beat does and what a call answers are tested
+against Postgres in `test_stream.py` and `test_socket_calls.py`, through the
+same `attach_stream`, `record_beat` and `socket_calls.answer` the socket uses.
+These cover what is particular to the socket: framing, the ping the server
+drives, how refusals and evictions are told, and how calls share the socket.
 """
 
 from __future__ import annotations
@@ -25,8 +26,9 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerTakenOverError,
     UnknownControllerConnectionError,
 )
-from switch_core.management import controller_routes
+from switch_core.management import controller_routes, socket_calls
 from switch_core.management.dependencies import (
+    get_authenticator,
     get_management,
     get_management_session_factory,
 )
@@ -57,6 +59,9 @@ class _Calls:
         self.attach_refusal: Exception | None = None
         self.beat_refusal: Exception | None = None
         self.beats: list[dict[str, Any]] = []
+        self.answered: list[dict[str, Any]] = []
+        # Released by a test to let the calls to `slow` finish.
+        self.slow = asyncio.Event()
 
 
 @pytest.fixture
@@ -88,11 +93,28 @@ def client(calls: _Calls, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClien
             raise calls.beat_refusal
         return ["a1"]
 
+    async def answer(
+        message: dict[str, Any], id_: str | int, **kwargs: Any
+    ) -> dict[str, Any]:
+        calls.answered.append(message)
+        if message["operation"] == "slow":
+            await calls.slow.wait()
+        return {
+            "event": "call.result",
+            "data": {
+                "id": id_,
+                "status": 200,
+                "body": {"result": message["operation"]},
+            },
+        }
+
     monkeypatch.setattr(controller_routes, "attach_stream", attach_stream)
     monkeypatch.setattr(controller_routes, "record_beat", record_beat)
+    monkeypatch.setattr(socket_calls, "answer", answer)
     app = FastAPI()
     app.include_router(controller_routes.router)
     app.dependency_overrides[get_protocol] = lambda: None
+    app.dependency_overrides[get_authenticator] = lambda: None
     app.dependency_overrides[get_management] = lambda: None
     app.dependency_overrides[get_management_session_factory] = lambda: None
     with TestClient(_AuthenticatedAs(app)) as test_client:
@@ -190,3 +212,102 @@ def test_another_controllers_socket_is_forbidden(client: TestClient) -> None:
 
     assert refused["data"]["detail"]["code"] == "forbidden"
     assert closed.value.code == 4403
+
+
+def _call(id_: Any, operation: str = "post_message") -> dict[str, Any]:
+    return {
+        "type": "call",
+        "id": id_,
+        "agent_id": "a1",
+        "operation": operation,
+        "arguments": {"body": "hi"},
+        "room_id": "r1",
+    }
+
+
+def test_a_call_is_answered_on_the_socket_by_its_id(
+    client: TestClient, calls: _Calls
+) -> None:
+    with client.websocket_connect(PATH) as socket:
+        socket.send_json(_call("c-1"))
+        answer = _until(socket, "call.result")
+
+    assert answer == {
+        "event": "call.result",
+        "data": {"id": "c-1", "status": 200, "body": {"result": "post_message"}},
+    }
+    assert calls.answered == [_call("c-1")]
+
+
+def test_a_slow_call_holds_up_neither_another_call_nor_the_beat(
+    client: TestClient, calls: _Calls
+) -> None:
+    with client.websocket_connect(PATH) as socket:
+        socket.send_json(_call(1, "slow"))
+        socket.send_json(_call(2))
+        first = _until(socket, "call.result")
+        socket.send_json({"type": "pong", "cursors": {"a1": 3}})
+        _until(socket, "ping")
+        _until(socket, "ping")
+        beats = len(calls.beats)
+        calls.slow.set()
+        second = _until(socket, "call.result")
+
+    assert first["data"]["id"] == 2
+    assert beats == 1
+    assert second["data"]["id"] == 1
+
+
+def test_a_call_over_the_limit_is_refused_without_running(
+    client: TestClient, calls: _Calls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(socket_calls, "MAX_CALLS_IN_FLIGHT", 1)
+    with client.websocket_connect(PATH) as socket:
+        socket.send_json(_call(1, "slow"))
+        socket.send_json(_call(2))
+        refused = _until(socket, "call.result")
+        calls.slow.set()
+        answered = _until(socket, "call.result")
+
+    assert refused["data"]["id"] == 2
+    assert refused["data"]["status"] == 429
+    assert refused["data"]["body"]["error"]["code"] == "capacity_exceeded"
+    assert refused["data"]["body"]["error"]["retryable"] is True
+    assert answered["data"] == {"id": 1, "status": 200, "body": {"result": "slow"}}
+    assert [call["id"] for call in calls.answered] == [1]
+
+
+@pytest.mark.parametrize("id_", [None, True, "", "x" * 65, {"id": 1}])
+def test_a_call_with_no_id_to_answer_by_is_dropped(
+    client: TestClient, calls: _Calls, id_: Any
+) -> None:
+    with client.websocket_connect(PATH) as socket:
+        socket.send_json(_call(id_))
+        socket.send_json(_call("after"))
+        answer = _until(socket, "call.result")
+
+    assert answer["data"]["id"] == "after"
+    assert [call["id"] for call in calls.answered] == ["after"]
+
+
+async def test_an_answer_goes_out_before_the_frames_waiting() -> None:
+    outbox = controller_routes._Outbox(2)
+    await outbox.put_frame({"event": "agent.event", "data": {"n": 1}})
+    await outbox.put_frame({"event": "agent.event", "data": {"n": 2}})
+    third = asyncio.create_task(
+        outbox.put_frame({"event": "agent.event", "data": {"n": 3}})
+    )
+    await asyncio.sleep(0)
+    outbox.put_answer({"event": "call.result", "data": {"id": 1}})
+
+    sent = [await outbox.get(timeout=1) for _ in range(4)]
+    await third
+
+    assert not third.cancelled()
+    assert [frame["event"] if frame else None for frame in sent] == [
+        "call.result",
+        "agent.event",
+        "agent.event",
+        "agent.event",
+    ]
+    assert await outbox.get(timeout=0.01) is None
