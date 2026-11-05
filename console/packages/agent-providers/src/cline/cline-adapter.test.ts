@@ -1,14 +1,20 @@
 import type * as fs from 'node:fs/promises';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { RuntimeMode } from '../adapter';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
+import type * as providerProcess from '../provider-process';
 
 vi.mock('node:fs/promises', async (original) => ({
   ...(await original<typeof fs>()),
   realpath: async (path: string) => path,
+}));
+vi.mock('../provider-process', async (original) => ({
+  ...(await original<typeof providerProcess>()),
+  execProvider: vi.fn(async () => ({ stdout: '{"stopped":true}', stderr: '' })),
 }));
 const spawned: Array<{ server: FakeAppServer; args: string[]; env: Record<string, string> }> = [];
 /** Whether the fake agent has a saved sign-in. */
@@ -47,11 +53,13 @@ const {
   createClineAdapter,
   parseClineSignIn,
 } = await import('./cline-adapter');
+const { execProvider } = await import('../provider-process');
 
 const dirs: string[] = [];
 beforeEach(() => {
   spawned.length = 0;
   agent.signedIn = true;
+  vi.mocked(execProvider).mockClear();
 });
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -60,14 +68,14 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 const providersJson = (providers: Record<string, unknown>) =>
   JSON.stringify({ version: 1, providers });
 
-async function setup(resume = false) {
+async function setup(resume = false, runtimeMode: RuntimeMode = 'approval-required') {
   const adapter = createClineAdapter();
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((e) => events.push(e));
   const session = await adapter.startSession({
     sessionId: 's',
     cwd: '/work',
-    runtimeMode: 'approval-required',
+    runtimeMode,
     env: { PATH: '/bin', SWITCH_TOKEN: 'from-env' },
     mcpServers: {
       switch: {
@@ -113,9 +121,27 @@ it('starts `cline --acp` and hands it the session MCP servers through its own se
     },
   });
   if (process.platform !== 'win32') expect((await stat(path)).mode & 0o777).toBe(0o600);
+  // A hub daemon of its own, found through a file in the same folder.
+  expect(dirname(env.CLINE_HUB_DISCOVERY_PATH!)).toBe(dirname(path));
   await adapter.stopSession('s');
   await flush();
   await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  // This fake never started a daemon, so there was none to stop.
+  expect(execProvider).not.toHaveBeenCalled();
+});
+
+it("stops the session's own Cline hub daemon when the session ends", async () => {
+  const { adapter, env } = await setup();
+  const hub = env.CLINE_HUB_DISCOVERY_PATH!;
+  // The daemon `cline --acp` starts records itself here.
+  await writeFile(hub, '{"pid":1}');
+  await adapter.stopSession('s');
+  expect(execProvider).toHaveBeenCalledWith(
+    expect.any(String),
+    ['hub', 'stop'],
+    expect.objectContaining({ env: expect.objectContaining({ CLINE_HUB_DISCOVERY_PATH: hub }) })
+  );
+  await expect(stat(dirname(hub))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('fails a signed-out start without opening a sign-in, and removes the settings file', async () => {
@@ -184,6 +210,50 @@ it("allows the session's own MCP tools once, and asks for a connector's", async 
   expect(events.some((e) => e.type === 'request.opened')).toBe(true);
 });
 
+it('treats Cline’s edit and command tools as edits and commands, though it marks them `other`', async () => {
+  const { adapter, events, server } = await setup(false, 'auto-accept-edits');
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'fix it' });
+  const options = [
+    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+    { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
+  ];
+  const ask = (id: number, toolCallId: string, title: string) =>
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: { sessionId: 'native', toolCall: { toolCallId, title, kind: 'other' }, options },
+    });
+  for (const [id, title] of [
+    ['p', 'apply_patch: {"input":"*** Begin Patch"}'],
+    ['c', 'run_commands: npm test'],
+  ] as const)
+    server.send({
+      method: 'session/update',
+      params: {
+        sessionId: 'native',
+        update: { sessionUpdate: 'tool_call', toolCallId: id, title, kind: 'other' },
+      },
+    });
+  await flush();
+  expect(
+    events.flatMap((e) => (e.type === 'item.started' ? [[e.item.id, e.item.type]] : []))
+  ).toEqual([
+    ['p', 'file_change'],
+    ['c', 'command_execution'],
+  ]);
+  // Edits go through in auto-accept-edits; a command still asks.
+  ask(92, 'p', 'apply_patch: {"input":"*** Begin Patch"}');
+  ask(93, 'c', 'run_commands: npm test');
+  await flush();
+  expect(server.received.find((m) => m.id === 92)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'allow_once' },
+  });
+  expect(server.received.some((m) => m.id === 93)).toBe(false);
+  expect(events.find((e) => e.type === 'request.opened')).toMatchObject({
+    requestType: 'command_execution_approval',
+  });
+});
+
 it('names the MCP server of a tool call and marks spawned agents as subagents', () => {
   expect(clineMcpServerOf({ toolCallId: '1', title: 'switch__send_message: hi' })).toBe('switch');
   expect(clineMcpServerOf({ toolCallId: '2', title: 'switch__list_members' })).toBe('switch');
@@ -213,6 +283,22 @@ it('writes stdio and HTTP servers in the shape Cline reads', () => {
       web: { type: 'streamableHttp', url: 'https://example.test/mcp', headers: {} },
       local: { type: 'stdio', command: 'tool', args: [], env: { KEY: 'set' } },
     },
+  });
+});
+
+it('quotes a stdio command or argument with a space on Windows, where Cline uses the shell', () => {
+  const server = {
+    transport: 'stdio' as const,
+    command: 'C:\\Program Files\\nodejs\\node.exe',
+    args: ['C:\\My Tools\\server.mjs', '--port', '"already quoted"'],
+  };
+  expect(clineMcpSettings({ local: server }, {}, 'win32').mcpServers.local).toMatchObject({
+    command: '"C:\\Program Files\\nodejs\\node.exe"',
+    args: ['"C:\\My Tools\\server.mjs"', '--port', '"already quoted"'],
+  });
+  expect(clineMcpSettings({ local: server }, {}, 'linux').mcpServers.local).toMatchObject({
+    command: server.command,
+    args: server.args,
   });
 });
 

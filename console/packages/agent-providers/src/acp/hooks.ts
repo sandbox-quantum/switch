@@ -175,6 +175,12 @@ export interface AcpProviderHooks {
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**
+   * The ACP `kind` of a tool call, for an agent that doesn't label its tools
+   * (Cline marks every one `other`). Consulted before the call's own `kind`;
+   * it decides which approval a call needs and the card it shows as.
+   */
+  toolKind?(toolCall: AcpToolCall): string | undefined;
+  /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.
    */

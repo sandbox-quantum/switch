@@ -544,6 +544,7 @@ export class AcpAdapter implements ProviderAdapter {
     const vendor = this.hooks.permission?.(context, request);
     if (vendor) return await vendor;
     const { toolCall } = request;
+    const kind = this.hooks.toolKind?.(toolCall) ?? toolCall.kind;
     const once = request.options.find((option) => option.kind === 'allow_once');
     const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
     // In auto mode whatever automatic review the agent has ran before it
@@ -552,7 +553,7 @@ export class AcpAdapter implements ProviderAdapter {
       once &&
       ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
         state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
+        (state.runtimeMode === 'auto-accept-edits' && kind === 'edit'))
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
@@ -583,9 +584,9 @@ export class AcpAdapter implements ProviderAdapter {
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : kind === 'execute'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
       title: toolCall.title ?? `${this.hooks.label} needs permission`,
@@ -645,6 +646,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
+    const kind = this.hooks.toolKind?.(update) ?? update.kind;
     const server = this.hooks.mcpServerOf?.(update);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
     const text = (update.content ?? [])
@@ -668,9 +670,9 @@ export class AcpAdapter implements ProviderAdapter {
         this.hooks.itemType?.(update) ??
         (server !== undefined || update.toolCallId.startsWith('mcp_')
           ? 'mcp_tool_call'
-          : update.kind === 'execute'
+          : kind === 'execute'
             ? 'command_execution'
-            : update.kind === 'edit'
+            : kind === 'edit'
               ? 'file_change'
               : 'tool_call'),
       title: update.title ?? old?.title ?? 'Tool',

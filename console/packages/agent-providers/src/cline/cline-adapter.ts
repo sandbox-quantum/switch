@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpLaunch, AcpLaunchInput, AcpProviderHooks } from '../acp/hooks';
 import type { AcpToolCall } from '../acp/protocol';
 import type { McpServerSpec } from '../adapter';
+import { execProvider } from '../provider-process';
 import { readiness, signInWith, type ProviderReadiness } from '../readiness';
 
 const CLINE_LOGIN = 'cline auth';
@@ -62,11 +63,18 @@ export function parseClineSignIn(text: string | undefined, path: string): Provid
   return readiness('unauthenticated', signInWith(CLINE_LOGIN));
 }
 
-/** The session's MCP servers in the shape of Cline's `cline_mcp_settings.json`. */
+/**
+ * The session's MCP servers in the shape of Cline's `cline_mcp_settings.json`.
+ * On Windows Cline starts a stdio server through the shell, so a command or
+ * argument with a space in it (`C:\Program Files\nodejs\node.exe`) is quoted.
+ */
 export function clineMcpSettings(
   servers: Record<string, McpServerSpec>,
-  env: Record<string, string>
+  env: Record<string, string>,
+  platform: NodeJS.Platform = process.platform
 ): { mcpServers: Record<string, Record<string, unknown>> } {
+  const part = (value: string) =>
+    platform === 'win32' && /\s/.test(value) && !value.includes('"') ? `"${value}"` : value;
   return {
     mcpServers: Object.fromEntries(
       Object.entries(servers).map(([name, server]) => [
@@ -74,8 +82,8 @@ export function clineMcpSettings(
         server.transport === 'stdio'
           ? {
               type: 'stdio',
-              command: server.command,
-              args: server.args,
+              command: part(server.command),
+              args: server.args.map(part),
               env: {
                 ...Object.fromEntries(
                   (server.envVars ?? [])
@@ -97,6 +105,11 @@ export function clineMcpSettings(
  * `CLINE_MCP_SETTINGS_PATH`. The file holds the servers' bearer tokens, so it
  * is private to this user and removed when the process exits. Pointing Cline
  * at it leaves the person's own MCP settings and sign-ins untouched.
+ *
+ * `cline --acp` runs its sessions in a hub daemon that outlives it, and the
+ * daemon reads `CLINE_MCP_SETTINGS_PATH` once, when it starts. Every session
+ * sharing one daemon would get the first session's servers, so each gets a
+ * daemon of its own (`CLINE_HUB_DISCOVERY_PATH`), stopped with the session.
  */
 export async function clineLaunch({
   binaryPath,
@@ -105,19 +118,41 @@ export async function clineLaunch({
 }: AcpLaunchInput): Promise<AcpLaunch> {
   const dir = await mkdtemp(join(tmpdir(), 'switch-cline-'));
   const settings = join(dir, 'cline_mcp_settings.json');
+  const hub = join(dir, 'hub.json');
   try {
     await writeFile(settings, JSON.stringify(clineMcpSettings(mcpServers, env)), { mode: 0o600 });
   } catch (error) {
     await rm(dir, { recursive: true, force: true });
     throw error;
   }
+  const launchEnv = { ...env, CLINE_MCP_SETTINGS_PATH: settings, CLINE_HUB_DISCOVERY_PATH: hub };
   return {
     command: binaryPath,
     args: ['--acp'],
-    env: { ...env, CLINE_MCP_SETTINGS_PATH: settings },
-    cleanup: () => rm(dir, { recursive: true, force: true }),
+    env: launchEnv,
+    cleanup: async () => {
+      try {
+        if (await exists(hub))
+          await execProvider(binaryPath, ['hub', 'stop'], { env: launchEnv, timeout: 30_000 });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
   };
 }
+
+const exists = (path: string) =>
+  access(path).then(
+    () => true,
+    () => false
+  );
+
+/** The ACP kind of Cline's own tools, which it reports as `other`. */
+const CLINE_TOOL_KINDS = new Map([
+  ['run_commands', 'execute'],
+  ['editor', 'edit'],
+  ['apply_patch', 'edit'],
+]);
 
 /** Cline titles a tool call `<tool>` or `<tool>: <summary of its input>`. */
 function clineToolName(toolCall: AcpToolCall): string {
@@ -170,6 +205,7 @@ export const clineAcp: AcpProviderHooks = {
   sessionMode: () => 'act',
   mcpServerOf: clineMcpServerOf,
   itemType: (toolCall) => (clineToolName(toolCall) === 'spawn_agent' ? 'subagent' : undefined),
+  toolKind: (toolCall) => CLINE_TOOL_KINDS.get(clineToolName(toolCall)),
 };
 
 export function createClineAdapter(options: AcpAdapterOptions = {}): AcpAdapter {
