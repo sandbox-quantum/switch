@@ -576,6 +576,13 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **A file that names nobody now follows the conversation like text does.**
+  A post with one or more files and no mention never reached the room's
+  assigned agent, the agent whose thread it was posted in, or the agent the
+  sender was just talking to, even with follow-ups on; the same words as a
+  text message did. A post is now decided by the same rules, read from its
+  first file's caption and thread, and the agent gets the post with every
+  file on it, in that thread.
 - **The dashboard offers only the room changes the server would allow.** On
   a publicly writable room, the default, anyone could change the Access
   setting and press Save, only for the server to refuse it. Someone who could
