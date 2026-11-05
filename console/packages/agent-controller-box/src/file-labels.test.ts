@@ -77,9 +77,23 @@ describe('topLevelLabels', () => {
       { name: 'b'.repeat(255), directory: `${ROOT}/max-one` },
     ]);
     expect(agentFor(labels, 'long-one')).toBeUndefined();
-    expect(labelFor(labels, 'long-one')).toBe(long);
+    // The label is kept, cut to Core's 255 characters.
+    expect(labelFor(labels, 'long-one')).toBe('a'.repeat(255));
     expect(agentFor(labels, 'odd-one')).toBeUndefined();
     expect(labelFor(labels, 'odd-one')).toBe('Upper_Case');
     expect(agentFor(labels, 'max-one')).toBe('b'.repeat(255));
+  });
+
+  it('cuts a long display label to 255 whole characters, never mid-character', () => {
+    const emoji = '😀'.repeat(300); // each is two UTF-16 units, one character
+    const labels = topLevelLabels(ROOT, [
+      { name: 'writer', displayName: emoji, directory: null },
+      { name: 'short', displayName: 'Short name', directory: null },
+    ]);
+    const cut = labelFor(labels, 'writer');
+    expect(Array.from(cut)).toHaveLength(255);
+    expect(cut).toBe('😀'.repeat(255));
+    expect(agentFor(labels, 'writer')).toBe('writer');
+    expect(labelFor(labels, 'short')).toBe('Short name');
   });
 });

@@ -54,9 +54,19 @@ export function topLevelLabels(
   return labels;
 }
 
-/** The label for one top-level folder name, given the map `topLevelLabels` made. */
+/** The most characters a label carries: Core's limit on an entry's `label`. */
+const LABEL_MAX = 255;
+
+/**
+ * The label for one top-level folder name, given the map `topLevelLabels` made.
+ * Cut to 255 characters (whole code points, never mid-character), so one long
+ * display name can't fail a whole listing in Core.
+ */
 export function labelFor(labels: ReadonlyMap<string, FolderLabel>, folder: string): string {
-  return labels.get(folder)?.label ?? SHARED_LABEL;
+  const label = labels.get(folder)?.label;
+  if (label === undefined) return SHARED_LABEL;
+  const points = Array.from(label);
+  return points.length <= LABEL_MAX ? label : points.slice(0, LABEL_MAX).join('');
 }
 
 /** The agent whose working folder this is, by its stable name, or undefined for a "Shared" one. */
