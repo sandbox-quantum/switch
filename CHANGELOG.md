@@ -147,6 +147,21 @@ version of their own to them without also giving them a release of their own.
   history is kept, and the deletion is recorded in the server audit log. The
   server's default workspace can't be deleted. Deleting your account now also
   deletes a workspace you leave empty.
+- **The Dropbox connection.** A person connects Dropbox from Switch Console
+  and an agent reaches their files through Dropbox's own MCP server, at the
+  least access its work needs: reading is account info, file metadata and
+  file content; writing adds file content. Dropbox's registration endpoint
+  rewrites the redirect addresses it is given to port-less `localhost` ones,
+  so each server's operator registers a Dropbox app and saves it under
+  Connector apps, or names it in `DROPBOX_CLIENT_CONFIG_PATH` (#839).
+  Dropbox's revocation endpoint is not RFC 7009 (it wants a bearer token and
+  no body), so disconnecting tells the person where in Dropbox to remove the
+  app, as for any OAuth service without revocation.
+- **An OAuth entry's identity call names its method.** `identity` takes
+  `method: GET` or `POST`; a POST may carry a `body` and sends none without
+  one, and a GET with a body is refused. Existing entries say `method: GET`.
+  A connection may also ask for `token_access_type`, which Dropbox needs to
+  hand out a refresh token (#839).
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
