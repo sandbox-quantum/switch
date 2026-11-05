@@ -6,6 +6,7 @@ import {
   filterLibraryItems,
   libraryPermissions,
   NO_LIBRARY_FILTER,
+  offeredLibraryFilter,
   parseUrls,
   typeOptions,
   visibilityOf,
@@ -101,6 +102,13 @@ describe('filterLibraryItems', () => {
 
   it('shows nothing as yours to a viewer it does not know', () => {
     expect(filterLibraryItems(items, { ...NO_LIBRARY_FILTER, mineOnly: true }, null)).toEqual([]);
+  });
+
+  it('applies a type only while it is offered', () => {
+    const picked = { ...NO_LIBRARY_FILTER, type: 'jira' };
+    expect(offeredLibraryFilter(picked, [{ value: 'jira' }]).type).toBe('jira');
+    expect(offeredLibraryFilter(picked, [{ value: 'github' }]).type).toBeNull();
+    expect(offeredLibraryFilter(picked, []).type).toBeNull();
   });
 
   it('offers each type once, by its name', () => {

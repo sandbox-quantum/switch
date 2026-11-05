@@ -24,6 +24,7 @@ import {
   KIND_TEXT,
   libraryPermissions,
   NO_LIBRARY_FILTER,
+  offeredLibraryFilter,
   typeOptions,
 } from './library-model';
 import { libraryItemsKey } from './library-queries';
@@ -78,8 +79,10 @@ const LibraryPanel = observer(function LibraryPanel() {
   const text = KIND_TEXT[kind];
   const all = items.data ?? [];
   const types = kind === 'references' ? typeOptions(all) : [];
-  // A type picked on References means nothing on Documents.
-  const applied = { ...filter, type: kind === 'references' ? filter.type : null };
+  // A type applies only while it is on offer: not on Documents, and not once
+  // the last reference of that type is gone (the filter would hide everything
+  // with no option showing it is on), as the Rooms filters do.
+  const applied = offeredLibraryFilter(filter, types);
   const shown = filterLibraryItems(all, applied, viewer.id);
   const filtering = applied.mineOnly || applied.query.trim() !== '' || applied.type !== null;
 

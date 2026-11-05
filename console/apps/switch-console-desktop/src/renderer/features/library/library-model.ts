@@ -94,6 +94,15 @@ export type LibraryFilter = {
 
 export const NO_LIBRARY_FILTER: LibraryFilter = { mineOnly: false, query: '', type: null };
 
+/** `filter` with its type kept only if `types` still offers it. */
+export function offeredLibraryFilter(
+  filter: LibraryFilter,
+  types: readonly { value: string }[]
+): LibraryFilter {
+  const offered = filter.type !== null && types.some((each) => each.value === filter.type);
+  return { ...filter, type: offered ? filter.type : null };
+}
+
 /** The items the filter row lets through, by name. */
 export function filterLibraryItems(
   items: readonly LibraryItem[],
