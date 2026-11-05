@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { deleteDescription } from './delete-description';
+import { confirmedWithdraw, deleteDescription } from './delete-description';
 
 const BASE = 'Its machine stops it and it is deleted from Switch, for every room it is in.';
 
@@ -43,5 +43,12 @@ describe('deleteDescription', () => {
     expect(deleteDescription(a, [a], false)).toBe(BASE);
     const mac = agent('m', 'claude', 'console');
     expect(deleteDescription(mac, [mac], true)).toBe(BASE);
+  });
+
+  it('passes what the confirm said about the login with the delete', () => {
+    const a = agent('a', 'claude');
+    expect(confirmedWithdraw(a, [a], true)).toBe(true);
+    expect(confirmedWithdraw(a, [a, agent('b', 'claude')], true)).toBe(false);
+    expect(confirmedWithdraw(a, [a], false)).toBeUndefined();
   });
 });

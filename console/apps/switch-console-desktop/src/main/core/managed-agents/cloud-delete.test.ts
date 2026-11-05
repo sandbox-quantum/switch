@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { type CloudDeleteSteps, deleteMindingBoxLogin, LoginStillOnBoxError } from './cloud-delete';
+import {
+  CloudDeleteChangedError,
+  type CloudDeleteSteps,
+  deleteMindingBoxLogin,
+  LoginStillOnBoxError,
+} from './cloud-delete';
 
 const onBox = (agentId: string, provider: string, controllerId: string | null = 'c-box') => ({
   agentId,
@@ -98,5 +103,26 @@ describe('deleteMindingBoxLogin', () => {
     const { calls, all } = steps([onBox('a', 'claude')], { boxControllerId: async () => null });
     await deleteMindingBoxLogin('a', all);
     expect(calls).toEqual(['list agents', 'delete agent']);
+  });
+
+  it('asks again, doing nothing, when the box changed since the confirm', async () => {
+    // The confirm said the login stays (another agent used it); that agent is gone now.
+    const keep = steps([onBox('a', 'claude')]);
+    await expect(deleteMindingBoxLogin('a', keep.all, false)).rejects.toBeInstanceOf(
+      CloudDeleteChangedError
+    );
+    expect(keep.calls).toEqual(['list agents']);
+    // The confirm said it goes; another agent has started using it since.
+    const go = steps([onBox('a', 'claude'), onBox('b', 'claude')]);
+    await expect(deleteMindingBoxLogin('a', go.all, true)).rejects.toBeInstanceOf(
+      CloudDeleteChangedError
+    );
+    expect(go.calls).toEqual(['list agents']);
+  });
+
+  it('goes ahead when the fresh read matches the confirm', async () => {
+    const { calls, all } = steps([onBox('a', 'claude')]);
+    expect(await deleteMindingBoxLogin('a', all, true)).toBe('claude');
+    expect(calls.at(-1)).toBe('delete agent');
   });
 });

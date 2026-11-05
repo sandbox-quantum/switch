@@ -483,7 +483,12 @@ export const managedAgentsController = createRPCController({
    * managing it first would leave the agent behind if the delete then failed.
    * An agent this Console moved to managed also loses the Console row it was
    * moved from; a failure there is left to the next automatic pass. */
-  remove: async (params: { serverId: string; agentId: string }): Promise<void> => {
+  remove: async (params: {
+    serverId: string;
+    agentId: string;
+    /** What the confirm said about the box's login (cloud agents, hosted agents v2), if anything. */
+    confirmedWithdraw?: boolean;
+  }): Promise<void> => {
     // On a cloud box with hosted agents v2, the box's login for the agent's
     // provider goes with its last agent there (as Switch web does it).
     await withReachableServerWorkspaceSession(params.serverId, (server) =>
@@ -510,7 +515,7 @@ export const managedAgentsController = createRPCController({
           }
         },
         deleteAgent: () => deleteAgent(server, params.agentId),
-      })
+      }, params.confirmedWithdraw)
     );
     await agentMigrationService
       .forgetDeleted(params.serverId, params.agentId)

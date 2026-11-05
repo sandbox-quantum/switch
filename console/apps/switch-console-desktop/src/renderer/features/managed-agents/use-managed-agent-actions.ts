@@ -7,7 +7,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { deleteDescription } from './delete-description';
+import { confirmedWithdraw, deleteDescription } from './delete-description';
 import { managedAgentLabel } from './managed-agent-state';
 import { MANAGED_AGENTS_KEY, useManagedAgents } from './use-managed-agents';
 
@@ -52,7 +52,11 @@ export function useManagedAgentActions(agent: ManagedAgentView) {
       confirmLabel: 'Delete',
       onSuccess: () =>
         void act(`${label} could not be deleted.`, async () => {
-          await rpc.managedAgents.remove({ serverId: agent.serverId, agentId: agent.agentId });
+          await rpc.managedAgents.remove({
+            serverId: agent.serverId,
+            agentId: agent.agentId,
+            confirmedWithdraw: confirmedWithdraw(agent, agents, hostedV2),
+          });
           // Its name is free again: the New agent form checks names against this list.
           await queryClient.invalidateQueries({ queryKey: ['workspace-agents'] });
           navigate('serverAgents', { serverId: agent.serverId });
