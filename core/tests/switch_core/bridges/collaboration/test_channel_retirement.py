@@ -51,6 +51,7 @@ def test_every_platform_declares_what_deleting_a_room_does() -> None:
         "whatsapp": "kept",
         "google_chat": "left",
         "zulip": "left",
+        "matrix": "left",
     }
 
 
