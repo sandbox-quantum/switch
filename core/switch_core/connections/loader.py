@@ -20,6 +20,10 @@ entry names the fields a person pastes and the call that checks them
 (``auth.api_key``), and how the session host puts them into each MCP request's
 headers or each CLI run's environment, by template. Placeholder entries may
 leave all of those out.
+
+An ``oauth`` entry may also name other levels a server can choose in place of
+its own (``access_profiles``, chosen in ``SERVICE_ACCESS_PROFILES``), each with
+the skill file sessions are then given.
 """
 
 import re
@@ -78,6 +82,11 @@ class OAuthClient(BaseModel):
     themselves, and what the sign-in does until they do, said whenever Switch
     drops one it cannot revoke.
 
+    `revocation_ends_grant`: revoking any of an account's sign-ins through
+    the client ends all of them, as Google's does. A reconnect to the same
+    account through the same client then does not revoke the sign-in it
+    replaces, as that would end the new one too.
+
     `unchecked`: what a static client's operator must see to themselves,
     because asking the vendor about the client cannot show it; said with every
     check that passes.
@@ -112,6 +121,7 @@ class OAuthClient(BaseModel):
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
+    revocation_ends_grant: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
 
     @model_validator(mode="after")
@@ -147,6 +157,12 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
+            )
+        if self.revocation_ends_grant and (
+            self.revocation_url is None and not self.revocation_discovered
+        ):
+            raise ValueError(
+                "revocation_ends_grant is for a vendor Switch revokes sign-ins at"
             )
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
@@ -514,6 +530,17 @@ class ConnectionAccess(BaseModel):
     write: LevelAccess | None = None
 
 
+class AccessProfile(BaseModel):
+    """Levels a server may choose for an entry in place of its own
+    (`SERVICE_ACCESS_PROFILES`), and the skill file, under `skill/`, that says
+    what they reach. For a vendor that reviews an app before it may ask for
+    some scopes: a server whose app has not passed can still offer the rest."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    access: ConnectionAccess
+    skill: str = Field(pattern=SKILL_PATH_RE.pattern)
+
+
 class ConnectionTools(BaseModel):
     """The service's tools by level.
 
@@ -554,6 +581,9 @@ class ConnectionDefinition(BaseModel):
     mcp: ConnectionMcp | None = None
     cli: ConnectionCli | None = None
     access: ConnectionAccess | None = None
+    access_profiles: dict[
+        Annotated[str, Field(pattern=SLUG_PATTERN)], AccessProfile
+    ] = Field(default_factory=dict)
     tools: ConnectionTools | None = None
 
     @model_validator(mode="after")
@@ -579,6 +609,8 @@ class ConnectionDefinition(BaseModel):
             self._check_oauth()
         elif self.adapter == "api_key":
             self._check_api_key()
+        if self.access_profiles:
+            self._check_access_profiles()
         if self.adapter != "api_key":
             if self.auth.api_key is not None:
                 raise ValueError("only the api_key adapter has key fields")
@@ -587,6 +619,26 @@ class ConnectionDefinition(BaseModel):
             if self.cli is not None and self.cli.env is not None:
                 raise ValueError("only an api_key entry's tool takes env templates")
         return self
+
+    def _check_access_profiles(self) -> None:
+        # A placeholder ships no skill, so it has none for a profile to name.
+        if not self.enabled:
+            raise ValueError("only an enabled entry has access profiles")
+        if self.adapter != "oauth" or self.access is None:
+            raise ValueError(
+                "only an oauth entry with access levels has access profiles"
+            )
+        for name, profile in self.access_profiles.items():
+            # A grant keeps its level when the server changes profile.
+            if (profile.access.write is None) != (self.access.write is None):
+                raise ValueError(
+                    f"access profile {name} must name the levels the entry does"
+                )
+            if any(
+                level is not None and level.scopes is None
+                for level in (profile.access.read, profile.access.write)
+            ):
+                raise ValueError(f"access profile {name}'s levels name OAuth scopes")
 
     def _check_api_key(self) -> None:
         if self.auth.type != "api_key":
@@ -756,7 +808,13 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
         files[relative] = content
     if "SKILL.md" not in files:
         raise CatalogError(f"Connection {slug} is enabled but has no skill/SKILL.md.")
-    match = FRONTMATTER_RE.match(files["SKILL.md"])
+    _check_frontmatter(slug, "SKILL.md", files["SKILL.md"])
+    return files
+
+
+def _check_frontmatter(slug: str, relative: str, content: str) -> None:
+    """A file sessions are given as the entry's skill names it."""
+    match = FRONTMATTER_RE.match(content)
     frontmatter = yaml.safe_load(match.group(1)) if match else None
     if (
         not isinstance(frontmatter, dict)
@@ -765,9 +823,8 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
         or not frontmatter["description"]
     ):
         raise CatalogError(
-            f"Connection {slug} SKILL.md needs frontmatter with name: {slug} and a description."
+            f"Connection {slug} {relative} needs frontmatter with name: {slug} and a description."
         )
-    return files
 
 
 def load_catalog(root: Path) -> dict[str, Connection]:
@@ -799,6 +856,13 @@ def load_catalog(root: Path) -> dict[str, Connection]:
                     f"Connection {definition.slug} is enabled but has no skill."
                 )
             files = _load_skill(definition.slug, skill)
+            for name, profile in definition.access_profiles.items():
+                if profile.skill not in files:
+                    raise CatalogError(
+                        f"Connection {definition.slug} access profile {name} names "
+                        f"a skill file it does not ship: {profile.skill}"
+                    )
+                _check_frontmatter(definition.slug, profile.skill, files[profile.skill])
         else:
             if skill.exists():
                 raise CatalogError(
@@ -810,6 +874,36 @@ def load_catalog(root: Path) -> dict[str, Connection]:
         raise CatalogError("The connection catalog is empty.")
     _check_server_names(catalog)
     return catalog
+
+
+def with_access_profiles(
+    catalog: dict[str, Connection], chosen: dict[str, str]
+) -> dict[str, Connection]:
+    """`catalog` as a server offers it: each entry in `chosen` reaching what
+    the access profile it names does, with that profile's skill. A service or
+    profile the catalog does not have stops the server."""
+    offered = dict(catalog)
+    for slug, name in chosen.items():
+        entry = catalog.get(slug)
+        if entry is None:
+            raise CatalogError(
+                f"SERVICE_ACCESS_PROFILES names a service not in the catalog: {slug}"
+            )
+        profile = entry.definition.access_profiles.get(name)
+        if profile is None:
+            known = ", ".join(sorted(entry.definition.access_profiles)) or "none"
+            raise CatalogError(
+                f"SERVICE_ACCESS_PROFILES names an access profile {slug} does not "
+                f"have: {name!r} (it has: {known})"
+            )
+        offered[slug] = Connection(
+            definition=entry.definition.model_copy(update={"access": profile.access}),
+            skill_files={
+                **entry.skill_files,
+                "SKILL.md": entry.skill_files[profile.skill],
+            },
+        )
+    return offered
 
 
 def session_server_names(definition: ConnectionDefinition) -> list[str]:

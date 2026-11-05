@@ -104,7 +104,11 @@ export default function PackageDetailPage() {
         <Divider />
         <PackageMembersSection packageId={id} canMutate={canMutate} />
         <Divider />
-        <ResourceAttachmentsSection kind="package" resourceId={id} />
+        <ResourceAttachmentsSection
+          kind="package"
+          resourceId={id}
+          hiddenRoomsCount={pkg.hidden_rooms_count}
+        />
         {canMutate && (
           <>
             <Divider />
@@ -118,6 +122,7 @@ export default function PackageDetailPage() {
         kind="package"
         resourceId={id}
         resourceLabel={pkg.name || id}
+        hiddenRoomsCount={pkg.hidden_rooms_count}
         onClose={() => setDeleteOpen(false)}
         onDeleted={() => navigate("/resources?tab=packages")}
       />

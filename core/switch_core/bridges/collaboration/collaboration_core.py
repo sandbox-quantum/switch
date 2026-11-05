@@ -1306,6 +1306,9 @@ class CollaborationCore:
                         else None
                     ),
                     metered=True,
+                    extra_content=(
+                        {SENDER_IS_APP_MARKER: True} if msg.sender_is_app else None
+                    ),
                 )
             if event_id is None:
                 logger.error(

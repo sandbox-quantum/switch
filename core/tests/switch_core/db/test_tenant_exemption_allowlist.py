@@ -137,6 +137,16 @@ _ALLOWED_MODULES = {
     # the flow's tenant, and the flow is then read scoped to it, so a wrong
     # answer is a missing flow rather than a cross-tenant read.
     "switch_core.connections.sign_in_flows",
+    # A WorkOS sign-in names the WorkOS organizations the person belongs to;
+    # which Switch organizations follow them has to be read before any is
+    # bound, and the membership is then written with that organization bound,
+    # so a wrong answer is a missing row rather than a write into another
+    # organization.
+    "switch_core.organization_mirror",
+    # The WorkOS mirror acts for no tenant and no person: which organizations
+    # are linked is read before any is bound, and each is then read and
+    # written with it bound.
+    "switch_core.workos_mirror",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
@@ -237,6 +247,15 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
     # deployment, so there is no tenant for a policy to narrow on.
     "switch_core.trust.client",
+    # The operator's account linking reads `users` and writes
+    # `oidc_identities`, both global (`rls_ddl.GLOBAL_TABLES`): a person and
+    # their sign-in identities belong to no tenant. Its organization linking
+    # binds the organization (`organization_session`).
+    "switch_core.workos_linking",
+    # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
+    # and reads `oidc_identities` to match people, both global
+    # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.
+    "switch_core.workos_mirror",
     #
     # ── The OAuth client Core registers for itself at a vendor that offers
     # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The
