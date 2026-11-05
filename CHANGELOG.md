@@ -304,9 +304,11 @@ version of their own to them without also giving them a release of their own.
   were only cleared when their account was deleted. They now pass to the
   admin removing them, or, when the removal comes from the organization's
   directory or from an operator who is not a member, to the workspace's
-  longest-standing other admin. Each is audited as an ownership transfer.
-  Chats, a room's own documents and a template whose name the admin already
-  uses stay as they were, and a member who owns agents still can't be removed
+  longest-standing other admin. The same happens in a workspace an
+  organization admin reached only through that role, when they lose it. Each
+  is audited as an ownership transfer. Chats, a room's own documents and a
+  template whose name the admin already uses, in any workspace, stay as they
+  were, and a member who owns agents still can't be removed
   until those are transferred or deleted.
 - **One role runs a workspace: owner merges into admin.** Every workspace
   `owner` becomes an `admin`, and every admin now manages every member, other

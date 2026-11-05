@@ -84,8 +84,11 @@ async def end_organization_admin_access(
     """In workspace `tenant_id`, bound on `session`, where `user_id` stands
     only as their organization's `org_admin`: remove their keys, service
     connections and sign-ins under way, recorded in its audit log with
-    `details`; `keep_agent_keys` as `revoke_workspace_access` has it. Raises
-    `ServiceError` when a connection is busy."""
+    `details`; `keep_agent_keys` as `revoke_workspace_access` has it.
+
+    What they own there passes to an heir, as `remove_membership` does it,
+    since they can no longer reach it either. Raises `ServiceError` when a
+    connection is busy."""
     revoked = await revoke_workspace_access(
         session,
         user_id,
@@ -93,6 +96,13 @@ async def end_organization_admin_access(
         broker=revocation.broker,
         sign_in_flows=revocation.sign_in_flows,
         keep_agent_keys=keep_agent_keys,
+    )
+    heir, handed = await _hand_over_to_heir(
+        session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        actor_id=actor_id,
+        reason="organization_admin_access_ended",
     )
     await record_audit_event(
         session,
@@ -105,6 +115,8 @@ async def end_organization_admin_access(
             **details,
             "api_keys_deleted": len(revoked.key_hashes),
             "service_connections_deleted": len(revoked.removed_services),
+            "handed_over_to": heir,
+            "handed_over": handed,
         },
     )
     return revoked
@@ -137,17 +149,13 @@ async def remove_membership(
         sign_in_flows=revocation.sign_in_flows,
         keep_agent_keys=keep_agent_keys,
     )
-    heir = await removal_heir(session, membership, actor_id)
-    handed: dict[str, int] = {}
-    if heir is not None:
-        handed = await hand_over_everything(
-            session,
-            tenant_id=membership.tenant_id,
-            previous_owner_id=membership.user_id,
-            heir_id=heir,
-            actor_id=actor_id,
-            reason="member_removed",
-        )
+    heir, handed = await _hand_over_to_heir(
+        session,
+        tenant_id=membership.tenant_id,
+        user_id=membership.user_id,
+        actor_id=actor_id,
+        reason="member_removed",
+    )
     await record_audit_event(
         session,
         tenant_id=membership.tenant_id,
@@ -168,26 +176,60 @@ async def remove_membership(
     return revoked
 
 
+async def _hand_over_to_heir(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    user_id: str,
+    actor_id: str | None,
+    reason: str,
+) -> tuple[str | None, dict[str, int]]:
+    """Hand what `user_id` owns in `tenant_id` to their `removal_heir`, for
+    `reason`. Returns the heir, or None when there is none and nothing moved,
+    and how many of each kind passed."""
+    heir = await removal_heir(session, tenant_id, user_id, actor_id)
+    if heir is None:
+        return None, {}
+    handed = await hand_over_everything(
+        session,
+        tenant_id=tenant_id,
+        previous_owner_id=user_id,
+        heir_id=heir,
+        actor_id=actor_id,
+        reason=reason,
+    )
+    return heir, handed
+
+
 async def removal_heir(
-    session: AsyncSession, membership: TenantMember, actor_id: str | None
+    session: AsyncSession, tenant_id: str, user_id: str, actor_id: str | None
 ) -> str | None:
-    """Who takes over what a removed member owns: the person removing them,
-    when they are a member of the workspace themselves; otherwise, as for a
-    removal the organization's directory made or the server's operator made
-    from outside, the longest-standing other admin, then the lowest id. None
-    when the workspace has no other admin, and what they own stays theirs."""
-    if actor_id is not None and actor_id != membership.user_id:
-        if await session.get(TenantMember, (membership.tenant_id, actor_id)):
+    """Who takes over what `user_id` owns in `tenant_id` when they lose access
+    to it: the person removing them, when they are a member of the workspace
+    themselves; otherwise, as for a removal the organization's directory made
+    or the server's operator made from outside, the longest-standing other
+    admin, then the lowest id. None when the workspace has no other admin, and
+    what they own stays theirs.
+
+    The heir's membership is locked until the caller commits, so a removal of
+    the heir running at the same time waits for this one and then finds what
+    was handed to them, rather than leaving it with someone already gone."""
+    if actor_id is not None and actor_id != user_id:
+        actor = await session.get(
+            TenantMember, (tenant_id, actor_id), with_for_update=True
+        )
+        if actor is not None:
             return actor_id
     heir: str | None = await session.scalar(
         select(TenantMember.user_id)
         .where(
-            TenantMember.tenant_id == membership.tenant_id,
-            TenantMember.user_id != membership.user_id,
+            TenantMember.tenant_id == tenant_id,
+            TenantMember.user_id != user_id,
             TenantMember.role == "admin",
         )
         .order_by(TenantMember.created_at, TenantMember.user_id)
         .limit(1)
+        .with_for_update()
     )
     return heir
 

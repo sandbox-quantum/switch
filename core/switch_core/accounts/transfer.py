@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast, get_args
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from switch_core.authz import Principal, can_manage
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -357,13 +358,6 @@ async def hand_over_everything(
     conversation; a room's own document, which goes with its room; and a
     template whose name the heir already uses. The caller commits."""
     handed: dict[str, int] = {}
-    clashing = set(
-        await session.scalars(
-            select(Template.name).where(
-                Template.tenant_id == tenant_id, Template.owner_id == heir_id
-            )
-        )
-    )
     for kind, model in _HANDED_OVER:
         rows: list[Owned] = list(
             await session.scalars(
@@ -380,9 +374,11 @@ async def hand_over_everything(
                 continue
             if isinstance(row, Document) and row.room_id is not None:
                 continue
-            if isinstance(row, Template) and row.name in clashing:
-                continue
-            row.owner_id = heir_id
+            if isinstance(row, Template):
+                if not await _template_passes(session, row, heir_id):
+                    continue
+            else:
+                row.owner_id = heir_id
             await record_audit_event(
                 session,
                 tenant_id=tenant_id,
@@ -400,3 +396,19 @@ async def hand_over_everything(
             handed[kind] = handed.get(kind, 0) + 1
     await session.flush()
     return handed
+
+
+async def _template_passes(
+    session: AsyncSession, template: Template, heir_id: str
+) -> bool:
+    """Make `heir_id` the owner of `template` unless they already have a
+    template by its name. Template names are unique per owner across every
+    workspace, and this session sees only its own, so the clash is found by
+    trying: in a savepoint, which a clash rolls back alone."""
+    try:
+        async with session.begin_nested():
+            template.owner_id = heir_id
+            await session.flush()
+    except IntegrityError:
+        return False
+    return True

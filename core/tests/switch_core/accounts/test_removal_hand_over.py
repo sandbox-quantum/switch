@@ -16,6 +16,7 @@ from switch_core.db.models import (
     Document,
     Package,
     Reference,
+    ReferenceType,
     Room,
     Template,
     TenantMember,
@@ -24,6 +25,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.organization_access import removal_heir
 from tests.switch_core.gateway.test_tenant_api_routes import (
     TENANT_A,
+    TENANT_B,
     _app,
     _client,
     _make_member,
@@ -98,8 +100,35 @@ async def test_the_admin_removing_a_member_takes_over_what_they_own(
         admins = Template(
             owner_id=admin_id, name="same", description="", kind="room", content="z"
         )
+        clashing_elsewhere = Template(
+            owner_id=member_id,
+            name="elsewhere",
+            description="",
+            kind="room",
+            content="w",
+        )
+        reference_type = ReferenceType(
+            type="ticket",
+            owner_id=member_id,
+            read_visibility="public",
+            write_visibility="private",
+            display_name="Ticket",
+            instructions="",
+            value_hint="",
+        )
         session.add_all(
-            [package, reference, room, chat, library, template, clashing, admins]
+            [
+                package,
+                reference,
+                reference_type,
+                room,
+                chat,
+                library,
+                template,
+                clashing,
+                clashing_elsewhere,
+                admins,
+            ]
         )
         await session.flush()
         in_chat = _library_document(member_id, room_id=chat.id)
@@ -113,6 +142,21 @@ async def test_the_admin_removing_a_member_takes_over_what_they_own(
             Template: template.id,
         }
         kept = {Room: chat.id, Document: in_chat.id, Template: clashing.id}
+        kept_elsewhere = clashing_elsewhere.id
+    # Template names are unique per owner across workspaces, and the removal's
+    # session can't see this one in another workspace.
+    await _make_tenant(session_factory, TENANT_B)
+    async with tenant_session(session_factory, TENANT_B) as session:
+        session.add(
+            Template(
+                owner_id=admin_id,
+                name="elsewhere",
+                description="",
+                kind="room",
+                content="v",
+            )
+        )
+        await session.commit()
 
     token = _token(admin_id, "remover@example.invalid", TENANT_A)
     async with _client(_app(session_factory), token) as client:
@@ -130,6 +174,25 @@ async def test_the_admin_removing_a_member_takes_over_what_they_own(
                 select(model.owner_id).where(model.id == row_id)
             )
             assert owner == member_id, model.__name__
+        assert (
+            await session.scalar(
+                select(Template.owner_id).where(Template.id == kept_elsewhere)
+            )
+            == member_id
+        )
+        assert (
+            await session.scalar(
+                select(ReferenceType.owner_id).where(ReferenceType.type == "ticket")
+            )
+            == admin_id
+        )
+        typed = await session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.action == "ownership.transferred",
+                AuditEvent.target_type == "reference_type",
+            )
+        )
+        assert typed is not None and typed.target_id == "ticket"
         moved = await session.scalar(
             select(AuditEvent).where(AuditEvent.target_id == package.id)
         )
@@ -150,6 +213,7 @@ async def test_the_admin_removing_a_member_takes_over_what_they_own(
             "room": 1,
             "package": 1,
             "reference": 1,
+            "reference_type": 1,
             "document": 1,
             "template": 1,
         }
@@ -184,11 +248,9 @@ async def test_from_outside_the_workspace_the_longest_standing_admin_takes_over(
             row.created_at = when  # type: ignore[assignment]
         await session.commit()
 
-        membership = await session.get(TenantMember, (TENANT_A, leaving))
-        assert membership is not None
-        assert await removal_heir(session, membership, outsider) == first
-        assert await removal_heir(session, membership, None) == first
-        assert await removal_heir(session, membership, later) == later
+        assert await removal_heir(session, TENANT_A, leaving, outsider) == first
+        assert await removal_heir(session, TENANT_A, leaving, None) == first
+        assert await removal_heir(session, TENANT_A, leaving, later) == later
 
 
 async def test_with_no_other_admin_what_they_own_stays_theirs(
@@ -199,6 +261,4 @@ async def test_with_no_other_admin_what_they_own_stays_theirs(
         session_factory, name="leaving", tenant_id=TENANT_A, role="member"
     )
     async with tenant_session(session_factory, TENANT_A) as session:
-        membership = await session.get(TenantMember, (TENANT_A, leaving))
-        assert membership is not None
-        assert await removal_heir(session, membership, None) is None
+        assert await removal_heir(session, TENANT_A, leaving, None) is None
