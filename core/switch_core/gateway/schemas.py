@@ -721,6 +721,12 @@ class BridgeDetail(BaseModel):
     # which is then what stands between this connection and its events.
     receives_webhooks: bool = False
     webhook_url: str | None = None
+    # What the caller may do with it: change its settings, Teams placement
+    # and confirmation rules, or delete it — a workspace admin. That chats
+    # still connected through it must be disconnected first is answered when
+    # it is deleted.
+    can_manage: bool
+    can_delete: bool
 
 
 class BridgeUpdateRequest(BaseModel):
@@ -792,6 +798,9 @@ class IdentityClaimant(BaseModel):
     # False for a claim made before accounts had to confirm their links
     # (CHOO-3881). It still counts, and its owner is asked to confirm it.
     verified: bool
+    # Whether the caller may drop this claim: their own, or anyone's for an
+    # admin.
+    can_unlink: bool
 
 
 class LinkCode(BaseModel):

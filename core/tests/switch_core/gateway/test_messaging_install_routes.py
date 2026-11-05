@@ -336,3 +336,47 @@ class TestPrivateRooms:
         with tenant_scope(_TENANT):
             await disconnect_install("t1", _Session(), service, _user(), True)  # type: ignore[arg-type]
         assert service.disconnected == ["t1"]
+
+
+class TestWhatTheCallerMayDisconnect:
+    """Each listed install says whether the caller may disconnect it, by the
+    rule `disconnect_install` enforces."""
+
+    @pytest.mark.parametrize(
+        ("rooms", "admin", "expected"),
+        [
+            # A chat whose room the caller may change; an OAuth install is an
+            # admin's alone.
+            ({"t1": _room()}, False, {"t1": True}),
+            ({"t1": _room()}, True, {"s1": True, "t1": True}),
+            # Readable, but not theirs to change.
+            ({"t1": _room(write="private")}, False, {"t1": False}),
+            # Its room is gone, so it is the tenant's admins' again.
+            ({}, False, {"t1": False}),
+            ({}, True, {"s1": True, "t1": True}),
+        ],
+    )
+    async def test_each_install_says_whether_the_caller_may_disconnect_it(
+        self,
+        rooms: dict[str, SimpleNamespace],
+        admin: bool,
+        expected: dict[str, bool],
+    ) -> None:
+        listed = await list_installs(
+            _Session(),  # type: ignore[arg-type]
+            _Service(rooms=rooms),  # type: ignore[arg-type]
+            _user(),
+            admin,
+        )
+        assert {i.id: i.can_disconnect for i in listed.installs} == expected
+
+    async def test_an_ended_install_has_nothing_left_to_disconnect(self) -> None:
+        ended = _install("t1", "telegram")
+        ended.status = "disconnected"
+        listed = await list_installs(
+            _Session(),  # type: ignore[arg-type]
+            _Service(installs=[ended]),  # type: ignore[arg-type]
+            _user(),
+            True,
+        )
+        assert [i.can_disconnect for i in listed.installs] == [False]
