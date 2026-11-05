@@ -745,7 +745,7 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
         files[relative] = content
     if "SKILL.md" not in files:
         raise CatalogError(f"Connection {slug} is enabled but has no skill/SKILL.md.")
-    match = FRONTMATTER_RE.match(files["SKILL.md"])
+    match = FRONTMATTER_RE.match(files["SKILL.md"].replace("\r\n", "\n"))
     frontmatter = yaml.safe_load(match.group(1)) if match else None
     if (
         not isinstance(frontmatter, dict)
