@@ -1,8 +1,8 @@
-import type { AgentIconAsset } from '@switch-console/core/agents/plugins';
+import type { AgentIconAsset } from "@switch-console/core/agents/plugins";
 
 export const icon: AgentIconAsset = {
-  kind: 'svg',
-  alt: 'Junie',
+  kind: "svg",
+  alt: "Junie",
   variants: [
     {
       minSize: 0,
