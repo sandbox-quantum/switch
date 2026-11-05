@@ -2722,6 +2722,11 @@ class DecisionSettings(TenantScoped, Base):
     `machine_ready_at` is when the controller first reported the model
     running for this choice; until then auto-route is unavailable there and
     posts no notices. Deleting the controller deletes the row.
+
+    `saved_by` is the user whose save wrote the row: the person in Console or
+    the gateway, or the owner of the agent whose tool saved it. An agent's
+    tool replaces or clears only a row its owner saved. None for a row from
+    before it was recorded, or once that user is deleted.
     """
 
     __tablename__ = "decision_settings"
@@ -2756,6 +2761,13 @@ class DecisionSettings(TenantScoped, Base):
     model: Mapped[str | None] = mapped_column(Text, nullable=True)
     machine_ready_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    saved_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id", ondelete="SET NULL", name="fk_decision_settings_saved_by"
+        ),
+        nullable=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

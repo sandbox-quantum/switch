@@ -356,6 +356,8 @@ async def test_an_endpoint_key_is_kept_only_for_the_same_url(
     assert moved_with_key.status_code == 200
     assert moved_with_key.json()["workspace"]["api_key_last4"] == "NewA"
     assert service.calls == []
+    row = await _row(session_factory, TENANT_ZERO_ID)
+    assert row is not None and row.saved_by == admin.id
 
 
 @pytest.mark.parametrize(
@@ -419,6 +421,7 @@ async def test_a_key_the_server_cannot_decrypt_still_loads(
             endpoint="http://10.9.0.5/decide",
             api_key_encrypted=lost.encrypt("lost-token"),
             threshold=None,
+            saved_by=None,
         )
         await session.commit()
 

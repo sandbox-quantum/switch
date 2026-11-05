@@ -41,6 +41,7 @@ async def test_two_workspaces_rows_stay_separate(
             endpoint="http://a.test/decide",
             api_key_encrypted="enc-a",
             threshold=0.6,
+            saved_by=None,
         )
         await STORE.save(
             session,
@@ -49,6 +50,7 @@ async def test_two_workspaces_rows_stay_separate(
             endpoint=None,
             api_key_encrypted=None,
             threshold=None,
+            saved_by=None,
         )
         await session.commit()
 
@@ -81,6 +83,7 @@ async def test_a_save_replaces_the_row_in_place(
             endpoint=None,
             api_key_encrypted="enc-1",
             threshold=None,
+            saved_by=None,
         )
         stamped = first.updated_at
         await session.commit()
@@ -91,6 +94,7 @@ async def test_a_save_replaces_the_row_in_place(
             endpoint="http://b.test/decide",
             api_key_encrypted=None,
             threshold=0.9,
+            saved_by=None,
         )
         await session.commit()
         rows = (await session.scalars(select(DecisionSettings))).all()
@@ -117,6 +121,7 @@ async def test_the_database_refuses_what_the_routes_refuse(
                 endpoint=None,
                 api_key_encrypted=None,
                 threshold=threshold,
+                saved_by=None,
             )
 
 
@@ -134,6 +139,7 @@ async def test_a_workspace_cannot_read_anothers_row_under_row_level_security(
             endpoint=None,
             api_key_encrypted="enc-a",
             threshold=None,
+            saved_by=None,
         )
         await session.commit()
 
@@ -171,6 +177,7 @@ async def test_a_machine_is_ready_only_once_it_reports_the_chosen_model(
             controller_id=controller_id,
             model=MODEL,
             threshold=0.7,
+            saved_by=None,
         )
         assert (saved.backend, saved.controller_id, saved.model) == (
             "machine",
@@ -205,15 +212,30 @@ async def test_choosing_the_same_machine_again_keeps_it_ready_and_another_starts
     second = await _machine(session_factory)
     async with session_factory() as session:
         await STORE.save_machine(
-            session, TENANT_ZERO_ID, controller_id=first, model=MODEL, threshold=None
+            session,
+            TENANT_ZERO_ID,
+            controller_id=first,
+            model=MODEL,
+            threshold=None,
+            saved_by=None,
         )
         await STORE.mark_machine_ready(session, TENANT_ZERO_ID, first, MODEL)
         again = await STORE.save_machine(
-            session, TENANT_ZERO_ID, controller_id=first, model=MODEL, threshold=0.5
+            session,
+            TENANT_ZERO_ID,
+            controller_id=first,
+            model=MODEL,
+            threshold=0.5,
+            saved_by=None,
         )
         assert again.machine_ready_at is not None
         moved = await STORE.save_machine(
-            session, TENANT_ZERO_ID, controller_id=second, model=MODEL, threshold=0.5
+            session,
+            TENANT_ZERO_ID,
+            controller_id=second,
+            model=MODEL,
+            threshold=0.5,
+            saved_by=None,
         )
         assert moved.machine_ready_at is None
         await STORE.mark_machine_ready(session, TENANT_ZERO_ID, second, MODEL)
@@ -224,6 +246,7 @@ async def test_choosing_the_same_machine_again_keeps_it_ready_and_another_starts
             endpoint=None,
             api_key_encrypted=None,
             threshold=None,
+            saved_by=None,
         )
         assert (away.controller_id, away.model, away.machine_ready_at) == (
             None,
@@ -245,6 +268,7 @@ async def test_a_machine_needs_its_controller_and_model(
                 endpoint=None,
                 api_key_encrypted=None,
                 threshold=None,
+                saved_by=None,
             )
         session.add(DecisionSettings(tenant_id=TENANT_ZERO_ID, backend="machine"))
         with pytest.raises(IntegrityError, match="ck_decision_settings_machine"):
@@ -264,4 +288,5 @@ async def test_a_machine_in_another_workspace_cannot_be_chosen(
                 controller_id=controller_id,
                 model=MODEL,
                 threshold=None,
+                saved_by=None,
             )

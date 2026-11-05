@@ -359,6 +359,7 @@ async def save_settings(
             controller_id=controller.id,
             model=req.model,
             threshold=req.threshold,
+            saved_by=user_id,
         )
     else:
         if endpoint_moved(req, existing):
@@ -382,6 +383,7 @@ async def save_settings(
             endpoint=req.endpoint if req.backend == "endpoint" else None,
             api_key_encrypted=api_key_encrypted,
             threshold=req.threshold,
+            saved_by=user_id,
         )
     await session.commit()
     client.forget(tenant_id)

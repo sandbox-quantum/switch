@@ -178,6 +178,21 @@ async def _assignment(
     return body
 
 
+async def _save_endpoint(harness: Harness, *, saved_by: str | None) -> None:
+    """A workspace admin's own endpoint and key, saved in Console."""
+    async with harness.session_factory() as session:
+        await DecisionSettingsStore().save(
+            session,
+            TENANT_ZERO_ID,
+            backend="endpoint",
+            endpoint="https://decide.example.invalid/decide",
+            api_key_encrypted=TEST_KEYRING.encrypt("fake-key-AwcA"),
+            threshold=None,
+            saved_by=saved_by,
+        )
+        await session.commit()
+
+
 class TestTheControllersSide:
     async def test_the_assignment_names_the_model_and_running_makes_it_ready(
         self, harness: Harness, client: httpx.AsyncClient
@@ -375,6 +390,85 @@ class TestTheAgentsSide:
         assert response.json()["result"]["source"] == "server_default"
         assert after["decision"] is None
         assert after["revision"] == chosen["revision"] + 1
+
+    async def test_choosing_records_the_owner_as_who_saved_it(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        ada = await _admin(harness, "ada")
+        mac = await enroll_console(harness, client, ada, name="Studio Mac")
+        await report_status(client, mac, 1)
+        agent_id, headers = await _agent(harness, ada, "helper")
+
+        response = await _call(
+            client,
+            agent_id,
+            "set_decision_routing",
+            headers,
+            {"choice": "machine", "machine": "Studio Mac", "model": MODEL},
+        )
+
+        assert response.status_code == 200, response.text
+        async with harness.session_factory() as session:
+            row = await DecisionSettingsStore().get(session, TENANT_ZERO_ID)
+        assert row is not None and row.saved_by == ada.id
+
+    @pytest.mark.parametrize("choice", ["server_default", "machine"])
+    async def test_another_admins_setting_is_neither_replaced_nor_cleared(
+        self, harness: Harness, client: httpx.AsyncClient, choice: str
+    ) -> None:
+        ada = await _admin(harness, "ada")
+        bea = await _admin(harness, "bea")
+        mac = await enroll_console(harness, client, ada, name="Studio Mac")
+        await report_status(client, mac, 1)
+        await _save_endpoint(harness, saved_by=bea.id)
+        agent_id, headers = await _agent(harness, ada, "helper")
+
+        response = await _call(
+            client,
+            agent_id,
+            "set_decision_routing",
+            headers,
+            {"choice": choice, "machine": "Studio Mac", "model": MODEL}
+            if choice == "machine"
+            else {"choice": choice},
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] == (
+            "Nothing was changed: this workspace's decision routing was saved by "
+            "bea, not your owner, and an agent can only replace or clear a "
+            "setting its owner saved. bea can change it, or any workspace admin "
+            "in Switch Console → Admin → Decision routing."
+        )
+        async with harness.session_factory() as session:
+            row = await DecisionSettingsStore().get(session, TENANT_ZERO_ID)
+        assert row is not None
+        assert (row.backend, row.endpoint, row.saved_by) == (
+            "endpoint",
+            "https://decide.example.invalid/decide",
+            bea.id,
+        )
+        assert TEST_KEYRING.decrypt(row.api_key_encrypted or "") == "fake-key-AwcA"
+
+    async def test_a_setting_saved_before_it_was_recorded_is_left_to_a_person(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        ada = await _admin(harness, "ada")
+        await _save_endpoint(harness, saved_by=None)
+        agent_id, headers = await _agent(harness, ada, "helper")
+
+        response = await _call(
+            client,
+            agent_id,
+            "set_decision_routing",
+            headers,
+            {"choice": "server_default"},
+        )
+
+        assert response.status_code == 403, response.text
+        assert "Switch doesn't record who" in response.json()["detail"]
+        async with harness.session_factory() as session:
+            assert await DecisionSettingsStore().get(session, TENANT_ZERO_ID)
 
     async def test_a_model_the_machine_does_not_offer_is_refused(
         self, harness: Harness, client: httpx.AsyncClient

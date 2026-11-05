@@ -247,6 +247,7 @@ class TestTheRoomDetail:
                 endpoint=None,
                 api_key_encrypted=None,
                 threshold=None,
+                saved_by=None,
             )
             await session.commit()
         async with _as(_app(session_factory), owner) as client:
