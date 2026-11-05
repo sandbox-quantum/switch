@@ -10,8 +10,8 @@ tools like **Velero**. Use those. This doc says what to back up and how.
 
 | Data | Where | Why it matters |
 |------|-------|----------------|
-| **Postgres** | PVC `<release>-postgresql-data` (managed mode) or your external DB | Everything: rooms, messages, attachments, accounts, and the Mattermost database. **This is the single most important thing to back up.** |
-| Mattermost files | PVC `<release>-mattermost-data` | Uploaded files/attachments (if you use the Mattermost bridge). |
+| **Postgres** | PVC `<release>-postgresql-data` (managed mode) or your external DB | Everything: rooms, messages, attachments, accounts, and the retained `mattermost` database of an install that once deployed it. **This is the single most important thing to back up.** |
+| Retained Mattermost files | PVC `<release>-mattermost-data` | Only on an install upgraded from a release that deployed Mattermost; nothing mounts it now. See the chart README. |
 
 `<release>` is your Helm release name (`kubectl get pvc` to see the real names).
 
