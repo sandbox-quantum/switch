@@ -555,7 +555,9 @@ class DynamicDecisionClient:
         if not self.availability.enabled:
             return None
         machine = (await self.settings(session, tenant_id)).machine
-        if machine is None or not machine.usable:
+        # A machine whose owner is no longer an admin is never asked, so any
+        # process can settle its messages as failed.
+        if machine is None or not machine.usable or not machine.owner_admin:
             return None
         if self.machines.held_here(machine.id):
             return ("here", None)
@@ -648,6 +650,15 @@ class DynamicDecisionClient:
     ) -> DecisionOutcome:
         machine = settings.machine
         assert machine is not None
+        if not machine.owner_admin:
+            return self._failed(
+                room_id,
+                "machine",
+                "owner_not_admin",
+                f"controller {machine.id}'s owner no longer administers the "
+                "workspace, so it was sent nothing",
+                machine=machine.name,
+            )
         threshold = (
             settings.threshold
             if settings.threshold is not None

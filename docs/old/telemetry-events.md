@@ -873,7 +873,7 @@ to nobody or to the room's triage agent.
 | Property | Type |
 |---|---|
 | `backend` | as above |
-| `reason` | `timeout` \| `unreachable` \| `error_status` \| `bad_answer` (not a decision, or an agent that was not a candidate) \| `key_unreadable` (a workspace key the server can no longer decrypt) \| `endpoint_refused` (a workspace endpoint the server's outbound policy does not allow: link-local, or private and not in `OUTBOUND_ALLOWED_PRIVATE_HOSTS`) \| `machine_offline` (the machine is not connected) \| `machine_not_ready` (its model is not running) \| `machine_busy` (it has as many decisions in flight as it takes) \| `machine_error` (its model server failed) |
+| `reason` | `timeout` \| `unreachable` \| `error_status` \| `bad_answer` (not a decision, or an agent that was not a candidate) \| `key_unreadable` (a workspace key the server can no longer decrypt) \| `endpoint_refused` (a workspace endpoint the server's outbound policy does not allow: link-local, or private and not in `OUTBOUND_ALLOWED_PRIVATE_HOSTS`) \| `machine_offline` (the machine is not connected) \| `machine_not_ready` (its model is not running) \| `machine_busy` (it has as many decisions in flight as it takes) \| `machine_error` (its model server failed) \| `owner_not_admin` (its owner no longer administers the workspace; it is sent nothing) |
 
 ### Resources, keys, groups and the rest
 

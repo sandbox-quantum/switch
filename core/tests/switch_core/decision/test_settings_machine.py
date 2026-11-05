@@ -1,7 +1,8 @@
 """What a workspace whose decisions run on a machine resolves to
 (`decision/settings.py`, `decision/machine.py`): unavailable without notices
 while the model gets ready or once the machine is removed, asked once it has
-been ready, whatever happens to it after."""
+been ready, whatever happens to it after, unless its owner is no longer a
+workspace admin."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from datetime import UTC, datetime
 import pytest
 
 from switch_core.db.models import AgentController, DecisionSettings
-from switch_core.decision.machine import REMOVED_REASON
+from switch_core.decision.machine import OWNER_NOT_ADMIN, REMOVED_REASON
 from switch_core.decision.settings import ServerDefault, availability, resolve
 from tests.switch_core.decision.machine_helpers import MACHINE_NAME, MODEL, status
 
@@ -52,7 +53,7 @@ def test_getting_ready_is_unavailable_with_the_progress() -> None:
         state="downloading",
         progress={"done_bytes": 1_200_000_000, "total_bytes": 2_740_000_000},
     )
-    resolved = resolve(_row(ready=False), SERVER, _controller(reported), None)
+    resolved = resolve(_row(ready=False), SERVER, _controller(reported), None, True)
 
     applies = availability(True, resolved)
     assert resolved.backend == "machine"
@@ -69,22 +70,24 @@ def test_getting_ready_is_unavailable_with_the_progress() -> None:
 
 def test_starting_and_waiting_say_so() -> None:
     starting = resolve(
-        _row(ready=False), SERVER, _controller(status(state="starting")), None
+        _row(ready=False), SERVER, _controller(status(state="starting")), None, True
     )
-    waiting = resolve(_row(ready=False), SERVER, _controller(status(state="off")), None)
+    waiting = resolve(
+        _row(ready=False), SERVER, _controller(status(state="off")), None, True
+    )
 
     assert starting.reason is not None and "(starting)" in starting.reason
     assert waiting.reason is not None and "getting ready" in waiting.reason
 
 
 def test_running_but_not_yet_recorded_ready_is_still_getting_ready() -> None:
-    resolved = resolve(_row(ready=False), SERVER, _controller(), None)
+    resolved = resolve(_row(ready=False), SERVER, _controller(), None, True)
 
     assert not availability(True, resolved).available
 
 
 def test_once_ready_it_is_asked() -> None:
-    resolved = resolve(_row(ready=True), SERVER, _controller(), None)
+    resolved = resolve(_row(ready=True), SERVER, _controller(), None, True)
 
     applies = availability(True, resolved)
     assert applies.available and applies.reason is None
@@ -102,13 +105,13 @@ def test_once_ready_it_is_asked() -> None:
 )
 def test_once_ready_a_failing_machine_is_still_asked(reported: dict) -> None:
     """It takes the failure path then, with a notice naming it."""
-    resolved = resolve(_row(ready=True), SERVER, _controller(reported), None)
+    resolved = resolve(_row(ready=True), SERVER, _controller(reported), None, True)
 
     assert availability(True, resolved).available
 
 
 def test_offline_shows_when_it_went() -> None:
-    resolved = resolve(_row(ready=True), SERVER, _controller(), False)
+    resolved = resolve(_row(ready=True), SERVER, _controller(), False, True)
 
     assert resolved.machine is not None
     assert resolved.machine.state == "offline"
@@ -118,7 +121,7 @@ def test_offline_shows_when_it_went() -> None:
 
 
 def test_a_running_machine_says_since_when() -> None:
-    resolved = resolve(_row(ready=True), SERVER, _controller(), True)
+    resolved = resolve(_row(ready=True), SERVER, _controller(), True, True)
 
     assert resolved.machine is not None
     assert resolved.machine.since == "2026-10-29T09:00:00Z"
@@ -126,7 +129,7 @@ def test_a_running_machine_says_since_when() -> None:
 
 def test_failed_before_it_was_ready_says_why() -> None:
     reported = status(state="failed", reason="not_enough_disk")
-    resolved = resolve(_row(ready=False), SERVER, _controller(reported), None)
+    resolved = resolve(_row(ready=False), SERVER, _controller(reported), None, True)
 
     assert resolved.reason == (
         "The decision model on Studio Mac isn't running (not enough disk space). "
@@ -137,7 +140,7 @@ def test_failed_before_it_was_ready_says_why() -> None:
 
 @pytest.mark.parametrize("ready", [True, False])
 def test_a_revoked_machine_is_removed(ready: bool) -> None:
-    resolved = resolve(_row(ready=ready), SERVER, _controller(revoked=True), None)
+    resolved = resolve(_row(ready=ready), SERVER, _controller(revoked=True), None, True)
 
     applies = availability(True, resolved)
     assert not applies.available
@@ -146,13 +149,37 @@ def test_a_revoked_machine_is_removed(ready: bool) -> None:
 
 
 def test_a_missing_machine_is_removed() -> None:
-    resolved = resolve(_row(ready=True), SERVER, None, None)
+    resolved = resolve(_row(ready=True), SERVER, None, None, True)
 
     assert not availability(True, resolved).available
     assert resolved.reason == REMOVED_REASON
 
 
 def test_the_flag_off_wins() -> None:
-    resolved = resolve(_row(ready=True), SERVER, _controller(), None)
+    resolved = resolve(_row(ready=True), SERVER, _controller(), None, True)
 
     assert not availability(False, resolved).available
+
+
+def test_an_owner_no_longer_admin_reads_as_unavailable_saying_why() -> None:
+    """The rooms still decide by it, each decision failing with a notice
+    (`DynamicDecisionClient.decide`), so `has_backend` stays."""
+    resolved = resolve(_row(ready=True), SERVER, _controller(), True, False)
+
+    applies = availability(True, resolved)
+    assert resolved.has_backend
+    assert not applies.available
+    assert applies.reason == (
+        "Auto-route's decisions run on Studio Mac, and its owner is no longer an "
+        "admin of this workspace, so it is sent nothing. A workspace admin can "
+        "choose another in Switch Console → Admin → Decision routing."
+    )
+    assert resolved.machine is not None
+    assert resolved.machine.reason == OWNER_NOT_ADMIN
+    assert not resolved.machine.owner_admin
+
+
+def test_a_removed_machine_says_removed_whoever_owns_it() -> None:
+    resolved = resolve(_row(ready=True), SERVER, _controller(revoked=True), None, False)
+
+    assert resolved.reason == REMOVED_REASON

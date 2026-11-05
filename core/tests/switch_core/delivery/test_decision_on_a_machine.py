@@ -25,6 +25,7 @@ from switch_core.db.models import (
     AgentController,
     AgentEventRow,
     PendingDecision,
+    TenantMember,
 )
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
@@ -88,7 +89,11 @@ def _presence() -> ControllerPresence:
 async def _choose_machine(
     world: World, *, ready: bool, reported: dict | None = None
 ) -> str:
+    """The world's owner, a workspace admin, chooses their machine."""
     async with world.session_factory() as session:
+        session.add(
+            TenantMember(tenant_id=TENANT_ZERO_ID, user_id=world.owner_id, role="admin")
+        )
         controller = await add_controller(session, world.owner_id, reported=reported)
         store = DecisionSettingsStore()
         await store.save_machine(
@@ -104,6 +109,19 @@ async def _choose_machine(
             )
         await session.commit()
         return controller.id
+
+
+async def _set_owner_role(world: World, role: str) -> None:
+    async with world.session_factory() as session:
+        await session.execute(
+            update(TenantMember)
+            .where(
+                TenantMember.tenant_id == TENANT_ZERO_ID,
+                TenantMember.user_id == world.owner_id,
+            )
+            .values(role=role)
+        )
+        await session.commit()
 
 
 async def _auto_route_on(world: World) -> None:
@@ -250,6 +268,39 @@ async def test_a_removed_machine_asks_nothing_and_says_nothing(world: World) -> 
     assert room.room_notices == []
     assert await _pending(world) == []
     assert "was removed" in reply
+
+
+async def test_a_demoted_owners_machine_is_sent_nothing_until_they_are_admin_again(
+    world: World,
+) -> None:
+    controller = await _choose_machine(world, ready=True)
+    presence = _presence()
+    machine = FakeMachine(hold(presence, controller, TENANT_ZERO_ID))
+    machine.pick = "helper"
+    room = await Journey(world, ON, _client(world.session_factory, presence)).start()
+    await room.command("alice", "auto-route", "on", at=0)
+    await room.command("alice", "auto-route", "fallback @reviewer", at=1)
+    await _set_owner_role(world, "member")
+
+    async with machine.running():
+        told = await room.say("bob", "can someone check the deploy?", at=10)
+    reply = await room.command("alice", "auto-route", "", at=20)
+
+    assert machine.requests == []
+    assert await room.reached(told) == {"reviewer"}
+    assert room.room_notices == [
+        "Auto-route is unavailable right now (Studio Mac's owner is no longer a "
+        "workspace admin); tag an agent to reach it."
+    ]
+    assert "its owner is no longer an admin of this workspace" in reply
+    assert await _pending(world) == []
+
+    await _set_owner_role(world, "admin")
+    async with machine.running():
+        again = await room.say("bob", "and the gateway?", at=30)
+
+    assert await room.reached(again) == {"helper"}
+    assert len(machine.requests) == 1
 
 
 class TestTheProcessHoldingTheMachine:
