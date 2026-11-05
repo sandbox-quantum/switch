@@ -77,10 +77,6 @@ export interface AgentSummary {
   // Why it cannot be handed to someone else, for whoever manages it; null
   // when it can, or when they could not anyway.
   transfer_blocked_reason: string | null;
-  // Its owner's alone: letting it manage their agents, and granting it their
-  // service connections (only where the server runs them).
-  can_change_manage_agents: boolean;
-  can_grant_services: boolean;
 }
 
 export interface AgentToolSummary {
@@ -128,6 +124,10 @@ export interface AgentDetail extends AgentSummary {
    * Only the owner changes it.
    */
   can_manage_agents: boolean;
+  // Its owner's alone: letting it manage their agents, and granting it their
+  // service connections (only where the server runs them).
+  can_change_manage_agents: boolean;
+  can_grant_services: boolean;
 }
 
 // Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)
