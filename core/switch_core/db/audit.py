@@ -83,6 +83,30 @@ class OrganizationAuditAction(StrEnum):
     CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
     SERVICE_SET = "organization.service_set"
     SERVICE_CLEARED = "organization.service_cleared"
+    # Changes made in a directory kept outside Switch, brought in at sign-in,
+    # from its events or by the daily check (`details.source`).
+    MEMBER_ADDED_FROM_DIRECTORY = "organization.member_added_from_directory"
+    MEMBER_PROMOTED_FROM_DIRECTORY = "organization.member_promoted_from_directory"
+    MEMBER_DEMOTED_FROM_DIRECTORY = "organization.member_demoted_from_directory"
+    MEMBER_REMOVED_FROM_DIRECTORY = "organization.member_removed_from_directory"
+    # A change brought in from the directory broke a rule Switch keeps itself
+    # (the last Org Admin, agents left with an owner who can't act); applied
+    # anyway, and recorded for the organization's admins (`details.kind`).
+    DIRECTORY_CONFLICT = "organization.directory_conflict"
+    # An operator made the organization follow one in the directory.
+    LINKED_TO_DIRECTORY = "organization.linked_to_directory"
+
+
+class OrganizationIssueKind(StrEnum):
+    """What can need an organization admin's attention
+    (`organization_issues.py`). `directory_organization_deleted` is also the
+    `details.kind` of the `DIRECTORY_CONFLICT` that reports it. Mirrored by
+    hand as `OrganizationIssueKind` in the gateway's `data/api.ts`."""
+
+    NO_ORG_ADMIN = "no_org_admin"
+    WORKSPACE_WITHOUT_ADMIN = "workspace_without_admin"
+    AGENTS_WITHOUT_ACTING_OWNER = "agents_without_acting_owner"
+    DIRECTORY_ORGANIZATION_DELETED = "directory_organization_deleted"
 
 
 class ServerAuditAction(StrEnum):
@@ -92,6 +116,10 @@ class ServerAuditAction(StrEnum):
     USER_DELETED = "user.deleted"
     USER_DELETION_REFUSED = "user.deletion_refused"
     USER_DELETION_FAILED = "user.deletion_failed"
+    # WorkOS refused where the directory mirror had got to in its events, and
+    # the mirror started again from now, with a full check of every linked
+    # organization.
+    DIRECTORY_EVENTS_RESTARTED = "directory.events_restarted"
 
 
 async def record_audit_event(

@@ -45,6 +45,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Security
+- **Counts and replies no longer name private rooms either.** Beyond the
+  room listings below, a reference, document or package's attached-rooms count
+  took in every room it was attached to, an agent's detail named every room
+  it is in, and removing an item from a package named every room that lost
+  it. Each now names, and counts, only rooms the viewer may read; workspace
+  admins still see every room. Whoever may manage a resource is still told
+  how many rooms they cannot open it is in, without their names, and deleting
+  it warns about those rooms too.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when
@@ -84,12 +92,52 @@ version of their own to them without also giving them a release of their own.
   the runner the room existed and could write its name into their new room.
   Now a room the runner cannot read reads as missing.
 
+- **Registering an agent under a parent requires owning the parent.** The
+  agent API's `register-known` and `register-known-bulk` accepted any agent as
+  `parent_agent_id`, copying its name and settings to the new child. They now
+  refuse a parent the registering user does not own, as the dashboard's own
+  subagent registration already did.
+- **Private rooms stay out of room listings for people who cannot read them.**
+  The room link graph, the rooms a document, package or reference is attached
+  to, and an agent's `list_all_rooms` now show only rooms the caller may read
+  (an agent also sees the rooms it is in). Linking a room to another now
+  needs read access to the target, whose name the link shows, including
+  links an agent's `create_room` makes. A room's links, outbound and inbound,
+  leave out rooms the caller cannot read, for people and agents alike. An
+  agent can list a room's participants only from inside the room.
+- **Only a workspace admin manages room groups.** Groups are shared by the
+  whole workspace and have no owner, so any member could rename, move or
+  delete one. Creating, changing and deleting a group, from the dashboard,
+  the API or an agent's `create_room_group`, now needs a workspace admin (for
+  an agent, its owner). Group room counts, and the rooms
+  `get_room_group_detail` lists, now leave out private rooms the caller
+  cannot read.
+- **Only a workspace admin puts a room in a room group.** A room's group can
+  decide who may address an agent, since an addressing policy can admit
+  everyone in a group's rooms, so any member who filed a room they could
+  write into a group could address that group's agents. Putting a room in a
+  group, whether when creating it, from the room's page, from the groups
+  page or through an agent's `create_room`, now needs a workspace admin (for
+  an agent, its owner). Running a template that makes a room group now
+  needs a workspace admin too, and an agent cannot run one, since it runs
+  templates without its owner's admin reach. Taking a room out of its group
+  still only needs write access to the room.
+
 #### Added
 - **The server's administrator can delete someone's account.** The Users page
   has a Delete action (`DELETE /users/{id}`) that removes the account in every
   workspace, with the same refusals as deleting your own. Administrator
   accounts and your own account are refused, and every attempt is recorded in
   the server audit log with its outcome.
+- **The gateway says what the caller may change in a room.** Rooms, in the
+  list (`GET /rooms`) and in a room's detail, carry `can_write`,
+  `can_manage` and `can_unlink`. Each room a reference, document or package
+  is attached to carries `can_unlink`, and a room's documents, listed or
+  fetched one at a time, carry `can_remove`. A reference, document or
+  package carries `hidden_rooms_count`: for whoever may manage it, how many
+  of the rooms it is in they may not read. All are decided by the same
+  rules the routes enforce, so a client offers a change only where the
+  server would allow it.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -101,6 +149,21 @@ version of their own to them without also giving them a release of their own.
   the agent's binding to it. The socket's first frame offers calls
   (`calls.max_in_flight`, 64); a call over that is answered 429
   `capacity_exceeded` without running, so the controller sends it over HTTP.
+- **Organizations can follow WorkOS (experimental, off by default).** With
+  `ORGANIZATION_DIRECTORY=workos`, an organization an operator links to a
+  WorkOS organization (`switch-link-workos`) takes its members, and who is
+  its Org Admin, from there: at sign-in, from WorkOS's events every 30
+  seconds, and in a full check once a day. A change from WorkOS is applied
+  even when it breaks a rule Switch keeps (the last Org Admin, agents left
+  without an owner who can act for them), and the Organization page tells
+  its admins what is left to fix. With a members service configured
+  (`MEMBERS_SERVICE_URL`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URL`), an Org
+  Admin's role changes and removals on the Organization page are made in
+  WorkOS too, with the admin's own WorkOS token, which the dashboard gets by
+  sending them through the organization's sign-in when needed. Without one,
+  making someone Org Admin is done in WorkOS, and taking it away in Switch
+  lasts only while WorkOS agrees. Adding someone new is done in WorkOS either
+  way. Setup and limits: `docs/old/workos-directory.md`.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
@@ -143,6 +206,23 @@ version of their own to them without also giving them a release of their own.
   one of its admins. With the flag off, nothing changes: the routes aren't
   mounted and no workspace consults its organization. The migration adds
   two empty tables either way.
+- **Google Workspace without Google's yearly security assessment.** A server
+  can set `SERVICE_ACCESS_PROFILES='{"google-workspace": "drive-file"}'` so
+  sign-ins ask for neither `drive` nor `drive.readonly`. Google counts those
+  two as restricted: an External app needs its strictest review before anyone
+  outside the organization can grant them, with a security assessment renewed
+  every year. With `drive-file`, agents still read and change any Doc, Sheet
+  or Slides deck the person can open, by its link, and Calendar as before; in
+  Drive they reach only the files and folders they create, so they cannot
+  search the person's Drive or read their PDFs and other uploads. Agents are
+  given a skill that says so. The setting covers every Google sign-in on the
+  server, an organization's own Google client included, so an organization
+  with its own Internal client also loses Drive search. Changing the setting
+  makes everyone connected before the change reconnect: until they do, their
+  connection shows as needing reconnection and their agents get no Google
+  Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
+  `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
+  nothing changes.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -200,6 +280,67 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **One role runs a workspace: owner merges into admin.** Every workspace
+  `owner` becomes an `admin`, and every admin now manages every member, other
+  admins included, as well as everything an owner could. A workspace always
+  keeps at least one admin: demoting or removing the last one is refused
+  (409), and so is deleting the account of the last admin of a workspace
+  others are in. Two admins demoting each other at once can't both succeed. A
+  client that still asks for `owner`, in an invitation or a role change, gets
+  `admin`. The organization issue `workspace_without_owner` is now
+  `workspace_without_admin`. The migration is not expand-only: until every
+  replica runs this release, an older one creating a workspace writes `owner`,
+  which the new check refuses, and an older one sees former owners as plain
+  admins with no last-admin rule. Roll every replica together.
+- **Only the owner or a workspace admin can change a reference's, reference
+  type's, package's or library document's visibility.** This tightens
+  permissions: before, anyone with write access could, so on a publicly
+  writable resource any member could make it private and lock everyone else
+  out of it and the rooms that use it.
+  Editing its other fields still needs only write access, as it does for rooms.
+- **Unlinking a resource from a room is for those taking part in it.** It
+  took write access to the room, which on a publicly writable room, the
+  default, is everyone's. It is now for the room's owner, people in it (in
+  Switch Console or through a claimed platform account), owners of agents in
+  it, and workspace admins, whether or not they may write to it. The
+  dashboard shows it as an "Unlink" button rather than a bin, since nothing
+  is deleted. Attaching still takes write access.
+- **A room's own documents are deleted by their creator, the room's owner or
+  an admin.** Anyone who could write to the room could delete them. A
+  document an agent made counts as made by the agent's owner.
+- **Usage telemetry tells people from bots.** Slack, Discord and Mattermost
+  posts from an integration (an app, a bot account, a webhook that isn't
+  Switch's own) were counted as people. The bridge now marks them, and the
+  daily snapshot reports `person_identity_active_*`, `bot_identity_active_*`
+  and `account_active_*` beside the old `chat_identity_active_*` and
+  `user_active_*`, which are still sent for one more stable release. Room and
+  agent message events report such posts as `sender_kind = bot`. An app's post
+  on Discord or Mattermost also no longer answers a request card or wakes an
+  agent following the conversation, as already on Slack.
+- **Usage telemetry follows Switch Cloud.** Every event now carries
+  `deployment_kind` (`switch_cloud`, `managed_by_console` or `self_hosted`),
+  so Cloud can be charted on its own or left out. New events cover its funnel:
+  `account_created` (sign-up, a first single sign-on sign-in, or an admin),
+  `signup_refused` with the reason, `workspace_created`, and a cloud machine
+  being requested, becoming ready (with how long a new one took), failing
+  (with the reason), being woken, and being stopped. Machine events are sent
+  only once their change is committed.
+- **Usage telemetry counts each finished day, week and month.** The daily
+  snapshot's `*_7d` counts are a trailing week, so a chart adding them up
+  over a week counted a room once for every day it was active. A new
+  `usage_period` event is sent once per finished UTC day, ISO week and
+  calendar month, with distinct active rooms, people and accounts for exactly
+  that period, dated to its middle. Summed at the matching interval it is the
+  real figure. A server that was off sends the periods it missed, up to 35
+  days back, when it next runs.
+- **Agent telemetry says connection where it meant one.**
+  `agent_connected`, `agent_disconnected` and the `first_agent_connected`
+  milestone are sent alongside `agent_session_started`, `agent_session_ended`
+  and `first_session_started`, which measured an agent coming online, not a
+  coding-agent session. The old names stay for one more stable release. The
+  new `first_agent_session` milestone is the first session a host reports. A
+  deployment that already passed either milestone claims it at startup
+  without reporting it.
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and
   downgrade the database before rolling back.** Every existing workspace gets
   an organization of its own, and its owners become the organization's admins.
@@ -458,6 +599,42 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **A file that names nobody now follows the conversation like text does.**
+  A post with one or more files and no mention never reached the room's
+  assigned agent, the agent whose thread it was posted in, or the agent the
+  sender was just talking to, even with follow-ups on; the same words as a
+  text message did. A post is now decided by the same rules, read from its
+  first file's caption and thread, and the agent gets the post with every
+  file on it, in that thread.
+- **The dashboard offers only the room changes the server would allow.** On
+  a publicly writable room, the default, anyone could change the Access
+  setting and press Save, only for the server to refuse it. Someone who could
+  only read a room was still offered adding and removing its agents and
+  users, attaching and detaching its resources, linking it to other rooms and
+  deleting its room documents. A document, reference or package's page
+  offered attaching it to, and detaching it from, rooms the viewer could not
+  change. The rooms list offered archiving, and the groups page filing,
+  rooms the viewer could not change; a bulk archive skipped those without
+  saying so. Each of these was refused when tried. Access is now read-only for
+  everyone but the room's owner and admins, and its description says so.
+  Everything else is offered only to those who may write to the room, and
+  only rooms they may write to are offered for attaching. A reader still sees
+  each agent's "Notify on join" setting, but cannot change it. A publicly
+  writable room's other settings stay editable by everyone, as before.
+- **Those taking part in a private room can read its resources.** The room
+  itself could be read by its participants, but its references, documents,
+  packages and linked rooms were refused to anyone but its owner and admins.
+- **Deleting a room document from the room page asks first.** It cannot be
+  undone, and its own page already asked.
+- **Reconnecting Google Workspace no longer ends the new connection.** On a
+  reconnect, Switch revoked the sign-in it replaced. Google ends every
+  sign-in of the account through the client when one is revoked, so the new
+  connection also stopped working, and the next token refresh asked the
+  person to reconnect again. A reconnect to the same Google account through
+  the same client no longer revokes the old sign-in. A reconnect to another
+  account still revokes it, and so does a disconnect. A sign-in that Switch
+  does not keep, because the workspace switched Google Workspace off during
+  it, no longer ends the existing connection either.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
@@ -2384,8 +2561,32 @@ version of their own to them without also giving them a release of their own.
   that still has a working login of its own, such as one it copied while the
   machine had an `auth.json`, starts as before; a copy that no longer works is
   removed.
+- **A Claude Code agent's session can continue a conversation started in the
+  Claude Code CLI.** The new-session dialog lists the conversations started in
+  the agent's folder, on this computer or its SSH host. The session continues a
+  copy of the one picked, so the terminal's own is never written to, and its
+  transcript starts with what was said in it. A conversation still open in a
+  terminal can't be picked. No earlier prompt is sent again.
 
 #### Changed
+- **No Owner role.** Inviting people and changing roles offer Admin and
+  Member, and the copy says "an admin of this workspace" where it said "an
+  owner or admin". A server from before the merge that still reports `owner`
+  shows as Admin, including for workspaces stored before the update.
+- **Usage data follows an install to a working agent.** Three new
+  `activation_milestone` steps (`server_ready`, `agent_ready`,
+  `first_agent_session`) are each sent once per install, and only by installs
+  made on this version or later, with `path` saying whether the install
+  started switch-buddy or skipped it. Sessions of agents on the agent
+  controller Console runs on this computer, which never reached
+  `session_started`, are sent as `managed_session_started`. Updates send
+  `update_download_started` and, on the first launch after one,
+  `update_installed` with the version it came from. Adding a server by
+  address, starting a server Console runs, and creating a room now say why
+  they failed where they said `error`, and Switch Cloud is its own
+  `server_kind`. An install once signed in with a staff account stays
+  labelled internal after it signs out. `agent_reset`, which was listed but
+  never sent, is gone from the list. `docs/TELEMETRY.md` has every field.
 - **Managed agents and machines update when the server says they changed.**
   Against a server that pushes change notices, Console reads those lists
   again when told to, and otherwise only every five minutes instead of every
@@ -2398,6 +2599,16 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Antigravity runs Google's own `agy` CLI, on Windows too.** Switch Console
+  finds `agy` (including `%LOCALAPPDATA%\agy\bin` on Windows), installs it with
+  Google's installers, runs sessions with `agy acp`, and checks the sign-in you
+  made with `agy acp --login` or a `GEMINI_API_KEY`, instead of a separate
+  Antigravity ACP profile that a Google sign-in never reached. Antigravity's
+  questions now reach you, too, including typed answers. A machine that only
+  has the older `antigravity-acp` runtime keeps using it until `agy` is
+  installed, and Update installs `agy` there. An Antigravity sign-in Switch
+  holds for the older runtime cannot sign `agy` in: a session given one now
+  says how to sign in on the machine instead of starting signed out.
 - **Console no longer opens to a blank window on a database a newer build
   has changed.** Stable and Canary share one database, so after Canary added a
   migration, an older build found tables it was not written for, applied
@@ -4445,6 +4656,11 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Tells Switch Console when a session started.** Once Switch has taken a
+  session host's start report, the controller Console runs on its own
+  computer passes the session's provider and how it started to Console over
+  its IPC channel, for Console's usage data. A controller with no parent
+  listening, on an SSH host or run as a service, sends nothing.
 - **Waits its turn when Switch is busy opening connections.** An open or an
   attach refused as `busy` comes with when to try again, the controller's
   place in the server's queue, and the controller now waits that long

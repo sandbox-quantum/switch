@@ -618,7 +618,6 @@ async def _decide_control_command(
     if level == "unsupported":
         return say(texts.unsupported)
 
-    deeplink: str | None = None
     role: str | None = None
     if level == "session_dependent":
         async with client.session_factory() as session:
@@ -649,18 +648,12 @@ async def _decide_control_command(
             return say(texts.no_live_session)
         if not caps.get(command):
             return say(texts.no_session)
-        deeplink = runtime.deeplink_url if runtime else None
 
     args = event.args
     if command in ("reset", "compact"):
         args = role or ""
 
-    # Mirror the runtime "working" surface: link back to the session in
-    # Switch Console when we know its deeplink.
-    body = (
-        f"{texts.ack} ([Open in Switch Console]({deeplink}))" if deeplink else texts.ack
-    )
-    decision = say(body)
+    decision = say(texts.ack)
     return ControlDecision(
         queued=CommandPayload(
             command=command,
@@ -1842,17 +1835,10 @@ def _format_status_lines(
     agents: list[Agent],
     statuses: dict[str, AgentStatus],
     runtime_states: dict[str, str],
-    deeplinks: dict[str, str],
 ) -> str:
     """Render the !status summary: one line per agent (sorted by the name it is
     shown under) with its presence emoji + label, runtime state (if any),
-    agent_type, and a Switch Console deeplink to its session
-    when one is known.
-
-    The deeplink is shown only for an agent whose session is LIVE in this room:
-    the stored link is per (agent, room) and survives a room switch, so once the
-    session moves away it would point at a session no longer here. Gating on
-    LIVE keeps the link from going stale when an agent hops rooms."""
+    and agent_type."""
     lines = ["**Agent status in this room:**"]
     for agent in sorted(agents, key=lambda a: (a.display_name or a.name).lower()):
         status = statuses.get(agent.id, AgentStatus.NO_SESSION)
@@ -1862,11 +1848,7 @@ def _format_status_lines(
         head = f"{emoji} **{name}** — {label}"
         if runtime is not None:
             head += f" · {runtime}"
-        parts = [head, agent.agent_type]
-        deeplink = deeplinks.get(agent.id)
-        if deeplink and status == AgentStatus.LIVE:
-            parts.append(f"[Open in Switch Console]({deeplink})")
-        lines.append("- " + " · ".join(parts))
+        lines.append(f"- {head} · {agent.agent_type}")
     return "\n".join(lines)
 
 
@@ -1900,15 +1882,12 @@ async def _cmd_status(
         )
         runtime_rows = await AgentRuntimeStateStore().get_by_room(session, meta.room_id)
         runtime_states = {row.agent_id: row.state for row in runtime_rows}
-        deeplinks = {
-            row.agent_id: row.deeplink_url for row in runtime_rows if row.deeplink_url
-        }
 
     await _reply(
         client,
         room,
         event,
-        _format_status_lines(agents, statuses, runtime_states, deeplinks),
+        _format_status_lines(agents, statuses, runtime_states),
     )
 
 

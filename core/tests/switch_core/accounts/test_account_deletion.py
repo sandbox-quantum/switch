@@ -248,20 +248,55 @@ async def test_the_servers_admin_account_is_refused(
         assert "administrator" in (await deletion.refusal(session, admin, []) or "")
 
 
-async def test_the_only_owner_of_a_shared_workspace_is_refused(
+async def test_the_only_admin_of_a_shared_workspace_is_refused(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     deletion, _, _ = _deletion(session_factory)
     async with session_factory() as session:
-        owner = await _user(session, "owner")
+        admin = await _user(session, "admin")
         other = await _user(session, "other")
-        await _member(session, TENANT_ZERO_ID, owner, "owner")
+        await _member(session, TENANT_ZERO_ID, admin, "admin")
         await _member(session, TENANT_ZERO_ID, other, "member")
         await session.commit()
         reason = await deletion.refusal(
-            session, owner, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
-    assert reason is not None and "only owner of Acme" in reason
+    assert reason is not None and "only admin of Acme" in reason
+
+
+async def test_an_org_admin_with_a_member_row_takes_no_admin_away(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The workspace lists its organization's `org_admin` as an admin, but
+    their own row is a member's: deleting them leaves the workspace's one
+    admin row where it was, so the last-admin rule has nothing to stop."""
+    deletion, _, _ = _deletion(session_factory)
+    async with session_factory() as session:
+        org_admin = await _user(session, "org-admin")
+        second = await _user(session, "second-org-admin")
+        workspace_admin = await _user(session, "ws-admin")
+        await _member(session, TENANT_ZERO_ID, org_admin, "member")
+        await _member(session, TENANT_ZERO_ID, workspace_admin, "admin")
+        await _organization_role(session, org_admin, "org_admin")
+        await _organization_role(session, second, "org_admin")
+        await session.commit()
+        user_id = org_admin.id
+
+    workspaces = [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        assert await deletion.refusal(session, user, workspaces) is None
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
+
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is None
+        admins = await session.scalars(
+            select(TenantMember.user_id).where(
+                TenantMember.tenant_id == TENANT_ZERO_ID, TenantMember.role == "admin"
+            )
+        )
+        assert list(admins) == [workspace_admin.id]
 
 
 async def _organization_role(session: AsyncSession, user: User, role: str) -> None:
@@ -280,12 +315,12 @@ async def test_the_only_org_admin_of_an_organization_with_others_is_refused(
         admin = await _user(session, "org-admin")
         other = await _user(session, "other")
         await _member(session, TENANT_ZERO_ID, admin, "admin")
-        await _member(session, TENANT_ZERO_ID, other, "owner")
+        await _member(session, TENANT_ZERO_ID, other, "admin")
         await _organization_role(session, admin, "org_admin")
         await _organization_role(session, other, "member")
         await session.commit()
         reason = await deletion.refusal(
-            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
     assert reason is not None and "only organization admin" in reason
 
@@ -299,7 +334,7 @@ async def test_an_org_admin_of_another_organization_does_not_count(
         other = await _user(session, "other")
         elsewhere = await _user(session, "elsewhere")
         await _member(session, TENANT_ZERO_ID, admin, "admin")
-        await _member(session, TENANT_ZERO_ID, other, "owner")
+        await _member(session, TENANT_ZERO_ID, other, "admin")
         await _organization_role(session, admin, "org_admin")
         await _organization_role(session, other, "member")
         session.add(Organization(id="org-elsewhere", slug="org-elsewhere", name="Else"))
@@ -311,7 +346,7 @@ async def test_an_org_admin_of_another_organization_does_not_count(
         )
         await session.commit()
         reason = await deletion.refusal(
-            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
     assert reason is not None and "only organization admin" in reason
 
@@ -324,12 +359,12 @@ async def test_an_org_admin_with_another_org_admin_beside_them_is_not_refused(
         admin = await _user(session, "org-admin")
         other = await _user(session, "other")
         await _member(session, TENANT_ZERO_ID, admin, "admin")
-        await _member(session, TENANT_ZERO_ID, other, "owner")
+        await _member(session, TENANT_ZERO_ID, other, "admin")
         await _organization_role(session, admin, "org_admin")
         await _organization_role(session, other, "org_admin")
         await session.commit()
         reason = await deletion.refusal(
-            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
     assert reason is None
 
@@ -340,7 +375,7 @@ async def test_a_connected_workspace_nobody_else_is_in_is_refused(
     deletion, _, _ = _deletion(session_factory)
     async with session_factory() as session:
         alone = await _user(session, "alone")
-        await _member(session, TENANT_ZERO_ID, alone, "owner")
+        await _member(session, TENANT_ZERO_ID, alone, "admin")
         session.add(
             MessagingInstall(
                 tenant_id=TENANT_ZERO_ID,
@@ -353,7 +388,7 @@ async def test_a_connected_workspace_nobody_else_is_in_is_refused(
         )
         await session.commit()
         reason = await deletion.refusal(
-            session, alone, [Workspace(TENANT_ZERO_ID, "Solo", "owner")]
+            session, alone, [Workspace(TENANT_ZERO_ID, "Solo", "admin")]
         )
     assert reason is not None and "Slack" in reason
 
@@ -363,9 +398,9 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
 ) -> None:
     deletion, protocol, rooms = _deletion(session_factory)
     async with session_factory() as session:
-        owner = await _user(session, "owner")
+        admin = await _user(session, "admin")
         leaving = await _user(session, "leaving")
-        await _member(session, TENANT_ZERO_ID, owner, "owner")
+        await _member(session, TENANT_ZERO_ID, admin, "admin")
         await _member(session, TENANT_ZERO_ID, leaving, "member")
         agent = await _agent(session, TENANT_ZERO_ID, leaving, "helper")
         invitation = await _invitation(session, TENANT_ZERO_ID, leaving)
@@ -425,7 +460,7 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
         await session.commit()
         ids = {
             "user": leaving.id,
-            "owner": owner.id,
+            "admin": admin.id,
             "agent": agent.id,
             "invitation": invitation.id,
             "shared_room": shared_room.id,
@@ -449,14 +484,14 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
             await session.scalar(
                 select(Invitation.created_by).where(Invitation.id == ids["invitation"])
             )
-        ) == ids["owner"]
+        ) == ids["admin"]
         assert (
             await session.scalar(
                 select(WorkspaceServiceSetting.updated_by).where(
                     WorkspaceServiceSetting.service == "github"
                 )
             )
-        ) == ids["owner"]
+        ) == ids["admin"]
         room = await session.scalar(select(Room).where(Room.id == ids["shared_room"]))
         assert room is not None and room.owner_id is None and room.created_by is None
         assert (
@@ -500,11 +535,11 @@ async def test_a_workspace_left_empty_stays_with_nothing_pointing_at_the_person(
         user_id = alone.id
         await session.commit()
     async with tenant_session(session_factory, solo) as session:
-        await _member(session, solo, alone, "owner")
+        await _member(session, solo, alone, "admin")
         await _invitation(session, solo, alone)
         await session.commit()
 
-    workspaces = [Workspace(solo, "Solo", "owner")]
+    workspaces = [Workspace(solo, "Solo", "admin")]
     async with session_factory() as session:
         user = await session.get(User, user_id)
         assert user is not None
@@ -589,12 +624,12 @@ async def test_a_workspace_the_person_was_removed_from_is_cleared_too(
     async with session_factory() as session:
         session.add(Tenant(id=left, slug=left, name="Left"))
         await session.flush()
-        owner = await _user(session, "owner")
+        admin = await _user(session, "admin")
         removed = await _user(session, "removed")
-        ids = {"owner": owner.id, "removed": removed.id}
+        ids = {"admin": admin.id, "removed": removed.id}
         await session.commit()
     async with tenant_session(session_factory, left) as session:
-        await _member(session, left, owner, "owner")
+        await _member(session, left, admin, "admin")
         invitation = await _invitation(session, left, removed)
         reference = Reference(
             tenant_id=left,
@@ -628,7 +663,7 @@ async def test_a_workspace_the_person_was_removed_from_is_cleared_too(
             await session.scalar(
                 select(Invitation.created_by).where(Invitation.id == ids["invitation"])
             )
-        ) == ids["owner"]
+        ) == ids["admin"]
 
 
 async def test_a_workspace_holding_nothing_of_the_person_is_not_touched(
@@ -663,18 +698,18 @@ def _reference_of(owner: User, slug: str, created_at: datetime) -> Reference:
 async def test_a_reference_type_in_use_passes_to_an_admin_else_the_oldest_reference(
     session_factory: async_sessionmaker[AsyncSession], admin_has_one: bool
 ) -> None:
-    """An owner or admin with a reference of the type inherits it before any
-    member does; with none, the owner of the oldest reference of it does."""
+    """An admin with a reference of the type inherits it before any member
+    does; with none, the owner of the oldest reference of it does."""
     deletion, _, _ = _deletion(session_factory)
     slug = f"ticket-{uuid.uuid4().hex[:6]}"
     start = datetime(2026, 1, 1, tzinfo=UTC)
     async with session_factory() as session:
-        owner = await _user(session, "owner")
+        other_admin = await _user(session, "other-admin")
         leaving = await _user(session, "leaving")
         early = await _user(session, "early")
         late = await _user(session, "late")
         admin = await _user(session, "admin-member")
-        await _member(session, TENANT_ZERO_ID, owner, "owner")
+        await _member(session, TENANT_ZERO_ID, other_admin, "admin")
         await _member(session, TENANT_ZERO_ID, leaving, "member")
         await _member(session, TENANT_ZERO_ID, early, "member")
         await _member(session, TENANT_ZERO_ID, late, "member")
@@ -713,7 +748,7 @@ async def test_a_reference_type_in_use_passes_to_an_admin_else_the_oldest_refere
         ) == expected
 
 
-async def test_the_successor_is_the_longest_standing_owner_then_the_lowest_id(
+async def test_the_successor_is_the_longest_standing_admin_then_the_lowest_id(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     deletion, _, _ = _deletion(session_factory)
@@ -724,40 +759,40 @@ async def test_the_successor_is_the_longest_standing_owner_then_the_lowest_id(
             TenantMember(
                 tenant_id=TENANT_ZERO_ID,
                 user_id=leaving.id,
-                role="owner",
+                role="admin",
                 created_at=joined - timedelta(days=9),
             )
         )
-        admin = await _user(session, "admin-first")
+        member = await _user(session, "member-first")
         session.add(
             TenantMember(
                 tenant_id=TENANT_ZERO_ID,
-                user_id=admin.id,
-                role="admin",
+                user_id=member.id,
+                role="member",
                 created_at=joined - timedelta(days=5),
             )
         )
-        tied = [await _user(session, f"owner-{n}") for n in range(3)]
-        for owner in tied:
+        tied = [await _user(session, f"admin-{n}") for n in range(3)]
+        for admin in tied:
             session.add(
                 TenantMember(
                     tenant_id=TENANT_ZERO_ID,
-                    user_id=owner.id,
-                    role="owner",
+                    user_id=admin.id,
+                    role="admin",
                     created_at=joined,
                 )
             )
-        later = await _user(session, "owner-later")
+        later = await _user(session, "admin-later")
         session.add(
             TenantMember(
                 tenant_id=TENANT_ZERO_ID,
                 user_id=later.id,
-                role="owner",
+                role="admin",
                 created_at=joined + timedelta(days=1),
             )
         )
         await session.commit()
-        expected = min(owner.id for owner in tied)
+        expected = min(admin.id for admin in tied)
         leaving_id = leaving.id
 
     async with tenant_session(session_factory, TENANT_ZERO_ID) as session:

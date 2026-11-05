@@ -19,7 +19,7 @@ from typing import Any
 from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import plan_template
-from switch_core.authz import Principal
+from switch_core.authz import Principal, require_group_filing
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
@@ -445,14 +445,25 @@ async def _decorate_linked_rooms(
     ``"member"`` if the calling agent is assigned to the target room,
     ``"not_member"`` otherwise. For ``not_member`` rows, also include a
     human-readable ``access_note`` warning that ``connect_to_room`` will
-    fail until the agent is added by an operator."""
+    fail until the agent is added by an operator.
+
+    A link whose target the agent may not see (see `list_all_rooms`) is left
+    out: it would show a private room's name and description."""
     if not linked_rooms:
         return []
     async with protocol.session_factory() as session:
         agent_rooms = await protocol.room_store.get_rooms_for_agent(session, agent_id)
+        visible_ids = {
+            r.id
+            for r in await protocol.rooms_visible_to(
+                session, agent_id, include_archived=True
+            )
+        }
     member_ids = {r.id for r in agent_rooms}
     out: list[dict[str, Any]] = []
     for entry in linked_rooms:
+        if entry["target_room_id"] not in visible_ids:
+            continue
         is_member = entry["target_room_id"] in member_ids
         decorated = {
             **entry,
@@ -963,6 +974,8 @@ async def create_room(
             Names match exactly. An ambiguous bare name errors with the path
             of each match to retry with; an unknown path errors naming the
             first segment not found. Omit to leave the room standalone.
+            Filing a room in a group needs an owner who is a workspace
+            admin; anyone else is refused.
         roles: Optional room-roles to define at creation. Each entry is
             `{"name": "...", "instructions": "...", "exclusive": bool}`.
             Roles are assumable instruction bundles agents pick up with
@@ -1473,9 +1486,11 @@ async def list_all_rooms(
     limit: int = 100,
     cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List every room on this Switch instance (not just rooms this agent
-    is a member of), a page at a time, oldest first. Use `list_rooms` instead
-    to see only the rooms this agent is assigned to.
+    """List the rooms on this Switch instance this agent may see, a page at
+    a time, oldest first: every room its owner can read (public rooms and
+    ones the owner takes part in; all rooms for a workspace admin) plus the
+    rooms it is a member of. Use `list_rooms` instead to see only the rooms
+    this agent is assigned to.
 
     Args:
         include_archived: When false (default), archived rooms are omitted.
@@ -1548,7 +1563,9 @@ async def create_room_group(
     A room group is a named bucket that rooms can be filed under (via
     `create_room`'s `group_name`), and groups can nest under a parent group to
     form a tree. Creating a group does not move any rooms into it, and does
-    not create missing parents: create each level first.
+    not create missing parents: create each level first. Groups are shared by
+    the whole workspace, so only an agent whose owner is a workspace admin
+    may create one; anyone else gets a permission error.
 
     Args:
         name: The group's display name. It cannot contain "/" (the path
@@ -1618,7 +1635,9 @@ async def create_room_from_yaml(
     Args:
         yaml: The template text. A top-level ``room:`` makes one room; a
             ``group:`` with a ``rooms:`` list (and optional ``links:``) makes
-            a room group. Either may declare ``params:`` with defaults and
+            a room group, which an agent is refused: only a workspace admin
+            puts rooms in a group, and an agent acts without its owner's
+            admin reach. Either may declare ``params:`` with defaults and
             descriptions; placeholders are filled in before provisioning.
         inputs: Values for declared params. A required param with no default
             must be supplied here, or provisioning fails naming it.
@@ -1737,6 +1756,9 @@ async def _provision_as_agent(
         user_id=owner.id, name=owner.name, email=owner.email, text=yaml, inputs=inputs
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
+    if isinstance(parsed.spec, GroupSpec):
+        # Without the owner's admin reach, which filing rooms in a group needs.
+        require_group_filing(False)
     await rooms_yaml.check_entity_params(parsed, reader=reader)
     await rooms_yaml.check_bridges(parsed)
     room_specs = (
@@ -2213,6 +2235,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
+    A room your owner cannot read is not named in it.
 
     Args:
         agent_id: The target agent's id (from `list_participants` or

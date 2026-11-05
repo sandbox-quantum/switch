@@ -98,6 +98,7 @@ _COLLABORATORS = (
     "invitation_store",
     "join_domain_store",
     "organization_store",
+    "organization_directory",
     "template_store",
     "usage_store",
     "budget_store",
