@@ -125,17 +125,24 @@ export function CreateRoomOptions({
   workspaceId,
   value,
   onChange,
+  administersWorkspace,
 }: {
   workspaceId: string | null;
   value: RoomCreateOptions;
   onChange: (next: RoomCreateOptions) => void;
+  /**
+   * Whether the viewer administers the workspace. Only they put a room in a
+   * group, since a group can decide who may address an agent; for anyone
+   * else the room is made with none and the group is not offered.
+   */
+  administersWorkspace: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const groups = useQuery({
     // The key every view reads the groups under, so they go stale and refresh together.
     queryKey: ['remote-room-groups', workspaceId],
     queryFn: () => rpc.workspaces.listRoomGroups(workspaceId as string),
-    enabled: workspaceId !== null,
+    enabled: workspaceId !== null && administersWorkspace,
   });
   // The group is named once the list has it; until then (or if it could not be
   // read) the room is still filed under it, so say so rather than "none".
@@ -151,37 +158,43 @@ export function CreateRoomOptions({
       <DisclosureRow
         open={open}
         title="More options"
-        summary={`Group: ${groupName ?? 'none'} · ${ACCESS_LABELS[access]}`}
+        summary={
+          administersWorkspace
+            ? `Group: ${groupName ?? 'none'} · ${ACCESS_LABELS[access]}`
+            : ACCESS_LABELS[access]
+        }
         onToggle={() => setOpen(!open)}
       />
       {open && (
         <>
-          <Field>
-            <FieldLabel>Group</FieldLabel>
-            <Select
-              value={value.groupId ?? NO_GROUP}
-              onValueChange={(next) =>
-                onChange({ ...value, groupId: next === NO_GROUP ? null : (next as string) })
-              }
-            >
-              <SelectTrigger className="w-full" aria-label="Group">
-                <SelectValue>{groupName ?? 'No group'}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_GROUP}>No group</SelectItem>
-                {(groups.data ?? []).map((group) => (
-                  <SelectItem key={group.id} value={group.id}>
-                    {group.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {groups.isError && (
-              <span className="text-xs text-destructive">
-                {failureText(groups.error, 'Could not list the groups.')}
-              </span>
-            )}
-          </Field>
+          {administersWorkspace && (
+            <Field>
+              <FieldLabel>Group</FieldLabel>
+              <Select
+                value={value.groupId ?? NO_GROUP}
+                onValueChange={(next) =>
+                  onChange({ ...value, groupId: next === NO_GROUP ? null : (next as string) })
+                }
+              >
+                <SelectTrigger className="w-full" aria-label="Group">
+                  <SelectValue>{groupName ?? 'No group'}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_GROUP}>No group</SelectItem>
+                  {(groups.data ?? []).map((group) => (
+                    <SelectItem key={group.id} value={group.id}>
+                      {group.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {groups.isError && (
+                <span className="text-xs text-destructive">
+                  {failureText(groups.error, 'Could not list the groups.')}
+                </span>
+              )}
+            </Field>
+          )}
 
           <Field>
             <FieldLabel>Who can see and change it</FieldLabel>

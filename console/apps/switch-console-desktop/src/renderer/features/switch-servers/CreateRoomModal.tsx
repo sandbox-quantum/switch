@@ -49,6 +49,7 @@ import {
 } from './room-create-request';
 import { RoomNameInput } from './room-name-input';
 import { switchServersStore } from './switch-servers-store';
+import { administersWorkspaceById } from './workspace-admin';
 
 type CreateRoomModalArgs = {
   /** Create on this server instead of the active one — for callers that are not
@@ -180,7 +181,10 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   };
   // A choice the chosen app does not offer (a private channel on Teams, say)
   // falls back to a new public channel rather than being sent and refused.
-  const roomOptions = optionsForBridge(options, selectedBridge);
+  const administers = workspaceId !== null && administersWorkspaceById(workspaceId);
+  // Only an admin files a room in a group; for anyone else it is made with none.
+  const bridgeOptions = optionsForBridge(options, selectedBridge);
+  const roomOptions = administers ? bridgeOptions : { ...bridgeOptions, groupId: null };
   const agentIds = shownPicked.filter((each) => each.kind === 'agent').map((each) => each.id);
   const memberUserIds = shownPicked.filter((each) => each.kind === 'person').map((each) => each.id);
 
@@ -379,6 +383,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               </Field>
               <CreateRoomOptions
                 workspaceId={workspaceId}
+                administersWorkspace={administers}
                 value={roomOptions}
                 onChange={(next) => {
                   setOptions(next);

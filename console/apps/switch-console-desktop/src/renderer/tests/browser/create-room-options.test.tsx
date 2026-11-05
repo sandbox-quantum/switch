@@ -50,7 +50,7 @@ afterEach(async () => {
   latest = DEFAULT_ROOM_OPTIONS;
 });
 
-function Harness({ bridge }: { bridge: RemoteBridge }) {
+function Harness({ bridge, admin }: { bridge: RemoteBridge; admin: boolean }) {
   const [value, setValue] = useState<RoomCreateOptions>(DEFAULT_ROOM_OPTIONS);
   const onChange = (next: RoomCreateOptions) => {
     latest = next;
@@ -59,12 +59,17 @@ function Harness({ bridge }: { bridge: RemoteBridge }) {
   return (
     <>
       <RoomChannelField bridge={bridge} value={value} onChange={onChange} />
-      <CreateRoomOptions workspaceId="ws-1" value={value} onChange={onChange} />
+      <CreateRoomOptions
+        workspaceId="ws-1"
+        value={value}
+        onChange={onChange}
+        administersWorkspace={admin}
+      />
     </>
   );
 }
 
-async function render(bridge: RemoteBridge = BRIDGE): Promise<HTMLDivElement> {
+async function render(bridge: RemoteBridge = BRIDGE, admin = true): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -72,7 +77,7 @@ async function render(bridge: RemoteBridge = BRIDGE): Promise<HTMLDivElement> {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
-        <Harness bridge={bridge} />
+        <Harness bridge={bridge} admin={admin} />
       </QueryClientProvider>
     )
   );
@@ -129,6 +134,14 @@ describe('creating a room on a messaging app', () => {
     const el = await render();
     await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     expect(el.querySelector('[aria-label="Group"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Who can see and change it"]')).not.toBeNull();
+  });
+
+  it('offers the group only to a workspace admin, who alone puts rooms in groups', async () => {
+    const el = await render(BRIDGE, false);
+    expect(el.textContent).not.toContain('Group:');
+    await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
+    expect(el.querySelector('[aria-label="Group"]')).toBeNull();
     expect(el.querySelector('[aria-label="Who can see and change it"]')).not.toBeNull();
   });
 });

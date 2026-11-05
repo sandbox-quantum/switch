@@ -54,6 +54,9 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
     idOnServerInScope: (serverId: string | null) => (serverId ? 'ws' : null),
   },
 }));
+vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
+  administersWorkspaceById: () => true,
+}));
 vi.mock('@renderer/features/chats/stores/chats', () => ({ chatsStore: { add: vi.fn() } }));
 vi.mock('@renderer/features/sidebar/sidebar-room-grouping', () => ({ openRoomView: vi.fn() }));
 vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
