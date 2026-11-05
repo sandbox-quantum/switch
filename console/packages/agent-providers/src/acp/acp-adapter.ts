@@ -234,7 +234,11 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      requireHttpMcp(
+        hooks.label,
+        input.mcpServers,
+        agent.mcpCapabilities?.http || hooks.mcpCapabilities?.http
+      );
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -532,14 +536,19 @@ export class AcpAdapter implements ProviderAdapter {
     if (vendor) return await vendor;
     const { toolCall } = request;
     const once = request.options.find((option) => option.kind === 'allow_once');
-    const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    const server =
+      this.hooks.mcpServerOf?.(toolCall, state.mcpNames) ??
+      state.toolServers.get(toolCall.toolCallId);
+    // The request's tool call is an update: it may name only a call announced earlier.
+    const tracked = state.items.get(toolCall.toolCallId);
+    const edit = toolCall.kind === 'edit' || tracked?.type === 'file_change';
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
     if (
       once &&
       ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
         state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
+        (state.runtimeMode === 'auto-accept-edits' && edit))
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
@@ -556,7 +565,7 @@ export class AcpAdapter implements ProviderAdapter {
       if (
         !decision ||
         options.some((offered) => offered.decision === decision) ||
-        /future|permanent/i.test(option.name)
+        /future|permanent/i.test(`${option.optionId} ${option.name}`)
       )
         continue;
       options.push({
@@ -570,12 +579,12 @@ export class AcpAdapter implements ProviderAdapter {
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : toolCall.kind === 'execute' || tracked?.type === 'command_execution'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : edit
             ? 'file_change_approval'
             : 'tool_approval',
-      title: toolCall.title ?? `${this.hooks.label} needs permission`,
+      title: toolCall.title ?? tracked?.title ?? `${this.hooks.label} needs permission`,
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
@@ -632,7 +641,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
-    const server = this.hooks.mcpServerOf?.(update);
+    const server = this.hooks.mcpServerOf?.(update, state.mcpNames);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
     const text = (update.content ?? [])
       .map((part) =>

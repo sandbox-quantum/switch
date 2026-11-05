@@ -274,6 +274,36 @@ it('approves without asking in full access, approves only edits in auto-accept-e
   }
 });
 
+it('reads a permission request that names only its call from the call announced before it', async () => {
+  const { adapter, events, server } = await start(dummy, { runtimeMode: 'auto-accept-edits' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  for (const [id, toolCallId, kind, title] of [
+    [55, 'patch', 'edit', 'Edit a.ts'],
+    [56, 'shell', 'execute', 'echo hi'],
+  ] as const) {
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call', toolCallId, kind, title, status: 'pending' },
+    });
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+  }
+  await flush();
+  expect(server.received.find((m) => m.id === 55)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  expect(events.filter((e) => e.type === 'request.opened')).toMatchObject([
+    { requestType: 'command_execution_approval', title: 'echo hi' },
+  ]);
+});
+
 it('lets vendor extensions ask questions and add items, and cancels them outside a turn', async () => {
   const hooks: AcpProviderHooks = {
     ...dummy,
