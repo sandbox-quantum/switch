@@ -119,7 +119,7 @@ export interface AcpProviderHooks {
    * session environment already signs it in, say). Omit for an agent that
    * never needs a sign-in call.
    */
-  authMethodId?(env: Record<string, string>): string | undefined;
+  authMethodId?(env: Record<string, string>, initialize: AcpInitializeResult): string | undefined;
   /**
    * Prompt content the agent accepts whether or not it advertises it. What it
    * advertises in `initialize` is always honoured as well.

@@ -226,7 +226,7 @@ export class AcpAdapter implements ProviderAdapter {
       // Signing in belongs here: starting a session is work the user asked
       // for, so a browser opening is an answer to something they did. Sign-in
       // checks stop at the handshake above.
-      const authMethodId = hooks.authMethodId?.(input.env);
+      const authMethodId = hooks.authMethodId?.(input.env, initialized);
       if (authMethodId) await client.request('authenticate', { methodId: authMethodId });
       const mcpServers = acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
