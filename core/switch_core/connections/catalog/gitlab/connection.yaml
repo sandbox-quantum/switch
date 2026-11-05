@@ -23,7 +23,12 @@ auth:
     unchecked: >-
       Switch can't check the redirect URI, or that the application has the mcp
       and read_user scopes. Have someone connect once to confirm.
-    revocation_discovered: true
+    # Named rather than discovered from the MCP server, so that no request
+    # names the MCP server as its resource: GitLab answers one that does with
+    # a token for mcp alone, whatever scopes it asked for.
+    authorization_url: https://gitlab.com/oauth/authorize
+    token_url: https://gitlab.com/oauth/token
+    revocation_url: https://gitlab.com/oauth/revoke
   # The mcp scope alone cannot read the account; read_user can.
   identity:
     url: https://gitlab.com/api/v4/user

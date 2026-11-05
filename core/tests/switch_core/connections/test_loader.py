@@ -245,9 +245,16 @@ def test_the_shipped_gitlab_entry_signs_in_as_gitlab_requires():
     )
     assert oauth.client_settings == "GITLAB"
     assert oauth.loopback_ports is None
-    # The endpoints, revocation included, come from GitLab's own metadata.
-    assert (oauth.authorization_url, oauth.token_url) == (None, None)
-    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, True)
+    # Named, so no request names the MCP server as its resource: GitLab would
+    # narrow the token to mcp, which cannot read the account.
+    assert (oauth.authorization_url, oauth.token_url) == (
+        "https://gitlab.com/oauth/authorize",
+        "https://gitlab.com/oauth/token",
+    )
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (
+        "https://gitlab.com/oauth/revoke",
+        False,
+    )
     assert oauth.remove_access is None
     assert oauth.unchecked is not None and "read_user" in oauth.unchecked
     assert definition.auth.refresh == "rotating"
