@@ -171,6 +171,7 @@ def app_specs(catalog: Mapping[str, Connection]) -> dict[str, AppSpec]:
         if not definition.enabled or kind is None:
             continue
         variables: tuple[str, ...]
+        public = False
         if kind == "github_app":
             variables = GITHUB_APP_VARIABLES
         else:
@@ -179,12 +180,13 @@ def app_specs(catalog: Mapping[str, Connection]) -> dict[str, AppSpec]:
             variables = (
                 client_settings_variable(definition.auth.oauth.client_settings),
             )
+            public = definition.auth.oauth.public_client
         specs[slug] = AppSpec(
             slug,
             definition.name,
             kind,
             variables,
-            public=(kind == "oauth_client" and definition.auth.oauth.public_client),
+            public=public,
         )
     if sum(spec.kind == "github_app" for spec in specs.values()) > 1:
         raise ValueError("The catalog names more than one GitHub App service.")

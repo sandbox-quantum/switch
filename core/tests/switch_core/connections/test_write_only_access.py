@@ -79,6 +79,7 @@ async def test_write_only_grant_cannot_be_downgraded_or_used_after_grant_off(
     session_factory, tmp_path
 ):
     from sqlalchemy import delete
+
     from switch_core.connections.broker import Principal, ServiceError
     from switch_core.db.models import ServiceGrant
     from tests.switch_core.connections.test_broker import _pass_through
