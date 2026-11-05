@@ -42,31 +42,46 @@ connector**:
 
 HubSpot does not let the operator define the connector's scopes: they follow
 the server's tools and the permissions each person grants at install. Switch
-asks for the least set that covers contacts, companies and deals, with
-`account-info.security.read` only so it can say whose account connected.
+does not send a scope parameter for this unscoped connector. It is write-capable,
+not a read-only connection. Account identity comes from `get_user_details`.
 
 ## Give Switch the client
 
-Write the connector's client id and secret to a JSON file on the server,
-readable by switch-core alone and never committed anywhere:
+In Switch Console, open **Admin > Connector apps > HubSpot > Set up**. Enter
+the connector's Client ID and Client secret directly into Switch's own form.
+Keep the secret out of terminals, chat messages, recordings and version control.
+Check and save, then inspect the result. A successful client check is not proof
+of a completed sign-in, effective permissions or a working MCP identity route.
 
-```json
-{"client_id": "<client id>", "client_secret": "<client secret>"}
-```
+Self-hosted operators can also use the documented `HUBSPOT_CLIENT_CONFIG_PATH`
+configuration route. That is not a shell-environment workaround for Console's
+managed native server, which supplies its own environment. Do not edit the
+managed server's generated environment file.
 
-The file must hold exactly those two keys. Then point switch-core at it with
-an absolute path and restart it:
+## Free-account eligibility and limits
 
-```bash
-HUBSPOT_CLIENT_CONFIG_PATH=/etc/switch/hubspot-client.json
-```
+HubSpot's remote CRM MCP server is generally available to all HubSpot accounts,
+and its current documentation explicitly describes free-tool accounts. The
+free CRM signup states that no credit card is needed. A paid AI-client
+subscription is not a requirement imposed by this custom Switch-client route.
+Core CRM tool availability still depends on the account and user permissions;
+call `get_user_details` after connecting to inspect the actual access.
 
-If the variable is set but the file cannot be read or holds anything else,
-switch-core does not start, and says why.
+This is the remote server at `https://mcp.hubspot.com`, not the local developer
+MCP server or HubSpot's credit-bearing Agent Builder. Do not activate paid plans,
+trials, credit features or beta revenue tools for a demo. The account owner must
+review the applicable Customer and Developer Terms before creating or using it.
+Use only authorized synthetic data in a recording, and never show credentials.
+
+Sources, checked November 6, 2026:
+- https://developers.hubspot.com/changelog/remote-hubspot-mcp-server-is-now-generally-available
+- https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server
+- https://www.hubspot.com/products/crm
+- https://legal.hubspot.com/hs-developer-terms
 
 ## What people do
 
-1. In Switch Console: Settings, Connections, HubSpot, Connect. The browser
+1. In Switch Console: Connectors, HubSpot, Connect. The browser
    opens HubSpot; the person picks their HubSpot account, grants the
    permissions, and comes back.
 2. They turn HubSpot on for an agent. The agent's HubSpot tools work as that
