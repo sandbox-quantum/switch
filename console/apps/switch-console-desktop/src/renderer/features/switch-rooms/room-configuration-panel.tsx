@@ -201,6 +201,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
               workspaceId={workspaceId}
               room={room}
               autoRoute={room.autoRoute}
+              canWrite={permissions.canWrite}
               canManage={permissions.canManage}
             />
           )}
@@ -526,11 +527,13 @@ const AutoRouteSection = observer(function AutoRouteSection({
   workspaceId,
   room,
   autoRoute,
+  canWrite,
   canManage,
 }: {
   workspaceId: string;
   room: RemoteRoomDetail;
   autoRoute: NonNullable<RemoteRoomDetail['autoRoute']>;
+  canWrite: boolean;
   canManage: boolean;
 }) {
   const remoteAgents = useWorkspaceAgents(workspaceId);
@@ -545,6 +548,7 @@ const AutoRouteSection = observer(function AutoRouteSection({
       room={room}
       autoRoute={autoRoute}
       agents={agents}
+      canWrite={canWrite}
       canManage={canManage}
       detailKey={roomDetailKey(workspaceId, room.id)}
     />

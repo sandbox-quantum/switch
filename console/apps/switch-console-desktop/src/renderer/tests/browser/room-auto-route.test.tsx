@@ -40,13 +40,6 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
 }));
 
-const access = vi.hoisted(() => ({ administers: true }));
-
-vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
-  administersWorkspaceInScope: () => access.administers,
-  operatesServer: () => false,
-}));
-
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: {
     roomWorkspaceId: () => 'ws-1',
@@ -56,7 +49,6 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
 }));
 
 import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 
 const NO_BACKEND =
@@ -70,10 +62,16 @@ const OFF: RoomAutoRoute = {
   fallbackAgentName: null,
 };
 
-function room(autoRoute: RoomAutoRoute | undefined, ownerId: string | null = null) {
+/** What the server says the signed-in account may do in the room. */
+type Access = { canWrite: boolean; canManage: boolean };
+
+const MANAGER: Access = { canWrite: true, canManage: true };
+
+function room(autoRoute: RoomAutoRoute | undefined, access: Access) {
   return {
     id: 'room-1',
-    ownerId,
+    ownerId: 'user-owner',
+    ...access,
     name: 'ops',
     description: '',
     instructions: null,
@@ -90,7 +88,6 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
-  access.administers = true;
   vi.spyOn(workspacesStore, 'serverIdFor').mockReturnValue('server-1');
   getRoomDetail.mockReset();
   setRoomAutoRoute.mockReset();
@@ -105,9 +102,9 @@ afterEach(async () => {
 
 async function render(
   autoRoute: RoomAutoRoute | undefined,
-  ownerId: string | null = null
+  access: Access = MANAGER
 ): Promise<HTMLElement> {
-  getRoomDetail.mockResolvedValue(room(autoRoute, ownerId));
+  getRoomDetail.mockResolvedValue(room(autoRoute, access));
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -191,14 +188,14 @@ it('turns auto-route off', async () => {
 });
 
 it('leaves the switch as it was when the server refuses, with the reason', async () => {
-  setRoomAutoRoute.mockRejectedValue(new Error('Only a room admin can change auto-route.'));
+  setRoomAutoRoute.mockRejectedValue(new Error('Not authorized to write this resource'));
   const el = await render(OFF);
   await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
 
   await act(async () => toggle(el).click());
 
   await vi.waitFor(() => expect(el.textContent).toContain('Not changed —'));
-  expect(el.textContent).toContain('Only a room admin can change auto-route.');
+  expect(el.textContent).toContain('Not authorized to write this resource');
   expect(checked(el)).toBe(false);
 });
 
@@ -272,25 +269,52 @@ it('names a triage agent by the name the server gives, even one that has left th
   );
 });
 
-it('holds the switch and picker for someone who neither owns the room nor administers the workspace', async () => {
-  access.administers = false;
-  const el = await render({ ...OFF, on: true });
+function picker(el: HTMLElement): HTMLElement {
+  return el.querySelector<HTMLElement>('[aria-label="Triage agent"]')!;
+}
+
+function pickerHeld(el: HTMLElement): boolean {
+  const p = picker(el);
+  return p.hasAttribute('data-disabled') || p.hasAttribute('disabled');
+}
+
+it('lets someone who may write to the room turn it on, but not name the triage agent', async () => {
+  setRoomAutoRoute.mockResolvedValue({ ...OFF, on: true });
+  const el = await render(OFF, { canWrite: true, canManage: false });
+  await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
+
+  expect(disabled(el)).toBe(false);
+  expect(pickerHeld(el)).toBe(true);
+  expect(el.textContent).toContain('Only the room’s owner or a workspace admin can change this.');
+  expect(el.textContent).not.toContain('needs write access');
+
+  await act(async () => toggle(el).click());
+
+  expect(setRoomAutoRoute).toHaveBeenCalledWith({
+    workspaceId: 'ws-1',
+    roomId: 'room-1',
+    on: true,
+  });
+  await vi.waitFor(() => expect(checked(el)).toBe(true));
+});
+
+it('holds the switch and picker for a read-only viewer, with the reason', async () => {
+  const el = await render({ ...OFF, on: true }, { canWrite: false, canManage: false });
   await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
 
   expect(checked(el)).toBe(true);
   expect(disabled(el)).toBe(true);
-  const picker = el.querySelector<HTMLElement>('[aria-label="Triage agent"]')!;
-  expect(picker.hasAttribute('data-disabled') || picker.hasAttribute('disabled')).toBe(true);
-  expect(el.textContent).toContain('Only the room’s owner or a workspace admin can change these.');
+  expect(pickerHeld(el)).toBe(true);
+  expect(el.textContent).toContain('Turning auto-route on or off needs write access to this room.');
+  expect(el.textContent).toContain('Only the room’s owner or a workspace admin can change this.');
 });
 
-it('lets the room’s owner change it without administering the workspace', async () => {
-  access.administers = false;
-  vi.spyOn(switchServersStore, 'statusFor').mockReturnValue({
-    user: { id: 'user-owner' },
-  } as never);
-  const el = await render(OFF, 'user-owner');
+it('offers both to the room’s owner or a workspace admin', async () => {
+  const el = await render(OFF, MANAGER);
   await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
 
   expect(disabled(el)).toBe(false);
+  expect(pickerHeld(el)).toBe(false);
+  expect(el.textContent).not.toContain('Only the room’s owner');
+  expect(el.textContent).not.toContain('needs write access');
 });

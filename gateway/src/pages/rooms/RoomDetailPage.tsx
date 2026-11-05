@@ -133,8 +133,12 @@ export default function RoomDetailPage() {
         <Divider />
         {room.auto_route && (
           <>
-            {/* Auto-route is the room owner's and the workspace admins' to change. */}
-            <RoomAutoRouteSection room={room} autoRoute={room.auto_route} canManage={canManage} />
+            <RoomAutoRouteSection
+              room={room}
+              autoRoute={room.auto_route}
+              canWrite={canWrite}
+              canManage={canManage}
+            />
             <Divider />
           </>
         )}

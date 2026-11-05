@@ -25,14 +25,17 @@ const NO_TRIAGE = '';
  *
  * Shows what the server says: the switch and picker move only once the
  * server has answered, and a refusal leaves them as they were with the
- * reason beside them. Only the room's owner and the workspace's admins may
- * change it, so for anyone else both are shown but held.
+ * reason beside them. Anyone who may write to the room may turn it on or
+ * off; naming the triage agent takes the room's owner or a workspace admin.
+ * Both come from the server (`can_write`, `can_manage`), and whatever the
+ * viewer may not change is shown but held, with the reason.
  */
 export function RoomAutoRouteSection({
   workspaceId,
   room,
   autoRoute,
   agents,
+  canWrite,
   canManage,
   detailKey,
 }: {
@@ -41,7 +44,9 @@ export function RoomAutoRouteSection({
   autoRoute: RoomAutoRoute;
   /** The room's agents, for the triage picker. */
   agents: { id: string; name: string }[];
-  /** Whether the signed-in account may change it: the room's owner or a workspace admin. */
+  /** Whether the signed-in account may write to the room, and so turn auto-route on or off. */
+  canWrite: boolean;
+  /** Whether the signed-in account manages the room, and so may name its triage agent. */
   canManage: boolean;
   /** The query the room's detail is read under, written back from each answer. */
   detailKey: readonly unknown[];
@@ -73,7 +78,7 @@ export function RoomAutoRouteSection({
   }
 
   // Unavailable, it can still be turned off, so a room isn't stuck "on".
-  const canFlip = canManage && pending === null && (autoRoute.available || autoRoute.on);
+  const canFlip = canWrite && pending === null && (autoRoute.available || autoRoute.on);
   const triage = autoRoute.fallbackAgent;
   // A triage agent that has left the room is still listed, so the setting stays visible.
   const triageChoices =
@@ -104,6 +109,12 @@ export function RoomAutoRouteSection({
           onCheckedChange={(on) => void change('on', { on })}
         />
       </div>
+
+      {!canWrite && (
+        <p className="text-xs text-foreground-muted" role="note">
+          Turning auto-route on or off needs write access to this room.
+        </p>
+      )}
 
       {!autoRoute.available && (
         <p className="text-xs text-foreground-warning" role="note">
@@ -146,8 +157,8 @@ export function RoomAutoRouteSection({
       </div>
 
       {!canManage && (
-        <p className="text-xs text-foreground-muted">
-          Only the room’s owner or a workspace admin can change these.
+        <p className="text-xs text-foreground-muted" role="note">
+          Only the room’s owner or a workspace admin can change this.
         </p>
       )}
       {pending !== null && <span className="text-xs text-foreground-muted">Saving…</span>}
