@@ -117,7 +117,11 @@ export default function ReferenceDetailPage() {
         <Divider />
         <InPackagesSection packageIds={ref.packages ?? []} />
         <Divider />
-        <ResourceAttachmentsSection kind="reference" resourceId={id} />
+        <ResourceAttachmentsSection
+          kind="reference"
+          resourceId={id}
+          hiddenRoomsCount={ref.hidden_rooms_count}
+        />
         {canMutate && (
           <>
             <Divider />
@@ -139,6 +143,7 @@ export default function ReferenceDetailPage() {
         kind="reference"
         resourceId={id}
         resourceLabel={ref.name || id}
+        hiddenRoomsCount={ref.hidden_rooms_count}
         onClose={() => setDeleteOpen(false)}
         onDeleted={() => navigate("/resources?tab=references")}
       />

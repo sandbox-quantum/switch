@@ -147,6 +147,21 @@ export interface ProviderTurnStartResult {
   steeredInto?: string;
 }
 
+/** One turn of a saved native conversation, as a transcript that starts with it shows it. */
+export interface ConversationHistoryTurn {
+  /** The same every time the same conversation is read, so reading it twice adds nothing. */
+  turnId: string;
+  items: ConversationHistoryItem[];
+}
+
+export interface ConversationHistoryItem {
+  itemId: string;
+  kind: 'user-message' | 'assistant-message' | 'tool-activity';
+  status: 'completed' | 'failed';
+  title: string;
+  text: string;
+}
+
 export interface ProviderCapabilities {
   /** The adapter can switch models on a live session, not only at start. */
   modelSwitchInSession: boolean;
@@ -195,6 +210,17 @@ export interface ProviderAdapter {
    * has no such channel; a caller says it in the next user message instead.
    */
   addDeveloperMessage?(sessionId: string, text: string): Promise<void>;
+  /**
+   * The turns of a saved native conversation, oldest first: what a session
+   * that continues a conversation started outside Switch shows before its own.
+   * Read without starting the session, from where a session with `env` would
+   * find it. Absent means the provider cannot read its saved conversations.
+   */
+  conversationHistory?(
+    nativeSessionId: string,
+    cwd: string,
+    env: Record<string, string>
+  ): Promise<ConversationHistoryTurn[]>;
   stopSession(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
   hasSession(sessionId: string): boolean;

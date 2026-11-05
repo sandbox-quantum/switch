@@ -42,7 +42,7 @@ describe("MembersSection", () => {
                 user_id: "u4",
                 name: "Dee",
                 email: "dee@example.com",
-                role: "owner",
+                role: "admin",
                 organization_role: "org_admin",
               }),
             ]),
@@ -50,10 +50,10 @@ describe("MembersSection", () => {
       ),
     );
 
-    render(<MembersSection tenantId="t1" selfId="u1" canAdmin isOwner />);
+    render(<MembersSection tenantId="t1" selfId="u1" canAdmin />);
 
     expect(await screen.findByText("Org Admin, via organization")).toBeTruthy();
-    expect(screen.getByText("Owner · Org Admin")).toBeTruthy();
+    expect(screen.getByText("Admin · Org Admin")).toBeTruthy();
     expect(screen.queryByLabelText("Remove dee@example.com")).toBeNull();
     expect(screen.queryByLabelText("Role for cy@example.com")).toBeNull();
     expect(screen.queryByLabelText("Remove cy@example.com")).toBeNull();

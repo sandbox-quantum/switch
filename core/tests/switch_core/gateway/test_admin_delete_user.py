@@ -95,7 +95,7 @@ async def _people(
         session_factory,
         name="operator",
         tenant_id=TENANT_ZERO_ID,
-        role="owner",
+        role="admin",
         email=ADMIN_EMAIL,
         user_role="admin",
     )
@@ -139,7 +139,7 @@ async def test_a_workspace_admin_who_is_not_the_operator_is_refused(
 ) -> None:
     _, member = await _people(session_factory)
     workspace_admin = await _make_member(
-        session_factory, name="ws-admin", tenant_id=TENANT_ZERO_ID, role="owner"
+        session_factory, name="ws-admin", tenant_id=TENANT_ZERO_ID, role="admin"
     )
     async with _client(
         _app(session_factory), workspace_admin, "ws-admin@example.invalid"

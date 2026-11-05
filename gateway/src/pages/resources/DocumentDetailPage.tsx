@@ -106,7 +106,11 @@ export default function DocumentDetailPage() {
         <Divider />
         <InPackagesSection packageIds={doc.packages ?? []} />
         <Divider />
-        <ResourceAttachmentsSection kind="document" resourceId={id} />
+        <ResourceAttachmentsSection
+          kind="document"
+          resourceId={id}
+          hiddenRoomsCount={doc.hidden_rooms_count}
+        />
         {canMutate && (
           <>
             <Divider />
@@ -128,6 +132,7 @@ export default function DocumentDetailPage() {
         kind="document"
         resourceId={id}
         resourceLabel={doc.name || id}
+        hiddenRoomsCount={doc.hidden_rooms_count}
         onClose={() => setDeleteOpen(false)}
         onDeleted={() => navigate("/resources?tab=documents")}
       />

@@ -9,8 +9,12 @@ vi.mock('node:child_process', () => ({
   spawnSync: spawnSyncMock,
 }));
 
-const { ensureUserBinDirsInPath, ensureWindowsNpmGlobalBinInPath, resolveUserEnv } =
-  await import('./userEnv');
+const {
+  ensureUserBinDirsInPath,
+  ensureWindowsNpmGlobalBinInPath,
+  ensureWindowsUserBinDirsInPath,
+  resolveUserEnv,
+} = await import('./userEnv');
 
 const originalPath = process.env.PATH;
 
@@ -62,6 +66,27 @@ describe('ensureWindowsNpmGlobalBinInPath', () => {
 
     expect(added).toBe('C:\\Users\\test\\AppData\\Roaming\\npm');
     expect(env.Path).toBe('C:\\Users\\test\\AppData\\Roaming\\npm;C:\\Windows\\System32');
+  });
+});
+
+describe('ensureWindowsUserBinDirsInPath', () => {
+  it('adds the folder Google’s agy installer writes to, once, after the PATH as the controller does', () => {
+    const env: NodeJS.ProcessEnv = {
+      localappdata: 'C:\\Users\\test\\AppData\\Local',
+      Path: 'C:\\Windows\\System32',
+    };
+
+    expect(ensureWindowsUserBinDirsInPath(env)).toEqual([
+      'C:\\Users\\test\\AppData\\Local\\agy\\bin',
+    ]);
+    expect(env.Path).toBe('C:\\Windows\\System32;C:\\Users\\test\\AppData\\Local\\agy\\bin');
+    expect(ensureWindowsUserBinDirsInPath(env)).toEqual([]);
+  });
+
+  it('adds nothing without LOCALAPPDATA', () => {
+    const env: NodeJS.ProcessEnv = { Path: 'C:\\Windows\\System32' };
+    expect(ensureWindowsUserBinDirsInPath(env)).toEqual([]);
+    expect(env.Path).toBe('C:\\Windows\\System32');
   });
 });
 

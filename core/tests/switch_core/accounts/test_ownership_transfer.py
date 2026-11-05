@@ -569,7 +569,7 @@ async def test_a_removal_waits_for_a_transfer_to_the_member(
     the agent they now own and refuses."""
     await _make_tenant(session_factory, TENANT_A)
     owner_id = await _make_member(
-        session_factory, name="giver", tenant_id=TENANT_A, role="owner"
+        session_factory, name="giver", tenant_id=TENANT_A, role="admin"
     )
     member_id = await _make_member(
         session_factory, name="taker", tenant_id=TENANT_A, role="member"

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { access, cp, readdir, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from '@main/lib/logger';
+import { GATEWAY_UI_DIR_NAME, gatewayUiOrNull } from './gateway-ui';
 import { exe } from './native-paths';
 import { BUNDLE_FORMAT, SWITCH_CORE_PYTHON } from './toolchain-pins';
 
@@ -29,6 +30,9 @@ export type LocalServerBundle = {
   sitePackages: string;
   /** Pure-Python wheels the editable install of switch-core builds with. */
   buildWheels: string;
+  /** The gateway's built pages for that switch-core, or null in a bundle
+   * built before they were shipped. */
+  gatewayUi: string | null;
 };
 
 type Manifest = {
@@ -89,6 +93,7 @@ export async function readLocalServerBundle(
     switchSource: path.join(root, 'switch', 'src'),
     sitePackages: path.join(root, 'switch', 'site-packages'),
     buildWheels: path.join(root, 'switch', 'build-wheels'),
+    gatewayUi: await gatewayUiOrNull(path.join(root, 'switch', GATEWAY_UI_DIR_NAME)),
   };
 }
 

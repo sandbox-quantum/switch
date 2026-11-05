@@ -17,6 +17,7 @@ from switch_core.accounts.deletion import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.chats.member_names import rename_member_clients
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
@@ -47,9 +48,11 @@ from switch_core.gateway.auth import (
     operator_entered_workspace,
     require_admin,
     set_session_cookie,
+    tenants_bindable_by,
     verify_password_off_loop,
 )
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_agent_store,
     get_api_key_store,
     get_bridge_store,
@@ -86,10 +89,12 @@ from switch_core.gateway.schemas import (
     SignupMachine,
     SignupRequest,
     SignupResponse,
+    UpdateMeRequest,
     UserResponse,
 )
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
+from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
 
@@ -118,6 +123,7 @@ def _session_response(user: User) -> SessionUserResponse:
         email=user.email,
         role=user.role,
         created_at=str(user.created_at),
+        has_password=user.password_hash is not None,
         server=_gateway_declaration(),
     )
 
@@ -214,6 +220,7 @@ async def _refuse_signup(
             config.gateway_signup_max_per_hour,
         )
         await session.rollback()
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "rate_limited"})
         raise HTTPException(
             status_code=429,
             detail="Too many sign-ups on this server in the last hour. Try again later.",
@@ -221,6 +228,7 @@ async def _refuse_signup(
         )
     if await user_store.get_by_email(session, email) is not None:
         await session.rollback()
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "email_taken"})
         raise HTTPException(status_code=409, detail="Email already registered")
 
 
@@ -244,6 +252,7 @@ async def signup(
     fails the sign-up: the response says why instead.
     """
     if not config.gateway_signup_open:
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "disabled"})
         raise HTTPException(
             status_code=403, detail="Sign-up is disabled on this server"
         )
@@ -273,11 +282,15 @@ async def signup(
             if not email_taken(err):
                 raise
             await session.rollback()
+            emit_safely(
+                current_telemetry(), "signup_refused", {"reason": "email_taken"}
+            )
             raise HTTPException(
                 status_code=409, detail="Email already registered"
             ) from None
         await session.commit()
         logger.info("Signed up user: %s (%s)", user.email, user.id)
+        emit_safely(current_telemetry(), "account_created", {"method": "signup"})
 
         set_session_cookie(
             response,
@@ -572,6 +585,34 @@ async def _workspaces_to_delete(
     return await deletion.with_former_workspaces(user_id, memberships)
 
 
+@router.patch("/auth/me")
+async def update_me(
+    req: UpdateMeRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user: Annotated[User, Depends(get_current_user)],
+) -> SessionUserResponse:
+    """Change the signed-in person's display name.
+
+    Like the password change, this writes the `User` that `get_current_user`
+    handed over and commits the session `get_session` handed over, which are
+    the same object within a request.
+    """
+    user.name = req.name
+    await session.commit()
+    # The name other members see beside what this person writes in a
+    # Console chat is their member client's, copied when it was made.
+    await rename_member_clients(
+        session_factory,
+        await tenants_bindable_by(session_factory, user.id),
+        user.id,
+        req.name,
+    )
+    return _session_response(user)
+
+
 @router.put("/auth/me/password")
 async def change_password(
     req: ChangePasswordRequest,
@@ -640,6 +681,7 @@ async def create_user(
     await session.commit()
 
     logger.info("Created user: %s (%s)", user.email, user.id)
+    emit_safely(current_telemetry(), "account_created", {"method": "admin"})
     return UserResponse(
         id=user.id,
         name=user.name,

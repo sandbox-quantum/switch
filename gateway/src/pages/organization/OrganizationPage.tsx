@@ -1,5 +1,5 @@
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
 import { fetchCurrentOrganization } from "../../data/api";
 import { administersOrganization } from "../../data/sessionState";
@@ -7,6 +7,7 @@ import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
 import OrganizationConnectorsSection from "./OrganizationConnectorsSection";
 import OrganizationServicesSection from "./OrganizationServicesSection";
+import OrganizationIssuesNotice from "./OrganizationIssuesNotice";
 import OrganizationMembersSection from "./OrganizationMembersSection";
 import WorkspacesSection from "./WorkspacesSection";
 
@@ -17,6 +18,10 @@ export default function OrganizationPage() {
   const { session } = useAuth();
   const load = useCallback(() => fetchCurrentOrganization(), []);
   const { data: organization, error } = useLoad(load);
+  // A change to the members can make an issue or settle one; the notice is
+  // read again, from scratch, after each.
+  const [membersChanged, setMembersChanged] = useState(0);
+  const onMembersChanged = useCallback(() => setMembersChanged((n) => n + 1), []);
   const tenant = session?.tenant;
   if (!session || !tenant) return <CircularProgress />;
   if (tenant.organization_id === null) {
@@ -40,9 +45,17 @@ export default function OrganizationPage() {
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
       <Stack spacing={4}>
+        {(isAdmin || session.user.is_operator) && <OrganizationIssuesNotice key={membersChanged} />}
         <WorkspacesSection currentId={tenant.id} canAdd={session.can_add_workspace} />
         {(isAdmin || session.user.is_operator) && (
-          <OrganizationMembersSection selfId={session.user.id} asOperator={!isAdmin} />
+          <OrganizationMembersSection
+            selfId={session.user.id}
+            organizationId={tenant.organization_id}
+            asOperator={!isAdmin}
+            fromDirectory={organization?.members_from_directory === true}
+            directoryTakesChanges={organization?.directory_takes_changes === true}
+            onChanged={onMembersChanged}
+          />
         )}
         {isAdmin && <OrganizationServicesSection />}
         {isAdmin && <OrganizationConnectorsSection />}

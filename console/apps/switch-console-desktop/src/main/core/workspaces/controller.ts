@@ -11,6 +11,15 @@ import {
 import {
   addBridgeTeam,
   addRoomAgents,
+  addRoomUsers,
+  createRoomRole,
+  deleteRoomRole,
+  fetchArchivedRooms,
+  fetchBridgeUserNames,
+  setRoomAgentJoinEvents,
+  setRoomArchived,
+  setRoomGroup,
+  updateRoomRole,
   agentExistsOnServer,
   checkSlackTokens,
   fetchSlackOwnAppSetup,
@@ -80,6 +89,13 @@ import {
   syncRoomName,
   updateRoom,
   updateTemplate,
+  addLinkedRoom,
+  fetchLibrary,
+  fetchLinkedRooms,
+  fetchRoomDocument,
+  fetchRoomResources,
+  removeLinkedRoom,
+  setRoomResourceAttached,
 } from '@main/core/switch-servers/gateway-client';
 import {
   cancelLinkRequestOnServer,
@@ -157,12 +173,17 @@ import type {
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
+  RoomRoleInput,
   SwitchServer,
   TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
   SyncRoomNameParams,
   UpdateRoomParams,
+  LinkedRoom,
+  RoomDocumentContent,
+  RoomResource,
+  RoomResourceKind,
 } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
@@ -211,9 +232,23 @@ function roomCreateFailureReason(result: CreateRoomResult): TelemetryRoomCreateF
       return 'bridge_unavailable';
     case 'invalid':
       return 'invalid';
-    default:
-      return 'error';
+    case 'error':
+      // The one generic result: the request never reached the server.
+      return 'network';
   }
+}
+
+/**
+ * A room create that threw, by the server's answer: the failures with no
+ * result of their own. `error` is one with no answer to read.
+ */
+function roomCreateErrorReason(error: unknown): TelemetryRoomCreateFailure {
+  if (!(error instanceof GatewayError) || error.kind !== 'http') return 'error';
+  if (error.status === 403) return 'forbidden';
+  if (error.status === 404) return 'not_found';
+  if (error.status === 409) return 'conflict';
+  if (error.status !== undefined && error.status >= 500) return 'server_error';
+  return 'error';
 }
 
 /**
@@ -468,7 +503,7 @@ export const workspacesController = createRPCController({
   listRooms: (workspaceId: string): Promise<RemoteRoomSummary[]> =>
     withWorkspaceSession(workspaceId, fetchRooms),
 
-  /** Admins and owners only; the gateway refuses anyone else with a 403. */
+  /** Admins only; the gateway refuses anyone else with a 403. */
   listInvitations: listWorkspaceInvitations,
 
   createInvitation: createWorkspaceInvitation,
@@ -476,8 +511,8 @@ export const workspacesController = createRPCController({
   revokeInvitation: revokeWorkspaceInvitation,
 
   /**
-   * The e-mail domains anyone may join the workspace from. Admins and owners
-   * only, and an admin may add only the domain of their own address.
+   * The e-mail domains anyone may join the workspace from. Admins only, and an
+   * admin may add only the domain of their own address.
    */
   listJoinDomains: listWorkspaceJoinDomains,
 
@@ -743,10 +778,13 @@ export const workspacesController = createRPCController({
           instructions: params.instructions,
           bridgeId: params.bridgeId,
           agentIds: params.agentIds,
+          channel: params.channel,
+          groupId: params.groupId,
+          access: params.access,
         })
       );
     } catch (error) {
-      report('error');
+      report(roomCreateErrorReason(error));
       throw error;
     }
 
@@ -917,7 +955,161 @@ export const workspacesController = createRPCController({
         name: params.name,
         description: params.description,
         instructions: params.instructions,
+        readVisibility: params.readVisibility,
+        writeVisibility: params.writeVisibility,
       })
+    ),
+
+  /** File a room under a group, or take it out of one (null). */
+  setRoomGroup: (params: {
+    workspaceId: string;
+    roomId: string;
+    groupId: string | null;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomGroup(server, params.roomId, params.groupId)
+    ),
+
+  /** Define a role in a room; resolves to the room's roles as they now stand. */
+  createRoomRole: (params: {
+    workspaceId: string;
+    roomId: string;
+    role: RoomRoleInput;
+  }): Promise<RemoteRoomRole[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomRole(server, params.roomId, params.role)
+    ),
+
+  /** Change a role's instructions or exclusivity; its name is fixed. */
+  updateRoomRole: (params: {
+    workspaceId: string;
+    roomId: string;
+    name: string;
+    instructions?: string;
+    exclusive?: boolean;
+  }): Promise<RemoteRoomRole[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomRole(server, params.roomId, params.name, {
+        instructions: params.instructions,
+        exclusive: params.exclusive,
+      })
+    ),
+
+  deleteRoomRole: (params: {
+    workspaceId: string;
+    roomId: string;
+    name: string;
+  }): Promise<RemoteRoomRole[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomRole(server, params.roomId, params.name)
+    ),
+
+  /** Whether one member agent is told when someone joins the room. */
+  setRoomAgentJoinEvents: (params: {
+    workspaceId: string;
+    roomId: string;
+    agentId: string;
+    receivesJoinEvents: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomAgentJoinEvents(server, params.roomId, params.agentId, params.receivesJoinEvents)
+    ),
+
+  /** Invite people to a bridged room by their messaging-app usernames. */
+  addRoomUsers: (params: {
+    workspaceId: string;
+    roomId: string;
+    userNames: string[];
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addRoomUsers(server, params.roomId, params.userNames)
+    ),
+
+  /** Archive a room, or bring it back. */
+  setRoomArchived: (params: {
+    workspaceId: string;
+    roomId: string;
+    archived: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomArchived(server, params.roomId, params.archived)
+    ),
+
+  /** The archived rooms the signed-in user can see. */
+  listArchivedRooms: (params: { workspaceId: string }): Promise<RemoteRoomSummary[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchArchivedRooms(server)),
+
+  /** What is attached to a room, of one kind. */
+  listRoomResources: (params: {
+    workspaceId: string;
+    roomId: string;
+    kind: RoomResourceKind;
+  }): Promise<RoomResource[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomResources(server, params.roomId, params.kind)
+    ),
+
+  /** The library items of one kind the signed-in person may attach. */
+  listLibrary: (params: { workspaceId: string; kind: RoomResourceKind }): Promise<RoomResource[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchLibrary(server, params.kind)),
+
+  /** Attach a library item to a room or detach it. Refusals propagate in the gateway's words. */
+  setRoomResourceAttached: (params: {
+    workspaceId: string;
+    roomId: string;
+    kind: RoomResourceKind;
+    resourceId: string;
+    attached: boolean;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomResourceAttached(
+        server,
+        params.roomId,
+        params.kind,
+        params.resourceId,
+        params.attached
+      )
+    ),
+
+  /** A document attached to a room, read in full. */
+  getRoomDocument: (params: {
+    workspaceId: string;
+    roomId: string;
+    documentId: string;
+  }): Promise<RoomDocumentContent> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomDocument(server, params.roomId, params.documentId)
+    ),
+
+  /** The rooms a room points at. */
+  listLinkedRooms: (params: { workspaceId: string; roomId: string }): Promise<LinkedRoom[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchLinkedRooms(server, params.roomId)),
+
+  /** Point a room at another. */
+  addLinkedRoom: (params: {
+    workspaceId: string;
+    roomId: string;
+    targetRoomId: string;
+    label: string;
+  }): Promise<LinkedRoom> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addLinkedRoom(server, params.roomId, params.targetRoomId, params.label)
+    ),
+
+  /** Stop a room pointing at another. */
+  removeLinkedRoom: (params: {
+    workspaceId: string;
+    roomId: string;
+    targetRoomId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      removeLinkedRoom(server, params.roomId, params.targetRoomId)
+    ),
+
+  /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
+  listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchBridgeUserNames(server, params.bridgeId)
     ),
 
   /**

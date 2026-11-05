@@ -66,4 +66,9 @@ describe('a room command', () => {
     expect(text(fromMember)).toContain('[Switch] Owner (workspace member) addressed you');
     expect(text(event)).toContain('[Switch] Owner addressed you');
   });
+
+  it('reads a workspace owner from a server before the merge as an admin', () => {
+    const fromOwner = { ...event, payload: { ...event.payload, sender_role: 'owner' } };
+    expect(text(fromOwner)).toContain('[Switch] Owner (workspace admin) addressed you');
+  });
 });
