@@ -873,18 +873,6 @@ async def claim_bridge_identity(
     target_user_id = _require_self_or_admin(
         user, is_admin, payload.user_id, "claim a messaging identity"
     )
-    if not payload.expects_confirmation and target_user_id != caller_id:
-        # An older client is shown the code in place of a refusal, and a code
-        # is only ever shown to the person it links.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Linking a chat account now has to be confirmed from that "
-                "account with a one-time code, and this version of Switch "
-                "Console cannot show one. Update Switch Console, then link the "
-                "account again."
-            ),
-        )
     # Standing in this tenant, not existence: `users` is deployment-wide, and
     # a claim names who the account is recognised as inside this tenant. An
     # organization's `org_admin` stands in every workspace of it.
@@ -952,6 +940,19 @@ async def claim_bridge_identity(
         # Already linked and confirmed: nothing to wait for.
         return await _identity_summary(
             session, external_user_store, user_store, external_user, None
+        )
+
+    if not payload.expects_confirmation and target_user_id != caller_id:
+        # An older client is shown the code in place of a refusal, and a code
+        # is only ever shown to the person it links.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Linking a chat account now has to be confirmed from that "
+                "account with a one-time code, and this version of Switch "
+                "Console cannot show one. Update Switch Console, then link the "
+                "account again."
+            ),
         )
 
     request = await external_user_store.request_link(

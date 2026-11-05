@@ -334,6 +334,33 @@ class TestAConsoleFromBeforeConfirmation:
             for c in again.claimed_by  # type: ignore[attr-defined]
         ] == [(world.ada.id, True)]
 
+    async def test_an_admin_relinking_someone_already_confirmed_is_answered(
+        self, world: _World
+    ) -> None:
+        summary = await _claim(world, world.ada)
+        async with world.session_factory() as session:
+            assert await _STORE.redeem_link_code(
+                session,
+                world.account,
+                summary.link_request.code.code,  # type: ignore[attr-defined]
+                UserStore(),
+            )
+            await session.commit()
+
+        again = await _claim(
+            world,
+            world.bob,
+            for_user=world.ada,
+            is_admin=True,
+            expects_confirmation=False,
+        )
+
+        assert again.link_request is None  # type: ignore[attr-defined]
+        assert [
+            (c.user_id, c.verified)
+            for c in again.claimed_by  # type: ignore[attr-defined]
+        ] == [(world.ada.id, True)]
+
     async def test_an_admin_linking_someone_else_is_told_to_update(
         self, world: _World
     ) -> None:
