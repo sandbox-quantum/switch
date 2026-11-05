@@ -51,7 +51,7 @@ import {
   waitForCoreHealth,
 } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
-import { checkoutGatewayUi, nativeAdminPages } from './gateway-ui';
+import { checkoutGatewayUi, downloadedGatewayUiWouldBuild, nativeAdminPages } from './gateway-ui';
 import {
   mattermostCallbackBaseUrl,
   pullMattermostImage,
@@ -614,16 +614,19 @@ export function nativeServerTelemetryEndpoint(): string {
 /**
  * Whether a start now would hand switch-core the gateway's pages: the
  * checkout has a build of them, this build's bundle ships them, or (dev
- * builds) a downloaded install would build them.
+ * builds) a downloaded install would build them — unless building them for
+ * that version already failed, which a restart would not retry.
  */
 export async function nativeAdminPagesOnRestart(
+  layout: NativeLayout,
   checkoutRoot: string | null,
   bundleRoot: string | null
 ): Promise<boolean> {
   if (checkoutRoot !== null) return (await checkoutGatewayUi(checkoutRoot)) !== null;
-  const bundle = await readLocalServerBundle(bundleRoot, managedSwitchVersion());
+  const version = managedSwitchVersion();
+  const bundle = await readLocalServerBundle(bundleRoot, version);
   if (bundle !== null) return bundle.gatewayUi !== null;
-  return import.meta.env.DEV;
+  return import.meta.env.DEV && (await downloadedGatewayUiWouldBuild(layout, version));
 }
 
 /** What the running native server's admin pages are doing, for its page to
@@ -633,7 +636,9 @@ export function readNativeAdminPages(
   checkoutRoot: string | null,
   bundleRoot: string | null
 ): Promise<LocalServerAdminPages> {
-  return nativeAdminPages(layout, () => nativeAdminPagesOnRestart(checkoutRoot, bundleRoot));
+  return nativeAdminPages(layout, () =>
+    nativeAdminPagesOnRestart(layout, checkoutRoot, bundleRoot)
+  );
 }
 
 export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {

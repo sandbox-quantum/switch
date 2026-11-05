@@ -42,6 +42,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { build } from 'esbuild';
+import { buildGatewayUi } from './build-gateway-ui.mjs';
 
 const OUT = path.resolve('dist-local-server');
 
@@ -270,25 +271,7 @@ await cp(
 // The release's gateway pages, built from the same source, as the published
 // image builds them: switch-core serves them when GATEWAY_UI_DIR names them.
 console.log(`local-server bundle: gateway pages for switch-core ${switchVersion}`);
-const gatewaySource = path.join(source, 'gateway');
-// The build tools are dev dependencies, which npm drops under
-// NODE_ENV=production; Windows' npm is a .cmd script, run through a shell.
-const npmEnv = { ...process.env };
-delete npmEnv.NODE_ENV;
-const npm = (args) =>
-  execFileSync('npm', args, {
-    cwd: gatewaySource,
-    stdio: 'inherit',
-    env: npmEnv,
-    shell: process.platform === 'win32',
-  });
-npm(['ci', '--no-audit', '--no-fund']);
-npm(['run', 'build']);
-const gatewayUi = path.join(switchDir, 'gateway-ui');
-await cp(path.join(gatewaySource, 'dist'), gatewayUi, { recursive: true });
-if (!existsSync(path.join(gatewayUi, 'index.html'))) {
-  throw new Error(`The gateway build in ${gatewaySource} produced no index.html`);
-}
+await buildGatewayUi(path.join(source, 'gateway'), path.join(switchDir, 'gateway-ui'));
 const requirements = execFileSync(
   uv,
   ['export', '--frozen', '--no-dev', '--no-emit-project', '--format', 'requirements-txt', '-q'],

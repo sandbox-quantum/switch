@@ -9,7 +9,10 @@ import { buildNativeCoreSettings } from './core-settings';
 import {
   buildGatewayUi,
   checkoutGatewayUi,
+  downloadedGatewayUiWouldBuild,
   GATEWAY_UI_ENV,
+  gatewayUiBuildFailed,
+  gatewayUiFailedMarker,
   hasGatewayUiBuild,
   nativeAdminPages,
   runningServesAdminPages,
@@ -234,6 +237,21 @@ describe('building the pages from source', () => {
       'utf8'
     );
     expect(buildLog).toContain('vite: build failed');
+    // Recorded, so later starts of this version skip the same failing build.
+    expect(await gatewayUiBuildFailed(path.join(root, 'gateway-ui'))).toBe(true);
+    expect(messages.at(-1)).toContain(gatewayUiFailedMarker(path.join(root, 'gateway-ui')));
+  });
+
+  it('stops offering a restart for a version whose build failed', async () => {
+    const layout = nativeLayout(path.join(root, 'server'));
+    // A dev build with no bundle or checkout builds the pages on its next start…
+    expect(await downloadedGatewayUiWouldBuild(layout, '0.31.0')).toBe(true);
+    // …unless that build already failed for this version: a restart would not retry it.
+    const pages = path.join(layout.switchCore, '0.31.0', 'gateway-ui');
+    await mkdir(path.dirname(pages), { recursive: true });
+    await writeFile(gatewayUiFailedMarker(pages), 'failed');
+    expect(await downloadedGatewayUiWouldBuild(layout, '0.31.0')).toBe(false);
+    expect(await downloadedGatewayUiWouldBuild(layout, '0.32.0')).toBe(true);
   });
 
   it('has nothing to build from a source without the gateway', async () => {

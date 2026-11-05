@@ -75,6 +75,7 @@ jobs:
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      local_server_bundle: ${{ steps.filter.outputs.local_server_bundle }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -114,6 +115,15 @@ jobs:
             gateway:
               - *shared
               - 'gateway/**'
+            # The step of the local-server bundle that builds the gateway's
+            # pages. The bundle itself is only built at release, so the console
+            # jobs below run this step alone when it, or what it installs, changes.
+            local_server_bundle:
+              - *shared
+              - 'console/apps/switch-console-desktop/scripts/build-gateway-ui.mjs'
+              - 'console/apps/switch-console-desktop/scripts/build-local-server-bundle.mjs'
+              - 'gateway/package.json'
+              - 'gateway/package-lock.json'
             # The server, the stack the fast lane stands up, and the harness.
             e2e:
               - *shared
@@ -296,6 +306,11 @@ jobs:
       - name: Test (vitest)
         run: pnpm -r run test
 
+      # The local-server bundle's gateway step, which otherwise first runs at release.
+      - name: Build the local server's gateway pages
+        if: ${{ !cancelled() && (needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'workflow_dispatch') }}
+        run: node apps/switch-console-desktop/scripts/build-gateway-ui.mjs ../gateway "$RUNNER_TEMP/gateway-ui"
+
   # The agent runner and the controller on native Windows (CHOO-3472): process
   # control, CLI lookup and permissions there take different code paths, and
   # their tests that start real processes only run on Windows. Scoped to the
@@ -346,6 +361,11 @@ jobs:
       - name: Test Console's embedded controller and Windows launching
         if: ${{ !cancelled() }}
         run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/embedded-controller src/main/core/execution-context
+
+      # The local-server bundle's gateway step, which runs npm through a shell on Windows.
+      - name: Build the local server's gateway pages
+        if: ${{ !cancelled() && (needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'workflow_dispatch') }}
+        run: node apps/switch-console-desktop/scripts/build-gateway-ui.mjs ../gateway "$RUNNER_TEMP/gateway-ui"
 
   artifacts:
     name: Artifact registry

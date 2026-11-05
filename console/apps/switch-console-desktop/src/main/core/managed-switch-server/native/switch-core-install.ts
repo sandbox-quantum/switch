@@ -10,6 +10,8 @@ import {
   buildGatewayUi,
   checkoutGatewayUi,
   GATEWAY_UI_DIR_NAME,
+  gatewayUiBuildFailed,
+  gatewayUiFailedMarker,
   gatewayUiOrNull,
 } from './gateway-ui';
 import type { NativeLayout } from './native-paths';
@@ -175,14 +177,15 @@ export async function installSwitchCore(opts: {
   const venv = path.join(dir, 'venv');
   const python = venvPython(venv);
   const gatewayUi = path.join(dir, GATEWAY_UI_DIR_NAME);
-  // A downloaded install whose pages are missing (a build that failed, or one
-  // made before they were built) gets another go at them; a bundled one has
-  // whatever its bundle shipped.
+  // A downloaded install whose pages are missing (one made before they were
+  // built) gets a go at them, unless building them for this install already
+  // failed; a bundled one has whatever its bundle shipped.
   const pagesFor = async (source: 'bundle' | 'download'): Promise<string | null> => {
     const existing = await gatewayUiOrNull(gatewayUi);
     if (existing !== null || source === 'bundle' || !opts.buildGatewayUiFromSource) {
       return existing;
     }
+    if (await gatewayUiBuildFailed(gatewayUi)) return null;
     return buildGatewayUi({ layout, sourceRoot: src, destination: gatewayUi, onMessage });
   };
   // Checked by running it, not by its file existing: an environment made from
@@ -223,6 +226,7 @@ export async function installSwitchCore(opts: {
   await uvSync(uv, layout, projectDir, venv);
   await writeMarker(dir, { version, source: 'download', uv: uv.version });
   await rm(gatewayUi, { recursive: true, force: true });
+  await rm(gatewayUiFailedMarker(gatewayUi), { force: true });
   return { version, sourceRoot: src, projectDir, python, gatewayUiDir: await pagesFor('download') };
 }
 
