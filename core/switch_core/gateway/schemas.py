@@ -839,8 +839,10 @@ class ClaimIdentityRequest(BaseModel):
     user_id: str | None = None
     # That the caller knows the link will wait for the account to confirm it
     # (CHOO-3881). A Console from before then leaves it out and would report
-    # a link that does not count as made, so the claim is refused with a
-    # reason it shows instead.
+    # a link that does not count as made, so its claim is answered with a 409
+    # whose text carries the code, which it shows. One for someone else is
+    # refused while the link needs confirming, since that text would show the
+    # code to the wrong person.
     expects_confirmation: bool = False
 
 

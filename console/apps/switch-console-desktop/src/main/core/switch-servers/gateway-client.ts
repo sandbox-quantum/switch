@@ -2386,9 +2386,9 @@ export async function searchBridgeDirectory(
  * with that status.
  *
  * A current server answers with the link still pending and a code to post from
- * the account (`link_request`); see {@link issueIdentityLinkCode}. It refuses a
- * claim that does not say it can show that code (`expects_confirmation`), since
- * a client that cannot would leave the link pending with no way to finish it.
+ * the account (`link_request`); see {@link issueIdentityLinkCode}. A claim that
+ * does not say it can show that code (`expects_confirmation`) gets it as the
+ * text of a 409 instead, which is all a Console from before then shows.
  */
 export async function claimBridgeIdentity(
   server: SwitchServer,
