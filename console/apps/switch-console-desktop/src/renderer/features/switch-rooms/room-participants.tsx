@@ -1,6 +1,8 @@
+import { useQuery } from '@tanstack/react-query';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { rpc } from '@renderer/lib/ipc';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
 import {
@@ -18,6 +20,19 @@ import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-serv
  * server's answer straight back into what the page is reading. */
 export function roomDetailKey(workspaceId: string, roomId: string) {
   return ['remote-room-detail', workspaceId, roomId] as const;
+}
+
+/**
+ * One room's detail from its server, under {@link roomDetailKey}, so every
+ * panel reading the room sees what a save writes back. Off until the room's
+ * workspace is known, and while `enabled` is false.
+ */
+export function useRoomDetail(workspaceId: string | null, roomId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: roomDetailKey(workspaceId ?? '', roomId),
+    queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
+    enabled: workspaceId !== null && enabled,
+  });
 }
 
 /** A person's initials disc: people have no picture in Switch. */

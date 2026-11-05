@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { Archive, FileText, Loader2, Lock, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
@@ -22,7 +22,7 @@ import { type ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { roomTitle } from './room-labels';
-import { roomDetailKey } from './room-participants';
+import { roomDetailKey, useRoomDetail } from './room-participants';
 import {
   AccessAndGroupFields,
   ArchiveRoomSection,
@@ -31,13 +31,9 @@ import {
 } from './room-settings-sections';
 
 /** One room read from its server; `workspaceId` is null until the room list has loaded. */
-function useRoomDetail(roomId: string) {
+function useRoomInWorkspace(roomId: string) {
   const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
-  const query = useQuery({
-    queryKey: roomDetailKey(workspaceId ?? '', roomId),
-    queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
-    enabled: workspaceId !== null && !opensAsConsoleChat(roomId),
-  });
+  const query = useRoomDetail(workspaceId, roomId, !opensAsConsoleChat(roomId));
   return { workspaceId, query };
 }
 
@@ -54,17 +50,17 @@ const ChatConfiguration = observer(function ChatConfiguration({
   chat: ChatSummary;
 }) {
   const workspaceId = switchRoomsStore.roomWorkspaceId(chat.roomId) ?? workspacesStore.activeId;
-  const detail = useQuery({
-    queryKey: roomDetailKey(workspaceId ?? '', chat.roomId),
-    queryFn: () =>
-      rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId: chat.roomId }),
-    enabled: workspaceId !== null && chat.canManage,
-  });
+  const detail = useRoomDetail(workspaceId, chat.roomId, chat.canManage);
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex w-full max-w-[880px] flex-col gap-8 px-10 py-8">
         {workspaceId !== null && detail.data && (
-          <GeneralSection key={chat.roomId} workspaceId={workspaceId} room={detail.data} />
+          <GeneralSection
+            key={chat.roomId}
+            workspaceId={workspaceId}
+            room={detail.data}
+            readOnly={false}
+          />
         )}
         {detail.isError && (
           <p className="text-xs text-foreground-muted">
@@ -121,7 +117,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
 }: {
   roomId: string;
 }) {
-  const { workspaceId, query } = useRoomDetail(roomId);
+  const { workspaceId, query } = useRoomInWorkspace(roomId);
   const chat = chatsStore.chat(roomId);
 
   if (chat && chatsStore.serverId && isConsoleGroupChatSummary(chat)) {
@@ -306,12 +302,12 @@ type SaveState = { phase: 'idle' | 'saving' | 'saved' } | { phase: 'failed'; mes
 function GeneralSection({
   workspaceId,
   room,
-  readOnly = false,
+  readOnly,
 }: {
   workspaceId: string;
   room: RemoteRoomDetail;
   /** For someone who may read the room but not change it: the fields show, and do not take edits. */
-  readOnly?: boolean;
+  readOnly: boolean;
 }) {
   const queryClient = useQueryClient();
   const savedName = room.name;

@@ -188,6 +188,31 @@ describe('room settings for someone who may write to the room', () => {
     expect(el.querySelector('[aria-label="Add people"]')).not.toBeNull();
   });
 
+  it('shows every role an agent holds, matched on its name on the server', async () => {
+    getRoomDetail.mockResolvedValue({
+      ...ROOM,
+      roles: [
+        { name: 'reviewer', instructions: '', exclusive: false, heldBy: ['reviewer-bot'] },
+        { name: 'lead', instructions: '', exclusive: true, heldBy: ['reviewer-bot'] },
+        { name: 'scribe', instructions: '', exclusive: false, heldBy: ['someone-else'] },
+      ],
+    });
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    const text = el.textContent ?? '';
+    expect(text).toContain('reviewer');
+    expect(text).toContain('lead');
+    expect(text).not.toContain('scribe');
+  });
+
+  it('says the room could not be read, rather than that it is empty', async () => {
+    getRoomDetail.mockRejectedValue(new Error('Switch gateway returned 500'));
+    const el = await renderPanel('side');
+    expect(el.textContent).not.toContain('No agents in this room yet.');
+    expect(el.textContent).not.toContain('Nobody has been seen here yet.');
+    expect(el.querySelector('[aria-label="Add agents"]')).toBeNull();
+  });
+
   it('turns an agent’s join notification on from its menu in the side column', async () => {
     const el = await renderPanel('side');
     await click(el.querySelector<HTMLElement>('[aria-label="reviewer-bot in this room"]')!);

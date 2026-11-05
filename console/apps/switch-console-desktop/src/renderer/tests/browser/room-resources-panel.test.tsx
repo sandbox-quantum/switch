@@ -134,6 +134,32 @@ describe('the Resources tab', () => {
     expect(text).toContain('escalate to');
   });
 
+  it('names only a package attached to this room as what brought an item in', async () => {
+    listRoomResources.mockImplementation(async ({ kind }: { kind: keyof typeof RESOURCES }) =>
+      kind === 'references'
+        ? [{ ...RESOURCES.references[0], packageIds: ['pkg-elsewhere'] }]
+        : RESOURCES[kind]
+    );
+    const el = await renderPanel();
+    expect(el.textContent).toContain('Repo');
+    expect(el.textContent).not.toContain('via');
+  });
+
+  it('opens a document from what the room listed, without fetching it again', async () => {
+    listRoomResources.mockImplementation(async ({ kind }: { kind: keyof typeof RESOURCES }) =>
+      kind === 'documents'
+        ? [{ ...RESOURCES.documents[0], content: 'Read **this** first.' }]
+        : RESOURCES[kind]
+    );
+    const el = await renderPanel();
+    const open = [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('Guide'))!;
+    await act(async () => open.click());
+    for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+    expect(document.querySelector('[data-slot="dialog-content"]')?.textContent).toContain(
+      'Read **this** first.'
+    );
+  });
+
   it('offers attaching, detaching, deleting and linking to someone who may change the room', async () => {
     const el = await renderPanel();
     expect(el.textContent).toContain('Attach reference');

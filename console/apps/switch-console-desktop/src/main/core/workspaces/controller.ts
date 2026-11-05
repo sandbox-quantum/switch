@@ -1022,7 +1022,6 @@ export const workspacesController = createRPCController({
   listArchivedRooms: (params: { workspaceId: string }): Promise<RemoteRoomSummary[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchArchivedRooms(server)),
 
-  /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
   /** What is attached to a room, of one kind. */
   listRoomResources: (params: {
     workspaceId: string;
@@ -1090,6 +1089,7 @@ export const workspacesController = createRPCController({
       removeLinkedRoom(server, params.roomId, params.targetRoomId)
     ),
 
+  /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
   listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchBridgeUserNames(server, params.bridgeId)

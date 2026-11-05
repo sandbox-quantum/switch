@@ -27,11 +27,7 @@ import {
   visibilityForAccess,
 } from '@shared/core/switch-servers/switch-servers';
 import { useArchiveRoomConfirm } from './archive-room-confirm';
-
-/** The query key the room page reads one room under; shared with `room-configuration-panel`. */
-function detailKey(workspaceId: string, roomId: string) {
-  return ['remote-room-detail', workspaceId, roomId] as const;
-}
+import { roomDetailKey } from './room-participants';
 
 /**
  * The room's read and write access as people read them. Write access is who
@@ -94,7 +90,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
   ) {
     setState({ phase: 'saving' });
     try {
-      queryClient.setQueryData(detailKey(workspaceId, room.id), await action());
+      queryClient.setQueryData(roomDetailKey(workspaceId, room.id), await action());
       setState({ phase: 'saved' });
       void refreshSidebarRoomState(true);
     } catch (cause) {
@@ -215,7 +211,7 @@ export const RolesSection = observer(function RolesSection({
   const [error, setError] = useState<string | null>(null);
 
   function storeRoles(roles: RemoteRoomRole[]) {
-    queryClient.setQueryData<RemoteRoomDetail>(detailKey(workspaceId, room.id), (current) =>
+    queryClient.setQueryData<RemoteRoomDetail>(roomDetailKey(workspaceId, room.id), (current) =>
       current ? { ...current, roles } : current
     );
   }
@@ -426,6 +422,8 @@ function ConfirmIconButton({
         size="xs"
         className="border-red-500/40 text-red-500 hover:bg-red-500/10 hover:text-red-500"
         disabled={busy}
+        // Focus moves here as the trash button goes, so clicking anywhere else disarms it.
+        autoFocus
         onBlur={() => !busy && setArmed(false)}
         onClick={async () => {
           setBusy(true);
@@ -517,7 +515,7 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
         roomId: room.id,
         archived: !room.archived,
       });
-      queryClient.setQueryData(detailKey(workspaceId, room.id), updated);
+      queryClient.setQueryData(roomDetailKey(workspaceId, room.id), updated);
       await switchRoomsStore.refreshRoomState();
       void refreshSidebarRoomState(true);
       void queryClient.invalidateQueries({ queryKey: ['archived-rooms', workspaceId] });

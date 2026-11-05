@@ -38,7 +38,13 @@ import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-server
 import { AddAgentPanel, AddPeoplePanel, ChatAddParticipantPanel } from './room-add-participants';
 import { roomAgentPresence } from './room-agent-presence';
 import { roomInviteability } from './room-membership';
-import { AgentMark, agentNameFor, PersonMark, roomDetailKey } from './room-participants';
+import {
+  AgentMark,
+  agentNameFor,
+  PersonMark,
+  roomDetailKey,
+  useRoomDetail,
+} from './room-participants';
 
 const TONE_CLASS = {
   live: 'bg-foreground-success',
@@ -92,11 +98,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   const [adding, setAdding] = useState<'agents' | 'people' | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Anyone taking part may read the room, so this answers for a chat's members too.
-  const detail = useQuery({
-    queryKey: roomDetailKey(workspaceId ?? '', roomId),
-    queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
-    enabled: workspaceId !== null,
-  });
+  const detail = useRoomDetail(workspaceId, roomId, true);
   const membersKey = chat && serverId ? chatMembersQueryKey(serverId, chat) : ['no-chat-members'];
   const members = useQuery({
     queryKey: membersKey,
@@ -105,6 +107,8 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   });
 
   const room = detail.data ?? null;
+  // A room that could not be read is not an empty one: say so, rather than "no agents yet".
+  const unreadable = !consoleChat && detail.isError;
   const agentIds = chat ? chat.agents.map((agent) => agent.id) : (room?.agentIds ?? []);
   const chatNames = new Map((chat?.agents ?? []).map((agent) => [agent.id, chatAgentLabel(agent)]));
   const people = consoleChat
@@ -197,7 +201,9 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         onAdd={controls.addAgents}
         addLabel={consoleChat ? 'Add participants' : 'Add agents'}
       >
-        {agentIds.length === 0 ? (
+        {unreadable ? (
+          <Note>{failureText(detail.error, 'Could not read who is in this room.')}</Note>
+        ) : agentIds.length === 0 ? (
           <Note>No agents in this room yet.</Note>
         ) : (
           agentIds.map((agentId) => (
@@ -223,7 +229,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         onAdd={controls.addPeople}
         addLabel="Add people"
       >
-        {people.length === 0 ? (
+        {unreadable ? null : people.length === 0 ? (
           <Note>{consoleChat ? 'Nobody else is here yet.' : 'Nobody has been seen here yet.'}</Note>
         ) : (
           people.map((person) => (
@@ -314,7 +320,7 @@ const AgentRow = observer(function AgentRow({
   serverId: string | null;
   name: string | null;
   status: string | undefined;
-  /** The room's roles; the one this agent holds is shown beside its status. */
+  /** The room's roles; those this agent holds are shown beside its status. */
   roles: RemoteRoomDetail['roles'];
   controls: RosterControls;
   act: (action: () => Promise<void>, fallback: string) => Promise<void>;
@@ -326,10 +332,9 @@ const AgentRow = observer(function AgentRow({
   const own = (managed.data ?? []).find((agent) => agent.agentId === agentId) ?? null;
   const [busy, setBusy] = useState(false);
   const label = name ?? agentNameFor(agentId, workspaceId, remoteById);
-  // Roles name their holders by agent name, which is how the server reports them.
-  const role = roles.find((each) => each.heldBy.includes(label));
+  const held = rolesHeldBy(roles, remoteById.get(agentId)?.name ?? null);
   const presence = roomAgentPresence(status);
-  const detail = [status === undefined ? null : presence.label, role?.name ?? null]
+  const detail = [status === undefined ? null : presence.label, ...held]
     .filter(Boolean)
     .join(' · ');
 
@@ -514,3 +519,13 @@ function Fold({
 const Note = ({ children }: { children: ReactNode }) => (
   <p className="px-2 py-1 text-xs text-foreground-muted">{children}</p>
 );
+
+/**
+ * The roles an agent holds. The server names a role's holders by the agent's
+ * server-side name, so that is what is matched, never the name this install
+ * shows (a local rename, or a chat's label); null holds nothing.
+ */
+export function rolesHeldBy(roles: RemoteRoomDetail['roles'], serverName: string | null): string[] {
+  if (serverName === null) return [];
+  return roles.filter((role) => role.heldBy.includes(serverName)).map((role) => role.name);
+}

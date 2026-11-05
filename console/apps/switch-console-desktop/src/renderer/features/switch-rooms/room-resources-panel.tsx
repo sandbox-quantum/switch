@@ -20,7 +20,7 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Input } from '@renderer/lib/ui/input';
 import type { RoomResource, RoomResourceKind } from '@shared/core/switch-servers/switch-servers';
-import { roomDetailKey } from './room-participants';
+import { useRoomDetail } from './room-participants';
 import { attachableResources, resourcesByOrigin } from './room-resources';
 
 const KIND_LABEL: Record<RoomResourceKind, { title: string; noun: string; none: string }> = {
@@ -55,11 +55,7 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
   const chat = chatsStore.chat(roomId);
   const workspaceId =
     switchRoomsStore.roomWorkspaceId(roomId) ?? (chat ? workspacesStore.activeId : null);
-  const detail = useQuery({
-    queryKey: roomDetailKey(workspaceId ?? '', roomId),
-    queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
-    enabled: workspaceId !== null,
-  });
+  const detail = useRoomDetail(workspaceId, roomId, true);
   if (workspaceId === null) {
     return <Centered>This room’s workspace is still loading.</Centered>;
   }
@@ -192,7 +188,8 @@ const ResourceSection = observer(function ResourceSection({
                 <ResourceRow
                   key={resource.id}
                   resource={resource}
-                  via={resource.packageIds.map((id) => packageNames.get(id) ?? 'a package')}
+                  // The server lists every package holding it; only those attached here brought it.
+                  via={resource.packageIds.flatMap((id) => packageNames.get(id) ?? [])}
                   onOpen={
                     resource.urls[0]
                       ? () => void openExternalUrl(resource.urls[0]!, 'Could not open the link')
@@ -460,9 +457,21 @@ function DocumentDialog({
   document: RoomResource;
   onClose: () => void;
 }) {
+  // The room's listing already carries the content; an older server's may not.
   const content = useQuery({
     queryKey: ['room-document', workspaceId, roomId, document.id],
     queryFn: () => rpc.workspaces.getRoomDocument({ workspaceId, roomId, documentId: document.id }),
+    enabled: document.content === undefined,
+    ...(document.content !== undefined
+      ? {
+          initialData: {
+            id: document.id,
+            name: document.name,
+            description: document.description,
+            content: document.content,
+          },
+        }
+      : {}),
   });
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>

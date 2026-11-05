@@ -1360,6 +1360,8 @@ export type RoomResource = {
   packageIds: string[];
   /** Whether the viewer may delete this room-scoped document, when the server says. */
   canRemove?: boolean;
+  /** A document's content, when the listing carried it (a room's documents do). */
+  content?: string;
 };
 
 /** A document read in full, through the room it is attached to. */
