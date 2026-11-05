@@ -263,6 +263,9 @@ class SwitchConfig(BaseSettings):
     # A message still waiting for a decision after this long (a restart, a
     # long outage) is dropped and logged rather than answered late.
     decision_pending_max_age_seconds: int = Field(default=120, ge=1, le=3600)
+    # How many tenants' waiting decisions each process's sweep settles at
+    # once, so one tenant with a slow backend does not hold up the others.
+    decision_sweep_concurrency: int = Field(default=4, ge=1, le=64)
 
     @field_validator("decision_endpoint_url", "decision_api_key", mode="before")
     @classmethod

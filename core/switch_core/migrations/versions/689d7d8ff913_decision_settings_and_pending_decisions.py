@@ -9,9 +9,15 @@ Two tenant-scoped tables for decision routing (`delivery/decision.py`):
   written with the message and deleted once it is decided, so a restart does
   not lose it.
 
-The row-level-security DDL is a verbatim copy of `switch_core/db/rls_ddl.py`
-as it stood when this migration was written, copied rather than imported for
-the reason `265ed188ad6f` gives.
+It also adds the nineteenth lookup to the exemption from row-level security,
+`tenants_with_pending_decisions`, so the decision sweep binds only the
+workspaces with a message waiting. See `db/tenant_lookup.py` for what it
+discloses.
+
+The row-level-security DDL is a verbatim copy of `switch_core/db/rls_ddl.py`,
+and the lookup's DDL of `switch_core/db/tenant_lookup.py`, as they stood when
+this migration was written, copied rather than imported for the reason
+`265ed188ad6f` gives.
 
 Expand only: a process from before this revision never reads either table,
 and decides untagged messages in memory, as it always did.
@@ -39,6 +45,18 @@ SETTINGS = "decision_settings"
 PENDING = "pending_decisions"
 
 _PREDICATE = f'"tenant_id" = (SELECT {REQUIRE_TENANT_FUNCTION_NAME}())'
+
+SECURE_SEARCH_PATH = "pg_catalog, public, pg_temp"
+
+CREATE_TENANTS_WITH_PENDING_DECISIONS = f"""CREATE OR REPLACE FUNCTION tenants_with_pending_decisions()
+    RETURNS SETOF text
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path = {SECURE_SEARCH_PATH}
+AS $$SELECT DISTINCT tenant_id FROM pending_decisions ORDER BY tenant_id$$"""
+
+DROP_TENANTS_WITH_PENDING_DECISIONS = (
+    "DROP FUNCTION IF EXISTS tenants_with_pending_decisions()"
+)
 
 
 def _create_policy(table: str) -> str:
@@ -111,9 +129,11 @@ def upgrade() -> None:
     )
     op.execute(f'ALTER TABLE "{PENDING}" ENABLE ROW LEVEL SECURITY')
     op.execute(_create_policy(PENDING))
+    op.execute(CREATE_TENANTS_WITH_PENDING_DECISIONS)
 
 
 def downgrade() -> None:
+    op.execute(DROP_TENANTS_WITH_PENDING_DECISIONS)
     op.execute(f'DROP POLICY IF EXISTS {POLICY_NAME} ON "{PENDING}"')
     op.drop_index("ix_pending_decisions_created_at", table_name=PENDING)
     op.drop_table(PENDING)

@@ -58,6 +58,7 @@ def test_off_by_default_with_nothing_configured() -> None:
     assert config.decision_timeout_seconds == 5.0
     assert config.decision_bedrock_enabled is False
     assert config.decision_pending_max_age_seconds == 120
+    assert config.decision_sweep_concurrency == 4
     client = build_decision_client(config, _NO_DB, None)
     assert client.availability.enabled is False
     assert client.server.configured is False
@@ -104,6 +105,12 @@ def test_bedrock_and_the_wait_are_settings() -> None:
 def test_the_wait_is_bounded(seconds: int) -> None:
     with pytest.raises(ValidationError, match="decision_pending_max_age_seconds"):
         _config(decision_pending_max_age_seconds=seconds)
+
+
+@pytest.mark.parametrize("tenants", [0, 65])
+def test_the_sweep_concurrency_is_bounded(tenants: int) -> None:
+    with pytest.raises(ValidationError, match="decision_sweep_concurrency"):
+        _config(decision_sweep_concurrency=tenants)
 
 
 @pytest.mark.parametrize("timeout", [0, -1])

@@ -41,10 +41,12 @@ from switch_core.db.models import (
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.pending_decision_store import PendingDecisionStore
 from switch_core.db.stores.room_store import DECISION_NOTICE_AT_KEY, RoomStore
+from switch_core.db.tenant_lookup import tenants_with_pending_decisions
 from switch_core.decision.client import DynamicDecisionClient
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery.decision import DECISION_NOTICE, THREAD_CONTEXT
 from switch_core.delivery.recipient import AgentRecipient
+from switch_core.delivery.router import sweep_pending_decisions
 from switch_core.outbound import OutboundPolicy
 from switch_core.tenant_context import current_tenant_id, no_tenant
 from switch_core.transport import InboundMessage
@@ -740,6 +742,28 @@ class TestDecisionsSurviveARestart:
                 )
             ).all()
         assert len(events) == 1
+
+    async def test_the_sweep_finds_only_the_workspace_with_a_message_waiting(
+        self, world: World, room: Journey, service: DecisionService
+    ) -> None:
+        _stop_waking(room)
+        service.pick = "helper"
+        assert TENANT_ZERO_ID not in await tenants_with_pending_decisions(
+            world.session_factory
+        )
+
+        told = await room.say("bob", "can someone check the deploy?", at=10)
+
+        assert await tenants_with_pending_decisions(world.session_factory) == [
+            TENANT_ZERO_ID
+        ]
+        await sweep_pending_decisions(
+            await tenants_with_pending_decisions(world.session_factory),
+            room.process.router.decide_pending,
+            4,
+        )
+        assert await room.reached(told) == {"helper"}
+        assert await tenants_with_pending_decisions(world.session_factory) == []
 
     async def test_a_message_waiting_too_long_is_dropped_and_logged(
         self,
