@@ -249,6 +249,13 @@ class Workspace:
     role: str
 
 
+def is_server_administrator(user: User, admin_email: str) -> bool:
+    """The server's administrator account: an operator, or the account at the
+    configured admin e-mail, which the server recreates every time it starts,
+    so it is never deleted."""
+    return user.role == "admin" or user.email.lower() == admin_email.lower()
+
+
 @dataclass
 class AccountDeletion:
     session_factory: async_sessionmaker[AsyncSession]
@@ -293,7 +300,7 @@ class AccountDeletion:
         self, session: AsyncSession, user: User, workspaces: list[Workspace]
     ) -> str | None:
         """Why the account cannot be deleted now, or None when it can."""
-        if user.role == "admin" or user.email.lower() == self.admin_email.lower():
+        if is_server_administrator(user, self.admin_email):
             return (
                 "This is the server's administrator account, which can't be "
                 "deleted. The server recreates it every time it starts."

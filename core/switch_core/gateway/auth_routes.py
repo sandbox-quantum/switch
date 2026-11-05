@@ -14,6 +14,7 @@ from switch_core.accounts.deletion import (
     AccountDeletionIncomplete,
     AccountDeletionRefused,
     Workspace,
+    is_server_administrator,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
@@ -82,6 +83,7 @@ from switch_core.gateway.schemas import (
     LinkedIdentity,
     LoginRequest,
     OidcLoginOptionView,
+    OperatorUserResponse,
     PendingIdentity,
     ServerDeclaration,
     SessionStateResponse,
@@ -90,7 +92,6 @@ from switch_core.gateway.schemas import (
     SignupRequest,
     SignupResponse,
     UpdateMeRequest,
-    UserResponse,
 )
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
@@ -635,16 +636,20 @@ async def change_password(
 async def list_users(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _admin: Annotated[User, Depends(require_admin)],
-) -> list[UserResponse]:
+    admin: Annotated[User, Depends(require_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> list[OperatorUserResponse]:
+    admin_id = admin.id
     users = await user_store.get_all(session)
     return [
-        UserResponse(
+        OperatorUserResponse(
             id=u.id,
             name=u.name,
             email=u.email,
             role=u.role,
             created_at=str(u.created_at),
+            can_delete=u.id != admin_id
+            and not is_server_administrator(u, config.gateway_admin_email),
         )
         for u in users
     ]
@@ -656,7 +661,8 @@ async def create_user(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     _admin: Annotated[User, Depends(require_admin)],
-) -> UserResponse:
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> OperatorUserResponse:
     existing = await user_store.get_by_email(session, req.email)
     if existing is not None:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -686,12 +692,13 @@ async def create_user(
 
     logger.info("Created user: %s (%s)", user.email, user.id)
     emit_safely(current_telemetry(), "account_created", {"method": "admin"})
-    return UserResponse(
+    return OperatorUserResponse(
         id=user.id,
         name=user.name,
         email=user.email,
         role=user.role,
         created_at=str(user.created_at),
+        can_delete=not is_server_administrator(user, config.gateway_admin_email),
     )
 
 

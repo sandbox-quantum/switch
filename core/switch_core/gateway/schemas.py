@@ -1012,6 +1012,15 @@ Email = Annotated[
 ]
 
 
+class OperatorUserResponse(UserResponse):
+    """An account as the deployment operator manages it. `can_delete`: not
+    their own, which they delete from their account settings, and not the
+    server's administrator account (`accounts.deletion.is_server_administrator`).
+    What else stands in the way is answered when it is asked."""
+
+    can_delete: bool
+
+
 class CreateUserRequest(BaseModel):
     name: str
     email: Email
