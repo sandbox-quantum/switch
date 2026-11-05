@@ -198,7 +198,15 @@ const ResourceSection = observer(function ResourceSection({
                       ? () => void openExternalUrl(resource.urls[0]!, 'Could not open the link')
                       : kind === 'documents'
                         ? () => setReading(resource)
-                        : null
+                        : // A package has nothing to read here: its page shows what it holds.
+                          serverId !== null
+                          ? () =>
+                              navigate('libraryItem', {
+                                serverId,
+                                kind: 'packages',
+                                itemId: resource.id,
+                              })
+                          : null
                   }
                   removeLabel={canUnlink ? `Detach ${resource.name}` : null}
                   busy={busy === resource.id}
