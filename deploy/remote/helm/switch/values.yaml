@@ -432,6 +432,13 @@ switchCore:
   decision:
     # DECISION_ENDPOINT_URL, e.g. http://switch-decision.decision.svc:8230.
     endpointUrl: ""
+    # DECISION_API_KEY for that endpoint: the bearer token a decision service
+    # run elsewhere requires (its DECISION_SERVICE_TOKEN), read from an
+    # existing Secret. Only with endpointUrl; with decision.enabled the chart
+    # wires its own token.
+    apiKey:
+      existingSecret: ""
+      existingSecretKey: token
     # DECISION_BEDROCK_ENABLED: workspaces may choose Claude Haiku on Amazon
     # Bedrock, which runs inside the decision service on its own AWS
     # credentials. With decision.enabled, decision.bedrock.enabled sets this.

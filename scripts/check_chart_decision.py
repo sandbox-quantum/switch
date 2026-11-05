@@ -353,6 +353,32 @@ def test_an_endpoint_elsewhere() -> None:
     assert "DECISION_API_KEY" not in env
 
 
+def test_an_endpoint_elsewhere_with_a_key() -> None:
+    docs = render(
+        "--set",
+        "switchCore.decision.endpointUrl=http://decider.example:8230",
+        "--set",
+        "switchCore.decision.apiKey.existingSecret=decider-token",
+    )
+    assert decision_objects(docs) == {}
+    env = core_env(docs)
+    assert env["DECISION_ENDPOINT_URL"] == "http://decider.example:8230"
+    assert env["DECISION_API_KEY"] == {
+        "secretKeyRef": {"name": "decider-token", "key": "token"}
+    }
+    error = render_error(
+        "--set", "switchCore.decision.apiKey.existingSecret=decider-token"
+    )
+    assert "no endpoint to send the key to" in error
+    error = render_error(
+        "--set",
+        "decision.enabled=true",
+        "--set",
+        "switchCore.decision.apiKey.existingSecret=decider-token",
+    )
+    assert "decision.token.existingSecret" in error
+
+
 def test_the_service_requires_a_token_that_switch_core_sends() -> None:
     docs = render("--set", "decision.enabled=true", *FLAGS)
     objects = decision_objects(docs)
@@ -584,6 +610,7 @@ TESTS: list[Callable[[], None]] = [
     test_without_a_model_server_there_is_no_gpu_or_volume,
     test_network_policy_can_be_left_out,
     test_an_endpoint_elsewhere,
+    test_an_endpoint_elsewhere_with_a_key,
     test_the_service_requires_a_token_that_switch_core_sends,
     test_an_existing_token_secret_replaces_the_generated_one,
     test_the_model_server_requires_the_token_too,

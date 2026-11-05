@@ -377,7 +377,11 @@ no further setup.
 
 To use a decision service run elsewhere instead, leave `decision.enabled` off
 and set `switchCore.decision.endpointUrl` (and `bedrockEnabled` if that service
-allows Bedrock). Setting both is refused at render time. With neither,
+allows Bedrock). If that service requires a token, put it in a Secret and
+name it in `switchCore.decision.apiKey.existingSecret` (key
+`existingSecretKey`, default `token`); switch-core sends it as
+`DECISION_API_KEY`. Setting both `decision.enabled` and an endpoint is refused
+at render time. With neither,
 auto-route is unavailable until a workspace admin sets up a backend in Switch
 Console. `switchCore.decision.timeoutSeconds` sets `DECISION_TIMEOUT_SECONDS`.
 
