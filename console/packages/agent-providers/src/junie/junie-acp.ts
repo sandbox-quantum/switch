@@ -1,6 +1,6 @@
-import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter'
-import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks'
-import { readiness } from '../readiness'
+import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
+import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
+import { readiness } from '../readiness';
 
 export const junieAcp: AcpProviderHooks = {
   provider: 'junie',
@@ -42,23 +42,23 @@ export const junieAcp: AcpProviderHooks = {
     env,
   }),
   checkSignIn: async ({ handshake }) => {
-    await handshake()
+    await handshake();
     // Neither an initialize authMethods list nor a configured key validates credentials.
     return readiness(
       'unknown',
       'Junie started. Authentication is verified when a task runs. Run junie and use /account to configure your account or model provider.'
-    )
+    );
   },
   mcpServerOf: (call) => {
     // Junie 3959.5 identifies MCP permissions as server/tool with this marker.
-    if (call._meta?.is_mcp_tool_call !== true || !call.title) return undefined
-    const separator = call.title.indexOf('/')
+    if (call._meta?.is_mcp_tool_call !== true || !call.title) return undefined;
+    const separator = call.title.indexOf('/');
     return separator > 0 && separator < call.title.length - 1
       ? call.title.slice(0, separator)
-      : undefined
+      : undefined;
   },
-}
+};
 
 export function createJunieAdapter(options: AcpAdapterOptions = {}): AcpAdapter {
-  return createAcpAdapter(junieAcp, options)
+  return createAcpAdapter(junieAcp, options);
 }
