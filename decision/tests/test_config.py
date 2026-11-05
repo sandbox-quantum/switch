@@ -11,6 +11,7 @@ def test_defaults(monkeypatch):
         "LLAMACPP_URL",
         "DECISION_SERVICE_TOKEN",
         "DECISION_BEDROCK_ENABLED",
+        "MODEL_SERVER_TOKEN",
     ):
         monkeypatch.delenv(k, raising=False)
     s = load_settings()
@@ -21,6 +22,7 @@ def test_defaults(monkeypatch):
     )
     assert s.llamacpp_url == "http://127.0.0.1:8300"
     assert (s.service_token, s.bedrock_enabled) == (None, False)
+    assert s.model_server_token is None
 
 
 def test_ollama_backend_default_model(monkeypatch):
@@ -72,3 +74,10 @@ def test_bedrock_enabled_flag(monkeypatch, value, enabled):
 def test_history_limit_defaults_to_eight(monkeypatch):
     monkeypatch.delenv("DECISION_HISTORY_LIMIT", raising=False)
     assert load_settings().history_limit == 8
+
+
+def test_model_server_token(monkeypatch):
+    monkeypatch.setenv("MODEL_SERVER_TOKEN", "s3cret")
+    assert load_settings().model_server_token == "s3cret"
+    monkeypatch.setenv("MODEL_SERVER_TOKEN", "")
+    assert load_settings().model_server_token is None

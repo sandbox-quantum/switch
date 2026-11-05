@@ -294,8 +294,12 @@ no further setup.
 
 - **The service token.** The decision service requires a bearer token on
   everything but `/health` (`DECISION_SERVICE_TOKEN`), and switch-core sends it
-  (`DECISION_API_KEY`), so another pod in the cluster gets 401 even where the
-  NetworkPolicy isn't enforced. The chart generates it into the Secret
+  (`DECISION_API_KEY`). The model server beside it, which listens on the pod's
+  IP for its probes, requires the same token (`LLAMA_API_KEY` for llama.cpp,
+  `STRANDS_API_KEY` for Strands), and the decision container sends it
+  (`MODEL_SERVER_TOKEN`). So another pod in the cluster gets 401 from either
+  port even where the NetworkPolicy isn't enforced; only `/health` answers
+  without it. The chart generates it into the Secret
   `<release>-decision-token` on the first install, and reads it back with
   `lookup` on every upgrade, so it stays the same. `helm template` can't read
   the cluster, so it renders a new value each time; that is expected, and only
@@ -366,8 +370,10 @@ no further setup.
 - **Other settings.** `decision.env` passes anything else in the service's
   environment (`DECISION_TIMEOUT_S`, `DECISION_HISTORY_LIMIT`, …).
 - **The NetworkPolicy** needs a CNI that enforces it; where none does, the
-  service token still keeps other pods out. It stays on by default as a
-  second layer; turn it off with `decision.networkPolicy.enabled: false`.
+  token still keeps other pods from asking for decisions or using the model
+  (they can read `/health`). It stays on by
+  default as a second layer; turn it off with
+  `decision.networkPolicy.enabled: false`.
 
 To use a decision service run elsewhere instead, leave `decision.enabled` off
 and set `switchCore.decision.endpointUrl` (and `bedrockEnabled` if that service

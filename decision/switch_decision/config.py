@@ -35,6 +35,9 @@ class Settings:
     with_reason: bool = True
     # Bearer token every request but GET /health must carry; None means no auth.
     service_token: str | None = None
+    # Bearer token sent to the llama.cpp and SystemOne (Strands) model servers,
+    # which then refuse everything but /health without it; None sends none.
+    model_server_token: str | None = None
     # Whether a request may choose Bedrock with X-Decision-Backend (it spends
     # the service's own AWS credentials).
     bedrock_enabled: bool = False
@@ -69,6 +72,7 @@ def load_settings() -> Settings:
         history_limit=int(os.environ.get("DECISION_HISTORY_LIMIT", "8")),
         with_reason=os.environ.get("DECISION_WITH_REASON", "1") != "0",
         service_token=os.environ.get("DECISION_SERVICE_TOKEN") or None,
+        model_server_token=os.environ.get("MODEL_SERVER_TOKEN") or None,
         bedrock_enabled=_flag("DECISION_BEDROCK_ENABLED"),
         bedrock_model=bedrock_model,
     )

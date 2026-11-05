@@ -1,5 +1,7 @@
+import asyncio
 import json
 import math
+from dataclasses import replace
 from types import SimpleNamespace
 
 import httpx
@@ -454,3 +456,71 @@ def test_read_anthropic_tool_call():
     assert (a.choice, a.confidence) == ("deploy-bot", 0.8)
     with pytest.raises(ModelServerError, match="did not call"):
         read_anthropic(SimpleNamespace(stop_reason="refusal", content=[]), OPTIONS)
+
+
+# ── the model server's bearer token ─────────────────────────────────────────
+
+
+def _ask_recording(settings: Settings, body: dict) -> httpx.Request:
+    """Run one `ask` against a fake model server; return the request it got."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=body)
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            await backends.ask(c, settings, _req())
+
+    asyncio.run(run())
+    assert len(seen) == 1
+    return seen[0]
+
+
+LLAMA_ANSWER = _top([("A", math.log(0.9)), ("N", math.log(0.1))])
+SYSTEMONE_ANSWER = _answer("deploy-bot", {"deploy-bot": 0.9, NONE: 0.1})
+
+
+@pytest.mark.parametrize(
+    ("backend", "body"),
+    [("llamacpp", LLAMA_ANSWER), ("systemone", SYSTEMONE_ANSWER)],
+)
+def test_the_model_server_token_is_sent_as_a_bearer_token(backend, body):
+    s = replace(_settings(), backend=backend, model_server_token="s3cret")
+    request = _ask_recording(s, body)
+    assert request.headers["authorization"] == "Bearer s3cret"
+
+
+@pytest.mark.parametrize(
+    ("backend", "body"),
+    [("llamacpp", LLAMA_ANSWER), ("systemone", SYSTEMONE_ANSWER)],
+)
+def test_no_model_server_token_sends_no_authorization(backend, body):
+    request = _ask_recording(replace(_settings(), backend=backend), body)
+    assert "authorization" not in request.headers
+
+
+def test_ollama_never_gets_the_model_server_token():
+    s = replace(_settings(), backend="ollama", model_server_token="s3cret")
+    body = {
+        "message": {"content": json.dumps({"agent": "deploy-bot", "confidence": 0.9})}
+    }
+    request = _ask_recording(s, body)
+    assert "authorization" not in request.headers
+
+
+def test_a_refused_model_server_token_is_a_502_without_the_token(monkeypatch, caplog):
+    tc = _client(
+        monkeypatch,
+        lambda r: httpx.Response(401, json={"detail": "missing or wrong bearer token"}),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "settings",
+        replace(app_module.settings, model_server_token="s3cret"),
+    )
+    with caplog.at_level("INFO"):
+        r = tc.post("/decide", json=_payload())
+    assert r.status_code == 502 and "401" in r.json()["detail"]
+    assert "s3cret" not in caplog.text and "s3cret" not in r.text
