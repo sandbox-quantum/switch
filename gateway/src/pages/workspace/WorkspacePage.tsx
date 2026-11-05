@@ -1,5 +1,6 @@
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useAuth } from "../../data/AuthContext";
+import DeleteWorkspaceSection from "./DeleteWorkspaceSection";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
 
@@ -32,6 +33,10 @@ export default function WorkspacePage() {
           <Alert severity="info">
             Ask a workspace admin to invite someone.
           </Alert>
+        )}
+        {/* An admin membership, not the operator's bypass: the server checks the same. */}
+        {tenant.role === "admin" && (
+          <DeleteWorkspaceSection tenantId={tenant.id} tenantName={tenant.name} />
         )}
       </Stack>
     </Box>

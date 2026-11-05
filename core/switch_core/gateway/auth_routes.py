@@ -494,6 +494,7 @@ async def delete_my_account(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
     """Delete the caller's own account, everywhere on this server.
@@ -524,6 +525,7 @@ async def delete_my_account(
         agent_store,
         api_key_store,
         template_store,
+        client_lifecycle,
         config,
     )
     workspaces = await _workspaces_to_delete(
@@ -552,6 +554,7 @@ def _account_deletion(
     agent_store: AgentStore,
     api_key_store: ApiKeyStore,
     template_store: TemplateStore,
+    client_lifecycle: ClientLifecycleService,
     config: SwitchConfig,
 ) -> AccountDeletion:
     return AccountDeletion(
@@ -568,6 +571,7 @@ def _account_deletion(
         agents=agent_store,
         api_keys=api_key_store,
         templates=template_store,
+        clients=client_lifecycle,
         admin_email=config.gateway_admin_email,
     )
 
@@ -709,6 +713,7 @@ async def delete_user(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
     """The deployment operator deletes someone's whole account.
@@ -747,6 +752,7 @@ async def delete_user(
         agent_store,
         api_key_store,
         template_store,
+        client_lifecycle,
         config,
     )
     workspaces = await _workspaces_to_delete(

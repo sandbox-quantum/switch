@@ -10,6 +10,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.workspace_deletion import (
+    WorkspaceDeletionRefused,
+    delete_workspace,
+)
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
@@ -18,14 +22,20 @@ from switch_core.authz import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
-from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from switch_core.clients.client_lifecycle_service import (
+    ClientLifecycleService,
+)
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import (
     ServiceBroker,
     ServiceError,
     get_service_broker,
 )
-from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
+from switch_core.db.audit import (
+    AuditAction,
+    list_audit_events,
+    record_audit_event,
+)
 from switch_core.db.models import (
     Invitation,
     Organization,
@@ -62,6 +72,7 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
+    initial_tenant_claim,
     list_tenant_memberships,
     may_bind_tenant,
     record_operator_entry,
@@ -119,6 +130,7 @@ from switch_core.gateway.schemas import (
     OperatorWorkspaceResponse,
     SessionUserResponse,
     TenantCreateRequest,
+    TenantDeleteRequest,
     TenantMembershipResponse,
     UsageTotalResponse,
 )
@@ -354,6 +366,70 @@ async def create_tenant(
         workspace_name=req.name,
     )
     return created.workspace
+
+
+@router.delete("/tenants/{tenant_id}")
+async def delete_tenant(
+    tenant_id: str,
+    req: TenantDeleteRequest,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, bool]:
+    """Delete the bound workspace, once it has been emptied.
+
+    Its admins only, by their own admin membership: not the deployment
+    operator's bypass, and not an organization admin acting as one, since
+    deleting a workspace is the one act that cannot be undone by anyone. The
+    caller confirms by typing its name.
+    A workspace that still holds anything is refused, 409, with what is left
+    by kind and count (`accounts/workspace_deletion.py`). The session cookie
+    is re-minted without it, onto the caller's only other workspace if there
+    is exactly one.
+    """
+    _require_bound_tenant(tenant_id)
+    if await user_store.tenant_role(session, tenant_id, user.id) != "admin":
+        raise HTTPException(
+            status_code=403, detail="Only a workspace admin may delete the workspace"
+        )
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        # Deleted by a request that got here first.
+        raise HTTPException(status_code=404, detail="That workspace doesn't exist.")
+    if req.name.strip() != tenant.name:
+        raise HTTPException(
+            status_code=400, detail="That name doesn't match this workspace."
+        )
+    try:
+        key_hashes = await delete_workspace(session, tenant_id, user.id, user.id)
+    except WorkspaceDeletionRefused as refused:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(refused)) from None
+    await session.commit()
+    logger.info("Admin %s deleted workspace %s", user.id, tenant_id)
+
+    for key_hash in key_hashes:
+        protocol.api_key_cache.invalidate(key_hash)
+    # The clients the server ran for it stop here, and everywhere else on the
+    # announcement.
+    await client_lifecycle.reconcile_tenant(tenant_id)
+    client_lifecycle.announce(tenant_id)
+
+    set_session_cookie(
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        await initial_tenant_claim(session_factory, user_store, user),
+    )
+    return {"ok": True}
 
 
 @router.post("/tenants/{tenant_id}/switch")

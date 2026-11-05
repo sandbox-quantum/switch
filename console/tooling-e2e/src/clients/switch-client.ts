@@ -1031,6 +1031,43 @@ export class SwitchClient {
     );
   }
 
+  /**
+   * `DELETE /gateway/tenants/{tenant_id}` — delete the bound workspace, once it
+   * is empty, by typing its name. Its own admins only. The server re-mints the
+   * session onto the caller's only other workspace, if there is exactly one,
+   * so from here on this client acts there.
+   */
+  async deleteTenant(tenantId: string, name: string): Promise<void> {
+    const { response } = await this.rawRequest(
+      "DELETE",
+      `/gateway/tenants/${encodeURIComponent(tenantId)}`,
+      { cookie: await this.gatewayLogin(), body: { name } },
+    );
+    const cookie = sessionCookieFrom(response);
+    if (cookie) {
+      this.issued.record(cookie.slice("switch_auth=".length));
+      this.gatewayCookie = cookie;
+    }
+  }
+
+  /** `POST /gateway/ownership/transfer` — make another member of this workspace the owner of something. */
+  async transferOwnership(params: {
+    kind: "agent" | "room" | "package" | "reference" | "reference_type" | "document" | "template";
+    id: string;
+    newOwnerId: string;
+  }): Promise<{ kind: string; id: string; owner_id: string; agent_key_reissued: boolean }> {
+    return this.gateway("POST", "/ownership/transfer", {
+      kind: params.kind,
+      id: params.id,
+      new_owner_id: params.newOwnerId,
+    });
+  }
+
+  /** `DELETE /gateway/users/{user_id}` — the deployment operator deletes someone's whole account. */
+  async deleteUser(userId: string): Promise<void> {
+    await this.gateway<unknown>("DELETE", `/users/${encodeURIComponent(userId)}`);
+  }
+
   /** `GET /gateway/operator/workspaces` — every workspace on the server, platform operator only. */
   async operatorWorkspaces(): Promise<{ id: string; name: string }[]> {
     return this.gateway<{ id: string; name: string }[]>("GET", "/operator/workspaces");
