@@ -13,6 +13,7 @@ import type {
 import { ProviderConversationUnavailableError, ProviderSessionError } from '../adapter';
 import type {
   ApprovalDecision,
+  ItemType,
   ProviderItem,
   ProviderRuntimeEvent,
   UserInputAnswers,
@@ -129,6 +130,8 @@ interface State {
   context: string;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   mcpNames: Set<string>;
+  /** Every MCP server the agent has: the session's, and those of its own settings. */
+  agentMcpNames: Set<string>;
   /** The registered servers whose tools are allowed without asking: all but the connectors. */
   autoApprovedMcpNames: Set<string>;
   toolServers: Map<string, string>;
@@ -136,6 +139,21 @@ interface State {
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
 }
+
+/** A tool call a permission request is about. */
+interface AskedToolCall {
+  title: string;
+  /** Its ACP kind: `execute`, `edit`… */
+  kind: string | undefined;
+  /** The MCP server it is on, when that is known. */
+  server: string | undefined;
+}
+
+/** The ACP kind of a tool call shown as each item type. */
+const ACP_KIND_OF_ITEM: Partial<Record<ItemType, string>> = {
+  command_execution: 'execute',
+  file_change: 'edit',
+};
 
 /** Room in a prompt part's line for the label saying which part it is. */
 const PART_LABEL_BYTES = 200;
@@ -244,6 +262,7 @@ export class AcpAdapter implements ProviderAdapter {
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
       mcpNames: new Set(Object.keys(input.mcpServers)),
+      agentMcpNames: new Set(Object.keys(input.mcpServers)),
       autoApprovedMcpNames: new Set(
         Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
       ),
@@ -339,6 +358,8 @@ export class AcpAdapter implements ProviderAdapter {
         : modelConfigOption(state.configOptions)
           ? modelsFromConfig(state.configOptions)
           : modelsFromList(result.models);
+      for (const name of (await hooks.ownMcpServers?.(input.env)) ?? [])
+        state.agentMcpNames.add(name);
       const mode = hooks.sessionMode?.(input.runtimeMode, result.modes);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
@@ -640,15 +661,13 @@ export class AcpAdapter implements ProviderAdapter {
     if (vendor) return await vendor;
     const { toolCall } = request;
     const once = request.options.find((option) => option.kind === 'allow_once');
-    const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    const asked = this.askedAbout(state, request);
+    const allowed = ({ kind, server }: AskedToolCall) =>
+      (server !== undefined && state.autoApprovedMcpNames.has(server)) ||
+      (state.runtimeMode === 'auto-accept-edits' && kind === 'edit');
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
-    if (
-      once &&
-      ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
-        state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
-    )
+    if (once && (state.runtimeMode === 'full-access' || (asked.length > 0 && asked.every(allowed))))
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
     for (const option of request.options) {
@@ -674,19 +693,51 @@ export class AcpAdapter implements ProviderAdapter {
       });
     }
     options.push({ decision: 'cancel', label: 'Cancel', response: ACP_CANCELLED });
+    // A request about several tool calls is titled as the agent titles it and
+    // lists them; one about a single call is that call's.
+    const only = asked.length === 1 ? asked[0] : undefined;
+    const server = only?.server;
     const mcp = server !== undefined && state.mcpNames.has(server);
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : only?.kind === 'execute'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : only?.kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
-      title: toolCall.title ?? `${this.hooks.label} needs permission`,
+      title: only?.title || toolCall.title || `${this.hooks.label} needs permission`,
+      ...(asked.length > 1 ? { detail: asked.map(({ title }) => `- ${title}`).join('\n') } : {}),
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
+  }
+
+  /**
+   * The tool calls a permission request is about: the one it names, or, for
+   * hooks with `confirmsAnnouncedToolCalls`, each one the turn announced and
+   * has not finished.
+   */
+  private askedAbout(state: State, request: AcpPermissionRequest): AskedToolCall[] {
+    if (!this.hooks.confirmsAnnouncedToolCalls?.(request)) {
+      const { toolCall } = request;
+      return [
+        {
+          title: toolCall.title ?? '',
+          kind: toolCall.kind,
+          server:
+            this.hooks.mcpServerOf?.(toolCall, state.agentMcpNames) ??
+            state.toolServers.get(toolCall.toolCallId),
+        },
+      ];
+    }
+    return [...state.items.values()]
+      .filter((item) => item.status === 'in_progress')
+      .map((item) => ({
+        title: item.title,
+        kind: ACP_KIND_OF_ITEM[item.type],
+        server: state.toolServers.get(item.id),
+      }));
   }
 
   private applyConfigOptions(state: State, options: AcpConfigOption[]): void {
@@ -741,7 +792,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
-    const server = this.hooks.mcpServerOf?.(update);
+    const server = this.hooks.mcpServerOf?.(update, state.agentMcpNames);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
     const text = (update.content ?? [])
       .map((part) =>

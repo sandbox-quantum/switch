@@ -34,6 +34,31 @@ export async function openhandsModel(env: Record<string, string>): Promise<strin
   }
 }
 
+/**
+ * The MCP servers OpenHands adds to every session from its own `mcp.json`,
+ * those not turned off. A session's server of the same name replaces one.
+ */
+export async function openhandsMcpServers(env: Record<string, string>): Promise<string[]> {
+  let text: string;
+  try {
+    text = await readFile(join(openhandsDirectory(env), 'mcp.json'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  let servers: unknown;
+  try {
+    servers = (JSON.parse(text) as { mcpServers?: unknown } | null)?.mcpServers;
+  } catch {
+    // OpenHands starts no session with an mcp.json it cannot read.
+    return [];
+  }
+  if (!servers || typeof servers !== 'object') return [];
+  return Object.entries(servers as Record<string, { enabled?: unknown } | null>)
+    .filter(([, server]) => server?.enabled !== false)
+    .map(([name]) => name);
+}
+
 /** The directory OpenHands keeps the conversation `id` in. */
 export function openhandsConversation(env: Record<string, string>, id: string): string {
   const conversations =
@@ -119,6 +144,16 @@ export const openhandsAcp: AcpProviderHooks = {
     }
   },
   itemType: (toolCall) => (toolCall.rawInput?.kind === 'TaskAction' ? 'subagent' : undefined),
+  // An MCP tool call names its arguments but not its tool or server, so it
+  // is put on a server only when OpenHands has just one: the session's, and
+  // none of its own in mcp.json.
+  mcpServerOf: (toolCall, servers) =>
+    toolCall.rawInput?.kind === 'MCPToolAction' && servers.size === 1 ? [...servers][0] : undefined,
+  ownMcpServers: openhandsMcpServers,
+  // Before each step it asks one "Confirm Agent Actions" for all the step's
+  // actions, each announced as a tool call just before.
+  confirmsAnnouncedToolCalls: (request) =>
+    request.toolCall.toolCallId === `confirmation-${request.sessionId}`,
 };
 
 export function createOpenhandsAdapter(options: AcpAdapterOptions = {}): AcpAdapter {

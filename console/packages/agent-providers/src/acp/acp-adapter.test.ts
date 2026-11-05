@@ -325,6 +325,91 @@ it('auto-approves a tool the hooks place on any session-registered MCP server', 
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
 });
 
+it('answers a request about every announced tool call from those calls, and shows them', async () => {
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    mcpServerOf: (toolCall, names) =>
+      toolCall.rawInput?.mcp === true && names.size === 1 ? [...names][0] : undefined,
+    confirmsAnnouncedToolCalls: (request) => request.toolCall.toolCallId === 'confirm',
+  };
+  const { adapter, events, server } = await start(hooks, {
+    mcpServers: { switch: { transport: 'stdio', command: 'node', args: ['switch.js'] } },
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const update = (toolCallId: string, fields: Record<string, unknown>) =>
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call', toolCallId, status: 'in_progress', ...fields },
+    });
+  const confirm = (id: number) =>
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: 'confirm', title: 'Confirm actions', kind: 'other' },
+        options: [{ optionId: 'yes', name: 'Yes', kind: 'allow_once' }],
+      },
+    });
+  const opened = () => events.filter((e) => e.type === 'request.opened');
+  // The session's own MCP server: let through without asking.
+  update('reply', { kind: 'other', title: 'post_message', rawInput: { mcp: true } });
+  confirm(80);
+  await flush();
+  expect(server.received.find((m) => m.id === 80)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'yes' },
+  });
+  expect(events.find((e) => e.type === 'item.started')).toMatchObject({
+    item: { id: 'reply', type: 'mcp_tool_call' },
+  });
+  update('reply', { sessionUpdate: 'tool_call_update', status: 'completed' });
+  // One command: the card is that command's.
+  update('cmd', { kind: 'execute', title: '$ uname -a' });
+  confirm(81);
+  await flush();
+  expect(opened()[0]).toMatchObject({
+    requestType: 'command_execution_approval',
+    title: '$ uname -a',
+  });
+  expect(opened()[0]).not.toHaveProperty('detail');
+  const [first] = opened();
+  if (first?.type !== 'request.opened') throw new Error('No approval');
+  await adapter.respondToRequest('s', first.requestId, 'accept');
+  update('cmd', { sessionUpdate: 'tool_call_update', status: 'completed' });
+  // Several: the agent's title, with each of them.
+  update('edit', { kind: 'edit', title: 'Editing notes.txt' });
+  update('again', { kind: 'other', title: 'post_message', rawInput: { mcp: true } });
+  confirm(82);
+  await flush();
+  expect(opened()[1]).toMatchObject({
+    requestType: 'tool_approval',
+    title: 'Confirm actions',
+    detail: '- Editing notes.txt\n- post_message',
+  });
+});
+
+it('gives mcpServerOf the MCP servers the agent has of its own with the session ones', async () => {
+  const given: string[][] = [];
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    ownMcpServers: async () => ['own', 'switch'],
+    mcpServerOf: (_toolCall, names) => {
+      given.push([...names]);
+      return undefined;
+    },
+  };
+  const { adapter, server } = await start(hooks, {
+    mcpServers: { switch: { transport: 'stdio', command: 'node', args: ['switch.js'] } },
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: { sessionUpdate: 'tool_call', toolCallId: 'c', kind: 'other', status: 'in_progress' },
+  });
+  await flush();
+  expect(given).toEqual([['switch', 'own']]);
+});
+
 it('offers allow-for-session, maps it to the agent option, and answers decline with cancelled when no reject is offered', async () => {
   const { adapter, events, server } = await start();
   await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });

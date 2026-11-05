@@ -37,8 +37,6 @@ describeConformance('openhands', {
   skip: {
     'user-input':
       'OpenHands CLI 1.16.0 asks nothing over ACP but permission: it has no question tool (2026-11-05).',
-    'mcp-registered':
-      "OpenHands CLI 1.16.0 asks one 'Confirm Agent Actions' before each step, naming no action, and its tool calls do not name their MCP server, so in approval-required a registered server's tools ask like any other action (2026-11-05).",
   },
   mcpServers: { echo: echoMcpServerSpec() },
   // Every scenario asks for the model in OpenHands' settings, the one it lists.

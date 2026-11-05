@@ -198,8 +198,26 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
-  /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  /**
+   * The MCP server a tool call belongs to, when the agent says so or only one
+   * of `mcpServerNames`, every MCP server the agent has (the session's and
+   * `ownMcpServers`), can be it.
+   */
+  mcpServerOf?(toolCall: AcpToolCall, mcpServerNames: ReadonlySet<string>): string | undefined;
+  /**
+   * The MCP servers the agent adds to every session from its own settings, by
+   * name. `mcpServerOf` is given them with the session's, so a tool call that
+   * may be on one of them is not taken for a session server's and allowed
+   * without asking.
+   */
+  ownMcpServers?(env: Record<string, string>): Promise<readonly string[]>;
+  /**
+   * Whether a permission request is about every tool call the turn announced
+   * and has not finished, rather than the tool call it names (OpenHands asks
+   * one "Confirm Agent Actions" for all of a step's actions). Such a request
+   * is answered from those calls and shows them.
+   */
+  confirmsAnnouncedToolCalls?(request: AcpPermissionRequest): boolean;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**

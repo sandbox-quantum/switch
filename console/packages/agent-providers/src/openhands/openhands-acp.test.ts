@@ -39,7 +39,8 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { createOpenhandsAdapter, openhandsAcp, openhandsModel } = await import('./openhands-acp');
+const { createOpenhandsAdapter, openhandsAcp, openhandsMcpServers, openhandsModel } =
+  await import('./openhands-acp');
 
 const NATIVE = '80d11f7b-d591-43e9-b578-599318b6f854';
 const relay = { transport: 'stdio' as const, command: '/node', args: ['/host.mjs', '--mcp-relay'] };
@@ -173,6 +174,78 @@ it('offers the confirmation OpenHands asks before each step, without its risk-ba
     { outcome: { outcome: 'selected', optionId: 'accept' } },
     { outcome: { outcome: 'selected', optionId: 'reject' } },
   ]);
+});
+
+it('runs the Switch tools without asking, and titles a confirmation with the action it is for', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'reply' });
+  const announce = (update: Record<string, unknown>) =>
+    server.notify('session/update', { sessionId: NATIVE, update });
+  // An MCP tool call as OpenHands CLI 1.16.0 announces it, then confirms it.
+  announce({
+    sessionUpdate: 'tool_call',
+    toolCallId: '14KBFfrSX',
+    kind: 'other',
+    status: 'in_progress',
+    title: 'post_message: {"text": "Hi"}',
+    rawInput: { data: { text: 'Hi' }, kind: 'MCPToolAction' },
+  });
+  confirm(server, 0);
+  await flush();
+  expect(server.received.find((m) => m.id === 0 && !m.method)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'accept' },
+  });
+  expect(events.find((e) => e.type === 'item.started')).toMatchObject({
+    item: { id: '14KBFfrSX', type: 'mcp_tool_call' },
+  });
+  announce({ sessionUpdate: 'tool_call_update', toolCallId: '14KBFfrSX', status: 'completed' });
+  announce({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'call_9',
+    kind: 'execute',
+    status: 'in_progress',
+    title: '$ uname -a',
+    rawInput: { command: 'uname -a', kind: 'TerminalAction' },
+  });
+  confirm(server, 1);
+  await flush();
+  expect(events.filter((e) => e.type === 'request.opened')).toMatchObject([
+    { requestType: 'command_execution_approval', title: '$ uname -a' },
+  ]);
+});
+
+it('asks before an MCP tool when OpenHands has MCP servers of its own it may be on', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'openhands-'));
+  try {
+    await mkdir(join(home, '.openhands'));
+    await writeFile(
+      join(home, '.openhands', 'mcp.json'),
+      JSON.stringify({
+        mcpServers: { github: { command: 'github-mcp' }, old: { command: 'x', enabled: false } },
+      })
+    );
+    expect(await openhandsMcpServers({ HOME: home })).toEqual(['github']);
+    const { adapter, events, server } = await setup(undefined, home);
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'reply' });
+    server.notify('session/update', {
+      sessionId: NATIVE,
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'm1',
+        kind: 'other',
+        status: 'in_progress',
+        title: 'post_message: {"text": "Hi"}',
+        rawInput: { data: { text: 'Hi' }, kind: 'MCPToolAction' },
+      },
+    });
+    confirm(server, 0);
+    await flush();
+    expect(events.filter((e) => e.type === 'request.opened')).toMatchObject([
+      { requestType: 'tool_approval', title: 'post_message: {"text": "Hi"}' },
+    ]);
+  } finally {
+    await rm(home, { recursive: true });
+  }
 });
 
 it('lists the model set in OpenHands as its only one, and refuses another', async () => {
