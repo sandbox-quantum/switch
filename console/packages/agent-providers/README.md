@@ -71,7 +71,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Goose run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -85,7 +85,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/goose/goose-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -108,3 +109,18 @@ call id starts with `interaction_`. Native session ids are stored with an
 `acp:` prefix; a conversation saved by the retired `agy` runtime starts fresh.
 Its sign-in check reads `authMethods` from the handshake and never calls
 `authenticate`, which would open a browser.
+
+**Goose** runs `goose acp` and needs no `authenticate`: it signs in to the
+model provider chosen with `goose configure`, or to the one named by
+`GOOSE_PROVIDER` and `GOOSE_MODEL` with that provider's key (for Groq,
+`GOOSE_PROVIDER=groq` and `GROQ_API_KEY`). Its sign-in check first opens
+`goose acp` to confirm the `goose` found is Block's, not pressly/goose (a
+database migration tool of the same name), then reads the provider choice from
+`config.yaml` and the environment, the way Goose resolves it. It never touches
+the keyring or calls a model, so a wrong key shows on the first turn. `GOOSE_PATH_ROOT` points it at another profile. On a headless machine,
+set `GOOSE_DISABLE_KEYRING=1` and keep the key in the environment or Goose's
+`secrets.yaml`. Goose's modes map as approval-required and auto-accept-edits
+to `approve`, auto to `smart_approve` and full-access to `auto`; it starts in
+`approve` until the session's mode is set. A tool call names its extension in
+`_meta.goose.toolCall`, and its subagents are the `delegate` tool of its
+`summon` extension.

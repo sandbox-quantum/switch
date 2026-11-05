@@ -40,6 +40,7 @@
     "@opencode-ai/sdk": "^1.18.27",
     "@sandboxaq/switch-agent-runtime": "workspace:*",
     "@switch-console/shared": "workspace:*",
+    "js-yaml": "^5.3.0",
     "jsonc-parser": "3.3.1",
     "smol-toml": "^1.8.0",
     "zod": "^4.6.7"
