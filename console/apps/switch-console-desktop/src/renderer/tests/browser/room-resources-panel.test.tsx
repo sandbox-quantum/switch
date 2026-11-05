@@ -279,7 +279,7 @@ describe('the Resources tab', () => {
   it('opens a package on its page in Resources when clicked', async () => {
     const el = await renderPanel();
     await act(async () =>
-      [...el.querySelectorAll('[aria-label="Packages"] button')]
+      [...el.querySelectorAll<HTMLButtonElement>('[aria-label="Packages"] button')]
         .find((b) => b.textContent?.includes('Onboarding'))!
         .click()
     );
@@ -288,5 +288,17 @@ describe('the Resources tab', () => {
       kind: 'packages',
       itemId: 'pkg-1',
     });
+  });
+
+  it('opens nothing for a reference with no link, rather than taking it for a package', async () => {
+    listRoomResources.mockImplementation(async ({ kind }: { kind: keyof typeof RESOURCES }) =>
+      kind === 'references' ? [{ ...RESOURCES.references[0], urls: [] }] : RESOURCES[kind]
+    );
+    const el = await renderPanel();
+    const row = [...el.querySelectorAll('[aria-label="References"] button')].find((b) =>
+      b.textContent?.includes('Repo')
+    );
+    expect(row).toBeUndefined();
+    expect(navigate).not.toHaveBeenCalled();
   });
 });
