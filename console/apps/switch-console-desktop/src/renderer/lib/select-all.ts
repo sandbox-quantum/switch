@@ -17,11 +17,13 @@ export function isSelectAllTarget(el: Element | null): boolean {
 }
 
 function isSelectAllShortcut(event: KeyboardEvent): boolean {
+  // Match the character, not the physical key: on AZERTY the KeyA position types Q,
+  // and claiming it would swallow Ctrl/Cmd+Q (Quit).
   return (
     (event.metaKey || event.ctrlKey) &&
     !event.altKey &&
     !event.shiftKey &&
-    (event.code === 'KeyA' || event.key.toLowerCase() === 'a')
+    event.key.toLowerCase() === 'a'
   );
 }
 

@@ -28,18 +28,18 @@ export const externalLinkOpenRequestedChannel = defineEvent<{ url: string }>(
  * Load existing agents, Remove agent — without each call site having to
  * remember a manual refetch (CHOO-2560).
  */
-export const agentsChangedChannel = defineEvent<{
-  kind: 'created' | 'updated' | 'deleted';
-}>('agents:changed');
+export const agentsChangedChannel = defineEvent<{ kind: 'created' | 'updated' | 'deleted' }>(
+  'agents:changed'
+);
 
 /**
  * A mouse back/forward button pressed on Windows, where those buttons arrive as
  * an `app-command` on the window rather than as a mouse event in the page.
  * Elsewhere the renderer sees them directly and this never fires.
  */
-export const appCommandNavigateChannel = defineEvent<{
-  direction: 'back' | 'forward';
-}>('app-command:navigate');
+export const appCommandNavigateChannel = defineEvent<{ direction: 'back' | 'forward' }>(
+  'app-command:navigate'
+);
 
 export const tabNavigationShortcutChannel = defineEvent<{
   source: { kind: 'browser'; browserId: string };

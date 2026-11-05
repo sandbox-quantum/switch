@@ -76,6 +76,21 @@ it('Ctrl+A in a contenteditable selects only its text', async () => {
   expect(selectedText()).toBe('editable text');
 });
 
+it('Ctrl+Q on AZERTY (physical KeyA) is left alone so Quit still works', () => {
+  mount(CHROME);
+  const button = container.querySelector('button')!;
+  button.focus();
+  const event = new KeyboardEvent('keydown', {
+    key: 'q',
+    code: 'KeyA',
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  button.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(false);
+});
+
 it('menu Select All on a focused button selects nothing', () => {
   mount(CHROME);
   container.querySelector('button')!.focus();
