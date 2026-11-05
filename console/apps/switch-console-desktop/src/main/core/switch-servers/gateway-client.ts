@@ -114,6 +114,9 @@ import {
   type RoomDocumentContent,
   type RoomResource,
   type RoomResourceKind,
+  type NewRoomChannel,
+  type RoomAccess,
+  visibilityForAccess,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -3656,8 +3659,16 @@ export async function createRoom(
     /** Null makes an internal room: no channel, not even on the default app. */
     bridgeId: string | null;
     agentIds: string[];
+    /** Null for a new public channel. */
+    channel: NewRoomChannel | null;
+    groupId: string | null;
+    /** The server's default (open to the workspace) when absent. */
+    /** Null for the server's default. */
+    access: RoomAccess | null;
   }
 ): Promise<RemoteRoomSummary> {
+  const channel = params.channel ?? { kind: 'new', private: false };
+  const visibility = params.access ? visibilityForAccess(params.access) : null;
   const res = await gatewayFetch(server, '/rooms', {
     authenticated: true,
     method: 'POST',
@@ -3667,7 +3678,17 @@ export async function createRoom(
       instructions: params.instructions?.trim() ? params.instructions : null,
       bridge_id: params.bridgeId,
       ...(params.bridgeId === null ? { internal_only: true } : {}),
-      channel_type: 'channel_public',
+      // An existing channel's type is the platform's, read by the server.
+      ...(channel.kind === 'existing'
+        ? { external_channel_id: channel.externalChannelId }
+        : { channel_type: channel.private ? 'channel_private' : 'channel_public' }),
+      ...(params.groupId ? { group_id: params.groupId } : {}),
+      ...(visibility
+        ? {
+            read_visibility: visibility.readVisibility,
+            write_visibility: visibility.writeVisibility,
+          }
+        : {}),
       agent_ids: params.agentIds,
     },
   });

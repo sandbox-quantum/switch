@@ -778,6 +778,9 @@ export const workspacesController = createRPCController({
           instructions: params.instructions,
           bridgeId: params.bridgeId,
           agentIds: params.agentIds,
+          channel: params.channel,
+          groupId: params.groupId,
+          access: params.access,
         })
       );
     } catch (error) {

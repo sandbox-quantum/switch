@@ -41,7 +41,8 @@ export const ACCESS_LABELS: Record<RoomAccess, string> = {
   private: 'Only those taking part and admins see it; owner and admins change it',
 };
 
-const ACCESS_ORDER: RoomAccess[] = ['public', 'read_only', 'private'];
+/** The access settings in the order they are offered, most open first. */
+export const ACCESS_ORDER: RoomAccess[] = ['public', 'read_only', 'private'];
 const NO_GROUP = '__none__';
 
 /** One write's progress, for a control that saves the moment it changes. */
@@ -85,7 +86,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
   const [groupState, setGroupState] = useState<WriteState>({ phase: 'idle' });
   const picksGroup = permissions.canWrite && administersWorkspace;
   const groups = useQuery({
-    queryKey: ['room-groups', workspaceId],
+    queryKey: ['remote-room-groups', workspaceId],
     queryFn: () => rpc.workspaces.listRoomGroups(workspaceId),
     enabled: picksGroup,
   });
