@@ -1385,22 +1385,24 @@ export async function runAgentHost(
           if (
             parsed.success &&
             parsed.data.body.type === 'turn.cancel' &&
-            parsed.data.origin.roomId
+            parsed.data.origin.roomId &&
+            (parsed.data.origin.threadId || parsed.data.origin.messageId)
           ) {
             const saved = await sessionConfig(sessionId);
             if (saved)
               try {
-                // The existing reply path checks placement: never move the
-                // session or redirect the cancellation to another host.
+                // Also bind the post to an existing message: if placement
+                // changes during the reply, Core rejects a thread outside
+                // the resolved room instead of posting into the wrong room.
                 await answerSession(
                   { ...saved.session, root: sharedSessionRoot(sessionId) },
                   {
                     type: 'room-reply',
                     roomId: parsed.data.origin.roomId,
-                    threadId: parsed.data.origin.threadId,
+                    threadId: parsed.data.origin.threadId ?? parsed.data.origin.messageId,
                     body:
-                      'I could not confirm cancellation because the session host is unavailable. ' +
-                      'Reconnect it and check the turn before retrying; use !interrupt if it has started.',
+                      'I could not confirm cancellation. Check the session and turn before retrying; ' +
+                      'use !interrupt if it has started.',
                   }
                 );
               } catch (error) {

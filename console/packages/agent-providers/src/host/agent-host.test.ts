@@ -2054,9 +2054,16 @@ it('passes an approval answer to the session it is for, and only that one', asyn
   }
 });
 
-it.each([false, true])(
-  'reports an unavailable cancellation host only while it still attends the room (displaced=%s)',
-  async (displaced) => {
+it.each([
+  { displaced: false, threadId: 'original-thread', messageId: 'cancel-message', rejected: false },
+  { displaced: false, threadId: null, messageId: 'cancel-message', rejected: false },
+  { displaced: false, threadId: null, messageId: null, rejected: false },
+  { displaced: true, threadId: 'original-thread', messageId: 'cancel-message', rejected: false },
+  { displaced: true, threadId: null, messageId: 'cancel-message', rejected: false },
+  { displaced: false, threadId: null, messageId: 'cancel-message', rejected: true },
+])(
+  'anchors unconfirmed cancellation feedback to its room (displaced=$displaced, thread=$threadId, message=$messageId, rejected=$rejected)',
+  async ({ displaced, threadId, messageId, rejected }) => {
     const root = await mkdtemp(join(tmpdir(), 'shared-watch-cancel-unavailable-'));
     roots.push(root);
     paths.root = root;
@@ -2081,6 +2088,10 @@ it.each([false, true])(
     try {
       await eventually(() => streams.length === 1);
       if (displaced) await control.place(other.sessionId, 'room');
+      if (rejected) {
+        await hosts.start(missing.sessionRoot);
+        vi.spyOn(hosts.links, 'request').mockRejectedValueOnce(new Error('IDEMPOTENCY_CONFLICT'));
+      }
       await streams[0]!.onSessionCommand!({
         contractVersion: 1,
         sessionId: missing.sessionId,
@@ -2091,13 +2102,15 @@ it.each([false, true])(
           surface: 'mattermost',
           actorId: '@sender:example',
           roomId: 'room',
-          threadId: 'original-thread',
-          messageId: 'cancel-message',
+          threadId,
+          messageId,
         },
         body: { type: 'turn.cancel', turnId: 'queued-turn' },
       });
       const posts = calls.filter((call) => call.path.endsWith('/ops/post_message'));
-      if (displaced) {
+      if (!threadId && !messageId) {
+        expect(posts).toEqual([]);
+      } else if (displaced) {
         expect(posts).toEqual([]);
         expect(warn.mock.calls.some(([line]) => String(line).includes('no longer attends'))).toBe(
           true
@@ -2107,8 +2120,9 @@ it.each([false, true])(
         expect(posts).toHaveLength(1);
         expect(posts[0]!.body).toEqual({
           body: expect.stringContaining('could not confirm cancellation'),
-          thread_id: 'original-thread',
+          thread_id: threadId ?? messageId,
         });
+        expect((posts[0]!.body as { body: string }).body).not.toContain('host is unavailable');
         expect(posts[0]!.headers['X-Switch-Session-Id']).toBe(missing.sessionId);
         expect(published.at(-1)).toEqual({ [missing.sessionId]: 'room' });
       }
