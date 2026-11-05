@@ -28,6 +28,11 @@ vi.mock("../../data/api", async (importOriginal) => {
 vi.mock("./RegisterAgentDialog", () => ({ default: () => null }));
 // The logins section has tests of its own; here it would add its own reads.
 vi.mock("./cloud/CloudLoginsSection", () => ({ default: () => null }));
+// The cloud delete has tests of its own; here it only shows which agent it opened for.
+vi.mock("./cloud/CloudDeleteDialog", () => ({
+  default: ({ agent }: { agent: { name: string } | null }) =>
+    agent ? <div data-testid="cloud-delete">{agent.name}</div> : null,
+}));
 
 // The data grid lays rows out from measured sizes, which jsdom does not have,
 // so it renders none. This draws each row and its action cell plainly.
@@ -210,6 +215,22 @@ describe("AgentsPage with hosted agents v2", () => {
     expect(new Set(urls)).toEqual(
       new Set(["/gateway/hosted-machines", "/gateway/shared-cloud/agents"]),
     );
+  });
+
+  it("deletes an agent on the box through the cloud delete, and any other agent as before", async () => {
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    await screen.findByText("Your cloud");
+    await waitFor(() => expect(within(screen.getByTestId("row-notes-taker")).getByRole("button")).toBeTruthy());
+    fireEvent.click(within(screen.getByTestId("row-notes-taker")).getByRole("button"));
+    expect((await screen.findByTestId("cloud-delete")).textContent).toBe("notes-taker");
+    expect(screen.queryByText("Delete agent")).toBeNull();
+    cleanup();
+    render(<AgentsPage />);
+    await screen.findByText("Your cloud");
+    fireEvent.click(within(screen.getByTestId("row-<b>local</b>")).getByRole("button"));
+    expect(await screen.findByText("Delete agent")).toBeTruthy();
+    expect(screen.queryByTestId("cloud-delete")).toBeNull();
   });
 
   it("offers Add agent on Switch cloud from the same read, where a box is available", async () => {

@@ -461,12 +461,14 @@ def _hosted_web_app(allowed: frozenset[str] = frozenset({SERVER})) -> TestClient
     box (ensure, lifecycle), mounted on a gateway app behind the middleware as
     Core mounts them (`mount_gateway_routes`, `create_gateway_app`). A refused
     request never reaches a route: no database is needed to show it."""
+    from switch_core.gateway.agents import router as agents_router
     from switch_core.gateway.hosted_machines import router as hosted_machines_router
     from switch_core.management.wiring import mount_gateway_routes
 
     gateway = FastAPI()
     mount_gateway_routes(gateway)
     gateway.include_router(hosted_machines_router)
+    gateway.include_router(agents_router, prefix="/agents")
     gateway.add_middleware(OriginCheckMiddleware, allowed=allowed)
     outer = FastAPI()
     outer.mount("/gateway", gateway)
@@ -479,6 +481,8 @@ HOSTED_WEB_CHANGES = [
     ("POST", "/gateway/hosted-machines/m-1/lifecycle"),
     ("PUT", "/gateway/management/controllers/c-1/provider-logins/claude"),
     ("DELETE", "/gateway/management/controllers/c-1/provider-logins/claude"),
+    # Deleting a cloud agent from Switch web (slice 5): the same route as every agent.
+    ("DELETE", "/gateway/agents/a-1"),
 ]
 
 

@@ -30,6 +30,7 @@ import { useAgents, useHostedV2 } from "../../data/hooks";
 import { useCloudView } from "../../data/hostedCloud";
 import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
 import { type CloudPresentation, cloudStatusFor } from "./cloud/cloudAgentState";
+import CloudDeleteDialog from "./cloud/CloudDeleteDialog";
 import CloudLoginsSection from "./cloud/CloudLoginsSection";
 import YourCloudPanel from "./cloud/YourCloudPanel";
 import CloudAgentDialog from "./CloudAgentDialog";
@@ -48,6 +49,8 @@ export default function AgentsPage() {
   const hostedV2 = useHostedV2() === true;
   const cloud = useCloudView(hostedV2);
   const [deleteTarget, setDeleteTarget] = useState<AgentSummary | null>(null);
+  // A cloud agent's delete takes its login into account (`CloudDeleteDialog`).
+  const [cloudDeleteTarget, setCloudDeleteTarget] = useState<AgentSummary | null>(null);
   const [deleteNotice, setDeleteNotice] = useState<{
     severity: "warning" | "error";
     text: string;
@@ -273,7 +276,9 @@ export default function AgentsPage() {
                 size="small"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setDeleteTarget(row);
+                  if (hostedV2 && cloud.machine?.controller_id && cloud.machine.agents.includes(row.id))
+                    setCloudDeleteTarget(row);
+                  else setDeleteTarget(row);
                 }}
               >
                 <DeleteOutline fontSize="small" />
@@ -283,7 +288,7 @@ export default function AgentsPage() {
         },
       },
     ],
-    [isAdmin, user?.id, parentNameById, hostedV2, cloudStatus],
+    [isAdmin, user?.id, parentNameById, hostedV2, cloudStatus, cloud.machine],
   );
 
   return (
@@ -410,6 +415,28 @@ export default function AgentsPage() {
           fillHeight
           onRowClick={(params) => navigate(`/agents/${params.id}`)}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
+        />
+      )}
+
+      {hostedV2 && cloud.machine?.controller_id && (
+        <CloudDeleteDialog
+          agent={cloudDeleteTarget}
+          controllerId={cloud.machine.controller_id}
+          onClose={() => setCloudDeleteTarget(null)}
+          onDeleted={(result) => {
+            setDeleteNotice(
+              result.bridge_cleanup_failures.length > 0
+                ? {
+                    severity: "warning",
+                    text:
+                      `Deleted, but its chat platform clean-up did not finish (` +
+                      `${result.bridge_cleanup_failures.join("; ")}). It will be finished when that bridge next starts.`,
+                  }
+                : null,
+            );
+            refetch();
+            cloud.refresh();
+          }}
         />
       )}
 
