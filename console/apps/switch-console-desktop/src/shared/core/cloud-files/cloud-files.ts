@@ -244,3 +244,10 @@ export function agentFolder(
 ): CloudFileEntry | null {
   return entries.find((entry) => entry.kind === 'folder' && entry.agent === agentName) ?? null;
 }
+
+/** Whether the person has at least one hosted agent: an agent on a v2 box. */
+export function hasHostedAgent(
+  machines: readonly { backend?: 'vm' | 'box'; agents: readonly string[] }[] | null | undefined
+): boolean {
+  return (machines ?? []).some((machine) => machine.backend === 'box' && machine.agents.length > 0);
+}
