@@ -40,6 +40,7 @@ vi.mock("../../components/DataTable", () => ({
   default: ({ rows, columns }: { rows: AgentSummary[]; columns: GridColDef<AgentSummary>[] }) => {
     const actions = columns.find((c) => c.field === "actions");
     const cloud = columns.find((c) => c.field === "cloud_status");
+    const name = columns.find((c) => c.field === "name");
     return (
       <div>
         {columns.map((c) => (
@@ -49,7 +50,11 @@ vi.mock("../../components/DataTable", () => ({
         ))}
         {rows.map((row) => (
           <div key={row.id} data-testid={`row-${row.name}`}>
-            {row.name}
+            <span data-testid="name">
+              {name?.valueGetter
+                ? String((name.valueGetter as (v: unknown, r: AgentSummary) => unknown)(row.name, row))
+                : row.name}
+            </span>
             {cloud && <span data-testid="cloud">{cloud.renderCell?.({ row } as never)}</span>}
             {actions?.renderCell?.({ row } as never)}
           </div>
@@ -125,12 +130,13 @@ describe("AgentsPage delete", () => {
 });
 
 describe("AgentsPage with hosted agents v2", () => {
-  const box = {
+  // A resting box with agents: Core's per-agent states show in the column.
+  const resting = {
     machine_id: "m-1",
-    state: "retained",
-    desired_state: "retained",
+    state: "stopped",
+    desired_state: "running",
     stop_reason: null,
-    sleeping: false,
+    sleeping: true,
     revision: 1,
     agents: ["a1", "a2"],
     controller_id: "c-1",
@@ -141,12 +147,14 @@ describe("AgentsPage with hosted agents v2", () => {
   };
   const others = [
     agent,
-    { ...agent, id: "a2", name: "stopped-one" },
+    { ...agent, id: "a2", name: "stopped-one", display_name: "Stopped one" },
     { ...agent, id: "a3", name: "<b>local</b>" },
   ] as AgentSummary[];
   let fetch: ReturnType<typeof vi.fn>;
+  let box: Record<string, unknown>;
 
   beforeEach(() => {
+    box = resting;
     vi.mocked(useAuth).mockReturnValue({
       user: { id: "u1" },
       canAdminTenant: false,
@@ -182,6 +190,40 @@ describe("AgentsPage with hosted agents v2", () => {
     expect(screen.getAllByTestId("column").map((c) => c.textContent)).not.toContain("Cloud");
     expect(screen.queryAllByTestId("cloud")).toHaveLength(0);
     expect(fetch).not.toHaveBeenCalled();
+    // The Name column is as upstream: the name, never the display name.
+    expect(within(screen.getByTestId("row-stopped-one")).getByTestId("name").textContent).toBe(
+      "stopped-one",
+    );
+  });
+
+  it("with v2 on, names each agent by its display name, as Console does", async () => {
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    await screen.findByText("Your cloud");
+    expect(within(screen.getByTestId("row-stopped-one")).getByTestId("name").textContent).toBe(
+      "Stopped one",
+    );
+    // No display name: the name.
+    expect(within(screen.getByTestId("row-notes-taker")).getByTestId("name").textContent).toBe(
+      "notes-taker",
+    );
+  });
+
+  it("says Stopped for every agent on a box the panel shows as Stopped", async () => {
+    box = { ...resting, state: "retained", desired_state: "retained", sleeping: false };
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    expect(await screen.findByText("Start it to add or use an agent.")).toBeTruthy();
+    await waitFor(() =>
+      expect(within(screen.getByTestId("row-notes-taker")).getByTestId("cloud").textContent).toBe(
+        "Stopped",
+      ),
+    );
+    expect(within(screen.getByTestId("row-stopped-one")).getByTestId("cloud").textContent).toBe(
+      "Stopped",
+    );
+    // An agent not on the box is left alone.
+    expect(within(screen.getByTestId("row-<b>local</b>")).getByTestId("cloud").textContent).toBe("—");
   });
 
   it("while the flag is still loading, shows and asks nothing", async () => {
@@ -198,7 +240,7 @@ describe("AgentsPage with hosted agents v2", () => {
     render(<AgentsPage />);
 
     expect(await screen.findByText("Your cloud")).toBeTruthy();
-    expect(screen.getByText("Start it to add or use an agent.")).toBeTruthy();
+    expect(screen.getByText("Starts when you message an agent.")).toBeTruthy();
     expect(screen.getAllByTestId("column").map((c) => c.textContent)).toContain("Cloud");
     await waitFor(() =>
       expect(within(screen.getByTestId("row-notes-taker")).getByTestId("cloud").textContent).toBe(

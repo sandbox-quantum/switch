@@ -132,15 +132,18 @@ export function replyAgo(iso: string, now: Date): string {
 
 /**
  * What the agents list shows for one agent: its state from Core, "Stopped"
- * for an agent on the box its owner stopped (Core leaves those out), or null
- * for an agent not on the person's cloud at all.
+ * for an agent on the box its owner stopped (Core leaves those out) or on a
+ * box the panel shows as Stopped (`boxStopped`), or null for an agent not on
+ * the person's cloud at all.
  */
 export function cloudStatusFor(
   agentId: string,
   states: ReadonlyMap<string, CloudAgent>,
   onBox: ReadonlySet<string>,
   now: Date,
+  boxStopped = false,
 ): CloudPresentation | null {
+  if (boxStopped && onBox.has(agentId)) return OWNER_STOPPED;
   const agent = states.get(agentId);
   if (agent) return cloudPresentation(agent, now);
   return onBox.has(agentId) ? OWNER_STOPPED : null;

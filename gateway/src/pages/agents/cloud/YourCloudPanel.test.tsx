@@ -71,6 +71,21 @@ describe("YourCloudPanel", () => {
     expect(hosted.ensureCloudMachine).not.toHaveBeenCalled();
   });
 
+  it("wakes a resting box with agents from a Wake button", async () => {
+    vi.mocked(hosted.ensureCloudMachine).mockResolvedValue(null);
+    render(<YourCloudPanel machine={box({ state: "stopped", sleeping: true })} onChanged={vi.fn()} />);
+    expect(screen.getByText("Starts when you message an agent.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Wake" }));
+    await waitFor(() => expect(hosted.ensureCloudMachine).toHaveBeenCalledOnce());
+    expect(hosted.startCloudMachine).not.toHaveBeenCalled();
+  });
+
+  it("shows no unlabelled bar under Ready", () => {
+    render(<YourCloudPanel machine={box()} onChanged={vi.fn()} />);
+    expect(screen.getByText("Room to work: Plenty of room")).toBeTruthy();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
   it("wakes a resting box with no agents", async () => {
     vi.mocked(hosted.ensureCloudMachine).mockResolvedValue(null);
     render(

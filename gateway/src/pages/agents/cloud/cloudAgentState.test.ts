@@ -91,6 +91,11 @@ describe("cloudStatusFor", () => {
     expect(cloudStatusFor("a2", states, new Set(["a1", "a2"]), now)).toBe(OWNER_STOPPED);
   });
 
+  it("says Stopped for every agent on a box the panel shows as Stopped", () => {
+    expect(cloudStatusFor("a1", states, new Set(["a1"]), now, true)).toBe(OWNER_STOPPED);
+    expect(cloudStatusFor("a3", states, new Set(["a1"]), now, true)).toBeNull();
+  });
+
   it("shows nothing for an agent not on the person's cloud", () => {
     expect(cloudStatusFor("a3", states, new Set(["a1"]), now)).toBeNull();
   });

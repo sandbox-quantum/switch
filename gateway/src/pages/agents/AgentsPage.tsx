@@ -30,6 +30,7 @@ import { useAgents, useHostedV2 } from "../../data/hooks";
 import { useCloudView } from "../../data/hostedCloud";
 import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
 import { type CloudPresentation, cloudStatusFor } from "./cloud/cloudAgentState";
+import { boxShowsStopped } from "./cloud/yourCloud";
 import CloudDeleteDialog from "./cloud/CloudDeleteDialog";
 import CloudLoginsSection from "./cloud/CloudLoginsSection";
 import YourCloudPanel from "./cloud/YourCloudPanel";
@@ -141,12 +142,13 @@ export default function AgentsPage() {
       if (
         q &&
         !a.name.toLowerCase().includes(q) &&
-        !a.description.toLowerCase().includes(q)
+        !a.description.toLowerCase().includes(q) &&
+        !(hostedV2 && a.display_name?.toLowerCase().includes(q))
       )
         return false;
       return true;
     });
-  }, [agents, ownerFilter, typeFilter, parentFilter, search]);
+  }, [agents, ownerFilter, typeFilter, parentFilter, search, hostedV2]);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -176,10 +178,11 @@ export default function AgentsPage() {
   // Each agent's state on the person's cloud; worked out once per read.
   const cloudStatus = useMemo(() => {
     const onBox = new Set(cloud.machine?.agents ?? []);
+    const boxStopped = cloud.machine !== null && boxShowsStopped(cloud.machine);
     const now = new Date();
     const map = new Map<string, CloudPresentation>();
     for (const agent of agents ?? []) {
-      const shown = cloudStatusFor(agent.id, cloud.agents, onBox, now);
+      const shown = cloudStatusFor(agent.id, cloud.agents, onBox, now, boxStopped);
       if (shown) map.set(agent.id, shown);
     }
     return map;
@@ -187,7 +190,21 @@ export default function AgentsPage() {
 
   const columns = useMemo<GridColDef<AgentSummary>[]>(
     () => [
-      { field: "name", headerName: "Name", flex: 1, minWidth: 200 },
+      {
+        field: "name",
+        headerName: "Name",
+        flex: 1,
+        minWidth: 200,
+        // With hosted agents v2 on, the label people read, as Console shows it:
+        // renaming a cloud agent changes only its display name (PM review).
+        // With it off, the column is as upstream.
+        ...(hostedV2
+          ? {
+              valueGetter: (_value: unknown, row: AgentSummary) =>
+                row.display_name || row.name,
+            }
+          : {}),
+      },
       ...(hostedV2
         ? [
             {

@@ -2,7 +2,7 @@
 // "Your cloud" card shows it. Only rendered with hosted agents v2 on and a box
 // to show; every name and message here is plain React text.
 
-import { Alert, Box, Button, LinearProgress, Paper, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { ApiError, errorText } from "../../../data/api";
 import {
@@ -80,7 +80,11 @@ export default function YourCloudPanel({
               disabled={pending}
               onClick={() => void startBox(cloud.start!)}
             >
-              {pending ? "Starting…" : "Start"}
+              {pending
+                ? cloud.startLabel === "Wake"
+                  ? "Waking…"
+                  : "Starting…"
+                : (cloud.startLabel ?? "Start")}
             </Button>
           )}
         </Box>
@@ -90,16 +94,10 @@ export default function YourCloudPanel({
             {cloud.heading}
           </Typography>
           {cloud.room && (
-            <>
-              <LinearProgress
-                variant="determinate"
-                value={cloud.room.usedPercent}
-                aria-label="Room to work"
-              />
-              <Typography variant="body2" color="text.secondary">
-                Room to work: {cloud.room.label}
-              </Typography>
-            </>
+            // No bar: "Room to work" and the awake count already say it (PM review).
+            <Typography variant="body2" color="text.secondary">
+              Room to work: {cloud.room.label}
+            </Typography>
           )}
           {cloud.awake && (
             <Typography variant="body2" color="text.secondary">

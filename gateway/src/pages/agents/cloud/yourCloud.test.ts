@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CloudMachine } from "../../../data/hostedCloud";
-import { machineProblem, startBlocked, yourCloudView } from "./yourCloud";
+import { boxShowsStopped, machineProblem, startBlocked, yourCloudView } from "./yourCloud";
 
 const time = (at: Date) => at.toISOString().slice(11, 16);
 
@@ -60,12 +60,6 @@ describe("yourCloudView", () => {
       "ensure",
     ],
     [
-      { sleeping: true, state: "stopped" as const },
-      "Resting",
-      "Starts when you message an agent.",
-      undefined,
-    ],
-    [
       { state: "stopped" as const, desired_state: "running" as const },
       "Starting…",
       "Usually ready in about two minutes.",
@@ -85,6 +79,29 @@ describe("yourCloudView", () => {
       line,
       ...(start ? { start } : {}),
     });
+  });
+
+  it("offers Wake on a resting box with agents, and Start on one with none", () => {
+    expect(yourCloudView(box({ sleeping: true, state: "stopped" }), time)).toEqual({
+      resting: true,
+      heading: "Resting",
+      line: "Starts when you message an agent.",
+      start: "ensure",
+      startLabel: "Wake",
+    });
+    const empty = yourCloudView(box({ sleeping: true, state: "stopped", agents: [] }), time);
+    expect(empty.resting && empty.startLabel).toBeUndefined();
+  });
+
+  it("tells the agents list to say Stopped only when the panel does", () => {
+    expect(boxShowsStopped(box({ state: "retained" }))).toBe(true);
+    expect(boxShowsStopped(box({ state: "stopped", desired_state: "stopped" }))).toBe(true);
+    expect(boxShowsStopped(box({ state: "error" }))).toBe(true);
+    expect(boxShowsStopped(box())).toBe(false);
+    expect(boxShowsStopped(box({ sleeping: true, state: "stopped" }))).toBe(false);
+    expect(boxShowsStopped(box({ state: "queued" }))).toBe(false);
+    expect(boxShowsStopped(box({ state: "retained", stop_reason: "paused" }))).toBe(false);
+    expect(boxShowsStopped(box({ state: "stopped", stop_reason: "turned_off" }))).toBe(false);
   });
 
   it("never says Ready for a box that is put away or stopped", () => {
