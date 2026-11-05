@@ -484,7 +484,7 @@ class TestResourcePermissions:
 
             assert (listed.can_edit, listed.can_manage) == (True, True)
 
-    async def test_a_rooms_own_document_cannot_be_transferred(
+    async def test_a_rooms_own_document_is_not_the_librarys_to_change(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
@@ -506,7 +506,12 @@ class TestResourcePermissions:
                 False,
             )
 
-            assert (detail.can_manage, detail.can_transfer) == (True, False)
+            # It is changed and removed in its room (`can_remove` there).
+            assert (detail.can_edit, detail.can_manage, detail.can_transfer) == (
+                False,
+                False,
+                False,
+            )
 
 
 class TestRoomTransfer:

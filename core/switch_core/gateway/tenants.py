@@ -868,6 +868,8 @@ async def revoke_invitation(
         invitation = await invitation_store.revoke(session, invitation_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvitationNotUsableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await record_audit_event(
         session,
         tenant_id=tenant_id,

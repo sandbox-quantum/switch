@@ -1467,6 +1467,9 @@ class ResourceService:
         ref = await self._references.get(session, reference_id)
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
+        # So did whoever adds it: a package lists its references to everyone
+        # who may read it, so adding one is showing it to them.
+        require(Principal(user_id, is_admin), "read", ref)
         # The package owner must be able to read the reference being added.
         if not can(Principal(pkg.owner_id, False), "read", ref):
             raise PermissionError(
@@ -1514,6 +1517,8 @@ class ResourceService:
             raise ValueError(
                 f"Document {document_id} is room-scoped and cannot be added to a package"
             )
+        # As for a reference: adding it shows it to every reader of the package.
+        require(Principal(user_id, is_admin), "read", doc)
         if not can(Principal(pkg.owner_id, False), "read", doc):
             raise PermissionError(
                 f"Package owner cannot include private document {document_id}"

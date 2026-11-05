@@ -105,6 +105,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _refuse_fixed_membership(room: Room) -> None:
+    """Raise 409 for a direct or group conversation. Who is in one is fixed by
+    its platform, and a direct one is one person and one agent by rule
+    (`RoomService`), so its agents and people are not changed through these
+    routes. A Switch Console chat changes its own through `/chats`."""
+    if room.channel_type in ("direct", "group"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This is a {room.channel_type} conversation: who is in it is "
+                "fixed by its platform, so its agents and people can't be "
+                "changed here."
+            ),
+        )
+
+
 async def _require_room_released(
     session: AsyncSession,
     room_store: RoomStore,
@@ -1192,7 +1208,9 @@ async def post_room_agents(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    await _require_room_released(session, room_store, room_id, principal, "write")
+    _refuse_fixed_membership(
+        await _require_room_released(session, room_store, room_id, principal, "write")
+    )
     try:
         await room_service.add_agents_to_room(
             room_id,
@@ -1267,7 +1285,9 @@ async def delete_room_agent(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    await _require_room_released(session, room_store, room_id, principal, "write")
+    _refuse_fixed_membership(
+        await _require_room_released(session, room_store, room_id, principal, "write")
+    )
     try:
         await room_service.remove_agents_from_room(room_id, [agent_id])
     except ValueError as e:
@@ -1301,7 +1321,9 @@ async def post_room_users(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    await _require_room_released(session, room_store, room_id, principal, "write")
+    _refuse_fixed_membership(
+        await _require_room_released(session, room_store, room_id, principal, "write")
+    )
     try:
         await room_service.add_users_to_room(room_id, req.user_names)
     except ValueError as e:

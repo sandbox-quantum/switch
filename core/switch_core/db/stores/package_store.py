@@ -1,4 +1,5 @@
-from sqlalchemy import delete, func, insert, or_, select
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
@@ -102,8 +103,14 @@ class PackageStore:
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, package_id: str
     ) -> None:
+        """Attach a package to a room. Idempotent, as attaching a reference
+        is: attaching one that is already attached is a no-op."""
         await session.execute(
-            insert(room_packages).values(room_id=room_id, package_id=package_id)
+            pg_insert(room_packages)
+            .values(room_id=room_id, package_id=package_id)
+            .on_conflict_do_nothing(
+                index_elements=[room_packages.c.room_id, room_packages.c.package_id]
+            )
         )
         await session.flush()
 
@@ -221,9 +228,15 @@ class PackageStore:
     async def add_reference(
         self, session: AsyncSession, package_id: str, reference_id: str
     ) -> None:
+        """Idempotent: adding a reference the package holds is a no-op."""
         await session.execute(
-            insert(package_references).values(
-                package_id=package_id, reference_id=reference_id
+            pg_insert(package_references)
+            .values(package_id=package_id, reference_id=reference_id)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    package_references.c.package_id,
+                    package_references.c.reference_id,
+                ]
             )
         )
         await session.flush()
@@ -242,9 +255,15 @@ class PackageStore:
     async def add_document(
         self, session: AsyncSession, package_id: str, document_id: str
     ) -> None:
+        """Idempotent: adding a document the package holds is a no-op."""
         await session.execute(
-            insert(package_documents).values(
-                package_id=package_id, document_id=document_id
+            pg_insert(package_documents)
+            .values(package_id=package_id, document_id=document_id)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    package_documents.c.package_id,
+                    package_documents.c.document_id,
+                ]
             )
         )
         await session.flush()

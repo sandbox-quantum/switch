@@ -1,4 +1,5 @@
-from sqlalchemy import and_, delete, func, insert, or_, select
+from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Document, Room, room_documents
@@ -100,8 +101,14 @@ class DocumentStore:
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, document_id: str
     ) -> None:
+        """Attach a document to a room. Idempotent, as attaching a reference
+        is: attaching one that is already attached is a no-op."""
         await session.execute(
-            insert(room_documents).values(room_id=room_id, document_id=document_id)
+            pg_insert(room_documents)
+            .values(room_id=room_id, document_id=document_id)
+            .on_conflict_do_nothing(
+                index_elements=[room_documents.c.room_id, room_documents.c.document_id]
+            )
         )
         await session.flush()
 

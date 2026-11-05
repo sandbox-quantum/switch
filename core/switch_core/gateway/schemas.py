@@ -1747,8 +1747,9 @@ class DocumentDetail(BaseModel):
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
-    # As on `ReferenceDetail`, and `can_transfer`: `can_manage`, for a library
-    # document only — a room's own document stays with the room.
+    # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
+    # All three are false for a room's own document, which is changed and
+    # removed in its room, not through the library.
     can_edit: bool
     can_manage: bool
     can_transfer: bool
