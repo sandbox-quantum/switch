@@ -155,9 +155,11 @@ does, and there is no polling tool to call.
   pick wrong: if the message is not really yours to answer (people talking to
   each other, or something another agent covers), stay silent and post
   nothing. In such a room, replies in a thread go to the decision service too,
-  rather than to the agent that spoke there last, and answering a routed
-  message does not make the person's next untagged message a follow-up to you:
-  it is decided again. `!auto-route off` turns it off, and `!auto-route` on its
+  rather than to the agent that spoke there last (so while the decision
+  service is down, a reply in your thread that doesn't tag you reaches you
+  only if you are the room's triage agent, and otherwise nobody), and
+  answering a routed message does not make the person's next untagged message
+  a follow-up to you: it is decided again. `!auto-route off` turns it off, and `!auto-route` on its
   own says which it is and whether it can act. Anyone who can post in the
   room may turn it on or off, from the room or from its toggle in Switch
   Console or on the gateway's room page (both need write access to the room).

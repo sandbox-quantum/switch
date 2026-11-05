@@ -156,6 +156,13 @@ a failure. A decision of nobody is not.
   so it knows why it got it. It cannot be the room's assigned agent, which
   already gets every untagged message before auto-route is asked.
   `!auto-route fallback off` clears it.
+- **Thread replies too.** In a room with auto-route on, a reply in a thread
+  is decided like any other untagged message: the follow-up rule that sends
+  it to the agent that spoke there last is skipped. So while the backend is
+  failing, a reply in an agent's thread that doesn't tag it goes to the
+  room's triage agent if one is named, and otherwise to nobody, with the
+  notice above; in a room without auto-route it would have reached that
+  agent. People reach it meanwhile by tagging it, which works as always.
 
 ### Across a restart
 

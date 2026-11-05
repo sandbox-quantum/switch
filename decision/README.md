@@ -183,6 +183,33 @@ To use Haiku only, no model server is needed: set
 `DECISION_BACKEND=anthropic` and `ANTHROPIC_API_KEY`, or leave the default
 backend and send the override headers per request.
 
+## Licences of the Strands image
+
+`switch-decision-strands` installs `strands-decider` (Apache-2.0) and every
+dependency pinned by hash in `model-servers/strands/requirements.txt`. Most
+are under permissive licences (Apache-2.0, MIT, BSD). Two groups are worth
+naming, and licence scanners flag the second:
+
+- **PyTorch** (`torch`): BSD-3-Clause.
+- **NVIDIA's CUDA runtime libraries**, the `nvidia-*` wheels PyTorch depends
+  on (cuBLAS, cuDNN, cuFFT, cuFile, cuRAND, cuSOLVER, cuSPARSE, NVRTC, CUPTI,
+  NVTX, NCCL and the rest): proprietary, under NVIDIA's end user licence
+  agreement for CUDA, which allows them to be redistributed as part of an
+  application that uses them. Their package metadata says "Other/Proprietary
+  License", which is what the scanners report. The base image,
+  `nvidia/cuda:13.0.3-base-ubuntu24.04`, comes under NVIDIA's terms too.
+
+**The decision: ship them.** The model server needs CUDA to run on a GPU, and
+these are NVIDIA's own runtime packages, used unmodified and in the way the
+EULA provides for. Nothing of them is in Switch's source: this repository
+names them, pinned by version and hash, and nothing more. The image is built
+by Switch's release CI and published to its registry, and a deployment pulls
+it at deploy time, in the same way it pulls the model weights from Hugging
+Face; neither is vendored into the source. Anyone who can't accept NVIDIA's
+terms can run without this image: Qwen on llama.cpp's CPU image (compose's
+`decision` profile), or Haiku with no model server
+(`decision.modelServer.enabled: false` in the chart).
+
 ## Evaluate
 
 `eval/` holds two scenario sets: `scenarios.json` (15 easy cases, three agents)
