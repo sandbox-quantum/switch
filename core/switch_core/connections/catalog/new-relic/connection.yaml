@@ -1,7 +1,123 @@
 slug: new-relic
 name: New Relic
 category: Observability
-description: Query New Relic telemetry and alerts.
-enabled: false
+description: Query New Relic telemetry, traces, logs and alerts, as you.
+enabled: true
+publisher: New Relic
+links:
+  documentation: https://docs.newrelic.com/docs/apis/mcp/
+  support: https://support.newrelic.com/
+  privacy: https://newrelic.com/termsandconditions/privacy/
+adapter: oauth
 auth:
   type: oauth
+  # Purely declarative today (loader.py); nothing in the codebase branches on
+  # rotating vs reusable. New Relic's authorization server answers Ory
+  # Hydra's own endpoint shapes (/oauth2/auth, /oauth2/token, /oauth2/revoke,
+  # /oauth2/sessions/logout), and Hydra rotates refresh tokens by default, so
+  # this is set to the conservative assumption. Not measured live: the org
+  # used for verification has the New Relic MCP Server feature switched off
+  # in Feature Control Manager (see below), which refuses the authorize step
+  # before a token is ever issued.
+  refresh: rotating
+  oauth:
+    # Measured live, 2026-11-05: dcr.service.newrelic.com/register returns
+    # 200 (every attempt; not 201, which Core's own register() already
+    # accepts) with token_endpoint_auth_method: none, and stores exactly the
+    # redirect_uris sent, ending in /callback (below).
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39241, 39242, 39243, 39244, 39245]
+    # Measured live, 2026-11-05: an authorize request against a redirect_uri
+    # ending in /callback, registered through the DCR above, is accepted —
+    # it reaches the account's Feature Control Manager check (below), never
+    # an invalid_request about the redirect. Core's own loopback default
+    # (/switch-services/callback) was not tried in this session; the report
+    # that New Relic refuses every loopback path but an empty one or exactly
+    # /callback (invalid_request, "redirect_uri does not match any of the
+    # pre-registered redirect urls") is from earlier research on issue #823,
+    # not independently re-measured here.
+    loopback_callback_path: /callback
+    # Read from the authorization server's own metadata (a public,
+    # unauthenticated endpoint), 2026-11-05: revocation_endpoint is
+    # published, so Core revokes there rather than at a catalog-named URL.
+    # Not measured whether revoking there actually ends the sign-in — no
+    # token was ever issued to revoke (see Feature Control Manager, below).
+    revocation_discovered: true
+  identity:
+    # Per the maintainer's direction on issue #823: userinfo, not NerdGraph.
+    # From New Relic's OAuth metadata/docs, not yet measured: this address is
+    # published as the userinfo_endpoint in the authorization server's
+    # metadata, but the GET itself, and the claim names it actually returns,
+    # were never reached live — no token was ever issued to call it with.
+    url: https://oauth2.service.newrelic.com/userinfo
+    account_id: sub
+    label: email
+# From New Relic's docs, not yet measured: New Relic does not document an
+# access token lifetime. 3600s is the conservative default for a Hydra
+# deployment (the authorization server's endpoint shapes match Ory Hydra's),
+# not a New Relic one, and is set low on purpose: a cap that is too short
+# only means Switch asks again sooner (safe), while one that is too long is
+# the failure that matters. Needs a live measurement once Feature Control
+# Manager allows a token through.
+token: { kind: pass_through, max_lifetime: 3600 }
+# Prerequisite, measured live, 2026-11-05: an organization admin must turn
+# on "New Relic MCP Server" under Feature Control Manager before any
+# account in the organization can use MCP at all, OAuth or key. Authorizing
+# without it fails with access_denied and
+# "Your administrator has disabled access to this application... Access to
+# New Relic MCP Server can be enabled by your administrator through New
+# Relic Feature Control Manager." On the free account used for this gate,
+# "New Relic MCP Server" is not listed under Feature Control or under
+# Previews & Trials at all, so it could not be turned on to test further;
+# it may simply not be offered on a free plan. From New Relic's docs
+# (docs.newrelic.com/docs/agentic-ai/mcp/overview/), not yet measured:
+# "Local Clients" is a second toggle, on by default; "API Keys" is a third,
+# separate toggle for the api_key route only and does not gate this OAuth
+# connector. The role that can grant a person's group access to the MCP
+# server once the org-wide toggle is on is documented as Organization
+# Manager or Authentication Domain Manager; which role can flip the Feature
+# Control Manager toggle itself is not stated in the docs.
+#
+# Several of New Relic's documented MCP tools (docs.newrelic.com/docs/
+# agentic-ai/mcp/tool-reference/) are OAuth-only and refused over an api_key
+# connection: natural_language_to_nrql_query, generate_alert_insights_report,
+# generate_user_impact_report, analyze_deployment_impact and
+# analyze_github_newrelic_gaps. A further group (search_traces,
+# analyze_trace_anomaly, analyze_service_dependencies and the three
+# analyze_kafka_* tools) are preview tools, OAuth-only and off by default
+# behind their own Feature Control Manager toggles. Tools pass through
+# unclassified (as every oauth entry's do), so what a session actually sees
+# is whatever the organization has turned on.
+mcp:
+  servers:
+    # US only: the loader's mcp.servers.url is a fixed string, with no
+    # per-connection choice field for an oauth entry (that mechanism exists
+    # only for auth.api_key's templates), so EU (mcp.eu.newrelic.com) and JP
+    # (mcp.jp.newrelic.com) need either a second catalog entry or a loader
+    # change to template an oauth entry's server URL from a choice. Flagged
+    # as a follow-up rather than built here.
+    - { name: new-relic, url: "https://mcp.newrelic.com/mcp/" }
+access:
+  read:
+    scopes:
+      # openid: for the userinfo identity call. observability:read: the one
+      # data-access scope New Relic's protected-resource metadata advertises
+      # for its MCP server. offline_access: a refresh token. Measured live,
+      # 2026-11-05: requesting all three together was accepted through DCR
+      # and through the authorize step (no invalid_scope). From New Relic's
+      # docs, not yet measured: whether each scope requested here actually
+      # survives to the granted token — DCR's own stored scope has been
+      # reported elsewhere to omit openid, and consent itself was never
+      # reached in this session (see Feature Control Manager, below), so
+      # what New Relic actually grants for this request is unconfirmed.
+      - openid
+      - observability:read
+      - offline_access
+  # No write level: every one of the 41 tools New Relic documents
+  # (docs.newrelic.com/docs/agentic-ai/mcp/tool-reference/) reads or analyzes
+  # data; none creates or changes anything. The protected-resource metadata
+  # does advertise dashboards:modify and alerts:modify, so a write scope
+  # exists at the vendor, but nothing offered over MCP would use it, so it is
+  # not asked for.
+tools: { mode: pass_through }

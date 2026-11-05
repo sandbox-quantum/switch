@@ -19,7 +19,6 @@ PLACEHOLDERS = {
     "asana",
     "bitbucket",
     "microsoft-365",
-    "new-relic",
     "salesforce",
     "box",
     "canva",
@@ -33,6 +32,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "new-relic",
         "google-workspace",
         "gitlab",
         "notion",
@@ -47,6 +47,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "gitlab",
         "google-workspace",
         "linear",
+        "new-relic",
         "notion",
         "sentry",
     ]
@@ -57,6 +58,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
+    assert "SKILL.md" in CATALOG["new-relic"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
     assert "SKILL.md" in CATALOG["linear"].skill_files
@@ -402,6 +404,56 @@ def test_the_shipped_notion_entry_signs_in_as_the_spike_found_it_must():
     assert identity.account_id == ["workspace_id", "user_id"]
     # The answer names nothing by name, so the workspace's id tells two apart.
     assert identity.label == "workspace_id"
+
+
+def test_the_shipped_new_relic_entry():
+    definition = CATALOG["new-relic"].definition
+    assert definition.publisher == "New Relic"
+    assert definition.links is not None
+    assert definition.links.documentation == "https://docs.newrelic.com/docs/apis/mcp/"
+    assert definition.links.support == "https://support.newrelic.com/"
+    assert (
+        definition.links.privacy == "https://newrelic.com/termsandconditions/privacy/"
+    )
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    # Measured live, 2026-11-05: New Relic's authorization server accepts an
+    # authorize request against a redirect_uri ending in /callback.
+    assert oauth.loopback_callback_path == "/callback"
+    assert oauth.loopback_ports == [39241, 39242, 39243, 39244, 39245]
+    assert oauth.revocation_discovered is True
+    assert (oauth.revocation_url, oauth.remove_access) == (None, None)
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url == "https://oauth2.service.newrelic.com/userinfo"
+    )
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "sub",
+        "email",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("new-relic", "https://mcp.newrelic.com/mcp/")
+    ]
+    assert definition.access is not None
+    # Read-only: nothing New Relic documents over MCP writes anything.
+    assert definition.access.write is None
+    assert definition.access.read.scopes == [
+        "openid",
+        "observability:read",
+        "offline_access",
+    ]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 RESTRICTED_DRIVE = {
