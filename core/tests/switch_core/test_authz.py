@@ -305,10 +305,10 @@ class TestCanDeleteWorkspace:
 
 class TestCanDeleteApiKey:
     def test_the_owner_may_delete_their_own_key(self) -> None:
-        assert can_delete_api_key(ALICE, "u-alice", is_agent_key=False)
+        assert can_delete_api_key(ALICE, "u-alice", an_agent_signs_in_with_it=False)
 
-    def test_not_an_agents_key(self) -> None:
-        assert not can_delete_api_key(ALICE, "u-alice", is_agent_key=True)
+    def test_not_one_an_agent_still_signs_in_with(self) -> None:
+        assert not can_delete_api_key(ALICE, "u-alice", an_agent_signs_in_with_it=True)
 
     def test_not_someone_elses_even_as_an_admin(self) -> None:
-        assert not can_delete_api_key(ADMIN, "u-alice", is_agent_key=False)
+        assert not can_delete_api_key(ADMIN, "u-alice", an_agent_signs_in_with_it=False)

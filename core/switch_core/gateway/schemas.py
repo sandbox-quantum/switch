@@ -644,6 +644,11 @@ class ApiKeyDetail(BaseModel):
     type: str
     key_prefix: str
     created_at: str
+    # What the caller may do with it: reveal and copy it, their own only; and
+    # delete it, their own unless an agent still signs in with it
+    # (`authz.can_delete_api_key`).
+    can_reveal: bool
+    can_delete: bool
 
 
 class CreateApiKeyResponse(BaseModel):

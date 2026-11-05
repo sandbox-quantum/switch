@@ -6,11 +6,13 @@ import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import Principal, can_delete_api_key, owns
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import HASH_ONLY_KEY_TYPES, ApiKey, User
+from switch_core.db.models import HASH_ONLY_KEY_TYPES, Agent, ApiKey, User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
@@ -57,6 +59,19 @@ async def list_api_keys(
         for k in await api_key_store.get_by_user(session, user.id)
         if k.type not in HASH_ONLY_KEY_TYPES
     ]
+    agent_keys = [k.id for k in keys if k.type == "agent"]
+    signed_in_with = (
+        set(
+            await session.scalars(
+                select(Agent.api_key_id).where(Agent.api_key_id.in_(agent_keys))
+            )
+        )
+        if agent_keys
+        else set()
+    )
+    # The caller's own keys, whatever their role: administering the workspace
+    # gives no reach over anyone's keys here.
+    principal = Principal(user.id, False)
     return [
         ApiKeyDetail(
             id=k.id,
@@ -64,6 +79,10 @@ async def list_api_keys(
             type=k.type,
             key_prefix=k.key_hash[:12],
             created_at=str(k.created_at),
+            can_reveal=owns(principal, k.user_id),
+            can_delete=can_delete_api_key(
+                principal, k.user_id, an_agent_signs_in_with_it=k.id in signed_in_with
+            ),
         )
         for k in keys
     ]
@@ -151,6 +170,17 @@ async def delete_api_key(
         raise HTTPException(status_code=404, detail="API key not found")
     if key.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this key")
+    if key.type == "agent" and await session.scalar(
+        select(Agent.id).where(Agent.api_key_id == key.id)
+    ):
+        # The agent row refers to it, so deleting it would fail anyway.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This is an agent's own key, which it still signs in with. "
+                "Delete the agent to retire it."
+            ),
+        )
     key_hash = key.key_hash
     await record_audit_event(
         session,

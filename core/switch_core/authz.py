@@ -269,11 +269,12 @@ def can_delete_workspace(*, tenant_role: str | None, is_default: bool) -> bool:
 
 
 def can_delete_api_key(
-    principal: Principal, owner_id: str | None, *, is_agent_key: bool
+    principal: Principal, owner_id: str | None, *, an_agent_signs_in_with_it: bool
 ) -> bool:
-    """Whether `principal` may delete an API key: their own, unless it is an
-    agent's. An agent's key goes with the agent, which still uses it."""
-    return owns(principal, owner_id) and not is_agent_key
+    """Whether `principal` may delete an API key: their own, unless an agent
+    still signs in with it. That key goes with its agent; once the agent is
+    deleted, what is left of it may go too."""
+    return owns(principal, owner_id) and not an_agent_signs_in_with_it
 
 
 def require_group_filing(is_admin: bool) -> None:
