@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.policy import default
@@ -9,6 +11,7 @@ import pytest
 from switch_core.bridges.collaboration.email.adapter import (
     EmailAdapter,
     EmailConnectionConfig,
+    _announces_mail,
     _body_parts,
     _channel_id,
     _decode_thread_ref,
@@ -72,6 +75,10 @@ def _message(
         message["In-Reply-To"] = references.split()[-1]
     message.set_content(body)
     return message.as_bytes()
+
+
+async def _ignore_app_join(_):
+    return None
 
 
 def test_email_is_registered_and_declares_mailbox_capabilities() -> None:
@@ -165,10 +172,13 @@ def test_outbound_html_is_formatted_and_rejects_unsafe_links() -> None:
 
 @pytest.mark.asyncio
 async def test_email_dispatch_maps_thread_and_attachments_to_room_message() -> None:
-    adapter = EmailAdapter(config=_config())
+    adapter = EmailAdapter(
+        config=_config(allowed_senders="mina@example.test,other@example.test")
+    )
     adapter.set_listening(False)
     received = []
     commands = []
+    rooms = []
 
     async def on_message(value):
         received.append(value)
@@ -176,10 +186,17 @@ async def test_email_dispatch_maps_thread_and_attachments_to_room_message() -> N
     async def on_command(value):
         commands.append(value)
 
-    async def unused(_):
-        pytest.fail("unexpected join callback")
+    async def on_app_join(value):
+        rooms.append(value)
 
-    await adapter.start(on_message, on_command, unused, unused, unused)
+    async def no_listen():
+        return None
+
+    adapter._listen = no_listen
+    adapter.set_listening(True)
+    await adapter.start(
+        on_message, on_command, _ignore_app_join, _ignore_app_join, on_app_join
+    )
     await adapter._dispatch_email("7", "42", _message(body="New answer"))
     await adapter._dispatch_email(
         "7",
@@ -196,14 +213,24 @@ async def test_email_dispatch_maps_thread_and_attachments_to_room_message() -> N
         "44",
         _message(subject="Different topic", body="Another root"),
     )
+    await adapter._dispatch_email(
+        "7",
+        "45",
+        _message(sender="Other <other@example.test>", body="From another sender"),
+    )
     assert received[0].channel_id == received[1].channel_id
     assert received[0].channel_id == received[2].channel_id
+    assert received[0].channel_id == received[3].channel_id
     assert received[0].root_id is None
     assert received[1].root_id is not None
     assert received[0].content == "New answer"
     assert received[1].content == "Follow up"
     assert received[0].sender_id == "mina@example.test"
+    assert received[3].sender_id == "other@example.test"
     assert received[0].message_ref != received[2].message_ref
+    assert len(rooms) == 1
+    assert rooms[0].channel_id == _channel_id("switch@example.test")
+    adapter.set_listening(False)
     await adapter.stop()
 
 
@@ -221,7 +248,7 @@ async def test_email_threaded_approval_and_question_answers_reach_shared_answer_
     async def unused(_):
         pytest.fail("unexpected callback")
 
-    await adapter.start(on_message, unused, unused, unused, unused)
+    await adapter.start(on_message, unused, unused, unused, _ignore_app_join)
     await adapter._dispatch_email(
         "7",
         "44",
@@ -261,7 +288,7 @@ async def test_email_commands_are_dispatched_as_switch_commands() -> None:
     async def unused(_):
         pytest.fail("unexpected callback")
 
-    await adapter.start(unused, on_command, unused, unused, unused)
+    await adapter.start(unused, on_command, unused, unused, _ignore_app_join)
     await adapter._dispatch_email("1", "5", _message(body="!help rooms"))
     assert commands[0].command == "help"
     assert commands[0].args == "rooms"
@@ -280,7 +307,7 @@ async def test_email_rejects_missing_or_untrusted_sender_authentication() -> Non
     async def unused(_):
         pytest.fail("unexpected callback")
 
-    await adapter.start(on_message, unused, unused, unused, unused)
+    await adapter.start(on_message, unused, unused, unused, _ignore_app_join)
     await adapter._dispatch_email(
         "7",
         "42",
@@ -339,7 +366,7 @@ async def test_email_rejects_missing_or_untrusted_sender_authentication() -> Non
     )
     adapter.set_listening(False)
     received.clear()
-    await adapter.start(on_message, unused, unused, unused, unused)
+    await adapter.start(on_message, unused, unused, unused, _ignore_app_join)
     await adapter._dispatch_email(
         "7",
         "47",
@@ -438,9 +465,111 @@ async def test_quiet_pod_does_not_start_the_imap_poller() -> None:
         return None
 
     adapter.set_listening(False)
-    await adapter.start(unused, unused, unused, unused, unused)
-    assert adapter._poll_task is None
+    await adapter.start(unused, unused, unused, unused, _ignore_app_join)
+    assert adapter._listener is None
     await adapter.stop()
+
+
+def test_email_connection_time_is_persisted_once() -> None:
+    config = _config()
+    prepared = asyncio.run(EmailAdapter.prepare_config(config.model_dump()))
+    assert prepared["connected_at"]
+    assert datetime.fromisoformat(prepared["connected_at"]).tzinfo == UTC
+    assert asyncio.run(EmailAdapter.prepare_config(prepared)) == prepared
+
+
+def test_handled_mail_uses_private_keyword_when_available(caplog) -> None:
+    adapter = EmailAdapter(config=_config())
+    assert adapter._handled_flag({b"PERMANENTFLAGS": (b"\\Seen", b"\\*")}) == (
+        b"$SwitchSeen"
+    )
+    assert adapter._handled_flag({b"PERMANENTFLAGS": (b"\\Seen",)}) == b"\\Seen"
+    assert "marked read" in caplog.text
+
+
+def test_idle_response_detection() -> None:
+    assert _announces_mail((3, b"EXISTS"))
+    assert _announces_mail((b"1", b"RECENT"))
+    assert not _announces_mail((3, b"FETCH"))
+    assert not _announces_mail(b"EXISTS")
+
+
+def test_imap_idle_wakes_on_new_mail_and_closes_the_idle_window(monkeypatch) -> None:
+    class FakeIMAP:
+        def __init__(self) -> None:
+            self.started = False
+            self.finished = False
+
+        def idle(self) -> None:
+            self.started = True
+
+        def idle_check(self, timeout: int) -> list[tuple[int, bytes]]:
+            assert timeout == 15
+            return [(1, b"EXISTS")]
+
+        def idle_done(self) -> None:
+            self.finished = True
+
+    client = FakeIMAP()
+    adapter = EmailAdapter(config=_config())
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.email.adapter._IDLE_SECONDS", 30
+    )
+    adapter._idle(client)
+    assert client.started
+    assert client.finished
+
+
+@pytest.mark.asyncio
+async def test_imap_cursor_marks_only_old_or_successfully_delivered_messages() -> None:
+    adapter = EmailAdapter(config=_config(connected_at="2026-11-05T00:00:00+00:00"))
+    adapter.set_listening(False)
+    delivered = []
+
+    class FakeIMAP:
+        def __init__(self) -> None:
+            self.search_criteria = None
+            self.flags = []
+
+        def search(self, criteria):
+            self.search_criteria = criteria
+            return [1, 2, 3]
+
+        def fetch(self, uids, fields):
+            dates = {
+                1: datetime(2026, 11, 4, tzinfo=UTC),
+                2: datetime(2026, 11, 5, 1, tzinfo=UTC),
+                3: datetime(2026, 11, 5, 2, tzinfo=UTC),
+            }
+            return {
+                uid: {
+                    b"BODY[]": b"test",
+                    b"INTERNALDATE": dates[uid],
+                }
+                for uid in uids
+            }
+
+        def add_flags(self, uids, flags):
+            self.flags.extend((uid, flag) for uid in uids for flag in flags)
+
+    client = FakeIMAP()
+
+    async def dispatch(uidvalidity, uid, raw):
+        delivered.append(uid)
+        if uid == "3":
+            raise RuntimeError("transport unavailable")
+
+    adapter._dispatch_email = dispatch
+    retry = await adapter._handle_waiting(
+        client,
+        b"$SwitchSeen",
+        {b"UIDVALIDITY": 12, b"PERMANENTFLAGS": (b"\\*",)},
+    )
+
+    assert retry is True
+    assert client.search_criteria == ["UNKEYWORD", b"$SwitchSeen"]
+    assert delivered == ["2", "3"]
+    assert client.flags == [(1, b"$SwitchSeen"), (2, b"$SwitchSeen")]
 
 
 def test_email_reply_uses_smtp_from_agent_and_sets_thread_headers(

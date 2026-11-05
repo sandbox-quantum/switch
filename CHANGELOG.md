@@ -230,6 +230,11 @@ version of their own to them without also giving them a release of their own.
   making someone Org Admin is done in WorkOS, and taking it away in Switch
   lasts only while WorkOS agrees. Adding someone new is done in WorkOS either
   way. Setup and limits: `docs/old/workos-directory.md`.
+- **Email bridges create one room per mailbox and wait on IMAP IDLE when
+  available.** The lease holder falls back to polling on servers without IDLE,
+  marks delivered mail with a durable IMAP keyword where supported to preserve
+  unread state; older mail is left in the mailbox when a connection is first
+  created.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)

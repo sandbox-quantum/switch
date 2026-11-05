@@ -2,24 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import html
-import imaplib
 import json
 import logging
 import re
 import smtplib
 import ssl
+import threading
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from email.header import decode_header, make_header
 from email.message import EmailMessage, Message
 from email.parser import BytesParser
 from email.policy import default
 from email.utils import formataddr, make_msgid, parseaddr
 from html.parser import HTMLParser
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 from urllib.parse import quote, unquote, urlsplit
 
 import markdown
+from imapclient import IMAPClient
+from imapclient.exceptions import IMAPClientError, LoginError
 from pydantic import Field, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
 from switch_core.bridges.collaboration.models import (
@@ -45,6 +49,13 @@ _MAX_BODY_CHARS = 40_000
 _MAX_OUTBOUND_CHARS = 18_000
 _COMMAND_PREFIX = "!"
 _THREAD_PREFIX = "email-ref:"
+_HANDLED_KEYWORD = b"$SwitchSeen"
+_SEEN = b"\\Seen"
+_IDLE_SECONDS = 25 * 60
+_IDLE_CHECK_SECONDS = 15
+_RECONNECT_FIRST = 5.0
+_RECONNECT_MAX = 300.0
+_IMAP_TIMEOUT_SECONDS = 30
 
 
 class EmailConnectionConfig(BridgeConnectionConfig):
@@ -78,6 +89,7 @@ class EmailConnectionConfig(BridgeConnectionConfig):
         description="Trusted Authentication-Results server identifier; empty trusts the topmost header",
     )
     poll_interval_seconds: int = Field(default=30, ge=10, le=300)
+    connected_at: SkipJsonSchema[str | None] = None
 
     @field_validator("from_address")
     @classmethod
@@ -107,6 +119,10 @@ class EmailConnectionConfig(BridgeConnectionConfig):
         if not re.fullmatch(r"[a-z0-9.-]+", server):
             raise ValueError("authentication_server must be a valid server identifier")
         return server
+
+    @property
+    def since(self) -> datetime | None:
+        return datetime.fromisoformat(self.connected_at) if self.connected_at else None
 
 
 def _decode_header(value: str | None) -> str:
@@ -424,21 +440,47 @@ def _sender_authenticated(
     return False
 
 
-def _imap_connect(config: EmailConnectionConfig) -> imaplib.IMAP4:
+def _imap_connect(config: EmailConnectionConfig) -> IMAPClient:
+    client: IMAPClient | None = None
     try:
-        if config.imap_security == "ssl":
-            client: imaplib.IMAP4 = imaplib.IMAP4_SSL(
-                config.imap_host, config.imap_port, timeout=20
-            )
-        else:
-            client = imaplib.IMAP4(config.imap_host, config.imap_port, timeout=20)
-            client.starttls(ssl_context=ssl.create_default_context())
+        client = IMAPClient(
+            config.imap_host,
+            port=config.imap_port,
+            ssl=config.imap_security == "ssl",
+            ssl_context=ssl.create_default_context(),
+            timeout=_IMAP_TIMEOUT_SECONDS,
+        )
+        if config.imap_security == "starttls":
+            client.starttls(ssl.create_default_context())
         client.login(config.imap_username, config.imap_password)
         return client
-    except (imaplib.IMAP4.error, OSError, ssl.SSLError) as exc:
+    except LoginError as exc:
+        if client is not None:
+            _close_imap_quietly(client)
         raise BridgeCredentialError(
             f"IMAP sign-in failed for {config.imap_username}: {exc}"
         ) from exc
+    except Exception:
+        if client is not None:
+            _close_imap_quietly(client)
+        raise
+
+
+def _close_imap_quietly(client: IMAPClient) -> None:
+    try:
+        client.logout()
+    except Exception:
+        try:
+            client.shutdown()
+        except Exception:
+            logger.debug("Could not close the IMAP connection", exc_info=True)
+
+
+def _shutdown_imap_quietly(client: IMAPClient) -> None:
+    try:
+        client.shutdown()
+    except Exception:
+        logger.debug("Could not shut down the IMAP connection", exc_info=True)
 
 
 def _smtp_connect(config: EmailConnectionConfig) -> smtplib.SMTP:
@@ -466,16 +508,13 @@ def _smtp_connect(config: EmailConnectionConfig) -> smtplib.SMTP:
 def _verify_mailbox(config: EmailConnectionConfig) -> None:
     imap = _imap_connect(config)
     try:
-        status, _ = imap.select(config.imap_folder, readonly=True)
-        if status != "OK":
-            raise BridgeCredentialError(
-                f"IMAP mailbox folder {config.imap_folder!r} was not found."
-            )
+        imap.select_folder(config.imap_folder, readonly=True)
+    except IMAPClientError as error:
+        raise BridgeCredentialError(
+            f"IMAP mailbox folder {config.imap_folder!r} could not be opened: {error}"
+        ) from error
     finally:
-        try:
-            imap.logout()
-        except (imaplib.IMAP4.error, OSError):
-            pass
+        _close_imap_quietly(imap)
     smtp = _smtp_connect(config)
     try:
         smtp.noop()
@@ -484,6 +523,18 @@ def _verify_mailbox(config: EmailConnectionConfig) -> None:
             smtp.quit()
         except (smtplib.SMTPException, OSError):
             pass
+
+
+def _announces_mail(response: Any) -> bool:
+    return (
+        isinstance(response, tuple)
+        and len(response) >= 2
+        and response[1] in (b"EXISTS", b"RECENT")
+    )
+
+
+def _aware(moment: datetime) -> datetime:
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 class EmailAdapter(PlatformAdapter):
@@ -498,7 +549,18 @@ class EmailAdapter(PlatformAdapter):
     def __init__(self, *, config: EmailConnectionConfig) -> None:
         super().__init__()
         self._config = config
-        self._poll_task: asyncio.Task[None] | None = None
+        self._listener: asyncio.Task[None] | None = None
+        self._client: IMAPClient | None = None
+        self._stopping = threading.Event()
+        self._stop_signal = asyncio.Event()
+
+    @classmethod
+    async def prepare_config(
+        cls, connection_config: dict[str, object]
+    ) -> dict[str, object]:
+        if connection_config.get("connected_at"):
+            return connection_config
+        return {**connection_config, "connected_at": datetime.now(UTC).isoformat()}
 
     @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
@@ -508,7 +570,7 @@ class EmailAdapter(PlatformAdapter):
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
         if isinstance(
-            exc, (imaplib.IMAP4.error, smtplib.SMTPException, BridgeCredentialError)
+            exc, (IMAPClientError, smtplib.SMTPException, BridgeCredentialError)
         ):
             return "auth_failed"
         if isinstance(exc, (TimeoutError, OSError, ssl.SSLError)):
@@ -537,96 +599,168 @@ class EmailAdapter(PlatformAdapter):
         self._on_agent_joined = on_agent_joined
         self._on_user_joined = on_user_joined
         self._on_app_joined = on_app_joined
+        self._stopping.clear()
+        self._stop_signal.clear()
         if self._listening:
-            self._poll_task = asyncio.create_task(
-                self._poll_loop(), name="email-imap-poller"
+            await on_app_joined(
+                InboundAppJoin(
+                    channel_id=_channel_id(self._config.from_address),
+                    channel_type="channel_private",
+                    channel_name=self._config.from_address,
+                )
+            )
+            self._listener = asyncio.create_task(
+                self._listen(), name=f"email-listener-{self._config.imap_username}"
             )
 
     async def stop(self) -> None:
-        task = self._poll_task
-        self._poll_task = None
+        self._stopping.set()
+        self._stop_signal.set()
+        client = self._client
+        if client is not None:
+            await asyncio.to_thread(_shutdown_imap_quietly, client)
+        task = self._listener
+        self._listener = None
         if task is not None:
-            task.cancel()
             try:
                 await task
-            except asyncio.CancelledError:
-                pass
-
-    async def _poll_loop(self) -> None:
-        while True:
-            try:
-                records = await asyncio.to_thread(self._fetch_unseen)
-                for uidvalidity, uid, raw in records:
-                    await self._dispatch_email(uidvalidity, uid, raw)
-                    # The mailbox flag is the durable cursor shared by Switch
-                    # pods. Set it after transport dispatch so a failed write
-                    # remains available for the next poll.
-                    await asyncio.to_thread(self._mark_seen, uid)
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.exception(
-                    "Email mailbox poll failed for %s", self._config.imap_username
+                    "The email listener for %s failed while stopping",
+                    self._config.imap_username,
                 )
-            await asyncio.sleep(self._config.poll_interval_seconds)
 
-    def _fetch_unseen(self) -> list[tuple[str, str, bytes]]:
-        client = _imap_connect(self._config)
-        try:
-            status, _ = client.select(self._config.imap_folder)
-            if status != "OK":
-                raise BridgeOperationError(
-                    f"IMAP folder {self._config.imap_folder!r} could not be selected."
-                )
-            _, validity_data = client.response("UIDVALIDITY")
-            uidvalidity = (validity_data or [b"unknown"])[0].decode(errors="replace")
-            status, data = client.uid("SEARCH", "UNSEEN")
-            if status != "OK":
-                raise BridgeOperationError("IMAP could not search for unread messages.")
-            uids = data[0].split() if data and data[0] else []
-            records: list[tuple[str, str, bytes]] = []
-            for uid_bytes in uids:
-                uid = uid_bytes.decode("ascii", errors="ignore")
-                # BODY.PEEK leaves the shared mailbox cursor untouched until
-                # dispatch succeeds and _mark_seen commits the message.
-                status, fetched = client.uid("FETCH", uid, "(BODY.PEEK[])")
-                if status != "OK":
-                    continue
-                raw = next(
-                    (
-                        item[1]
-                        for item in fetched
-                        if isinstance(item, tuple) and isinstance(item[1], bytes)
-                    ),
-                    None,
-                )
-                if raw is not None:
-                    records.append((uidvalidity, uid, raw))
-            return records
-        finally:
+    async def _listen(self) -> None:
+        delay = _RECONNECT_FIRST
+        while not self._stopping.is_set():
+            client: IMAPClient | None = None
             try:
-                client.logout()
-            except (imaplib.IMAP4.error, OSError):
-                pass
+                client = await asyncio.to_thread(_imap_connect, self._config)
+                self._client = client
+                if self._stopping.is_set():
+                    return
+                delay = _RECONNECT_FIRST
+                await self._watch(client)
+            except asyncio.CancelledError:
+                raise
+            except BridgeCredentialError as error:
+                logger.error(
+                    "Email bridge for %s cannot read mail: %s. Retrying in %.0fs",
+                    self._config.imap_username,
+                    error,
+                    delay,
+                )
+            except Exception:
+                if self._stopping.is_set():
+                    return
+                logger.exception(
+                    "Email bridge for %s lost the mailbox; reconnecting in %.0fs",
+                    self._config.imap_username,
+                    delay,
+                )
+            finally:
+                if self._client is client:
+                    self._client = None
+                if client is not None:
+                    _shutdown_imap_quietly(client)
+            if self._stopping.is_set():
+                return
+            await self._wait_or_stop(delay)
+            delay = min(delay * 2, _RECONNECT_MAX)
 
-    def _mark_seen(self, uid: str) -> None:
-        client = _imap_connect(self._config)
+    async def _watch(self, client: IMAPClient) -> None:
+        selected = await asyncio.to_thread(
+            client.select_folder, self._config.imap_folder
+        )
+        keyword = self._handled_flag(selected)
+        idles = b"IDLE" in await asyncio.to_thread(client.capabilities)
+        if not idles:
+            logger.info(
+                "The IMAP server for %s offers no IDLE; checking every %ds",
+                self._config.imap_username,
+                self._config.poll_interval_seconds,
+            )
+        while not self._stopping.is_set():
+            retry = await self._handle_waiting(client, keyword, selected)
+            if retry:
+                await self._wait_or_stop(5)
+                continue
+            if idles:
+                await asyncio.to_thread(self._idle, client)
+            else:
+                await self._wait_or_stop(self._config.poll_interval_seconds)
+
+    async def _wait_or_stop(self, seconds: float) -> None:
         try:
-            status, _ = client.select(self._config.imap_folder)
-            if status != "OK":
-                raise BridgeOperationError(
-                    f"IMAP folder {self._config.imap_folder!r} could not be selected."
-                )
-            status, _ = client.uid("STORE", uid, "+FLAGS", "(\\Seen)")
-            if status != "OK":
-                raise BridgeOperationError(
-                    f"IMAP could not mark message UID {uid} as seen."
-                )
+            await asyncio.wait_for(self._stop_signal.wait(), timeout=seconds)
+        except TimeoutError:
+            pass
+
+    def _handled_flag(self, selected: dict[bytes, Any]) -> bytes:
+        permanent = selected.get(b"PERMANENTFLAGS") or ()
+        if b"\\*" in permanent or _HANDLED_KEYWORD in permanent:
+            return _HANDLED_KEYWORD
+        logger.warning(
+            "The IMAP server for %s keeps no custom keywords, so handled mail is "
+            "marked read (\\Seen) instead. Mail someone reads in a mail client "
+            "before Switch does is then not posted.",
+            self._config.imap_username,
+        )
+        return _SEEN
+
+    def _idle(self, client: IMAPClient) -> None:
+        client.idle()
+        try:
+            waited = 0
+            while not self._stopping.is_set() and waited < _IDLE_SECONDS:
+                responses = client.idle_check(timeout=_IDLE_CHECK_SECONDS)
+                waited += _IDLE_CHECK_SECONDS
+                if any(_announces_mail(response) for response in responses):
+                    return
         finally:
+            client.idle_done()
+
+    async def _handle_waiting(
+        self, client: IMAPClient, keyword: bytes, selected: dict[bytes, Any]
+    ) -> bool:
+        criteria: list[Any] = (
+            ["UNKEYWORD", _HANDLED_KEYWORD]
+            if keyword == _HANDLED_KEYWORD
+            else ["UNSEEN"]
+        )
+        uids = sorted(await asyncio.to_thread(client.search, criteria))
+        uidvalidity = str(selected.get(b"UIDVALIDITY", "unknown"))
+        since = self._config.since
+        retry = False
+        for uid in uids:
+            if self._stopping.is_set():
+                return retry
+            fetched = await asyncio.to_thread(
+                client.fetch, [uid], [b"BODY.PEEK[]", b"INTERNALDATE"]
+            )
+            data = fetched.get(uid)
+            if data is None or not isinstance(data.get(b"BODY[]"), bytes):
+                continue
+            arrived = data.get(b"INTERNALDATE")
+            if (
+                since is not None
+                and isinstance(arrived, datetime)
+                and _aware(arrived) < since
+            ):
+                await asyncio.to_thread(client.add_flags, [uid], [keyword])
+                continue
             try:
-                client.logout()
-            except (imaplib.IMAP4.error, OSError):
-                pass
+                await self._dispatch_email(uidvalidity, str(uid), data[b"BODY[]"])
+            except Exception:
+                logger.exception(
+                    "Could not hand mail %s in %s to the room; it will be retried",
+                    uid,
+                    self._config.imap_username,
+                )
+                retry = True
+                continue
+            await asyncio.to_thread(client.add_flags, [uid], [keyword])
+        return retry
 
     async def _dispatch_email(self, uidvalidity: str, uid: str, raw: bytes) -> None:
         message = BytesParser(policy=default).parsebytes(raw)

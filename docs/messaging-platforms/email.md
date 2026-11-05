@@ -1,17 +1,19 @@
 # Email
 
-Email connects a mailbox you control to Switch. The adapter uses IMAP to poll
-the mailbox and SMTP to send replies. This works with ordinary mail providers
-and avoids requiring a particular inbound-email webhook provider. Polling is
-started only by the switch-core pod holding the bridge lease.
+Email connects a mailbox you control to Switch. The adapter uses IMAP IDLE when
+available, polling as a fallback, and SMTP to send replies. This works with
+ordinary mail providers and avoids requiring a particular inbound-email
+webhook provider. The IMAP listener runs only on the switch-core pod holding
+the bridge lease.
 
 ## Set up a mailbox
 
 1. Choose a mailbox or alias for Switch. People send email to this address;
    replies are sent from the configured `from_address`.
-2. Enable IMAP and SMTP access in your provider. Some providers require an app
-   password instead of the account password. If your provider requires TLS,
-   use the provider's SSL or STARTTLS settings.
+2. Enable IMAP and SMTP access in your provider. For Gmail, enable 2-Step
+   Verification and create an app password; use `imap.gmail.com:993` with SSL
+   and `smtp.gmail.com:587` with STARTTLS. Other providers may require an app
+   password or different server settings.
 3. In Switch Console, create an Email connection and enter the IMAP and SMTP
    hostnames, ports, usernames, passwords, and sender address. Password fields
    are stored as connection secrets.
@@ -19,7 +21,7 @@ started only by the switch-core pod holding the bridge lease.
    allowed to start conversations.
 5. Keep sender authentication enabled and set `authentication_server` to the
    trusted `Authentication-Results` identifier from your provider. For Gmail,
-   use `mx.google.com`.
+   use `mx.google.com`; an empty value trusts the first such header.
 6. Connect the mailbox. Switch checks both IMAP and SMTP credentials before
    saving the connection.
 7. Send a test email to the mailbox. The mailbox maps to one private Switch
@@ -53,6 +55,8 @@ against forged `From` addresses.
 
 Switch checks the configured mail hosts against the deployment's outbound
 network policy when the connection is created and started.
+Only messages that arrived after the connection was created are relayed; older
+unhandled mail remains in the mailbox.
 
 ## Rooms, threads, and message formatting
 
@@ -74,9 +78,10 @@ network policy when the connection is created and started.
   signature delimiter are removed. Provider-specific quote layouts may not be
   recognized.
 - Auto-replies, list mail, mail marked with `Auto-Submitted` other than `no`,
-  and mail carrying `X-Switch-Email-Bridge` are ignored to prevent loops and
-  unsolicited broadcasts. Replies sent by Switch carry
-  `Auto-Submitted: auto-generated` and `X-Switch-Email-Bridge`.
+  bounces with an empty `Return-Path`, and mail carrying
+  `X-Switch-Email-Bridge` are ignored to prevent loops and unsolicited
+  broadcasts. Replies sent by Switch carry `Auto-Submitted: auto-generated`
+  and `X-Switch-Email-Bridge`.
 - `!commands` are routed to Switch. Approval and question prompts use Switch's
   text format and are answerable by replying in the email thread. Use the
   handle and answer form printed in the prompt, for example `A7 1`, `A7 yes`,
@@ -92,15 +97,19 @@ network policy when the connection is created and started.
 
 ## Polling, multiple pods, and delivery limits
 
-The active lease holder polls unread messages. Other pods stay quiet. The
-mailbox's IMAP seen flag is the shared cursor, so progress does not depend on
-process memory. Switch marks a message seen after handing it to the room
-transport. The adapter uses the RFC `Message-ID` as the stable external message
-reference, with IMAP `UIDVALIDITY` and UID as a fallback. Switch derives
-transport event IDs from that bridge, room, and reference; if a crash happens
-after the room write but before the seen flag is set, retrying writes no second
-room message or duplicate attachment rows. Inbound mail therefore resumes
-without process-local deduplication state.
+The active lease holder waits on IMAP IDLE, leaving the connection every 25
+minutes as required by the protocol; servers without IDLE are checked at the
+configured polling interval. Other pods stay quiet. Switch marks a message with
+the mailbox's `$SwitchSeen` IMAP keyword after handing it to the room transport,
+so it stays unread for people using the mailbox. Servers without support for
+custom keywords fall back to `\Seen` and log that limitation. The durable flag
+is shared across pods and restarts. When the server supports no custom flags,
+messages read in another mail client before Switch sees them may be missed.
+The adapter uses RFC `Message-ID` as the
+stable external message reference, with IMAP `UIDVALIDITY` and UID as a
+fallback. If a crash happens after the room write but before the flag is set,
+transport event IDs deduplicate the retry without duplicating room messages or
+attachments.
 
 SMTP does not provide an idempotency key. If an SMTP server accepts an email
 but its response is lost before Switch records the sent message ID, a retry
