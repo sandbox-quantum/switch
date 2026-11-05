@@ -1,13 +1,21 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as logins from "../../../data/cloudLogins";
+import * as hosted from "../../../data/hostedCloud";
+import type { CloudMachine } from "../../../data/hostedCloud";
 import * as seal from "../../../data/sealLogin";
-import CloudLoginDialog, { OUTCOME_TEXT } from "./CloudLoginDialog";
+import CloudLoginDialog, { ASLEEP_TEXT, OUTCOME_TEXT } from "./CloudLoginDialog";
 
 vi.mock("../../../data/cloudLogins", async (original) => ({
   ...(await original<typeof import("../../../data/cloudLogins")>()),
   giveCloudLogin: vi.fn(),
   waitForOperation: vi.fn(),
+}));
+
+vi.mock("../../../data/hostedCloud", async (original) => ({
+  ...(await original<typeof import("../../../data/hostedCloud")>()),
+  ensureCloudMachine: vi.fn(),
+  startCloudMachine: vi.fn(),
 }));
 
 vi.mock("../../../data/sealLogin", async (original) => ({
@@ -39,8 +47,36 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-function dialog(provider = "claude", label = "Claude", onClose = () => {}) {
-  return render(<CloudLoginDialog open provider={provider} providerLabel={label} onClose={onClose} onDone={() => {}} />);
+const box = (over: Partial<CloudMachine> = {}): CloudMachine => ({
+  machine_id: "m-1",
+  state: "ready",
+  desired_state: "running",
+  stop_reason: null,
+  sleeping: false,
+  revision: 4,
+  error: null,
+  error_code: null,
+  agents: ["a-1"],
+  controller_id: "box-ctl",
+  backend: "box",
+  room: null,
+  awake: null,
+  ai_calls_today: null,
+  ...over,
+});
+
+function dialog(provider = "claude", label = "Claude", onClose = () => {}, machine = box(), onCloudChanged = () => {}) {
+  return render(
+    <CloudLoginDialog
+      open
+      provider={provider}
+      providerLabel={label}
+      machine={machine}
+      onCloudChanged={onCloudChanged}
+      onClose={onClose}
+      onDone={() => {}}
+    />,
+  );
 }
 
 function noMarkerAnywhere(marker: string) {
@@ -168,4 +204,107 @@ describe("a browser that can't seal", () => {
 it("says Console is the stronger place to add a login", async () => {
   dialog();
   expect(await screen.findByText(/Switch Console is the stronger place/)).toBeTruthy();
+});
+
+describe("a box that isn't up (PM rule 1)", () => {
+  it.each([
+    ["put away (retained)", box({ state: "retained", desired_state: "retained" })],
+    ["resting", box({ sleeping: true })],
+    ["resting with no agents", box({ sleeping: true, agents: [] })],
+  ])("when %s, says it's asleep and offers Wake it, with no key field", async (_name, machine) => {
+    const onCloudChanged = vi.fn();
+    vi.mocked(hosted.ensureCloudMachine).mockResolvedValue(null);
+    dialog("claude", "Claude", () => {}, machine, onCloudChanged);
+    expect((await screen.findByTestId("cloud-asleep")).textContent).toBe(ASLEEP_TEXT.asleep);
+    expect(screen.queryByLabelText("Setup token", { selector: "input" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Give login" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Wake it" }));
+    await waitFor(() => expect(onCloudChanged).toHaveBeenCalled());
+    expect(hosted.ensureCloudMachine).toHaveBeenCalled();
+    expect(hosted.startCloudMachine).not.toHaveBeenCalled();
+    expect(logins.giveCloudLogin).not.toHaveBeenCalled();
+  });
+
+  it("offers Start for a box its owner stopped, by lifecycle start", async () => {
+    const machine = box({ state: "stopped", desired_state: "stopped", stop_reason: "owner" });
+    vi.mocked(hosted.startCloudMachine).mockResolvedValue();
+    dialog("claude", "Claude", () => {}, machine);
+    expect((await screen.findByTestId("cloud-asleep")).textContent).toBe(ASLEEP_TEXT.stopped);
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(hosted.startCloudMachine).toHaveBeenCalledWith(machine));
+    expect(hosted.ensureCloudMachine).not.toHaveBeenCalled();
+  });
+
+  it("says plainly when the wake fails, in fixed words", async () => {
+    vi.mocked(hosted.ensureCloudMachine).mockRejectedValue(new Error("upstream said <b>no</b>"));
+    dialog("claude", "Claude", () => {}, box({ sleeping: true }));
+    fireEvent.click(await screen.findByRole("button", { name: "Wake it" }));
+    await waitFor(() => expect(screen.getByText(ASLEEP_TEXT.wakeFailed)).toBeTruthy());
+    expect(document.body.textContent).not.toContain("upstream");
+  });
+
+  it("offers nothing to press while it starts, then carries on to the form once it's ready", async () => {
+    const view = dialog("claude", "Claude", () => {}, box({ state: "provisioning" }));
+    expect((await screen.findByTestId("cloud-asleep")).textContent).toBe(ASLEEP_TEXT.starting);
+    expect(screen.queryByRole("button", { name: "Wake it" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    view.rerender(
+      <CloudLoginDialog open provider="claude" providerLabel="Claude" machine={box()} onCloudChanged={() => {}} onClose={() => {}} onDone={() => {}} />,
+    );
+    expect(await screen.findByLabelText("Setup token", { selector: "input" })).toBeTruthy();
+    expect(screen.queryByTestId("cloud-asleep")).toBeNull();
+  });
+
+  it("offers no wake for a box Switch paused, and shows the panel's own words", async () => {
+    dialog("claude", "Claude", () => {}, box({ state: "stopped", desired_state: "stopped", stop_reason: "paused" }));
+    expect((await screen.findByTestId("cloud-asleep")).textContent).toBe("Paused by Switch. Contact your admin");
+    expect(screen.queryByRole("button", { name: "Wake it" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Give login" })).toBeNull();
+  });
+});
+
+describe("Close is never disabled (PM rule 3)", () => {
+  it("stays on while the box is being followed, and closing stops only the following", async () => {
+    const onClose = vi.fn();
+    vi.mocked(logins.waitForOperation).mockImplementation(
+      (_id, _match, options) =>
+        new Promise((resolve) => options?.signal?.addEventListener("abort", () => resolve(null))),
+    );
+    const view = dialog("claude", "Claude", onClose);
+    fireEvent.change(await screen.findByLabelText("Setup token", { selector: "input" }), { target: { value: MARKER } });
+    fireEvent.click(screen.getByRole("button", { name: "Give login" }));
+    await waitFor(() => expect(logins.waitForOperation).toHaveBeenCalled());
+    const close = screen.getByRole("button", { name: "Close" }) as HTMLButtonElement;
+    expect(close.disabled).toBe(false);
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalled();
+    // The parent closes it: the following stops, and the login stays sent.
+    view.rerender(
+      <CloudLoginDialog open={false} provider="claude" providerLabel="Claude" machine={box()} onCloudChanged={() => {}} onClose={onClose} onDone={() => {}} />,
+    );
+    await waitFor(() => expect(vi.mocked(logins.waitForOperation).mock.calls[0]![2]!.signal!.aborted).toBe(true));
+    expect(logins.giveCloudLogin).toHaveBeenCalledTimes(1);
+    noMarkerAnywhere(MARKER);
+  });
+
+  it("closed while the login is being sent: no outcome shows, and the panel is told to read again", async () => {
+    let send!: (value: Awaited<ReturnType<typeof logins.giveCloudLogin>>) => void;
+    vi.mocked(logins.giveCloudLogin).mockImplementation(() => new Promise((resolve) => (send = resolve)));
+    const onDone = vi.fn();
+    const props = { provider: "claude", providerLabel: "Claude", machine: box(), onCloudChanged: () => {}, onClose: () => {}, onDone };
+    const view = render(<CloudLoginDialog open {...props} />);
+    fireEvent.change(await screen.findByLabelText("Setup token", { selector: "input" }), { target: { value: MARKER } });
+    fireEvent.click(screen.getByRole("button", { name: "Give login" }));
+    await waitFor(() => expect(logins.giveCloudLogin).toHaveBeenCalled());
+    view.rerender(<CloudLoginDialog open={false} {...props} />);
+    await act(async () => send({ controllerId: "box-ctl", operation: { id: "op-1", state: "pending" } }));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(logins.waitForOperation).not.toHaveBeenCalled();
+    // Opened again: a fresh form, not a stale outcome or a stuck spinner.
+    view.rerender(<CloudLoginDialog open {...props} />);
+    expect(await screen.findByLabelText("Setup token", { selector: "input" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Give login" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(OUTCOME_TEXT.succeeded)).toBeNull();
+  });
 });

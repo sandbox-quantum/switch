@@ -338,6 +338,8 @@ export default function AgentsPage() {
       {hostedV2 && cloud.machine?.controller_id && (
         <CloudLoginsSection
           controllerId={cloud.machine.controller_id}
+          machine={cloud.machine}
+          onCloudChanged={cloud.refresh}
           askFor={askLoginFor}
           onAsked={loginAsked}
         />

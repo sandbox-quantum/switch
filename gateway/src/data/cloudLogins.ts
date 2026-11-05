@@ -106,6 +106,30 @@ export async function withdrawCloudLogin(provider: string): Promise<{ controller
   return { controllerId: box.controller_id };
 }
 
+/** The box's operations, newest or not: how it took each login, recheck and so on. */
+export async function listOperations(controllerId: string): Promise<Operation[]> {
+  return call<Operation[]>(`/operations?controller_id=${encodeURIComponent(controllerId)}`, "GET");
+}
+
+/**
+ * Where a provider's login stands on the box (PM rule 2). "set" only once the
+ * box has confirmed it: its latest `provider.login` succeeded, or there's none
+ * to wait for. Until then "waiting"; "failed" when the box couldn't sign in
+ * with it, and "missed" when the box never took it (expired or cancelled).
+ */
+export type LoginStatus = "none" | "set" | "waiting" | "failed" | "missed";
+
+export function loginStatus(provider: string, logins: CloudLogin[], operations: Operation[]): LoginStatus {
+  if (!logins.some((login) => login.provider === provider)) return "none";
+  const latest = operations
+    .filter((op) => op.kind === "provider.login" && op.params?.provider === provider)
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+  if (!latest || latest.state === "succeeded") return "set";
+  if (latest.state === "pending" || latest.state === "claimed") return "waiting";
+  if (latest.state === "failed") return "failed";
+  return "missed";
+}
+
 export const OPERATION_POLL_MS = 3000;
 export const OPERATION_WAIT_MS = 3 * 60_000;
 const DONE = new Set(["succeeded", "failed", "cancelled", "expired"]);
@@ -126,10 +150,7 @@ export async function waitForOperation(
   for (;;) {
     // Closed or gone: stop asking (the login or withdraw has already been sent).
     if (options.signal?.aborted) return null;
-    const operations = await call<Operation[]>(
-      `/operations?controller_id=${encodeURIComponent(controllerId)}`,
-      "GET",
-    );
+    const operations = await listOperations(controllerId);
     const found =
       "id" in match
         ? operations.find((op) => op.id === match.id)
