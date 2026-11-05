@@ -125,6 +125,7 @@ class MatrixAdapter(PlatformAdapter):
         self._user_id: str | None = None
         self._bot_localpart = ""
         self._sync_token: str | None = None
+        self._room_event_cursors: dict[str, str] = {}
         self._sync_task: asyncio.Task[None] | None = None
         self._stopping = False
         self._known_rooms: set[str] = set()
@@ -140,6 +141,16 @@ class MatrixAdapter(PlatformAdapter):
     def load_adapter_state(self, state: Mapping[str, object]) -> None:
         token = state.get("sync_token")
         self._sync_token = token if isinstance(token, str) and token else None
+        cursors = state.get("room_event_cursors")
+        self._room_event_cursors = (
+            {
+                room_id: event_id
+                for room_id, event_id in cursors.items()
+                if isinstance(room_id, str) and isinstance(event_id, str) and event_id
+            }
+            if isinstance(cursors, dict)
+            else {}
+        )
 
     async def start(
         self,
@@ -207,7 +218,12 @@ class MatrixAdapter(PlatformAdapter):
                 await self._handle_sync(body)
                 next_batch = body.get("next_batch")
                 if isinstance(next_batch, str) and next_batch:
-                    await self.persist_adapter_state({"sync_token": next_batch})
+                    await self.persist_adapter_state(
+                        {
+                            "sync_token": next_batch,
+                            "room_event_cursors": dict(self._room_event_cursors),
+                        }
+                    )
                     self._sync_token = next_batch
             except asyncio.CancelledError:
                 raise
@@ -274,7 +290,8 @@ class MatrixAdapter(PlatformAdapter):
         await self._announce_room(room_id)
 
     async def _handle_joined(self, room_id: str, room: dict[str, Any]) -> None:
-        timeline = self._events(room.get("timeline"))
+        timeline_data = room.get("timeline")
+        timeline = self._events(timeline_data)
         state = self._events(room.get("state"))
         encrypted = self._has_encryption(state) or self._has_encryption(timeline)
         if encrypted:
@@ -287,19 +304,81 @@ class MatrixAdapter(PlatformAdapter):
                 return
 
         await self._note_room_name(room_id, state)
+        if (
+            isinstance(timeline_data, dict)
+            and timeline_data.get("limited") is True
+            and room_id in self._room_event_cursors
+        ):
+            gap_events = await self._backfill_limited_timeline(room_id, timeline_data)
+            for event in gap_events:
+                if await self._handle_room_event(room_id, event):
+                    return
+
         for event in timeline:
-            event_type = event.get("type")
-            if event_type in ("m.room.encryption", "m.room.encrypted"):
-                await self._refuse_encrypted(room_id, "encryption was turned on")
+            if await self._handle_room_event(room_id, event):
                 return
-            if event_type == "m.room.name":
-                await self._note_room_name(room_id, [event])
-            elif event_type == "m.room.member":
-                await self._handle_member(room_id, event)
-            elif event_type == "m.room.message":
-                await self._handle_message(room_id, event)
-            elif event_type == "m.room.redaction":
-                await self._handle_redaction(room_id, event)
+
+    async def _backfill_limited_timeline(
+        self, room_id: str, timeline: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        cursor = self._room_event_cursors[room_id]
+        from_token = timeline.get("prev_batch")
+        if not isinstance(from_token, str) or not from_token:
+            raise BridgeOperationError(
+                f"Matrix marked room {room_id} as limited without a pagination token"
+            )
+
+        collected: list[dict[str, Any]] = []
+        seen_tokens = {from_token}
+        while True:
+            page = await self._client.messages(room_id, from_token)
+            chunk = page.get("chunk")
+            if not isinstance(chunk, list):
+                raise BridgeOperationError(
+                    f"Matrix returned an unreadable history page for room {room_id}"
+                )
+            events = [event for event in chunk if isinstance(event, dict)]
+            collected.extend(events)
+            if any(event.get("event_id") == cursor for event in events):
+                chronological = list(reversed(collected))
+                anchor = next(
+                    i
+                    for i, event in enumerate(chronological)
+                    if event.get("event_id") == cursor
+                )
+                return chronological[anchor + 1 :]
+
+            next_token = page.get("end")
+            if (
+                not isinstance(next_token, str)
+                or not next_token
+                or next_token in seen_tokens
+            ):
+                raise BridgeOperationError(
+                    f"Matrix history for room {room_id} did not reach its "
+                    "last processed event; refusing to skip the gap"
+                )
+            seen_tokens.add(next_token)
+            from_token = next_token
+
+    async def _handle_room_event(self, room_id: str, event: dict[str, Any]) -> bool:
+        event_type = event.get("type")
+        if event_type in ("m.room.encryption", "m.room.encrypted"):
+            await self._refuse_encrypted(room_id, "encryption was turned on")
+            return True
+        if event_type == "m.room.name":
+            await self._note_room_name(room_id, [event])
+        elif event_type == "m.room.member":
+            await self._handle_member(room_id, event)
+        elif event_type == "m.room.message":
+            await self._handle_message(room_id, event)
+        elif event_type == "m.room.redaction":
+            await self._handle_redaction(room_id, event)
+
+        event_id = event.get("event_id")
+        if isinstance(event_id, str) and event_id:
+            self._room_event_cursors[room_id] = event_id
+        return False
 
     async def _announce_room(
         self, room_id: str, *, state: list[dict[str, Any]] | None = None
@@ -1186,6 +1265,7 @@ class MatrixAdapter(PlatformAdapter):
         self._room_names.pop(room_id, None)
         self._room_types.pop(room_id, None)
         self._member_names.pop(room_id, None)
+        self._room_event_cursors.pop(room_id, None)
 
     def _member_name(self, room_id: str, user_id: str) -> str:
         name = self._member_names.get(room_id, {}).get(user_id)

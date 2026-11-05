@@ -68,9 +68,10 @@ read, or forward encrypted events, and it does not fall back to a partial
 bridge.
 
 To use a room with Switch, create it without encryption. If encryption is
-already on, create a new unencrypted room and invite the bot there. Encrypted
-attachments in an unencrypted room are not downloaded; Switch posts a visible
-note naming the file instead.
+already on, create a new unencrypted room and invite the bot there. Matrix
+encrypted-file attachments in an otherwise unencrypted room are downloaded,
+integrity-checked, decrypted, and relayed. This does not enable encrypted-room
+support.
 
 ## Attachments
 
@@ -110,3 +111,6 @@ and deletes are mirrored to Matrix with `m.replace` and redactions.
   new lease holder resumes from that position after a restart. If a sync batch
   was processed but its checkpoint was not saved, deterministic event-derived
   transport ids prevent duplicate Switch messages when Matrix replays it.
+  Limited room timelines are backfilled to the last durably processed event
+  before Switch advances its sync checkpoint; if Matrix cannot supply that
+  history, the checkpoint is held rather than silently skipping the gap.

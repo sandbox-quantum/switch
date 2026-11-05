@@ -142,6 +142,15 @@ class MatrixClient:
             timeout=timeout_ms / 1000 + 30,
         )
 
+    async def messages(
+        self, room_id: str, from_token: str, *, limit: int = 100
+    ) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            f"/_matrix/client/v3/rooms/{_quote(room_id)}/messages",
+            params={"from": from_token, "dir": "b", "limit": str(limit)},
+        )
+
     async def send_event(
         self,
         room_id: str,

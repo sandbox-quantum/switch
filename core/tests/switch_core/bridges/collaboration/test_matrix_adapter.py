@@ -12,10 +12,11 @@ from pydantic import ValidationError
 from switch_core.bridges.collaboration.matrix import adapter as matrix_adapter
 from switch_core.bridges.collaboration.matrix.adapter import MatrixAdapter
 from switch_core.bridges.collaboration.matrix.chunking import chunk_message
-from switch_core.bridges.collaboration.matrix.client import MatrixApiError
+from switch_core.bridges.collaboration.matrix.client import MatrixApiError, MatrixClient
 from switch_core.bridges.collaboration.matrix.config import MatrixConnectionConfig
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
+    BridgeOperationError,
     InboundCommand,
     InboundMessage,
     InboundMessageDelete,
@@ -41,6 +42,8 @@ class _FakeClient:
         self.relations_events: list[dict[str, Any]] = []
         self.downloaded: bytes = b"file"
         self.download_error: Exception | None = None
+        self.message_pages: list[dict[str, Any]] = []
+        self.message_page_requests: list[tuple[str, str]] = []
 
     async def whoami(self) -> str:
         return BOT
@@ -107,6 +110,12 @@ class _FakeClient:
         self, room_id: str, event_id: str, rel_type: str, *, limit: int = 10
     ) -> list[dict[str, Any]]:
         return self.relations_events
+
+    async def messages(
+        self, room_id: str, from_token: str, *, limit: int = 100
+    ) -> dict[str, Any]:
+        self.message_page_requests.append((room_id, from_token))
+        return self.message_pages.pop(0)
 
     async def typing(
         self, room_id: str, user_id: str, *, typing: bool, timeout_ms: int = 30000
@@ -841,25 +850,175 @@ async def test_a_rejected_token_is_a_credential_error(
 
 async def test_sync_resumes_from_and_persists_the_durable_checkpoint() -> None:
     adapter = _adapter()
-    adapter.load_adapter_state({"sync_token": "saved-token"})
+    adapter.load_adapter_state(
+        {
+            "sync_token": "saved-token",
+            "room_event_cursors": {ROOM: "$room-cursor"},
+        }
+    )
+    adapter._known_rooms.add(ROOM)
     checkpoints: list[dict[str, object]] = []
     adapter.set_adapter_state_persister(
         lambda state: _collect(checkpoints, dict(state))
     )
+    received: list[InboundMessage] = []
+    adapter._on_message = lambda message: _collect(received, message)
     client = _client(adapter)
     requested: list[str | None] = []
 
     async def sync(since: str | None) -> dict[str, Any]:
         requested.append(since)
         adapter._stopping = True
-        return {"next_batch": "next-token", "rooms": {}}
+        return {
+            "next_batch": "next-token",
+            "rooms": {
+                "join": {
+                    ROOM: {
+                        "timeline": {
+                            "events": [
+                                {
+                                    "event_id": "$new-cursor",
+                                    "sender": "@alice:example.org",
+                                    "type": "m.room.message",
+                                    "content": {
+                                        "msgtype": "m.text",
+                                        "body": "checkpointed",
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+        }
 
     client.sync = sync  # type: ignore[attr-defined,method-assign]
     await adapter._sync_forever()
 
     assert requested == ["saved-token"]
-    assert checkpoints == [{"sync_token": "next-token"}]
+    assert checkpoints == [
+        {
+            "sync_token": "next-token",
+            "room_event_cursors": {ROOM: "$new-cursor"},
+        }
+    ]
     assert adapter._sync_token == "next-token"
+    assert [message.content for message in received] == ["checkpointed"]
+
+
+async def test_limited_matrix_timeline_is_backfilled_to_the_durable_room_cursor() -> (
+    None
+):
+    adapter = _adapter()
+    client = _client(adapter)
+    adapter._known_rooms.add(ROOM)
+    adapter.load_adapter_state({"room_event_cursors": {ROOM: "$previous"}})
+    client.message_pages = [
+        {
+            "chunk": [
+                {
+                    "event_id": "$gap-2",
+                    "sender": "@alice:example.org",
+                    "type": "m.room.message",
+                    "content": {"msgtype": "m.text", "body": "gap-2"},
+                },
+                {
+                    "event_id": "$gap-1",
+                    "sender": "@alice:example.org",
+                    "type": "m.room.message",
+                    "content": {"msgtype": "m.text", "body": "gap-1"},
+                },
+            ],
+            "end": "older-page",
+        },
+        {
+            "chunk": [{"event_id": "$previous"}],
+            "end": "before-previous",
+        },
+    ]
+    received: list[InboundMessage] = []
+    adapter._on_message = lambda message: _collect(received, message)
+
+    await adapter._handle_joined(
+        ROOM,
+        {
+            "timeline": {
+                "limited": True,
+                "prev_batch": "before-gap",
+                "events": [
+                    {
+                        "event_id": "$current",
+                        "sender": "@alice:example.org",
+                        "type": "m.room.message",
+                        "content": {"msgtype": "m.text", "body": "current"},
+                    }
+                ],
+            }
+        },
+    )
+
+    assert client.message_page_requests == [
+        (ROOM, "before-gap"),
+        (ROOM, "older-page"),
+    ]
+    assert [message.content for message in received] == [
+        "gap-1",
+        "gap-2",
+        "current",
+    ]
+    assert adapter._room_event_cursors[ROOM] == "$current"
+
+
+async def test_limited_timeline_without_its_cursor_does_not_advance_the_gap() -> None:
+    adapter = _adapter()
+    client = _client(adapter)
+    adapter._known_rooms.add(ROOM)
+    adapter.load_adapter_state({"room_event_cursors": {ROOM: "$previous"}})
+    client.message_pages = [{"chunk": [], "end": None}]
+
+    with pytest.raises(BridgeOperationError, match="did not reach its last"):
+        await adapter._handle_joined(
+            ROOM,
+            {
+                "timeline": {
+                    "limited": True,
+                    "prev_batch": "before-gap",
+                    "events": [],
+                }
+            },
+        )
+
+    assert adapter._room_event_cursors[ROOM] == "$previous"
+
+
+async def test_matrix_client_requests_backwards_room_history() -> None:
+    requests: list[httpx.Request] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"chunk": [], "end": "next"})
+
+    client = MatrixClient(
+        MatrixConnectionConfig(
+            homeserver_url="https://matrix.example.org",
+            access_token="token",
+        ),
+        transport=httpx.MockTransport(respond),
+    )
+    try:
+        page = await client.messages(ROOM, "pagination-token")
+    finally:
+        await client.close()
+
+    assert page == {"chunk": [], "end": "next"}
+    assert requests[0].url.raw_path.split(b"?")[0] == (
+        b"/_matrix/client/v3/rooms/%21room%3Aexample.org/messages"
+    )
+    assert dict(requests[0].url.params) == {
+        "from": "pagination-token",
+        "dir": "b",
+        "limit": "100",
+    }
 
 
 async def test_a_nonlease_pod_verifies_the_bot_but_does_not_start_sync() -> None:
