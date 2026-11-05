@@ -204,7 +204,7 @@ class MatrixClient:
         if not server or not media_id:
             raise MatrixApiError(400, None, "not a Matrix media URI")
         return await self._bytes(
-            (f"/_matrix/media/v3/download/{_quote(server)}/{_quote(media_id)}"),
+            (f"/_matrix/client/v1/media/download/{_quote(server)}/{_quote(media_id)}"),
             timeout=90,
         )
 

@@ -419,7 +419,10 @@ export async function runSharedHost(
         stageAttachments: (attachments) =>
           Promise.all(
             attachments.map((attachment) =>
-              stageAttachment(options.root, attachment, async () => {
+              // Provider sandboxes can read files in their working directory,
+              // but the host's private session-state directory is outside that
+              // boundary. Materialize the file where the provider can open it.
+              stageAttachment(options.input.cwd, attachment, async () => {
                 const fetched =
                   roomAttachments.get(attachment.attachmentId) ??
                   (await readStagedAttachment(options.root, attachment));

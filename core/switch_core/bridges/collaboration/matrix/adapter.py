@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
+import hmac
 import logging
 import re
 from collections import OrderedDict
@@ -11,6 +14,7 @@ from urllib.parse import quote
 
 import httpx
 import markdown
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
@@ -51,6 +55,51 @@ _MATRIX_USER_BARE = re.compile(r"@([A-Za-z0-9._=/+-]+):([A-Za-z0-9.-]+(?::\d+)?)
 _INBOUND_MENTION = re.compile(rf"{_MATRIX_USER_BARE.pattern}|@room\b", re.IGNORECASE)
 _MENTION = re.compile(r"(?<![\w@/])@([A-Za-z0-9][A-Za-z0-9._-]*)(?![\w:])")
 _SEEN_LIMIT = 5000
+
+
+class _InvalidEncryptedMedia(ValueError):
+    """Encrypted Matrix media was malformed or failed its integrity check."""
+
+
+def _decode_matrix_base64(value: object, size: int) -> bytes:
+    """Decode an unpadded Matrix base64url value of an exact byte length."""
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise _InvalidEncryptedMedia("invalid encrypted attachment metadata")
+    try:
+        decoded = base64.b64decode(
+            value + "=" * (-len(value) % 4), altchars=b"-_", validate=True
+        )
+    except (ValueError, binascii.Error) as exc:
+        raise _InvalidEncryptedMedia("invalid encrypted attachment metadata") from exc
+    if len(decoded) != size:
+        raise _InvalidEncryptedMedia("invalid encrypted attachment metadata")
+    return decoded
+
+
+def _decrypt_matrix_attachment(ciphertext: bytes, metadata: dict[str, Any]) -> bytes:
+    """Verify and decrypt a Matrix v2 AES-CTR attachment."""
+    key_data = metadata.get("key")
+    hashes = metadata.get("hashes")
+    if (
+        metadata.get("v") != "v2"
+        or not isinstance(key_data, dict)
+        or key_data.get("alg") != "A256CTR"
+        or key_data.get("kty") != "oct"
+        or key_data.get("ext") is not True
+        or not isinstance(key_data.get("key_ops"), list)
+        or not {"encrypt", "decrypt"}.issubset(key_data["key_ops"])
+        or not isinstance(hashes, dict)
+    ):
+        raise _InvalidEncryptedMedia("unsupported encrypted attachment metadata")
+
+    key = _decode_matrix_base64(key_data.get("k"), 32)
+    iv = _decode_matrix_base64(metadata.get("iv"), 16)
+    expected_hash = _decode_matrix_base64(hashes.get("sha256"), 32)
+    if not hmac.compare_digest(hashlib.sha256(ciphertext).digest(), expected_hash):
+        raise _InvalidEncryptedMedia("encrypted attachment integrity check failed")
+
+    decryptor = Cipher(algorithms.AES(key), modes.CTR(iv)).decryptor()
+    return decryptor.update(ciphertext) + decryptor.finalize()
 
 
 class MatrixAdapter(PlatformAdapter):
@@ -473,15 +522,13 @@ class MatrixAdapter(PlatformAdapter):
     ) -> None:
         filename = content.get("body")
         filename = filename if isinstance(filename, str) and filename else "attachment"
-        if isinstance(content.get("file"), dict):
-            failures.append(
-                AttachmentFailure(
-                    filename=filename,
-                    reason="the attachment is encrypted, which Switch does not support",
-                )
-            )
-            return
-        url = content.get("url")
+        encrypted_file = content.get("file")
+        encrypted_file = encrypted_file if isinstance(encrypted_file, dict) else None
+        url = (
+            encrypted_file.get("url")
+            if encrypted_file is not None
+            else content.get("url")
+        )
         if not isinstance(url, str) or not url.startswith("mxc://"):
             failures.append(
                 AttachmentFailure(
@@ -506,11 +553,13 @@ class MatrixAdapter(PlatformAdapter):
             return
         try:
             data = await self._client.download_media(url)
-        except (MatrixApiError, httpx.HTTPError) as exc:
+            if encrypted_file is not None:
+                data = _decrypt_matrix_attachment(data, encrypted_file)
+        except (MatrixApiError, httpx.HTTPError, _InvalidEncryptedMedia):
             failures.append(
                 AttachmentFailure(
                     filename=filename,
-                    reason=f"the file could not be downloaded: {exc}",
+                    reason="the file could not be downloaded or verified",
                 )
             )
             return

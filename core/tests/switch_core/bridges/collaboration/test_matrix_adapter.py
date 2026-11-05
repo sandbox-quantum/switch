@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 from typing import Any
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from pydantic import ValidationError
 
 from switch_core.bridges.collaboration.matrix import adapter as matrix_adapter
@@ -351,8 +354,36 @@ async def test_a_command_is_parsed_from_either_prefix() -> None:
     assert seen[0].args == "bob"
 
 
-async def test_an_encrypted_attachment_is_disclosed_not_dropped() -> None:
+@pytest.mark.parametrize(
+    ("filename", "mimetype", "plaintext"),
+    [
+        ("synthetic.txt", "text/plain", b"Synthetic Matrix attachment.\n"),
+        (
+            "synthetic-684kb.pdf",
+            "application/pdf",
+            b"%PDF-1.7\n" + bytes(684_910 - len(b"%PDF-1.7\n")),
+        ),
+        (
+            "synthetic-7mb.pdf",
+            "application/pdf",
+            b"%PDF-1.7\n" + bytes(7_250_000 - len(b"%PDF-1.7\n")),
+        ),
+    ],
+)
+async def test_a_matrix_encrypted_file_event_is_decrypted_before_relay(
+    filename: str, mimetype: str, plaintext: bytes
+) -> None:
     adapter = _adapter()
+    client = _client(adapter)
+    key = bytes(range(32))
+    iv = bytes(range(16))
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    def encode(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+
+    client.downloaded = ciphertext
     seen: list[InboundMessage] = []
     adapter._on_message = lambda m: _collect(seen, m)
 
@@ -364,8 +395,67 @@ async def test_an_encrypted_attachment_is_disclosed_not_dropped() -> None:
             "type": "m.room.message",
             "content": {
                 "msgtype": "m.file",
-                "body": "secret.pdf",
-                "file": {"url": "mxc://example.org/encrypted"},
+                "body": filename,
+                "file": {
+                    "url": "mxc://example.org/synthetic-media",
+                    "v": "v2",
+                    "key": {
+                        "alg": "A256CTR",
+                        "ext": True,
+                        "k": encode(key),
+                        "key_ops": ["encrypt", "decrypt"],
+                        "kty": "oct",
+                    },
+                    "iv": encode(iv),
+                    "hashes": {"sha256": encode(hashlib.sha256(ciphertext).digest())},
+                },
+                "info": {"mimetype": mimetype, "size": len(plaintext)},
+            },
+        },
+    )
+
+    assert len(seen) == 1
+    assert seen[0].attachment_failures == []
+    assert len(seen[0].attachments) == 1
+    assert seen[0].attachments[0].filename == filename
+    assert seen[0].attachments[0].mimetype == mimetype
+    assert seen[0].attachments[0].data == plaintext
+
+
+async def test_a_matrix_encrypted_file_with_a_bad_hash_is_not_relayed() -> None:
+    adapter = _adapter()
+    client = _client(adapter)
+    client.downloaded = b"synthetic ciphertext"
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    await adapter._handle_message(
+        ROOM,
+        {
+            "event_id": "$bad-encrypted-file",
+            "sender": "@alice:example.org",
+            "type": "m.room.message",
+            "content": {
+                "msgtype": "m.file",
+                "body": "synthetic.txt",
+                "file": {
+                    "url": "mxc://example.org/synthetic-media",
+                    "v": "v2",
+                    "key": {
+                        "alg": "A256CTR",
+                        "ext": True,
+                        "kty": "oct",
+                        "k": base64.urlsafe_b64encode(bytes(32)).rstrip(b"=").decode(),
+                        "key_ops": ["encrypt", "decrypt"],
+                    },
+                    "iv": base64.urlsafe_b64encode(bytes(16)).rstrip(b"=").decode(),
+                    "hashes": {
+                        "sha256": base64.urlsafe_b64encode(bytes(32))
+                        .rstrip(b"=")
+                        .decode()
+                    },
+                },
+                "info": {"mimetype": "text/plain", "size": len(client.downloaded)},
             },
         },
     )
@@ -373,7 +463,7 @@ async def test_an_encrypted_attachment_is_disclosed_not_dropped() -> None:
     assert len(seen) == 1
     assert seen[0].attachments == []
     assert len(seen[0].attachment_failures) == 1
-    assert "encrypted" in seen[0].attachment_failures[0].reason
+    assert "verified" in seen[0].attachment_failures[0].reason
 
 
 async def test_an_oversize_attachment_is_not_downloaded() -> None:
@@ -516,6 +606,94 @@ async def test_a_media_event_does_not_repeat_its_filename_as_text() -> None:
     assert seen[0].attachments[0].filename == "photo.png"
 
 
+@pytest.mark.parametrize(
+    ("filename", "mimetype", "data"),
+    [
+        ("notes.txt", "text/plain", b"hello from Matrix\n"),
+        (
+            "report.pdf",
+            "application/pdf",
+            b"%PDF-1.7\n" + bytes(range(256)) * 482,
+        ),
+    ],
+)
+async def test_inbound_matrix_media_keeps_text_and_binary_bytes(
+    filename: str, mimetype: str, data: bytes
+) -> None:
+    adapter = _adapter()
+    client = _client(adapter)
+    client.downloaded = data
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    await adapter._handle_message(
+        ROOM,
+        {
+            "event_id": "$media",
+            "sender": "@alice:example.org",
+            "type": "m.room.message",
+            "content": {
+                "msgtype": "m.file",
+                "body": filename,
+                "url": "mxc://media.example.org/media-id",
+                "info": {"mimetype": mimetype, "size": len(data)},
+            },
+        },
+    )
+
+    assert len(seen) == 1
+    assert seen[0].content == ""
+    assert seen[0].attachment_failures == []
+    assert len(seen[0].attachments) == 1
+    assert seen[0].attachments[0].filename == filename
+    assert seen[0].attachments[0].mimetype == mimetype
+    assert seen[0].attachments[0].data == data
+
+
+@pytest.mark.parametrize(
+    ("url", "error"),
+    [
+        (
+            "mxc://media.example.org/missing",
+            MatrixApiError(404, "M_NOT_FOUND", "unavailable"),
+        ),
+        ("https://media.example.org/not-mxc", None),
+    ],
+)
+async def test_unavailable_or_invalid_matrix_media_is_reported_as_failure(
+    url: str, error: Exception | None
+) -> None:
+    adapter = _adapter()
+    client = _client(adapter)
+    client.download_error = error
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    await adapter._handle_message(
+        ROOM,
+        {
+            "event_id": "$missing-media",
+            "sender": "@alice:example.org",
+            "type": "m.room.message",
+            "content": {
+                "msgtype": "m.file",
+                "body": "missing.txt",
+                "url": url,
+                "info": {"mimetype": "text/plain", "size": 206},
+            },
+        },
+    )
+
+    assert len(seen) == 1
+    assert seen[0].attachments == []
+    assert len(seen[0].attachment_failures) == 1
+    assert seen[0].attachment_failures[0].filename == "missing.txt"
+    assert (
+        "could not be downloaded" in seen[0].attachment_failures[0].reason
+        or "download URL" in seen[0].attachment_failures[0].reason
+    )
+
+
 async def test_a_room_link_opens_in_a_browser() -> None:
     adapter = _adapter()
     assert (
@@ -566,6 +744,26 @@ async def test_an_oversized_outbound_file_is_disclosed_without_uploading() -> No
     assert client.uploads == []
     assert "big.bin" in client.sent[0][2]["body"]
     assert "4 bytes" in client.sent[0][2]["body"]
+
+
+async def test_outbound_attachment_still_uploads_and_sends_matrix_media() -> None:
+    adapter = _adapter()
+    client = _client(adapter)
+    data = b"%PDF-1.7 synthetic outbound bytes"
+
+    event_id = await adapter.send_attachment(
+        ROOM, "alice", "report.pdf", "application/pdf", data
+    )
+
+    assert event_id == "$event1"
+    assert client.uploads == [(data, "report.pdf", "application/pdf")]
+    assert client.sent[0][0:2] == (ROOM, "m.room.message")
+    assert client.sent[0][2]["msgtype"] == "m.file"
+    assert client.sent[0][2]["url"] == "mxc://example.org/media"
+    assert client.sent[0][2]["info"] == {
+        "mimetype": "application/pdf",
+        "size": len(data),
+    }
 
 
 async def test_an_edit_replaces_the_message() -> None:

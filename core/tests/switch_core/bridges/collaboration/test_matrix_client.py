@@ -136,7 +136,9 @@ async def test_room_state_reads_the_state_array() -> None:
     assert state[0]["type"] == "m.room.encryption"
 
 
-async def test_media_download_uses_the_server_and_media_id() -> None:
+async def test_media_download_uses_authenticated_client_endpoint_and_mxc_parts() -> (
+    None
+):
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -149,7 +151,41 @@ async def test_media_download_uses_the_server_and_media_id() -> None:
     finally:
         await client.close()
 
-    assert seen[0].url.path == "/_matrix/media/v3/download/example.org/abc"
+    assert seen[0].url.path == "/_matrix/client/v1/media/download/example.org/abc"
+    assert seen[0].headers["Authorization"] == "Bearer token"
+
+
+async def test_media_download_raises_on_unavailable_media() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"errcode": "M_NOT_FOUND", "error": "media unavailable"},
+        )
+
+    client = MatrixClient(_config(), transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(MatrixApiError) as caught:
+            await client.download_media("mxc://example.org/missing")
+    finally:
+        await client.close()
+
+    assert caught.value.status == 404
+    assert caught.value.errcode == "M_NOT_FOUND"
+
+
+@pytest.mark.parametrize("uri", ["", "https://example.org/file", "mxc://", "mxc:///id"])
+async def test_media_download_rejects_invalid_mxc_uris(uri: str) -> None:
+    client = MatrixClient(
+        _config(),
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=b"")),
+    )
+    try:
+        with pytest.raises(MatrixApiError) as caught:
+            await client.download_media(uri)
+    finally:
+        await client.close()
+
+    assert caught.value.status == 400
 
 
 async def test_creating_a_private_room_sends_an_invite_only_preset() -> None:
