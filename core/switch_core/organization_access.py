@@ -17,8 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.transfer import hand_over_everything
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.sign_in_flows import SignInFlows
@@ -120,9 +122,13 @@ async def remove_membership(
     """Remove `membership` from its workspace, bound on `session`, with the
     member's keys, service connections and sign-ins under way there, recorded
     in its audit log with `details`; `keep_agent_keys` as
-    `revoke_workspace_access` has it. Agents they own are left as they are.
-    Raises `ServiceError` when a connection is busy, before anything is
-    removed."""
+    `revoke_workspace_access` has it.
+
+    What they own there passes to an heir (`removal_heir`), so the workspace
+    is not left with rooms, packages and the like owned by someone who can no
+    longer reach them. Agents they own are left as they are: the callers
+    refuse, or record a conflict, while there are any. Raises `ServiceError`
+    when a connection is busy, before anything is removed."""
     revoked = await revoke_workspace_access(
         session,
         membership.user_id,
@@ -131,6 +137,17 @@ async def remove_membership(
         sign_in_flows=revocation.sign_in_flows,
         keep_agent_keys=keep_agent_keys,
     )
+    heir = await removal_heir(session, membership, actor_id)
+    handed: dict[str, int] = {}
+    if heir is not None:
+        handed = await hand_over_everything(
+            session,
+            tenant_id=membership.tenant_id,
+            previous_owner_id=membership.user_id,
+            heir_id=heir,
+            actor_id=actor_id,
+            reason="member_removed",
+        )
     await record_audit_event(
         session,
         tenant_id=membership.tenant_id,
@@ -143,10 +160,36 @@ async def remove_membership(
             "role": membership.role,
             "api_keys_deleted": len(revoked.key_hashes),
             "service_connections_deleted": len(revoked.removed_services),
+            "handed_over_to": heir,
+            "handed_over": handed,
         },
     )
     await session.delete(membership)
     return revoked
+
+
+async def removal_heir(
+    session: AsyncSession, membership: TenantMember, actor_id: str | None
+) -> str | None:
+    """Who takes over what a removed member owns: the person removing them,
+    when they are a member of the workspace themselves; otherwise, as for a
+    removal the organization's directory made or the server's operator made
+    from outside, the longest-standing other admin, then the lowest id. None
+    when the workspace has no other admin, and what they own stays theirs."""
+    if actor_id is not None and actor_id != membership.user_id:
+        if await session.get(TenantMember, (membership.tenant_id, actor_id)):
+            return actor_id
+    heir: str | None = await session.scalar(
+        select(TenantMember.user_id)
+        .where(
+            TenantMember.tenant_id == membership.tenant_id,
+            TenantMember.user_id != membership.user_id,
+            TenantMember.role == "admin",
+        )
+        .order_by(TenantMember.created_at, TenantMember.user_id)
+        .limit(1)
+    )
+    return heir
 
 
 async def end_access_through_organization(

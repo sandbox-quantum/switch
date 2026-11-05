@@ -324,3 +324,79 @@ async def transfer_ownership(
         new_owner_id=new_owner_id,
         retired_key_hash=retired,
     )
+
+
+# What passes to an heir when its owner leaves the workspace, in the order
+# handed over. Agents are not here: removing a member who owns one is refused
+# until it is transferred or deleted with it in front of an admin.
+_HANDED_OVER: tuple[tuple[str, type[Owned]], ...] = (
+    ("room", Room),
+    ("package", Package),
+    ("reference", Reference),
+    ("reference_type", ReferenceType),
+    ("document", Document),
+    ("template", Template),
+)
+
+
+async def hand_over_everything(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    previous_owner_id: str,
+    heir_id: str,
+    actor_id: str | None,
+    reason: str,
+) -> dict[str, int]:
+    """Make `heir_id` the owner of what `previous_owner_id` owns in the
+    workspace bound on `session`, each with its audit event, so nothing there
+    is left owned by someone who can no longer reach it. Returns how many of
+    each kind passed.
+
+    What a transfer refuses stays with them: a chat, which is one person's
+    conversation; a room's own document, which goes with its room; and a
+    template whose name the heir already uses. The caller commits."""
+    handed: dict[str, int] = {}
+    clashing = set(
+        await session.scalars(
+            select(Template.name).where(
+                Template.tenant_id == tenant_id, Template.owner_id == heir_id
+            )
+        )
+    )
+    for kind, model in _HANDED_OVER:
+        rows: list[Owned] = list(
+            await session.scalars(
+                select(model)
+                .where(
+                    model.tenant_id == tenant_id,
+                    model.owner_id == previous_owner_id,
+                )
+                .with_for_update()
+            )
+        )
+        for row in rows:
+            if isinstance(row, Room) and "chat_operation_id" in (row.metadata_ or {}):
+                continue
+            if isinstance(row, Document) and row.room_id is not None:
+                continue
+            if isinstance(row, Template) and row.name in clashing:
+                continue
+            row.owner_id = heir_id
+            await record_audit_event(
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=actor_id,
+                action=AuditAction.OWNERSHIP_TRANSFERRED,
+                target_type=kind,
+                target_id=row.type if isinstance(row, ReferenceType) else row.id,
+                details={
+                    "from": previous_owner_id,
+                    "to": heir_id,
+                    "reason": reason,
+                    "agent_key_reissued": False,
+                },
+            )
+            handed[kind] = handed.get(kind, 0) + 1
+    await session.flush()
+    return handed
