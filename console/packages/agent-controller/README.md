@@ -155,7 +155,7 @@ before this one starts its own.
 
 The `status`, `doctor`, `enroll`, `update`, `install-service` and `uninstall-service`
 reports use named sections, aligned fields and explicit `[OK]`, `[WARN]`,
-`[ERROR]` and `[INFO]` labels. Colour is enabled only when stdout is a terminal;
+`[ERROR]` and `[INFO]` labels. Colour is enabled only when the output stream is a terminal;
 setting `NO_COLOR` (including an empty value) or `TERM=dumb` disables it. Redirected
 and piped output is plain text. Names and diagnostic text cannot inject terminal
 control sequences into the human output.
