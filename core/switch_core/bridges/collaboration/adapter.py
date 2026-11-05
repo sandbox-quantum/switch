@@ -223,6 +223,11 @@ class RequestCard:
     # nobody is not the same as a redraw of one already asked, and only the
     # first is worth saying out loud.
     notify_unreachable: bool = False
+    # The request's turn was asked at the channel root, so a card threaded
+    # under that message is somewhere the channel does not look. Set on the
+    # first post only; an adapter that can also show a thread reply in the
+    # channel (Slack's `reply_broadcast`) does.
+    asked_at_root: bool = False
 
 
 RichContent = TurnActivity | RequestCard
@@ -894,6 +899,18 @@ class PlatformAdapter(ABC):
         as. Linking one would recognise all of them as the same Switch user.
         """
         return None
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        """Why this account cannot be linked to anyone, asking the platform
+        where the id alone cannot tell, or None if it can be.
+
+        A bot or an integration's account is one whoever runs it posts as, so
+        linking it would recognise all of them as one Switch user. Some
+        platforms say so in the id (`unlinkable_account_reason`); others only
+        when asked. Raise `LookupError` when the platform has no such account,
+        and `RuntimeError` when it cannot be asked.
+        """
+        return self.unlinkable_account_reason(external_user_id)
 
     async def account_id_for_session(self, token: str) -> str:
         """The platform id of the account a session token belongs to.

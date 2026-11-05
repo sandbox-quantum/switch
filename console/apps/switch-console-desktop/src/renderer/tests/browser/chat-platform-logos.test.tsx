@@ -56,11 +56,11 @@ describe('messaging-app logos in chat', () => {
     expect(apps()).toEqual([
       'Slack (logo, inline)',
       'Microsoft Teams (logo, inline)',
-      'Mattermost (logo, inline)',
+      'Discord (logo, inline)',
       'Telegram (logo, inline)',
     ]);
     expect(container!.textContent?.replace(/\s+/g, ' ')).toContain(
-      'Slack, Microsoft Teams, Mattermost and Telegram'
+      'Slack, Microsoft Teams, Discord and Telegram'
     );
     expect(container!.textContent).not.toContain('switchdash');
   });

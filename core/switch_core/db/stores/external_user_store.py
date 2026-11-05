@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, func, literal, select
+from sqlalchemy import CursorResult, delete, func, literal, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,11 @@ from switch_core.db.stores.user_store import UserStore
 
 class NoSuchLink(LookupError):
     """There was no link, or no waiting one, between this account and user."""
+
+
+class CodeNotAccepted(LookupError):
+    """A link code confirms nothing: not a code, wrong or expired for this
+    account, or for someone no longer in the workspace."""
 
 
 @dataclass(frozen=True)
@@ -261,40 +266,61 @@ class ExternalUserStore:
         return [(external, claim) for external, claim in result.tuples()]
 
     async def require_confirmation(
-        self, session: AsyncSession, bridge_id: str, requested_by_user_id: str
+        self,
+        session: AsyncSession,
+        bridge_id: str,
+        links: list[tuple[str, str]],
+        requested_by_user_id: str,
     ) -> list[tuple[str, str]]:
-        """Stop trusting this bridge's claims made before links needed
+        """Stop trusting these claims on this bridge, each an
+        `(external_user_id, user_id)` pair made before links needed
         confirming, turning each into a request its owner confirms with a
-        code. Returns the `(external_user_id, user_id)` pairs moved.
+        code. Returns the pairs moved.
 
-        A request already waiting (its owner started confirming) is kept, code
-        and all. The requests are written before the claims go, the order a
-        confirmation takes the two in, so the two cannot deadlock.
+        Only the pairs named: an admin agrees to demote the people they were
+        shown, and a claim that appeared since is left alone. A pair that has
+        been confirmed since, or is on another bridge, is skipped. A request
+        already waiting (its owner started confirming) is kept, code and all.
+
+        The requests are written before the claims go, the order a
+        confirmation takes the two in, so the two cannot deadlock; and a claim
+        is only deleted where its request now exists, so none is lost between
+        the two statements.
         """
-        on_bridge = select(ExternalUser.id).where(ExternalUser.bridge_id == bridge_id)
-        unconfirmed = select(
-            ExternalUserClaim.tenant_id,
-            ExternalUserClaim.external_user_id,
-            ExternalUserClaim.user_id,
-            literal(requested_by_user_id),
-        ).where(
-            ExternalUserClaim.external_user_id.in_(on_bridge),
-            ExternalUserClaim.verified_at.is_(None),
+        if not links:
+            return []
+        named = tuple_(
+            ExternalUserClaim.external_user_id, ExternalUserClaim.user_id
+        ).in_(links)
+        on_bridge = ExternalUserClaim.external_user_id.in_(
+            select(ExternalUser.id).where(ExternalUser.bridge_id == bridge_id)
         )
+        unconfirmed = ExternalUserClaim.verified_at.is_(None)
         await session.execute(
             pg_insert(ExternalUserLinkRequest)
             .from_select(
                 ["tenant_id", "external_user_id", "user_id", "requested_by_user_id"],
-                unconfirmed,
+                select(
+                    ExternalUserClaim.tenant_id,
+                    ExternalUserClaim.external_user_id,
+                    ExternalUserClaim.user_id,
+                    literal(requested_by_user_id),
+                ).where(named, on_bridge, unconfirmed),
             )
             .on_conflict_do_nothing(index_elements=["external_user_id", "user_id"])
         )
+        waiting = (
+            select(ExternalUserLinkRequest.external_user_id)
+            .where(
+                ExternalUserLinkRequest.external_user_id
+                == ExternalUserClaim.external_user_id,
+                ExternalUserLinkRequest.user_id == ExternalUserClaim.user_id,
+            )
+            .exists()
+        )
         moved = await session.execute(
             delete(ExternalUserClaim)
-            .where(
-                ExternalUserClaim.external_user_id.in_(on_bridge),
-                ExternalUserClaim.verified_at.is_(None),
-            )
+            .where(named, on_bridge, unconfirmed, waiting)
             .returning(ExternalUserClaim.external_user_id, ExternalUserClaim.user_id)
         )
         pairs = [(external_user_id, user_id) for external_user_id, user_id in moved]
@@ -313,8 +339,9 @@ class ExternalUserStore:
         """Start linking this account to a Switch user, pending the account's
         confirmation.
 
-        Asking again keeps the request that is already waiting, code and all,
-        and only records who asked most recently.
+        Asking again keeps the request that is already waiting, code, who
+        started it and all: the person shown as having started a link is the
+        one who did.
         """
         await session.execute(
             pg_insert(ExternalUserLinkRequest)
@@ -323,10 +350,7 @@ class ExternalUserStore:
                 user_id=switch_user_id,
                 requested_by_user_id=requested_by_user_id,
             )
-            .on_conflict_do_update(
-                index_elements=["external_user_id", "user_id"],
-                set_={"requested_by_user_id": requested_by_user_id},
-            )
+            .on_conflict_do_nothing(index_elements=["external_user_id", "user_id"])
         )
         await session.flush()
         request = await session.get(
@@ -440,14 +464,14 @@ class ExternalUserStore:
         external_user: ExternalUser,
         code: str,
         user_store: UserStore,
-    ) -> ExternalUserLinkRequest | None:
+    ) -> ExternalUserLinkRequest:
         """Confirm the link this code was issued for, if it was issued for
         this account, has not expired, and is for someone who still stands in
         the workspace.
 
         The request becomes a verified claim, upgrading an unverified one in
-        place. None when nothing matches, which the caller reports without
-        saying which part was wrong.
+        place. Raises `CodeNotAccepted` when nothing matches, which the caller
+        reports without saying which part was wrong.
 
         Standing is checked here as well as when the link was started, because
         a request outlives a member's removal from the workspace and the claim
@@ -458,7 +482,7 @@ class ExternalUserStore:
         """
         normalised = normalise_link_code(code)
         if normalised is None:
-            return None
+            raise CodeNotAccepted("That is not a link code")
         result = await session.execute(
             select(ExternalUserLinkRequest)
             .where(
@@ -471,14 +495,18 @@ class ExternalUserStore:
         )
         request = result.scalar_one_or_none()
         if request is None:
-            return None
+            raise CodeNotAccepted(
+                f"No unexpired code like that is waiting for account {external_user.id}"
+            )
         if (
             await user_store.effective_tenant_role(
                 session, request.tenant_id, request.user_id
             )
             is None
         ):
-            return None
+            raise CodeNotAccepted(
+                f"User {request.user_id} no longer stands in the workspace"
+            )
         await self.confirm_link_request(session, request)
         return request
 

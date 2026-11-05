@@ -14,6 +14,16 @@ const ACTION_LABELS: Record<string, string> = {
   "organization.workspace_created": "Workspace added",
   "organization.role_changed": "Organization role changed",
   "organization.member_removed": "Member removed",
+  "organization.connector_app_saved": "Connector app saved",
+  "organization.connector_app_removed": "Connector app removed",
+  "organization.service_set": "Service switched",
+  "organization.service_cleared": "Service left to workspaces",
+  "organization.member_added_from_directory": "Member added from WorkOS",
+  "organization.member_promoted_from_directory": "Member made Org Admin from WorkOS",
+  "organization.member_demoted_from_directory": "Org Admin made Member from WorkOS",
+  "organization.member_removed_from_directory": "Member removed from WorkOS",
+  "organization.directory_conflict": "WorkOS change broke a Switch rule",
+  "organization.linked_to_directory": "Linked to WorkOS",
 };
 
 const COLUMNS: GridColDef<OrganizationAuditEvent>[] = [

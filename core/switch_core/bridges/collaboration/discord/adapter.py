@@ -1112,6 +1112,25 @@ class DiscordAdapter(PlatformAdapter):
         option = COMMANDS_BY_NAME["invite-agent"].args_spec[0].name
         return f"`/invite-agent {option}:agent-name` — the Discord slash command"
 
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        # Other bots and webhooks are bridged like people (see `_on_message`),
+        # and the id alone does not say which is which.
+        client = self._require_client()
+        try:
+            user = await client.fetch_user(int(external_user_id))
+        except (ValueError, discord.NotFound):
+            return (
+                "This isn't a Discord user's account. It may be a webhook, which "
+                "anyone holding its URL posts as."
+            )
+        except discord.HTTPException as e:
+            raise RuntimeError(
+                f"Could not ask Discord about account {external_user_id}: {e}"
+            ) from e
+        if user.bot or user.system:
+            return "This is a Discord bot's account, which whoever runs it posts as."
+        return None
+
     @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
@@ -2492,7 +2511,7 @@ class DiscordAdapter(PlatformAdapter):
         # the pair, visible only to the bridge and the user.
         guild = await self._get_guild()
         channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(f"dm-{user_name}-{agent_name}"),
+            name=self._sanitize_channel_name(f"{agent_name}-{user_name}"),
             topic=f"Direct conversation between {user_name} and {agent_name}",
             overwrites=self._private_channel_overwrites(guild),
         )
@@ -2975,6 +2994,10 @@ class DiscordAdapter(PlatformAdapter):
                 attachments=attachments,
                 attachment_failures=attachment_failures,
                 self_mention_token=str(bot_user_id) if self_mention else None,
+                # Another bot, or a webhook that is not one of ours (ours were
+                # dropped above): an integration posting, not a person.
+                sender_is_app=bool(getattr(author, "bot", False))
+                or getattr(message, "webhook_id", None) is not None,
             )
         )
 

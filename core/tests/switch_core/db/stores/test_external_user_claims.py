@@ -30,6 +30,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.external_user_store import (
+    CodeNotAccepted,
     ExternalUserStore,
     LinkRelease,
     NoSuchLink,
@@ -388,18 +389,13 @@ class TestLinkRequests:
                 session, account, user_id, requested_by_user_id=user_id
             )
             code, _expires = await _STORE.issue_link_code(session, request)
-            assert (
-                await _STORE.redeem_link_code(session, account, code, UserStore())
-                is not None
-            )
+            await _STORE.redeem_link_code(session, account, code, UserStore())
             await _STORE.release(session, account, user_id)
             await session.commit()
 
         async with session_factory() as session:
-            assert (
+            with pytest.raises(CodeNotAccepted):
                 await _STORE.redeem_link_code(session, account, code, UserStore())
-                is None
-            )
             assert await _STORE.claimant_ids(session, account.id) == []
 
     async def test_the_code_from_another_account_confirms_nothing(
@@ -421,10 +417,8 @@ class TestLinkRequests:
             await session.commit()
 
         async with session_factory() as session:
-            assert (
+            with pytest.raises(CodeNotAccepted):
                 await _STORE.redeem_link_code(session, bystander, code, UserStore())
-                is None
-            )
             await session.commit()
 
         async with session_factory() as session:
@@ -447,10 +441,8 @@ class TestLinkRequests:
             await session.commit()
 
         async with session_factory() as session:
-            assert (
+            with pytest.raises(CodeNotAccepted):
                 await _STORE.redeem_link_code(session, account, code, UserStore())
-                is None
-            )
             assert await _STORE.claimant_ids(session, account.id) == []
 
     async def test_a_new_code_replaces_the_old_one(
@@ -468,14 +460,9 @@ class TestLinkRequests:
             await session.commit()
 
         async with session_factory() as session:
-            assert (
+            with pytest.raises(CodeNotAccepted):
                 await _STORE.redeem_link_code(session, account, old, UserStore())
-                is None
-            )
-            assert (
-                await _STORE.redeem_link_code(session, account, new, UserStore())
-                is not None
-            )
+            await _STORE.redeem_link_code(session, account, new, UserStore())
 
     async def test_text_that_cannot_be_a_code_confirms_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -492,10 +479,8 @@ class TestLinkRequests:
 
         async with session_factory() as session:
             for text in ("", "hello", "@ABCD-EFGH", "ABCD-EFGH-JKMN"):
-                assert (
+                with pytest.raises(CodeNotAccepted):
                     await _STORE.redeem_link_code(session, account, text, UserStore())
-                    is None
-                )
 
     async def test_confirming_upgrades_an_unverified_claim(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -515,10 +500,7 @@ class TestLinkRequests:
             await session.commit()
 
         async with session_factory() as session:
-            assert (
-                await _STORE.redeem_link_code(session, account, code, UserStore())
-                is not None
-            )
+            await _STORE.redeem_link_code(session, account, code, UserStore())
             await session.commit()
 
         async with session_factory() as session:
@@ -536,8 +518,8 @@ class TestLinkRequests:
     async def test_asking_again_keeps_the_waiting_code(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # A second "This is me" must not invalidate a code someone is already
-        # about to post; only asking for a new code does.
+        # A second "This is me", or an admin's, must not invalidate a code
+        # someone is already about to post; only asking for a new code does.
         async with session_factory() as session:
             bridge_id = await _make_bridge(session)
             account = await _make_external_user(session, bridge_id=bridge_id)
@@ -550,14 +532,12 @@ class TestLinkRequests:
             again = await _STORE.request_link(
                 session, account, user_id, requested_by_user_id=admin_id
             )
-            assert again.requested_by_user_id == admin_id
+            # Whoever started it stays its starter.
+            assert again.requested_by_user_id == user_id
             await session.commit()
 
         async with session_factory() as session:
-            assert (
-                await _STORE.redeem_link_code(session, account, code, UserStore())
-                is not None
-            )
+            await _STORE.redeem_link_code(session, account, code, UserStore())
 
     async def test_release_cancels_a_waiting_request(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -581,10 +561,8 @@ class TestLinkRequests:
         async with session_factory() as session:
             with pytest.raises(NoSuchLink):
                 await _STORE.release(session, account, user_id)
-            assert (
+            with pytest.raises(CodeNotAccepted):
                 await _STORE.redeem_link_code(session, account, code, UserStore())
-                is None
-            )
 
     async def test_deleting_the_switch_user_drops_their_requests(
         self, session_factory: async_sessionmaker[AsyncSession]

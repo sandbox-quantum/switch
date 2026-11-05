@@ -16,6 +16,7 @@ import type {
   IssueLinkCodeResult,
   RequireLinkConfirmationResult,
   SwitchServer,
+  UnconfirmedLink,
 } from '@shared/core/switch-servers/switch-servers';
 
 /**
@@ -182,10 +183,14 @@ export async function cancelLinkRequestOnServer(
  */
 export async function requireLinkConfirmationOnServer(
   server: SwitchServer,
-  bridgeId: string
+  bridgeId: string,
+  links: readonly Pick<UnconfirmedLink, 'id' | 'userId'>[]
 ): Promise<RequireLinkConfirmationResult> {
   try {
-    return { kind: 'required', moved: await requireLinkConfirmation(server, bridgeId) };
+    return {
+      kind: 'required',
+      moved: await requireLinkConfirmation(server, bridgeId, links),
+    };
   } catch (cause) {
     if (cause instanceof GatewayError) {
       if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };

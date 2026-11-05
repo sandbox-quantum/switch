@@ -35,6 +35,14 @@ export interface RoomSummary {
   write_visibility: "public" | "private";
   created_at: string;
   archived: boolean;
+  // What the viewer may do, as the server decides it. `can_write` covers the
+  // room's settings, roles, participants, links and attaching resources;
+  // `can_manage` (owner or workspace admin) covers its access and deleting it;
+  // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
+  // reference, document or package from it.
+  can_write: boolean;
+  can_manage: boolean;
+  can_unlink: boolean;
 }
 
 export interface AgentSummary {
@@ -55,6 +63,9 @@ export interface AgentSummary {
   parent_agent_id: string | null;
   known_agent_type: string | null;
   known_agent_options: Record<string, unknown> | null;
+  // Whether the caller may rename the agent and edit its options and who may
+  // address it, as the server decides it: its owner or a workspace admin.
+  can_manage: boolean;
 }
 
 export interface AgentToolSummary {
@@ -1133,7 +1144,7 @@ export interface AuthConfig {
 
 // ── Session and workspaces ──────────────────────────────────────────────────
 
-export type TenantRole = "owner" | "admin" | "member";
+export type TenantRole = "admin" | "member";
 
 export type OrganizationRole = "org_admin" | "member";
 
@@ -1210,6 +1221,42 @@ export async function fetchMembers(tenantId: string): Promise<Member[]> {
   return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
 }
 
+// Owner only, and only once the workspace is empty: the server refuses
+// otherwise, listing what is left.
+export async function deleteWorkspace(tenantId: string, name: string): Promise<void> {
+  await jsonRequest(`/tenants/${encodeURIComponent(tenantId)}`, "DELETE", { name });
+}
+
+export type OwnershipKind =
+  | "agent"
+  | "room"
+  | "package"
+  | "reference"
+  | "reference_type"
+  | "document"
+  | "template";
+
+export interface OwnershipTransferResult {
+  kind: OwnershipKind;
+  id: string;
+  owner_id: string;
+  // An agent's API key is re-issued to its new owner, who has to reconnect it.
+  agent_key_reissued: boolean;
+}
+
+// The current owner or a workspace admin, to a current member of the workspace.
+export async function transferOwnership(
+  kind: OwnershipKind,
+  id: string,
+  newOwnerId: string,
+): Promise<OwnershipTransferResult> {
+  return jsonRequest<OwnershipTransferResult>("/ownership/transfer", "POST", {
+    kind,
+    id,
+    new_owner_id: newOwnerId,
+  });
+}
+
 export async function updateMemberRole(
   tenantId: string,
   userId: string,
@@ -1261,6 +1308,12 @@ export interface CurrentOrganization {
   name: string;
   // Null for the platform operator there through operator access alone.
   role: OrganizationRole | null;
+  // Its members, and who is its Org Admin, come from a directory kept outside
+  // Switch: people are added and made Org Admin there, not here.
+  members_from_directory: boolean;
+  // Changes made here to those members are made in that directory too, so
+  // they last; the admin may first be sent to sign in there.
+  directory_takes_changes: boolean;
 }
 
 export interface OperatorWorkspace {
@@ -1282,6 +1335,56 @@ export async function fetchOrganizationWorkspaces(): Promise<TenantMembership[]>
 /** Add a workspace to the current organization. The session stays where it is. */
 export async function createOrganizationWorkspace(name: string): Promise<TenantMembership> {
   return jsonRequest<TenantMembership>("/organizations/current/workspaces", "POST", { name });
+}
+
+/** What an organization set for a service across its workspaces: on or off,
+ * and whether workspace admins may change it. */
+export interface OrganizationServiceSetting {
+  enabled: boolean;
+  locked: boolean;
+}
+
+/** A catalog service as its organization's admins see it. */
+export interface OrganizationService {
+  slug: string;
+  name: string;
+  /** Null: the organization has no say, and each workspace decides. */
+  setting: OrganizationServiceSetting | null;
+  updated_by_name: string | null;
+  updated_at: string | null;
+  /** Why the server switched it off everywhere, whatever any workspace says; null if it didn't. */
+  server_switched_off: string | null;
+  /** In how many of the organization's workspaces it is on now. */
+  workspaces_on: number;
+  /** Workspaces whose admin set it themselves: an unlocked setting doesn't reach them. */
+  workspaces_set_own: number;
+  /** People across the organization's workspaces with it connected, each once. */
+  connected_members: number;
+}
+
+export interface OrganizationServices {
+  /** How many workspaces the organization has. */
+  workspaces: number;
+  services: OrganizationService[];
+}
+
+export async function fetchOrganizationServices(): Promise<OrganizationServices> {
+  return jsonRequest<OrganizationServices>("/organizations/current/services", "GET");
+}
+
+/** Set a service for every workspace; `warning` says what could not be revoked yet. */
+export async function setOrganizationService(
+  service: string,
+  setting: OrganizationServiceSetting,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/organizations/current/services/${service}`, "PUT", setting);
+}
+
+/** Give up the organization's say in a service. */
+export async function clearOrganizationService(
+  service: string,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/organizations/current/services/${service}`, "DELETE");
 }
 
 export async function fetchOrganizationMembers(): Promise<OrganizationMember[]> {
@@ -1307,6 +1410,28 @@ export async function removeOrganizationMember(
     `/organizations/current/members/${encodeURIComponent(userId)}`,
     "DELETE",
   );
+}
+
+// Mirrors `OrganizationIssueKind` in core/switch_core/db/audit.py, by hand.
+export type OrganizationIssueKind =
+  | "no_org_admin"
+  | "workspace_without_admin"
+  | "agents_without_acting_owner"
+  | "directory_organization_deleted";
+
+/** Something in the organization that needs an admin's attention now. Read
+ * from how things stand, so it is gone once fixed. */
+export interface OrganizationIssue {
+  kind: OrganizationIssueKind;
+  // Null for an issue of the organization's own.
+  workspace_id: string | null;
+  workspace_name: string | null;
+  agents: string[];
+}
+
+/** Its admins only, and the platform operator while it has none. */
+export async function fetchOrganizationIssues(): Promise<OrganizationIssue[]> {
+  return jsonRequest<OrganizationIssue[]>("/organizations/current/issues", "GET");
 }
 
 export const ORGANIZATION_AUDIT_PAGE = 50;
@@ -1398,6 +1523,33 @@ export function oidcLoginUrl(): string {
   return `${BASE}/auth/oidc/login`;
 }
 
+/** Where an admin signs in to their organization's WorkOS account, for the
+ * token a change to its members needs, and comes back to `returnTo`. */
+// A dashboard path, and nothing that could leave it: no `//`, which a browser
+// reads as another host. The server checks the same.
+const DASHBOARD_PATH = /^\/(?!\/)[A-Za-z0-9/_.-]*$/;
+
+export function organizationSignInUrl(returnTo: string): string {
+  const path = DASHBOARD_PATH.test(returnTo) ? returnTo : "/organization";
+  return `${BASE}/auth/workos/organization?return_to=${encodeURIComponent(path)}`;
+}
+
+/** The server's answer when a change to a linked organization's members
+ * waits on the admin signing in to its WorkOS account. */
+export function needsOrganizationSignIn(err: unknown): boolean {
+  if (!(err instanceof ApiError) || !err.detail || typeof err.detail !== "object") return false;
+  return (err.detail as Record<string, unknown>).error === "directory_sign_in_required";
+}
+
+/** Whether the change that asked for a sign-in had already taken away the
+ * person's workspace access before it did. */
+export function signInAfterAccessEnded(err: unknown): boolean {
+  return (
+    needsOrganizationSignIn(err) &&
+    (err as ApiError & { detail: Record<string, unknown> }).detail.access_ended === true
+  );
+}
+
 export async function changePassword(
   currentPassword: string,
   newPassword: string,
@@ -1422,6 +1574,13 @@ export async function createUser(
   role: UserRole,
 ): Promise<UserInfo> {
   return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
+}
+
+// Deployment operator only. Deletes the whole account, as the person
+// deleting it themselves would; the server refuses its own administrator
+// account and the caller's own.
+export async function deleteUser(userId: string): Promise<void> {
+  await jsonRequest(`/users/${encodeURIComponent(userId)}`, "DELETE");
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────
@@ -1487,6 +1646,9 @@ export interface ReferenceDetail {
   instructions: string;
   value: Record<string, unknown>;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   packages: string[];
   created_at: string;
   // Resolved server-side and unfiltered by the type's visibility. Null when
@@ -1523,6 +1685,9 @@ export interface DocumentSummary {
   description: string;
   instructions: string;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   packages: string[];
   scope: "global" | "room";
   room_id: string | null;
@@ -1533,6 +1698,20 @@ export interface DocumentSummary {
 
 export interface DocumentDetail extends DocumentSummary {
   content: string;
+}
+
+// Whether the viewer may remove a document from a room it is in: delete it if
+// it is room-scoped (its creator, the room's owner, a workspace admin), unlink
+// it if it is attached (those taking part in the room, a workspace admin).
+
+/** A document as listed in a room it is in. */
+export interface RoomDocumentSummary extends DocumentSummary {
+  can_remove: boolean;
+}
+
+/** A document as seen from a room it is in. */
+export interface RoomDocumentDetail extends DocumentDetail {
+  can_remove: boolean;
 }
 
 export interface DocumentCreateInput {
@@ -1556,6 +1735,9 @@ export interface DocumentUpdateInput {
 export interface ResourceRoom {
   room_id: string;
   room_name: string;
+  // Whether the viewer may unlink the resource from this room: they take part
+  // in it, or are a workspace admin.
+  can_unlink: boolean;
 }
 
 export interface ResourceDeleteResult {
@@ -1810,15 +1992,15 @@ export async function fetchDocumentRooms(id: string): Promise<ResourceRoom[] | n
 
 export async function fetchRoomDocuments(
   roomId: string,
-): Promise<DocumentSummary[] | null> {
-  return fetchJson<DocumentSummary[]>(`/rooms/${roomId}/documents`);
+): Promise<RoomDocumentSummary[] | null> {
+  return fetchJson<RoomDocumentSummary[]>(`/rooms/${roomId}/documents`);
 }
 
 export async function fetchRoomDocument(
   roomId: string,
   documentId: string,
-): Promise<DocumentDetail | null> {
-  return fetchJson<DocumentDetail>(`/rooms/${roomId}/documents/${documentId}`);
+): Promise<RoomDocumentDetail | null> {
+  return fetchJson<RoomDocumentDetail>(`/rooms/${roomId}/documents/${documentId}`);
 }
 
 export async function attachDocumentToRoom(
@@ -1859,7 +2041,13 @@ export interface PackageDetail {
   references_count: number;
   documents_count: number;
   attached_rooms_count: number;
+  // Of those, rooms the viewer may not read, which are never named to them.
+  // Counted only for whoever may manage the resource; zero for anyone else.
+  hidden_rooms_count: number;
   created_at: string;
+  // Whether the caller may open the package. Only a room's package list
+  // includes packages the caller cannot read.
+  can_read: boolean;
 }
 
 export interface PackageCreateInput {
@@ -1881,8 +2069,11 @@ export interface PackageUpdateInput {
 export interface PackageMemberRemoveResult {
   package_id: string;
   member_id: string;
+  // The rooms that lost sight of the member, of those the viewer may read.
   affected_room_ids: string[];
   affected_room_names: string[];
+  // How many more did among rooms the viewer may not read, never named.
+  hidden_affected_rooms_count: number;
 }
 
 export async function fetchPackages(): Promise<PackageDetail[] | null> {
@@ -2149,8 +2340,8 @@ export interface CurrentTenant {
   slug: string;
   name: string;
   role: string;
-  // Whether the caller may manage the workspace: an owner or admin
-  // membership, or the operator bit.
+  // Whether the caller may manage the workspace: an admin membership,
+  // `org_admin` of its organization, or the operator bit.
   administers: boolean;
 }
 
@@ -2318,6 +2509,8 @@ export interface ServiceConnection {
   unavailable_reason: string | null;
   /** Whether it waits on the server's operator setting up its app under Connectors. */
   server_setup_needed: boolean;
+  /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
+  app_source: "organization" | "server";
   status: "not_connected" | "active" | "needs_reauthorization" | "error";
   /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
   pass_through: boolean;
@@ -2451,6 +2644,9 @@ export interface ConnectorApp {
   workspaces: number;
   /** Connections made through an app this server no longer uses. */
   stale_connections: number;
+  /** An organization's page only: whether the server has an app its
+   * workspaces use while the organization saves none of its own. */
+  server_app?: boolean;
 }
 
 /** The server's connector apps; a service that needs no app of the operator's is not listed. */
@@ -2497,8 +2693,17 @@ export class ConnectorAppRefusal extends ApiError {
 export const CONNECTORS_NOT_ENABLED =
   "Connectors are not enabled on this server. An operator turns them on by adding service_connections to FEATURE_FLAGS_ENABLED.";
 
-export async function fetchConnectorApps(): Promise<ConnectorApps> {
-  return jsonRequest<ConnectorApps>("/connector-apps", "GET");
+/** Whose apps a page manages: the server's, its operator's alone, or the
+ * current workspace's organization's, its org admins'. */
+export type ConnectorAppScope = "server" | "organization";
+
+const CONNECTOR_APPS_PATH: Record<ConnectorAppScope, string> = {
+  server: "/connector-apps",
+  organization: "/organizations/current/connector-apps",
+};
+
+export async function fetchConnectorApps(scope: ConnectorAppScope): Promise<ConnectorApps> {
+  return jsonRequest<ConnectorApps>(CONNECTOR_APPS_PATH[scope], "GET");
 }
 
 /** A saved app, and what the vendor said when Switch checked it; none from an older server. */
@@ -2508,10 +2713,11 @@ export interface SavedConnectorApp {
 }
 
 export async function saveConnectorApp(
+  scope: ConnectorAppScope,
   service: string,
   input: SaveConnectorAppInput,
 ): Promise<SavedConnectorApp> {
-  const res = await fetch(`${BASE}/connector-apps/${service}`, {
+  const res = await fetch(`${BASE}${CONNECTOR_APPS_PATH[scope]}/${service}`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -2535,19 +2741,27 @@ export async function importConnectorApp(service: string): Promise<ConnectorApp>
 }
 
 export async function checkConnectorApp(
+  scope: ConnectorAppScope,
   service: string,
 ): Promise<{ ok: boolean; checks: ConnectorAppCheck[] }> {
-  return jsonRequest(`/connector-apps/${service}/check`, "POST");
+  return jsonRequest(`${CONNECTOR_APPS_PATH[scope]}/${service}/check`, "POST");
 }
 
 export async function fetchConnectorAppImpact(
+  scope: ConnectorAppScope,
   service: string,
   clientId: string,
 ): Promise<ConnectorAppImpact> {
   const params = new URLSearchParams({ client_id: clientId });
-  return jsonRequest<ConnectorAppImpact>(`/connector-apps/${service}/impact?${params}`, "GET");
+  return jsonRequest<ConnectorAppImpact>(
+    `${CONNECTOR_APPS_PATH[scope]}/${service}/impact?${params}`,
+    "GET",
+  );
 }
 
-export async function removeConnectorApp(service: string): Promise<ConnectorAppImpact> {
-  return jsonRequest<ConnectorAppImpact>(`/connector-apps/${service}`, "DELETE");
+export async function removeConnectorApp(
+  scope: ConnectorAppScope,
+  service: string,
+): Promise<ConnectorAppImpact> {
+  return jsonRequest<ConnectorAppImpact>(`${CONNECTOR_APPS_PATH[scope]}/${service}`, "DELETE");
 }

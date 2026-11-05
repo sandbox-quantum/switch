@@ -162,9 +162,25 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/organizations/current/connector-apps/{service}",
+      "auth": "session",
+      "flags": [
+        "organization_connector_apps",
+        "service_connections"
+      ]
+    },
+    {
       "route": "DELETE /gateway/organizations/current/members/{user_id}",
       "auth": "session",
       "flags": []
+    },
+    {
+      "route": "DELETE /gateway/organizations/current/services/{service}",
+      "auth": "session",
+      "flags": [
+        "organization_connector_apps",
+        "service_connections"
+      ]
     },
     {
       "route": "DELETE /gateway/packages/{package_id}",
@@ -261,6 +277,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/tenants/{tenant_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/tenants/{tenant_id}/budgets/{budget_id}",
       "auth": "session",
       "flags": []
@@ -284,6 +305,18 @@
       "route": "DELETE /gateway/trust-settings",
       "auth": "session",
       "flags": []
+    },
+    {
+      "route": "DELETE /gateway/users/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/workspace/services/{service}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
     },
     {
       "route": "GET /gateway/agent-sessions/approvals",
@@ -364,6 +397,16 @@
     },
     {
       "route": "GET /gateway/auth/session",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/workos/callback",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/workos/organization",
       "auth": "session",
       "flags": []
     },
@@ -622,9 +665,38 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/organizations/current/connector-apps",
+      "auth": "session",
+      "flags": [
+        "organization_connector_apps",
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/organizations/current/connector-apps/{service}/impact",
+      "auth": "session",
+      "flags": [
+        "organization_connector_apps",
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/organizations/current/issues",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/organizations/current/members",
       "auth": "session",
       "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations/current/services",
+      "auth": "session",
+      "flags": [
+        "organization_connector_apps",
+        "service_connections"
+      ]
     },
     {
       "route": "GET /gateway/organizations/current/workspaces",
@@ -890,6 +962,11 @@
     },
     {
       "route": "PATCH /gateway/agents/{agent_id}/options",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/auth/me",
       "auth": "session",
       "flags": []
     },
@@ -1200,7 +1277,20 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/organizations/current/connector-apps/{service}/check",
+      "auth": "session",
+      "flags": [
+        "organization_connector_apps",
+        "service_connections"
+      ]
+    },
+    {
       "route": "POST /gateway/organizations/current/workspaces",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/ownership/transfer",
       "auth": "session",
       "flags": []
     },
@@ -1459,6 +1549,22 @@
       "auth": "session",
       "flags": [
         "agent_management"
+      ]
+    },
+    {
+      "route": "PUT /gateway/organizations/current/connector-apps/{service}",
+      "auth": "session",
+      "flags": [
+        "organization_connector_apps",
+        "service_connections"
+      ]
+    },
+    {
+      "route": "PUT /gateway/organizations/current/services/{service}",
+      "auth": "session",
+      "flags": [
+        "organization_connector_apps",
+        "service_connections"
       ]
     },
     {

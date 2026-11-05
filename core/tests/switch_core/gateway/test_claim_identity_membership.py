@@ -36,12 +36,13 @@ _EXTERNAL_USERS = ExternalUserStore()
 
 
 class _Lifecycle:
-    """The bridge-type questions a claim asks, for a platform with no
-    stand-in accounts."""
+    """What a claim asks of a running bridge, for a platform where any account
+    can be linked."""
 
-    def unlinkable_account_reason(
-        self, _bridge_type: str, _external_user_id: str
-    ) -> None:
+    def get_adapter(self, _bridge_id: str) -> _Lifecycle:
+        return self
+
+    async def account_unlinkable_reason(self, _external_user_id: str) -> None:
         return None
 
     def link_code_instructions(
@@ -95,7 +96,7 @@ async def _setup(
         session.add(external_user)
         admin = await _make_user(session, tenant_id=TENANT_ZERO_ID, role="admin")
         member = await _make_user(session, tenant_id=TENANT_ZERO_ID, role="member")
-        outsider = await _make_user(session, tenant_id=other_tenant, role="owner")
+        outsider = await _make_user(session, tenant_id=other_tenant, role="admin")
         await session.commit()
         return bridge.id, external_user, admin, member, outsider
 
@@ -199,9 +200,7 @@ class _ProvisioningLifecycle:
     def get(self, _bridge_id: str) -> _ProvisioningLifecycle:
         return self
 
-    def unlinkable_account_reason(
-        self, _bridge_type: str, _external_user_id: str
-    ) -> None:
+    async def account_unlinkable_reason(self, _external_user_id: str) -> None:
         return None
 
     def link_code_instructions(

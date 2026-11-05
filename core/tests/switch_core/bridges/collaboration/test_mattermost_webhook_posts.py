@@ -20,10 +20,13 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 
 _CREATOR = "creator-user-id"
+_BOT_ACCOUNT = "jira-bot-user-id"
 
 
 class _Users:
-    def get_user(self, user_id: str) -> dict[str, str]:
+    def get_user(self, user_id: str) -> dict[str, object]:
+        if user_id == _BOT_ACCOUNT:
+            return {"id": _BOT_ACCOUNT, "username": "jira", "is_bot": True}
         if user_id != _CREATOR:
             raise AssertionError(f"looked up {user_id!r}, not a Mattermost user")
         return {"id": _CREATOR, "username": "ada"}
@@ -84,6 +87,7 @@ def test_a_persons_own_post_is_theirs() -> None:
     [message] = received
     assert isinstance(message, InboundMessage)
     assert (message.sender_id, message.sender_name) == (_CREATOR, "ada")
+    assert message.sender_is_app is False
 
 
 def test_a_webhook_post_goes_under_a_stand_in_not_its_creator() -> None:
@@ -96,7 +100,10 @@ def test_a_webhook_post_goes_under_a_stand_in_not_its_creator() -> None:
     [message] = received
     assert isinstance(message, InboundMessage)
     assert message.sender_id == f"webhook:{_CREATOR}"
-    assert message.sender_name == "ci (webhook)"
+    # Named after the person who set it up, not the name the post claims.
+    assert message.sender_name == "ada's webhook"
+    # And an integration posting, for the cards and the people counts alike.
+    assert message.sender_is_app is True
 
 
 def test_a_command_from_a_webhook_is_not_the_creators() -> None:
@@ -108,7 +115,7 @@ def test_a_command_from_a_webhook_is_not_the_creators() -> None:
     assert isinstance(command, InboundCommand)
     assert command.command == "unlink-account"
     assert command.sender_id == f"webhook:{_CREATOR}"
-    assert command.sender_name == "webhook"
+    assert command.sender_name == "ada's webhook"
 
 
 def test_the_stand_in_cannot_be_linked() -> None:
@@ -123,3 +130,24 @@ def test_the_stand_in_is_never_mentioned() -> None:
         assert loop.run_until_complete(adapter._mention(f"webhook:{_CREATOR}")) is None
     finally:
         loop.close()
+
+
+def test_a_bot_accounts_post_is_an_apps() -> None:
+    adapter, received = _adapter()
+
+    _deliver(adapter, {**_post("PROJ-1 moved to Done"), "user_id": _BOT_ACCOUNT})
+
+    [message] = received
+    assert isinstance(message, InboundMessage)
+    assert message.sender_id == _BOT_ACCOUNT
+    assert message.sender_is_app is True
+
+
+def test_a_post_mattermost_marks_from_a_bot_is_an_apps() -> None:
+    adapter, received = _adapter()
+
+    _deliver(adapter, _post("nightly report", from_bot="true"))
+
+    [message] = received
+    assert isinstance(message, InboundMessage)
+    assert message.sender_is_app is True

@@ -37,8 +37,10 @@ export interface MessagePayload {
   attachments?: AttachmentRef[];
   /** The words the chat opened with, posted in the agent's name as it joined; absent elsewhere. */
   opening_message?: string | null;
-  /** The sending person's role in the workspace when the message arrived. */
-  sender_role?: 'owner' | 'admin' | 'member' | null;
+  /** The sending person's role in the workspace when the message arrived. A
+   * server from before `owner` merged into `admin` may still send `owner`,
+   * which means `admin`. */
+  sender_role?: 'admin' | 'member' | 'owner' | null;
   sender_owns_agent?: boolean;
   mid_turn_delivery?: 'steer' | 'queue';
 }

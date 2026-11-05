@@ -76,6 +76,7 @@ from switch_core.gateway.schemas import (
     IdentityClaimant,
     LinkCode,
     LinkRequestSummary,
+    RequireConfirmationRequest,
     RequireConfirmationResult,
     SlackOwnAppSetup,
     SlackTokensCheck,
@@ -636,7 +637,7 @@ async def _user_names(
     wanted = {claim.user_id for found in claims.values() for claim in found}
     if not wanted:
         return {}
-    return {u.id: u.name for u in await user_store.get_all(session) if u.id in wanted}
+    return {u.id: u.name for u in await user_store.get_many(session, wanted)}
 
 
 def _claimants(
@@ -893,7 +894,9 @@ async def claim_bridge_identity(
         raise HTTPException(status_code=404, detail="Switch user not found")
 
     bridge_type, connection_config = bridge.type, bridge.connection_config or {}
-    _refuse_unlinkable(collab_lifecycle, bridge_type, payload.external_user_id)
+    # Not held across asking the platform.
+    await session.commit()
+    await _refuse_unlinkable(collab_lifecycle, bridge_id, payload.external_user_id)
 
     external_user = await external_user_store.get_by_external_id(
         session, bridge_id, payload.external_user_id
@@ -1047,18 +1050,37 @@ async def _identity_on_bridge(
     return external_user
 
 
-def _refuse_unlinkable(
+async def _unlinkable_reason(
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    bridge_type: str,
+    bridge_id: str,
     external_user_id: str,
-) -> None:
-    unlinkable = collab_lifecycle.unlinkable_account_reason(
-        bridge_type, external_user_id
-    )
-    if unlinkable is not None:
+) -> str | None:
+    """Why the account cannot be linked, asking the platform. Call holding no
+    connection: it may wait on the platform."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    if adapter is None:
         raise HTTPException(
             status_code=409,
-            detail=f"This account cannot be linked to anyone. {unlinkable}",
+            detail="Bridge is not running — cannot check this account",
+        )
+    try:
+        return await adapter.account_unlinkable_reason(external_user_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+async def _refuse_unlinkable(
+    collab_lifecycle: CollaborationBridgeLifecycleService,
+    bridge_id: str,
+    external_user_id: str,
+) -> None:
+    reason = await _unlinkable_reason(collab_lifecycle, bridge_id, external_user_id)
+    if reason is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This account cannot be linked to anyone. {reason}",
         )
 
 
@@ -1102,7 +1124,26 @@ async def issue_identity_link_code(
     external_user = await _identity_on_bridge(
         session, external_user_store, bridge_id, external_user_row_id
     )
-    _refuse_unlinkable(collab_lifecycle, bridge.type, external_user.external_user_id)
+    bridge_type, connection_config = bridge.type, bridge.connection_config or {}
+    external_account_id = external_user.external_user_id
+    # Not held across asking the platform.
+    await session.commit()
+    unlinkable = await _unlinkable_reason(
+        collab_lifecycle, bridge_id, external_account_id
+    )
+    if unlinkable is not None:
+        # A link made before links needed confirming may point at such an
+        # account. It cannot be confirmed, and must not go on counting.
+        removed = await _drop_older_link(
+            session, external_user_store, external_user, caller_id, bridge_id
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This account cannot be linked to anyone. {unlinkable}"
+                + (" Your earlier link to it has been removed." if removed else "")
+            ),
+        )
     # Locked first, so a code posted at this moment is either redeemed before
     # this reads the claim or waits for the new code to replace it.
     request = await external_user_store.lock_link_request(
@@ -1136,11 +1177,41 @@ async def issue_identity_link_code(
         external_user_store,
         collab_lifecycle,
         request,
-        bridge_type=bridge.type,
-        connection_config=bridge.connection_config or {},
+        bridge_type=bridge_type,
+        connection_config=connection_config,
     )
     await session.commit()
     return code
+
+
+async def _drop_older_link(
+    session: AsyncSession,
+    external_user_store: ExternalUserStore,
+    external_user: ExternalUser,
+    user_id: str,
+    bridge_id: str,
+) -> bool:
+    """Remove `user_id`'s link to this account if it is one made before links
+    needed confirming, and say whether there was one."""
+    claim = await external_user_store.get_claim(session, external_user.id, user_id)
+    if claim is None or claim.verified_at is not None:
+        return False
+    try:
+        await external_user_store.release(session, external_user, user_id)
+    except NoSuchLink:
+        # Unlinked another way since it was read, which is the outcome wanted.
+        return False
+    await record_audit_event(
+        session,
+        tenant_id=external_user.tenant_id,
+        actor_user_id=user_id,
+        action=AuditAction.BRIDGE_IDENTITY_RELEASED,
+        target_type="external_user",
+        target_id=external_user.id,
+        details={"bridge_id": bridge_id, "user_id": user_id, "by": "unlinkable"},
+    )
+    await session.commit()
+    return True
 
 
 @router.post("/{bridge_id}/identities/{external_user_row_id}/verify-session")
@@ -1195,6 +1266,25 @@ async def verify_identity_with_session(
         raise HTTPException(
             status_code=403,
             detail="That session token belongs to a different account",
+        )
+    # A session proves who holds the account, not that one person does: a
+    # bot's token is as good a proof as a person's, and its account is one
+    # whoever runs it posts as. Such a link can never count, so it goes.
+    unlinkable = await _unlinkable_reason(
+        collab_lifecycle, bridge_id, external_user.external_user_id
+    )
+    if unlinkable is not None:
+        try:
+            await external_user_store.cancel_link_request(
+                session, external_user, caller_id
+            )
+        except NoSuchLink:
+            pass
+        else:
+            await session.commit()
+        raise HTTPException(
+            status_code=409,
+            detail=f"This account cannot be linked to anyone. {unlinkable}",
         )
 
     request = await external_user_store.lock_link_request(
@@ -1257,6 +1347,7 @@ async def list_unconfirmed_identity_links(
 @router.post("/{bridge_id}/identities/require-confirmation")
 async def require_identity_confirmation(
     bridge_id: str,
+    payload: RequireConfirmationRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
@@ -1268,14 +1359,19 @@ async def require_identity_confirmation(
     Each becomes a link waiting for its account, as if its owner had just
     started it, so it counts for nothing until then. Their owner-only agents
     stop recognising them in the meantime, which is the point and what an
-    admin is told before running it. Links already confirmed, and other
-    bridges, are untouched; running it again moves nothing.
+    admin is told before running it. Only the links named are moved: the
+    ones the admin was shown, not any that appeared since. Links already
+    confirmed, and other bridges, are untouched; running it again moves
+    nothing.
     """
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
     moved = await external_user_store.require_confirmation(
-        session, bridge_id, requested_by_user_id=admin.id
+        session,
+        bridge_id,
+        [(link.id, link.user_id) for link in payload.links],
+        requested_by_user_id=admin.id,
     )
     await record_audit_event(
         session,

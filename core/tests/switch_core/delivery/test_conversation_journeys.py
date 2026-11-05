@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, delete, func, select, update
 
 from switch_core.addressing import owner_only_policy
 from switch_core.bridges.agent.commands import (
@@ -25,15 +25,27 @@ from switch_core.bridges.agent.commands import (
     _cmd_follow_ups,
     _cmd_unassign_agent,
 )
+from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.clients.admin_messages import ADMIN_MARKER, AUTO_REPLY_FLAG
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import AgentEventRow, Client, ClientRoom, Message, Room
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    AgentEventRow,
+    Client,
+    ClientRoom,
+    Message,
+    PendingAttachmentGroup,
+    Room,
+)
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.delivery import router as router_module
 from switch_core.delivery.conversation import ConversationSettings
+from switch_core.delivery.recipient import AgentRecipient
 from switch_core.transport import RoomRef
 from tests.routing import Process, process_on
 from tests.switch_core.delivery.world import World
@@ -107,6 +119,63 @@ class Journey:
         return event_id
 
     post = say
+
+    async def send_file(
+        self,
+        who: str,
+        filename: str,
+        *,
+        at: float,
+        thread: str | None = None,
+        caption: str | None = None,
+        group: dict[str, object] | None = None,
+    ) -> str:
+        """Write one file as `who`, `at` seconds in, and return its event id."""
+        await self._set_the_clock(at)
+        event_id = await self.process.send_file(
+            self.room,
+            filename,
+            sender=self.clients[who],
+            caption=caption,
+            group=group,
+            thread_root_id=thread,
+        )
+        self.at[event_id] = at
+        await self.process.idle()
+        return event_id
+
+    async def payloads(self, message_key: str) -> dict[str, MessagePayload]:
+        """Each agent's own event for `message_key`, by agent name."""
+        ids = {agent.id: name for name, agent in self.world.agents.items()}
+        async with self.world.session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(AgentEventRow).where(
+                        AgentEventRow.message_key == message_key
+                    )
+                )
+            ).all()
+        payloads = {}
+        for row in rows:
+            payload = AgentEvent.model_validate(row.payload).payload
+            assert isinstance(payload, MessagePayload)
+            payloads[ids[row.agent_id]] = payload
+        return payloads
+
+    async def after_the_wait(self) -> None:
+        """Every multi-file post still waiting for files is given up on and
+        decided with the files that arrived."""
+        async with tenant_session(
+            self.world.session_factory, TENANT_ZERO_ID
+        ) as session:
+            await session.execute(
+                update(PendingAttachmentGroup).values(
+                    deadline=PendingAttachmentGroup.deadline - timedelta(minutes=10)
+                )
+            )
+            await session.commit()
+        await self.process.router.flush_due_groups(TENANT_ZERO_ID)
+        await self.process.idle()
 
     async def reached(self, event_id: str) -> set[str]:
         """The agents given `event_id` as one of their own events."""
@@ -345,6 +414,265 @@ class TestJourneys:
         assert await room.reached(question) == set()
         assert refused.startswith("You can't assign")
         assert await room.reached(after) == set()
+
+
+@pytest.mark.parametrize("with_file", [False, True])
+@pytest.mark.parametrize("sender", ["alice", "bob"])
+@pytest.mark.parametrize("delivery", ["steer", "queue"])
+async def test_follow_up_preserves_steering_metadata(
+    room: Journey, with_file: bool, sender: str, delivery: str
+) -> None:
+    async with room.world.session_factory() as session:
+        agent = await AgentStore().get(session, room.world.agents["helper"].id)
+        assert agent is not None
+        agent.metadata_ = {**(agent.metadata_ or {}), "mid_turn_delivery": delivery}
+        await session.commit()
+    answer = await room.post("helper", "What should I do next?", at=0)
+
+    if with_file:
+        told = await room.send_file(sender, "correction.txt", at=10, thread=answer)
+    else:
+        told = await room.say(
+            sender, "Use the corrected instructions", at=10, thread=answer
+        )
+
+    payload = (await room.payloads(told))["helper"]
+    assert payload.sender_owns_agent is (sender == "alice")
+    assert payload.mid_turn_delivery == delivery
+
+
+class TestAttachments:
+    """A post with files follows the conversation as a text message does
+    (CHOO-4067): the rules read the first file's text and thread, and the
+    agent is given the post with every file on it."""
+
+    async def test_the_assigned_agent_gets_a_file(self, room: Journey) -> None:
+        await room.command("alice", "assign-agent", "@helper", at=0)
+
+        told = await room.send_file("bob", "deploy.log", at=10)
+
+        assert await room.reached(told) == {"helper"}
+
+    async def test_a_file_follows_the_agents_answer(self, room: Journey) -> None:
+        await room.say("alice", "@helper can you read a screenshot?", at=0)
+        await room.post("helper", "Yes, send it", at=10)
+
+        told = await room.send_file("alice", "screen.png", at=20, caption="here")
+
+        assert await room.reached(told) == {"helper"}
+
+    async def test_a_file_in_the_agents_thread_reaches_it(self, room: Journey) -> None:
+        answer = await room.post("helper", "Which log?", at=0)
+
+        told = await room.send_file("alice", "app.log", at=10, thread=answer)
+
+        assert await room.reached(told) == {"helper"}
+        payload = (await room.payloads(told))["helper"]
+        assert payload.thread_id == answer
+
+    async def test_a_file_that_mentions_someone_else_follows_nothing(
+        self, room: Journey
+    ) -> None:
+        answer = await room.post("helper", "Which log?", at=0)
+
+        told = await room.send_file(
+            "alice", "app.log", at=10, thread=answer, caption="@bob have a look"
+        )
+
+        assert await room.reached(told) == set()
+
+    async def test_a_mention_on_a_file_still_wins(self, room: Journey) -> None:
+        await room.command("alice", "assign-agent", "@helper", at=0)
+
+        told = await room.send_file(
+            "alice", "pr.diff", at=10, caption="@reviewer can you check this?"
+        )
+
+        assert await room.reached(told) == {"reviewer"}
+
+    async def test_a_file_from_someone_not_allowed_is_dropped_quietly(
+        self, world: World, room: Journey
+    ) -> None:
+        await _owner_only(world, "helper")
+        answer = await room.post("helper", "Which log?", at=0)
+
+        told = await room.send_file("bob", "app.log", at=10, thread=answer)
+
+        assert await room.reached(told) == set()
+        refusals = await room.auto_replies("helper")
+        assert not any(
+            "not permitted" in body or "only take" in body for body in refusals
+        )
+
+    async def test_a_file_to_the_room_reaches_nobody(self, room: Journey) -> None:
+        told = await room.send_file("bob", "lunch-menu.pdf", at=0)
+
+        assert await room.reached(told) == set()
+
+    async def test_follow_ups_off_stops_a_file(self, room: Journey) -> None:
+        answer = await room.post("helper", "Which log?", at=0)
+        await room.command("alice", "follow-ups", "off", at=5)
+
+        told = await room.send_file("alice", "app.log", at=10, thread=answer)
+
+        assert await room.reached(told) == set()
+
+    async def test_a_multi_file_post_is_delivered_once_with_every_file(
+        self, room: Journey
+    ) -> None:
+        answer = await room.post("helper", "Send me the screenshots", at=0)
+        for index, name in enumerate(("one.png", "two.png", "three.png")):
+            await room.send_file(
+                "alice",
+                name,
+                at=10,
+                thread=answer,
+                caption="the three screens" if index == 0 else None,
+                group={"id": "grp-1", "index": index, "total": 3},
+            )
+
+        assert await room.reached("grp-1") == {"helper"}
+        payload = (await room.payloads("grp-1"))["helper"]
+        assert [a.filename for a in payload.attachments] == [
+            "one.png",
+            "two.png",
+            "three.png",
+        ]
+        assert payload.thread_id == answer
+
+    async def test_a_multi_file_post_given_up_on_still_follows(
+        self, room: Journey, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(router_module, "ATTACHMENT_GROUP_TIMEOUT_SECONDS", 60.0)
+        await room.command("alice", "assign-agent", "@helper", at=0)
+        await room.send_file(
+            "bob", "one.png", at=10, group={"id": "grp-2", "index": 0, "total": 2}
+        )
+
+        assert await room.reached("grp-2") == set()
+        await room.after_the_wait()
+
+        assert await room.reached("grp-2") == {"helper"}
+        payload = (await room.payloads("grp-2"))["helper"]
+        assert [a.filename for a in payload.attachments] == ["one.png"]
+
+    async def test_a_file_in_a_direct_room_reaches_its_agent_once(
+        self, world: World, room: Journey
+    ) -> None:
+        async with world.session_factory() as session:
+            await session.execute(
+                update(Room)
+                .where(Room.id == world.room_id)
+                .values(channel_type="direct")
+            )
+            # A direct room is one agent's: helper is left alone in it.
+            await RoomStore().remove_agents(
+                session, world.room_id, [world.agents["reviewer"].id]
+            )
+            await session.execute(
+                delete(ClientRoom).where(
+                    ClientRoom.client_id == room.clients["reviewer"].id,
+                    ClientRoom.room_id == world.room_id,
+                )
+            )
+            await session.commit()
+
+        told = await room.send_file("alice", "notes.md", at=0)
+
+        assert await room.reached(told) == {"helper"}
+        async with world.session_factory() as session:
+            count = await session.scalar(
+                select(func.count())
+                .select_from(AgentEventRow)
+                .where(AgentEventRow.message_key == told)
+            )
+        assert count == 1
+
+    async def test_a_post_given_up_on_reads_only_what_came_before_it(
+        self, room: Journey, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Another agent speaks in the thread while the post waits for files
+        # that never come: written after the post began, it does not count.
+        monkeypatch.setattr(router_module, "ATTACHMENT_GROUP_TIMEOUT_SECONDS", 60.0)
+        answer = await room.post("helper", "Send me the screenshots", at=0)
+        await room.send_file(
+            "alice",
+            "one.png",
+            at=10,
+            thread=answer,
+            group={"id": "grp-3", "index": 0, "total": 3},
+        )
+        # Written after the first file. At the same moment: a member who
+        # joined after a post began is not given it, and this world's members
+        # joined moments ago, so the file is not moved back past them.
+        await room.post("reviewer", "I can look too", at=10, thread=answer)
+
+        await room.after_the_wait()
+
+        assert await room.reached("grp-3") == {"helper"}
+
+    async def test_a_post_is_delivered_in_the_thread_it_was_routed_by(
+        self, room: Journey
+    ) -> None:
+        # Only the first file carries the thread, and the post completes on
+        # a later one.
+        answer = await room.post("helper", "Send me the screenshots", at=0)
+        for index, name in enumerate(("one.png", "two.png")):
+            await room.send_file(
+                "alice",
+                name,
+                at=10,
+                thread=answer if index == 0 else None,
+                group={"id": "grp-4", "index": index, "total": 2},
+            )
+
+        assert await room.reached("grp-4") == {"helper"}
+        payload = (await room.payloads("grp-4"))["helper"]
+        assert payload.thread_id == answer
+
+    async def test_a_slow_post_is_timed_from_its_first_file(
+        self, room: Journey
+    ) -> None:
+        # The first file is inside the window after the agent's answer; the
+        # last lands outside it. The post is as old as its first file.
+        await room.say("alice", "@helper can you read screenshots?", at=0)
+        await room.post("helper", "Yes, send them", at=5)
+        await room.send_file(
+            "alice", "one.png", at=300, group={"id": "grp-5", "index": 0, "total": 2}
+        )
+        await room.send_file(
+            "alice", "two.png", at=330, group={"id": "grp-5", "index": 1, "total": 2}
+        )
+
+        assert await room.reached("grp-5") == {"helper"}
+
+    async def test_a_filename_is_not_read_as_text(self, room: Journey) -> None:
+        # With no caption the file's body is its filename, which looks like
+        # a mention here. It is no text of the sender's.
+        answer = await room.post("helper", "Which report?", at=0)
+
+        told = await room.send_file("alice", "@2024-q3.csv", at=10, thread=answer)
+
+        assert await room.reached(told) == {"helper"}
+
+    async def test_a_post_not_known_to_name_nobody_does_not_follow(
+        self, room: Journey, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Whether the post names reviewer cannot be worked out. It may have
+        # (by alias or role), so it is not handed to the thread's owner.
+        answer = await room.post("helper", "Which log?", at=0)
+        addressed_by = AgentRecipient.addressed_by
+
+        async def failing(self: AgentRecipient, session: Any, event: Any) -> bool:
+            if self.agent.name == room.world.agents["reviewer"].name:
+                raise RuntimeError("cannot tell")
+            return await addressed_by(self, session, event)
+
+        monkeypatch.setattr(AgentRecipient, "addressed_by", failing)
+
+        told = await room.send_file("alice", "app.log", at=10, thread=answer)
+
+        assert await room.reached(told) == set()
 
 
 class TestWithTheFlagOff:

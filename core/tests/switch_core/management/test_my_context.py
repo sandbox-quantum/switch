@@ -79,6 +79,13 @@ def _config(
             key: key == SWITCH_CLOUD and cloud for key in KNOWN_FEATURE_FLAGS
         },
         managed_by_console=managed_by_console,
+        deployment_kind=(
+            "switch_cloud"
+            if cloud
+            else "managed_by_console"
+            if managed_by_console
+            else "self_hosted"
+        ),
     )
 
 
@@ -346,12 +353,12 @@ async def test_an_admin_is_told_so(harness: Harness, client: httpx.AsyncClient) 
     async with harness.session_factory() as session:
         membership = await session.get(TenantMember, (TENANT_ZERO_ID, ada_id))
         assert membership is not None
-        membership.role = "owner"
+        membership.role = "admin"
         await session.commit()
 
     person = (await _context(client, buddy_id, key))["person"]
 
-    assert person["workspace_role"] == "owner"
+    assert person["workspace_role"] == "admin"
     assert person["workspace_admin"] is True
 
 
