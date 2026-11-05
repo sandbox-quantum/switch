@@ -125,6 +125,15 @@ export interface AcpProviderHooks {
    */
   httpMcpOverStdio?: boolean;
   /**
+   * Tool arguments the agent cannot take under their own names. OpenHands
+   * builds a model for each MCP tool on a base with a `kind` field, so a tool
+   * with a `kind` argument (Switch's `list_templates`) fails the build and
+   * takes every tool of the session with it. A relayed server
+   * (`httpMcpOverStdio`) offers each such argument with a trailing underscore,
+   * and the relay passes it on under its own name.
+   */
+  renamedToolArguments?: readonly string[];
+  /**
    * The agent resumes the conversation it is launched with
    * (`AcpLaunchInput.resumeSessionId`) through `session/new`, because its
    * `session/load` drops the session's MCP servers.

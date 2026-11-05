@@ -43,3 +43,65 @@ it('relays MCP on stdio to an HTTP server with its headers, answering a refused 
     await server.close();
   }
 });
+
+it('offers a tool argument the agent cannot take under another name, and passes it on under its own', async () => {
+  const token = 'b'.repeat(64);
+  const server = await serveMcpOverHttp(token, {
+    listTools: async () => [
+      {
+        name: 'list_templates',
+        description: 'List templates.',
+        inputSchema: {
+          type: 'object',
+          properties: { query: { type: 'string' }, kind: { type: 'string' } },
+          required: ['kind'],
+        },
+      },
+    ],
+    callTool: async (_name, args) => ({ content: [{ type: 'text', text: JSON.stringify(args) }] }),
+  });
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const relayed = relayMcpOverStdio({
+    stdin,
+    stdout,
+    env: {
+      SWITCH_MCP_RELAY_URL: server.url,
+      SWITCH_MCP_RELAY_HEADERS: JSON.stringify({ Authorization: `Bearer ${token}` }),
+      SWITCH_MCP_RELAY_RENAMED: '["kind"]',
+    },
+  });
+  const replies = createInterface({ input: stdout })[Symbol.asyncIterator]();
+  const ask = async (message: Record<string, unknown>) => {
+    stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+    return JSON.parse((await replies.next()).value as string) as unknown;
+  };
+  try {
+    expect(await ask({ id: 1, method: 'tools/list' })).toMatchObject({
+      result: {
+        tools: [
+          {
+            name: 'list_templates',
+            inputSchema: {
+              properties: { query: { type: 'string' }, kind_: { type: 'string' } },
+              required: ['kind_'],
+            },
+          },
+        ],
+      },
+    });
+    expect(
+      await ask({
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'list_templates', arguments: { kind_: 'room', query: 'x' } },
+      })
+    ).toMatchObject({
+      result: { content: [{ type: 'text', text: JSON.stringify({ kind: 'room', query: 'x' }) }] },
+    });
+  } finally {
+    stdin.end();
+    await relayed;
+    await server.close();
+  }
+});

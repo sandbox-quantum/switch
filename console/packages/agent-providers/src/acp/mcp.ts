@@ -6,15 +6,19 @@ import type { McpServerSpec, StdioMcpServerSpec } from '../adapter';
  */
 export const MCP_RELAY_URL_ENV = 'SWITCH_MCP_RELAY_URL';
 export const MCP_RELAY_HEADERS_ENV = 'SWITCH_MCP_RELAY_HEADERS';
+/** The tool arguments a relay offers under another name, as a JSON list. */
+export const MCP_RELAY_RENAMED_ENV = 'SWITCH_MCP_RELAY_RENAMED';
 
 /**
  * `servers` with each HTTP server replaced by `relay`, a stdio server that
- * relays to it, for an agent that takes MCP over stdio only.
+ * relays to it, for an agent that takes MCP over stdio only. The relay offers
+ * the tool arguments named in `renamed` under other names.
  */
 export function relayHttpMcp(
   agent: string,
   servers: Record<string, McpServerSpec>,
-  relay: StdioMcpServerSpec | undefined
+  relay: StdioMcpServerSpec | undefined,
+  renamed: readonly string[] = []
 ): Record<string, McpServerSpec> {
   return Object.fromEntries(
     Object.entries(servers).map(([name, server]) => {
@@ -31,6 +35,7 @@ export function relayHttpMcp(
             ...relay.env,
             [MCP_RELAY_URL_ENV]: server.url,
             [MCP_RELAY_HEADERS_ENV]: JSON.stringify(server.headers ?? {}),
+            ...(renamed.length > 0 ? { [MCP_RELAY_RENAMED_ENV]: JSON.stringify(renamed) } : {}),
           },
         },
       ];

@@ -273,7 +273,12 @@ export class AcpAdapter implements ProviderAdapter {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
       const servers = hooks.httpMcpOverStdio
-        ? relayHttpMcp(hooks.label, input.mcpServers, this.options.mcpRelay)
+        ? relayHttpMcp(
+            hooks.label,
+            input.mcpServers,
+            this.options.mcpRelay,
+            hooks.renamedToolArguments
+          )
         : input.mcpServers;
       requireHttpMcp(hooks.label, servers, agent.mcpCapabilities?.http);
       state.prompt = {

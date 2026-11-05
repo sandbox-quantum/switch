@@ -116,6 +116,9 @@ it('starts a session without signing in, with the Switch tools relayed over stdi
   expect(server.received[1]?.params?.mcpServers).toMatchObject([
     { name: 'switch', command: '/node', args: ['/host.mjs', '--mcp-relay'] },
   ]);
+  expect(
+    (server.received[1]?.params?.mcpServers as Array<{ env: unknown[] }> | undefined)?.[0]?.env
+  ).toContainEqual({ name: 'SWITCH_MCP_RELAY_RENAMED', value: '["kind"]' });
   expect(server.received[2]?.params).toEqual({ sessionId: NATIVE, modeId: 'always-ask' });
 });
 

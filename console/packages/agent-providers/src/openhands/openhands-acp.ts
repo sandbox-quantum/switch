@@ -94,6 +94,9 @@ export const openhandsAcp: AcpProviderHooks = {
   // OpenHands 1.16 passes an HTTP server's headers on as a list where its MCP
   // client takes a map, and fails every prompt of the session.
   httpMcpOverStdio: true,
+  // OpenHands' SDK makes a pydantic model of each MCP tool on a base with a
+  // computed `kind`, and an argument of that name fails every tool.
+  renamedToolArguments: ['kind'],
   resumeOnLaunch: true,
   // It accepts `session/set_model` and runs the model in its settings anyway.
   fixedModel: openhandsModel,
