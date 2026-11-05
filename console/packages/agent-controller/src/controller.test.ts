@@ -791,6 +791,7 @@ describe('the decision model on this machine', () => {
     expect(servers.last!.completions.at(-1)!.body).toEqual({
       messages: [{ role: 'user', content: 'room text' }],
       max_tokens: 1,
+      n_predict: 1,
     });
 
     core.push('decision.request', {
@@ -807,6 +808,30 @@ describe('the decision model on this machine', () => {
       error: { code: 'not_running' },
     });
     stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('stops the model server, and waits for it to exit, before anything else on the way out', async () => {
+    core.setAssignment({ revision: 1, agents: [], decision: { revision: 1, model: 'test-model' } });
+    running = runController(withDecision(), stop.signal);
+    await waitFor(
+      () => core.statusReports.at(-1)?.decision.state === 'running',
+      'the model running'
+    );
+    // A status report in flight when the controller is told to stop, held:
+    // the controller waits for it on the way out.
+    let release = () => {};
+    core.holdStatus = new Promise<void>((resolve) => (release = resolve));
+    const reported = core.statusReports.length;
+    core.setAssignment({ revision: 2, agents: [], decision: { revision: 2, model: 'test-model' } });
+    core.push('assignment.changed', { revision: 2 });
+    await waitFor(() => core.statusReports.length > reported, 'a status report in flight');
+
+    stop.abort();
+    await waitFor(() => servers.last!.stopped, 'the model server stopped');
+    await servers.last!.exited;
+    release();
+    core.holdStatus = null;
     expect(await running).toBe('stopped');
   });
 

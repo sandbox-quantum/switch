@@ -175,7 +175,11 @@ describe('a model server an earlier run left', () => {
       pidFileStaleServers({
         file,
         run: async () => command,
-        kill: (pid) => void killed.push(pid),
+        kill: (pid, signal) => {
+          if (signal === 0) throw new Error('ESRCH');
+          killed.push(pid);
+        },
+        graceMs: 1_000,
       });
     await stale('').record(4242, '/data/decision/runtime/b1/llama-server');
     await stale('/data/decision/runtime/b1/llama-server --model x\n').stopStale();
@@ -186,5 +190,41 @@ describe('a model server an earlier run left', () => {
     expect(killed).toEqual([4242]);
     await stale('').stopStale();
     expect(killed).toEqual([4242]);
+  });
+
+  it('waits for it to exit, and kills it when SIGTERM does not end it', async () => {
+    const file = join(dir, 'model-server.pid');
+    const serverBinary = '/data/decision/runtime/b1/llama-server';
+    const sent: (NodeJS.Signals | 0)[] = [];
+    // A process that ends `exitsAfterChecks` liveness checks after the signal that ends it.
+    const stale = (endsOn: NodeJS.Signals | null, exitsAfterChecks: number) => {
+      let ending = false;
+      let checks = 0;
+      return pidFileStaleServers({
+        file,
+        run: async () => `${serverBinary} --model x\n`,
+        kill: (_pid, signal) => {
+          sent.push(signal);
+          if (signal === endsOn) ending = true;
+          if (signal !== 0) return;
+          if (ending && ++checks > exitsAfterChecks) throw new Error('ESRCH');
+        },
+        graceMs: 300,
+      });
+    };
+
+    await stale(null, 0).record(4242, serverBinary);
+    await stale('SIGTERM', 2).stopStale();
+    expect(sent.filter((signal) => signal !== 0)).toEqual(['SIGTERM']);
+    expect(sent.filter((signal) => signal === 0).length).toBe(3);
+
+    sent.length = 0;
+    await stale(null, 0).record(4242, serverBinary);
+    await stale('SIGKILL', 0).stopStale();
+    expect(sent.filter((signal) => signal !== 0)).toEqual(['SIGTERM', 'SIGKILL']);
+
+    sent.length = 0;
+    await stale(null, 0).record(4242, serverBinary);
+    await expect(stale(null, 0).stopStale()).rejects.toThrow(/still running after SIGKILL/);
   });
 });

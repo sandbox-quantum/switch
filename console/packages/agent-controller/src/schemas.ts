@@ -541,8 +541,9 @@ export const credentialRevokedSchema = z.object({});
 /**
  * One auto-route decision for this machine's model server. `payload` is the
  * exact body for llama-server's `POST /v1/chat/completions`, forwarded as it
- * came: room content, never logged. `deadline_ms` is how long Switch waits
- * for the answer, counted from when the request arrives here.
+ * came (capped at one token): room content, never logged. `deadline_ms` is
+ * how long Switch waits for the answer, counted from when the request arrives
+ * here, and held to [100, 10 000] ms (`decisionDeadlineMs`).
  */
 export const decisionRequestFrameSchema = z.object({
   request_id: id,

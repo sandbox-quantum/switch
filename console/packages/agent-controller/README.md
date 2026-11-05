@@ -649,11 +649,14 @@ it offers, and the model's state. When the assignment names a model
 - starts it again after 2, 4 and 8 seconds when it crashes, and reports
   `failed` on the third crash in ten minutes, until the next revision;
 - stops it within seconds when the assignment stops naming a model or decision
-  work is turned off here, keeping the weights.
+  work is turned off here, keeping the weights, and when the controller exits,
+  first and waiting for it to exit (killed after five seconds); a server an
+  earlier run left is stopped the same way before a new one starts.
 
 `decision.request` frames are answered off the frame loop, at most four at a
-time (`busy` beyond), within their `deadline_ms`, with a `decision.result` up
-the socket. Their payloads and answers are room content: never logged or
+time (`busy` beyond), within their `deadline_ms` held to 100 ms to 10 s, with
+a `decision.result` up the socket. The model request is capped at one token,
+whatever the payload asks for, and a slot is freed however a decision ends. Their payloads and answers are room content: never logged or
 written anywhere. Each decision logs its id, outcome and time.
 
 Turning decision work off on a machine: `run --no-decision-model`, or

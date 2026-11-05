@@ -13,7 +13,14 @@ import {
   testDecisionRuntime,
 } from '../testing/fake-decision';
 import { decisionLayout, writeLocalSetting } from './local-setting';
-import { type DecisionRuntime, type DecisionRuntimeDeps, MAX_IN_FLIGHT } from './runtime';
+import {
+  type DecisionRuntime,
+  type DecisionRuntimeDeps,
+  decisionDeadlineMs,
+  MAX_DEADLINE_MS,
+  MAX_IN_FLIGHT,
+  MIN_DEADLINE_MS,
+} from './runtime';
 
 const SECRET_TEXT = 'the-launch-codes-are-in-the-blue-folder';
 
@@ -183,7 +190,7 @@ describe('DecisionRuntime', () => {
     expect(answer.body).toEqual(launcher.last!.answer.body);
     expect(answer.model_ms).toBeGreaterThanOrEqual(0);
     const forwarded = launcher.last!.completions.at(-1)!;
-    expect(forwarded.body).toEqual(request().payload);
+    expect(forwarded.body).toEqual({ ...request().payload, n_predict: 1 });
     expect(forwarded.authorization).toBe(`Bearer ${launcher.last!.apiKey}`);
     expect(status(runtime).last_decision_ms).toBe(answer.model_ms);
   });
@@ -227,6 +234,66 @@ describe('DecisionRuntime', () => {
       ok: false,
       error: { code: 'deadline' },
     });
+  });
+
+  it('caps the model request at one token, whatever the payload asks for', async () => {
+    const runtime = await started();
+    await running(runtime);
+    const { max_tokens: _asked, ...payload } = request().payload;
+    await runtime.decide(
+      request({
+        payload: { ...payload, max_tokens: 4096, n_predict: -1, max_completion_tokens: 9 },
+      })
+    );
+    expect(launcher.last!.completions.at(-1)!.body).toEqual({
+      ...payload,
+      max_tokens: 1,
+      n_predict: 1,
+    });
+  });
+
+  it(`holds a deadline to [${MIN_DEADLINE_MS}, ${MAX_DEADLINE_MS}] ms`, async () => {
+    expect(decisionDeadlineMs(60 * 60 * 1000)).toBe(MAX_DEADLINE_MS);
+    expect(decisionDeadlineMs(2 ** 31 + 5)).toBe(MAX_DEADLINE_MS);
+    expect(decisionDeadlineMs(1)).toBe(MIN_DEADLINE_MS);
+    expect(decisionDeadlineMs(2_500)).toBe(2_500);
+
+    const runtime = await started();
+    await running(runtime);
+    // An hour's deadline (and one AbortSignal.timeout would refuse) is
+    // answered within the maximum.
+    launcher.last!.answer = { ...launcher.last!.answer, delayMs: MAX_DEADLINE_MS + 2_000 };
+    const asked = Date.now();
+    expect(await runtime.decide(request({ deadline_ms: 2 ** 33 }))).toMatchObject({
+      ok: false,
+      error: {
+        code: 'deadline',
+        message: `The model server did not answer within ${MAX_DEADLINE_MS} ms.`,
+      },
+    });
+    expect(Date.now() - asked).toBeLessThan(MAX_DEADLINE_MS + 1_000);
+  }, 20_000);
+
+  it('frees a slot however a decision ends, so failures in a row never leave it busy', async () => {
+    const runtime = await started();
+    await running(runtime);
+    launcher.last!.answer = { ...launcher.last!.answer, delayMs: 300 };
+    for (let round = 0; round < 3; round++) {
+      const timedOut = await Promise.all(
+        Array.from({ length: MAX_IN_FLIGHT }, (_, i) =>
+          runtime.decide(request({ request_id: `slow-${round}-${i}`, deadline_ms: 1 }))
+        )
+      );
+      expect(timedOut.every((answer) => !answer.ok && answer.error.code === 'deadline')).toBe(true);
+    }
+    launcher.last!.answer = { status: 500, body: { error: 'boom' }, delayMs: 0 };
+    for (let i = 0; i < MAX_IN_FLIGHT * 2; i++)
+      expect(await runtime.decide(request({ request_id: `refused-${i}` }))).toMatchObject({
+        ok: false,
+        error: { code: 'model_server_error' },
+      });
+    launcher.last!.answer = { status: 200, body: { choices: [] }, delayMs: 0 };
+    expect(await runtime.decide(request({ request_id: 'after' }))).toMatchObject({ ok: true });
   });
 
   it('answers not_running while off, for another model, or another kind', async () => {

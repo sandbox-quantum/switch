@@ -40,6 +40,30 @@ import {
 /** As many decisions as the model server has slots for; one more is answered `busy`. */
 export const MAX_IN_FLIGHT = 4;
 
+/**
+ * The bounds a decision's `deadline_ms` is held to: Switch waits a few
+ * seconds at most, and a longer deadline would only keep the machine's model
+ * server busy for nothing.
+ */
+export const MIN_DEADLINE_MS = 100;
+export const MAX_DEADLINE_MS = 10_000;
+
+/** How long a decision may take here: its deadline, held to the bounds. */
+export function decisionDeadlineMs(requested: number): number {
+  return Math.min(MAX_DEADLINE_MS, Math.max(MIN_DEADLINE_MS, requested));
+}
+
+/**
+ * What is sent to the model server for a decision's payload: the payload,
+ * capped to one token whatever it asked for, as a decision reads only the
+ * first token's log-probabilities. llama-server takes `n_predict` over
+ * `max_tokens`, so both are set, and `max_completion_tokens` is dropped.
+ */
+export function modelServerBody(payload: Record<string, unknown>): Record<string, unknown> {
+  const { max_completion_tokens: _dropped, ...rest } = payload;
+  return { ...rest, max_tokens: 1, n_predict: 1 };
+}
+
 export type DecisionTiming = {
   /** How long a model server has to load its model and answer `/health`. */
   healthTimeoutMs: number;
@@ -181,9 +205,11 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * stopped. When the assignment stops naming a model, or the owner turns
  * decision work off here, the server is stopped and the weights are kept.
  *
- * Decisions are forwarded to the model server as they came, at most
- * `MAX_IN_FLIGHT` at once. Their payloads and answers are room content:
- * they are never logged or written anywhere.
+ * Decisions are forwarded to the model server as they came, capped to one
+ * token (`modelServerBody`), at most `MAX_IN_FLIGHT` at once, each within
+ * its deadline held to [`MIN_DEADLINE_MS`, `MAX_DEADLINE_MS`]. A slot is
+ * freed however a decision ends. Their payloads and answers are room
+ * content: they are never logged or written anywhere.
  */
 export class DecisionRuntime {
   private hardware: DecisionHardware | null = null;
@@ -313,9 +339,15 @@ export class DecisionRuntime {
     return outcome;
   }
 
-  /** Stops the model server and any download, for the controller's exit. */
+  /**
+   * Stops the model server and any download, for the controller's exit, and
+   * resolves once the server has exited (killed when it has not within a few
+   * seconds of being asked).
+   */
   async close(): Promise<void> {
     this.closed = true;
+    // A change already being applied may start a server; it is stopped too.
+    await this.applying;
     await this.stopWork();
   }
 
@@ -340,10 +372,12 @@ export class DecisionRuntime {
       );
     if (this.inFlight >= MAX_IN_FLIGHT)
       return result(id, 'busy', `This machine is already answering ${MAX_IN_FLIGHT} decisions.`);
+    const deadlineMs = decisionDeadlineMs(request.deadline_ms);
     this.inFlight++;
     const started = this.deps.now();
-    const deadline = AbortSignal.timeout(request.deadline_ms);
+    let deadline: AbortSignal | null = null;
     try {
+      deadline = AbortSignal.timeout(deadlineMs);
       const response = await this.deps.fetch(
         `http://127.0.0.1:${server.port}/v1/chat/completions`,
         {
@@ -352,7 +386,7 @@ export class DecisionRuntime {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${server.apiKey}`,
           },
-          body: JSON.stringify(request.payload),
+          body: JSON.stringify(modelServerBody(request.payload)),
           signal: deadline,
         }
       );
@@ -379,12 +413,8 @@ export class DecisionRuntime {
         model_ms: modelMs,
       };
     } catch (error) {
-      if (deadline.aborted)
-        return result(
-          id,
-          'deadline',
-          `The model server did not answer within ${request.deadline_ms} ms.`
-        );
+      if (deadline?.aborted)
+        return result(id, 'deadline', `The model server did not answer within ${deadlineMs} ms.`);
       // The error names the request's failure, never its payload.
       return result(
         id,
