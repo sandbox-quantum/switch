@@ -520,14 +520,19 @@ none of it is needed to take part in a conversation.
   in chat, point them at the command, or use `update_agent_detail` yourself
   for a rename once they confirm.
 
-  A person links their chat account to their Switch user in Switch Console,
-  which shows them a one-time code. The link counts only once they post
-  `!link-account CODE` from that chat account; Console says exactly how on each
-  platform (on Teams they @mention the Switch app with `link-account CODE`, on
-  Telegram they send `/link_account CODE`). `!unlink-account` lists the
-  Switch users a chat account is linked to, and `!unlink-account NAME` removes
-  one; both act only on the account that sends them. Never ask for a code or
-  post one yourself: it only works from the account it was issued for.
+  A person links their chat account to their Switch user in Switch Console.
+  Switch's bot usually sends that chat account a direct message with a few
+  numbers: tapping the one Console shows confirms the link, and **Not me**
+  cancels it. Console also shows a one-time code, which works where the
+  message can't be sent. The person posts `!link-account CODE` from that chat
+  account, and Console says exactly how on each platform (on Slack,
+  `/link-account CODE` works from any conversation; on Teams they @mention the
+  Switch app with `link-account CODE`; on Telegram they send
+  `/link_account CODE`). `!unlink-account` lists the Switch users a chat
+  account is linked to, and `!unlink-account NAME` removes one. Both act only
+  on the account that sends them, and the bridge answers them to that person,
+  not in a room. Never ask for a code or number, or post one yourself: they
+  only work from the account they were issued for.
 - **`request_agent_deletion`** — ask for another of your owner's agents to be
   deleted. It deletes nothing: Switch posts the request in your connected
   room, and only the agent's owner or a workspace admin can carry it out by

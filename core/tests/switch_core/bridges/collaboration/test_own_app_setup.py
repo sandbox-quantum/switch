@@ -42,6 +42,14 @@ class TestSlackManifest:
             if command.description.strip() and not command.hidden
         }
 
+    def test_shows_the_apps_messages_but_takes_none(self) -> None:
+        # The prompt that confirms a linked account arrives in the app's own
+        # conversation (CHOO-4121); nothing typed there reaches an agent.
+        app_home = slack_manifest()["features"]["app_home"]
+
+        assert app_home["messages_tab_enabled"] is True
+        assert app_home["messages_tab_read_only_enabled"] is True
+
     def test_every_registered_command_does_something(self) -> None:
         registered = {
             c["command"].removeprefix("/")
