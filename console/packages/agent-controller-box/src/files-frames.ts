@@ -92,6 +92,8 @@ export type FilesEntry = {
   mtime: number;
   collapsed?: boolean;
   label?: string;
+  /** The agent's stable name, on a top-level folder that is one agent's (never on "Shared"). */
+  agent?: string;
 };
 
 /** The up-frame. Exactly one of a listing page, bytes, or an error. */

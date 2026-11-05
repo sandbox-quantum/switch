@@ -26,26 +26,37 @@ export const SHARED_LABEL = 'Shared';
  * name while another agent writes there too. A working folder nested deeper, or
  * outside the workspaces folder, labels nothing.
  */
+/** A folder that is exactly one agent's working folder: what people read, and the agent's stable name. */
+export type FolderLabel = { label: string; agent: string };
+
 export function topLevelLabels(
   workspaces: string,
   agents: readonly LabelledAgent[]
-): Map<string, string> {
+): Map<string, FolderLabel> {
   const root = resolve(workspaces);
-  const owners = new Map<string, string[]>();
+  const owners = new Map<string, FolderLabel[]>();
   for (const agent of agents) {
     const folder = topLevelFolder(root, agent);
     if (folder === null) continue;
     const label = agent.displayName?.trim() || agent.name;
-    owners.set(folder, [...(owners.get(folder) ?? []), label]);
+    owners.set(folder, [...(owners.get(folder) ?? []), { label, agent: agent.name }]);
   }
-  const labels = new Map<string, string>();
-  for (const [folder, names] of owners) if (names.length === 1) labels.set(folder, names[0]!);
+  const labels = new Map<string, FolderLabel>();
+  for (const [folder, owned] of owners) if (owned.length === 1) labels.set(folder, owned[0]!);
   return labels;
 }
 
 /** The label for one top-level folder name, given the map `topLevelLabels` made. */
-export function labelFor(labels: ReadonlyMap<string, string>, folder: string): string {
-  return labels.get(folder) ?? SHARED_LABEL;
+export function labelFor(labels: ReadonlyMap<string, FolderLabel>, folder: string): string {
+  return labels.get(folder)?.label ?? SHARED_LABEL;
+}
+
+/** The agent whose working folder this is, by its stable name, or undefined for a "Shared" one. */
+export function agentFor(
+  labels: ReadonlyMap<string, FolderLabel>,
+  folder: string
+): string | undefined {
+  return labels.get(folder)?.agent;
 }
 
 /** The top-level folder name an agent works in, if its working folder is exactly one level under the root. */

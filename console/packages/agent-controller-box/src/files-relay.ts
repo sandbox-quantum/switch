@@ -1,4 +1,4 @@
-import { labelFor } from './file-labels';
+import { agentFor, type FolderLabel, labelFor } from './file-labels';
 import {
   errorReply,
   FILES_CHUNK_BYTES,
@@ -34,7 +34,7 @@ export type FilesRelayDeps = {
   /** Sends a reply up the controller's socket to Core. */
   send: (reply: FilesReply) => void;
   /** Top-level folder labels from the controller's own agent definitions (`topLevelLabels`). */
-  labels: () => ReadonlyMap<string, string>;
+  labels: () => ReadonlyMap<string, FolderLabel>;
   /**
    * A hook for box activity, if the controller ever reports it itself. Today Core
    * marks the box active when it serves the request (`active_at`), as it does for
@@ -153,7 +153,11 @@ export class FilesRelay {
       const labels = open.topLevel ? this.deps.labels() : null;
       const entries = report.listing.entries.map((entry) =>
         labels && entry.kind === 'folder'
-          ? { ...entry, label: labelFor(labels, entry.name) }
+          ? {
+              ...entry,
+              label: labelFor(labels, entry.name),
+              ...(agentFor(labels, entry.name) ? { agent: agentFor(labels, entry.name) } : {}),
+            }
           : entry
       );
       this.deps.send({

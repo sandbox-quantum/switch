@@ -30,7 +30,7 @@ function fakeLink() {
   return { link, started, follow, ended };
 }
 
-function setup(labels = new Map<string, string>()) {
+function setup(labels = new Map<string, { label: string; agent: string }>()) {
   const fake = fakeLink();
   const sent: FilesReply[] = [];
   const logs: { event: string; fields: Record<string, string | number> }[] = [];
@@ -71,7 +71,7 @@ describe('FilesRelay: one order per request, the reply under Core’s id', () =>
   });
 
   it('labels top-level folders only, from the controller’s own definitions', () => {
-    const t = setup(new Map([['writer', 'Writer']]));
+    const t = setup(new Map([['writer', { label: 'Writer', agent: 'writer' }]]));
     t.relay.request(req({ id: 'top' }));
     t.started[0]!.onReport({
       kind: 'reply',
@@ -94,7 +94,7 @@ describe('FilesRelay: one order per request, the reply under Core’s id', () =>
         last: true,
         cursor: 'notes',
         entries: [
-          { name: 'writer', kind: 'folder', size: 0, mtime: 1, label: 'Writer' },
+          { name: 'writer', kind: 'folder', size: 0, mtime: 1, label: 'Writer', agent: 'writer' },
           { name: 'notes', kind: 'folder', size: 0, mtime: 1, label: 'Shared' },
           { name: 'a.txt', kind: 'file', size: 3, mtime: 1 },
         ],
@@ -265,7 +265,9 @@ describe('FilesRelay: activity, never an agent host, no paths in logs', () => {
   });
 
   it('logs codes and counts only, never a path or a name', () => {
-    const t = setup(new Map([['secret-project', 'Secret agent']]));
+    const t = setup(
+      new Map([['secret-project', { label: 'Secret agent', agent: 'secret-agent' }]])
+    );
     t.relay.request(req({ id: 'a', path: 'secret-project/private-file.txt', op: 'read' }));
     t.started[0]!.onReport({ kind: 'reply', id: t.started[0]!.id, ok: false, code: 'not_found' });
     t.relay.request(req({ id: 'b' }));

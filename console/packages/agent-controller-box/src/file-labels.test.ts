@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { labelFor, SHARED_LABEL, topLevelLabels } from './file-labels';
+import { agentFor, labelFor, SHARED_LABEL, topLevelLabels } from './file-labels';
 
 const ROOT = '/data/agents/workspaces';
 
@@ -55,5 +55,17 @@ describe('topLevelLabels', () => {
   it('falls back to the name when the display name is blank', () => {
     const labels = topLevelLabels(ROOT, [{ name: 'writer', displayName: '  ', directory: null }]);
     expect(labelFor(labels, 'writer')).toBe('writer');
+  });
+
+  it('gives each agent’s folder its stable name as well as its label, and none to Shared', () => {
+    const labels = topLevelLabels(ROOT, [
+      { name: 'coder', displayName: 'Code helper', directory: null },
+      { name: 'one', directory: `${ROOT}/common` },
+      { name: 'two', directory: `${ROOT}/common` },
+    ]);
+    expect(agentFor(labels, 'coder')).toBe('coder');
+    expect(labelFor(labels, 'coder')).toBe('Code helper');
+    expect(agentFor(labels, 'common')).toBeUndefined();
+    expect(agentFor(labels, 'downloads')).toBeUndefined();
   });
 });
