@@ -47,6 +47,7 @@ from switch_core.db.stores.room_store import (
     RoomStore,
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.invites import InviteGate, InviteOutcome, Inviter, actor_kind
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -172,6 +173,11 @@ class RoomCreateResult(BaseModel):
 
     room: Room
     failed_attachments: list[dict[str, Any]] = []
+    # Ids of restricted agents a platform join let in unverified — the
+    # platform did not say who added them, so nobody could be judged. The
+    # bridging caller discloses them in the channel; empty for every invite
+    # that named its inviter.
+    invite_unverified: list[str] = []
 
 
 ROOM_NAME_MAX = 200
@@ -183,6 +189,7 @@ class RoomService:
     # attributes. Telemetry is genuinely optional here; `emit_safely` treats
     # None as "report nothing".
     _telemetry: TelemetryService | None = None
+    _invites: InviteGate | None = None
     _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
     _room_listeners: tuple[Callable[[str, str, list[str]], None], ...] = ()
 
@@ -213,6 +220,40 @@ class RoomService:
         self._telemetry = telemetry
         # The shared delivery read; told when a room goes.
         self._room_cache = room_cache
+        # Who may put an agent in a room; asked by create_room and
+        # add_agents_to_room, the two funnels every invite path ends in.
+        self._invites = InviteGate.build(room_store=room_store, agent_store=agent_store)
+
+    def _invite_gate(self) -> InviteGate:
+        """The invite gate, built on first use for the instances a test
+        assembles without `__init__` (see the class-level defaults). The
+        stores fall back to fresh ones where a bare instance never set
+        them: judging an invite reads agents, not rooms."""
+        if self._invites is None:
+            self._invites = InviteGate.build(
+                room_store=getattr(self, "_room_store", None) or RoomStore(),
+                agent_store=getattr(self, "_agent_store", None) or AgentStore(),
+            )
+        return self._invites
+
+    async def _check_invites(
+        self,
+        invited_by: Inviter,
+        agent_ids: list[str],
+        *,
+        room_id: str,
+        group_id: str | None,
+    ) -> InviteOutcome:
+        """Ask the gate about `agent_ids` for `invited_by`, on a session of
+        this service's own. Raises the combined `InviteRefused` when any
+        agent refuses; otherwise returns the outcome (whose `unverified`
+        matters to platform joins)."""
+        if not agent_ids:
+            return InviteOutcome()
+        async with self._session_factory() as session:
+            return await self._invite_gate().require(
+                session, invited_by, agent_ids, room_id=room_id, group_id=group_id
+            )
 
     def on_room_changed(self, listener: Callable[[str, str, list[str]], None]) -> None:
         """Call `listener(tenant_id, room_id, [])` once a room is created,
@@ -550,7 +591,19 @@ class RoomService:
             [(external_channel_id, channel_type)]
         )
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: Inviter
+    ) -> RoomCreateResult:
+        """Create a room with the agents `config` names in it, on
+        `invited_by`'s authority.
+
+        Every agent named has to take instructions from `invited_by`
+        (`invites.InviteGate`), asked before anything is provisioned, or
+        nothing is created and `InviteRefused` is raised. A platform join
+        that names nobody is the one exception: the room is created, and
+        the restricted agents it let in are reported on the result for
+        the caller to disclose.
+        """
         await self._validate_attachments(config)
         # Before anything is provisioned: a name refused after the channel and
         # the room exist would leave both behind. Alias collisions need the
@@ -568,6 +621,14 @@ class RoomService:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
+        # Before the room (or its channel) exists: an agent the inviter may
+        # not add aborts the whole creation, and nothing is left behind.
+        invite_outcome = await self._check_invites(
+            invited_by,
+            agent_ids,
+            room_id="",
+            group_id=config.group_id,
+        )
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
@@ -850,7 +911,11 @@ class RoomService:
             )
 
         self.room_changed(room.tenant_id, room.id)
-        return RoomCreateResult(room=room, failed_attachments=failed_attachments)
+        return RoomCreateResult(
+            room=room,
+            failed_attachments=failed_attachments,
+            invite_unverified=[agent.id for agent in invite_outcome.unverified],
+        )
 
     async def _seed_aliases(
         self,
@@ -1012,11 +1077,20 @@ class RoomService:
         agent_names: list[str] | None = None,
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
-        added_by_kind: Literal["user", "agent", "system"] = "user",
+        *,
+        invited_by: Inviter,
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
-    ) -> None:
-        """`with_agents` runs in the transaction that records the agents, so
-        what it writes commits with them or not at all."""
+    ) -> InviteOutcome:
+        """Add agents to a room, on `invited_by`'s authority.
+
+        Only the agents not already in the room are judged
+        (`invites.InviteGate`): an agent already in the room stays,
+        whatever its policy says now. A refusal raises `InviteRefused`
+        before anything is added. `with_agents` runs in the transaction
+        that records the agents, so what it writes commits with them or
+        not at all. The outcome reports the restricted agents a platform
+        join let in unverified, for the caller to disclose.
+        """
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1049,7 +1123,14 @@ class RoomService:
                 new_agent_ids,
                 agent_ids,
             )
-            return
+            return InviteOutcome()
+
+        invite_outcome = await self._check_invites(
+            invited_by,
+            new_agent_ids,
+            room_id=room_id,
+            group_id=room.group_id,
+        )
 
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 
@@ -1095,9 +1176,10 @@ class RoomService:
             {
                 # Added, not requested.
                 "agent_count": len(new_agent_ids),
-                "added_by_kind": added_by_kind,
+                "added_by_kind": actor_kind(invited_by),
             },
         )
+        return invite_outcome
 
     async def remove_agents_from_room(
         self,

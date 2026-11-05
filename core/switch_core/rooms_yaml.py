@@ -45,6 +45,7 @@ from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
+from switch_core.invites import AgentInviter, Inviter, UserInviter
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 
 if TYPE_CHECKING:
@@ -1099,7 +1100,15 @@ class RoomYamlService:
             package_ids=attached_package_ids or None,
             aliases=spec.aliases,
         )
-        result = await self._rooms.create_room(config)
+        # Judged as whoever is provisioning: the calling agent when
+        # an agent runs the template (its origin is on the config), the
+        # user themselves otherwise.
+        invited_by: Inviter = (
+            AgentInviter(origin.agent_id)
+            if origin is not None
+            else UserInviter(user_id)
+        )
+        result = await self._rooms.create_room(config, invited_by=invited_by)
         room_id = result.room.id
         failures: list[dict[str, Any]] = list(result.failed_attachments)
 

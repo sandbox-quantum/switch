@@ -608,6 +608,43 @@ def test_the_bot_being_added_provisions_the_room() -> None:
     assert app_joins[0].channel_name == "general"
 
 
+def test_a_join_names_the_person_who_added_the_member() -> None:
+    # The service message's sender is who added the new members; the join
+    # is judged by an agent's addressing policy as that person.
+    adapter = _adapter()
+    joins: list[Any] = []
+    adapter._on_user_joined = lambda j: _collect(joins, j)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                new_chat_members=[_FakeUser(user_id=9, username="bob")],
+                from_user=_FakeUser(user_id=7, username="adder"),
+            )
+        )
+    )
+
+    assert joins[0].external_user_id == "9"
+    assert joins[0].added_by_external_user_id == "7"
+
+
+def test_the_bot_being_added_names_who_added_it() -> None:
+    adapter = _adapter()
+    app_joins: list[Any] = []
+    adapter._on_app_joined = lambda j: _collect(app_joins, j)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                new_chat_members=[_FakeUser(user_id=BOT_USER_ID)],
+                from_user=_FakeUser(user_id=7, username="adder"),
+            )
+        )
+    )
+
+    assert app_joins[0].added_by_external_user_id == "7"
+
+
 def test_a_membership_update_for_the_bot_provisions_the_room() -> None:
     adapter = _adapter()
     app_joins: list[Any] = []

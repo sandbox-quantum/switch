@@ -7,6 +7,7 @@ import pytest
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
+from switch_core.invites import UserInviter
 from switch_core.room_service import RoomCreateConfig, RoomService
 
 # A DM room is a 1:1 "direct" room provisioned outbound onto a bridge (on Slack,
@@ -72,7 +73,13 @@ class _FakeAgentStore:
         self._names = names
 
     async def get(self, session: Any, agent_id: str) -> Any:
-        return SimpleNamespace(id=agent_id, name=self._names[agent_id])
+        return SimpleNamespace(
+            id=agent_id,
+            name=self._names[agent_id],
+            display_name=None,
+            owner_id=None,
+            addressing_policy=None,
+        )
 
 
 class _FakeBridge:
@@ -141,7 +148,10 @@ async def test_create_dm_room_fails_when_user_unknown_to_bridge() -> None:
     svc, bridge = _dm_service(known_users={})
 
     with pytest.raises(ValueError, match="no user 'ghost' is known"):
-        await svc.create_room(_dm_config(agent_ids=["a1"], user_names=["ghost"]))
+        await svc.create_room(
+            _dm_config(agent_ids=["a1"], user_names=["ghost"]),
+            invited_by=UserInviter("alice"),
+        )
 
     # We never tried to create a channel for an unreachable user.
     assert bridge.dm_calls == []
@@ -155,7 +165,10 @@ async def test_create_dm_room_refused_when_operator_withheld_channel_creation() 
     )
 
     with pytest.raises(ChannelCreationUnsupported, match="turned off"):
-        await svc.create_room(_dm_config(agent_ids=["a1"], user_names=["alice"]))
+        await svc.create_room(
+            _dm_config(agent_ids=["a1"], user_names=["alice"]),
+            invited_by=UserInviter("alice"),
+        )
 
     assert bridge.dm_calls == []
 
