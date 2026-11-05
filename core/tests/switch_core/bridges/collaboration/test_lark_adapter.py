@@ -86,6 +86,8 @@ def test_lark_is_registered_as_a_webhook_platform() -> None:
     assert LarkAdapter.receives_webhooks
     assert LarkAdapter.keeps_quiet_unless_listening
     assert LarkAdapter.supports_channel_creation
+    assert LarkAdapter.supports_activity_reactions
+    assert LarkAdapter.supports_queue_reaction
 
 
 @pytest.mark.asyncio
@@ -367,6 +369,85 @@ async def test_reply_is_sent_in_the_lark_thread() -> None:
 
 
 @pytest.mark.asyncio
+async def test_long_top_level_message_continues_in_first_chunk_thread() -> None:
+    adapter = LarkAdapter(config=_config())
+    calls: list[httpx.Request] = []
+    message_ids = iter(("om_first", "om_second"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "tenant-token"}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {"message": {"message_id": next(message_ids)}},
+            },
+        )
+
+    await adapter._http.aclose()
+    adapter._http = httpx.AsyncClient(
+        base_url="https://open.larksuite.com", transport=httpx.MockTransport(handler)
+    )
+
+    ref = await adapter._send("oc_chat", "x" * 5000)
+    message_calls = [
+        request
+        for request in calls
+        if request.url.path.endswith("/messages") or request.url.path.endswith("/reply")
+    ]
+
+    assert ref == "om_first"
+    assert len(message_calls) == 2
+    assert message_calls[0].url.path == "/open-apis/im/v1/messages"
+    assert message_calls[1].url.path == "/open-apis/im/v1/messages/om_first/reply"
+    assert json.loads(message_calls[1].content)["reply_in_thread"] is True
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_long_thread_reply_keeps_original_thread_root() -> None:
+    adapter = LarkAdapter(config=_config())
+    calls: list[httpx.Request] = []
+    message_ids = iter(("om_first", "om_second"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "tenant-token"}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {"message": {"message_id": next(message_ids)}},
+            },
+        )
+
+    await adapter._http.aclose()
+    adapter._http = httpx.AsyncClient(
+        base_url="https://open.larksuite.com", transport=httpx.MockTransport(handler)
+    )
+
+    ref = await adapter._send("oc_chat", "x" * 5000, "om_root")
+    message_calls = [
+        request for request in calls if request.url.path.endswith("/reply")
+    ]
+
+    assert ref == "om_first"
+    assert len(message_calls) == 2
+    assert all(
+        request.url.path == "/open-apis/im/v1/messages/om_root/reply"
+        for request in message_calls
+    )
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
 async def test_group_creation_and_member_addition_use_lark_chat_apis() -> None:
     adapter = LarkAdapter(config=_config())
     calls: list[httpx.Request] = []
@@ -404,8 +485,6 @@ async def test_group_creation_and_member_addition_use_lark_chat_apis() -> None:
 
 
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
 async def test_message_recall_triggers_delete_callback() -> None:
     """Test that im.message.recalled_v1 events call on_delete callback."""
@@ -603,7 +682,9 @@ async def test_activity_reactions_are_added_and_removed() -> None:
     await adapter.mark_activity(
         "oc_chat", "om_msg2", agent_name="test-agent", mark="queued", on=True
     )
-    queued_call = [c for c in calls if "/reactions" in c.url.path and "om_msg2" in c.url.path][-1]
+    queued_call = [
+        c for c in calls if "/reactions" in c.url.path and "om_msg2" in c.url.path
+    ][-1]
     assert queued_call.method == "POST"
     queued_body = json.loads(queued_call.content)
     assert queued_body["reaction_type"]["emoji_type"] == "HOURGLASS_NOT_DONE"

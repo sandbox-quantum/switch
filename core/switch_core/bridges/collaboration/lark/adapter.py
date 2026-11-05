@@ -42,7 +42,6 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundMessage,
     InboundMessageDelete,
-    InboundMessageEdit,
     InboundUserJoin,
 )
 
@@ -249,6 +248,8 @@ class LarkAdapter(PlatformAdapter):
     docs_slug: ClassVar[str | None] = "lark"
     receives_webhooks: ClassVar[bool] = True
     draws_session_activity: ClassVar[bool] = True
+    supports_activity_reactions: ClassVar[bool] = True
+    supports_queue_reaction: ClassVar[bool] = True
     supports_channel_creation: ClassVar[bool] = True
     supports_directory_search: ClassVar[bool] = True
     renders_custom_url_schemes: ClassVar[bool] = False
@@ -571,12 +572,13 @@ class LarkAdapter(PlatformAdapter):
     ) -> str | None:
         chunks = _chunks(content)
         first_ref: str | None = None
+        reply_root_id = thread_root_id
         for chunk in chunks:
             content_json = _post_content(chunk)
-            if thread_root_id:
+            if reply_root_id:
                 data = await self._request(
                     "POST",
-                    f"/open-apis/im/v1/messages/{thread_root_id}/reply",
+                    f"/open-apis/im/v1/messages/{reply_root_id}/reply",
                     json={
                         "msg_type": "post",
                         "content": content_json,
@@ -598,6 +600,14 @@ class LarkAdapter(PlatformAdapter):
             ref = message.get("message_id")
             if first_ref is None and ref:
                 first_ref = str(ref)
+            if reply_root_id is None:
+                if not ref and len(chunks) > 1:
+                    raise BridgeOperationError(
+                        "Lark did not return a message ID needed to thread the "
+                        "remaining parts of this long message."
+                    )
+                if ref:
+                    reply_root_id = str(ref)
         return first_ref
 
     async def send_message(
@@ -795,7 +805,6 @@ class LarkAdapter(PlatformAdapter):
         filename: str,
         mimetype: str,
         data: bytes,
-        *,
         caption: str | None = None,
         thread_root_id: str | None = None,
     ) -> str | None:

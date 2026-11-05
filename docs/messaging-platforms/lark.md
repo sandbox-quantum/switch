@@ -19,7 +19,10 @@ chat service.
    credentials. Choose **Lark** for `open.larksuite.com` or **Feishu** for
    `open.feishu.cn`.
 5. Copy the webhook address shown by Switch into Event Subscriptions as the
-   Request URL. Subscribe to `im.message.receive_v1` and save the subscription.
+   Request URL. Subscribe to `im.message.receive_v1`,
+   `im.message.recalled_v1`, and `im.message.deleted_v1`, then save the
+   subscription. The latter two events let Switch mirror message recalls and
+   deletions into the room.
    The public deployment must have `MESSAGING_PUBLIC_URL` and route `/messaging`
    to switch-core over HTTPS. See [Add a messaging platform](../contributing/add-a-messaging-platform.md#exposing-it-over-public-https)
    for local tunnel setup.
@@ -57,7 +60,8 @@ ciphertext because CBC itself does not provide authentication.
   are available. The created chat contains the bot; agents share the app bot
   identity and are distinguished by their names in message text.
 - Text and post messages are bridged. Long messages are split on paragraph or
-  word boundaries within the API message limit.
+  word boundaries within the API message limit; chunks of a new top-level
+  message are sent as replies in the first chunk's thread.
 - Image and file attachments are downloaded from Lark and uploaded back to
   Lark. Outbound files are limited to 20 MiB, and inbound files use Switch's
   configured attachment limit. Larger files are refused with a visible
