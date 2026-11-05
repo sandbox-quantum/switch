@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session } from '@switch-console/shared/session-v1';
@@ -1798,5 +1798,157 @@ describe('retrying a room message', () => {
     await host.command(roomMessage('first'));
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
+  });
+});
+
+describe('mid-turn room steering', () => {
+  it.each([
+    ['starter', true, false, 'same', 'room', 'thread', 'steer', true],
+    ['agent owner', true, true, 'other', 'room', 'thread', 'steer', true],
+    ['unrelated sender', true, false, 'other', 'room', 'thread', 'steer', false],
+    ['different thread', true, true, 'same', 'room', 'elsewhere', 'steer', false],
+    ['different room', true, true, 'same', 'elsewhere', 'thread', 'steer', false],
+    ['incapable adapter', false, true, 'same', 'room', 'thread', 'steer', false],
+    ['always queue', true, true, 'same', 'room', 'thread', 'queue', false],
+    ['missing sender', true, false, '', 'room', 'thread', 'steer', false],
+  ] as const)(
+    '%s follows the steering policy',
+    async (_name, capable, owner, sender, room, thread, delivery, steers) => {
+      const { host, adapter, emit } = await start('claude');
+      adapter.capabilities.steering = capable;
+      const first = roomMessage('first', 'thread');
+      first.origin.actorId = 'same';
+      await host.command(first);
+      await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+      vi.mocked(adapter.sendTurn).mockResolvedValue({ turnId: 'second', steeredInto: 'first' });
+      const second = roomMessage('second', thread);
+      second.origin = { ...second.origin, actorId: sender, roomId: room };
+      if (second.body.type !== 'message.send') throw new Error('Expected a message');
+      second.body.delivery = delivery;
+      if (!sender) {
+        expect(() => host.command(second, owner)).toThrow();
+        expect(adapter.sendTurn).toHaveBeenCalledOnce();
+        return;
+      }
+      await host.command(second, owner);
+      await host.barrier();
+      expect(adapter.sendTurn).toHaveBeenCalledTimes(steers ? 2 : 1);
+      if (steers) {
+        expect(host.snapshot().items.find((item) => item.itemId === 'user-second')?.title).toBe(
+          'Steered into running turn'
+        );
+        await host.command(structuredClone(second), owner);
+        expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+      } else {
+        emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+        await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+      }
+    }
+  );
+
+  it.each(['steered', 'separate', 'unknown', 'completion-race', 'completed-before-error'] as const)(
+    'accounts for %s without resending input',
+    async (outcome) => {
+      const { host, adapter, emit, root } = await start('claude');
+      adapter.capabilities.steering = true;
+      await host.command(roomMessage('first', 'thread'));
+      await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+      vi.mocked(adapter.sendTurn).mockImplementationOnce(async () => {
+        if (outcome === 'steered') return { turnId: 'second', steeredInto: 'first' };
+        if (outcome === 'unknown') throw new Error('Response lost after acceptance');
+        emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+        if (outcome === 'completion-race' || outcome === 'completed-before-error')
+          emit({ type: 'turn.completed', turnId: 'second', outcome: 'completed', usage: [] });
+        if (outcome === 'completed-before-error')
+          throw new Error('Response lost after completed turn');
+        return { turnId: 'second' };
+      });
+      if (outcome === 'unknown') await host.command(roomMessage('queued', 'thread'));
+      const second = roomMessage('second', 'thread');
+      if (second.body.type !== 'message.send') throw new Error('Expected message');
+      second.body.delivery = 'steer';
+      await host.command(second);
+      await host.barrier();
+      expect(host.status('second').status).toBe(outcome === 'unknown' ? 'unknown' : 'applied');
+      if (outcome === 'unknown') {
+        expect(host.snapshot().session.status).toBe('error');
+        expect(host.snapshot().turns.find((turn) => turn.turnId === 'queued')?.status).toBe(
+          'queued'
+        );
+      }
+      expect(host.snapshot().items.find((item) => item.itemId === 'user-second')?.title).toBe(
+        outcome === 'unknown'
+          ? 'Delivery outcome unknown'
+          : outcome === 'steered'
+            ? 'Steered into running turn'
+            : 'Started separate turn'
+      );
+      await host.command(structuredClone(second));
+      expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+      await host.shutdown();
+      if (outcome === 'steered') {
+        // Crash after the inbox receipt, before the confirmed presentation is durable.
+        const file = join(root, 'events.jsonl');
+        const lines = (await readFile(file, 'utf8')).trim().split('\n');
+        const confirmed = lines.findIndex((line) => {
+          const { body } = JSON.parse(line);
+          return body.type === 'item.upsert' && body.item.title === 'Steered into running turn';
+        });
+        expect(confirmed).toBeGreaterThan(0);
+        await writeFile(file, lines.slice(0, confirmed).join('\n') + '\n');
+      }
+      const recovered = setup('claude');
+      const next = await startHost(root, recovered.config, recovered.adapter);
+      hosts.push(next);
+      expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
+      if (outcome === 'steered')
+        expect(next.snapshot().items.find((item) => item.itemId === 'user-second')?.title).toBe(
+          'Steered into running turn'
+        );
+    }
+  );
+
+  it('preserves queued FIFO order while an authorized correction steers', async () => {
+    const { host, adapter, emit } = await start('claude');
+    adapter.capabilities.steering = true;
+    await host.command(roomMessage('first', 'thread'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+    const correction = roomMessage('correction', 'thread');
+    if (correction.body.type !== 'message.send') throw new Error('Expected message');
+    correction.body.delivery = 'steer';
+    vi.mocked(adapter.sendTurn).mockResolvedValueOnce({
+      turnId: 'correction',
+      steeredInto: 'first',
+    });
+    await Promise.all([
+      host.command(roomMessage('queued-a', 'thread')),
+      host.command(roomMessage('queued-b', 'thread')),
+      host.command(correction),
+    ]);
+    expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+    emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(adapter.sendTurn).mock.calls[2]![0].turnId).toBe('queued-a');
+    emit({ type: 'turn.completed', turnId: 'queued-a', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(4));
+    expect(vi.mocked(adapter.sendTurn).mock.calls[3]![0].turnId).toBe('queued-b');
+  });
+
+  it('does not cancel an outstanding approval when steering', async () => {
+    const { host, adapter, emit } = await start('claude');
+    adapter.capabilities.steering = true;
+    await host.command(roomMessage('turn', 'thread'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+    await openApproval(emit, host);
+    vi.mocked(adapter.sendTurn).mockResolvedValueOnce({
+      turnId: 'correction',
+      steeredInto: 'turn',
+    });
+    const correction = roomMessage('correction', 'thread');
+    if (correction.body.type !== 'message.send') throw new Error('Expected message');
+    correction.body.delivery = 'steer';
+    await host.command(correction);
+    expect(host.snapshot().requests[0]?.state).toBe('open');
+    expect(adapter.respondToRequest).not.toHaveBeenCalled();
   });
 });

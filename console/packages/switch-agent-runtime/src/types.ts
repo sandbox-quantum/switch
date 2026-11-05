@@ -39,6 +39,8 @@ export interface MessagePayload {
   opening_message?: string | null;
   /** The sending person's role in the workspace when the message arrived. */
   sender_role?: 'owner' | 'admin' | 'member' | null;
+  sender_owns_agent?: boolean;
+  mid_turn_delivery?: 'steer' | 'queue';
 }
 
 export interface CommandPayload {

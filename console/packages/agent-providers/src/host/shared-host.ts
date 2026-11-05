@@ -720,7 +720,8 @@ export async function runSharedHost(
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
-      requesterName: string | null
+      requesterName: string | null,
+      senderOwnsAgent = false
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -746,7 +747,7 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.some((entry) => entry.commandId === command.commandId);
       try {
-        await host!.command(command);
+        await host!.command(command, senderOwnsAgent);
       } catch (error) {
         await host!.reject(command, error);
       }
@@ -847,7 +848,7 @@ export async function runSharedHost(
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null);
+        const outcome = await run(command, null, message.data.payload.sender_owns_agent);
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)

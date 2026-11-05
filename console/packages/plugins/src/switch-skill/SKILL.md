@@ -1132,3 +1132,7 @@ Every Switch tool you call in normal operation, one line each.
 - `attach_reference_to_room` — attach an existing Reference to a room.
 - `link_rooms` — add a directed pointer between two rooms.
 - `unlink_rooms` — remove one.
+
+### Messages during a running turn
+
+By default, supported providers can receive same-thread corrections from the turn starter or the agent owner while working. Other senders, rooms and threads queue. The agent owner can select always-queue on the agent settings page in the gateway. Cards report confirmed delivery; an unknown provider outcome is not automatically retried. Sending a correction does not cancel outstanding approvals.

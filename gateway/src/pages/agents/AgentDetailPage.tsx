@@ -37,6 +37,7 @@ import {
   titleCase,
 } from "../../theme/hootFormat";
 import AddressingPolicySection from "./AddressingPolicySection";
+import MidTurnDeliverySection from "./MidTurnDeliverySection";
 import AgentManagementSection from "./AgentManagementSection";
 import ServiceAccessSection from "./ServiceAccessSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
@@ -181,6 +182,7 @@ export default function AgentDetailPage() {
           canEdit={isOwner}
           onUpdated={refetch}
         />
+        <MidTurnDeliverySection agent={agent} canEdit={isOwner} onUpdated={refetch} />
         <AgentManagementSection
           agent={agent}
           canEdit={isOwner}
