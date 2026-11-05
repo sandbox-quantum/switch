@@ -76,6 +76,8 @@ describe('main', () => {
       'swce_test',
       '--name',
       'build-box',
+      '--secret-store',
+      'file',
       '--description',
       '  The build box in the office ',
       '--data-dir',
@@ -83,6 +85,18 @@ describe('main', () => {
     ]);
     vi.unstubAllGlobals();
     expect(code).toBe(EXIT_OK);
+    const output = vi
+      .mocked(process.stdout.write)
+      .mock.calls.map(([chunk]) => String(chunk))
+      .join('');
+    expect(output).toContain('Enrollment');
+    expect(output).toContain('Enrolled as controller controller-1');
+    // Console enrollment on an SSH host extracts this phrase from stdout.
+    expect(/Enrolled as controller (\S+)/.exec(output)?.[1]).toBe('controller-1');
+    expect(output).toContain('build-box');
+    expect(output).toContain('Next steps');
+    expect(output).toContain(`switch-agent-controller install-service --data-dir '${dir}'`);
+    expect(output).not.toContain('swcc_test');
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatchObject({
       controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
@@ -101,7 +115,15 @@ describe('main', () => {
         );
       })
     );
-    const base = ['enroll', '--server', 'https://switch.example.com', '--code', 'swce_test'];
+    const base = [
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--secret-store',
+      'file',
+    ];
     expect(await main([...base, '--description', 'x'.repeat(501), '--data-dir', dir])).toBe(
       EXIT_CONFIGURATION
     );
