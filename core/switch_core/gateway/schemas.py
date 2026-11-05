@@ -306,6 +306,11 @@ class AgentSummary(BaseModel):
     # owner-restricted without fetching each one — the console warns about
     # exactly that, and per-agent reads would make it a request storm.
     addressing_policy: AddressingPolicy | None = None
+    # Whether the caller may manage the agent (rename it, edit its options and
+    # who may address it): its owner or a workspace admin. Decided here by
+    # `switch_core.authz` so the Gateway does not repeat the rule; set by the
+    # Gateway routes, and left out of what agents read.
+    can_manage: bool = False
 
 
 class AgentToolSummary(BaseModel):
@@ -1728,6 +1733,11 @@ class PackageDetail(BaseModel):
     # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
     hidden_rooms_count: int = 0
     created_at: str
+    # Whether the caller may open the package. Every route returns only
+    # packages the caller may read, except a room's package list: a private
+    # package its owner attached is listed to every reader of the room, and the
+    # Gateway shows that one without a link.
+    can_read: bool = True
 
 
 class PackageCreateRequest(BaseModel):

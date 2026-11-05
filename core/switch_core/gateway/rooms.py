@@ -197,6 +197,7 @@ async def _build_room_detail(
 
     roles = await _list_room_role_details(session, room.id, protocol)
     join_event_listeners = await room_store.get_join_event_listeners(session, room.id)
+    owner = await session.get(User, room.owner_id) if room.owner_id else None
     takes_part = await takes_part_in_room(session, room_store, room.id, principal.id)
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
@@ -217,6 +218,8 @@ async def _build_room_detail(
         external_channel_url=external_channel_url,
         group_id=room.group_id,
         group_name=group_name,
+        owner_id=room.owner_id,
+        owner_name=owner.name if owner else None,
         read_visibility=room.read_visibility,
         write_visibility=room.write_visibility,
         created_at=str(room.created_at),

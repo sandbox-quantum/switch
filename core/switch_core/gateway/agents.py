@@ -14,7 +14,7 @@ from switch_core.agent_icon import (
     normalise_icon_url,
     refuse_third_party_avatar,
 )
-from switch_core.authz import Principal, require_manage
+from switch_core.authz import Principal, can_manage, require_manage
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentCore,
     AgentExistsError,
@@ -81,14 +81,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _for_caller[Summary: AgentSummary](
+    summary: Summary, user: User, is_admin: bool
+) -> Summary:
+    """`summary` with what `user` may do with the agent filled in."""
+    principal = Principal(user.id, is_admin)
+    return summary.model_copy(
+        update={"can_manage": can_manage(principal, summary.owner_id)}
+    )
+
+
 @router.get("")
 async def list_agents(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[AgentSummary]:
-    return await list_agent_summaries(session, agent_store, user_store)
+    summaries = await list_agent_summaries(session, agent_store, user_store)
+    return [_for_caller(summary, user, is_admin) for summary in summaries]
 
 
 @router.delete("/by-name/{agent_name}")
@@ -422,7 +434,8 @@ async def update_agent_options(
     )
 
     owner_name = user.name if agent.owner_id == user.id else None
-    return await build_agent_summary(session, agent_store, agent, owner_name)
+    summary = await build_agent_summary(session, agent_store, agent, owner_name)
+    return _for_caller(summary, user, is_admin)
 
 
 @router.put("/{agent_id}/icon")
@@ -487,7 +500,8 @@ async def update_agent_icon(
     )
 
     owner_name = user.name if agent.owner_id == user.id else None
-    return await build_agent_summary(session, agent_store, agent, owner_name)
+    summary = await build_agent_summary(session, agent_store, agent, owner_name)
+    return _for_caller(summary, user, is_admin)
 
 
 @router.put("/{agent_id}/name")
@@ -542,7 +556,11 @@ async def rename_agent(
     await session.refresh(renamed)
     owner_name = user.name if renamed.owner_id == user.id else None
     return RenameAgentResponse(
-        agent=await build_agent_summary(session, agent_store, renamed, owner_name),
+        agent=_for_caller(
+            await build_agent_summary(session, agent_store, renamed, owner_name),
+            user,
+            is_admin,
+        ),
         old_name=result.old_name,
         bridge_failures=result.bridge_failures,
         templates_mentioning_old_name=result.templates_mentioning_old_name,
@@ -604,7 +622,8 @@ async def update_agent_display_name(
     )
 
     owner_name = user.name if agent.owner_id == user.id else None
-    return await build_agent_summary(session, agent_store, agent, owner_name)
+    summary = await build_agent_summary(session, agent_store, agent, owner_name)
+    return _for_caller(summary, user, is_admin)
 
 
 @router.put("/{agent_id}/description")
@@ -643,7 +662,8 @@ async def update_agent_description(
     logger.info("Set agent %s description by user %s", agent.name, user.name)
 
     owner_name = user.name if agent.owner_id == user.id else None
-    return await build_agent_summary(session, agent_store, agent, owner_name)
+    summary = await build_agent_summary(session, agent_store, agent, owner_name)
+    return _for_caller(summary, user, is_admin)
 
 
 @router.post("/register-other")
@@ -730,7 +750,7 @@ async def update_addressing_policy(
         user.name,
     )
 
-    return await assemble_agent_detail(
+    detail = await assemble_agent_detail(
         session,
         agent=agent,
         visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
@@ -741,6 +761,7 @@ async def update_addressing_policy(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
+    return _for_caller(detail, user, is_admin)
 
 
 @router.put("/{agent_id}/can-manage-agents")
@@ -783,7 +804,7 @@ async def update_can_manage_agents(
         user.name,
     )
 
-    return await assemble_agent_detail(
+    detail = await assemble_agent_detail(
         session,
         agent=agent,
         visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
@@ -794,6 +815,7 @@ async def update_can_manage_agents(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
+    return _for_caller(detail, user, is_admin)
 
 
 # Declared after the literal GET routes (e.g. /known-types) so those are matched
@@ -813,7 +835,7 @@ async def get_agent_detail(
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
-    return await assemble_agent_detail(
+    detail = await assemble_agent_detail(
         session,
         agent=agent,
         visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
@@ -824,3 +846,4 @@ async def get_agent_detail(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
+    return _for_caller(detail, user, is_admin)
