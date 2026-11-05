@@ -40,7 +40,9 @@ export type ModelServerHandle = {
 
 export type LaunchModelServer = (spec: ModelServerSpec) => Promise<ModelServerHandle>;
 
-const STOP_GRACE_MS = 5_000;
+// Under the 4 s Switch Console gives its embedded controller before SIGKILL,
+// so the server is gone before the controller can be killed with it running.
+const STOP_GRACE_MS = 2_500;
 const KEPT_LINES = 30;
 const LINE_LIMIT = 300;
 const OUT_OF_MEMORY =
