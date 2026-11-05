@@ -129,6 +129,15 @@ version of their own to them without also giving them a release of their own.
   workspace, with the same refusals as deleting your own. Administrator
   accounts and your own account are refused, and every attempt is recorded in
   the server audit log with its outcome.
+- **Transfer ownership.** The owner, or a workspace admin, can hand an agent,
+  room, package, reference, reference type, library document or template to
+  another member of the workspace (`POST /ownership/transfer`, and a Transfer
+  ownership action on the detail pages). Each transfer is audited. An agent
+  that uses its owner's service connections, is managed on its owner's
+  machine, can manage agents, has sub-agents or signs in with its own OAuth
+  client is refused; any other agent gets a new API key that only the new
+  owner can see, so it has to be reconnected. Chats and room documents are not
+  transferable.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package

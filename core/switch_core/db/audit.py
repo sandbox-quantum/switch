@@ -72,6 +72,7 @@ class AuditAction(StrEnum):
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
     WORKSPACE_SERVICE_CLEARED = "workspace_service.cleared"
+    OWNERSHIP_TRANSFERRED = "ownership.transferred"
 
 
 class OrganizationAuditAction(StrEnum):
