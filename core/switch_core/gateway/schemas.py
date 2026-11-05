@@ -841,7 +841,8 @@ class ClaimIdentityRequest(BaseModel):
     # (CHOO-3881). A Console from before then leaves it out and would report
     # a link that does not count as made, so its claim is answered with a 409
     # whose text carries the code, which it shows. One for someone else is
-    # refused, since that text would show the code to the wrong person.
+    # refused while the link needs confirming, since that text would show the
+    # code to the wrong person.
     expects_confirmation: bool = False
 
 

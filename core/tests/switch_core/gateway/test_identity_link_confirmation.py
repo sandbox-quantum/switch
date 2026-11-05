@@ -383,6 +383,27 @@ class TestAConsoleFromBeforeConfirmation:
                 is None
             )
 
+    async def test_an_admin_linking_an_unseen_account_provisions_nothing(
+        self, world: _World
+    ) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await _claim(
+                world,
+                world.bob,
+                external_user_id="U-unseen",
+                for_user=world.ada,
+                is_admin=True,
+                expects_confirmation=False,
+            )
+
+        assert refused.value.status_code == 409
+        assert "Update Switch Console" in refused.value.detail
+        async with world.session_factory() as session:
+            provisioned = await session.scalar(
+                select(ExternalUser).where(ExternalUser.external_user_id == "U-unseen")
+            )
+        assert provisioned is None
+
 
 class TestIssuingACode:
     async def test_a_new_code_for_a_waiting_link(self, world: _World) -> None:

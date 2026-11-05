@@ -873,6 +873,11 @@ async def claim_bridge_identity(
     target_user_id = _require_self_or_admin(
         user, is_admin, payload.user_id, "claim a messaging identity"
     )
+    # An older client is shown the code in place of a refusal, and a code is
+    # only ever shown to the person it links.
+    older_client_for_someone_else = (
+        not payload.expects_confirmation and target_user_id != caller_id
+    )
     # Standing in this tenant, not existence: `users` is deployment-wide, and
     # a claim names who the account is recognised as inside this tenant. An
     # organization's `org_admin` stands in every workspace of it.
@@ -893,6 +898,10 @@ async def claim_bridge_identity(
         session, bridge_id, payload.external_user_id
     )
     if external_user is None:
+        if older_client_for_someone_else:
+            # An account never seen has nothing confirmed to answer with, so
+            # refuse before provisioning leaves a row behind.
+            raise _older_client_linking_someone_else()
         # Nobody has seen this person speak yet, which is the normal case right
         # after connecting a workspace. Provision the identity now rather than
         # making them post something first — but only once the platform agrees
@@ -942,18 +951,8 @@ async def claim_bridge_identity(
             session, external_user_store, user_store, external_user, None
         )
 
-    if not payload.expects_confirmation and target_user_id != caller_id:
-        # An older client is shown the code in place of a refusal, and a code
-        # is only ever shown to the person it links.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Linking a chat account now has to be confirmed from that "
-                "account with a one-time code, and this version of Switch "
-                "Console cannot show one. Update Switch Console, then link the "
-                "account again."
-            ),
-        )
+    if older_client_for_someone_else:
+        raise _older_client_linking_someone_else()
 
     request = await external_user_store.request_link(
         session, external_user, target_user_id, requested_by_user_id=caller_id
@@ -1002,6 +1001,18 @@ async def claim_bridge_identity(
         user_store,
         external_user,
         LinkRequestSummary(user_id=target_user_id, code=code),
+    )
+
+
+def _older_client_linking_someone_else() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=(
+            "Linking a chat account now has to be confirmed from that "
+            "account with a one-time code, and this version of Switch "
+            "Console cannot show one. Update Switch Console, then link the "
+            "account again."
+        ),
     )
 
 
