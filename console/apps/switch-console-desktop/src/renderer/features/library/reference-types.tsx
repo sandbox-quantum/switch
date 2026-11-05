@@ -493,7 +493,7 @@ export function ReferenceTypeModal({
               value={form.type}
               disabled={!creating}
               aria-invalid={creating && touchedSlug && problem !== null}
-              className="font-mono"
+              className="h-9 font-mono leading-normal"
               onChange={(e) => {
                 slugEdited.current = true;
                 setTouchedSlug(true);
