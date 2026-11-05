@@ -22,6 +22,7 @@ from switch_core.feature_flags import (
     GROUP_CHATS,
     HOSTED_AGENTS,
     HOSTED_AWAKE_BUDGETS,
+    HOSTED_CLOUD_FILES,
     KNOWN_FEATURE_FLAGS,
     ORGANIZATION_CONNECTOR_APPS,
     SERVICE_CONNECTIONS,
@@ -1386,6 +1387,10 @@ class SwitchConfig(BaseSettings):
     @property
     def hosted_awake_budgets_enabled(self) -> bool:
         return self.feature_flags[HOSTED_AWAKE_BUDGETS]
+
+    @property
+    def hosted_cloud_files_enabled(self) -> bool:
+        return self.feature_flags[HOSTED_CLOUD_FILES]
 
     @property
     def service_connections_enabled(self) -> bool:
