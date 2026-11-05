@@ -852,7 +852,8 @@ async def claim_bridge_identity(
     (CHOO-3881), and counts for nothing before then: who an account is
     recognised as is for the account's holder to say. A claim for yourself
     comes back with the code; one an admin makes for someone else does not,
-    and the person asks for their own.
+    and the person asks for their own. A Console from before confirmation is
+    given its code as the text of a 409, the one part of the answer it shows.
 
     Claiming one for someone else is an admin action; claiming one for
     yourself is not. Claims are **not exclusive** — several Switch users may
@@ -865,7 +866,16 @@ async def claim_bridge_identity(
     # session holds, the caller included, and an expired row cannot be
     # reloaded from synchronous attribute access.
     caller_id = user.id
-    if not payload.expects_confirmation:
+    bridge = await bridge_store.get(session, bridge_id)
+    if bridge is None:
+        raise HTTPException(status_code=404, detail="Bridge not found")
+
+    target_user_id = _require_self_or_admin(
+        user, is_admin, payload.user_id, "claim a messaging identity"
+    )
+    if not payload.expects_confirmation and target_user_id != caller_id:
+        # An older client is shown the code in place of a refusal, and a code
+        # is only ever shown to the person it links.
         raise HTTPException(
             status_code=409,
             detail=(
@@ -875,13 +885,6 @@ async def claim_bridge_identity(
                 "account again."
             ),
         )
-    bridge = await bridge_store.get(session, bridge_id)
-    if bridge is None:
-        raise HTTPException(status_code=404, detail="Bridge not found")
-
-    target_user_id = _require_self_or_admin(
-        user, is_admin, payload.user_id, "claim a messaging identity"
-    )
     # Standing in this tenant, not existence: `users` is deployment-wide, and
     # a claim names who the account is recognised as inside this tenant. An
     # organization's `org_admin` stands in every workspace of it.
@@ -989,6 +992,8 @@ async def claim_bridge_identity(
         details={"bridge_id": bridge_id, "user_id": target_user_id},
     )
     await session.commit()
+    if code is not None and not payload.expects_confirmation:
+        raise HTTPException(status_code=409, detail=_code_as_refusal_text(code))
 
     return await _identity_summary(
         session,
@@ -996,6 +1001,24 @@ async def claim_bridge_identity(
         user_store,
         external_user,
         LinkRequestSummary(user_id=target_user_id, code=code),
+    )
+
+
+def _code_as_refusal_text(code: LinkCode) -> str:
+    """A link code worded as the next step, for a Console from before links
+    had to be confirmed.
+
+    Those Consoles ignore the code in a claim's response but show a 409's
+    detail in the link dialog, so the code travels there. They show it as
+    plain text, so the instructions lose their backticks: a command copied
+    with one would not start with its prefix, and the bridge would not read
+    it as a command.
+    """
+    minutes = code.expires_in_seconds // 60
+    return (
+        "One more step: confirm this account is yours. "
+        f"{code.instructions.replace('`', '')} "
+        f"The code expires in {minutes} minutes."
     )
 
 
