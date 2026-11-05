@@ -64,10 +64,14 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 _LOOPBACK_NAMES = frozenset({"localhost"})
 
 # Switch web's pages: no framing, scripts from the server only, no plugins, no
-# moving the base, and forms post only to the server.
+# moving the base, forms post only to the server, the page's own requests go
+# only to the server too, so a login sealed in the page (hosted agents v2)
+# can't be sent anywhere else even by mistake, and images come only from the
+# server or from the page itself (a file preview's `blob:`, a bundled `data:`).
 CONTENT_SECURITY_POLICY = (
     "frame-ancestors 'none'; script-src 'self'; object-src 'none'; "
-    "base-uri 'self'; form-action 'self'"
+    "base-uri 'none'; form-action 'self'; connect-src 'self'; "
+    "img-src 'self' blob: data:"
 )
 
 

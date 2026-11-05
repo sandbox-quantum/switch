@@ -417,6 +417,7 @@ def test_a_page_carries_the_csp_and_refuses_framing(dist: Path) -> None:
         assert response.status_code == 200
         assert response.headers["content-security-policy"] == (
             "frame-ancestors 'none'; script-src 'self'; object-src 'none'; "
-            "base-uri 'self'; form-action 'self'"
+            "base-uri 'none'; form-action 'self'; connect-src 'self'; "
+            "img-src 'self' blob: data:"
         )
         assert response.headers["x-frame-options"] == "DENY"
