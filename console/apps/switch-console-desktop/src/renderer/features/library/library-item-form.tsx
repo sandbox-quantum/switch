@@ -73,7 +73,7 @@ export function LibraryItemFields({
           {!typeLocked && onNewType && (
             <button
               type="button"
-              className="cursor-pointer self-start text-xs text-foreground-muted underline-offset-2 hover:text-foreground hover:underline"
+              className="w-max cursor-pointer self-start text-left text-xs text-foreground-muted underline-offset-2 hover:text-foreground hover:underline"
               onClick={onNewType}
             >
               None fit? New type…
