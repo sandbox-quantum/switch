@@ -767,7 +767,11 @@ export class RemoteServerService {
     action: 'starting' | 'updating'
   ): Promise<StartRemoteServerResult> {
     if (this.busy.has(sshHost)) {
-      return { kind: 'error', message: `An operation is already in progress for ${sshHost}.` };
+      return {
+        kind: 'error',
+        message: `An operation is already in progress for ${sshHost}.`,
+        failure: 'operation_in_progress',
+      };
     }
     hostReachabilityService.requireReachable(sshHost);
     this.busy.add(sshHost);
@@ -873,7 +877,7 @@ export class RemoteServerService {
       this.setStatus(sshHost, { phase: 'error', error: message });
       this.failUpgrade(sshHost, message);
       reportManagedServerStartThrew('remote');
-      return { kind: 'error', message };
+      return { kind: 'error', message, failure: 'unexpected' };
     } finally {
       this.busy.delete(sshHost);
       this.startAborts.delete(sshHost);

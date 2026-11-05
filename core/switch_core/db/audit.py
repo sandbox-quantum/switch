@@ -50,7 +50,15 @@ class AuditAction(StrEnum):
     BRIDGE_UPDATED = "collaboration_bridge.updated"
     BRIDGE_DEFAULT_SET = "collaboration_bridge.default_set"
     BRIDGE_DELETED = "collaboration_bridge.deleted"
+    # A claim took effect. Once links needed confirming from the account
+    # (CHOO-3881), that is when the account confirmed one, not when someone
+    # asked for it (`BRIDGE_IDENTITY_LINK_REQUESTED`).
     BRIDGE_IDENTITY_CLAIMED = "collaboration_bridge.identity_claimed"
+    BRIDGE_IDENTITY_LINK_REQUESTED = "collaboration_bridge.identity_link_requested"
+    BRIDGE_IDENTITY_LINK_CANCELLED = "collaboration_bridge.identity_link_cancelled"
+    BRIDGE_IDENTITY_CONFIRMATION_REQUIRED = (
+        "collaboration_bridge.identity_confirmation_required"
+    )
     BRIDGE_IDENTITY_RELEASED = "collaboration_bridge.identity_released"
     MESSAGING_INSTALL_STARTED = "messaging_install.started"
     MESSAGING_INSTALL_CONNECTED = "messaging_install.connected"
@@ -63,6 +71,7 @@ class AuditAction(StrEnum):
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
+    WORKSPACE_SERVICE_CLEARED = "workspace_service.cleared"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -70,12 +79,44 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_CREATED = "organization.workspace_created"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
+    CONNECTOR_APP_SAVED = "organization.connector_app_saved"
+    CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
+    SERVICE_SET = "organization.service_set"
+    SERVICE_CLEARED = "organization.service_cleared"
+    # Changes made in a directory kept outside Switch, brought in at sign-in,
+    # from its events or by the daily check (`details.source`).
+    MEMBER_ADDED_FROM_DIRECTORY = "organization.member_added_from_directory"
+    MEMBER_PROMOTED_FROM_DIRECTORY = "organization.member_promoted_from_directory"
+    MEMBER_DEMOTED_FROM_DIRECTORY = "organization.member_demoted_from_directory"
+    MEMBER_REMOVED_FROM_DIRECTORY = "organization.member_removed_from_directory"
+    # A change brought in from the directory broke a rule Switch keeps itself
+    # (the last Org Admin, agents left with an owner who can't act); applied
+    # anyway, and recorded for the organization's admins (`details.kind`).
+    DIRECTORY_CONFLICT = "organization.directory_conflict"
+    # An operator made the organization follow one in the directory.
+    LINKED_TO_DIRECTORY = "organization.linked_to_directory"
+
+
+class OrganizationIssueKind(StrEnum):
+    """What can need an organization admin's attention
+    (`organization_issues.py`). `directory_organization_deleted` is also the
+    `details.kind` of the `DIRECTORY_CONFLICT` that reports it. Mirrored by
+    hand as `OrganizationIssueKind` in the gateway's `data/api.ts`."""
+
+    NO_ORG_ADMIN = "no_org_admin"
+    WORKSPACE_WITHOUT_OWNER = "workspace_without_owner"
+    AGENTS_WITHOUT_ACTING_OWNER = "agents_without_acting_owner"
+    DIRECTORY_ORGANIZATION_DELETED = "directory_organization_deleted"
 
 
 class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
     CONNECTOR_APP_REMOVED = "connector_app.removed"
+    # WorkOS refused where the directory mirror had got to in its events, and
+    # the mirror started again from now, with a full check of every linked
+    # organization.
+    DIRECTORY_EVENTS_RESTARTED = "directory.events_restarted"
 
 
 async def record_audit_event(

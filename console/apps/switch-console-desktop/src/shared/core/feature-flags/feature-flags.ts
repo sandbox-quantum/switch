@@ -18,6 +18,7 @@ export const CONSOLE_FEATURE_FLAGS = [
   'agent_chats',
   'switch_buddy',
   'group_chats',
+  'buddy_slack_handoff',
 ] as const;
 
 export type FeatureFlagKey = (typeof CONSOLE_FEATURE_FLAGS)[number];

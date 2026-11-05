@@ -66,7 +66,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import event, text
+from sqlalchemy import event
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import ORMExecuteState, Session, SessionTransaction
 
@@ -138,6 +138,10 @@ def register_tenant_session_hook() -> None:
     _registered = True
 
 
+_SET_TENANT = "SELECT set_config('app.tenant_id', $1, true)"
+_SET_ORGANIZATION = "SELECT set_config('app.organization_id', $1, true)"
+
+
 def _set_tenant_on_begin(
     session: Session, transaction: SessionTransaction, connection: Connection
 ) -> None:
@@ -158,16 +162,12 @@ def _set_tenant_on_begin(
     # apart from "no transaction has begun yet".
     session.info[_STAMPED] = tenant_id
     session.info[_STAMPED_ORGANIZATION] = organization_id
+    # Sent to the driver as they are: a `text()` construct would be built and
+    # compiled again for every transaction, which is every session.
     if tenant_id is not None:
-        connection.execute(
-            text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-            {"tenant_id": tenant_id},
-        )
+        connection.exec_driver_sql(_SET_TENANT, (tenant_id,))
     if organization_id is not None:
-        connection.execute(
-            text("SELECT set_config('app.organization_id', :organization_id, true)"),
-            {"organization_id": organization_id},
-        )
+        connection.exec_driver_sql(_SET_ORGANIZATION, (organization_id,))
 
 
 def _forget_the_stamp(session: Session, transaction: SessionTransaction) -> None:
@@ -195,7 +195,7 @@ def _refuse_a_binding_that_came_too_late(state: ORMExecuteState) -> None:
     nothing to compare and nothing to refuse. From the second onwards the two
     must agree.
     """
-    _refuse_drift(state.session)
+    refuse_drift(state.session)
 
 
 def _note_that_a_statement_was_issued(state: ORMExecuteState) -> None:
@@ -207,10 +207,10 @@ def _refuse_a_flush_that_drifted(
     session: Session, flush_context: object, instances: object
 ) -> None:
     """The same check, on the path `do_orm_execute` does not see."""
-    _refuse_drift(session)
+    refuse_drift(session)
 
 
-def _refuse_drift(session: Session) -> None:
+def refuse_drift(session: Session) -> None:
     if _STAMPED not in session.info:
         return
     stamped_organization = session.info.get(_STAMPED_ORGANIZATION)
@@ -383,7 +383,7 @@ class TenantCheckedSession(Session):
     """
 
     def get(self, *args: Any, **kwargs: Any) -> Any:
-        _refuse_drift(self)
+        refuse_drift(self)
         self.info[_ISSUED_A_STATEMENT] = False
         instance = super().get(*args, **kwargs)
         if instance is not None and not self.info[_ISSUED_A_STATEMENT]:
@@ -392,7 +392,7 @@ class TenantCheckedSession(Session):
         return instance
 
     def get_one(self, *args: Any, **kwargs: Any) -> Any:
-        _refuse_drift(self)
+        refuse_drift(self)
         self.info[_ISSUED_A_STATEMENT] = False
         instance = super().get_one(*args, **kwargs)
         if not self.info[_ISSUED_A_STATEMENT]:

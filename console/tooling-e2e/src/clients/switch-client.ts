@@ -511,6 +511,13 @@ export class SwitchClient {
     return this.gateway("GET", "/organizations/current/audit-events");
   }
 
+  /** `GET /gateway/organizations/current/issues` — what the organization's admins have left to fix; organization admin only. */
+  async organizationIssues(): Promise<
+    { kind: string; workspace_id: string | null; workspace_name: string | null; agents: string[] }[]
+  > {
+    return this.gateway("GET", "/organizations/current/issues");
+  }
+
   /** `GET /gateway/organizations/current` — the current workspace's organization and the caller's role there. */
   async currentOrganization(): Promise<{
     id: string;
@@ -546,7 +553,7 @@ export class SwitchClient {
   async registerAgentAsUser(params: {
     name: string;
     description: string;
-  }): Promise<AgentRef> {
+  }): Promise<RegisteredAgent> {
     const body = await this.gateway<{ id: string; api_key: string }>(
       "POST",
       "/agents/register",
@@ -558,7 +565,7 @@ export class SwitchClient {
       },
     );
     this.issued.record(body.api_key);
-    return { id: body.id, name: params.name };
+    return { id: body.id, name: params.name, apiKey: body.api_key };
   }
 
   /** `GET /gateway/feature-flags` — the flags this deployment has turned on. */
@@ -864,15 +871,19 @@ export class SwitchClient {
 
   /**
    * `POST /gateway/collaborations/{bridge}/identities` on the default bridge
-   * of `bridgeType` — link a chat account to the signed-in Switch user, so
-   * Switch can recognise that person in a room (what the rename and delete
-   * chat commands check).
+   * of `bridgeType` — start linking a chat account to the signed-in Switch
+   * user, so Switch can recognise that person in a room (what the rename and
+   * delete chat commands check).
+   *
+   * The link counts only once the account posts the returned code
+   * (`!link-account CODE`); `code` is null when the account had already
+   * confirmed it.
    */
   async claimIdentity(
     bridgeType: string,
     externalUserId: string,
     username: string,
-  ): Promise<void> {
+  ): Promise<{ bridgeId: string; identityId: string; code: string | null }> {
     const bridges = await this.gateway<
       { bridge_id: string; bridge_type: string; is_default?: boolean }[]
     >("GET", "/collaborations");
@@ -882,15 +893,83 @@ export class SwitchClient {
       throw new Error(
         `No ${bridgeType} collaboration bridge on this Switch server`,
       );
+    const body = await this.gateway<{
+      id: string;
+      link_request: { code: { code: string } | null } | null;
+    }>("POST", `/collaborations/${bridge.bridge_id}/identities`, {
+      external_user_id: externalUserId,
+      username,
+      user_id: null,
+      expects_confirmation: true,
+    });
+    if (body.link_request && !body.link_request.code)
+      throw new Error("A link for yourself came back without a code");
+    return {
+      bridgeId: bridge.bridge_id,
+      identityId: body.id,
+      code: body.link_request?.code?.code ?? null,
+    };
+  }
+
+  /**
+   * `DELETE /gateway/collaborations/{bridge}/identities/{identity}` — unlink
+   * the signed-in user from a chat account, or cancel a link still waiting
+   * for its code.
+   */
+  async releaseIdentity(bridgeId: string, identityId: string): Promise<void> {
     await this.gateway(
-      "POST",
-      `/collaborations/${bridge.bridge_id}/identities`,
-      {
-        external_user_id: externalUserId,
-        username,
-        user_id: null,
-      },
+      "DELETE",
+      `/collaborations/${bridgeId}/identities/${identityId}`,
     );
+  }
+
+  /**
+   * `DELETE /gateway/collaborations/{bridge}/identities/{identity}/request` —
+   * stop waiting for a chat account to confirm the signed-in user's link,
+   * leaving any link it already has.
+   */
+  async cancelLinkRequest(bridgeId: string, identityId: string): Promise<void> {
+    await this.gateway(
+      "DELETE",
+      `/collaborations/${bridgeId}/identities/${identityId}/request`,
+    );
+  }
+
+  /**
+   * `GET /gateway/collaborations/{bridge}/identities/unconfirmed` — the
+   * links on a bridge made before links needed confirming, by identity id.
+   * Admin only.
+   */
+  async unconfirmedLinkIds(bridgeId: string): Promise<string[]> {
+    const rows = await this.gateway<{ id: string }[]>(
+      "GET",
+      `/collaborations/${bridgeId}/identities/unconfirmed`,
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * `GET /gateway/auth/me/identities/pending` — the chat accounts waiting to
+   * confirm a link to the signed-in user, by identity id.
+   */
+  async pendingIdentityIds(): Promise<string[]> {
+    const rows = await this.gateway<{ id: string }[]>(
+      "GET",
+      "/auth/me/identities/pending",
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * `POST /gateway/collaborations/{bridge}/identities/{identity}/code` — a
+   * fresh code for the signed-in user's waiting link, replacing the last.
+   */
+  async issueLinkCode(bridgeId: string, identityId: string): Promise<string> {
+    const body = await this.gateway<{ code: string }>(
+      "POST",
+      `/collaborations/${bridgeId}/identities/${identityId}/code`,
+    );
+    return body.code;
   }
 
   async listAgents(): Promise<AgentSummary[]> {

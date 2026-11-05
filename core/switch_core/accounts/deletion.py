@@ -133,6 +133,8 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("organization_members", "user_id"): "database cascades",
     ("template_installs", "owner_id"): "database cascades",
     ("external_user_claims", "user_id"): "database cascades",
+    ("external_user_link_requests", "user_id"): "database cascades",
+    ("external_user_link_requests", "requested_by_user_id"): "database clears",
     ("chat_operations", "user_id"): "database cascades",
     ("chat_hidden", "user_id"): "database cascades",
     ("chat_owner_grants", "user_id"): "database cascades",
@@ -140,6 +142,8 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("service_connections", "user_id"): "database cascades",
     ("sign_in_flows", "user_id"): "database cascades",
     ("clients", "user_id"): "database clears",
+    ("organization_app_credentials", "updated_by"): "database clears",
+    ("organization_service_settings", "updated_by"): "database clears",
 }
 
 
@@ -299,7 +303,9 @@ class AccountDeletion:
         write that could leave an organization without an `org_admin` takes
         (`OrganizationStore.lock_admins`), so `refusal` holds against another
         admin stepping down at the same moment. Every check runs before any
-        row goes."""
+        row goes. Only Switch's rows go: a membership in a directory kept
+        outside Switch (`organization_directory.py`) is the person's beyond
+        Switch, and stays there."""
         organizations: dict[str, str] = {}
         for workspace in workspaces:
             async with tenant_session(self.session_factory, workspace.id) as session:
