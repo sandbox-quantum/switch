@@ -115,14 +115,6 @@ const LibraryPanel = observer(function LibraryPanel() {
             options={KINDS}
             className="w-max"
           />
-          {kind === 'documents' && (
-            // The server keeps an agent's room documents out of this list, which
-            // surprises someone who knows one exists: say where it is.
-            <p className="text-xs text-foreground-muted">
-              Documents an agent writes in a room belong to that room, so they aren’t listed here.
-              Find them in the room’s Resources tab.
-            </p>
-          )}
           <ListToolbar
             scope={
               viewer.id !== null && (
@@ -157,6 +149,14 @@ const LibraryPanel = observer(function LibraryPanel() {
               )
             }
           />
+          {kind === 'documents' && (
+            // The server keeps an agent's room documents out of this list, which
+            // surprises someone who knows one exists: say where it is.
+            <p className="text-xs text-foreground-muted">
+              Documents an agent writes in a room belong to that room, so they aren’t listed here.
+              Find them in the room’s Resources tab.
+            </p>
+          )}
           {items.isPending ? (
             <p className="py-2 text-sm text-foreground-muted">Loading…</p>
           ) : items.isError ? (
