@@ -81,18 +81,21 @@ class FakeController:
             reply["error"] = self.error
         elif request["op"] == "list":
             reply["entries"] = [
+                # The launcher's real entry shape: `mtime` in epoch
+                # milliseconds, and `agent` only on an agent's own folder.
                 {
                     "name": "agent-a",
                     "kind": "folder",
                     "size": 0,
-                    "mtime": "2026-11-05T10:00:00Z",
+                    "mtime": 1793880000000,
                     "label": "Scout",
+                    "agent": "agent-a",
                 },
                 {
                     "name": "shared",
                     "kind": "folder",
                     "size": 0,
-                    "mtime": "2026-11-05T10:00:00Z",
+                    "mtime": 1793880000000,
                     "label": "Shared",
                 },
             ]
@@ -194,6 +197,9 @@ async def test_the_owner_lists_a_folder_with_its_agent_labels(box: Box, caplog) 
         ("agent-a", "Scout"),
         ("shared", "Shared"),
     ]
+    # The stable agent key and the epoch-millisecond time pass through as sent.
+    assert [e.get("agent") for e in listed.json()["entries"]] == ["agent-a", None]
+    assert listed.json()["entries"][0]["mtime"] == 1793880000000
     assert listed.headers["cache-control"] == "private, no-store"
     assert box.requests_sent()[0]["data"]["op"] == "list"
     assert "op=list" in caplog.text and "status=200" in caplog.text
@@ -277,6 +283,7 @@ async def test_a_bad_path_shape_is_refused_before_anything_goes_down(
         ("too_large", 413),
         ("not_regular", 415),
         ("failed", 500),
+        ("bad_request", 400),
         ("busy", 429),
         ("timeout", 504),
     ],

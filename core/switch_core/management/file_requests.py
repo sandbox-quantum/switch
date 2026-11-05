@@ -63,10 +63,14 @@ ERRORS = frozenset(
         "failed",
         "busy",
         "timeout",
+        "bad_request",
     }
 )
 
 Op = Literal["list", "read", "zip"]
+
+# An agent name, as `VALID_AGENT_NAME_RE` allows it.
+AGENT_NAME_PATTERN = r"^[a-z0-9][a-z0-9._-]*$"
 
 
 class _Entry(BaseModel):
@@ -74,9 +78,14 @@ class _Entry(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     kind: Literal["file", "folder"]
     size: int = Field(ge=0)
-    mtime: str = Field(max_length=64)
+    # Milliseconds since the epoch, as the launcher reads it from the file.
+    mtime: int = Field(ge=0)
     collapsed: bool | None = None
     label: str | None = Field(default=None, max_length=255)
+    # The agent whose working folder this is, by its stable name (top level only).
+    # Same rule as Core's agent names (`VALID_AGENT_NAME_RE`), kept here so this
+    # module needn't import the agent protocol; a test holds the two together.
+    agent: str | None = Field(default=None, max_length=255, pattern=AGENT_NAME_PATTERN)
 
 
 class FileReply(BaseModel):

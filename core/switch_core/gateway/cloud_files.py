@@ -86,6 +86,7 @@ _STATUS = {
     "too_large": 413,
     "not_regular": 415,
     "failed": 500,
+    "bad_request": 400,
     "busy": 429,
     "timeout": 504,
 }

@@ -6,11 +6,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 from typing import Any
 
 import pytest
 
 from switch_core.management.file_requests import (
+    AGENT_NAME_PATTERN,
     CHUNK_BYTES,
     MAX_IN_FLIGHT_PER_CONTROLLER,
     BadReply,
@@ -95,7 +97,30 @@ async def test_a_reply_on_another_controllers_socket_is_dropped(
         {"data": base64.b64encode(b"x" * (CHUNK_BYTES + 1)).decode()},  # over one chunk
         {"error": "something_else"},
         {"surprise": True},  # an unknown field
-        {"entries": [{"name": "../x", "kind": "pipe", "size": 0, "mtime": "-"}]},
+        {"entries": [{"name": "../x", "kind": "pipe", "size": 0, "mtime": 1}]},
+        {"entries": [{"name": "a", "kind": "file", "size": 1, "mtime": "2026-11-05"}]},
+        {
+            "entries": [
+                {
+                    "name": "a",
+                    "kind": "folder",
+                    "size": 0,
+                    "mtime": 1,
+                    "agent": "Bad Name",
+                }
+            ]
+        },
+        {
+            "entries": [
+                {
+                    "name": "a",
+                    "kind": "folder",
+                    "size": 0,
+                    "mtime": 1,
+                    "agent": "a" * 256,
+                }
+            ]
+        },
     ],
 )
 async def test_a_reply_that_breaks_the_frame_rules_fails_its_request(
@@ -174,3 +199,55 @@ async def test_an_old_socket_going_leaves_the_newer_one_in_place() -> None:
     assert requests.holds("c-1")
     requests.open("c-1", "list", "")
     assert new.frames and not old.frames
+
+
+async def test_a_listing_in_the_launchers_real_shape_reaches_its_request() -> None:
+    """`mtime` is epoch milliseconds and `agent` an agent name, as the relay sends them."""
+    requests, _ = _held()
+    request = requests.open("c-1", "list", "")
+    entries = [
+        {
+            "name": "scout",
+            "kind": "folder",
+            "size": 0,
+            "mtime": 1793880000000,
+            "label": "Scout",
+            "agent": "scout",
+        },
+        {
+            "name": "shared",
+            "kind": "folder",
+            "size": 0,
+            "mtime": 1793880000000,
+            "label": "Shared",
+        },
+        {"name": "notes.md", "kind": "file", "size": 12, "mtime": 1793880000123},
+    ]
+
+    requests.deliver("c-1", {**_reply(request.id), "entries": entries})
+
+    reply = await request.reply(timeout=1)
+    assert reply.entries is not None
+    assert [entry.agent for entry in reply.entries] == ["scout", None, None]
+    assert reply.entries[2].mtime == 1793880000123
+
+
+async def test_bad_request_is_one_of_the_codes_a_reply_may_carry() -> None:
+    requests, _ = _held()
+    request = requests.open("c-1", "list", "")
+
+    requests.deliver("c-1", {**_reply(request.id), "error": "bad_request"})
+
+    reply = await request.reply(timeout=1)
+    assert reply.error == "bad_request"
+
+
+@pytest.mark.parametrize(
+    "name", ["scout", "web-qa", "a.b_c-1", "0x", "Bad", "-x", "a b", ""]
+)
+def test_the_agent_name_rule_matches_cores_own(name: str) -> None:
+    from switch_core.bridges.agent.protocol.agent_core import VALID_AGENT_NAME_RE
+
+    assert bool(re.fullmatch(AGENT_NAME_PATTERN, name)) == bool(
+        VALID_AGENT_NAME_RE.match(name)
+    )
