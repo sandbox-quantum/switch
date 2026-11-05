@@ -23,6 +23,9 @@ const {
   fetchLibraryItems,
   fetchReferenceTypes,
   updateLibraryItem,
+  addPackageMember,
+  fetchPackageMembers,
+  removePackageMember,
 } = await import('./library-client');
 
 const SERVER = {
@@ -125,6 +128,8 @@ describe('reading the library', () => {
       urls: ['https://github.com/acme/switch'],
       attachedRoomsCount: 2,
       packageIds: ['pkg-1'],
+      referencesCount: 0,
+      documentsCount: 0,
       createdAt: '2026-11-01T09:00:00+00:00',
     });
   });
@@ -276,5 +281,88 @@ describe('changing the library', () => {
       affectedPackageIds: ['pkg-1'],
     });
     expect(lastCall()).toMatchObject({ method: 'DELETE' });
+  });
+});
+
+describe('packages', () => {
+  const PACKAGE = {
+    id: 'pkg-1',
+    owner_id: 'u1',
+    owner_name: 'Ada',
+    read_visibility: 'public',
+    write_visibility: 'private',
+    name: 'Onboarding',
+    description: 'Everything a new agent needs',
+    instructions: '',
+    references_count: 2,
+    documents_count: 1,
+    attached_rooms_count: 3,
+    created_at: '2026-11-01T09:00:00+00:00',
+  };
+
+  it('reads what a package holds, by kind, and a package’s counts', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse([PACKAGE]));
+    const [pkg] = await fetchLibraryItems(SERVER, 'packages');
+    expect(pkg).toMatchObject({
+      kind: 'packages',
+      referencesCount: 2,
+      documentsCount: 1,
+      type: null,
+    });
+
+    fetchMock.mockImplementation(async () => jsonResponse([REFERENCE]));
+    const members = await fetchPackageMembers(SERVER, 'pkg-1', 'references');
+    expect(lastCall().url).toMatch(/\/gateway\/packages\/pkg-1\/references$/);
+    expect(members[0]).toMatchObject({ id: 'ref-1', kind: 'references', typeLabel: 'GitHub' });
+  });
+
+  it('creates a package with nothing of a reference’s or a document’s', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse(PACKAGE));
+    await createLibraryItem(SERVER, 'packages', {
+      name: 'Onboarding',
+      description: '',
+      instructions: '',
+      readVisibility: 'public',
+      writeVisibility: 'private',
+    });
+    expect(lastCall().body).toEqual({
+      name: 'Onboarding',
+      description: '',
+      instructions: '',
+      read_visibility: 'public',
+      write_visibility: 'private',
+    });
+  });
+
+  it('adds with a POST and removes with a DELETE on the member’s path, saying which rooms lost it', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({}));
+    await addPackageMember(SERVER, 'pkg-1', 'documents', 'doc-1');
+    expect(lastCall()).toMatchObject({ method: 'POST' });
+    expect(lastCall().url).toMatch(/\/packages\/pkg-1\/documents\/doc-1$/);
+
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        package_id: 'pkg-1',
+        member_id: 'doc-1',
+        affected_room_ids: ['r1', 'r2'],
+        affected_room_names: ['design'],
+        hidden_affected_rooms_count: 1,
+      })
+    );
+    expect(await removePackageMember(SERVER, 'pkg-1', 'documents', 'doc-1')).toEqual({
+      affectedRoomNames: ['design'],
+      hiddenAffectedRoomsCount: 1,
+    });
+    expect(lastCall()).toMatchObject({ method: 'DELETE' });
+  });
+
+  it('counts no private rooms when an older server does not', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ affected_room_ids: [], affected_room_names: [] })
+    );
+    expect(await removePackageMember(SERVER, 'pkg-1', 'references', 'ref-1')).toEqual({
+      affectedRoomNames: [],
+      hiddenAffectedRoomsCount: 0,
+    });
   });
 });

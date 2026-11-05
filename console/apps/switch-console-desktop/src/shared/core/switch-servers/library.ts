@@ -1,11 +1,14 @@
 /**
- * The workspace's library: references and documents anyone may attach to a
- * room, as the gateway's Resources pages show them. Packages bundle them and
- * join later.
+ * The workspace's library ("Resources" to people): references and documents
+ * anyone may attach to a room, and packages bundling them, as the gateway's
+ * Resources pages show them.
  */
 
-/** The library kinds the Library page lists. */
-export type LibraryKind = 'references' | 'documents';
+/** The library kinds the Resources page lists. */
+export type LibraryKind = 'references' | 'documents' | 'packages';
+
+/** What a package can hold. */
+export type PackageMemberKind = 'references' | 'documents';
 
 /** Who may read, or change, a library item: its owner (and admins) alone, or everyone. */
 export type LibraryVisibility = 'private' | 'public';
@@ -36,8 +39,11 @@ export type LibraryItem = {
    * them; undefined from an older one.
    */
   hiddenRoomsCount?: number;
-  /** The packages it is in, by id. */
+  /** The packages it is in, by id; empty for a package. */
   packageIds: string[];
+  /** What a package holds, by kind; zero for anything else. */
+  referencesCount: number;
+  documentsCount: number;
   createdAt: string;
 };
 
@@ -85,4 +91,14 @@ export type LibraryItemRoom = {
   roomName: string;
   /** Whether the viewer may detach the item from this room, when the server says. */
   canUnlink?: boolean;
+};
+
+/**
+ * What taking something out of a package cost: the rooms that had it only
+ * through the package, by name where the viewer may read them, the rest
+ * counted (by a server that counts them).
+ */
+export type PackageMemberRemoval = {
+  affectedRoomNames: string[];
+  hiddenAffectedRoomsCount: number;
 };
