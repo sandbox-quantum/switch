@@ -570,7 +570,7 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
         <p className="text-xs text-foreground-muted">
           {room.archived
             ? 'Puts the room back in the room lists.'
-            : 'Hides the room from room lists, yours and its agents’. Everything else stays as it is: who is in it, its history and its channel. You can unarchive it from Your Rooms.'}
+            : 'Hides the room from room lists, yours and its agents’. Everything else stays as it is: who is in it, its history and its channel. You can unarchive it from Rooms.'}
         </p>
         {error !== null && <p className="text-xs text-destructive">{error}</p>}
       </div>

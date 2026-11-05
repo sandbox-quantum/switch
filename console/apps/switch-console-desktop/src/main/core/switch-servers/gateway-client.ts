@@ -3299,6 +3299,7 @@ type RoomSummaryJson = {
   description: string;
   channel_type: string | null;
   agent_count: number;
+  bridge_id?: string | null;
   bridge_display_name: string | null;
   bridge_type?: string | null;
   external_channel_url?: string | null;
@@ -3312,6 +3313,11 @@ type RoomSummaryJson = {
   can_write?: boolean;
   can_manage?: boolean;
   can_unlink?: boolean;
+  group_id?: string | null;
+  group_name?: string | null;
+  owner_name?: string | null;
+  read_visibility?: string;
+  connected_user_count?: number;
 };
 
 function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
@@ -3331,6 +3337,11 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     createdAt: r.created_at,
     // The same reading as a room's detail, so the list and the room page offer the same changes.
     writeVisibility: visibilityOf(r.write_visibility),
+    ...(r.read_visibility !== undefined ? { readVisibility: visibilityOf(r.read_visibility) } : {}),
+    ...(r.bridge_id !== undefined ? { bridgeId: r.bridge_id } : {}),
+    ...(r.group_id !== undefined ? { groupId: r.group_id, groupName: r.group_name ?? null } : {}),
+    ...(r.owner_name !== undefined ? { ownerName: r.owner_name } : {}),
+    ...(r.connected_user_count !== undefined ? { connectedUserCount: r.connected_user_count } : {}),
     ...(r.can_write !== undefined && r.can_manage !== undefined
       ? {
           serverPermissions: {
