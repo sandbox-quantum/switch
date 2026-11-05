@@ -39,7 +39,7 @@ if [ "$VIDEO" = 1 ] && ! command -v ffmpeg >/dev/null; then
 fi
 
 set -a; source .env; set +a
-COMPOSE=(docker compose -p switch-e2e -f deploy/local/docker-compose.yml --project-directory .)
+COMPOSE=(docker compose -p switch-e2e -f deploy/local/docker-compose.yml -f deploy/local/docker-compose.e2e-mattermost.yml --project-directory .)
 SERVER_PID=""
 AGENTS_PID=""
 stop_server() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null; SERVER_PID=""; return 0; }

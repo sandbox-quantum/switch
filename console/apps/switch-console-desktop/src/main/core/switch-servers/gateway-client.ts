@@ -4242,9 +4242,10 @@ export async function disconnectService(server: SwitchServer, service: string) {
 // ── Agent management: controllers and the agents placed on them ─────────────
 
 /**
- * The server does not run agent management: its `/gateway/management` routes
- * are not mounted (its `agent_management` flag is off), so they answer a bare
- * 404 rather than one in the management error envelope.
+ * The server does not run agent management: an older one with its
+ * `agent_management` flag off does not mount its `/gateway/management`
+ * routes, so they answer a bare 404 rather than one in the management error
+ * envelope.
  */
 export class AgentManagementUnavailableError extends Error {
   constructor(server: SwitchServer) {

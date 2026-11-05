@@ -30,9 +30,7 @@ Mattermost server to reach switch-core, not the internet; see
    too). Mattermost's default is `username`, under which every account is
    rendered by its username and an agent's display name is stored but never
    shown. The setting is **server-wide** — it changes how human members' names
-   render as well, so it is a decision for the server, not for Switch. Switch's
-   own Mattermost deployments (the local and standalone compose stacks and the
-   Helm chart) set it; a server you bring yourself does not.
+   render as well, so it is a decision for the server, not for Switch.
 
 ## 2. Onboard the bridge in Switch
 
@@ -110,8 +108,7 @@ integration requests to private addresses unless the host is listed in System
 Console → Environment → Developer → *Allow untrusted internal connections to*
 (`ServiceSettings.AllowedUntrustedInternalConnections`, space-separated hosts).
 Add the host from `callback_base_url` when that address is a private one; a
-publicly routable address is not gated by this setting. Switch's own compose
-stacks set it already, and a server you bring yourself does not. The symptom is
+publicly routable address is not gated by this setting. The symptom is
 a press that fails: Mattermost 10.5 and later put "Action failed to execute"
 under the card, and the reason — `err=address forbidden` for this one — is in
 the Mattermost server log and nowhere else.
@@ -173,49 +170,19 @@ of each one pays the call.
 
 **Kubernetes.** The chart publishes the callback port when
 `switchCore.collaborationCallback.enabled` is set, which it is not by default:
-the Service gains the port, switch-core declares it, and the Mattermost this
-chart deploys is given the address to allow. `helm install` then prints the
+the Service gains the port and switch-core declares it; add the address to the
+Mattermost server's allowlist yourself. `helm install` then prints the
 `callback_base_url` to put on the bridge — the cluster-internal Service name,
 not an address a browser follows. No Ingress is rendered for it, so a Mattermost
 outside the cluster needs a route you provide yourself.
 
 ## Local development
 
-The local stack (`just up` / `just standalone-up`) runs a **Mattermost server in
-Docker** and **auto-registers a Mattermost bridge** for you via
-`deploy/shared_resources/setup.py`. It reads these values from `.env`:
-
-```dotenv
-MATTERMOST_HOST_PORT=8065
-MATTERMOST_ADMIN_USER=admin
-MATTERMOST_ADMIN_PASSWORD=admin1234
-MATTERMOST_TEAM_NAME=switch
-MATTERMOST_USER=user
-MATTERMOST_USER_PASSWORD=user1234
-```
-
-The seeder creates the admin user + team, then registers the bridge with
-`connection_config = { url, admin_user, admin_password, team_name }` (adding
-`public_url` only if a public URL is configured). So for local dev you normally
-don't onboard Mattermost by hand — it's already there after setup. Log in at
-`http://localhost:8065` with the `MATTERMOST_USER` credentials to try it.
-
-Both stacks also wire up button presses ([step 3](#3-optional-let-mattermost-deliver-button-presses)):
-the compose file allows Mattermost to call the private address, and the seeder
-sets `callback_base_url` — `http://switch:8081` under `standalone-up`, where
-switch-core is a service, and `http://host.docker.internal:8081` under `just up`,
-where it runs on your host. A bridge that is **already** registered keeps its
-existing configuration, except for this one field: the seeder sets the callback
-address on every run, because the config a bridge holds carries the admin
-password and so is not readable back to compare against. A bridge registered
-before callbacks existed therefore gains its buttons on the next stack start,
-and the bridge restarts as part of that.
-
-A **Mattermost container** created before callbacks existed does not get the
-allowlist by being restarted — its environment was fixed when it was created.
-Recreate it (`docker compose up -d --force-recreate mattermost`; the volume and
-so the data survive), or set the value by hand in System Console → Environment →
-Developer.
+The local stack (`just up`) runs no Mattermost. To try the bridge locally, run
+a Mattermost server yourself (for example the `mattermost` service in
+`deploy/local/docker-compose.e2e-mattermost.yml`, which the end-to-end harnesses
+use) and onboard it as in step 2. `OUTBOUND_ALLOWED_PRIVATE_HOSTS=localhost`,
+the `.env.example` default, lets switch-core reach a server on your machine.
 
 ## Notes
 

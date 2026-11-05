@@ -124,14 +124,12 @@ function row(
   return (
     <MessagingAppRow
       workspaceId={overrides.workspaceId === undefined ? 'ws-1' : overrides.workspaceId}
-      serverId="srv-1"
       bridge={overrides.bridge ?? bridge()}
       identities={overrides.identities === undefined ? [] : overrides.identities}
       pending={overrides.pending === undefined ? [] : overrides.pending}
       currentUserId="u1"
       onReleased={overrides.onReleased ?? (() => {})}
       olderLinks={overrides.olderLinks ?? null}
-      showBundledSignIn={false}
       isAdmin={overrides.isAdmin ?? false}
       personal={overrides.personal ?? false}
       savingChannelCreation={false}

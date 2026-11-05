@@ -1,8 +1,8 @@
-"""Deployment setup — registers Mattermost bridge with Switch after both are ready.
+"""E2E setup — seeds the end-to-end harness's Mattermost and registers it as a
+bridge with Switch once both are ready.
 
-Runs as a short-lived container: an init container under docker-compose, and a
-post-install/post-upgrade Helm hook on a cluster deployment, so it also runs
-against live installations on every upgrade. Waits for Switch and
+Runs as a short-lived container from deploy/local/docker-compose.e2e-mattermost.yml,
+which only the e2e harnesses start; no deployment ships it. Waits for Switch and
 Mattermost to be healthy, bootstraps the Mattermost admin/team, then registers
 the Mattermost bridge via the authorized Switch gateway API — logging in as the
 seeded gateway admin first, since bridge administration is an admin action.

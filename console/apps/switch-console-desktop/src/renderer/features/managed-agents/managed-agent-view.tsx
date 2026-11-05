@@ -6,11 +6,7 @@ import { ChatHeaderControls } from '@renderer/features/chats/components/chat-hea
 import { useAgentActivities } from '@renderer/features/chats/components/chat-panel';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { UNSAVED_CHAT_NAME } from '@renderer/features/chats/stores/direct-chat-starter';
-import {
-  embeddedRoomFallbackTab,
-  OpenInMessagingApp,
-  RoomTabs,
-} from '@renderer/features/switch-rooms/view';
+import { OpenInMessagingApp, RoomTabs } from '@renderer/features/switch-rooms/view';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import {
   ServerStatusPill,
@@ -121,7 +117,7 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
           </div>
           <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
             {/* At the right, so the tabs stay put however long the room's name is. */}
-            {room && <RoomTabs roomId={room} fallback={embeddedRoomFallbackTab(room)} />}
+            {room && <RoomTabs roomId={room} fallback="configuration" />}
             {room && <OpenInMessagingApp roomId={room} />}
             {server &&
               serverState(server) !== 'connected' &&
