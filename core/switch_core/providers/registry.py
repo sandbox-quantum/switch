@@ -65,6 +65,7 @@ class AgentProvider:
 
 
 AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
+    AgentProvider(id="junie", label="Junie", sign_in_command="junie"),
     AgentProvider(
         id="claude",
         label="Claude Code",
