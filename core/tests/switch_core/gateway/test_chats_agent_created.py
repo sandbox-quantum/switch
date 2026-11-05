@@ -9,9 +9,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import func, select
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.db.models import Agent
+from switch_core.chats.service import ChatError
+from switch_core.db.models import Agent, Room
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
@@ -34,6 +36,7 @@ def _protocol(chats: _Harness) -> SimpleNamespace:
         room_service=chats.room_service,
         client_lifecycle=chats.lifecycle,
         _member_adder=chats.service.add_member,
+        _member_join_check=chats.service.require_can_join,
     )
     for name in ("run_service", "_resolve_acting_identity", "_resolve_group_name"):
         setattr(protocol, name, partial(getattr(AgentCore, name), protocol))
@@ -93,3 +96,47 @@ async def test_refused_where_it_makes_no_sense(
     agent = await chats.agent("buddy", owner=chats.alice)
     with pytest.raises(ValueError, match=message):
         await _create(chats, agent, **overrides)
+
+
+async def test_an_owner_outside_the_workspace_is_refused_before_the_room(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("buddy", owner=chats.carol)
+
+    with pytest.raises(ValueError, match="not a member of this workspace"):
+        await _create(chats, agent)
+
+    async with chats.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Room)) == 0
+
+
+async def test_an_owner_refused_after_the_room_is_made_takes_the_room_with_it(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = await chats.agent("buddy", owner=chats.alice)
+
+    async def refusing(*args: Any) -> None:
+        raise ChatError(422, "NOT_A_TENANT_MEMBER", "Left the workspace.")
+
+    monkeypatch.setattr(chats.service, "add_member", refusing)
+    with pytest.raises(ValueError, match="Left the workspace"):
+        await _create(chats, agent)
+
+    async with chats.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Room)) == 0
+
+
+async def test_any_failure_adding_the_owner_takes_the_room_with_it_and_surfaces(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = await chats.agent("buddy", owner=chats.alice)
+
+    async def crashing(*args: Any) -> None:
+        raise RuntimeError("join failed")
+
+    monkeypatch.setattr(chats.service, "add_member", crashing)
+    with pytest.raises(RuntimeError, match="^join failed$"):
+        await _create(chats, agent)
+
+    async with chats.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Room)) == 0

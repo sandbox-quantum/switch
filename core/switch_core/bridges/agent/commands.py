@@ -43,7 +43,11 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
-from switch_core.db.stores.external_user_store import CodeNotAccepted, NoSuchLink
+from switch_core.db.stores.external_user_store import (
+    CodeNotAccepted,
+    ExternalUserStore,
+    NoSuchLink,
+)
 from switch_core.db.stores.session_activity_store import (
     RETRYABLE_TURN_STATUSES,
     AgentSessionActivityStore,
@@ -55,7 +59,7 @@ from switch_core.platform_access import administers_on_record
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.clients.command_consumer import CommandConsumer
     from switch_core.clients.room_meta import RoomMeta
@@ -1436,88 +1440,94 @@ async def _manage_authority(
 async def _cmd_link_account(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
-    """Confirm a link to a Switch user with the code Console showed (CHOO-3881).
+    """Confirm a link to a Switch user with the code Console showed (CHOO-3881)."""
+    host = cast("CommandConsumer", client)
+    async with host.session_factory() as session:
+        account = await _sender_account(host, session, event)
+    reply = await link_account_reply(
+        host.session_factory,
+        host._external_user_store,
+        host._user_store,
+        account,
+        event.args or "",
+    )
+    await _reply(host, room, event, reply)
+
+
+async def link_account_reply(
+    session_factory: async_sessionmaker[AsyncSession],
+    external_user_store: ExternalUserStore,
+    user_store: UserStore,
+    account: ExternalUser | None,
+    args: str,
+) -> str:
+    """Redeem a `link-account` code for `account` and say what happened.
 
     Only the Switch user was shown the code, and the platform says which
     account posted it, so a match proves one person holds both. A code posted
     from any other account matches nothing, which is why posting it in a busy
-    channel gives nothing away.
+    channel gives nothing away. The collaboration bridge calls this directly
+    for a channel that is not a Switch room, so linking never creates one.
     """
-    host = cast("CommandConsumer", client)
-    code = (event.args or "").strip()
+    code = args.strip()
     if not code:
-        await _reply(
-            host,
-            room,
-            event,
+        return (
             "Usage: `!link-account CODE`, with the code Switch Console showed "
-            "you when you linked this account.",
+            "you when you linked this account."
         )
-        return
-
-    # Replies wait until the session has closed: a rejected code may have
-    # locked the request it was checked against, and nobody should wait on
-    # that while a reply is written.
-    refusal: str | None = None
-    async with host.session_factory() as session:
-        account = await _sender_account(host, session, event)
-        if account is None:
-            refusal = (
-                "⚠️ Only a chat account can confirm a link to itself, by posting "
-                "the code from that account."
+    if account is None:
+        return (
+            "⚠️ Only a chat account can confirm a link to itself, by posting "
+            "the code from that account."
+        )
+    # The reply is written by the caller after this session has closed: a
+    # rejected code may have locked the request it was checked against, and
+    # nobody should wait on that while a reply is written.
+    async with session_factory() as session:
+        try:
+            request = await external_user_store.redeem_link_code(
+                session, account, code, user_store
             )
-        else:
-            try:
-                request = await host._external_user_store.redeem_link_code(
-                    session, account, code, host._user_store
-                )
-            except CodeNotAccepted:
-                refusal = (
-                    "⚠️ That code doesn't match a link waiting for this account, "
-                    "or it has expired. Get a new code in Switch Console, and post "
-                    "it from the account you're linking."
-                )
-            else:
-                user_id = request.user_id
-                linked = await host._user_store.get(session, user_id)
-                bridge = await session.get(CollaborationBridge, account.bridge_id)
-                # Both are held by foreign keys from the rows just written.
-                if linked is None or bridge is None:
-                    raise RuntimeError(
-                        f"Confirmed a link for user {user_id} on bridge "
-                        f"{account.bridge_id}, but could not read either back"
-                    )
-                name, platform = linked.name, bridge.display_name
-                username = account.external_username
-                await record_audit_event(
-                    session,
-                    tenant_id=account.tenant_id,
-                    actor_user_id=user_id,
-                    action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
-                    target_type="external_user",
-                    target_id=account.id,
-                    details={
-                        "bridge_id": account.bridge_id,
-                        "user_id": user_id,
-                        "by": "code",
-                    },
-                )
-                await session.commit()
-    if refusal is not None:
-        await _reply(host, room, event, refusal)
-        return
+        except CodeNotAccepted:
+            return (
+                "⚠️ That code doesn't match a link waiting for this account, "
+                "or it has expired. Get a new code in Switch Console, and post "
+                "it from the account you're linking."
+            )
+        user_id = request.user_id
+        linked = await user_store.get(session, user_id)
+        bridge = await session.get(CollaborationBridge, account.bridge_id)
+        # Both are held by foreign keys from the rows just written.
+        if linked is None or bridge is None:
+            raise RuntimeError(
+                f"Confirmed a link for user {user_id} on bridge "
+                f"{account.bridge_id}, but could not read either back"
+            )
+        name, platform = linked.name, bridge.display_name
+        username = account.external_username
+        await record_audit_event(
+            session,
+            tenant_id=account.tenant_id,
+            actor_user_id=user_id,
+            action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
+            target_type="external_user",
+            target_id=account.id,
+            details={
+                "bridge_id": account.bridge_id,
+                "user_id": user_id,
+                "by": "code",
+            },
+        )
+        await session.commit()
 
     # Names the Switch user, so whoever posted it sees who the account is now
     # recognised as, and how to take that back if it is not them. "The way you
     # ran this" because platforms differ in how a command reaches Switch: typed
     # with `!`, as a slash command, or with the app mentioned.
-    await _reply(
-        host,
-        room,
-        event,
+    return (
         f"✅ Linked this {platform} account ({username}) to Switch user "
         f"**{name}**. If that isn't you, run `unlink-account {name}` the way "
-        "you ran this command.",
+        "you ran this command."
     )
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import yaml
 
+from switch_core.agent_templates import repo_note
 from switch_core.management.schemas import MAX_INSTRUCTIONS_BYTES
 from switch_core.official_templates import (
     _SHIPPED,
@@ -27,6 +28,7 @@ _PACKAGED = _REPO / "core" / "switch_core" / "official_templates"
 
 
 _KNOWLEDGE = _REPO / "switch-expert" / "knowledge"
+_PLAYBOOK = _PACKAGED / "switch-buddy" / "PLAYBOOK.md"
 
 
 def test_the_switch_expert_copies_match_the_repository():
@@ -113,7 +115,9 @@ def test_every_official_template_s_instructions_fit_the_server_limit():
                     else [data["agent"]]
                 )
                 for agent in agents:
-                    size = len(agent["instructions"].encode())
+                    # A template with a repo appends its note to the instructions.
+                    note = repo_note(agent["repo"]) if agent.get("repo") else ""
+                    size = len((agent["instructions"] + note).encode())
                     assert size <= MAX_INSTRUCTIONS_BYTES, (template.id, size)
 
 
@@ -268,8 +272,9 @@ def test_switch_buddy_makes_every_private_room_private_in_switch():
     workspace nonmembers can find it and change its instructions."""
     text = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
     items = re.split(r"\n\s*(?:- |\d+\. )", text)
+    items += _PLAYBOOK.read_text().split("\n## ")
     private_rooms = [i for i in items if "channel_private" in i or "include_owner" in i]
-    assert len(private_rooms) >= 2
+    assert len(private_rooms) >= 3
     for item in private_rooms:
         item = " ".join(item.split())
         assert '`read_visibility` and `write_visibility` "private"' in item, item
@@ -290,4 +295,65 @@ def test_switch_buddy_tells_telegram_users_to_reply_to_the_bot():
     assert (
         "reply to the bot's message" in text
         or "reply to the Switch bot's message" in text
+    )
+
+
+def test_switch_buddy_offers_choices_in_its_question_form():
+    """Switch draws a host's question form as a card with buttons on Slack and
+    Discord, but only for one single-choice question, and hosts without forms
+    need the choices as numbered text."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "use your host's question form" in text
+    assert "`AskUserQuestion`" in text
+    assert "one single-choice question per form" in text
+    assert "With no question form, list numbered options" in text
+    # Form answers are not consent to create: the proposal is its own form.
+    assert "end with a separate proposal" in text
+    assert "create only after explicit confirmation" in text
+
+
+def test_every_playbook_section_switch_buddy_is_pointed_at_exists():
+    """switch-buddy reads the playbook from its clone of the repository when
+    its instructions point at a section, so the path and each section named
+    must exist as written."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    paths = re.findall(r"`switch/(\S+?PLAYBOOK\.md)`", text)
+    assert paths
+    for path in paths:
+        assert (_REPO / path).resolve() == _PLAYBOOK.resolve(), path
+    headings = set(re.findall(r"^## (.+)$", _PLAYBOOK.read_text(), re.MULTILINE))
+    named = set(re.findall(r'§ "([^"]+)"', text))
+    assert len(named) >= 10
+    assert named - headings == set()
+
+
+def test_switch_buddy_checks_the_services_an_agent_needs_before_proposing():
+    """An agent created without the services its job needs guesses its way
+    in, so buddy checks them first and offers the grant in the proposal."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "Before proposing, check the services its job needs" in text
+    assert "`get_my_context`" in text and "`set_agent_service`" in text
+    assert "for a missing one, say so and link where to connect it" in text
+    playbook = " ".join(_PLAYBOOK.read_text().split())
+    assert "Only your owner's own agents, and only after a yes" in playbook
+    assert "[Connectors](switchdash://open/connections)" in playbook
+
+
+def test_switch_buddy_carries_on_without_its_playbook():
+    """A fresh install may have no clone, and an older tag no playbook: that
+    must pause only what needs the detail, never basic onboarding."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "read it only if you need more" in text
+    assert "pause only the action that needs the missing detail" in text
+    assert "Never ask the person for the file" in text
+
+
+def test_switch_buddy_always_tells_telegram_users_to_reply_to_the_bot():
+    """In a Telegram group the bot sees only commands and replies to its own
+    messages, so every Telegram walkthrough must say to reply, playbook or not."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "Every Telegram walkthrough, with or without the playbook" in text
+    assert (
+        "reply to a Switch bot message with the agent's exact name and their request"
+        in text
     )

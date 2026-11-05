@@ -312,9 +312,10 @@ wrote.
 ## Questions and approvals
 
 Native question forms can be answered in the Console or from the room. The
-room presents one question at a time; each addressed reply answers that
-question. A form with several questions stays open until all questions have
-answers. Wait for the tool to return before acting on the answers.
+room shows the whole form as one card. A form of one single-choice question
+gets buttons on Slack and Discord; any other form is answered by typing the
+card's handle and an answer to every question in one reply, as the card shows.
+Wait for the tool to return before acting on the answers.
 
 Approvals reach the room on every host. Native question forms do not: Claude
 Code, OpenCode and Antigravity have them, while Codex and Cursor sessions

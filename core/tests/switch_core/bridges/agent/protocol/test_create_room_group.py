@@ -158,6 +158,7 @@ class TestFilingNeedsAnAdminOwner:
                 channel_type=None,
                 bridge_id=None,
                 group_name="Eng",
+                include_owner=False,
             )
 
     async def test_the_refusal_comes_before_the_group_lookup(
@@ -181,4 +182,5 @@ class TestFilingNeedsAnAdminOwner:
                 channel_type=None,
                 bridge_id=None,
                 group_name="No/Such/Group",
+                include_owner=False,
             )

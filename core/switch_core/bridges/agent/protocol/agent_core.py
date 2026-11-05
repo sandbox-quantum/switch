@@ -81,6 +81,7 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
+from switch_core.chats.service import ChatError
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
 from switch_core.clients.admin_messages import (
@@ -376,6 +377,9 @@ class AgentCore:
     # Puts a person in a room as a Console member: (tenant_id, actor, room_id,
     # target_user_id). Set by the process wiring to the chats service's.
     _member_adder: Callable[[str, User, str, str], Awaitable[Room]] | None = None
+    # Raises the ChatError `_member_adder` would refuse that person with:
+    # (tenant_id, user_id). Wired with it.
+    _member_join_check: Callable[[str, str], Awaitable[None]] | None = None
 
     def __init__(
         self,
@@ -823,9 +827,12 @@ class AgentCore:
         self._room_agents_listener = listener
 
     def set_member_adder(
-        self, adder: Callable[[str, User, str, str], Awaitable[Room]]
+        self,
+        adder: Callable[[str, User, str, str], Awaitable[Room]],
+        join_check: Callable[[str, str], Awaitable[None]],
     ) -> None:
         self._member_adder = adder
+        self._member_join_check = join_check
 
     def set_agent_profile_listener(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -2976,8 +2983,14 @@ class AgentCore:
                 raise ValueError(
                     f"Agent {agent_id} has no owner, so there is no one to include"
                 )
-            if self._member_adder is None:
+            if self._member_adder is None or self._member_join_check is None:
                 raise RuntimeError("Adding people to rooms is not wired on this server")
+            try:
+                await self._member_join_check(agent.tenant_id, owner.id)
+            except ChatError as e:
+                raise ValueError(
+                    f"include_owner: your owner {owner.name} cannot join: {e.message}"
+                ) from e
         if (reference_ids or package_ids) and agent.owner_id is None:
             raise ValueError(
                 f"Agent {agent_id} has no owner_id and cannot attach references "
@@ -3033,9 +3046,24 @@ class AgentCore:
                 raise RuntimeError(f"Room service error: {str(e)}") from e
         if include_owner:
             assert owner is not None and self._member_adder is not None
-            await self._member_adder(
-                result.room.tenant_id, owner, result.room.id, owner.id
-            )
+            try:
+                await self._member_adder(
+                    result.room.tenant_id, owner, result.room.id, owner.id
+                )
+            except Exception as e:
+                # A room without the owner it was made for is not what was asked for.
+                try:
+                    await self.room_service.delete_room(
+                        result.room.id, retire_channel=False
+                    )
+                except Exception as cleanup:
+                    raise cleanup from e
+                if isinstance(e, ChatError):
+                    raise ValueError(
+                        f"Room not created: your owner {owner.name} could not be "
+                        f"added: {e.message}"
+                    ) from e
+                raise
         return result
 
     async def _resolve_group_name(

@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from switch_core.db.models import (
     Agent,
@@ -72,10 +72,10 @@ class _FakeCore:
     def add_room_mapping(self, *args: Any) -> None:
         return None
 
-    async def ensure_users_in_room(
-        self, room_id: str, transport_room_id: str, user_names: list[str]
+    async def ensure_external_users_in_room(
+        self, room_id: str, transport_room_id: str, external_user_ids: list[str]
     ) -> None:
-        self.users_added.append(user_names)
+        self.users_added.append(external_user_ids)
 
 
 class _FakeCollabLifecycle:
@@ -175,6 +175,41 @@ async def test_a_bridged_chat_opens_a_dm_with_the_callers_linked_account(
         assert room is not None
         assert room.bridge_id == bridge_id
         assert room.external_channel_id == "C-DM-1"
+        assert room.name == "helper · Acme Slack"
+
+
+async def test_a_bridged_chat_goes_by_the_agents_display_name(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    async with chats.factory() as session:
+        await session.execute(
+            update(Agent).where(Agent.id == agent.id).values(display_name="Helper Bot")
+        )
+        await session.commit()
+    bridge_id, core = await _slack(chats, link=chats.alice)
+
+    response = await _create(chats, [agent], bridge_id)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["chat"]["name"] == "Helper Bot · Acme Slack"
+    assert [call["agent_name"] for call in core.dm_calls] == ["Helper Bot"]
+
+
+async def test_the_linked_account_is_used_even_when_another_shares_its_name(
+    chats: _Harness,
+) -> None:
+    """After a rename, another cached account on the bridge can hold the
+    linked one's old handle; the hand-off must still reach the linked one."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+    core._known = {"alice.s": "U-OTHER"}
+
+    response = await _create(chats, [agent], bridge_id)
+
+    assert response.status_code == 200, response.text
+    assert [call["user_external_id"] for call in core.dm_calls] == ["U-ALICE"]
+    assert core.users_added == [["U-ALICE"]]
 
 
 async def test_a_retry_returns_the_same_chat_and_opens_one_channel(
@@ -344,7 +379,7 @@ async def test_a_retry_after_a_failed_bridge_invite_puts_the_bridge_in(
     room = await _create_on(chats, chats.service, agent, bridge_id)
 
     assert bridge_invites == [room.transport_room_id]
-    assert core.users_added == [["alice.s"]]
+    assert core.users_added == [["U-ALICE"]]
     assert len(core.dm_calls) == 1
 
 
@@ -404,4 +439,70 @@ async def test_resuming_a_create_that_failed_after_saving_finishes_it(
 
     assert resumed.status_code == 200, resumed.text
     assert again.json()["chat"]["roomId"] == resumed.json()["chat"]["roomId"]
+    assert len(core.dm_calls) == 1
+
+
+async def test_two_linked_accounts_on_the_bridge_are_refused(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+    async with chats.factory() as session:
+        person = Client(
+            transport_user_id="@slack-alice-old:switch.test",
+            display_name="alice.old",
+            type="human",
+        )
+        session.add(person)
+        await session.flush()
+        external = ExternalUser(
+            bridge_id=bridge_id,
+            external_user_id="U-ALICE-OLD",
+            external_username="alice.old",
+            client_id=person.id,
+        )
+        session.add(external)
+        await session.flush()
+        session.add(
+            ExternalUserClaim(external_user_id=external.id, user_id=chats.alice.id)
+        )
+        await session.commit()
+
+    response = await _create(chats, [agent], bridge_id)
+
+    assert response.status_code == 409
+    assert _code(response) == "ACCOUNTS_AMBIGUOUS"
+    assert core.dm_calls == []
+
+
+async def test_a_retry_after_the_linked_account_changed_is_refused(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+    provisioning = chats.room_service._provisioning
+    invite = provisioning.invite_to_room
+    failures = [RuntimeError("invite failed")]
+
+    async def failing_invite(room_id: str, user_id: str) -> None:
+        if user_id == "@slack-bot:switch.test" and failures:
+            raise failures.pop()
+        await invite(room_id, user_id)
+
+    monkeypatch.setattr(provisioning, "invite_to_room", failing_invite)
+    with pytest.raises(RuntimeError, match="invite failed"):
+        await _create_on(chats, chats.service, agent, bridge_id)
+    async with chats.factory() as session:
+        await session.execute(
+            update(ExternalUser)
+            .where(ExternalUser.external_user_id == "U-ALICE")
+            .values(external_user_id="U-ALICE-NEW")
+        )
+        await session.commit()
+
+    response = await _create(chats, [agent], bridge_id)
+
+    assert response.status_code == 409
+    assert _code(response) == "LINKED_ACCOUNT_CHANGED"
+    assert core.users_added == []
     assert len(core.dm_calls) == 1

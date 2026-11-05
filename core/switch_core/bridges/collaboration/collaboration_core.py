@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.bridges.agent.commands import stop_control_frame
+from switch_core.bridges.agent.commands import link_account_reply, stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
@@ -57,6 +57,7 @@ from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
 )
+from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
@@ -1350,6 +1351,11 @@ class CollaborationCore:
 
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
         room_ids = self._channel_to_room.get(cmd.channel_id)
+        if room_ids is None and cmd.command == "link-account":
+            # Linking an account is about the person, not the channel: answer
+            # it here so a channel that isn't a Switch room doesn't become one.
+            await self._link_account_outside_room(cmd)
+            return
         if room_ids is None:
             lock = self._channel_locks.setdefault(cmd.channel_id, asyncio.Lock())
             async with lock:
@@ -1443,6 +1449,21 @@ class CollaborationCore:
                 )
             finally:
                 self._pending_message_maps.pop(event_id, None)
+
+    async def _link_account_outside_room(self, cmd: InboundCommand) -> None:
+        account = await self.ensure_external_user(
+            external_user_id=cmd.sender_id, external_username=cmd.sender_name
+        )
+        reply = await link_account_reply(
+            self._session_factory,
+            self._external_user_store,
+            UserStore(),
+            account,
+            cmd.args,
+        )
+        await self._adapter.admin_message(
+            cmd.channel_id, reply, cmd.root_id or cmd.message_ref
+        )
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
@@ -1780,7 +1801,19 @@ class CollaborationCore:
         (the resolver logs them); the on_user_joined callback or the inbound
         message path picks them up later."""
         resolved = await self.resolve_external_user_id_map(user_names)
-        for ext_id in resolved.values():
+        await self.ensure_external_users_in_room(
+            room_id, transport_room_id, list(resolved.values())
+        )
+
+    async def ensure_external_users_in_room(
+        self,
+        room_id: str,
+        transport_room_id: str,
+        external_user_ids: list[str],
+    ) -> None:
+        """`ensure_users_in_room` for accounts already known by id, as for a
+        linked identity: no name is resolved, since two accounts can share one."""
+        for ext_id in external_user_ids:
             async with self._session_factory() as session:
                 ext_user = await self._external_user_store.get_by_external_id(
                     session, self._bridge_id, ext_id
