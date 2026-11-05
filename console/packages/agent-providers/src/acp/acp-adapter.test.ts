@@ -324,6 +324,17 @@ it('lets vendor extensions ask questions and add items, and cancels them outside
   });
 });
 
+it('takes HTTP MCP servers on the hooks word when initialize leaves it out, and never against it', async () => {
+  const http = { switch: { transport: 'http' as const, url: 'http://127.0.0.1:4000/mcp' } };
+  await expect(start(dummy, { mcpServers: http })).rejects.toThrow();
+  const { server } = await start({ ...dummy, httpMcp: true }, { mcpServers: http });
+  expect(server.received.find((m) => m.method === 'session/new')?.params?.mcpServers).toEqual([
+    { type: 'http', name: 'switch', url: 'http://127.0.0.1:4000/mcp', headers: [] },
+  ]);
+  agent.capabilities = { mcpCapabilities: { http: false } };
+  await expect(start({ ...dummy, httpMcp: true }, { mcpServers: http })).rejects.toThrow();
+});
+
 it('fills a stdio MCP server environment from the session for its envVars', async () => {
   const { server } = await start(dummy, {
     env: { TOKEN: 'secret', OTHER: 'unused' },
