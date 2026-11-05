@@ -154,6 +154,12 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="copilot",
+        label="GitHub Copilot",
+        sign_in_command="copilot login",
+        connector_type="GitHub Copilot CLI",
+    ),
 )
 
 
