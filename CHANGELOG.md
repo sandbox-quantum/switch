@@ -667,6 +667,16 @@ version of their own to them without also giving them a release of their own.
   a package, failed with a 500. It now changes nothing, as for a reference.
 - **A package in a room's list said the caller may open it** only on that
   list; every route now works it out from the package's read rule.
+- **Stable Switch Console can link chat accounts again.** Since links have to
+  be confirmed from the account with a one-time code, a claim from a Console
+  that cannot show the code was refused with "Update Switch Console", and no
+  stable release could show it, so nobody on stable could link a new account.
+  Switch now issues the code anyway and returns it as the 409's text, which
+  stable Switch Console shows in the link dialog: what to post from the
+  account and that the code expires in 30 minutes. An account already
+  confirmed links normally. An admin linking someone else from an older client
+  is still refused while the link needs confirming, since the code would be
+  shown to the admin.
 - **A file that names nobody now follows the conversation like text does.**
   A post with one or more files and no mention never reached the room's
   assigned agent, the agent whose thread it was posted in, or the agent the
