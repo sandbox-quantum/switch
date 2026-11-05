@@ -47,7 +47,7 @@ def _message(
     *,
     sender: str = "Mina <mina@example.test>",
     subject: str = "Project update",
-    message_id: str = "<root@example.test>",
+    message_id: str | None = "<root@example.test>",
     body: str = "Hello Switch",
     references: str | None = None,
     authentication_results: str | None = (
@@ -61,7 +61,8 @@ def _message(
     message["From"] = sender
     message["To"] = "switch@example.test"
     message["Subject"] = subject
-    message["Message-ID"] = message_id
+    if message_id is not None:
+        message["Message-ID"] = message_id
     if authentication_results is not None:
         message["Authentication-Results"] = authentication_results
     if auto_submitted is not None:
@@ -85,6 +86,7 @@ def test_email_is_registered_and_declares_mailbox_capabilities() -> None:
     registration = next(item for item in PLATFORMS if item.key == "email")
     assert registration.adapter is EmailAdapter
     assert registration.config is EmailConnectionConfig
+    assert EmailAdapter.icon_svg() is not None
     assert EmailAdapter.supports_channel_creation is False
     assert EmailAdapter.supports_directory_search is False
     assert EmailAdapter.keeps_quiet_unless_listening is True
@@ -231,6 +233,27 @@ async def test_email_dispatch_maps_thread_and_attachments_to_room_message() -> N
     assert len(rooms) == 1
     assert rooms[0].channel_id == _channel_id("switch@example.test")
     adapter.set_listening(False)
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_email_without_message_id_gets_a_stable_content_reference() -> None:
+    adapter = EmailAdapter(config=_config())
+    adapter.set_listening(False)
+    received = []
+
+    async def on_message(value):
+        received.append(value)
+
+    async def unused(_):
+        pytest.fail("unexpected callback")
+
+    await adapter.start(on_message, unused, unused, unused, _ignore_app_join)
+    raw = _message(message_id=None)
+    await adapter._dispatch_email("7", "42", raw)
+    await adapter._dispatch_email("8", "17", raw)
+
+    assert received[0].message_ref == received[1].message_ref
     await adapter.stop()
 
 
@@ -483,8 +506,8 @@ def test_handled_mail_uses_private_keyword_when_available(caplog) -> None:
     assert adapter._handled_flag({b"PERMANENTFLAGS": (b"\\Seen", b"\\*")}) == (
         b"$SwitchSeen"
     )
-    assert adapter._handled_flag({b"PERMANENTFLAGS": (b"\\Seen",)}) == b"\\Seen"
-    assert "marked read" in caplog.text
+    assert adapter._handled_flag({b"PERMANENTFLAGS": (b"\\Seen",)}) is None
+    assert "rescan mail received since connection setup" in caplog.text
 
 
 def test_idle_response_detection() -> None:
@@ -570,6 +593,50 @@ async def test_imap_cursor_marks_only_old_or_successfully_delivered_messages() -
     assert client.search_criteria == ["UNKEYWORD", b"$SwitchSeen"]
     assert delivered == ["2", "3"]
     assert client.flags == [(1, b"$SwitchSeen"), (2, b"$SwitchSeen")]
+
+
+@pytest.mark.asyncio
+async def test_imap_fallback_rescans_read_messages_without_changing_flags() -> None:
+    adapter = EmailAdapter(config=_config(connected_at="2026-11-05T00:00:00+00:00"))
+    delivered = []
+
+    class FakeIMAP:
+        def __init__(self) -> None:
+            self.search_criteria = None
+            self.flags = []
+
+        def search(self, criteria):
+            self.search_criteria = criteria
+            return [1]
+
+        def fetch(self, uids, fields):
+            return {
+                uid: {
+                    b"BODY[]": _message(message_id="<already-read@example.test>"),
+                    b"INTERNALDATE": datetime(2026, 11, 5, 1, tzinfo=UTC),
+                }
+                for uid in uids
+            }
+
+        def add_flags(self, uids, flags):
+            self.flags.extend((uid, flag) for uid in uids for flag in flags)
+
+    client = FakeIMAP()
+
+    async def dispatch(uidvalidity, uid, raw):
+        delivered.append((uidvalidity, uid, raw))
+
+    adapter._dispatch_email = dispatch
+    retry = await adapter._handle_waiting(
+        client,
+        None,
+        {b"UIDVALIDITY": 12, b"PERMANENTFLAGS": (b"\\Seen",)},
+    )
+
+    assert retry is False
+    assert client.search_criteria == ["SINCE", datetime(2026, 11, 5).date()]
+    assert len(delivered) == 1
+    assert client.flags == []
 
 
 def test_email_reply_uses_smtp_from_agent_and_sets_thread_headers(

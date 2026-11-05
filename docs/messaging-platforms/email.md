@@ -99,17 +99,16 @@ unhandled mail remains in the mailbox.
 
 The active lease holder waits on IMAP IDLE, leaving the connection every 25
 minutes as required by the protocol; servers without IDLE are checked at the
-configured polling interval. Other pods stay quiet. Switch marks a message with
-the mailbox's `$SwitchSeen` IMAP keyword after handing it to the room transport,
-so it stays unread for people using the mailbox. Servers without support for
-custom keywords fall back to `\Seen` and log that limitation. The durable flag
-is shared across pods and restarts. When the server supports no custom flags,
-messages read in another mail client before Switch sees them may be missed.
-The adapter uses RFC `Message-ID` as the
-stable external message reference, with IMAP `UIDVALIDITY` and UID as a
-fallback. If a crash happens after the room write but before the flag is set,
-transport event IDs deduplicate the retry without duplicating room messages or
-attachments.
+configured polling interval. Other pods stay quiet. Where the server supports
+custom IMAP keywords, Switch marks a message `$SwitchSeen` only after handing
+it to the room transport. Otherwise Switch rescans mail received since
+connection setup and relies on transport event IDs to deduplicate it. This
+fallback does not change `\Seen`, so reading a message in another mail client
+does not make Switch miss it; it does require scanning the mailbox's newer
+messages on each poll or IDLE wake. RFC `Message-ID` is the stable external
+message reference; when absent, a hash of the raw message is used. If a crash
+happens after the room write but before the keyword is set, transport event IDs
+deduplicate the retry without duplicating room messages or attachments.
 
 SMTP does not provide an idempotency key. If an SMTP server accepts an email
 but its response is lost before Switch records the sent message ID, a retry

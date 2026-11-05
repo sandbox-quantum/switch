@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -50,7 +51,6 @@ _MAX_OUTBOUND_CHARS = 18_000
 _COMMAND_PREFIX = "!"
 _THREAD_PREFIX = "email-ref:"
 _HANDLED_KEYWORD = b"$SwitchSeen"
-_SEEN = b"\\Seen"
 _IDLE_SECONDS = 25 * 60
 _IDLE_CHECK_SECONDS = 15
 _RECONNECT_FIRST = 5.0
@@ -696,17 +696,17 @@ class EmailAdapter(PlatformAdapter):
         except TimeoutError:
             pass
 
-    def _handled_flag(self, selected: dict[bytes, Any]) -> bytes:
+    def _handled_flag(self, selected: dict[bytes, Any]) -> bytes | None:
         permanent = selected.get(b"PERMANENTFLAGS") or ()
         if b"\\*" in permanent or _HANDLED_KEYWORD in permanent:
             return _HANDLED_KEYWORD
         logger.warning(
-            "The IMAP server for %s keeps no custom keywords, so handled mail is "
-            "marked read (\\Seen) instead. Mail someone reads in a mail client "
-            "before Switch does is then not posted.",
+            "The IMAP server for %s keeps no custom keywords; Switch will rescan "
+            "mail received since connection setup and rely on transport "
+            "deduplication instead of changing mailbox flags.",
             self._config.imap_username,
         )
-        return _SEEN
+        return None
 
     def _idle(self, client: IMAPClient) -> None:
         client.idle()
@@ -721,16 +721,17 @@ class EmailAdapter(PlatformAdapter):
             client.idle_done()
 
     async def _handle_waiting(
-        self, client: IMAPClient, keyword: bytes, selected: dict[bytes, Any]
+        self, client: IMAPClient, keyword: bytes | None, selected: dict[bytes, Any]
     ) -> bool:
-        criteria: list[Any] = (
-            ["UNKEYWORD", _HANDLED_KEYWORD]
-            if keyword == _HANDLED_KEYWORD
-            else ["UNSEEN"]
-        )
+        since = self._config.since
+        if keyword is not None:
+            criteria: list[Any] = ["UNKEYWORD", keyword]
+        elif since is not None:
+            criteria = ["SINCE", since.date()]
+        else:
+            criteria = ["UNSEEN"]
         uids = sorted(await asyncio.to_thread(client.search, criteria))
         uidvalidity = str(selected.get(b"UIDVALIDITY", "unknown"))
-        since = self._config.since
         retry = False
         for uid in uids:
             if self._stopping.is_set():
@@ -747,7 +748,8 @@ class EmailAdapter(PlatformAdapter):
                 and isinstance(arrived, datetime)
                 and _aware(arrived) < since
             ):
-                await asyncio.to_thread(client.add_flags, [uid], [keyword])
+                if keyword is not None:
+                    await asyncio.to_thread(client.add_flags, [uid], [keyword])
                 continue
             try:
                 await self._dispatch_email(uidvalidity, str(uid), data[b"BODY[]"])
@@ -759,7 +761,8 @@ class EmailAdapter(PlatformAdapter):
                 )
                 retry = True
                 continue
-            await asyncio.to_thread(client.add_flags, [uid], [keyword])
+            if keyword is not None:
+                await asyncio.to_thread(client.add_flags, [uid], [keyword])
         return retry
 
     async def _dispatch_email(self, uidvalidity: str, uid: str, raw: bytes) -> None:
@@ -787,7 +790,8 @@ class EmailAdapter(PlatformAdapter):
             return
         subject = _normal_subject(_decode_header(message.get("Subject")))
         message_id = str(
-            message.get("Message-ID") or f"<imap-{uidvalidity}-{uid}@switch.local>"
+            message.get("Message-ID")
+            or f"<{hashlib.sha256(raw).hexdigest()}@switch.local>"
         ).strip()
         ref = _thread_ref(message_id, sender_address, subject)
         parent_id = _thread_headers(message)
