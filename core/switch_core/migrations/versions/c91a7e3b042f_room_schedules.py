@@ -7,7 +7,7 @@ DDL is frozen here so future model edits do not change migration history.
 from alembic import op
 
 revision = "c91a7e3b042f"
-down_revision = "c3d9a1f7b246"
+down_revision = "a3d9f6c2b871"
 branch_labels = None
 depends_on = None
 expand_only = True
