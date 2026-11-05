@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { CloudAgent } from "../../../data/hostedCloud";
-import { OWNER_STOPPED, cloudPresentation, cloudStatusFor, replyAgo } from "./cloudAgentState";
+import {
+  BOX_STOPPED,
+  OWNER_STOPPED,
+  cloudPresentation,
+  cloudStatusFor,
+  replyAgo,
+} from "./cloudAgentState";
 
 const now = new Date("2026-11-05T12:00:00Z");
 
@@ -92,8 +98,15 @@ describe("cloudStatusFor", () => {
   });
 
   it("says Stopped for every agent on a box the panel shows as Stopped", () => {
-    expect(cloudStatusFor("a1", states, new Set(["a1"]), now, true)).toBe(OWNER_STOPPED);
+    expect(cloudStatusFor("a1", states, new Set(["a1"]), now, true)).toBe(BOX_STOPPED);
+    // Its owner stopped it: Core leaves it out.
+    expect(cloudStatusFor("a2", states, new Set(["a1", "a2"]), now, true)).toBe(OWNER_STOPPED);
     expect(cloudStatusFor("a3", states, new Set(["a1"]), now, true)).toBeNull();
+    // A failure keeps its own words on a stopped box.
+    const paused = new Map([["a1", agent({ state: "unavailable", paused: true })]]);
+    expect(cloudStatusFor("a1", paused, new Set(["a1"]), now, true)?.label).toBe(
+      "Paused by Switch",
+    );
   });
 
   it("shows nothing for an agent not on the person's cloud", () => {

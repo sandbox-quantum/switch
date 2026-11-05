@@ -114,6 +114,17 @@ it('a box its owner stopped is started by lifecycle start, never ensure', async 
   expect(switchServers.ensureCloudMachine).not.toHaveBeenCalled();
 });
 
+it('a resting box with agents offers Wake, which calls ensure', async () => {
+  const el = await render(
+    box({ state: 'stopped', desired_state: 'stopped', sleeping: true, agents: ['a1'] })
+  );
+  expect(el.textContent).toContain('Starts when you message an agent.');
+  const wake = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Wake');
+  await act(async () => wake!.click());
+  expect(switchServers.ensureCloudMachine).toHaveBeenCalledWith('server');
+  expect(switchServers.cloudMachineLifecycle).not.toHaveBeenCalled();
+});
+
 it('a box that is starting reads Starting… with no Start', async () => {
   const el = await render(box({ state: 'provisioning', desired_state: 'running' }));
   expect(el.textContent).toContain('Starting…');

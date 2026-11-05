@@ -3,7 +3,11 @@
  * machine card (the designer's wording), and an older server read as no figures.
  */
 import { describe, expect, it } from 'vitest';
-import { retainedBoxToWake, yourCloudView } from '@renderer/features/cloud-agents/your-cloud';
+import {
+  boxShowsStopped,
+  retainedBoxToWake,
+  yourCloudView,
+} from '@renderer/features/cloud-agents/your-cloud';
 import { cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 
 const GIB = 1024 ** 3;
@@ -64,6 +68,8 @@ describe('Your cloud on the cloud machine card', () => {
       resting: true,
       heading: 'Resting',
       line: 'Starts when you message an agent.',
+      start: 'ensure',
+      startLabel: 'Wake',
     });
   });
 
@@ -178,7 +184,7 @@ describe('Your cloud shows the box\'s real state, never "Ready" from an old repo
     });
   });
 
-  it('a resting box with agents wakes by a message; with none, it offers Start', () => {
+  it('a resting box with agents wakes by a message or Wake; with none, it offers Start', () => {
     const resting = {
       ...up,
       state: 'stopped' as const,
@@ -189,6 +195,8 @@ describe('Your cloud shows the box\'s real state, never "Ready" from an old repo
       resting: true,
       heading: 'Resting',
       line: 'Starts when you message an agent.',
+      start: 'ensure',
+      startLabel: 'Wake',
     });
     expect(yourCloudView(resting, at2)).toEqual({
       resting: true,
@@ -216,6 +224,18 @@ describe('Your cloud shows the box\'s real state, never "Ready" from an old repo
         line: 'Not running right now.',
       });
     }
+  });
+  it('tells the agents to read Stopped only when Your cloud says Stopped', () => {
+    const box = { ...up, agents: ['a1'] };
+    expect(boxShowsStopped({ ...box, state: 'retained' as const })).toBe(true);
+    expect(
+      boxShowsStopped({ ...box, state: 'stopped' as const, desired_state: 'stopped' as const })
+    ).toBe(true);
+    expect(boxShowsStopped(box)).toBe(false);
+    expect(boxShowsStopped({ ...box, state: 'stopped' as const, sleeping: true })).toBe(false);
+    expect(
+      boxShowsStopped({ ...box, state: 'stopped' as const, stop_reason: 'paused' as const })
+    ).toBe(false);
   });
 });
 

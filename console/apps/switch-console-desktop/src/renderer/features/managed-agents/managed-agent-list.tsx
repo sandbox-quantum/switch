@@ -4,6 +4,7 @@ import { byLatestDirectChat } from '@renderer/features/chats/agent-conversations
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { useResealResult } from '@renderer/features/cloud-agents/repair-cloud';
 import { useCloudMachineFor } from '@renderer/features/cloud-agents/use-cloud-agents';
+import { boxShowsStopped } from '@renderer/features/cloud-agents/your-cloud';
 import {
   type SharedCloudTone,
   sharedCloudFromSession,
@@ -105,7 +106,7 @@ const ManagedAgentRow = observer(function ManagedAgentRow({
   // its card. Otherwise the row is the same as anywhere else.
   const sharedShown =
     sharedState && showsSharedCloudState(sharedState)
-      ? sharedCloudPresentation(sharedState, new Date())
+      ? sharedCloudPresentation(sharedState, new Date(), box !== null && boxShowsStopped(box))
       : null;
   return (
     <SidebarAgentRow

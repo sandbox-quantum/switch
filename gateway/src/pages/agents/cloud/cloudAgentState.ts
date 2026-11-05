@@ -15,6 +15,14 @@ export interface CloudPresentation {
   when: string | null;
 }
 
+/** A resting agent on a box Your cloud shows as Stopped. */
+export const BOX_STOPPED: CloudPresentation = {
+  label: "Stopped",
+  detail: "Your cloud is stopped",
+  tone: "resting",
+  when: null,
+};
+
 /** An agent on the box with no state from Core: its owner stopped it
  * (Console's `managed-agent-state.ts`: "Stopped", no second line). */
 export const OWNER_STOPPED: CloudPresentation = {
@@ -143,8 +151,10 @@ export function cloudStatusFor(
   now: Date,
   boxStopped = false,
 ): CloudPresentation | null {
-  if (boxStopped && onBox.has(agentId)) return OWNER_STOPPED;
   const agent = states.get(agentId);
+  // A resting agent on a stopped box won't start when messaged (Console's
+  // `sharedCloudPresentation` says the same); a failure keeps its own words.
+  if (boxStopped && onBox.has(agentId) && agent?.state === "resting") return BOX_STOPPED;
   if (agent) return cloudPresentation(agent, now);
   return onBox.has(agentId) ? OWNER_STOPPED : null;
 }

@@ -129,7 +129,11 @@ export function CloudMachineCard({
                 disabled={pending}
                 onClick={() => void startBox(cloud.start!)}
               >
-                {pending ? 'Starting…' : 'Start'}
+                {pending
+                  ? cloud.startLabel === 'Wake'
+                    ? 'Waking…'
+                    : 'Starting…'
+                  : (cloud.startLabel ?? 'Start')}
               </Button>
             </div>
           )}

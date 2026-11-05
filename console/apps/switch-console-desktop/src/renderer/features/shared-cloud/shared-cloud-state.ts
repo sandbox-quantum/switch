@@ -27,7 +27,10 @@ export type SharedCloudPresentation = {
  */
 export function sharedCloudPresentation(
   agent: SharedCloudAgent,
-  now: Date
+  now: Date,
+  /** Your cloud shows the box as Stopped (`boxShowsStopped`): a resting agent
+   * on it won't start when messaged, so it reads Stopped (PM review). */
+  boxStopped = false
 ): SharedCloudPresentation {
   const when =
     agent.state === 'working' || !agent.last_reply_at
@@ -55,6 +58,8 @@ export function sharedCloudPresentation(
         when,
       };
     case 'resting':
+      if (boxStopped)
+        return { label: 'Stopped', detail: 'Your cloud is stopped', tone: 'resting', when };
       return {
         label: 'Resting',
         detail: agent.box_stopped ? 'Starts when messaged' : 'Back when messaged',

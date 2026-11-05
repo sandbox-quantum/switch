@@ -39,6 +39,20 @@ describe('an agent on the shared cloud, as a person reads it', () => {
     expect(shown.when).toBe('last reply 4 min ago');
   });
 
+  it('says Stopped for a resting agent on a box Your cloud shows as Stopped', () => {
+    const resting = { agent_id: 'a', state: 'resting' as const, box_stopped: true };
+    expect(sharedCloudPresentation(resting, now, true)).toMatchObject({
+      label: 'Stopped',
+      detail: 'Your cloud is stopped',
+    });
+    expect(sharedCloudPresentation(resting, now).label).toBe('Resting');
+    // A failure keeps its own words on a stopped box.
+    expect(
+      sharedCloudPresentation({ agent_id: 'a', state: 'unavailable', paused: true }, now, true)
+        .label
+    ).toBe('Paused by Switch');
+  });
+
   it('never lets a failure pass for resting', () => {
     const shown = sharedCloudPresentation({ agent_id: 'a', state: 'unavailable' }, now);
     expect(shown).toMatchObject({ label: "Can't reply right now", tone: 'problem' });

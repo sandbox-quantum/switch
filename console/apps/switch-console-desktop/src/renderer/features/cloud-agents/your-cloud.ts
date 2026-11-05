@@ -35,6 +35,8 @@ export type YourCloudView =
        * resting one; `lifecycle` starts a box its owner stopped, which ensure
        * leaves as it is (Core's `ensure_machine`). Absent when Start isn't offered. */
       start?: 'ensure' | 'lifecycle';
+      /** What the Start button says: "Wake" for a resting box with agents. */
+      startLabel?: 'Start' | 'Wake';
     }
   | {
       resting: false;
@@ -105,7 +107,15 @@ export function yourCloudView(
   if (machine.sleeping)
     return noAgents
       ? { resting: true, heading: 'Resting', line: 'Start it to add an agent.', start: 'ensure' }
-      : { resting: true, heading: 'Resting', line: 'Starts when you message an agent.' };
+      : {
+          // Wake is offered too (PM review, story 2), as on the files view's
+          // resting page; a message to an agent still wakes it by itself.
+          resting: true,
+          heading: 'Resting',
+          line: 'Starts when you message an agent.',
+          start: 'ensure',
+          startLabel: 'Wake',
+        };
   if (state === 'stopped' && desired === 'running')
     return { resting: true, heading: 'Starting…', line: 'Usually ready in about two minutes.' };
   if (state === 'stopped')
@@ -141,6 +151,15 @@ export function yourCloudView(
         }
       : null,
   };
+}
+
+/**
+ * Whether the agents on the box should read Stopped: Your cloud says Stopped
+ * (put away, stopped by its owner, or not running), so a message won't start
+ * it, and "Back when messaged" would be wrong (PM review).
+ */
+export function boxShowsStopped(machine: Parameters<typeof yourCloudView>[0]): boolean {
+  return yourCloudView(machine, () => '').heading === 'Stopped';
 }
 
 /**

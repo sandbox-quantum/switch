@@ -8,6 +8,7 @@ import {
   useCloudMachineFor,
   useCloudMachines,
 } from '@renderer/features/cloud-agents/use-cloud-agents';
+import { boxShowsStopped } from '@renderer/features/cloud-agents/your-cloud';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
@@ -222,7 +223,13 @@ function ManagedAgentCard({
       </div>
       {sharedState && showsSharedCloudState(sharedState) ? (
         <div className="pointer-events-none px-3.5 pb-3">
-          <SharedCloudAgentState shown={sharedCloudPresentation(sharedState, new Date())} />
+          <SharedCloudAgentState
+            shown={sharedCloudPresentation(
+              sharedState,
+              new Date(),
+              box !== null && boxShowsStopped(box)
+            )}
+          />
         </div>
       ) : (
         <div
