@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import logging
 import re
 import secrets
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from switch_core.addressing import (
     AddressingPolicy,
@@ -64,10 +67,7 @@ from switch_core.bridges.agent.protocol.types import (
     ToolCallReport,
     ToolSpec,
 )
-from switch_core.bridges.agent.registration_bootstrap import (
-    REGISTRATION_KEY_TYPES,
-    resolve_registration_owner_id,
-)
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentIdentityConflict,
@@ -115,7 +115,7 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_api_key
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
 from switch_core.events import (
     LlmCallReport as RoomLlmCallReport,
@@ -124,6 +124,7 @@ from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.platform_access import administers_on_record
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
     is_reserved_mention_name,
@@ -148,6 +149,8 @@ from switch_core.trust.client import (
 )
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.agent_runs import RunService
@@ -175,6 +178,25 @@ if TYPE_CHECKING:
     from switch_core.session_activity.outcomes import ApprovalOutcomes
 
 logger = logging.getLogger(__name__)
+
+LIST_ALL_ROOMS_MAX = 500
+
+
+def _encode_room_cursor(created_at: datetime | str, room_id: str) -> str:
+    stamp = created_at.isoformat() if isinstance(created_at, datetime) else created_at
+    raw = json.dumps([stamp, room_id]).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _decode_room_cursor(cursor: str) -> tuple[datetime, str]:
+    """A `list_all_rooms` cursor's position. It only says where a page starts
+    in this tenant's own rooms, so a cursor from elsewhere moves a page and
+    reveals nothing."""
+    try:
+        created_at, room_id = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        return datetime.fromisoformat(created_at), str(room_id)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("cursor is not one list_all_rooms returned") from exc
 
 
 # \A and \Z rather than ^ and $: Python's $ also matches before a single
@@ -296,17 +318,6 @@ class AgentDeletionResult:
     bridge_failures: list[str]
 
 
-class BootstrapOwnerMisconfiguredError(Exception):
-    """Raised when the deployment-wide bootstrap key's owner account cannot
-    be resolved or trusted (see ``registration_bootstrap.py``).
-
-    Deliberately not a ``PermissionError``: the presented token is valid, so
-    this is a deployment misconfiguration, not a bad credential. A caller
-    that catches ``PermissionError`` to mean "bad token" must not also catch
-    this and report the same thing.
-    """
-
-
 def _describe_room(room: Room) -> RoomDescriptor:
     return RoomDescriptor(
         id=room.id,
@@ -330,6 +341,9 @@ class AgentCore:
     # Same reason: a minimal test instance gets a client that allows everything
     # rather than one that needs real config to construct.
     trust_client: TrustClient = NullTrustClient()
+    # Same reason: a minimal test instance keeps nothing and reads every
+    # check from the database. The server supplies the process's one cache.
+    room_access: RoomAccessCache = RoomAccessCache(ttl_seconds=0, max_entries=1)
     # Told (tenant_id, agent_id) just before an agent is deleted, while its row
     # still exists. Set by the process wiring when something outside Core keeps
     # state about agents that a cascade alone would drop without telling anyone.
@@ -374,9 +388,12 @@ class AgentCore:
         config: SwitchConfig,
         approval_outcomes: ApprovalOutcomes,
         trust_client: TrustClient,
+        room_access: RoomAccessCache | None = None,
         telemetry: TelemetryService | None = None,
     ) -> None:
         self.telemetry = telemetry
+        if room_access is not None:
+            self.room_access = room_access
         self.trust_client = trust_client
         self.approval_outcomes = approval_outcomes
         # Pairs session start with session end. Held here because the handler
@@ -438,8 +455,8 @@ class AgentCore:
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
-        Pass ``owner_id`` directly (gateway flow) or use
-        ``register_agent_with_token`` to resolve a registration token first.
+        The caller resolves ``owner_id``: the gateway from the signed-in
+        person, the HTTP registration endpoint from the registration token.
 
         ``parent_agent_id`` links this agent as a child of another (a Claude
         Code subagent registered under the user's main agent); None for an
@@ -610,91 +627,6 @@ class AgentCore:
             oauth_client_id=oauth_client_id,
         )
 
-    async def register_agent_with_token(
-        self,
-        *,
-        registration_token: str,
-        name: str,
-        description: str,
-        display_name: str | None = None,
-        connector_type: str,
-        integration_profile: IntegrationProfile,
-        tools: list[ToolSpec] | None = None,
-        models: list[ModelSpec] | None = None,
-        metadata: dict[str, Any] | None = None,
-        overwrite: bool = False,
-        addressing_policy: AddressingPolicy | None = default_agent_policy(),
-    ) -> RegistrationResult:
-        """Resolve a registration token to its owner, then register the agent.
-
-        Raises PermissionError if the token does not match a stored ApiKey of
-        a registration type (see ``registration_bootstrap.REGISTRATION_KEY_TYPES``).
-        Raises BootstrapOwnerMisconfiguredError if the token is valid but its
-        bootstrap owner cannot be resolved or trusted — a deployment fault,
-        not a bad credential, so callers must not conflate it with the
-        PermissionError above (the detail is logged here, not in the
-        exception, to match the HTTP registration path's handling of the
-        same failure).
-        Raises AgentExistsError if the name is taken and ``overwrite`` is False.
-
-        The token also decides the *tenant* the new agent and its API key land
-        in, and that is bound here rather than left to the caller. The HTTP
-        registration endpoint has ``BearerAuthMiddleware`` in front of it doing
-        the same thing. This path does not: a server-side connector calls it
-        in-process from ``server_connectors/core.py``, which binds its own
-        row's tenant around the call (``_register_agent``) — from boot, and
-        from ``POST /connectors``, where the tenant already bound is the
-        *requesting operator's*, which is not necessarily the connector's.
-
-        So the binding here is not filling a vacuum; it is overriding whatever
-        the caller had, with the one thing that is authoritative for these
-        rows. Bearer authentication later reads ``api_keys.tenant_id`` back as
-        the source of truth, so a key filed under the wrong tenant would keep
-        confirming itself on every subsequent call.
-        """
-        token_hash = hashlib.sha256(registration_token.encode()).hexdigest()
-        # Resolving a credential is the read that *produces* a tenant, so it
-        # cannot be answered under one: doing so is either a tautology or a
-        # false "invalid token". `key_hash` is one of the two columns
-        # deliberately left globally unique for exactly this, and the
-        # exemption (`db/tenant_lookup.py`) turns it into a tenant id. The key
-        # row itself, and the owner resolution that reads it, are then
-        # ordinary scoped reads under that tenant.
-        tenant_id = await tenant_of_api_key(self.session_factory, token_hash)
-        if tenant_id is None:
-            raise PermissionError("Invalid registration token")
-        async with tenant_session(self.session_factory, tenant_id) as session:
-            key = await self.api_key_store.get_by_hash(session, token_hash)
-            if key is None or key.type not in REGISTRATION_KEY_TYPES:
-                raise PermissionError("Invalid registration token")
-            try:
-                owner_id = await resolve_registration_owner_id(
-                    session, self.user_store, key
-                )
-            except RuntimeError as exc:
-                logger.error(
-                    "Agent-registration bootstrap owner resolution failed: %s", exc
-                )
-                raise BootstrapOwnerMisconfiguredError(
-                    "Agent registration is temporarily unavailable"
-                ) from exc
-
-        with tenant_scope(tenant_id):
-            return await self.register_agent(
-                name=name,
-                description=description,
-                display_name=display_name,
-                connector_type=connector_type,
-                integration_profile=integration_profile,
-                tools=tools,
-                models=models,
-                metadata=metadata,
-                owner_id=owner_id,
-                overwrite=overwrite,
-                addressing_policy=addressing_policy,
-                registration_path="bootstrap",
-            )
-
     async def _create_agent(
         self,
         *,
@@ -779,7 +711,7 @@ class AgentCore:
 
         await session.commit()
         self.client_lifecycle.start_client(client_record)
-        self.client_lifecycle.announce(client_record.tenant_id)
+        self.client_lifecycle.announce(client_record.tenant_id, [client_record.id])
         return agent.id
 
     async def _reregister_agent(
@@ -819,8 +751,8 @@ class AgentCore:
         # rotates credentials and rebuilds the profile, and callers that know
         # nothing about icons must not wipe one the owner chose.
         icon_fields = {} if icon_url is None else {"icon_url": icon_url}
-        # Same for the display name: a connector re-registers on every startup
-        # and knows nothing about it.
+        # Same for the display name: a client that re-registers on every
+        # launch knows nothing about it.
         display_name_fields = (
             {} if display_name is None else {"display_name": display_name}
         )
@@ -885,6 +817,12 @@ class AgentCore:
         self, listener: Callable[[str, str], Awaitable[None]]
     ) -> None:
         self._agent_profile_listener = listener
+
+    async def agent_profile_changed(self, agent_id: str) -> None:
+        """Tell whoever follows agents' faces that this one's icon or
+        display name changed, after a change made outside
+        `update_agent_detail`."""
+        await self._agent_profile_changed(agent_id)
 
     async def _agent_profile_changed(self, agent_id: str) -> None:
         if self._agent_profile_listener is not None:
@@ -1117,8 +1055,7 @@ class AgentCore:
                 unsafe to render (InvalidDisplayName), or no such agent.
             AgentExistsError: another agent has the name.
             AgentRenameRefused: a clash in a room or on a platform, or an agent
-                that cannot be renamed (a subagent, a parent of subagents, or
-                one a server connector discovered).
+                that cannot be renamed (a subagent or a parent of subagents).
             RuntimeError: no tenant is bound.
         """
         (
@@ -1174,9 +1111,9 @@ class AgentCore:
             # the next message that already matched its old name.
             if isinstance(actor, AgentActor):
                 actor.set_agent(agent)
-        # Every other process re-reads the tenant's clients, so its copy of the
+        # Every other process re-reads the agent's client, so its copy of the
         # agent and the bridges it holds take the new name too.
-        self.client_lifecycle.announce(tenant_id)
+        self.client_lifecycle.announce(tenant_id, [agent.client_id])
         if self._agent_rename_listener is not None:
             await self._agent_rename_listener(tenant_id, agent_id, old_name)
         await self._agent_profile_changed(agent_id)
@@ -1256,8 +1193,8 @@ class AgentCore:
 
         Raises:
             PermissionError: the target belongs to another owner.
-            AgentRenameRefused: the target is the caller itself, an agent that
-                can manage agents, or one a server connector found.
+            AgentRenameRefused: the target is the caller itself, or an agent
+                that can manage agents.
             ValueError: no such agent or room.
             RuntimeError: deletion requests are not wired in this process.
         """
@@ -1283,11 +1220,6 @@ class AgentCore:
                     f"Agent '{target.name}' can manage agents itself, so another "
                     "agent cannot ask for it to be deleted. Its owner can delete "
                     "it from the gateway or with `!delete-agent`."
-                )
-            if (target.metadata_ or {}).get("server_connector_id"):
-                raise AgentRenameRefused(
-                    f"Agent '{target.name}' was found by a server connector, which "
-                    "would bring it back. Remove it at its source."
                 )
             await record_audit_event(
                 session,
@@ -1340,11 +1272,6 @@ class AgentCore:
     async def _check_renamable(
         self, session: AsyncSession, agent: Agent, new_name: str
     ) -> None:
-        if (agent.metadata_ or {}).get("server_connector_id"):
-            raise AgentRenameRefused(
-                f"Agent '{agent.name}' was found by a server connector, which "
-                "would bring it back under its old name. Rename it at its source."
-            )
         if agent.parent_agent_id is not None:
             raise AgentRenameRefused(
                 f"Agent '{agent.name}' is a subagent; its name comes from its "
@@ -1488,7 +1415,7 @@ class AgentCore:
             # its client must not stay stopped here.
             self.client_lifecycle.deletion_failed(client_id)
             raise
-        self.client_lifecycle.announce(tenant_id)
+        self.client_lifecycle.announce(tenant_id, [client_id])
         self.api_key_cache.invalidate_agent(resolved_id)
         # Its connections end with it, here and in whichever process holds
         # one: their rows went with its row. After its key is dropped, so a
@@ -1534,30 +1461,62 @@ class AgentCore:
 
     async def require_room_member(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """Get room and verify agent is a member. Raises PermissionError if not."""
-        async with self.session_factory() as session:
+        tenant_id = current_tenant_id()
+        if tenant_id is not None:
+            held = self.room_access.member(tenant_id, agent_id, room_id)
+            if held is not None:
+                return held
+        async with self._bound_session() as session:
             return await self._room_member_in(session, agent_id, room_id)
+
+    def _bound_session(self) -> AbstractAsyncContextManager[AsyncSession]:
+        """A session for the bound tenant: the one a `shared_tenant_session`
+        block lends this task, if it is inside one, so a caller can put
+        several reads in one transaction."""
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            return self.session_factory()
+        return tenant_session(self.session_factory, tenant_id)
 
     async def require_room_poster(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """`require_room_member`, and raise `BudgetExceeded` if the agent has
         reached a budget covering it. One session for both, so a post still
         costs one pool checkout."""
+        tenant_id = require_tenant_id()
+        access = self.room_access
+        room = access.member(tenant_id, agent_id, room_id)
+        if room is not None and access.unbudgeted(tenant_id, agent_id):
+            return room
         async with self.session_factory() as session:
-            room = await self._room_member_in(session, agent_id, room_id)
-            await self.budget_guard.require_within(
-                session, tenant_id=require_tenant_id(), agent_id=agent_id
+            if room is None:
+                room = await self._room_member_in(session, agent_id, room_id)
+            ticket = access.ticket()
+            covered = await self.budget_guard.require_within(
+                session, tenant_id=tenant_id, agent_id=agent_id
             )
+        if not covered:
+            access.put_unbudgeted(tenant_id, agent_id, ticket)
         return room
 
     async def _room_member_in(
         self, session: AsyncSession, agent_id: str, room_id: str
     ) -> RoomDescriptor:
+        tenant_id = current_tenant_id()
+        if tenant_id is not None:
+            held = self.room_access.member(tenant_id, agent_id, room_id)
+            if held is not None:
+                return held
+        ticket = self.room_access.ticket()
         found = await self.room_store.get_with_membership(session, room_id, agent_id)
         if found is None:
             raise ValueError(f"Room not found: {room_id}")
         room, is_member = found
         if not is_member:
             raise PermissionError("Agent is not a member of this room")
-        return _describe_room(room)
+        described = _describe_room(room)
+        if tenant_id is not None:
+            self.room_access.put_member(tenant_id, agent_id, described, ticket)
+        return described
 
     async def list_rooms(
         self, agent_id: str, *, include_archived: bool = False
@@ -2677,7 +2636,7 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         limit = max(1, min(limit, HISTORY_MAX_LIMIT))
 
-        async with self.session_factory() as session:
+        async with self._bound_session() as session:
             # One more than asked for. Whether that row exists is precisely the
             # question `truncated` answers, so there is nothing to estimate and
             # no reason to be conservative about it.
@@ -3221,8 +3180,14 @@ class AgentCore:
         owner_is_admin = False
         if agent.owner_id is not None:
             owner = await session.get(User, agent.owner_id)
-            owner_is_admin = owner is not None and await self.user_store.administers(
-                session, owner
+            owner_is_admin = owner is not None and await administers_on_record(
+                session,
+                self.session_factory,
+                self.user_store,
+                owner,
+                target_type="agent",
+                target_id=agent.id,
+                details={"event": "agent_acting"},
             )
         return agent, agent.owner_id, owner_is_admin
 
@@ -3734,10 +3699,12 @@ class AgentCore:
     ) -> dict[str, Any]:
         """Create a directed link from source_room_id → target_room_id.
 
-        Requires write access to the source room.
+        Requires write access to the source room and read access to the
+        target, whose name and description the link shows.
         """
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, source_room_id, "write")
+            await self._require_room_action(session, agent_id, target_room_id, "read")
             result = await self.resource_service.attach_linked_room(
                 session,
                 source_room_id=source_room_id,
@@ -3772,34 +3739,75 @@ class AgentCore:
             await session.commit()
 
     async def list_all_rooms(
-        self, agent_id: str, *, include_archived: bool = False
-    ) -> list[Room]:
-        """List all rooms (moderation only).
-
-        Archived rooms are excluded unless `include_archived` is set.
-        """
+        self,
+        agent_id: str,
+        *,
+        include_archived: bool,
+        name_contains: str | None,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[Room], str | None]:
+        """One page of the rooms the agent may see, oldest first, and the
+        cursor for the next page (None on the last): every room its owner may
+        read, plus those it is a member of. Archived rooms are excluded unless
+        `include_archived` is set."""
+        if not 1 <= limit <= LIST_ALL_ROOMS_MAX:
+            raise ValueError(f"limit must be between 1 and {LIST_ALL_ROOMS_MAX}")
         async with self.session_factory() as session:
-            rooms = await self.room_store.get_all(
-                session, include_archived=include_archived
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
             )
-        return rooms
+            rooms = await self.room_store.page_all(
+                session,
+                include_archived=include_archived,
+                name_contains=name_contains,
+                limit=limit + 1,
+                after=_decode_room_cursor(cursor) if cursor is not None else None,
+                reader_id=owner_id,
+                reader_is_admin=owner_is_admin,
+                member_agent_id=agent_id,
+            )
+        if len(rooms) <= limit:
+            return rooms, None
+        rooms = rooms[:limit]
+        last = rooms[-1]
+        return rooms, _encode_room_cursor(last.created_at, last.id)
+
+    async def rooms_visible_to(
+        self, session: AsyncSession, agent_id: str, *, include_archived: bool
+    ) -> list[Room]:
+        """The rooms the agent's owner may read, plus those the agent is in."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        return await self.room_store.list_visible_to_agent(
+            session,
+            reader_id=owner_id,
+            reader_is_admin=owner_is_admin,
+            member_agent_id=agent_id,
+            include_archived=include_archived,
+        )
+
+    async def _visible_room_ids(self, session: AsyncSession, agent_id: str) -> set[str]:
+        """Ids of `rooms_visible_to`, archived rooms included."""
+        rooms = await self.rooms_visible_to(session, agent_id, include_archived=True)
+        return {r.id for r in rooms}
 
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.
 
         Returns dicts of ``{id, name, description, parent_group_id, room_count,
         path}`` where `path` is the root-first ancestry (e.g. "Parent / Child")
-        and `room_count` is the number of rooms directly in that group.
+        and `room_count` is the number of rooms directly in that group that
+        the agent may see.
         """
         async with self.session_factory() as session:
             result = await session.execute(select(RoomGroup))
             groups = list(result.scalars().all())
-            count_rows = await session.execute(
-                select(Room.group_id, func.count(Room.id))
-                .where(Room.group_id.is_not(None))
-                .group_by(Room.group_id)
+            visible = await self.rooms_visible_to(
+                session, agent_id, include_archived=True
             )
-            counts = {gid: c for gid, c in count_rows.all() if gid is not None}
+        counts = Counter(r.group_id for r in visible if r.group_id is not None)
 
         by_id = {g.id: g for g in groups}
 
@@ -3858,9 +3866,18 @@ class AgentCore:
         (a path, bare name or id). Returns the new group's detail dict.
 
         Raises ValueError if `parent_group_name` is unknown or ambiguous, or if
-        the parent already has a group with this name.
+        the parent already has a group with this name, and PermissionError
+        unless the agent's owner administers the workspace: groups are shared
+        and have no owner of their own.
         """
         async with self.session_factory() as session:
+            _agent, _owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            if not owner_is_admin:
+                raise PermissionError(
+                    "Only a workspace admin's agent can create room groups."
+                )
             parent_group_id = await self._resolve_group_name(session, parent_group_name)
             group = await self.room_group_store.create(
                 session,
@@ -3887,7 +3904,7 @@ class AgentCore:
         self, agent_id: str, group_id: str
     ) -> dict[str, Any]:
         """Return one room group's detail: its fields, ancestry path, the rooms
-        directly in it, and its immediate child groups.
+        directly in it that the agent may see, and its immediate child groups.
 
         Raises ValueError if the group does not exist.
         """
@@ -3896,11 +3913,12 @@ class AgentCore:
             if group is None:
                 raise ValueError(f"Room group not found: {group_id}")
 
-            member_room_rows = await session.execute(
-                select(Room.id, Room.name).where(Room.group_id == group_id)
-            )
             member_rooms = [
-                {"id": rid, "name": rname} for rid, rname in member_room_rows.all()
+                {"id": r.id, "name": r.name}
+                for r in await self.rooms_visible_to(
+                    session, agent_id, include_archived=True
+                )
+                if r.group_id == group_id
             ]
 
             child_rows = await session.execute(
@@ -3963,6 +3981,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=agent,
+                visible_room_ids=await self._visible_room_ids(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4036,6 +4055,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,
+                visible_room_ids=await self._visible_room_ids(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4279,12 +4299,6 @@ class AgentCore:
         # count rose anyway.
         await self.room_service.set_room_archived(room_id, archived)
         return await self.get_room_detail(agent_id, room_id)
-
-    async def list_all_agents(self, agent_id: str) -> list[Agent]:
-        """List all agents (moderation only)."""
-        async with self.session_factory() as session:
-            agents = await self.agent_store.get_all(session)
-        return agents
 
     async def pre_tool_call(
         self,

@@ -2,22 +2,19 @@ import { observer } from 'mobx-react-lite';
 import { motion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
-import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { report } from '@renderer/lib/telemetry/report';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
 import { agentProviders } from '@shared/core/providers/agent-provider-registry';
 import { BuddyAvatar } from './buddy-avatar';
-import { firstNameOf, isBuddy } from './buddy-identity';
+import { findBuddy, firstNameOf } from './buddy-identity';
+import { buddyPerson } from './buddy-person';
 import { buddyProviders, startButtons } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
-import { createBuddy } from './create-buddy';
 import { MeetBuddyIntro } from './meet-buddy-intro';
 import { ProviderSetup } from './provider-setup';
+import { useStartBuddy } from './use-start-buddy';
 import { useThisComputer } from './use-this-computer';
 
 /**
@@ -45,15 +42,19 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   workspaceId,
   onCreated,
   onSkip,
+  onSetupOpened,
 }: {
   serverId: string;
   workspaceId: string;
   onCreated: (agent: { agentId: string; name: string }) => void;
   onSkip: () => void;
+  /** The person opened the other providers' setup, for the page that holds this one to count. */
+  onSetupOpened: () => void;
 }) {
   const exit = useWizardExit();
   const [settingUp, setSettingUp] = useState(false);
-  const { state: computer, earlyProviders } = useThisComputer(serverId, workspaceId);
+  const thisComputer = useThisComputer(serverId, workspaceId);
+  const { state: computer, earlyProviders } = thisComputer;
   // What this computer's controller reports, or until it does, what Console
   // found checking the providers as onboarding opened.
   const reported = useMemo(
@@ -86,11 +87,15 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     () => (firstDecided ?? []).flatMap((id) => providers.filter((provider) => provider.id === id)),
     [firstDecided, providers]
   );
-  const existing = useManagedAgents(serverId).data?.find(isBuddy) ?? null;
-  const [starting, setStarting] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const user = switchServersStore.statusFor(serverId)?.user ?? null;
-  const firstName = firstNameOf(user?.name);
+  const existing = findBuddy(useManagedAgents(serverId).data);
+  const { starting, error, start } = useStartBuddy({
+    serverId,
+    workspaceId,
+    computer,
+    entryPoint: 'onboarding',
+    onCreated,
+  });
+  const firstName = firstNameOf(buddyPerson(serverId).name);
   // The opening plays once: back from setting up a provider, it is at rest.
   const introPlayed = useRef(false);
 
@@ -101,51 +106,9 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
 
   const openSetup = () => {
     reportBuddyStep('setup_opened', null);
-    report('onboarding_page', { page: 'provider_setup', path: onboardingStore.via });
+    onSetupOpened();
     setSettingUp(true);
   };
-
-  // A provider chosen before this computer's controller is up: started once it is.
-  const [waitingToStart, setWaitingToStart] = useState<string | null>(null);
-  useEffect(() => {
-    if (waitingToStart === null) return;
-    if (computer.kind === 'failed') {
-      setWaitingToStart(null);
-      setStarting(null);
-      return;
-    }
-    if (computer.kind !== 'ready') return;
-    const providerId = waitingToStart;
-    setWaitingToStart(null);
-    void startWithRef.current(providerId);
-  }, [computer, waitingToStart]);
-
-  const startWith = async (providerId: string) => {
-    setStarting(providerId);
-    if (computer.kind !== 'ready') {
-      setWaitingToStart(providerId);
-      return;
-    }
-    reportBuddyStep('start', providerId);
-    setError(null);
-    try {
-      onCreated(
-        await createBuddy({
-          serverId,
-          workspaceId,
-          machineId: computer.machine.id,
-          provider: providerId,
-          person: { name: user?.name ?? null, email: user?.email ?? null },
-          entryPoint: 'onboarding',
-        })
-      );
-    } catch (cause) {
-      setError(failureText(cause, 'Could not create switch-buddy.'));
-      setStarting(null);
-    }
-  };
-  const startWithRef = useRef(startWith);
-  startWithRef.current = startWith;
 
   const header = (
     <div className="flex flex-col items-center gap-2 text-center">
@@ -176,6 +139,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
           workspaceId={workspaceId}
           entryPoint="onboarding"
           onCreated={onCreated}
+          thisComputer={thisComputer}
         />
       </OnboardingSurface>
     );
@@ -201,7 +165,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
             checking={computer.kind !== 'failed' && !checked}
             ready={ready}
             starting={starting}
-            onStart={(providerId) => void startWith(providerId)}
+            onStart={start}
             onSetUp={openSetup}
             onSkip={skip}
           />

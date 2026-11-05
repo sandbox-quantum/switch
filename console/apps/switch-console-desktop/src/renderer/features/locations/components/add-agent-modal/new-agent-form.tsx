@@ -7,7 +7,11 @@ import { isMachineAsleep } from '@renderer/features/cloud-agents/cloud-machine-s
 import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
-import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
+import {
+  MANAGED_AGENTS_KEY,
+  refreshEvery,
+} from '@renderer/features/managed-agents/use-managed-agents';
+import { useUserChangesLive } from '@renderer/features/managed-agents/use-user-changes';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import {
@@ -75,6 +79,7 @@ import {
   machineLabel,
   machineRunLocation,
   machineRunLocations,
+  type MachineRunLocation,
   sshHostIsMachine,
   thisComputerIsMachine,
 } from './server-run-locations';
@@ -84,7 +89,8 @@ export type NewAgentFormProps = {
   onBack: (() => void) | null;
   entryPoint: UiEntryPoint;
   serverId: string | null;
-  initialRunLocation: 'local' | 'cloud';
+  /** Where the agent runs at first: this computer, Switch cloud, or one of the server's machines. */
+  initialRunLocation: 'local' | 'cloud' | MachineRunLocation;
 };
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
@@ -162,6 +168,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // every machine the user owns there. Null when it does not run management.
   const askForMachines =
     !!selectedServerId && !!workspacesStore.idOnServerInScope(selectedServerId);
+  const machinesPushed = useUserChangesLive(askForMachines ? selectedServerId : null);
   const machinesQuery = useQuery({
     queryKey: [
       MANAGED_AGENTS_KEY,
@@ -171,7 +178,8 @@ export const NewAgentForm = observer(function NewAgentForm({
     ],
     queryFn: () => rpc.managedAgents.machines(selectedServerId!),
     enabled: askForMachines,
-    refetchInterval: (query) => (query.state.data ? 5000 : false),
+    refetchInterval: (query) =>
+      query.state.data ? refreshEvery(5000, machinesPushed, query.state.status === 'error') : false,
   });
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;
@@ -294,7 +302,9 @@ export const NewAgentForm = observer(function NewAgentForm({
     if (runHost === 'cloud') return;
     const id = machineIdOf(runHost);
     if (!serverMachines) {
-      if (id !== null) setRunHost(LOCAL_RUN_LOCATION);
+      // A machine picked before the list arrives keeps its place until the list says otherwise.
+      if (id !== null && (!askForMachines || machinesQuery.isFetched))
+        setRunHost(LOCAL_RUN_LOCATION);
       return;
     }
     if (id !== null) {
@@ -303,7 +313,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     }
     const enrolled = machineFor(runHost, serverMachines);
     if (enrolled) setRunHost(machineRunLocation(enrolled.id));
-  }, [serverMachines, runHost]);
+  }, [serverMachines, runHost, askForMachines, machinesQuery.isFetched]);
 
   // Everything chosen below the run location belongs to the machine it was
   // chosen on, so changing machines clears it.

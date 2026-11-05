@@ -7,7 +7,8 @@ guard against that is a count that does not grow: the same route over one row
 and over many runs the same number of statements.
 
 Counted at the engine's `before_cursor_execute` event, which every statement
-reaches whichever store or helper issued it. A request is a `StatementScope`,
+reaches whichever store or helper issued it, and, for the statements run on
+asyncpg directly (`db/raw.py`), which never reach it, at `RawStatement.all`. A request is a `StatementScope`,
 entered with `StatementCounts.scope()` or, for an app under test,
 `StatementCounts.wrap(app)`; the scope lives in a context variable, which
 SQLAlchemy carries into the greenlet a statement runs in, the same way
@@ -16,14 +17,16 @@ SQLAlchemy carries into the greenlet a statement runs in, the same way
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+
+from switch_core.db import raw
 
 
 @dataclass
@@ -32,6 +35,8 @@ class StatementScope:
 
     label: str
     statements: list[str] = field(default_factory=list)
+    # Rows each statement returned, as the driver fetched them.
+    rows: int = 0
 
     @property
     def count(self) -> int:
@@ -48,9 +53,44 @@ class StatementCounts:
         self._engine = engine.sync_engine
         self.scopes: list[StatementScope] = []
         event.listen(self._engine, "before_cursor_execute", self._on_execute)
+        event.listen(self._engine, "after_cursor_execute", self._on_executed)
+        self._raw_all = raw.RawStatement.all
+        run = self._raw_all
+
+        async def counted(
+            statement: raw.RawStatement,
+            session: AsyncSession,
+            parameters: Mapping[str, Any],
+        ) -> list[Any]:
+            rows = await run(statement, session, parameters)
+            scope = _current.get()
+            if scope is not None:
+                scope.statements.append(statement.sql or "")
+                scope.rows += len(rows)
+            return rows
+
+        raw.RawStatement.all = counted  # type: ignore[method-assign]
 
     def close(self) -> None:
         event.remove(self._engine, "before_cursor_execute", self._on_execute)
+        event.remove(self._engine, "after_cursor_execute", self._on_executed)
+        raw.RawStatement.all = self._raw_all  # type: ignore[method-assign]
+
+    def _on_executed(
+        self,
+        _conn: Any,
+        cursor: Any,
+        _statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        scope = _current.get()
+        if scope is None:
+            return
+        # The asyncpg adapter holds a statement's result rows in `_rows`.
+        fetched = getattr(cursor, "_rows", None)
+        scope.rows += len(fetched) if fetched is not None else max(cursor.rowcount, 0)
 
     def _on_execute(
         self,

@@ -93,15 +93,19 @@ export function workspaceOffNotice(
  * repositories, or replace a connected key. None while the workspace has the
  * service off, whose notice says what to do instead, nor where the server
  * says nothing can be connected until its app is set up, or ever on this
- * server. Another reason the server gives does not take it away: a service
- * can often be connected where it cannot be granted, and the button is
- * disabled where it cannot.
+ * server, nor for a key Switch never hands to agents. Another reason the
+ * server gives does not take it away: a service can often be connected where
+ * it cannot be granted, and the button is disabled where it cannot.
  */
 export function profileConnectAction(
   entry: ConnectionCatalogEntry
 ): 'connect' | 'reconnect' | 'replace' | null {
   if (entry.status === 'coming_soon' || entry.workspace_enabled === false) return null;
-  if (entry.unavailable_code === 'app_not_set_up' || entry.unavailable_code === 'needs_https')
+  if (
+    entry.unavailable_code === 'app_not_set_up' ||
+    entry.unavailable_code === 'needs_https' ||
+    entry.unavailable_code === 'key_never_expires'
+  )
     return null;
   if (entry.status === 'not_connected') return 'connect';
   if (entry.status === 'needs_reauthorization' || entry.status === 'error') return 'reconnect';

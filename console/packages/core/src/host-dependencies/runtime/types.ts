@@ -65,6 +65,7 @@ export type DependencyUninstallError =
   | { type: 'unknown-dependency'; id: string }
   | { type: 'no-uninstall-strategy'; id: string }
   | { type: 'no-uninstall-command'; id: string }
+  | { type: 'uninstall-target-not-found'; id: string; package: string; method: string }
   | { type: 'still-present'; id: string }
   | InstallCommandError;
 

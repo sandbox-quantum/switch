@@ -160,9 +160,8 @@ example), leave `tls.enabled` false and annotate.
 
 **switch-core can run more than one replica.** `switchCore.replicaCount` sets
 how many. Shared state lives in the database: replicas signal each other through
-Postgres notifications, and each bridge's listener and outbound relay, each
-server connector and each command reader is owned by one replica at a time
-through a lease. That includes the shared Discord gateway connection of the
+Postgres notifications, and each bridge's listener and outbound relay and each
+command reader is owned by one replica at a time through a lease. That includes the shared Discord gateway connection of the
 distributed Discord app, whose Discord bridges run beside it on the same
 replica, and each Teams bridge's Graph subscriptions, which only the replica
 holding the bridge makes and renews. Any replica can hold any client's
@@ -200,9 +199,11 @@ stored in the database.
 
 An agent with no icon of its own is drawn by api.dicebear.com with its name as
 the seed, and a person relayed from another platform by ui-avatars.com with their
-name in the URL. Slack, Discord and Teams clients load those images, so the
-services see the name and each reader's address; the Mattermost bridge loads them
-from switch-core. To send no such URL:
+name in the URL, so the services see the name. Slack and Discord fetch the image
+on their own servers and serve their copy, Teams draws it inside each card (some
+Teams clients may load it from the service directly), the Mattermost bridge
+fetches it from switch-core, and Switch Console loads it on each user's machine.
+To send no such URL:
 
 ```yaml
 switchCore:
@@ -211,11 +212,11 @@ switchCore:
 ```
 
 Each platform then shows its own default icon (Slack the app's icon, Discord its
-default avatar, Teams no image), icons already stored on those services are
-withheld too, and new agents get no generated icon. Setting an icon on one of
-those services is refused with the reason. Switch Console asks the server and
-stops drawing them for its agents. An icon an owner set on any other host is
-unaffected.
+default avatar, Teams no image; a Mattermost bot keeps the image it already has),
+icons already stored on those services are withheld too, and new agents get no
+generated icon. Setting an icon on one of those services is refused with the
+reason. Switch Console asks the server and stops drawing them for its agents. An
+icon an owner set on any other host is unaffected.
 
 ## Follow the conversation
 
@@ -238,6 +239,32 @@ only while the flag is on (1 to 3600 seconds). A channel exchange counts only
 while every gap in it, from a person's request to the agent's answer and from
 that answer to their next message, is within the window; after a break, people
 mention the agent again.
+
+## Service connections
+
+Two settings change the catalog services that people connect on this server.
+Both are empty by default, and the chart sets each variable only when you give
+it a value.
+
+```yaml
+switchCore:
+  # DISABLED_SERVICES: turn a service off, with the reason people see.
+  disabledServices:
+    datadog: "Not offered on this server."
+  # SERVICE_ACCESS_PROFILES: ask a service for less access.
+  serviceAccessProfiles:
+    google-workspace: drive-file
+```
+
+- `disabledServices`: people cannot connect, grant or issue a turned-off
+  service, but they can disconnect it.
+- `serviceAccessProfiles`: only `google-workspace` has a profile now.
+  `drive-file` asks for `drive.file` in place of Google's restricted `drive`
+  and `drive.readonly` scopes, so an External Google app needs no yearly
+  security assessment. Agents then cannot search Drive or read uploaded files.
+  If you change it, people must reconnect Google Workspace.
+
+An unknown service or profile stops switch-core at startup.
 
 ## Agent management
 

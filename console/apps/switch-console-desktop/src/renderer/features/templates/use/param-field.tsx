@@ -1,12 +1,14 @@
 import type { ParamSpec } from '@main/core/room-templates/controller';
 import { AgentTypePicker } from '@renderer/features/locations/components/add-agent-modal/agent-type-picker';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
+import { MachineProviderPicker } from '@renderer/features/locations/components/add-agent-modal/machine-provider-picker';
 import {
   AgentField,
   BridgeField,
   type EntityLists,
   UserField,
 } from '@renderer/features/room-templates/entity-fields';
+import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { Input } from '@renderer/lib/ui/input';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
@@ -27,6 +29,8 @@ export function ParamField({
   sshHost,
   hosts,
   machines,
+  serverId,
+  managedMachine,
   locationAsMachine,
   newRoom,
   disabled,
@@ -43,6 +47,10 @@ export function ParamField({
   hosts: readonly { sshHost: string; name: string }[];
   /** The owner's machines a `machine` param may name; null without agent management. */
   machines: readonly OwnedMachine[] | null;
+  serverId: string;
+  /** With agent management, the machine the agent reading this param runs on, whose
+   * reported providers a `provider` is chosen from; null until it has one. */
+  managedMachine: OwnedMachine | null;
   /** On a server with agent management, a `location` is one of the deployer's machines there. */
   locationAsMachine: boolean;
   /** For a `room` param: the room the template creates, offered as `$new`. */
@@ -52,6 +60,7 @@ export function ParamField({
 }) {
   const required = isRequired(param);
   const strVal = typeof value === 'string' ? value : String(value ?? '');
+  const { value: defaultAgent } = useAppSettingsKey('defaultAgent');
   const showDefault = param.default !== null && !isChain(param) && param.type !== 'boolean';
 
   let control: React.ReactNode;
@@ -65,6 +74,20 @@ export function ParamField({
         />
         {value ? 'Yes' : 'No'}
       </label>
+    );
+  } else if (param.type === 'provider' && locationAsMachine) {
+    control = managedMachine ? (
+      <MachineProviderPicker
+        serverId={serverId}
+        machine={managedMachine}
+        value={(strVal || null) as AgentProviderId | null}
+        onChange={(id) => onChange(id)}
+        defaultAgent={defaultAgent}
+      />
+    ) : (
+      <p className="text-xs text-foreground-muted">
+        Choose a machine first: the providers offered are the ones it has ready.
+      </p>
     );
   } else if (param.type === 'provider') {
     control = (

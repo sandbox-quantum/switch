@@ -22,7 +22,9 @@ auth:
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
-# Atlassian's MCP access tokens live 8 hours; agents still ask again hourly.
+# Atlassian's MCP access tokens live 8 hours, and Atlassian offers no way to
+# ask for a shorter one or to revoke one alone, so an agent's copy may outlive
+# its grant by up to that long. Agents still ask again hourly.
 token: { kind: pass_through, max_lifetime: 28800 }
 mcp:
   servers:

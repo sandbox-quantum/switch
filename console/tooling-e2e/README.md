@@ -2,7 +2,7 @@
 
 End-to-end tests for Switch: **real messages through a real Switch server**, and
 through a real Mattermost bridge where a scenario crosses one. One package,
-four lanes:
+five lanes:
 
 - **The fast lane** needs no provider, no Switch Console and no LLM key. The
   harness plays every participant over plain HTTP: it registers throwaway
@@ -20,6 +20,10 @@ four lanes:
   conversations come from scenario files: a model plays the human, and another
   model grades the result against a rubric. Adding a scenario is adding a
   file. See "The agentic lane" below.
+- **The explore lane** drives the same gateway UI as the browser lane, but at
+  random for a fixed time, with [Bombadil](https://github.com/antithesishq/bombadil).
+  Instead of following a script it checks properties every page must keep, in
+  every state it reaches. See "The explore lane" below.
 
 Nothing here talks to Switch Console directly. If a scenario passes, an operator
 doing the same thing by hand would have seen the same result.
@@ -83,9 +87,10 @@ Typecheck: `pnpm typecheck`.
 | `src/fast/` | Fast-lane scenarios, one file per area, listed in `index.ts` |
 | `src/provider/` | The provider lane: Console credential files, the shared agent and channel, the scenarios, `seed.ts` |
 | `src/browser/` | The browser lane: the gateway UI driver (`gateway-ui.ts`) and the scenarios, listed in `index.ts` |
+| `src/explore/` | The explore lane: the Bombadil specification (`spec/gateway.ts`), the trace reader, the property list |
 | `src/agentic/` | The agentic lane: scenario files' format, the driver and judge, model calls, spend |
 | `agentic/` | The agentic scenarios, one YAML file each |
-| `scripts/ephemeral-stack.sh` | The throwaway-stack runner behind `just e2e-fast`, `just e2e-provider` and `just e2e-browser` |
+| `scripts/ephemeral-stack.sh` | The throwaway-stack runner behind the `just e2e-*` recipes |
 | `scripts/scan-artifacts.sh` | Fails if a run's output holds one of the secrets the run used |
 | `src/ci-summary.ts` | The CI run summary, read from the JUnit report |
 | `src/gate/` | The coverage gate |
@@ -137,7 +142,12 @@ passed or not. A teardown that leaves something behind fails the scenario.
 | `unaddressed-history` | Five unaddressed messages arrive in the recipient's room history in the order sent, and none of them as a notification. | — |
 | `operations-front-door` | The operations registry over HTTP: it lists the operations, `list_rooms` returns the room, `read_context` returns a message posted in it. | — |
 | `mattermost-roundtrip` | A room on the Mattermost bridge: an addressed post from the human reaches the agent, and the agent's reply appears as its bot. | Mattermost |
-| `agent-identity` | Renaming an agent from the gateway and with `!rename-agent` renames its Mattermost bot in place, and mentions follow the new name; `!delete-agent`, confirmed, deletes it. | Mattermost |
+| `agent-identity` | The human links their chat account by posting the code the gateway issued, and a replaced code confirms nothing; renaming an agent from the gateway and with `!rename-agent` renames its Mattermost bot in place, and mentions follow the new name; `!delete-agent`, confirmed, deletes it. | Mattermost |
+| `room-group-paths` | The same subgroup name under two parents: a bare name both share is refused naming each path, the path picks one, and a second group of that name under one parent is refused whatever its case. | — |
+| `attachment-names` | A file whose name is not latin-1 is posted, listed by `read_context` and downloaded under its own name (`filename*` in `Content-Disposition`). | — |
+| `client-mistakes` | An outsider reading a room gets a 403, and a history timestamp that is not ISO 8601 a 400 naming the parameter; never a 500. | — |
+| `room-capture` | A room built from a document keeps the package it names, and the room captured back as a document builds a second room with the same package; both rooms delete. | — |
+| `follow-ups` | Follow the conversation: an untagged message continuing an exchange the agent just answered, or replying in its thread, reaches it; one after another agent spoke, or after the window, does not; an agent's message follows no one. | Mattermost; ephemeral only, where the stack turns the flag on with a 20-second window |
 
 If `mattermost-roundtrip` passes and a provider-lane scenario fails, the fault
 is in the agent session, not in Switch, the bridge or the harness.
@@ -204,8 +214,9 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `SWITCH_E2E_KEEP` | no | `1` leaves agents, rooms and channels behind for inspection. |
 | `SWITCH_E2E_SERVER_LOG` | no | The server's log, written with `LOG_FORMAT=json`. When set, a scenario fails if the server logged an error while it ran. The stack script sets it. |
 | `SWITCH_E2E_SECRETS_FILE` | no | File to append each credential the server issues during the run to (agent keys, gateway sessions), for CI's scan of the output. The stack script sets it. |
-| `SWITCH_GATEWAY_UI_URL` | browser lane | Where the gateway UI is served. Its `/gateway` requests must reach `SWITCH_API_URL`. `just e2e-browser` sets it. |
-| `SWITCH_E2E_OUTPUT_DIR` | no | Where the browser lane saves screenshots of failed pages. The stack script sets it. |
+| `SWITCH_GATEWAY_UI_URL` | browser and explore lanes | Where the gateway UI is served. Its `/gateway` requests must reach `SWITCH_API_URL`. `just e2e-browser` and `just e2e-explore` set it. |
+| `SWITCH_E2E_OUTPUT_DIR` | explore lane | Where the browser lane saves screenshots of failed pages, and the explore lane its trace (in `explore/`). The stack script sets it. |
+| `SWITCH_E2E_EXPLORE_TIME_LIMIT` | no | How long the explore lane explores, e.g. `90s`, `5m` (the default), `1h`. Read only by that lane. |
 | `SWITCH_E2E_DRIVER_MODEL` | agentic lane | Exact model id that plays the human, e.g. `claude-sonnet-5`. |
 | `SWITCH_E2E_JUDGE_MODEL` | agentic lane | Exact model id that grades the conversation. |
 | `SWITCH_E2E_AGENTIC_BUDGET_USD` | agentic lane | What one run may spend, driver, judge and agent together. The run stops once it is reached. |
@@ -367,6 +378,60 @@ agent's session is nearly nine tenths of it ($0.045 to $0.21 a scenario,
 most where it calls tools); the driver and judge together are about $0.01 a
 scenario.
 
+## The explore lane
+
+`just e2e-explore` sets up what `just e2e-browser` does, then hands the gateway
+UI to [Bombadil](https://github.com/antithesishq/bombadil) for
+`SWITCH_E2E_EXPLORE_TIME_LIMIT` (`5m` by default, `10m` in CI). Bombadil
+clicks, types, scrolls and navigates at random, and after every action checks
+the properties that `src/explore/spec/gateway.ts` exports:
+
+| Property | Holds when |
+| --- | --- |
+| `noUncaughtExceptions`, `noUnhandledPromiseRejections` | no page throws (Bombadil's defaults) |
+| `noConsoleErrors` | nothing calls `console.error` (Bombadil's default) |
+| `noErrorBanner` | no page opens with an MUI error alert (one after a click is the gateway refusing random input) |
+| `noServerErrors` | the server answers no `/gateway` request with a 5xx |
+| `signsIn` | the explorer gets past the login page within 30 s |
+| `staysSignedIn` | once signed in, it is never sent back to the login page |
+
+These are the browser lane's rules for a page that renders but is broken,
+checked everywhere the explorer reaches rather than on a scripted path. A 4xx
+is not a failure here, because random input is supposed to be refused. As in
+the browser lane, the server log must stay free of errors for the whole run.
+
+The explorer deletes, archives and renames whatever it finds, so the lane
+refuses to run on anything but an ephemeral stack. It cannot sign out, since
+that would end the session it is testing, nor click Change password, the entry
+next to Sign out, and it acts only once signed in.
+Everything else is fair game, including deleting things behind a confirmation
+dialog. The lane seeds an agent and two rooms first, so the pages have
+something on them.
+
+The explorer signs in from inside the page, using a custom action with the
+admin's credentials. Those credentials are written next to a copy of the spec
+in a private temporary directory. A session cookie is never passed on
+Bombadil's command line, because Bombadil prints its arguments back, and
+nothing an action types is a secret, because actions are written to the trace.
+
+**Reading a failure.** The JUnit report has one case for the exploration, one
+per property, and one for the server log. A failed property case says when and
+on which page the property first failed, what the condition saw, and which
+screenshot shows it. Bombadil's own log, `trace.jsonl` and screenshots are
+written to `build/e2e/ephemeral/explore/` (`explore/` in the CI artifact). To
+step through the run state by state:
+
+```bash
+pnpm --dir console/tooling-e2e exec bombadil browser inspect build/e2e/ephemeral/explore
+```
+
+**Adding a property.** Export it from `spec/gateway.ts` and add its name to
+`src/explore/properties.ts`; a unit test keeps the two lists the same. The spec
+runs inside Bombadil, not Node, so it may import only Bombadil's modules and
+JSON. It has its own `tsconfig.json`, and `pnpm typecheck` checks it. The
+[Bombadil manual](https://antithesishq.github.io/bombadil/) covers
+extractors, the temporal operators and action generators.
+
 ## Server health and errors
 
 A scenario can pass every assertion while the server logs an error and carries
@@ -473,7 +538,7 @@ hand.
 | After a merge to main (`e2e-scheduled.yml`) | provider | ephemeral | no |
 | Nightly (`e2e-scheduled.yml`) | provider | ephemeral | no |
 | A release tag, candidates included (`e2e-scheduled.yml`) | fast; provider; agentic | ephemeral | no |
-| By hand (`e2e.yml`, dispatch) | any | ephemeral | no |
+| By hand (`e2e.yml`, dispatch) | any, including browser and explore | ephemeral | no |
 
 - **Secrets.** An ephemeral fast run generates every secret it uses on the
   runner, so it works the same on a fork PR. Every other run reads its secrets
@@ -601,6 +666,8 @@ than being half-used.
 | `question` | Two turns: the agent asks, the human answers in the channel, the agent uses the answer. | The bot offers `red`/`green`/`blue`, then replies `green` after the answer. |
 | `approval` | A tool call the session is not pre-authorised to make. | The bot posts an approval card, answering it with `<handle> 1` allows the call, the bot replies `done`. |
 | `interrupt` | `!interrupt @agent-name` cancels a running local shell command after its start marker is verified. | No completion marker appears after the command’s 90-second lifetime (observed for 95 seconds). Requires `SWITCH_E2E_AGENT_DIR` on this machine. |
+| `card-answer-refused` | With the agent open only to its owner, a person who is not the owner answers its approval card, then the owner does. | The Switch admin bot tells the other person in the card's thread that the answer did not land and the command does not run; after the owner's answer the bot replies `done`. Ephemeral and local only: the other person signs up on the spot. |
+| `template-agent` | A template creates a managed agent on the controller and a Mattermost room with it in it. | The run reports the agent on the controller and listening, and it answers `SWITCH_E2E_OK_TPL` in the new channel. Requires an agent controller. |
 
 `question` is the one a one-shot reply cannot fake: it only passes if the session
 is still alive and still connected when the second message arrives.

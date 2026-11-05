@@ -748,20 +748,18 @@ export class OpencodeAdapter implements ProviderAdapter {
       {
         type: 'user-input.requested',
         requestId: id,
-        questions: questions.map(
-          (question, index): UserInputQuestion => ({
-            id: String(index),
-            ...(question.header ? { header: question.header } : {}),
-            question: question.question,
-            options: question.options.map((option) => ({
-              label: option.label,
-              value: option.label,
-              ...(option.description ? { description: option.description } : {}),
-            })),
-            multiSelect: question.multiple === true,
-            allowCustomAnswer: question.custom === true,
-          })
-        ),
+        questions: questions.map((question, index): UserInputQuestion => ({
+          id: String(index),
+          ...(question.header ? { header: question.header } : {}),
+          question: question.question,
+          options: question.options.map((option) => ({
+            label: option.label,
+            value: option.label,
+            ...(option.description ? { description: option.description } : {}),
+          })),
+          multiSelect: question.multiple === true,
+          allowCustomAnswer: question.custom === true,
+        })),
       },
       turnId,
       event

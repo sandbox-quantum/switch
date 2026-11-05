@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { commandSchema } from '@switch-console/shared/session-v1';
+import { commandSchema, hasOwnActivity } from '@switch-console/shared/session-v1';
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
@@ -13,6 +13,7 @@ import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
 import {
   followupCommandId,
+  retryRefusal,
   roomControlFollowup,
   roomControlRefusal,
 } from './room-control-followup';
@@ -67,6 +68,9 @@ import {
   type VendorServers,
 } from './vendor-mcp';
 
+/** How long a faulted host waits for its last reports to reach Switch before it stops. */
+const FINAL_REPORT_MS = 5_000;
+
 /**
  * A session run on behalf of its agent.
  *
@@ -94,6 +98,8 @@ export type SharedHostOptions = {
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
   grant?: { roomId: string; messageId: string };
+  /** The session continues a native conversation started outside Switch. */
+  importHistory: boolean;
   /** The IPC channel to the process that started this host, or null if none did. */
   parent: ParentChannel | null;
   /** How long the host waits with nothing to do before parking; null never parks. */
@@ -175,6 +181,22 @@ export const ROOM_POSTING_TOOLS = new Set([
   'send_targeted_message',
   'send_attachment',
 ]);
+
+/** Why a post to the room was refused, when the result is one; null for anything else. */
+export function postFailure(name: string, result: unknown): string | null {
+  if (!ROOM_POSTING_TOOLS.has(name)) return null;
+  if (typeof result !== 'object' || result === null) return null;
+  const { isError, content } = result as { isError?: unknown; content?: unknown };
+  if (isError !== true) return null;
+  const text = Array.isArray(content)
+    ? content
+        .map((part) => (part as { text?: unknown }).text)
+        .filter((part): part is string => typeof part === 'string')
+        .join(' ')
+        .trim()
+    : '';
+  return text || 'Switch refused the post.';
+}
 
 /** Whether a Switch tool result is a post that landed. */
 export function postedToRoom(name: string, result: unknown): boolean {
@@ -389,6 +411,7 @@ export async function runSharedHost(
           : {}),
         session: options.session,
         input: options.input,
+        importHistory: options.importHistory,
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
         redactions: options.redactions,
@@ -418,6 +441,8 @@ export async function runSharedHost(
     stopHearingTools =
       parentChannel?.onToolAnswered((name, result) => {
         if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+        const failure = postFailure(name, result);
+        if (failure !== null) hosted.agentPostFailed(failure);
       }) ?? null;
 
     options.serviceNotices.attach((message) => host!.serviceFallback(message));
@@ -460,6 +485,9 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    // One report at a time: the loop below and the last one before a fault share the cursor.
+    let reportChain: Promise<void> = Promise.resolve();
+    const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
     const report = async () => {
       if (reportingUnsupported) return;
       const { events } = host!.replay(reporter.cursor);
@@ -634,12 +662,14 @@ export async function runSharedHost(
     // A conversation that has not started yet is given the current ones as it
     // starts. One that has, and was told others, gets a note with the next
     // room message: its provider would otherwise keep the old ones.
+    // Turns copied in from a conversation started outside Switch are not this
+    // conversation having started here: it resumes under Switch's context.
+    const startedHere = () => hasOwnActivity(host!.snapshot());
     const instructions = options.instructions;
     let instructionsNote: string | null = null;
     if (instructions !== null) {
       const told = await readToldInstructions(options.root);
-      if (host.snapshot().turns.length === 0)
-        await recordToldInstructions(options.root, instructions);
+      if (!startedHere()) await recordToldInstructions(options.root, instructions);
       else if (told !== instructions) instructionsNote = instructionsChangedNote(instructions);
     }
     const instructionsTold = async (): Promise<void> => {
@@ -674,7 +704,7 @@ export async function runSharedHost(
       roomId: string
     ): Promise<{ note: string | null; instructions: string | null }> => {
       if (!parentChannel || !options.roomConnection) return { note: null, instructions: null };
-      if (host!.snapshot().turns.length === 0) toldRooms = {};
+      if (!startedHere()) toldRooms = {};
       try {
         const { instructions } = roomInstructionsAnswerSchema.parse(
           await parentChannel.ask({ type: 'room-instructions', roomId })
@@ -749,6 +779,27 @@ export async function runSharedHost(
               `Could not tell room ${owed.roomId} that its ${owed.action} was refused: ${String(error)}`
             )
           );
+      // A retry asked for from a room that cannot run is answered there, where it was asked.
+      if (
+        command.body.type === 'message.retry' &&
+        status?.status === 'rejected' &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection &&
+        command.origin.roomId
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: command.origin.roomId,
+            threadId: command.origin.threadId,
+            body: retryRefusal(status.message),
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
+            )
+          );
       // A fresh conversation starts with the instructions this host was given,
       // and has been told no room's.
       if (command.body.type === 'session.reset' && status?.status === 'applied') {
@@ -796,7 +847,7 @@ export async function runSharedHost(
           surface: 'switch-web',
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
-          firstOfConversation: host!.snapshot().turns.length === 0,
+          firstOfConversation: !startedHere(),
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
@@ -957,7 +1008,7 @@ export async function runSharedHost(
       await reportStart();
       let force = true;
       while (!executionSignal.aborted) {
-        await report();
+        await reportInTurn();
         await applyOutcomes(force);
         force = false;
         await waker.idleReporting(250, executionSignal);
@@ -970,10 +1021,19 @@ export async function runSharedHost(
       if (reportingFailure) throw reportingFailure;
       const status = host.snapshot().session.status;
       if (status === 'stopped') break;
-      if (status === 'error' && !host.resetDecisionPending)
+      if (status === 'error' && !host.resetDecisionPending) {
+        // What faulted it, and the turn that ended with it, are what Switch most
+        // needs to show; stopping would drop them unreported, the turn left running.
+        await Promise.race([
+          reportInTurn().catch((error: unknown) =>
+            console.warn(`Could not report this session's last events: ${String(error)}`)
+          ),
+          delay(FINAL_REPORT_MS, undefined, { signal: executionSignal }).catch(() => {}),
+        ]);
         throw new Error(
           'HOST_FAULTED: Provider execution failed. Inspect the transcript before recovery.'
         );
+      }
       if (host.resetDecisionPending) {
         heldForDecision = true;
         const first = rooms?.pending()[0];
@@ -1108,7 +1168,8 @@ export async function hostSessionProcess(input: {
       mcp.spec,
       input.services,
       endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint },
-      { ...vendors.specs, ...clis.specs }
+      { ...vendors.specs, ...clis.specs },
+      (secret) => redactions.add(secret)
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
     // The people watching see it as a notice; the agent reads it with the
@@ -1132,6 +1193,7 @@ export async function hostSessionProcess(input: {
         input: prepared.input,
         roomConnection: config.roomConnection,
         grant: config.grant,
+        importHistory: config.importHistory ?? false,
         parent,
         parkAfterMs: parkAfterMs(),
         instructions: config.execution?.instructions ?? null,

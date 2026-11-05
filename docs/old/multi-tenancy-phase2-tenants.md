@@ -201,9 +201,9 @@ this phase must prove it has removed.
 
 **Creating a workspace is bounded, because it is an amplification vector
 rather than a row.** `all_tenant_ids()` drives a fan-out per tenant at boot and
-a sweep every few seconds, across clients, collaboration bridges, server
-connectors and rooms, so unbounded self-service creation buys steady-state work
-in the deployment, not storage. `GATEWAY_MAX_WORKSPACES_PER_USER` is both the
+a sweep every few seconds, across clients, collaboration bridges and rooms, so
+unbounded self-service creation buys steady-state work in the deployment, not
+storage. `GATEWAY_MAX_WORKSPACES_PER_USER` is both the
 cap and the gate: at the limit `POST /tenants` is a 403, and `0` closes the
 route outright. It counts workspaces a person has *created*
 (`users.workspaces_created`), not ones they own: ownership can be handed to a

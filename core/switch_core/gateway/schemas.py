@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -84,6 +85,20 @@ class RoomSummary(BaseModel):
     created_at: str
     # True when the room is archived (hidden from the default active list).
     archived: bool = False
+    # The caller owns the room, is in it (in Switch Console or through a
+    # platform account they claimed), or owns an agent in it.
+    viewer_is_member: bool = False
+    # A Switch Console chat (made through the chats API): only its members can open it.
+    is_console_chat: bool = False
+    # What the caller may do with it, so a client offers a change only where
+    # the server would allow it. `can_write` covers its settings, roles,
+    # participants, links and attaching resources; `can_manage` (owner or
+    # tenant admin) covers its access, deleting it and taking the platform
+    # channel's name; `can_unlink` (taking part in it, or tenant admin) covers
+    # unlinking a reference, document or package from it.
+    can_write: bool
+    can_manage: bool
+    can_unlink: bool
 
 
 class RoomDetail(RoomSummary):
@@ -107,6 +122,10 @@ class RoomDetail(RoomSummary):
     # What deleting the room will do to its platform channel ("archived",
     # "deleted", "left", "kept"), or null when the room has no channel.
     channel_on_delete: ChannelRetirement | None = None
+    # The linked platform channel's name as the bridge last saw it, or null
+    # when it has not seen one. A room not named after its channel can take
+    # it with `POST /rooms/{id}/sync-name`.
+    linked_channel_name: str | None = None
 
 
 class RoomCreateRequest(BaseModel):
@@ -725,6 +744,32 @@ class IdentityClaimant(BaseModel):
 
     user_id: str
     user_name: str
+    # False for a claim made before accounts had to confirm their links
+    # (CHOO-3881). It still counts, and its owner is asked to confirm it.
+    verified: bool
+
+
+class LinkCode(BaseModel):
+    """A one-time code that confirms a link when posted from the account."""
+
+    code: str
+    expires_at: datetime
+    # Its lifetime when issued, so a client can count down on its own clock
+    # rather than compare `expires_at` with a clock that may be wrong.
+    expires_in_seconds: int
+    # How to post it on this platform, in Markdown. The platforms differ in
+    # which messages reach Switch at all, so this is the bridge's to say.
+    instructions: str
+
+
+class LinkRequestSummary(BaseModel):
+    """A link waiting for the platform account to confirm it."""
+
+    user_id: str
+    # Only for the Switch user being linked, and only on the response that
+    # issued it: the code is not stored, so a lost one is replaced, not shown
+    # again. An admin linking someone else never gets one.
+    code: LinkCode | None
 
 
 class ExternalUserSummary(BaseModel):
@@ -736,6 +781,9 @@ class ExternalUserSummary(BaseModel):
     # claiming is not exclusive, so an account shared by several Switch users
     # satisfies an owner rule for any of them.
     claimed_by: list[IdentityClaimant] = []
+    # Set on the response to a claim that is waiting for the account to
+    # confirm it, which counts for nothing until it does.
+    link_request: LinkRequestSummary | None = None
 
 
 class DirectoryUserSummary(BaseModel):
@@ -783,6 +831,11 @@ class ClaimIdentityRequest(BaseModel):
     # Omitted means "claim it for me"; only an admin may claim on behalf of
     # someone else.
     user_id: str | None = None
+    # That the caller knows the link will wait for the account to confirm it
+    # (CHOO-3881). A Console from before then leaves it out and would report
+    # a link that does not count as made, so the claim is refused with a
+    # reason it shows instead.
+    expects_confirmation: bool = False
 
 
 class LinkedIdentity(BaseModel):
@@ -794,29 +847,65 @@ class LinkedIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # False for a link made before accounts had to confirm them: it works,
+    # and Console asks its owner to confirm it.
+    verified: bool
 
 
-# ── Server-Side Connectors ──────────────────────────────────────────────────
+class PendingIdentity(BaseModel):
+    """A platform account waiting to confirm a link to the signed-in user.
+
+    It counts for nothing yet. No code is listed, because none is stored:
+    asking for one issues a fresh one.
+    """
+
+    id: str
+    bridge_id: str
+    bridge_display_name: str
+    bridge_type: str
+    external_user_id: str
+    external_username: str
+    # Who started it, when that was someone else (an admin); null when it was
+    # the user themselves or the admin has since been deleted.
+    requested_by_name: str | None
+    # When the last code issued stops working; null when none has been issued,
+    # as for a link an admin started.
+    code_expires_at: datetime | None
 
 
-class ConnectorTypeInfo(BaseModel):
-    key: str
-    config_schema: dict[str, Any]
+class UnconfirmedLink(BaseModel):
+    """A link made before links needed confirming. It counts until its owner
+    confirms it, or an admin requires them to."""
+
+    id: str
+    external_user_id: str
+    external_username: str
+    user_id: str
+    user_name: str
 
 
-class CreateConnectorRequest(BaseModel):
-    type: str
-    display_name: str
-    connection_config: dict[str, object]
+class UnconfirmedLinkRef(BaseModel):
+    # The `ExternalUser` row id and the Switch user, as `UnconfirmedLink` names
+    # them.
+    id: str
+    user_id: str
 
 
-class ConnectorDetail(BaseModel):
-    connector_id: str
-    connector_type: str
-    display_name: str
-    status: str
-    agent_names: list[str]
-    created_at: str
+class RequireConfirmationRequest(BaseModel):
+    """The older links an admin was shown and agrees to stop trusting."""
+
+    links: list[UnconfirmedLinkRef]
+
+
+class RequireConfirmationResult(BaseModel):
+    # How many links stopped counting and now wait for their owners' codes.
+    moved: int
+
+
+class VerifyIdentitySessionRequest(BaseModel):
+    """Confirm a link with the platform account's own session token."""
+
+    token: str
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
@@ -835,19 +924,62 @@ class UserResponse(BaseModel):
     created_at: str
 
 
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_BYTES = 72
+
+
+def _bcrypt_sized_validator(password: str) -> str:
+    if len(password.encode()) > PASSWORD_MAX_BYTES:
+        raise ValueError(f"Password must be at most {PASSWORD_MAX_BYTES} bytes.")
+    return password
+
+
+# Every password the server is asked to store: long enough to mean something,
+# and no longer than the 72 bytes bcrypt reads. bcrypt 4 ignores the rest, so a
+# longer password would be stored as its first 72 bytes; bcrypt 5 raises.
+Password = Annotated[
+    str,
+    StringConstraints(min_length=PASSWORD_MIN_LENGTH),
+    AfterValidator(_bcrypt_sized_validator),
+]
+
+# The address an account is created with, trimmed, lowercased and
+# shape-checked, so the same address arriving through signup or the admin user
+# list resolves to one account, not near-duplicates. Login does not use it: an
+# account whose address does not fit the shape must still be able to sign in.
+Email = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        to_lower=True,
+        max_length=320,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    ),
+]
+
+
 class CreateUserRequest(BaseModel):
     name: str
-    email: str
-    password: str
-    role: str = "user"
-
-
-PASSWORD_MIN_LENGTH = 8
+    email: Email
+    password: Password
+    # Only the exact string "admin" grants operator rights (`require_admin`),
+    # so anything else would create an account claiming a role it lacks.
+    role: Literal["user", "admin"] = "user"
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+    new_password: Password
+
+
+class UpdateMeRequest(BaseModel):
+    """The signed-in person's own profile fields. Only the name, for now: the
+    email is the sign-in identity and changes through the account's provider."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+    ]
 
 
 class DeleteAccountRequest(BaseModel):
@@ -859,29 +991,14 @@ class DeleteAccountRequest(BaseModel):
 
 class SignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    email: Annotated[
-        str,
-        StringConstraints(
-            strip_whitespace=True,
-            to_lower=True,
-            max_length=320,
-            pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
-        ),
-    ]
-    password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+    email: Email
+    password: Password
     display_name: (
         Annotated[
             str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
         ]
         | None
     ) = None
-
-    @field_validator("password")
-    @classmethod
-    def bcrypt_sized(cls, password: str) -> str:
-        if len(password.encode()) > 72:
-            raise ValueError("Password must be at most 72 bytes.")
-        return password
 
 
 class SignupMachine(BaseModel):
@@ -901,7 +1018,24 @@ class TenantMembershipResponse(BaseModel):
     id: str
     slug: str
     name: str
+    # The role the caller acts with here: an organization's `org_admin` is
+    # reported as at least `admin` of each of its workspaces, membership row
+    # or not.
     role: str
+    organization_role: str | None
+    # None only for a workspace from before organizations that no migration
+    # has given one yet.
+    organization_id: str | None
+
+
+class OperatorWorkspaceResponse(BaseModel):
+    """One workspace on the server, as the platform operator's list shows it."""
+
+    id: str
+    slug: str
+    name: str
+    organization_id: str | None
+    organization_name: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):
@@ -913,6 +1047,59 @@ class CurrentTenantResponse(TenantMembershipResponse):
 
 
 class TenantCreateRequest(BaseModel):
+    name: str
+
+
+class OrganizationCreateRequest(BaseModel):
+    name: str
+    # The first workspace's name; the organization's when left out.
+    workspace_name: str | None = None
+
+
+class OrganizationSummary(BaseModel):
+    """One organization the caller belongs to, and their role in it."""
+
+    id: str
+    slug: str
+    name: str
+    role: str
+
+
+class CurrentOrganizationResponse(BaseModel):
+    """The bound workspace's organization, and the caller's role in it: None
+    for the platform operator there on the operator flag alone."""
+
+    id: str
+    slug: str
+    name: str
+    role: str | None
+
+
+class OrganizationAuditEventDetail(BaseModel):
+    """An organization audit event, with the people it names resolved to
+    names: an actor or a target removed since, or never a member (the platform
+    operator), is not on the organization's member list to look up."""
+
+    id: str
+    occurred_at: str
+    actor_user_id: str | None
+    actor_name: str | None
+    action: str
+    target_type: str
+    target_id: str | None
+    target_name: str | None
+    details: dict[str, Any] | None
+
+
+class OrganizationCreateResponse(BaseModel):
+    """A new organization and its first workspace, which the session is now
+    bound to."""
+
+    organization: OrganizationSummary
+    workspace: TenantMembershipResponse
+
+
+class WorkspaceCreateRequest(BaseModel):
     name: str
 
 
@@ -945,7 +1132,13 @@ class SessionStateResponse(BaseModel):
     tenant: TenantMembershipResponse | None
     tenants: list[TenantMembershipResponse]
     state: Literal["ready", "needs_selection", "needs_workspace"]
+    # Whether the caller may create a new organization with its first
+    # workspace (`POST /organizations`, and `POST /tenants` before it).
     can_create_workspace: bool
+    # Whether the caller may add a workspace to the bound workspace's
+    # organization (`POST /organizations/current/workspaces`): its
+    # `org_admin`, within their allowance. False with no workspace bound.
+    can_add_workspace: bool
     # Whether an invitation addressed to an e-mail is sent there, or only
     # minted for the admin to share.
     invite_email_enabled: bool
@@ -1085,11 +1278,23 @@ class InvitationCreateResponse(InvitationDetail):
 
 
 class MemberDetail(BaseModel):
+    """One person in a workspace's roster.
+
+    `via_organization` marks an organization's `org_admin` who holds no
+    membership row here: listed as `admin`, because that is what they act
+    as, and changed or removed only through the organization's members.
+    """
+
     user_id: str
     name: str
     email: str
     role: str
     created_at: str
+    # The agent-registration bootstrap owner: kept in the roster, never a
+    # person to add to a chat.
+    service_account: bool
+    organization_role: str | None
+    via_organization: bool
 
 
 class UsageTotalResponse(BaseModel):
@@ -1109,6 +1314,21 @@ class UsageTotalResponse(BaseModel):
 
 class MemberUpdateRequest(BaseModel):
     role: str
+
+
+class OrganizationMemberDetail(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    role: str
+    created_at: str
+    # What could not be revoked at a vendor when a demotion took away what
+    # they held in workspaces they were in only as `org_admin`.
+    warning: str | None
+
+
+class OrganizationMemberUpdateRequest(BaseModel):
+    role: Literal["org_admin", "member"]
 
 
 class OidcLoginOptionView(BaseModel):
@@ -1168,6 +1388,10 @@ class SessionUserResponse(UserResponse):
     """
 
     server: ServerDeclaration
+    # Whether the account has a password of its own to change. False for one
+    # made through single sign-on, which signs in without one. Added later and
+    # defaulted, so the frozen authentication surface stays compatible.
+    has_password: bool = True
 
 
 class SignupResponse(SessionUserResponse):
@@ -1189,6 +1413,10 @@ class ReferenceDetail(BaseModel):
     instructions: str
     value: dict[str, Any]
     attached_rooms_count: int = 0
+    # Of `attached_rooms_count`, rooms the caller may not read, which are
+    # never named to them. Counted only for whoever may manage the resource
+    # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
+    hidden_rooms_count: int = 0
     packages: list[str] = []
     created_at: str
     # Resolved server-side, unfiltered by the type's visibility: the caller can
@@ -1286,6 +1514,9 @@ class ReferenceTypeDeleteResponse(BaseModel):
 class ResourceRoom(BaseModel):
     room_id: str
     room_name: str
+    # Whether the caller may unlink the resource from this room: they take
+    # part in it, or are a tenant admin.
+    can_unlink: bool
 
 
 # ── Linked rooms ───────────────────────────────────────────────────────────
@@ -1384,12 +1615,27 @@ class DocumentDetail(BaseModel):
     instructions: str
     content: str
     attached_rooms_count: int = 0
+    # Of `attached_rooms_count`, rooms the caller may not read, which are
+    # never named to them. Counted only for whoever may manage the resource
+    # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
+    hidden_rooms_count: int = 0
     packages: list[str] = []
     scope: str = "global"  # "global" | "room"
     room_id: str | None = None
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+
+
+# Whether the caller may remove a document from a room it is in: delete it if
+# it is room-scoped (its creator, the room's owner, a tenant admin), unlink it
+# if it is attached (those taking part in the room, a tenant admin).
+
+
+class RoomDocumentDetail(DocumentDetail):
+    """A document as seen from a room it is in."""
+
+    can_remove: bool
 
 
 class DocumentSummary(BaseModel):
@@ -1402,12 +1648,22 @@ class DocumentSummary(BaseModel):
     description: str
     instructions: str
     attached_rooms_count: int = 0
+    # Of `attached_rooms_count`, rooms the caller may not read, which are
+    # never named to them. Counted only for whoever may manage the resource
+    # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
+    hidden_rooms_count: int = 0
     packages: list[str] = []
     scope: str = "global"
     room_id: str | None = None
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+
+
+class RoomDocumentSummary(DocumentSummary):
+    """A document as listed in a room it is in."""
+
+    can_remove: bool
 
 
 class DocumentCreateRequest(BaseModel):
@@ -1449,6 +1705,10 @@ class PackageDetail(BaseModel):
     references_count: int = 0
     documents_count: int = 0
     attached_rooms_count: int = 0
+    # Of `attached_rooms_count`, rooms the caller may not read, which are
+    # never named to them. Counted only for whoever may manage the resource
+    # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
+    hidden_rooms_count: int = 0
     created_at: str
 
 
@@ -1476,8 +1736,12 @@ class PackageDeleteResponse(BaseModel):
 class PackageMemberRemoveResponse(BaseModel):
     package_id: str
     member_id: str
+    # The rooms that lost sight of the member, of those the caller may read.
     affected_room_ids: list[str]
     affected_room_names: list[str]
+    # How many more lost sight of it among rooms the caller may not read,
+    # which are never named to them.
+    hidden_affected_rooms_count: int
 
 
 # ── Templates ─────────────────────────────────────────────────────────────────

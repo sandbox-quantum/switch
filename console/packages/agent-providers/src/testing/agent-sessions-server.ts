@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import { changed } from './until';
 
 type Fetch = (url: string, options: RequestInit) => Promise<Response>;
 
@@ -35,6 +36,7 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
       path,
       body: typeof options.body === 'string' ? JSON.parse(options.body) : null,
     });
+    changed();
     if (state.unavailable) return new Response('unavailable', { status: 503 });
     if (path.endsWith('/approvals/outcomes')) {
       const listed = state.outcomes;

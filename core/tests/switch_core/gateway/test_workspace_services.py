@@ -35,6 +35,7 @@ from tests.switch_core.connections.service_harness import (
     build_service_harness,
     connect,
     grant_directly,
+    services_on_by_default,
 )
 from tests.switch_core.gateway.test_tenant_api_routes import TENANT_A, _make_tenant
 from tests.switch_core.management.harness import Harness, add_member, cookies_for
@@ -180,10 +181,9 @@ class TestWhoMayCall:
             ("admin", "user", 200),
             ("owner", "user", 200),
             ("member", "admin", 200),
-            # The gateway binds only a workspace the caller belongs to, the
-            # operator included: the operator bit lifts a member, it does not
-            # reach into a workspace from outside.
-            (None, "admin", 403),
+            # The operator may enter any workspace, on `platform_access`,
+            # which the workspace's audit log records.
+            (None, "admin", 200),
         ],
         ids=["member", "admin", "owner", "operator-as-member", "operator-not-a-member"],
     )
@@ -232,9 +232,12 @@ class TestRequests:
 
 
 class TestResults:
-    async def test_untouched_services_read_on_with_nobody_named(
-        self, harness: Harness
+    @pytest.mark.parametrize("on_by_default", [False, True])
+    async def test_untouched_services_take_the_workspaces_default_with_nobody_named(
+        self, harness: Harness, on_by_default: bool
     ) -> None:
+        if on_by_default:
+            await services_on_by_default(harness.session_factory)
         admin = await _person(harness.session_factory, "admin", member_role="admin")
         services = _by_slug(await _get(harness, admin))
         assert set(services) == {
@@ -247,8 +250,10 @@ class TestResults:
         assert services["datadog"] == {
             "slug": "datadog",
             "name": "Datadog",
-            "enabled": True,
+            "enabled": on_by_default,
+            "organization_locked": False,
             "updated_by_name": None,
+            "workspace_set": False,
             "updated_at": None,
             "connected_members": 0,
             "granted_agents": 0,
@@ -339,6 +344,10 @@ class TestSwitchingOff:
                 _issuance(None, ada.id, "github", "ghs_elsewhere", tenant_id=TENANT_A)
             )
             await session.commit()
+        # On here, so its token is live: switching GitHub off must leave it.
+        assert (
+            await _put(harness, admin, "atlassian", {"enabled": True})
+        ).status_code == 200
 
         response = await _put(harness, admin, "github", {"enabled": False})
 

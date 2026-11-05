@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import and_, func, literal, select
+from sqlalchemy import and_, bindparam, func, literal, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,28 @@ class UsageTotal:
     amount: int
 
 
+def _record() -> Any:
+    """The statement `UsageStore.record` runs, built once and run with bind
+    parameters: every message an agent sends records its usage, and building
+    the statement each time cost more than running it."""
+    bucket = func.date_trunc("hour", func.now(), literal("UTC"))
+    statement = insert(TenantUsage).values(
+        tenant_id=bindparam("tenant_id"),
+        metric=bindparam("metric"),
+        bucket_start=bucket,
+        client_id=bindparam("client_id"),
+        model=bindparam("model"),
+        amount=bindparam("amount"),
+    )
+    return statement.on_conflict_do_update(
+        index_elements=["tenant_id", "metric", "bucket_start", "client_id", "model"],
+        set_={"amount": TenantUsage.amount + statement.excluded.amount},
+    )
+
+
+_RECORD = _record()
+
+
 class UsageStore:
     async def record(
         self,
@@ -43,26 +66,16 @@ class UsageStore:
         """
         if amount <= 0:
             raise ValueError(f"usage amount must be positive, got {amount}")
-        bucket = func.date_trunc("hour", func.now(), literal("UTC"))
-        statement = insert(TenantUsage).values(
-            tenant_id=tenant_id,
-            metric=metric.value,
-            bucket_start=bucket,
-            client_id=client_id,
-            model=model,
-            amount=amount,
+        await session.execute(
+            _RECORD,
+            {
+                "tenant_id": tenant_id,
+                "metric": metric.value,
+                "client_id": client_id,
+                "model": model,
+                "amount": amount,
+            },
         )
-        statement = statement.on_conflict_do_update(
-            index_elements=[
-                "tenant_id",
-                "metric",
-                "bucket_start",
-                "client_id",
-                "model",
-            ],
-            set_={"amount": TenantUsage.amount + statement.excluded.amount},
-        )
-        await session.execute(statement)
 
     async def totals(
         self,

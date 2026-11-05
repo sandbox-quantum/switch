@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core import messaging_platforms
 from switch_core.addressing import policy_kind
@@ -28,6 +29,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     Agent,
     MessagingInstall,
+    ServiceConnection,
     Tenant,
     TenantMember,
     User,
@@ -35,7 +37,6 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
-from switch_core.feature_flags import SWITCH_CLOUD
 from switch_core.version import switch_core_version
 
 _CONNECTIONS = ServiceConnectionStore()
@@ -70,12 +71,18 @@ async def get_my_context() -> dict[str, Any]:
         `messaging_apps`: {connected, how_to_add}.
         `connected` lists the workspace's messaging apps, each {id, platform,
         name, status, is_default, installed_with, your_account_linked,
-        your_usernames}. `id` is the `bridge_id` that `create_room` takes.
+        your_account_link, your_usernames}. `id` is the `bridge_id` that `create_room` takes.
         `installed_with` is "official_app" (the Switch app, added with one
         click) or "own_app" (an app someone created and pasted tokens from).
         `your_account_linked` is whether your owner's account on that platform
         is linked to their Switch user; until it is, agents that answer only
         their owner do not recognise them there.
+        `your_account_link` says more: "verified" (linked and confirmed from
+        the chat account), "unverified" (linked before links needed
+        confirming; it works, and Console asks them to confirm it), "pending"
+        (waiting for them to post, from that account, the code Console
+        shows them, so it does not count yet: they started linking, or an
+        admin required them to confirm an older link) or "none".
         `your_usernames` are your owner's usernames on that app, empty until
         their account is linked. People are named by these, never by their
         Switch name, in `create_room`'s and `add_users_to_room`'s `user_names`
@@ -92,8 +99,10 @@ async def get_my_context() -> dict[str, Any]:
         set up; `unavailable_code` says why not, one of "switched_off" (its
         operator turned it off), "needs_https" (it can't work on this
         server), "app_not_set_up" (its operator can set it up under Admin →
-        Connector apps in Switch Console), "not_set_up" or
-        "not_fully_set_up";
+        Connector apps in Switch Console), "organization_app_unusable" (the
+        app your organization saved for it can't be used), "not_set_up",
+        "not_fully_set_up" or "key_never_expires" (it connects with a key
+        that never expires, which Switch does not hand to agents);
         `connection` is your owner's: "not_connected", "active",
         "needs_reauthorization" or "error". `agents_using` names your owner's
         agents granted it. Empty when this server has service connections off.
@@ -125,16 +134,30 @@ async def get_my_context() -> dict[str, Any]:
         if owner is None:
             raise PermissionError(f"Agent {caller.name}'s owner no longer exists.")
         tenant = await session.get(Tenant, tenant_id)
-        role = await protocol.user_store.tenant_role(session, tenant_id, owner.id)
+        role = await protocol.user_store.effective_tenant_role(
+            session, tenant_id, owner.id
+        )
         members = await session.scalar(select(func.count()).select_from(TenantMember))
         agents = await protocol.agent_store.get_by_owner(session, owner.id)
         usernames_by_bridge: dict[str, list[str]] = {}
-        for identity in await protocol.external_user_store.get_by_user(
+        link_by_bridge: dict[str, str] = {}
+        for identity, claim in await protocol.external_user_store.claims_of_user(
             session, owner.id
         ):
             usernames_by_bridge.setdefault(identity.bridge_id, []).append(
                 identity.external_username
             )
+            if claim.verified_at is not None:
+                link_by_bridge[identity.bridge_id] = "verified"
+            else:
+                link_by_bridge.setdefault(identity.bridge_id, "unverified")
+        for (
+            identity,
+            _request,
+        ) in await protocol.external_user_store.link_requests_of_user(
+            session, owner.id
+        ):
+            link_by_bridge.setdefault(identity.bridge_id, "pending")
         installed_bridges = set(
             await session.scalars(
                 select(MessagingInstall.bridge_id).where(
@@ -144,7 +167,7 @@ async def get_my_context() -> dict[str, Any]:
             )
         )
         connections = {
-            connection.service: connection.status
+            connection.service: connection
             for connection in await _CONNECTIONS.list_connections(session, owner.id)
         }
         grants = {
@@ -155,6 +178,7 @@ async def get_my_context() -> dict[str, Any]:
             for agent in agents
         }
         bridges = await protocol.bridge_store.get_all(session)
+        services = await _services(session, protocol, connections, agents, grants)
 
     admin = role in {"owner", "admin"} or owner.role == "admin"
     port = management_port()
@@ -185,7 +209,7 @@ async def get_my_context() -> dict[str, Any]:
             "members": members,
         },
         "server": {
-            "kind": _server_kind(protocol.config),
+            "kind": protocol.config.deployment_kind,
             "version": switch_core_version(),
             "features": sorted(
                 key for key, enabled in protocol.config.feature_flags.items() if enabled
@@ -203,13 +227,14 @@ async def get_my_context() -> dict[str, Any]:
                         "official_app" if bridge.id in installed_bridges else "own_app"
                     ),
                     "your_account_linked": bridge.id in usernames_by_bridge,
+                    "your_account_link": link_by_bridge.get(bridge.id, "none"),
                     "your_usernames": sorted(usernames_by_bridge.get(bridge.id, [])),
                 }
                 for bridge in bridges
             ],
             "how_to_add": _how_to_add(protocol),
         },
-        "services": _services(protocol, connections, agents, grants),
+        "services": services,
         "agents": [
             {
                 "id": agent.id,
@@ -238,14 +263,6 @@ async def get_my_context() -> dict[str, Any]:
     }
 
 
-def _server_kind(config: Any) -> str:
-    if config.feature_flags[SWITCH_CLOUD]:
-        return "switch_cloud"
-    if config.managed_by_console:
-        return "managed_by_console"
-    return "self_hosted"
-
-
 def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
     service = protocol.install_service
     official = set(service.platforms()) if service is not None else set()
@@ -265,9 +282,10 @@ def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
     return entries
 
 
-def _services(
+async def _services(
+    session: AsyncSession,
     protocol: Any,
-    connections: dict[str, str],
+    connections: dict[str, ServiceConnection],
     agents: list[Agent],
     grants: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
@@ -280,18 +298,20 @@ def _services(
         definition = entry.definition
         if not definition.enabled:
             continue
-        unavailable = broker.unavailable(definition.slug)
+        standing = await broker.standing(session, definition.slug)
+        unavailable = standing.unavailable
         entries.append(
             {
                 "slug": definition.slug,
                 "name": definition.name,
-                "available": unavailable is None
-                and broker.connectable(definition.slug),
+                "available": unavailable is None and standing.connectable,
                 "unavailable_reason": None
                 if unavailable is None
                 else unavailable.reason,
                 "unavailable_code": None if unavailable is None else unavailable.code,
-                "connection": connections.get(definition.slug, "not_connected"),
+                "connection": broker.connection_status(
+                    standing, connections.get(definition.slug)
+                ),
                 "agents_using": sorted(
                     names[agent_id]
                     for agent_id, services in grants.items()

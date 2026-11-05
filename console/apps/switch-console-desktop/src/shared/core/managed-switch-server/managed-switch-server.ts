@@ -229,9 +229,10 @@ export type LocalServerStatus = {
   /** Populated only when `phase === 'error'`. */
   error: string | null;
   /** What failed when `phase === 'error'` and it was not a start: a stop or a
-   * reset that broke partway. Null for a failed start, and whenever the phase
-   * is anything else. */
-  failedTo: 'stop' | 'reset' | null;
+   * reset that broke partway, or (`run`) a server that was running and then
+   * stopped or stopped answering on its own. Null for a failed start, and
+   * whenever the phase is anything else. */
+  failedTo: 'stop' | 'reset' | 'run' | null;
 };
 
 /**
@@ -259,7 +260,7 @@ export class ManagedServerStoppedError extends Error {
 /** Human-readable one-liner for a stopped managed stack, used in errors and the UI. */
 export function managedServerStoppedReason(serverName: string, phase: LocalServerPhase): string {
   if (phase === 'error') {
-    return `${serverName} isn't running: its last start or stop failed. See the server's page.`;
+    return `${serverName} isn't running: it failed to start or stop, or stopped unexpectedly. See the server's page.`;
   }
   return `${serverName}'s Switch stack is not running. Start it from the server's page, then retry.`;
 }
@@ -286,7 +287,23 @@ export type StartLocalServerResult =
   // history was copied out of it, and the copy failed. The stack is untouched
   // and still on `deployed`; retrying is safe and resumes where it stopped.
   | { kind: 'matrix-migration-failed'; deployed: string; expected: string; detail: string }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; failure: ManagedStartFailure };
+
+/**
+ * Which way a start failed that the result has no kind of its own for, as a
+ * code rather than its message: `start_refused` is the start's own check turning
+ * it down before anything ran, `health_timeout` a server that started but never
+ * answered, `core_exited` one that stopped during startup, `running_as_root` the
+ * app run as root (the local database refuses it), `operation_in_progress`
+ * another start or stop already running, and `unexpected` anything that threw.
+ */
+export type ManagedStartFailure =
+  | 'start_refused'
+  | 'health_timeout'
+  | 'core_exited'
+  | 'running_as_root'
+  | 'operation_in_progress'
+  | 'unexpected';
 
 /** Outcome of starting a remote stack: a start's, or `cancelled` when the user
  * stopped waiting for another Console's hold on the stack, before anything
@@ -317,7 +334,14 @@ export type ConnectRemoteServerResult =
   | { kind: 'error'; message: string };
 
 /** Something that happened to the stack on this computer, as Console recorded it. */
-export type LocalActivityAction = 'started' | 'stopped' | 'start-failed' | 'updated' | 'reset';
+export type LocalActivityAction =
+  | 'started'
+  | 'stopped'
+  | 'start-failed'
+  | 'updated'
+  | 'reset'
+  /** The running server stopped, or stopped answering, without being asked. */
+  | 'crashed';
 
 /** One entry of the local stack's history. Only this Console acts on it, so
  * there is no "who". */
@@ -325,7 +349,8 @@ export type LocalActivityEntry = {
   /** ISO timestamp. */
   at: string;
   action: LocalActivityAction;
-  /** The version an update moved to, or why a start failed; else null. */
+  /** The version an update moved to, or why a start failed or the server
+   * stopped; else null. */
   detail: string | null;
 };
 

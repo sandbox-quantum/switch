@@ -17,6 +17,8 @@ import type { ServerSurface } from '../gate/gate.ts';
  * A route behind a feature flag the deployment has off is not mounted, and
  * answers 404 for that reason alone, so the probe skips exactly those: the
  * snapshot names each route's flags, and the deployment says which it has on.
+ * A WebSocket route (`WS /gateway/...`) is probed with its opening handshake,
+ * which a session socket refuses with the same 401.
  * Every other session route is probed, whether or not it appears in the
  * deployment's OpenAPI document. Path parameters get a well-formed id that names nothing: the
  * session check runs before the route ever looks the id up.

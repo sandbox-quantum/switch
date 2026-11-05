@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 
-from switch_core.connections.adapters import ConnectionNotRevocable
+from switch_core.connections.adapters import (
+    AccessToken,
+    ConnectionNotRevocable,
+    IssueRequest,
+    ServiceAdapterError,
+)
 from switch_core.connections.adapters.api_key import (
     ApiKeyAdapter,
     InvalidKeyError,
@@ -46,7 +52,7 @@ ENTRY = {
             },
         },
     },
-    "token": {"kind": "pass_through", "max_lifetime": 3600},
+    "token": {"kind": "pass_through", "max_lifetime": None},
     "mcp": {
         "servers": [
             {
@@ -119,3 +125,15 @@ async def test_disconnecting_says_only_the_vendor_can_revoke_a_key() -> None:
     adapter = _adapter(lambda request: httpx.Response(200))
     with pytest.raises(ConnectionNotRevocable, match="Revoke it in Example"):
         await adapter.revoke_connection(adapter.secret(FIELDS))
+
+
+async def test_a_key_is_never_issued_to_an_agent() -> None:
+    adapter = _adapter(lambda request: httpx.Response(200))
+    assert adapter.can_issue is False
+    key = adapter.secret(FIELDS).access_token
+    assert key is not None
+    with pytest.raises(ServiceAdapterError, match="never handed to an agent"):
+        await adapter.issue(
+            AccessToken(key, datetime.now(UTC) + timedelta(hours=1)),
+            IssueRequest(service="example", access="write", reach={}, resources={}),
+        )

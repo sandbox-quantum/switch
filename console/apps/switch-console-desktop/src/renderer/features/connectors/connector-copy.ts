@@ -61,12 +61,12 @@ export function switchOffConfirmation(
   };
 }
 
-/** Who last changed a workspace switch, and when; a switch nobody touched is on by default. */
+/** Who last changed a workspace switch, and when; a switch nobody touched takes the workspace's default. */
 export function workspaceSwitchNote(
   service: Pick<WorkspaceService, 'enabled' | 'updated_by_name' | 'updated_at'>,
   formatTime: (iso: string) => string
 ): string {
-  if (service.updated_at === null) return 'On by default.';
+  if (service.updated_at === null) return service.enabled ? 'On by default.' : 'Off by default.';
   const state = service.enabled ? 'on' : 'off';
   const who = service.updated_by_name ?? 'a deleted account';
   return `Switched ${state} by ${who}, ${formatTime(service.updated_at)}.`;

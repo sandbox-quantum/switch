@@ -507,6 +507,10 @@ pnpm run lint
   from there. What a session host does tell is the Switch server it already works for:
   that a new session started and how (`host/session-start.ts`), as ordinary traffic to
   that server. Whether that leaves the server as telemetry is the server's own setting.
+  The agent controller this app runs on its own computer still reports nothing itself:
+  once Switch has taken a session's start it tells its parent over the IPC channel
+  (`host/session-started.ts`), and this app reports `managed_session_started` under its
+  own gate. A controller on any other machine has no parent listening; keep it that way.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.
@@ -525,6 +529,21 @@ pnpm run lint
   Code's own file, read by every session in the directory, which does not need
   the credential. Do not add a token back to it: two copies is how one goes stale
   and authenticates as the wrong agent.
+  - **It is readable by its owner alone:** `0600` in a `0700` `.switch/agents/`,
+    with owner-only ACLs on Windows. Every write of it is a secret write:
+    `PluginFs.write` with `{ secret: true }`, or what that calls —
+    `writeSecretFile` in `src/main/core/providers/plugin-fs.ts` locally,
+    `SshFileSystem.writeSecret` over SFTP. A plain write takes the umask,
+    typically leaving the token readable by every account on the machine. A
+    directory another account owns is left as it is, with a warning, rather
+    than failing the write; the file is private either way.
+  - To tighten a file already there, use `PluginFs.protectSecret`, which
+    changes permissions only; rewriting the content to the same end can undo a
+    concurrent write. `{ fileOnly: true }` leaves the directory alone, for a
+    legacy file in `.claude/` that still holds a token.
+  - A secret write that is cut off leaves its temporary `<file>.<uuid>` copy
+    behind, so `PluginFs.delete` removes those too: delete the file through it,
+    or through `deleteFiles` on a host, never with a bare `rm`.
   - **Where Switch Console writes the settings file, Claude Code makes it live.**
     Its `env` block becomes real process environment for everything a session
     spawns, so keep the agent id in it in step with `.switch/agents/`; changing
@@ -669,7 +688,7 @@ pnpm run test
 - App updates in dev: the update service is inert outside packaged builds, so the
   "update available" UI cannot be exercised by `pnpm run dev` alone. Set
   `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —
-  `available`, `download-error`, `check-error`, `auth-required`, or `up-to-date`.
+  `available`, `install-error`, `download-error`, `check-error`, or `up-to-date`.
   An unrecognised value fails at startup rather than silently doing nothing.
   `SWITCHDASH_FAKE_UPDATE_VERSION` overrides the offered version (default: the
   current minor, bumped) and `SWITCHDASH_FAKE_UPDATE_MS` the simulated download

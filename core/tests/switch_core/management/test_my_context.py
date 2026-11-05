@@ -27,6 +27,7 @@ from switch_core.db.models import (
     Client,
     CollaborationBridge,
     ExternalUser,
+    ExternalUserClaim,
     MessagingInstall,
     ServiceGrant,
     TenantMember,
@@ -78,6 +79,13 @@ def _config(
             key: key == SWITCH_CLOUD and cloud for key in KNOWN_FEATURE_FLAGS
         },
         managed_by_console=managed_by_console,
+        deployment_kind=(
+            "switch_cloud"
+            if cloud
+            else "managed_by_console"
+            if managed_by_console
+            else "self_hosted"
+        ),
     )
 
 
@@ -154,8 +162,10 @@ async def _context(
 
 async def _setup(harness: Harness) -> tuple[str, str, str]:
     """Ada, a member, with her buddy and a reviewer; a Slack workspace added
-    with the Switch app, her account on it linked; a Discord server someone
-    pasted tokens for. Returns the buddy's id and key, and Ada's id."""
+    with the Switch app, her account on it linked and confirmed; a Discord
+    server someone pasted tokens for, where she has started linking her
+    account but not confirmed it. Returns the buddy's id and key, and Ada's
+    id."""
     ada = await add_member(harness.session_factory, "ada")
     async with harness.session_factory() as session:
         buddy, key = await _agent(
@@ -211,8 +221,29 @@ async def _setup(harness: Harness) -> tuple[str, str, str]:
             client_id=account.id,
         )
         session.add(identity)
+        discord_account = Client(
+            type="external_user",
+            transport_user_id="@discord-ada:test",
+            display_name="ada",
+        )
+        session.add(discord_account)
         await session.flush()
-        await ExternalUserStore().claim(session, identity, ada.id)
+        discord_identity = ExternalUser(
+            bridge_id=discord.id,
+            external_user_id="D1",
+            external_username="ada-on-discord",
+            client_id=discord_account.id,
+        )
+        session.add(discord_identity)
+        await session.flush()
+        store = ExternalUserStore()
+        request = await store.request_link(
+            session, identity, ada.id, requested_by_user_id=ada.id
+        )
+        await store.confirm_link_request(session, request)
+        await store.request_link(
+            session, discord_identity, ada.id, requested_by_user_id=ada.id
+        )
         await session.commit()
         return buddy.id, key, ada.id
 
@@ -258,6 +289,7 @@ async def test_it_says_how_messaging_apps_are_and_would_be_set_up(
             "is_default": False,
             "installed_with": "own_app",
             "your_account_linked": False,
+            "your_account_link": "pending",
             "your_usernames": [],
         },
         {
@@ -268,6 +300,7 @@ async def test_it_says_how_messaging_apps_are_and_would_be_set_up(
             "is_default": True,
             "installed_with": "official_app",
             "your_account_linked": True,
+            "your_account_link": "verified",
             "your_usernames": ["ada"],
         },
     ]
@@ -277,6 +310,25 @@ async def test_it_says_how_messaging_apps_are_and_would_be_set_up(
         ("discord", "own_app", "admins"),
         ("slack", "official_app", "admins"),
     ]
+
+
+async def test_a_link_from_before_confirmation_reads_as_unverified(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    buddy_id, key, ada_id = await _setup(harness)
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(ExternalUserClaim)
+            .where(ExternalUserClaim.user_id == ada_id)
+            .values(verified_at=None)
+        )
+        await session.commit()
+
+    apps = (await _context(client, buddy_id, key))["messaging_apps"]["connected"]
+
+    slack = next(app for app in apps if app["platform"] == "slack")
+    assert slack["your_account_linked"] is True
+    assert slack["your_account_link"] == "unverified"
 
 
 async def test_it_lists_only_the_persons_own_agents(
@@ -387,7 +439,8 @@ class TestGivingAgentsServices:
         datadog = next(
             entry for entry in context["services"] if entry["slug"] == "datadog"
         )
-        assert datadog["unavailable_code"] == "not_set_up"
+        assert datadog["unavailable_code"] == "key_never_expires"
+        assert datadog["available"] is False
 
         taken = await _op(
             client,

@@ -5,12 +5,13 @@ import io
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Literal
 
+import aiohttp
 import discord
 from discord.http import Route
 from pydantic import ConfigDict, Field, model_validator
@@ -50,6 +51,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeCredentialError,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -533,6 +535,37 @@ class DiscordAdapter(PlatformAdapter):
         return None
 
     @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Log in with the bot token, which fetches the bot's own user.
+
+        A bridge on the distributed app holds no token of its own; the
+        deployment's is checked when its shared connection opens.
+        """
+        config = DiscordConnectionConfig.model_validate(connection_config)
+        if config.event_delivery == "shared":
+            return
+        assert config.bot_token is not None  # guaranteed by the validator
+        client = discord.Client(intents=discord.Intents.none())
+        try:
+            await client.login(config.bot_token)
+        except discord.LoginFailure as exc:
+            raise BridgeCredentialError(
+                "Discord rejected the bot token. Copy it again from the "
+                "Developer Portal (your application -> Bot -> Reset Token)."
+            ) from exc
+        except discord.HTTPException as exc:
+            raise BridgeCredentialError(
+                f"Discord did not accept the bot token: {exc}"
+            ) from exc
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise BridgeCredentialError(
+                f"Could not reach Discord to check the bot token: "
+                f"{exc or type(exc).__name__}. Try again."
+            ) from exc
+        finally:
+            await client.close()
+
+    @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
         if isinstance(exc, discord.LoginFailure):
             return "auth_failed"
@@ -595,6 +628,8 @@ class DiscordAdapter(PlatformAdapter):
         super().__init__()
         self._config = config
         self._guild_id = int(config.guild_id)
+        # Channels whose name this bridge has reported since it started.
+        self._channel_names_seen: set[int] = set()
         # The Gateway socket lives on the connection, not the adapter: the
         # socket is per bot token and the adapter is per guild. Intents are
         # built here and handed over, so the socket owner does not decide them.
@@ -701,6 +736,7 @@ class DiscordAdapter(PlatformAdapter):
         conn.register_message_handler(self._guild_id, self._handle_message)
         conn.set_dm_handler(self._handle_message)
         conn.set_interaction_handler(self._make_on_interaction())
+        conn.set_channel_update_handler(self.dispatch_channel_update)
         await conn.connect(
             commands=build_app_commands(self._handle_slash_command),
         )
@@ -794,6 +830,23 @@ class DiscordAdapter(PlatformAdapter):
         and routes each invocation to the bridge its guild resolves to.
         """
         await self._handle_slash_command(interaction, command, values)
+
+    async def dispatch_channel_update(
+        self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel
+    ) -> None:
+        """A channel in this bridge's guild changed: tell the bridge what it is
+        called now, so the room linked to it follows a rename, including one
+        made before the bridge followed renames."""
+        if after.guild.id != self._guild_id:
+            return
+        # Only a rename, or the first word of a channel since this process
+        # started, is worth the bridge's lookup; Discord sends an update for
+        # every permission or topic change too.
+        if before.name == after.name and after.id in self._channel_names_seen:
+            return
+        self._channel_names_seen.add(after.id)
+        if self._on_channel_named is not None:
+            await self._on_channel_named(str(after.id), before.name, after.name)
 
     async def dispatch_interaction(self, interaction: discord.Interaction) -> None:
         """Handle one press on a card's button the shared client routed here.
@@ -1058,6 +1111,40 @@ class DiscordAdapter(PlatformAdapter):
         # are registered from, so a renamed argument cannot leave this stale.
         option = COMMANDS_BY_NAME["invite-agent"].args_spec[0].name
         return f"`/invite-agent {option}:agent-name` — the Discord slash command"
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        # Other bots and webhooks are bridged like people (see `_on_message`),
+        # and the id alone does not say which is which.
+        client = self._require_client()
+        try:
+            user = await client.fetch_user(int(external_user_id))
+        except (ValueError, discord.NotFound):
+            return (
+                "This isn't a Discord user's account. It may be a webhook, which "
+                "anyone holding its URL posts as."
+            )
+        except discord.HTTPException as e:
+            raise RuntimeError(
+                f"Could not ask Discord about account {external_user_id}: {e}"
+            ) from e
+        if user.bot or user.system:
+            return "This is a Discord bot's account, which whoever runs it posts as."
+        return None
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        option = COMMANDS_BY_NAME["link-account"].args_spec[0].name
+        slash = f"`/link-account {option}:{code}`"
+        if connection_config.get("event_delivery") == "shared":
+            # The shared connection is not given message text, so a typed
+            # `!link-account` never reaches Switch; the slash command does.
+            return f"Run {slash} from that account in a server channel Switch is in."
+        return (
+            f"Run {slash} from that account in a server channel Switch is in, "
+            f"or post `!link-account {code}` there."
+        )
 
     async def admin_message(
         self,
@@ -2907,6 +2994,10 @@ class DiscordAdapter(PlatformAdapter):
                 attachments=attachments,
                 attachment_failures=attachment_failures,
                 self_mention_token=str(bot_user_id) if self_mention else None,
+                # Another bot, or a webhook that is not one of ours (ours were
+                # dropped above): an integration posting, not a person.
+                sender_is_app=bool(getattr(author, "bot", False))
+                or getattr(message, "webhook_id", None) is not None,
             )
         )
 
@@ -3695,9 +3786,7 @@ class DiscordAdapter(PlatformAdapter):
         root_message = None
         try:
             root_message = await channel.fetch_message(root_message_id)
-            root_content = str(root_message.content or "").strip()
-            if root_content:
-                name = root_content[:60]
+            name = _thread_title(root_message) or name
         except discord.HTTPException:
             pass
 
@@ -3720,3 +3809,15 @@ class DiscordAdapter(PlatformAdapter):
             logger.error("Invalid Discord message ref format: %s", message_ref)
             return "", ""
         return parts[0], parts[1]
+
+
+# A user, role or channel mention as Discord writes it in a message's text.
+_MENTION_TOKEN = re.compile(r"<(?:@[!&]?|#)\d+>")
+
+
+def _thread_title(message: Any) -> str:
+    """A thread's name from the message it starts at: its text with mentions
+    as people read them (`@name`, `#channel`), any Discord could not resolve
+    dropped, at most 60 characters."""
+    text = _MENTION_TOKEN.sub("", str(message.clean_content or ""))
+    return " ".join(text.split())[:60]

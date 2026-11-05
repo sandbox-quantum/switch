@@ -19,6 +19,7 @@ import {
   addReferenceToPackage,
   removeDocumentFromPackage,
   removeReferenceFromPackage,
+  type PackageMemberRemoveResult,
 } from "../../data/api";
 import {
   useDocuments,
@@ -26,6 +27,7 @@ import {
   usePackageReferences,
   useReferences,
 } from "../../data/hooks";
+import { privateRoomsLabel } from "./privateRooms";
 
 interface Props {
   packageId: string;
@@ -114,11 +116,8 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
     setRemoveWarning(null);
     try {
       const result = await removeReferenceFromPackage(packageId, refId);
-      if (result.affected_room_names.length > 0) {
-        setRemoveWarning(
-          `Removed. ${result.affected_room_names.length} room(s) lost visibility: ${result.affected_room_names.join(", ")}`,
-        );
-      }
+      const warning = lostVisibilityWarning(result);
+      if (warning) setRemoveWarning(warning);
       refetchRefs();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to remove reference");
@@ -133,11 +132,8 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
     setRemoveWarning(null);
     try {
       const result = await removeDocumentFromPackage(packageId, docId);
-      if (result.affected_room_names.length > 0) {
-        setRemoveWarning(
-          `Removed. ${result.affected_room_names.length} room(s) lost visibility: ${result.affected_room_names.join(", ")}`,
-        );
-      }
+      const warning = lostVisibilityWarning(result);
+      if (warning) setRemoveWarning(warning);
       refetchDocs();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to remove document");
@@ -200,6 +196,7 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
                       handleRemoveRef(r.id);
                     }}
                     disabled={busy}
+                    aria-label={`Remove ${r.name || "(unnamed)"} from package`}
                   >
                     <DeleteOutline fontSize="small" />
                   </IconButton>
@@ -259,6 +256,7 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
                       handleRemoveDoc(d.id);
                     }}
                     disabled={busy}
+                    aria-label={`Remove ${d.name || "(unnamed)"} from package`}
                   >
                     <DeleteOutline fontSize="small" />
                   </IconButton>
@@ -298,4 +296,13 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
       />
     </Stack>
   );
+}
+
+// Rooms the viewer may not read are counted, never named.
+function lostVisibilityWarning(result: PackageMemberRemoveResult): string | null {
+  const named = result.affected_room_names;
+  const hidden = result.hidden_affected_rooms_count;
+  if (named.length + hidden === 0) return null;
+  const rooms = [...named, ...(hidden > 0 ? [privateRoomsLabel(hidden)] : [])];
+  return `Removed. ${named.length + hidden} room(s) lost visibility: ${rooms.join(", ")}`;
 }

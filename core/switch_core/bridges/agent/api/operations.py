@@ -63,6 +63,26 @@ class BadArgumentsError(Exception):
     """The body did not match the operation's parameters."""
 
 
+def refusal_status(exc: Exception) -> int | None:
+    """The status an operation's refusal is answered with, over HTTP or on a
+    controller's socket; None for an exception that is a failure instead."""
+    if isinstance(exc, UnknownOperationError):
+        return 404
+    if isinstance(exc, BadArgumentsError):
+        return 400
+    if isinstance(exc, BudgetExceeded):
+        return 429
+    if isinstance(exc, GuardrailBlockedError):
+        return 422
+    if isinstance(exc, PermissionError):
+        return 403
+    if isinstance(exc, ValueError):
+        # Operations raise ValueError for "you asked for something that is not
+        # there or not allowed yet" - surfaced rather than swallowed.
+        return 400
+    return None
+
+
 def list_operations() -> dict[str, dict[str, Any]]:
     """Every operation, with its parameters.
 
@@ -214,6 +234,7 @@ async def resolve_caller(
             host_id=host_id or "",
             epoch=epoch or "",
             room_id=protocol.connections.session_room(agent_id, session_id),
+            placed_by_controller=False,
         )
 
     # Derived, never taken on trust: a connection belonging to another agent,
@@ -255,7 +276,9 @@ async def resolve_controller_caller(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-    return holder, CallerSession(id=holder, host_id="", epoch="", room_id=room_id)
+    return holder, CallerSession(
+        id=holder, host_id="", epoch="", room_id=room_id, placed_by_controller=True
+    )
 
 
 router = APIRouter(prefix="/agents", tags=["operations"])
@@ -324,19 +347,10 @@ async def post_operation(
             connection_id=session_key,
             session=caller,
         )
-    except UnknownOperationError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except BadArgumentsError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except BudgetExceeded as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except GuardrailBlockedError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        # Operations raise ValueError for "you asked for something that is not
-        # there or not allowed yet" - surfaced rather than swallowed.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        status = refusal_status(exc)
+        if status is None:
+            raise
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     return {"result": result}

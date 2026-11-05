@@ -18,9 +18,12 @@ LAUNCH_VISIBILITY_GRACE = timedelta(minutes=15)
 
 
 class Reconciler:
-    def __init__(self, store: MachineStore, cloud: Ec2Cloud):
+    def __init__(self, store: MachineStore, cloud: Ec2Cloud, *, instance_type: str | None):
+        """`instance_type` is the type every machine moves onto when it next
+        launches, the cloud gateway's; None keeps each on the type it was created with."""
         self._store = store
         self._cloud = cloud
+        self._instance_type = instance_type
 
     def reconcile_all(self) -> None:
         for listed in self._store.list():
@@ -91,10 +94,16 @@ class Reconciler:
             if not machine.instance_launch_issued:
                 if not self._unchanged(claim, DesiredState.RUNNING):
                     return self._store.cancel_queued_instance_launch(claim)
-                if machine.image_id != self._cloud.image_id:
-                    # No instance is left, and the data volume is kept: the
-                    # one moment the machine can move onto the configured image.
-                    machine = self._store.use_image(claim, self._cloud.image_id)
+                instance_type = self._instance_type or machine.instance_type
+                if (
+                    machine.image_id != self._cloud.image_id
+                    or machine.instance_type != instance_type
+                ):
+                    # No instance is left, and the data volume is kept: the one
+                    # moment the machine can move onto the configured image and type.
+                    machine = self._store.use_launch_spec(
+                        claim, self._cloud.image_id, instance_type
+                    )
                     if not self._same_claim(claim, machine):
                         return machine
                 self._cloud.validate_image(machine)

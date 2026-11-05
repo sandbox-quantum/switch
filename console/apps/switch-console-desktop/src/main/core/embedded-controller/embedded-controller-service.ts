@@ -1,3 +1,4 @@
+import type { SessionStartedNotice } from '@switch-console/agent-providers';
 import { MovedAgentsHereError } from '@shared/core/agent-migration/agent-migration';
 import type {
   EmbeddedControllerEnrollment,
@@ -80,6 +81,8 @@ export type EmbeddedControllerDeps = {
   log: ServiceLog;
   /** Where the controller's own log lines go. */
   controllerLine: (serverId: string, level: ControllerLogLevel, line: string) => void;
+  /** A session of an agent on this computer started (`reportManagedSessionStarted`). */
+  sessionStarted: (notice: SessionStartedNotice) => void;
   now: () => number;
   backoff: ControllerBackoff;
   /** How long a revoked controller is given to stop its agents and exit by itself. */
@@ -94,8 +97,13 @@ export type EmbeddedControllerDeps = {
 
 const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
 
-/** Every provider's sign-in check runs at once; the slowest allows itself 15 seconds. */
-const RECHECK_TIMEOUT_MS = 60_000;
+/**
+ * Every provider is checked at once. Claude Code's is the slowest: its status
+ * command (up to 15 seconds), then a test prompt (up to 30), then the report
+ * to Switch, so the wait leaves room for all three and resolves on the
+ * report that has them rather than timing out ahead of it.
+ */
+const RECHECK_TIMEOUT_MS = 90_000;
 
 function providerSeedArgs(file: string | null): string[] {
   return file === null ? [] : ['--provider-seed', file];
@@ -458,6 +466,7 @@ export class EmbeddedControllerService {
         onPhase: (phase) => this.setRunnerPhase(serverId, phase),
         onFinal: (exit) => void this.onFinal(serverId, exit),
         onLine: (level, line) => this.deps.controllerLine(serverId, level, line),
+        onSessionStarted: (notice) => this.deps.sessionStarted(notice),
         now: this.deps.now,
         backoff: this.deps.backoff,
       }),

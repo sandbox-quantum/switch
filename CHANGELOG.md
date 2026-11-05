@@ -44,7 +44,162 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Security
+- **Counts and replies no longer name private rooms either.** Beyond the
+  room listings below, a reference, document or package's attached-rooms count
+  took in every room it was attached to, an agent's detail named every room
+  it is in, and removing an item from a package named every room that lost
+  it. Each now names, and counts, only rooms the viewer may read; workspace
+  admins still see every room. Whoever may manage a resource is still told
+  how many rooms they cannot open it is in, without their names, and deleting
+  it warns about those rooms too.
+- **A refused request is no longer repeated back.** When the gateway or the
+  agent API refused a request as invalid, the 422 repeated what was sent: a
+  password too short to accept, or the whole body, password included, when
+  another field was missing. Registering or editing a Slack, Discord or Teams
+  connection with a config that did not fit quoted part of its bot token or
+  secret, and on an edit that could be the stored token, which nothing else
+  returns. Anything that records error responses (APM, proxies, browser HAR
+  captures) could end up holding passwords and tokens. Each error now says
+  only where and what is wrong (`type`, `loc` and `msg`), and the agent API no
+  longer writes the request body to its log. A script that read `input` or
+  `ctx` from a 422 will find them gone. A validation rule that raised its own
+  error on the agent API now answers 422 rather than 500.
+- **Agents are no longer handed a key that never expires.** Datadog connects
+  with an API key and an application key that do not expire and that only
+  Datadog can revoke, and an agent granted Datadog was handed both. Switch now
+  refuses: Datadog can no longer be connected or granted, and an agent with an
+  existing Datadog grant is told why when it asks. A Datadog connection made
+  before can still be disconnected; revoke the keys in Datadog if they were
+  ever granted to an agent.
+- **Service connections start off in a new workspace.** A workspace created
+  from now on has every service connection switched off until a workspace
+  admin switches each on under Connectors. Workspaces that already had members
+  keep every service on by default, as before, along with every switch an
+  admin already set.
+- **A Google Workspace token is never handed out with more than an hour
+  left,** and one Google issues for longer is refused.
+- **Withdrawing access says what it could not take back.** Removing a grant,
+  disconnecting, or switching a service off for the workspace cannot revoke an
+  Atlassian or Google Workspace token already given to an agent, since that
+  token is the owner's own. The change now marks those tokens withdrawn and
+  its warning names the service and the time until which they may keep
+  working: up to an hour for Google Workspace, and up to eight hours for
+  Atlassian, whose tokens cannot be asked for shorter.
+- **A template's room params name only rooms its runner can see.** A room
+  param checked its value against every room on the server, and `$first` or
+  a list of candidates could settle on someone else's private room. That told
+  the runner the room existed and could write its name into their new room.
+  Now a room the runner cannot read reads as missing.
+
+- **Registering an agent under a parent requires owning the parent.** The
+  agent API's `register-known` and `register-known-bulk` accepted any agent as
+  `parent_agent_id`, copying its name and settings to the new child. They now
+  refuse a parent the registering user does not own, as the dashboard's own
+  subagent registration already did.
+- **Private rooms stay out of room listings for people who cannot read them.**
+  The room link graph, the rooms a document, package or reference is attached
+  to, and an agent's `list_all_rooms` now show only rooms the caller may read
+  (an agent also sees the rooms it is in). Linking a room to another now
+  needs read access to the target, whose name the link shows, including
+  links an agent's `create_room` makes. A room's links, outbound and inbound,
+  leave out rooms the caller cannot read, for people and agents alike. An
+  agent can list a room's participants only from inside the room.
+- **Only a workspace admin manages room groups.** Groups are shared by the
+  whole workspace and have no owner, so any member could rename, move or
+  delete one. Creating, changing and deleting a group, from the dashboard,
+  the API or an agent's `create_room_group`, now needs a workspace admin (for
+  an agent, its owner). Anyone can still file a room they can write into an
+  existing group. Group room counts, and the rooms `get_room_group_detail`
+  lists, now leave out private rooms the caller cannot read.
+
 #### Added
+- **The gateway says what the caller may change in a room.** Rooms, in the
+  list (`GET /rooms`) and in a room's detail, carry `can_write`,
+  `can_manage` and `can_unlink`. Each room a reference, document or package
+  is attached to carries `can_unlink`, and a room's documents, listed or
+  fetched one at a time, carry `can_remove`. A reference, document or
+  package carries `hidden_rooms_count`: for whoever may manage it, how many
+  of the rooms it is in they may not read. All are decided by the same
+  rules the routes enforce, so a client offers a change only where the
+  server would allow it.
+- **An agent controller can send its agents' operations on its socket.**
+  Every operation a controller's agents call was an HTTP request of its own,
+  parsed, routed and authenticated with the controller's token, though the
+  controller already holds an authenticated WebSocket to the server. The
+  socket now takes them as `call` frames and answers each with a
+  `call.result` frame carrying the status and body the HTTP route
+  (`POST /agents/{id}/ops/{operation}`) would have answered with. A call is
+  authorized as that request is: the controller checked against its row, and
+  the agent's binding to it. The socket's first frame offers calls
+  (`calls.max_in_flight`, 64); a call over that is answered 429
+  `capacity_exceeded` without running, so the controller sends it over HTTP.
+- **A reconnect storm is paced instead of taking the pool.** When a pod goes
+  away, every agent and controller it held opens a connection on the pods
+  left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
+  those opens took the whole database pool: requests and the process lease
+  timed out with them, and the surviving pod dropped agents of its own. Each
+  process now opens at most `AGENT_OPEN_LIMIT` (8) agent and controller
+  connections at once. An open that finds no slot within 2 s, which keeps it
+  well inside the timeout of the proxy in front, is refused before
+  authentication with 503 and `retry_after_s`, its place in the line at the
+  pace opens are taking in that process, so the storm comes back as a queue
+  spread over what the process can take. A caller that comes back early keeps
+  its time. `switch.agent.opens_deferred` counts the refusals, by route.
+- **The Helm chart can put switch-core on chosen nodes.**
+  `switchCore.nodeSelector` and `switchCore.tolerations` go onto the
+  switch-core pods as written, so they can run on a node group of their own,
+  such as one kept for load tests. Both are empty by default, which places the
+  pods as before.
+- **Organizations set up their own connector apps and switch services for
+  their workspaces, behind `organization_connector_apps`, off by default.**
+  With the flag on (and `service_connections`), the dashboard's Organization
+  page gains two sections for organization admins:
+  - **Connectors.** An organization saves its own GitHub App, Google client
+    or Airtable integration, checked with the vendor as the operator's are.
+    Every workspace in the organization then signs in, is issued and is
+    refreshed through it rather than the server's. An organization's app
+    that stops working makes the service unavailable in its workspaces,
+    with the reason, and never falls back to the server's. A workspace's
+    service listing says whose app it goes through (`app_source`).
+  - **Services.** An organization switches each service on or off for its
+    workspaces. Unlocked, its setting applies where a workspace admin hasn't
+    set the service themselves; locked, it applies everywhere and workspace
+    admins can't change it. Wherever a change leaves a service off, the
+    tokens issued for it there are revoked; any a change could not reach,
+    the periodic token upkeep revokes within five minutes. A workspace admin can drop their
+    own switch (`DELETE /gateway/workspace/services/{service}`) to take the
+    organization's setting.
+
+  Every change is recorded in the organization's audit log. The platform
+  operator has no say in an organization's apps or services unless they are
+  one of its admins. With the flag off, nothing changes: the routes aren't
+  mounted and no workspace consults its organization. The migration adds
+  two empty tables either way.
+- **Google Workspace without Google's yearly security assessment.** A server
+  can set `SERVICE_ACCESS_PROFILES='{"google-workspace": "drive-file"}'` so
+  sign-ins ask for neither `drive` nor `drive.readonly`. Google counts those
+  two as restricted: an External app needs its strictest review before anyone
+  outside the organization can grant them, with a security assessment renewed
+  every year. With `drive-file`, agents still read and change any Doc, Sheet
+  or Slides deck the person can open, by its link, and Calendar as before; in
+  Drive they reach only the files and folders they create, so they cannot
+  search the person's Drive or read their PDFs and other uploads. Agents are
+  given a skill that says so. The setting covers every Google sign-in on the
+  server, an organization's own Google client included, so an organization
+  with its own Internal client also loses Drive search. Changing the setting
+  makes everyone connected before the change reconnect: until they do, their
+  connection shows as needing reconnection and their agents get no Google
+  Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
+  `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
+  nothing changes.
+- **The `[CONN]` log lines say when a client fell back to the event stream.**
+  `/events` takes optional `fallback` and `fallback_close_code` parameters,
+  and the `[CONN] opened` and `[CONN] reattached` lines end with
+  `fallback=<reason>:<close code>` only when they are present, so a new agent
+  runtime whose WebSocket never opened is told apart from a client built
+  before the socket. Unknown reasons log as `other` and anything but a short
+  numeric close code is dropped.
 - **Templates carry packages.** A room in a template takes `packages:`, a list
   of packages that already exist, by `id` or by `name`, attached when the room
   is created. The person running the template must be able to attach each one
@@ -58,6 +213,13 @@ version of their own to them without also giving them a release of their own.
   itself up, its rules with the people, agents and rooms they name. So an
   agent can tell someone who may answer its questions and approvals instead
   of guessing. Another agent sees only the kind.
+- **Console hears when your managed agents or machines change.** A signed-in
+  user's Console opens one WebSocket per workspace (`/gateway/changes/ws`), and
+  switch-core tells it when one of their managed agents or machines changed, so
+  Console reads it again instead of polling. A notice names a kind and an id
+  and carries nothing else. Notices travel between replicas on the signal bus,
+  so a change made through one pod reaches a Console connected to another
+  (#717).
 - **The Airtable connection.** A person connects Airtable from Switch Console,
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that
@@ -88,6 +250,204 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Unlinking a resource from a room is for those taking part in it.** It
+  took write access to the room, which on a publicly writable room, the
+  default, is everyone's. It is now for the room's owner, people in it (in
+  Switch Console or through a claimed platform account), owners of agents in
+  it, and workspace admins, whether or not they may write to it. The
+  dashboard shows it as an "Unlink" button rather than a bin, since nothing
+  is deleted. Attaching still takes write access.
+- **A room's own documents are deleted by their creator, the room's owner or
+  an admin.** Anyone who could write to the room could delete them. A
+  document an agent made counts as made by the agent's owner.
+- **Usage telemetry tells people from bots.** Slack, Discord and Mattermost
+  posts from an integration (an app, a bot account, a webhook that isn't
+  Switch's own) were counted as people. The bridge now marks them, and the
+  daily snapshot reports `person_identity_active_*`, `bot_identity_active_*`
+  and `account_active_*` beside the old `chat_identity_active_*` and
+  `user_active_*`, which are still sent for one more stable release. Room and
+  agent message events report such posts as `sender_kind = bot`. An app's post
+  on Discord or Mattermost also no longer answers a request card or wakes an
+  agent following the conversation, as already on Slack.
+- **Usage telemetry follows Switch Cloud.** Every event now carries
+  `deployment_kind` (`switch_cloud`, `managed_by_console` or `self_hosted`),
+  so Cloud can be charted on its own or left out. New events cover its funnel:
+  `account_created` (sign-up, a first single sign-on sign-in, or an admin),
+  `signup_refused` with the reason, `workspace_created`, and a cloud machine
+  being requested, becoming ready (with how long a new one took), failing
+  (with the reason), being woken, and being stopped. Machine events are sent
+  only once their change is committed.
+- **Usage telemetry counts each finished day, week and month.** The daily
+  snapshot's `*_7d` counts are a trailing week, so a chart adding them up
+  over a week counted a room once for every day it was active. A new
+  `usage_period` event is sent once per finished UTC day, ISO week and
+  calendar month, with distinct active rooms, people and accounts for exactly
+  that period, dated to its middle. Summed at the matching interval it is the
+  real figure. A server that was off sends the periods it missed, up to 35
+  days back, when it next runs.
+- **Agent telemetry says connection where it meant one.**
+  `agent_connected`, `agent_disconnected` and the `first_agent_connected`
+  milestone are sent alongside `agent_session_started`, `agent_session_ended`
+  and `first_session_started`, which measured an agent coming online, not a
+  coding-agent session. The old names stay for one more stable release. The
+  new `first_agent_session` milestone is the first session a host reports. A
+  deployment that already passed either milestone claims it at startup
+  without reporting it.
+- **Workspaces belong to organizations. Upgrade by replacing every pod, and
+  downgrade the database before rolling back.** Every existing workspace gets
+  an organization of its own, and its owners become the organization's admins.
+  An organization admin administers every workspace in it without being added
+  to each. A release from before organizations doesn't know about organization
+  admins: if old and new pods serve together during a rolling update, or after
+  a rollback that keeps the new database, an owner removed from a workspace by
+  an old pod is still the organization's admin and can come back into it. So
+  for this release, replace every switch-core pod at once rather than rolling
+  them, and to roll back, first downgrade the database to the revision before
+  `238c68b7306e` (`alembic downgrade 238c68b7306e-1`), then start the older
+  release.
+- **Messages no longer queue for the database's NOTIFY lock.** Postgres
+  lets one transaction that sends a `NOTIFY` commit at a time, and the
+  triggers on `messages` and `agent_events` sent one from every message's
+  transaction, so the whole deployment stopped near 300 messages a second
+  however many pods or vCPUs it had. The router now writes without them and
+  announces its rows once they have committed, through one announcer per
+  process that sends everything queued since its last send in a single
+  transaction (`announcer.py`). Same channels and payloads, so pods of the
+  previous release and this one hear each other during a rolling update; the
+  migration is expand only. A reader re-checks its rooms, and the agent
+  event listener forgets the heads it was told, every 20 to 30 seconds, so an
+  announcement lost with a process that died right after its commit costs a
+  delay, not a message. Signals go through the same announcer.
+- **The statements every message write costs run on asyncpg directly.**
+  Taking the room's lock, reading its head, storing the agents' own events
+  and reading the room's agent members again under the lock go straight to
+  asyncpg on the transaction's connection (`db/raw.py`), as the delivery
+  reads do, rather than through SQLAlchemy's execution.
+- **The two reads behind every delivery run on asyncpg directly.** A
+  stream reads an agent's events, and counts its unread messages, for every
+  event it delivers, and under load SQLAlchemy's work around each statement
+  cost more than Postgres took to run it. `db/raw.py` runs a statement
+  SQLAlchemy compiled once on the session's own asyncpg connection, in its
+  transaction and under its tenant, with SQLAlchemy's type conversions and
+  timed into `db.query.duration` as every other statement is.
+- **Pods start in seconds again with many rooms.** Every process checks at
+  startup that each room has its clients, under a lock that lets one
+  process at a time through, and read each room on its own to do it. With
+  tens of thousands of rooms that took about 100 seconds, so processes
+  starting together were restarted while they waited. Rooms are now read a
+  thousand at a time.
+- **Idle agents behind a controller cost the database far less.** A
+  controller stream's pass, including the one after every idle interval,
+  read each of its agents' events in a session of its own; it now reads all
+  their heads in one query and reads only the agents with something new. And
+  each process's 30-second re-check of controllers held by another process
+  read every agent's rooms with a query of its own, which grew with
+  processes times agents; it is now one query per controller.
+- **A delivery to an agent behind a controller takes two database
+  transactions instead of four.** The controller's stream read the heads of
+  all its agents to find the work, again after delivering, and again before
+  waiting. It now reads them once a pass, and an event that arrives after
+  that read wakes the stream for the next pass.
+- **A controller keeps its socket when a delivery pass cannot get a
+  database connection.** When a pod was too busy to hand its streams a
+  connection within the pool timeout, the controller's stream ended and its
+  socket closed, and every agent on it reconnected, which needs more of
+  what was short. The pass is now tried again after a short wait, doubling
+  to 5 seconds, and the socket closes only if it is still failing after a
+  minute.
+- **Switch's own reader is woken only by commands.** The process that holds
+  a workspace's admin client read every row of every room to find the
+  `!command` rows it answers. A new row's announcement now names its type,
+  and that reader is woken for command rows only and reads only those, from
+  a partial index on them. Its warnings for tags nobody can answer are
+  already posted by the process that writes the message.
+- **The heads-up for tagging an agent that isn't in the room comes from the
+  process that wrote the message, and costs nothing when every name tagged
+  is one of the room's agents.** The admin's consumer, which reads every
+  message in a workspace on one process, checked each message with an `@`:
+  two database sessions and a lookup for every name tagged. Under load that
+  one process fell behind the rest. The check now runs once a message has
+  committed, on whichever process wrote it, and only when the message tags
+  a name that is none of the room's agents (a role, a person, an agent not
+  in the room). The warnings read as before.
+- **The server spends less CPU on its event loop and on finding the agent
+  sending a message.** It now runs on uvloop wherever uvloop is installed,
+  which is every platform but Windows. Finding the actor of the agent
+  sending a message no longer looks through every client's actor, and
+  compiled mention patterns are kept per name. In a CPU profile under
+  message load the event loop's own work was about 15% of a pod's CPU and
+  the actor lookup about 3%.
+- **Creating a room or an agent no longer looks through every running
+  client.** Every process keeps an actor for every client, and finding a
+  workspace's admin, or the actor of an agent registered in another process
+  a moment before, read all of them. Each is now found from an index of the
+  running clients by type and by agent. While 10,000 agents were being
+  created, these lookups took about 11% of a process's CPU in a profile.
+- **Each database transaction costs the server a little less.** Binding the
+  workspace to a transaction built and compiled the same statement every
+  time; it is now sent to the driver as it is. And timing who holds a pooled
+  connection worked out the borrower's name and a short stack on every
+  checkout; the name is now kept per function, and the stack is written out
+  only for a hold long enough to log.
+- **Usage analytics read the database far less per message in a large
+  workspace.** With usage reporting on, each message looked up its room's
+  platform and member counts, its sender and the agent's runtime, each kept
+  for five minutes in caches of at most 10,000 entries. Quiet rooms missed
+  every time, and with thousands of agents the caches evicted what they were
+  about to be asked again. A room's facts are now kept for fifteen minutes,
+  a sender and an agent's runtime, which do not change, for an hour, and up
+  to 50,000 of each.
+- **A post's first checks are kept until a signal says they changed.**
+  Every post checks that its agent is in the room and that no budget
+  covering it has run out, and a controller relaying it checks the
+  membership again: two transactions per post. Each process now keeps those
+  answers as it keeps a controller token's rows. Triggers on `room_agents`,
+  `rooms` and `usage_budgets` signal every change, so an answer is kept while
+  the signal connection listens and for `AGENT_AUTH_CACHE_TTL_SECONDS`
+  otherwise. A refusal is never kept. `ROOM_ACCESS_CACHE_MAX_ENTRIES`
+  (20,000) bounds what is kept.
+- **An agent's stream reads in one database session per pass, and pooled
+  connections are no longer pinged before use.** A pass that delivered a
+  message opened a session for each of its reads, six pool checkouts and six
+  transactions, and the pre-ping added a transaction to every checkout. The
+  reads of a pass now share one session, for an agent on its own socket and
+  for each agent an agent controller serves. `DB_POOL_PRE_PING` now defaults
+  to `false`: after a database restart the first query on each pod fails, along
+  with any query running at the time, and the pool then replaces every
+  connection it held. Set it to `true` behind
+  anything that drops idle connections. In a load test of 300 agents at 10
+  messages a second on 2 pods, CPU per message fell by a quarter and database
+  transactions per message by more than two thirds. At most half of a pod's
+  pool goes to streams' passes at once, so requests still get a connection
+  when the pod's CPU is saturated.
+- **A cloud machine can move to another instance type and keep its disk.**
+  The hosted controller now launches every new instance of a machine as the
+  instance type in its `gateway.json`, at the same moment it already moves the
+  machine onto the configured image, and `upgrade --gateway-config` moves a
+  stopped machine onto both. Changing `instance_type` therefore resizes
+  existing machines as well as new ones; a machine that only stops and starts
+  keeps its instance and type. `allowed_instance_types` is no longer bound to
+  the controller's state database, so it can change while machines exist, and
+  `status` and `list` report `instance_type_allowed` for each machine. A
+  database bound before this release is accepted and rebound on first start,
+  as long as `allowed_instance_types` has not changed in the same deploy.
+- **The Helm chart runs switch-core as a ServiceAccount of its own.**
+  It is `<release>-switch-core` (`switchCore.serviceAccount`) where it used to be
+  the namespace's `default`, which every pod that names no account shares, so
+  anything trusting switch-core's identity, such as the distributed Teams app's
+  federated credential, trusts switch-core alone. `create: false` with a `name`
+  runs it as an account made elsewhere. A Teams app whose federated
+  credential trusts `default` stops getting tokens after this upgrade: add a
+  credential for `system:serviceaccount:<namespace>:<release>-switch-core`
+  first, and remove the old one once the new pod is up.
+- **Agents and controllers are pinged every 10 seconds instead of every 2.**
+  A connection is now declared dead after 30 seconds without a beat, up from
+  6, so a client that goes away holds its room slot and shows online for up to
+  30 seconds. The interval is advertised on every open, so clients follow it
+  without an update. The agent auth cache now gives each entry a random 80 to
+  120% of `AGENT_AUTH_CACHE_TTL_SECONDS`, so entries filled together after a
+  restart do not all expire together, and that setting must stay below 25
+  seconds (the 30 second heartbeat TTL, less the jitter) or startup refuses it.
 - **Following the conversation is described the same way everywhere, and the
   chart can turn it on.** The feature added in 0.31.0 is off unless
   `follow_the_conversation` is among the enabled feature flags
@@ -111,8 +471,183 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **Delivering an event to an agent behind a controller no longer reads the
+  agent's head first.** The notification of a new agent event already carries
+  its number, and the controller's stream now keeps it as the agent's head, so
+  a delivery costs the agent's own read alone, where it read the heads of all
+  the controller's agents first. The heads are still read after each idle
+  interval, when an agent is attached, and after the listener reconnects.
+- **Delivering an event to an agent costs three statements, where it cost
+  seven.** The rooms dropped after the agent's cursor are read with its
+  events, and the unread count reads the agent's baseline, the room's window
+  and the agent's user id in the statement that counts.
+- **Writing a message no longer costs four statements for each agent it is
+  for.** The agents' own events are stored together, in two statements and
+  one savepoint, where each agent's event took a savepoint, a numbering, an
+  insert and a release of its own.
+- **A controller's stream waits on three events, where it waited on one per
+  agent and two more.** Every attached agent's doorbell now rings the stream's
+  one bell.
+- **Reading an agent's own events no longer builds its query each time.**
+  Each shape of the read is built once and run with bind parameters.
+- **A message addressed to a connected agent no longer reads the agent's
+  membership after it commits.** That read stops an agent removed from the
+  room in the meantime from saying anything there, and a connected agent has
+  nothing to say about a message addressed to it, so the read is now made only
+  before a refusal or an offline notice is posted, or a machine woken.
+- **Message telemetry reads a workspace's rooms, clients and agents at once.**
+  The first lookup that misses reads all of them, where each room, sender and
+  agent was read on its own, so in a large workspace most messages no longer
+  cost a lookup.
+- **Registering, renaming or deleting an agent no longer makes every process
+  read every client and agent.** The change now names the clients it touched,
+  and each process reads only those, where it read every client of the
+  workspace and, with a messaging app connected, every agent as well. The
+  30-second re-check reads every client only when a fingerprint of the
+  workspace's clients and agents has changed since its last full read, where
+  it read them all every time.
+- **The 30-second re-check of which controller runs each agent reads one
+  query, and nothing when no placement changed.** Every process read every
+  placed agent's definition, document included, then each controller with a
+  query of its own. It now reads the columns a binding is made of in one
+  query per workspace, and only when a fingerprint of the placements has
+  changed since its last full read.
+- **The 30-second re-check of who holds each controller's socket no longer
+  reads every controller each time.** It compares a fingerprint of their
+  connections and of the live processes first, and when it reads, reads only
+  the connection columns, where it read every row with its status and
+  platform, and the rooms of every agent on a controller another process held.
+- **Writing to a room for the first time through a process no longer reads the
+  room.** A process's clients now share the room ids they look up, where each
+  kept its own, and the first one a process misses reads every open room of
+  the workspace at once, so with many agents behind a load balancer most sends
+  no longer start with a read of the room.
+- **Checking a message against Switch Trust no longer reads its settings each
+  time.** Each process keeps the settings it read until they change: saving or
+  clearing them in the gateway tells every process, so a change still takes
+  effect on the next message. Settings are read again after 30 seconds at most,
+  for a change whose signal was lost.
+- **Reading an agent's budget standings no longer builds their query each
+  time.** The standings are read twice for every message an agent posts, and
+  building the query cost more than running it; it is now built once.
+- **Reading a room's context costs one transaction.** The room's newest
+  message number, the membership check and the history read share one
+  session, where each opened its own.
+- **A controller's requests no longer read its row and its agent's row each
+  time.** They were kept for 5 seconds, and a controller's requests, spread
+  over several processes, rarely came back to one within that. They are now
+  kept until a signal says they changed, which triggers on `agents` and
+  `agent_controllers` send, and a miss reads all of the controller's agents
+  at once. `CONTROLLER_AUTH_CACHE_MAX_AGENTS` (20,000) bounds the agent rows
+  kept.
+- **Reading an agent's rooms uses an index.** `room_agents` is indexed on
+  `agent_id`; reads by agent scanned the whole table, 2.9 ms each at 10,000
+  agents.
+- **Recording a message's usage builds its statement once.** The insert was
+  built for every message an agent sent; it is built once and run with bind
+  parameters.
+- **A controller's access token is verified once.** Each process keeps the
+  tokens that verified until they expire, where every request verified its
+  token again; revocation is still checked on every request.
 
 #### Fixed
+- **The dashboard offers only the room changes the server would allow.** On
+  a publicly writable room, the default, anyone could change the Access
+  setting and press Save, only for the server to refuse it. Someone who could
+  only read a room was still offered adding and removing its agents and
+  users, attaching and detaching its resources, linking it to other rooms and
+  deleting its room documents. A document, reference or package's page
+  offered attaching it to, and detaching it from, rooms the viewer could not
+  change. The rooms list offered archiving, and the groups page filing,
+  rooms the viewer could not change; a bulk archive skipped those without
+  saying so. Each of these was refused when tried. Access is now read-only for
+  everyone but the room's owner and admins, and its description says so.
+  Everything else is offered only to those who may write to the room, and
+  only rooms they may write to are offered for attaching. A reader still sees
+  each agent's "Notify on join" setting, but cannot change it. A publicly
+  writable room's other settings stay editable by everyone, as before.
+- **Those taking part in a private room can read its resources.** The room
+  itself could be read by its participants, but its references, documents,
+  packages and linked rooms were refused to anyone but its owner and admins.
+- **Deleting a room document from the room page asks first.** It cannot be
+  undone, and its own page already asked.
+- **Reconnecting Google Workspace no longer ends the new connection.** On a
+  reconnect, Switch revoked the sign-in it replaced. Google ends every
+  sign-in of the account through the client when one is revoked, so the new
+  connection also stopped working, and the next token refresh asked the
+  person to reconnect again. A reconnect to the same Google account through
+  the same client no longer revokes the old sign-in. A reconnect to another
+  account still revokes it, and so does a disconnect. A sign-in that Switch
+  does not keep, because the workspace switched Google Workspace off during
+  it, no longer ends the existing connection either.
+- **A client in more than 32,767 rooms starts reading them.** The reads a
+  client makes as it starts matched its rooms with one parameter each, and
+  Postgres takes at most 32,767 per statement. Switch's own client is in
+  every room of its workspace, archived ones included, so past that many it
+  failed to start, retried, and failed again while the process ran, taking
+  up rooms one at a time in between. The rooms now go as one array.
+- **On Slack, the 👀 and the activity card no longer arrive after the agent's
+  reply.** Every running turn's card was redrawn every 5 seconds to tick its
+  clock. Slack closes a streamed card after 10 minutes, so on a longer turn
+  each tick was a full message edit, and Slack allows about 50 of those a
+  minute for the whole workspace. A few long turns used that up, Slack made the
+  bridge wait, and new turns' cards and 👀 waited behind the clock redraws. The
+  clock now moves once a minute, and a running card shows whole minutes
+  ("Working… 3m"). Clock redraws stop while Slack is making the bridge wait,
+  and new turns go ahead of them. The 👀 goes on as soon as a turn starts
+  rather than once its card has posted. A card is redrawn as soon as Slack
+  closes its stream, instead of showing still-running steps as failed until
+  the next change. A turn whose first draw into its stream fails keeps that
+  card rather than posting a second one under it.
+- **An agent is told why a machine's CLI cannot be used.** When
+  `create_agent` or `update_agent_detail` was refused because a provider was
+  not logged in, it said the owner needed to log in, even when the machine had
+  reported a login its agents could not use, which logging in does not fix
+  (a Codex login in the OS keyring, say). The refusal now gives what the
+  machine said instead, and `list_machines` shows it as each provider's
+  `problem`.
+- **A Teams app on a federated credential can deploy from the Helm chart.**
+  switch-core's migrate init container and the pre-upgrade migration Job were
+  given the Teams app's settings but not its projected token, so
+  `TEAMS_APP_FEDERATED_TOKEN_FILE` named a missing file and both refused to
+  load their configuration: with `switchCore.teamsApp.credential: federated`,
+  no release could migrate or start. The two that migrate are no longer given
+  the Teams app at all.
+- **The agent HTTP API answers a refused or malformed request with a 4xx, not
+  a 500.** Inviting an agent to a room the caller may not change answered 500
+  instead of 403, and so did looking up a room the agent is not in. A room
+  history request whose `since` or `before` is not an ISO 8601 timestamp
+  answered 500 instead of 400; it now says which parameter was wrong, and so
+  does `read_context` (#1045). One whose offset moves it outside the years 1
+  to 9999 in UTC is refused the same way instead of answering 404, and a time
+  in the last millisecond of 9999 is no longer refused at all.
+- **Creating a user refuses a role the server does not understand.** An
+  account is a user or an admin, and only the exact role `admin` grants
+  operator rights. `POST /users` accepted any role string, so `Admin` or
+  `owner` created an account that was shown with that role, was stored with
+  it, and had no operator rights. Anything other than `user` or `admin` is now
+  a 422 and creates nothing. The Add User dialog offers only those two, so
+  only scripts calling the API were affected. Accounts already stored with
+  another role are left as they are, still listed with that role and still
+  treated as ordinary users; `SELECT id, email, role FROM users WHERE role
+  NOT IN ('user', 'admin')` finds them.
+- **Every way of setting a password now applies the same rules.** Signup
+  already required 8 characters and at most 72 bytes. Changing your own
+  password checked only the 8 characters, and an admin creating a user checked
+  nothing, so a short or empty password went through, and a long passphrase
+  was saved as just its first 72 bytes, the most bcrypt reads. Both now refuse
+  what signup refuses, saying why. Creating a user also trims, lowercases and
+  checks the email the way signup does, so the same address with a stray
+  space no longer makes a second account, and an address with no dot in its
+  domain is refused. A script that creates users through `POST /users` gets a
+  422 for either. Passwords already saved still work (#1035).
+- **Full garbage collections no longer stall the server for hundreds of
+  milliseconds.** Once boot has built what lasts for the life of the process
+  (modules, the ORM's mappers, the app's routes), the server freezes it out of
+  garbage collection, so a full pass walks only what was made since. The
+  clients and bridges started after that stay collectable, since replicas hand
+  them to one another. The dashboard's pause chart now shows the average pause
+  next to p99, as Datadog keeps the average for longer.
 - **Agents no longer read offline while their replica shuts down.** With several
   replicas, a stopping replica released its lease before its 5 s drain, so for
   up to about 6 s the other replicas counted its connected agents as gone: `@role`
@@ -152,6 +687,18 @@ version of their own to them without also giving them a release of their own.
   uploaded again.
 
 #### Removed
+- **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are
+  removed** and answer `404`. They predate the operations door, which runs the
+  same operations as MCP. Call `POST /agents/{id}/ops/<operation>` with the
+  operation's arguments as the JSON body instead:
+  `POST moderation/rooms` is `create_room`,
+  `POST moderation/rooms/{room_id}/invite` is `invite_agent_to_room`,
+  `GET moderation/rooms` is `list_all_rooms`,
+  `GET moderation/rooms/{room_id}` is `get_room_detail`,
+  `GET moderation/agents` is `list_agents`, and
+  `GET moderation/bridges` is `list_bridges`. The reply is
+  `{"result": …}` in the operation's own shape, so `list_all_rooms` gives
+  `room_id` where the old route gave `id`.
 - **`!run-cmd`, and the terminal command in offline replies.** A CLI started
   with that command got none of the Switch tools, so it never brought the agent
   online. The reply for an agent that is offline or not live now says what's
@@ -1923,6 +2470,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Replace a messaging app's token without disconnecting it.** When a bot
+  token is rotated or leaked, a workspace admin can paste the new one from the
+  connection's menu on the server page. The connection restarts with it and
+  keeps its rooms. Offered on connections to your own bot, not on ones that
+  came from installing Switch's app.
 - **Airtable's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks
@@ -1935,8 +2487,47 @@ version of their own to them without also giving them a release of their own.
 - **Connectors says why Airtable or Google Workspace can't be connected on a
   server without a public address**: the operator is told to set
   `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.
+- **Codex sessions can use an API key kept in the OS keyring.** With
+  `cli_auth_credentials_store = "keyring"` or `"auto"`, the execution machine's
+  Codex keeps its login in the keyring, where a session's own Codex home cannot
+  find it, so every session failed with "Sign in on the execution machine with
+  codex login" while `codex login status` said it was signed in (#1048). When
+  the machine has no `auth.json` to copy, a session now asks its Codex for the
+  API key as it starts and keeps it in the memory of the session's own Codex
+  process: it is not written to a file, put in the environment or copied into
+  another keyring entry, and a changed key is picked up at the next start. A
+  ChatGPT login in the keyring cannot be handed over, and the session says so
+  with the file-storage workaround; it also refuses to hand over the key when an
+  administrator's Codex configuration would have it saved elsewhere. A session
+  that still has a working login of its own, such as one it copied while the
+  machine had an `auth.json`, starts as before; a copy that no longer works is
+  removed.
+- **A Claude Code agent's session can continue a conversation started in the
+  Claude Code CLI.** The new-session dialog lists the conversations started in
+  the agent's folder, on this computer or its SSH host. The session continues a
+  copy of the one picked, so the terminal's own is never written to, and its
+  transcript starts with what was said in it. A conversation still open in a
+  terminal can't be picked. No earlier prompt is sent again.
 
 #### Changed
+- **Usage data follows an install to a working agent.** Three new
+  `activation_milestone` steps (`server_ready`, `agent_ready`,
+  `first_agent_session`) are each sent once per install, and only by installs
+  made on this version or later, with `path` saying whether the install
+  started switch-buddy or skipped it. Sessions of agents on the agent
+  controller Console runs on this computer, which never reached
+  `session_started`, are sent as `managed_session_started`. Updates send
+  `update_download_started` and, on the first launch after one,
+  `update_installed` with the version it came from. Adding a server by
+  address, starting a server Console runs, and creating a room now say why
+  they failed where they said `error`, and Switch Cloud is its own
+  `server_kind`. An install once signed in with a staff account stays
+  labelled internal after it signs out. `agent_reset`, which was listed but
+  never sent, is gone from the list. `docs/TELEMETRY.md` has every field.
+- **Managed agents and machines update when the server says they changed.**
+  Against a server that pushes change notices, Console reads those lists
+  again when told to, and otherwise only every five minutes instead of every
+  15 to 30 seconds; against one that does not, it polls as before (#717).
 - **One name for the controller.** Console, the Gateway and the docs say
   "agent controller" everywhere, matching the `switch-agent-controller`
   package, instead of a mix of "agent controller" and "agents controller".
@@ -1945,6 +2536,56 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Console no longer opens to a blank window on a database a newer build
+  has changed.** Stable and Canary share one database, so after Canary added a
+  migration, an older build found tables it was not written for, applied
+  nothing, and failed its first query with nothing on screen. Console now
+  refuses a database carrying a migration it does not know, before changing
+  anything, and says why: open the build that last used it, download a newer
+  release (a build that cannot start cannot update itself), or move the data
+  folder aside to start empty. Migrations are tracked one by one, so a
+  migration applied out of order is applied rather than skipped. Any other
+  startup failure now shows the error and a Reload button instead of a blank
+  window. drizzle-kit now defaults to the dev data folder's database rather
+  than the installed app's.
+- **Giving a machine a Vertex AI login no longer pre-fills a project.** The
+  Google Cloud project field started out filled with one organisation's own
+  project, so anyone else who kept it got a sign-in failure with nothing to
+  say why. It now starts empty, with a placeholder; the region still starts
+  at `global`.
+- **Two agent hosts starting at once on Windows no longer crash each other.**
+  A host reading another host's ownership ticket while that host replaced or
+  deleted it got `EPERM` from Windows and exited. It now tries the read again
+  for a few seconds, as it already did for its own writes.
+- **Codex is no longer shown as ready with a login sessions cannot use.** A
+  ChatGPT login kept in the OS keyring passed Console's sign-in check, so
+  Codex showed as signed in while every session failed: a session takes that
+  login only from `auth.json`. The check now reports a login sessions cannot
+  reach as not signed in, and says why: a ChatGPT login or a Bedrock key
+  Codex keeps in the keyring, an `auth.json` Codex ignores because it is set
+  to use the keyring, and an API key in the keyring that Codex will not hand
+  over or that an administrator's Codex configuration stops Switch handing to
+  sessions. It gives the switch to file storage where that helps and names
+  the Codex home it checked (from `~` when it is under your home folder), and
+  when it cannot tell, it says so and why.
+  Otherwise an API key in the keyring still counts as signed in, since
+  sessions are handed it. The provider status card and the warning beside an
+  agent now show what the check said when a provider is not signed in,
+  instead of a generic line.
+- **Console stops offering a sign-in that cannot help.** When a provider's
+  check says signing in would not fix it (an administrator pinning where
+  Codex keeps logins, or a check that could not finish, say), the status
+  card, Settings → Agent providers and switch-buddy say it can't be used yet
+  and why, instead of "Not signed in" with the login command or a Sign in
+  button.
+- **A relative `CODEX_HOME` is refused.** Codex reads one from whichever
+  directory it starts in, which differed between Console's check and
+  Switch's sessions, so the two could look at different Codex homes. Both
+  now say to set an absolute path, and a session will not start with one.
+- **Settings → Agent providers keeps this computer's report current.** It
+  prefers the report from the server Console is on, rereads it while open and
+  after the controller reports again, and the install section says so when
+  Console's own check disagrees with the controller's.
 - **The local Switch server starts on Intel Macs without Homebrew.**
   cryptography publishes no wheel for Intel Macs, so the Intel build of
   Console compiled its own against the build machine's Homebrew OpenSSL, and
@@ -1974,6 +2615,13 @@ version of their own to them without also giving them a release of their own.
   skill said a request card needed the owner's linked identity and room
   membership. Its addressing policy decides, and agents now read theirs with
   `get_agent_detail` and name the people who can answer.
+- **Giving this computer's Codex login to a machine explains a keyring
+  login.** When Codex keeps its login in the OS keyring
+  (`cli_auth_credentials_store = "keyring"` or `"auto"`), it said "This
+  computer is not signed in to codex". It now says the login is in the keyring,
+  which cannot be given to another machine, and gives the workaround for a
+  machine whose organization does not enforce the keyring: switch Codex to file
+  storage, which keeps the login in plaintext, and sign in again (#1048).
 
 ### [0.40.1] - 2026-10-21
 
@@ -3935,6 +4583,19 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Tells Switch Console when a session started.** Once Switch has taken a
+  session host's start report, the controller Console runs on its own
+  computer passes the session's provider and how it started to Console over
+  its IPC channel, for Console's usage data. A controller with no parent
+  listening, on an SSH host or run as a service, sends nothing.
+- **Waits its turn when Switch is busy opening connections.** An open or an
+  attach refused as `busy` comes with when to try again, the controller's
+  place in the server's queue, and the controller now waits that long
+  instead of its own backoff.
+- **A provider report says when signing in would not help.** A provider
+  whose check says its login command would not fix the problem is reported
+  with `login_helps: false` beside `auth_problem`, so Console does not offer
+  the command. Absent otherwise, as before.
 - **Provider logins given to the machine, on demand.** The controller makes an
   X25519 keypair at enrollment (or on its next run, for one enrolled before)
   and registers the public half. When its owner gives the machine a login
@@ -3955,14 +4616,25 @@ tags; see RELEASING.md.
   `--env-file`, not its user's own logins. `--agent-users` sets how many agents
   can run (16 by default).
 
+#### Changed
+- **Agents' operations go to Switch on the controller's socket.** Every
+  operation an agent host calls through the relay
+  (`POST /agents/{id}/ops/{operation}`) is sent as a call on the socket the
+  controller already holds, when Switch offers calls, instead of as an HTTP
+  request of its own. Over HTTP as before against a server that does not
+  offer them, while the socket is down, and when as many calls are in flight
+  as Switch takes. A call the socket closes on is answered 502, as a request
+  whose connection drops.
+
 #### Fixed
 - **A Claude Code login that is there but does not work is reported as not
   signed in.** `claude auth status` only says a login or key is present, so a
   key left by an old install read as signed in while every session failed.
   When setting up, on a recheck, and whenever a login was not yet known to
-  work, the controller now sends Claude Code one short test prompt and reports
-  what it said if it fails. A Claude Code too old to have `auth status` is
-  reported as such instead of as a check that never finished.
+  work, the controller now sends Claude Code one short test prompt, with the
+  person's hooks off and stdin closed, and reports what it said if it fails,
+  from its result, its `errors` or its stderr. A Claude Code too old to have
+  `auth status` is reported as such instead of as a check that never finished.
 - **A controller updates to the release Switch names while sessions sit idle.**
   It waited until no session existed on the machine, and a session connected to
   a room counted even with nothing to do, so a machine with long-lived sessions
@@ -4029,6 +4701,17 @@ The Switch protocol client and MCP runtime
 (`console/packages/switch-agent-runtime/`). Version lives in its `package.json`.
 
 ### [Unreleased]
+
+#### Added
+- **Waits its turn when Switch is busy opening connections.** A server
+  pacing a reconnect storm refuses an open as `busy` with when to open again,
+  which is this agent's place in its queue. The stream now waits that long,
+  even right after a restart, instead of retrying on its own schedule.
+- When the WebSocket never opens and the runtime asks for the event stream
+  instead, the request carries `fallback=socket_never_opened` and the
+  socket's close code as `fallback_close_code`, so the server's log can tell
+  it from a client built before the socket. Opening the event stream straight
+  away, against an old server, sends neither.
 
 ### [0.8.0] - 2026-09-25
 

@@ -5,14 +5,19 @@ import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
 import { delimiter, dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { Fetch } from './api';
+import { ConfigurationError } from './errors';
 import { errorMessage, type Logger } from './log';
+import type { TrustedReleaseKey } from './release-keys';
+import { assertTrustedKeys, verifyDownloadedRelease } from './release-signing';
 import { pointCurrent, prefixBin, pruneReleases, readCurrent } from './releases';
 import { RELEASE_VERSION } from './update';
 
 /**
  * Updating this controller to the release Switch names in its status
- * responses (`controller_release`): fetched, checked against the SHA-256
- * Switch gave, installed, then switched to by exiting with `EXIT_RESTARTING`
+ * responses (`controller_release`): fetched over https, checked against the
+ * SHA-256 Switch gave and against the release signature, which only a key built
+ * into this controller (`release-keys.ts`) can make, installed with no install
+ * scripts run, then switched to by exiting with `EXIT_RESTARTING`
  * for the service to start it again. Only while no session is in the middle
  * of a turn: idle sessions are restarted with it and resume their
  * conversations.
@@ -26,12 +31,32 @@ const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_PROBLEM = 500;
 
+/** Turns following the release Switch names off on this machine: `off`, or `on` (the default). */
+export const SELF_UPDATE_ENV = 'SWITCH_CONTROLLER_SELF_UPDATE';
+
+/**
+ * Whether self-update is turned off, by `--no-self-update` or
+ * `SWITCH_CONTROLLER_SELF_UPDATE=off` (from the environment or the env file);
+ * any other value of it than `on` or `off` is a configuration error.
+ */
+export function selfUpdateTurnedOff(flag: boolean, env: NodeJS.ProcessEnv): boolean {
+  const value = env[SELF_UPDATE_ENV]?.trim().toLowerCase();
+  if (value !== undefined && value !== '' && value !== 'on' && value !== 'off')
+    throw new ConfigurationError(
+      `${SELF_UPDATE_ENV} must be on or off, not '${env[SELF_UPDATE_ENV]}'.`
+    );
+  return flag || value === 'off';
+}
+
+/** What a controller with self-update turned off reports when Switch names another release. */
+export const SELF_UPDATE_OFF = `Self-update is turned off on this machine (${SELF_UPDATE_ENV}=off or --no-self-update); install releases by hand (switch-agent-controller update), or turn it back on.`;
+
 /** The release Switch names for this controller. */
 export type ControllerReleaseTarget = { version: string; url: string; sha256: string };
 
 const controllerReleaseSchema = z.object({
   version: z.string().regex(RELEASE_VERSION, 'must be x.y.z or x.y.z-<prerelease>'),
-  url: z.url({ protocol: /^https?$/ }),
+  url: z.url({ protocol: /^https$/ }),
   sha256: z
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, 'must be 64 hex digits')
@@ -66,6 +91,8 @@ export async function downloadPackage(input: {
   maxBytes: number;
   signal: AbortSignal | null;
 }): Promise<{ file: string; sha256: string }> {
+  if (new URL(input.url).protocol !== 'https:')
+    throw new Error(`A controller package is downloaded over https only, not from ${input.url}.`);
   await mkdir(input.dir, { recursive: true, mode: 0o700 });
   const signals = [
     AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
@@ -105,16 +132,20 @@ export async function downloadPackage(input: {
 }
 
 /**
- * Fetches the release into `dir` and checks it against the SHA-256 Switch
- * gave, the only one trusted: a file that differs is deleted.
+ * Fetches the release into `dir`, checks it against the SHA-256 Switch gave,
+ * then checks the signature published beside it (`<url>.sig`) against `keys`
+ * for that version and SHA-256: a file that fails either is deleted. With no
+ * trusted key, nothing is downloaded.
  */
 export async function downloadVerified(input: {
   fetch: Fetch;
   release: ControllerReleaseTarget;
+  keys: readonly TrustedReleaseKey[];
   dir: string;
   maxBytes: number;
   signal: AbortSignal | null;
 }): Promise<string> {
+  assertTrustedKeys(input.keys);
   const { file, sha256 } = await downloadPackage({ ...input, url: input.release.url });
   if (sha256 !== input.release.sha256) {
     await rm(file, { force: true });
@@ -122,6 +153,15 @@ export async function downloadVerified(input: {
       `The package at ${input.release.url} has SHA-256 ${sha256}, not the ${input.release.sha256} Switch named; it was deleted.`
     );
   }
+  await verifyDownloadedRelease({
+    fetch: input.fetch,
+    file,
+    url: input.release.url,
+    version: input.release.version,
+    sha256,
+    keys: input.keys,
+    signal: input.signal,
+  });
   return file;
 }
 
@@ -181,8 +221,9 @@ function npmCommand(setup: NpmSetup): { file: string; env: NodeJS.ProcessEnv } {
 }
 
 /**
- * `npm install --global --prefix <prefix> <file>`: the package from the local
- * file, never a URL. With no prefix, into npm's own global one.
+ * `npm install --global --ignore-scripts --prefix <prefix> <file>`: the
+ * package from the local file, never a URL, with no lifecycle script run. With
+ * no prefix, into npm's own global one.
  */
 export async function npmInstall(
   setup: NpmSetup,
@@ -193,7 +234,7 @@ export async function npmInstall(
   const npm = npmCommand(setup);
   await setup.run(
     npm.file,
-    ['install', '--global', ...(prefix ? ['--prefix', prefix] : []), file],
+    ['install', '--global', '--ignore-scripts', ...(prefix ? ['--prefix', prefix] : []), file],
     {
       env: npm.env,
       signal,

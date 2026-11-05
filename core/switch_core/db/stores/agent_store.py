@@ -31,6 +31,15 @@ class AgentStore:
     async def get(self, session: AsyncSession, agent_id: str) -> Agent | None:
         return await session.get(Agent, agent_id)
 
+    async def get_many(
+        self, session: AsyncSession, agent_ids: Collection[str]
+    ) -> list[Agent]:
+        """`get` for many agents in one query; an id with no agent is left out."""
+        if not agent_ids:
+            return []
+        result = await session.execute(select(Agent).where(Agent.id.in_(agent_ids)))
+        return list(result.scalars().all())
+
     async def get_by_name(self, session: AsyncSession, name: str) -> Agent | None:
         """Resolve an agent by name within the bound tenant.
 
@@ -108,18 +117,6 @@ class AgentStore:
 
     async def get_all(self, session: AsyncSession) -> list[Agent]:
         result = await session.execute(select(Agent))
-        return list(result.scalars().all())
-
-    async def get_by_server_connector(
-        self, session: AsyncSession, connector_id: str
-    ) -> list[Agent]:
-        """The agents a server-side connector registered, in the bound tenant:
-        each carries the connector's id in its metadata."""
-        result = await session.execute(
-            select(Agent)
-            .where(Agent.metadata_["server_connector_id"].astext == connector_id)
-            .order_by(Agent.name)
-        )
         return list(result.scalars().all())
 
     async def get_by_owner(self, session: AsyncSession, owner_id: str) -> list[Agent]:

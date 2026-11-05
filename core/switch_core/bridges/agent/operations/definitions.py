@@ -19,6 +19,7 @@ from typing import Any
 from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import plan_template
+from switch_core.authz import Principal
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
@@ -56,10 +57,12 @@ from switch_core.bridges.agent.protocol.instructions import build_room_instructi
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
+from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
-from switch_core.rooms_yaml import GroupSpec, template_json_schema
+from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
+from switch_core.template_installs import InstallSource, record_install, source_of
 from switch_core.template_runs import (
     LISTEN_TIMEOUT_SECONDS,
     AgentsNotCreated,
@@ -442,14 +445,25 @@ async def _decorate_linked_rooms(
     ``"member"`` if the calling agent is assigned to the target room,
     ``"not_member"`` otherwise. For ``not_member`` rows, also include a
     human-readable ``access_note`` warning that ``connect_to_room`` will
-    fail until the agent is added by an operator."""
+    fail until the agent is added by an operator.
+
+    A link whose target the agent may not see (see `list_all_rooms`) is left
+    out: it would show a private room's name and description."""
     if not linked_rooms:
         return []
     async with protocol.session_factory() as session:
         agent_rooms = await protocol.room_store.get_rooms_for_agent(session, agent_id)
+        visible_ids = {
+            r.id
+            for r in await protocol.rooms_visible_to(
+                session, agent_id, include_archived=True
+            )
+        }
     member_ids = {r.id for r in agent_rooms}
     out: list[dict[str, Any]] = []
     for entry in linked_rooms:
+        if entry["target_room_id"] not in visible_ids:
+            continue
         is_member = entry["target_room_id"] in member_ids
         decorated = {
             **entry,
@@ -709,21 +723,24 @@ async def read_context(
         room_id = sole_connected_room(connected)
 
     protocol = get_protocol()
-    since_ms = parse_timestamp_ms(since) if since else None
-    before_ms = parse_timestamp_ms(before) if before else None
+    since_ms = parse_timestamp_ms("since", since) if since else None
+    before_ms = parse_timestamp_ms("before", before) if before else None
 
     buffer = protocol.event_buffer
     tenant_id = require_tenant_id()
-    # The room's newest `messages.seq`, taken before the history read because
-    # a message written while the read is in flight is not in its response.
-    # Recording the catch-up through a later number would mark such a message
-    # as read when the agent never saw it. Recording it through this number
-    # can at worst count a message twice.
-    through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
+    # The room's head, the membership check and the history read share one
+    # session, so a context read costs one pool checkout and one transaction.
+    async with shared_tenant_session(protocol.session_factory, tenant_id):
+        # The room's newest `messages.seq`, taken before the history read
+        # because a message written while the read is in flight is not in its
+        # response. Recording the catch-up through a later number would mark
+        # such a message as read when the agent never saw it. Recording it
+        # through this number can at worst count a message twice.
+        through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
 
-    context = await protocol.read_context(
-        agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
-    )
+        context = await protocol.read_context(
+            agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
+        )
 
     reader = counting_reader()
     if reader is not None and room_id in connected:
@@ -915,8 +932,9 @@ async def create_room(
         name: Display name for the room.
         description: Free-text description shown to participants.
         agent_names: Names of agents to add to the room at creation. The
-            calling agent is not added automatically — include its name here
-            if it should join. Names must already exist in the registry.
+            calling agent is not a member unless listed here — include your
+            own name if you should join (`caller_is_member` in the result
+            says whether you did). Names must already exist in the registry.
         user_names: Optional list of people to add, each named by their
             username on the room's messaging app, or by the e-mail address of
             their account there (not on Discord, which never shares e-mail
@@ -975,7 +993,8 @@ async def create_room(
             with an agent's real name, a room role, or another alias.
 
     Returns:
-        `{"id", "name", "matrix_room_id", "failed_attachments": [...]}`.
+        `{"id", "name", "matrix_room_id", "caller_is_member",
+        "failed_attachments": [...]}`.
         `failed_attachments` is empty on full success; otherwise it lists
         `{kind, id, error}` for each attachment that could not be applied
         after the room was created (race-time failures only; predictable
@@ -1008,12 +1027,17 @@ async def create_room(
             aliases=aliases,
             from_room_id=await connected_room(),
         )
+    async with protocol.session_factory() as session:
+        caller_is_member = agent_id in await protocol.room_store.get_agent_ids(
+            session, result.room.id
+        )
     return {
         "id": result.room.id,
         "name": result.room.name,
         "transport_room_id": result.room.transport_room_id,
         # Deprecated alias, carried for the connector compatibility window.
         "matrix_room_id": result.room.transport_room_id,
+        "caller_is_member": caller_is_member,
         "failed_attachments": result.failed_attachments,
     }
 
@@ -1454,31 +1478,52 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
 
 @operation
-async def list_all_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
-    """List every room on this Switch instance (not just rooms this agent
-    is a member of). Use `list_rooms` instead to see only the rooms this
-    agent is assigned to.
+async def list_all_rooms(
+    include_archived: bool = False,
+    name_contains: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """List the rooms on this Switch instance this agent may see, a page at
+    a time, oldest first: every room its owner can read (public rooms and
+    ones the owner takes part in; all rooms for a workspace admin) plus the
+    rooms it is a member of. Use `list_rooms` instead to see only the rooms
+    this agent is assigned to.
 
     Args:
         include_archived: When false (default), archived rooms are omitted.
             Set true to also include archived rooms (each carries
             `archived: true`).
+        name_contains: Only rooms whose name contains this text, in any case.
+        limit: Rooms per page, 1 to 500 (default 100).
+        cursor: The `next_cursor` of the previous page, to read the next one.
+            Pass the same `include_archived` and `name_contains` with it.
 
     Returns:
-        List of {room_id, name, description, archived} dicts.
+        `{"rooms": [{room_id, name, description, archived}, ...],
+        "next_cursor"}`; `next_cursor` is null on the last page.
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
-    rooms = await protocol.list_all_rooms(agent_id, include_archived=include_archived)
-    return [
-        {
-            "room_id": r.id,
-            "name": r.name,
-            "description": r.description,
-            "archived": r.archived_at is not None,
-        }
-        for r in rooms
-    ]
+    rooms, next_cursor = await protocol.list_all_rooms(
+        agent_id,
+        include_archived=include_archived,
+        name_contains=name_contains,
+        limit=limit,
+        cursor=cursor,
+    )
+    return {
+        "rooms": [
+            {
+                "room_id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "archived": r.archived_at is not None,
+            }
+            for r in rooms
+        ],
+        "next_cursor": next_cursor,
+    }
 
 
 @operation
@@ -1516,7 +1561,9 @@ async def create_room_group(
     A room group is a named bucket that rooms can be filed under (via
     `create_room`'s `group_name`), and groups can nest under a parent group to
     form a tree. Creating a group does not move any rooms into it, and does
-    not create missing parents: create each level first.
+    not create missing parents: create each level first. Groups are shared by
+    the whole workspace, so only an agent whose owner is a workspace admin
+    may create one; anyone else gets a permission error.
 
     Args:
         name: The group's display name. It cannot contain "/" (the path
@@ -1599,7 +1646,9 @@ async def create_room_from_yaml(
     """
     async with _refusals_reported("create_room_from_yaml"):
         if is_v2_text(yaml):
-            return await _run_document(yaml, inputs, {}, template_name=None)
+            return await _run_document(
+                yaml, inputs, {}, template_name=None, source=None
+            )
         return await _provision_as_agent(
             yaml, inputs, template_name=None, new_agents=[], room_addressing={}
         )
@@ -1696,12 +1745,14 @@ async def _provision_as_agent(
         return {"created_agents": _created_view(created)}
 
     rooms_yaml = protocol.room_yaml_service()
-    inputs = await rooms_yaml.resolve_defaults(yaml, inputs)
+    # As the owner without admin reach, plus the rooms the agent is in.
+    reader = RoomReader(Principal(owner.id, False), agent_id=agent.id)
+    inputs = await rooms_yaml.resolve_defaults(yaml, inputs, reader=reader)
     builtins = await rooms_yaml.builtins_for(
         user_id=owner.id, name=owner.name, email=owner.email, text=yaml, inputs=inputs
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
-    await rooms_yaml.check_entity_params(parsed)
+    await rooms_yaml.check_entity_params(parsed, reader=reader)
     await rooms_yaml.check_bridges(parsed)
     room_specs = (
         [(r, r.kickoff) for r in parsed.spec.rooms]
@@ -1934,7 +1985,13 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        return await _run_document(content, inputs, agents or {}, template_name=name)
+        return await _run_document(
+            content,
+            inputs,
+            agents or {},
+            template_name=name,
+            source=source_of(template),
+        )
 
 
 async def _run_document(
@@ -1943,16 +2000,24 @@ async def _run_document(
     filled: dict[str, str],
     *,
     template_name: str | None,
+    source: InstallSource | None,
 ) -> dict[str, Any]:
     """Work a template's agents and rooms out of its document and create
-    them, as the calling agent."""
+    them, as the calling agent. With a `source`, the agents it creates are
+    recorded as that template's install, to be updated from it."""
     protocol = get_protocol()
     acting = await _acting_for()
     rooms_yaml = protocol.room_yaml_service()
     if is_v2_text(content):
         # A version 2 condition may read a messaging app or room param
         # whose value is the first candidate the server has.
-        inputs = await rooms_yaml.resolve_defaults(content, inputs)
+        inputs = await rooms_yaml.resolve_defaults(
+            content,
+            inputs,
+            reader=RoomReader(
+                Principal(acting.owner.id, False), agent_id=acting.agent.id
+            ),
+        )
     builtins = await rooms_yaml.builtins_for(
         user_id=acting.owner.id,
         name=acting.owner.name,
@@ -1967,13 +2032,26 @@ async def _run_document(
         builtins=builtins,
         machines=await _owners_machines(),
     )
-    return await _provision_as_agent(
+    result = await _provision_as_agent(
         plan.document,
         plan.inputs or None,
         template_name=template_name,
         new_agents=plan.new_agents,
         room_addressing=plan.room_addressing,
     )
+    if source is not None:
+        await record_install(
+            protocol.session_factory,
+            require_tenant_id(),
+            owner_id=acting.owner.id,
+            source=source,
+            document=content,
+            inputs=inputs or {},
+            builtins=builtins,
+            plans=plan.new_agents,
+            created=result.get("created_agents") or [],
+        )
+    return result
 
 
 async def _owners_machines() -> list[dict[str, Any]] | None:
@@ -2150,6 +2228,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
+    A room your owner cannot read is not named in it.
 
     Args:
         agent_id: The target agent's id (from `list_participants` or
@@ -2200,8 +2279,8 @@ async def request_agent_deletion(agent_id: str) -> dict[str, Any]:
     minutes; otherwise it lapses. Confirm with the person asking before you
     call this, and tell them what to send.
 
-    Refused for an agent of another owner, yourself, an agent that can manage
-    agents, and one a server connector found.
+    Refused for an agent of another owner, yourself, and an agent that can
+    manage agents.
 
     Args:
         agent_id: The agent to delete (`id` from `list_agents`).
@@ -2262,8 +2341,8 @@ async def update_agent_detail(
             notes-writer); otherwise the label stays. Rooms, roles, aliases and
             credentials follow; its handle on each chat platform is renamed
             too. Refused for a name in use, one that clashes with an alias or
-            role in its rooms or a handle on a chat platform, a subagent or a
-            parent of subagents, and an agent a server connector found.
+            role in its rooms or a handle on a chat platform, a subagent, and a
+            parent of subagents.
         description: What the agent is for.
         display_name: Human label shown next to its name; "" clears it.
         icon_url: An https link to its icon; "" clears it. A server with

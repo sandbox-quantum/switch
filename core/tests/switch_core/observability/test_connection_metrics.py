@@ -163,8 +163,6 @@ def _probes(agents_connected: Any) -> RuntimeProbes:
         bridges_running_by_platform=lambda: {},
         bridges_configured=lambda: 0,
         consumers_running=lambda: 0,
-        connectors_running=lambda: 0,
-        connectors_configured=lambda: 0,
         agents_connected=agents_connected,
         pool_stats=lambda: None,
         room_cache_stats=lambda: RoomCacheStats(bytes=0, rooms=0, rows=0),
@@ -253,7 +251,12 @@ class _EmptyBuffer(EventBuffer):
     """
 
     def __init__(self) -> None:
-        super().__init__(object(), sequence_base=0, rooms=QuietRooms())  # type: ignore[arg-type]
+        super().__init__(
+            object(),  # type: ignore[arg-type]
+            sequence_base=0,
+            rooms=QuietRooms(),
+            session_slots=None,
+        )
 
     async def head(self, tenant_id: str, agent_id: str) -> int:
         return self.sequence_floor - 1

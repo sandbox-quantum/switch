@@ -1,9 +1,9 @@
-import type {
-  ControllerProviderReport,
-  ManagementController,
-} from '@main/core/switch-servers/gateway-client';
+import type { ControllerProviderReport } from '@main/core/switch-servers/controller-provider-report';
+import type { ManagementController } from '@main/core/switch-servers/gateway-client';
 import {
   isCloudMachine,
+  type MachineDetail,
+  type MachineLocal,
   type MachineProvider,
   type OwnedMachine,
   type ThisComputerReport,
@@ -33,6 +33,28 @@ export function machineProvider(report: ControllerProviderReport): MachineProvid
     ready: problem === null,
     problem,
     detail: problem === null ? null : report.problem,
+    loginHelps: report.loginHelps,
+  };
+}
+
+function machineLocal(controller: ManagementController, local: LocalControllers): MachineLocal {
+  if (controller.id === local.thisComputer) return { kind: 'this-computer' };
+  const sshHost = local.sshHosts.find((host) => host.controllerId === controller.id)?.sshHost;
+  return sshHost ? { kind: 'ssh-host', sshHost } : null;
+}
+
+function ownedMachine(controller: ManagementController, local: LocalControllers): OwnedMachine {
+  return {
+    id: controller.id,
+    name: controller.name,
+    kind: controller.kind,
+    state: controller.state,
+    providers: controller.providers.map(machineProvider),
+    acceptsLogins: controller.sealingKey !== null,
+    cloud: isCloudMachine(controller),
+    workspacesDir: controller.workspacesDir,
+    os: controller.os,
+    local: machineLocal(controller, local),
   };
 }
 
@@ -43,26 +65,53 @@ export function ownedMachines(
 ): OwnedMachine[] {
   return controllers
     .filter((controller) => controller.state !== 'revoked')
-    .map((controller): OwnedMachine => {
-      const sshHost = local.sshHosts.find((host) => host.controllerId === controller.id)?.sshHost;
-      return {
-        id: controller.id,
-        name: controller.name,
-        kind: controller.kind,
-        state: controller.state,
-        providers: controller.providers.map(machineProvider),
-        acceptsLogins: controller.sealingKey !== null,
-        cloud: isCloudMachine(controller),
-        workspacesDir: controller.workspacesDir,
-        os: controller.os,
-        local:
-          controller.id === local.thisComputer
-            ? { kind: 'this-computer' }
-            : sshHost
-              ? { kind: 'ssh-host', sshHost }
-              : null,
-      };
-    });
+    .map((controller) => ownedMachine(controller, local));
+}
+
+/** Every one of the owner's machines, revoked ones included, with all each last reported. */
+export function machineDetails(
+  controllers: ManagementController[],
+  local: LocalControllers
+): MachineDetail[] {
+  return controllers.map((controller): MachineDetail => {
+    const report = controller.report;
+    return {
+      ...ownedMachine(controller, local),
+      description: controller.description,
+      providers: controller.providers.map((entry) => {
+        const check = report?.providerChecks.find((c) => c.provider === entry.provider);
+        return {
+          ...machineProvider(entry),
+          version: check?.version ?? null,
+          authSource: check?.authSource ?? null,
+          checkedAt: check?.checkedAt ?? null,
+        };
+      }),
+      platform: controller.platform,
+      version: controller.version,
+      connection: controller.connection,
+      release: controller.release,
+      updatedBy: report?.updatedBy ?? null,
+      update: report?.update ?? null,
+      resources: report?.resources ?? null,
+      agents: report?.agents ?? [],
+      lastSeenAt: controller.lastSeenAt,
+      observedAt: report?.observedAt ?? null,
+      createdAt: controller.createdAt,
+      revokedAt: controller.revokedAt,
+    };
+  });
+}
+
+/**
+ * `serverIds` with `preferred` moved to the front when it is among them: the
+ * server Console is on now, whose report is the one its screens are about,
+ * since controllers on different servers can each say something different.
+ */
+export function preferredFirst(serverIds: readonly string[], preferred: string | null): string[] {
+  return preferred && serverIds.includes(preferred)
+    ? [preferred, ...serverIds.filter((serverId) => serverId !== preferred)]
+    : [...serverIds];
 }
 
 /**

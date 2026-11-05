@@ -475,6 +475,18 @@ AGENT_CONNECTIONS_REFUSED = _spec(
     "revision in common), unauthorized (no valid credential), other.",
     "reason",
 )
+# An agent or controller connection told to open again later because this
+# process was already opening as many as it takes at once (`open_gate.py`).
+# A burst of these is a reconnect storm being paced, after a pod went away.
+AGENT_OPENS_DEFERRED = _spec(
+    "switch.agent.opens_deferred",
+    "sum",
+    "{connection}",
+    "Agent and controller connection opens refused with a time to come back, "
+    "because this process was opening as many as it takes at once. By route: "
+    "agent_socket, agent_event_stream, controller_open, controller_socket.",
+    "route",
+)
 AGENT_CONNECTIONS_EXPIRED = _spec(
     "switch.agent.connections_expired",
     "sum",
@@ -523,14 +535,6 @@ CONSUMERS_RUNNING = _spec(
     "Room consumers with a live read loop. Actors that only write (a person on "
     "another platform) run no loop and are not counted. A collaboration "
     "bridge's workspace consumer counts under switch.bridges.running.",
-)
-CONNECTORS_RUNNING = _spec(
-    "switch.connectors.running",
-    "gauge",
-    "{connector}",
-    "Server-side connectors running. Started fire-and-forget with each failure "
-    "logged and stepped over, so one short of the configured count is a dead "
-    "agent host nothing else reports.",
 )
 
 # ── Service tokens ───────────────────────────────────────────────────────────
@@ -671,10 +675,10 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENT_BUFFER_SCAN_DURATION,
         AGENT_CONNECTIONS_REFUSED,
         AGENT_CONNECTIONS_EXPIRED,
+        AGENT_OPENS_DEFERRED,
         AGENT_CONNECTIONS_OPENED,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,
-        CONNECTORS_RUNNING,
         SERVICE_TOKEN_REQUESTS,
         RUNTIME_MEMORY_RSS,
         RUNTIME_CPU_SECONDS,
