@@ -312,6 +312,14 @@ jobs:
         if: ${{ !cancelled() && (needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'workflow_dispatch') }}
         run: node apps/switch-console-desktop/scripts/build-gateway-ui.mjs ../gateway "$RUNNER_TEMP/gateway-ui"
 
+      - name: Upload buddy onboarding screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: buddy-onboarding-screenshots
+          path: console/apps/switch-console-desktop/build/acceptance/buddy-onboarding/
+          if-no-files-found: warn
+
   # The agent runner and the controller on native Windows (CHOO-3472): process
   # control, CLI lookup and permissions there take different code paths, and
   # their tests that start real processes only run on Windows. Scoped to the

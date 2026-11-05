@@ -6,6 +6,7 @@ import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
+import type { ChatApproval } from '@shared/core/chats/activity';
 import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
 import {
   chatAgentLabel,
@@ -13,7 +14,7 @@ import {
   liveSessionStartingNotices,
   turnEndNotice,
 } from '@shared/core/chats/chats';
-import { foldTurnEndNotices, placeTurns, type TurnActivity } from '../activity-join';
+import { foldTurnEndNotices, placeRequests, placeTurns, type TurnActivity } from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import {
   agentTargets,
@@ -176,6 +177,13 @@ export const ChatTimelineView = observer(function ChatTimelineView({
 }: Props) {
   const turnsByMessage = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
   const blocksByAnchor = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
+  /** Requests shown after the agent's text that led up to them rather than with their turn. */
+  const requestsByAnchor = new Map<
+    string,
+    { activity: AgentActivity; requests: ChatApproval[] }[]
+  >();
+  /** Each turn's requests that stay in its work log, by `agentId:turnId`. */
+  const blockRequests = new Map<string, ChatApproval[]>();
   /** Turn-end notices shown on their turn's status row, by message id → `agentId:turnId`. */
   const foldedNotices = new Map<string, string>();
   const boundTurns = new Map(activities.map((activity) => [activity, activity.turns()]));
@@ -185,11 +193,28 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       list.push({ activity, turn });
       turnsByMessage.set(messageId, list);
     }
-    for (const [anchorId, turns] of placeTurns(timeline.messages, activity.agentId, bound))
+    for (const [anchorId, turns] of placeTurns(timeline.messages, activity.agentId, bound)) {
       blocksByAnchor.set(anchorId, [
         ...(blocksByAnchor.get(anchorId) ?? []),
         ...turns.map((turn) => ({ activity, turn })),
       ]);
+      for (const turn of turns)
+        for (const [requestAnchor, requests] of placeRequests(
+          timeline.messages,
+          activity.agentId,
+          bound,
+          anchorId,
+          turn
+        )) {
+          if (requestAnchor === anchorId)
+            blockRequests.set(`${activity.agentId}:${turn.turnId}`, requests);
+          else
+            requestsByAnchor.set(requestAnchor, [
+              ...(requestsByAnchor.get(requestAnchor) ?? []),
+              { activity, requests },
+            ]);
+        }
+    }
     for (const [noticeId, turnId] of foldTurnEndNotices(timeline.messages, activity.agentId, bound))
       foldedNotices.set(noticeId, `${activity.agentId}:${turnId}`);
   }
@@ -230,6 +255,25 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       return '';
     }
     return isNewBlock ? 'mt-5' : 'mt-1.5';
+  };
+  // Called inline, not as a component: it advances the block and spacing state in render order.
+  const requestsRow = (key: string, activity: AgentActivity, requests: ChatApproval[]) => {
+    const agent = agentOf(activity.agentId);
+    const head = startsBlock(activity.agentId);
+    return (
+      <AgentRow
+        key={key}
+        agent={{
+          name: agent ? chatAgentLabel(agent) : activity.agentId,
+          iconUrl: agent?.iconUrl ?? null,
+        }}
+        serverId={serverId}
+        head={head}
+        className={spacing(head)}
+      >
+        <ChatRequests activity={activity} requests={requests} />
+      </AgentRow>
+    );
   };
   return (
     <div className="flex flex-col">
@@ -387,7 +431,10 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   serverId={serverId}
                   key={`${activity.agentId}:${turn.turnId}`}
                   activity={activity}
-                  turn={turn}
+                  turn={{
+                    ...turn,
+                    requests: blockRequests.get(`${activity.agentId}:${turn.turnId}`) ?? [],
+                  }}
                   endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
                   head={head}
                   agent={{
@@ -398,6 +445,9 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 />
               );
             })}
+            {(requestsByAnchor.get(message.messageId) ?? []).map(({ activity, requests }) =>
+              requestsRow(`requests:${activity.agentId}:${requests[0].turnId}`, activity, requests)
+            )}
           </Fragment>
         );
       })}
@@ -406,22 +456,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
           (request) => request.state === 'open' && !shownRequests.has(request.requestId)
         );
         if (!requests.length) return null;
-        const agent = agentOf(activity.agentId);
-        const head = startsBlock(activity.agentId);
-        return (
-          <AgentRow
-            key={`requests:${activity.agentId}`}
-            agent={{
-              name: agent ? chatAgentLabel(agent) : activity.agentId,
-              iconUrl: agent?.iconUrl ?? null,
-            }}
-            serverId={serverId}
-            head={head}
-            className={spacing(head)}
-          >
-            <ChatRequests activity={activity} requests={requests} />
-          </AgentRow>
-        );
+        return requestsRow(`requests:${activity.agentId}`, activity, requests);
       })}
       {timeline.pending.map((send) => (
         <PendingBubble

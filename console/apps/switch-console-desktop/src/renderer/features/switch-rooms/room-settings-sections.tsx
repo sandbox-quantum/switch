@@ -485,12 +485,13 @@ export function RoomInfoSection({ room }: { room: RemoteRoomDetail }) {
       'Created',
       room.createdAt ? <AbsoluteTime key="created" value={room.createdAt} includeYear /> : '—',
     ],
-    ['Owner', room.ownerName ?? '—'],
     [
       'Messaging app',
       room.bridgeDisplayName ?? (room.isConsoleChat ? 'Group chat in Switch Console' : 'None'),
     ],
   ];
+  // A room an agent created on its own has no owning person; say nothing rather than "—".
+  if (room.ownerName) rows.splice(1, 0, ['Owner', room.ownerName]);
   if (room.linkedChannelName) rows.push(['Channel', `#${room.linkedChannelName}`]);
   if (room.externalChannelId)
     rows.push(['Channel id', <Mono key="c">{room.externalChannelId}</Mono>]);

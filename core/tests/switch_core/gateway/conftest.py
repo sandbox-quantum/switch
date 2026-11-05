@@ -75,6 +75,9 @@ class _FakeLifecycle:
     def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
         return []
 
+    def get(self, client_id: str) -> None:
+        return None
+
 
 class _FakeListener:
     """Records subscriptions; a test rings a room by hand, or deliberately not."""
