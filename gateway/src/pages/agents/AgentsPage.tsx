@@ -31,6 +31,7 @@ import { useCloudView } from "../../data/hostedCloud";
 import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
 import { type CloudPresentation, cloudStatusFor } from "./cloud/cloudAgentState";
 import YourCloudPanel from "./cloud/YourCloudPanel";
+import CloudAgentDialog from "./CloudAgentDialog";
 import RegisterAgentDialog from "./RegisterAgentDialog";
 
 // Connector type is a category, not a status. Colour here would compete with
@@ -52,6 +53,10 @@ export default function AgentsPage() {
   } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
+  // Add agent on Switch cloud: where this workspace may have a box, from the
+  // same read as the panel (`available`).
+  const [cloudOpen, setCloudOpen] = useState(false);
+  const cloudAgents = hostedV2 && cloud.available;
   const [ownerFilter, setOwnerFilter] = useState<string>("");
   const [search, setSearch] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("");
@@ -281,13 +286,24 @@ export default function AgentsPage() {
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
         <Typography variant="h5">Agents</Typography>
-        <Button
-          variant="contained"
-          startIcon={<AddCircleOutline />}
-          onClick={() => setRegisterOpen(true)}
-        >
-          Register Agent
-        </Button>
+        <Stack direction="row" spacing={1}>
+          {cloudAgents && (
+            <Button
+              variant="contained"
+              startIcon={<AddCircleOutline />}
+              onClick={() => setCloudOpen(true)}
+            >
+              Add agent on Switch cloud
+            </Button>
+          )}
+          <Button
+            variant={cloudAgents ? "outlined" : "contained"}
+            startIcon={<AddCircleOutline />}
+            onClick={() => setRegisterOpen(true)}
+          >
+            Register Agent
+          </Button>
+        </Stack>
       </Stack>
 
       {hostedV2 && cloud.machine && (
@@ -413,6 +429,16 @@ export default function AgentsPage() {
         onClose={() => setRegisterOpen(false)}
         onRegistered={refetch}
       />
+      {cloudAgents && (
+        <CloudAgentDialog
+          open={cloudOpen}
+          onClose={() => setCloudOpen(false)}
+          onCreated={() => {
+            refetch();
+            cloud.refresh();
+          }}
+        />
+      )}
     </Box>
   );
 }

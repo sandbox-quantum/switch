@@ -140,6 +140,8 @@ export interface Controller {
   assignment_revision: number;
   created_at: string;
   revoked_at: string | null;
+  /** The controller's sealing key, which a login is sealed to; null when it has none. */
+  public_key?: { alg: string; key: string; key_id: string } | null;
 }
 
 export interface Definition {

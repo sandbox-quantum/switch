@@ -49,7 +49,7 @@ describe("YourCloudPanel", () => {
 
   it("starts a put-away box with ensure", async () => {
     const onChanged = vi.fn();
-    vi.mocked(hosted.ensureCloudMachine).mockResolvedValue();
+    vi.mocked(hosted.ensureCloudMachine).mockResolvedValue(null);
     render(<YourCloudPanel machine={box({ state: "retained" })} onChanged={onChanged} />);
     expect(screen.getByText("Stopped")).toBeTruthy();
 
@@ -72,7 +72,7 @@ describe("YourCloudPanel", () => {
   });
 
   it("wakes a resting box with no agents", async () => {
-    vi.mocked(hosted.ensureCloudMachine).mockResolvedValue();
+    vi.mocked(hosted.ensureCloudMachine).mockResolvedValue(null);
     render(
       <YourCloudPanel
         machine={box({ state: "stopped", sleeping: true, agents: [] })}

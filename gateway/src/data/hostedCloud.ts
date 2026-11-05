@@ -166,16 +166,31 @@ function readAgent(value: unknown): CloudAgent | null {
   };
 }
 
+/** A machine read as a v2 box, or null: a v1 cloud machine keeps its own (upstream) screens. */
+function readBox(value: unknown): CloudMachine | null {
+  const machine = readMachine(value);
+  return machine && machine.backend === "box" ? machine : null;
+}
+
+/**
+ * The person's box serving this workspace (null when they have none here), and
+ * whether this workspace may have one at all (`available`), which is where a
+ * cloud agent can be offered.
+ */
+export async function fetchCloudPlace(): Promise<{ available: boolean; machine: CloudMachine | null }> {
+  const answer = await jsonRequest<{ available?: unknown; machines?: unknown }>("/hosted-machines", "GET");
+  const machines = Array.isArray(answer.machines) ? answer.machines : [];
+  let machine: CloudMachine | null = null;
+  for (const raw of machines) {
+    machine = readBox(raw);
+    if (machine) break;
+  }
+  return { available: answer.available === true, machine };
+}
+
 /** The person's box serving this workspace, or null when they have none here. */
 export async function fetchCloudMachine(): Promise<CloudMachine | null> {
-  const answer = await jsonRequest<{ machines?: unknown }>("/hosted-machines", "GET");
-  const machines = Array.isArray(answer.machines) ? answer.machines : [];
-  // A v2 box only: a v1 cloud machine keeps its own (upstream) screens.
-  for (const raw of machines) {
-    const machine = readMachine(raw);
-    if (machine && machine.backend === "box") return machine;
-  }
-  return null;
+  return (await fetchCloudPlace()).machine;
 }
 
 /** Their agents' states on the box; an empty list when they have none there. */
@@ -185,9 +200,13 @@ export async function fetchCloudAgents(): Promise<CloudAgent[]> {
   return agents.map(readAgent).filter((agent): agent is CloudAgent => agent !== null);
 }
 
-/** Wake a resting box, or bring back a put-away (retained) one. */
-export async function ensureCloudMachine(): Promise<void> {
-  await jsonRequest<unknown>("/hosted-machines/ensure", "POST");
+/**
+ * Claim the person's box, wake a resting one or bring back a put-away
+ * (retained) one; a box its owner stopped is left as it is. The box as Core
+ * answers, read as above: null when it isn't a v2 box.
+ */
+export async function ensureCloudMachine(): Promise<CloudMachine | null> {
+  return readBox(await jsonRequest<unknown>("/hosted-machines/ensure", "POST"));
 }
 
 /** Start a box its owner stopped (`ensure` leaves an owner's stop as it is). */
@@ -203,6 +222,8 @@ export const REFRESH_MS = 5000;
 
 export interface CloudView {
   machine: CloudMachine | null;
+  /** Whether this workspace may have a box here (`/hosted-machines`' `available`). */
+  available: boolean;
   agents: Map<string, CloudAgent>;
   /** False until the first read has finished. */
   loaded: boolean;
@@ -217,6 +238,7 @@ export interface CloudView {
  */
 export function useCloudView(enabled: boolean): CloudView {
   const [machine, setMachine] = useState<CloudMachine | null>(null);
+  const [available, setAvailable] = useState(false);
   const [agents, setAgents] = useState<Map<string, CloudAgent>>(new Map());
   const [loaded, setLoaded] = useState(false);
   const [tick, setTick] = useState(0);
@@ -232,14 +254,16 @@ export function useCloudView(enabled: boolean): CloudView {
       if (inFlight || document.hidden) return;
       inFlight = true;
       try {
-        const [box, states] = await Promise.all([fetchCloudMachine(), fetchCloudAgents()]);
+        const [place, states] = await Promise.all([fetchCloudPlace(), fetchCloudAgents()]);
         if (cancelled) return;
-        setMachine(box);
+        setMachine(place.machine);
+        setAvailable(place.available);
         setAgents(new Map(states.map((agent) => [agent.agent_id, agent])));
       } catch (error) {
         // 404 with v2 switched off server-side: nothing to show.
         if (!cancelled && error instanceof ApiError && error.status === 404) {
           setMachine(null);
+          setAvailable(false);
           setAgents(new Map());
         }
       } finally {
@@ -256,6 +280,6 @@ export function useCloudView(enabled: boolean): CloudView {
   }, [enabled, tick]);
 
   return enabled
-    ? { machine, agents, loaded, refresh }
-    : { machine: null, agents: new Map(), loaded: false, refresh };
+    ? { machine, available, agents, loaded, refresh }
+    : { machine: null, available: false, agents: new Map(), loaded: false, refresh };
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ensureCloudMachine,
+  fetchCloudPlace,
   fetchCloudAgents,
   fetchCloudMachine,
   readMachine,
@@ -81,6 +82,20 @@ describe("the owner routes", () => {
   it("has no box when there is none", async () => {
     vi.stubGlobal("fetch", answer({ available: false, machines: [] }));
     expect(await fetchCloudMachine()).toBeNull();
+  });
+
+  it("says whether this workspace may have a box, from `available`", async () => {
+    vi.stubGlobal("fetch", answer({ available: true, machines: [] }));
+    expect(await fetchCloudPlace()).toEqual({ available: true, machine: null });
+    vi.stubGlobal("fetch", answer({ machines: [summary] }));
+    expect((await fetchCloudPlace()).available).toBe(false); // missing reads as no
+  });
+
+  it("answers the box ensure gives back, and nothing for a v1 machine", async () => {
+    vi.stubGlobal("fetch", answer(summary));
+    expect((await ensureCloudMachine())?.machine_id).toBe("m-1");
+    vi.stubGlobal("fetch", answer({ ...summary, backend: "vm" }));
+    expect(await ensureCloudMachine()).toBeNull();
   });
 
   it("keeps only agent states in shape", async () => {

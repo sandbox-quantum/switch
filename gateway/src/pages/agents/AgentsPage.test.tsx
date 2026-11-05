@@ -209,4 +209,35 @@ describe("AgentsPage with hosted agents v2", () => {
       new Set(["/gateway/hosted-machines", "/gateway/shared-cloud/agents"]),
     );
   });
+
+  it("offers Add agent on Switch cloud from the same read, where a box is available", async () => {
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    expect(await screen.findByRole("button", { name: "Add agent on Switch cloud" })).toBeTruthy();
+    // One hosted-machines read feeds both the panel and the button.
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    const reads = fetch.mock.calls.filter((call) => call[0] === "/gateway/hosted-machines");
+    expect(reads).toHaveLength(1);
+  });
+
+  it("doesn't offer it where this workspace may not have a box", async () => {
+    fetch.mockImplementation(async (url: string) =>
+      new Response(
+        JSON.stringify(url.endsWith("/hosted-machines") ? { available: false, machines: [] } : { agents: [] }),
+        { status: 200 },
+      ),
+    );
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByRole("button", { name: "Add agent on Switch cloud" })).toBeNull();
+  });
+
+  it("with v2 off, doesn't offer it", async () => {
+    vi.mocked(hooks.useHostedV2).mockReturnValue(false);
+    render(<AgentsPage />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByRole("button", { name: "Add agent on Switch cloud" })).toBeNull();
+  });
 });
