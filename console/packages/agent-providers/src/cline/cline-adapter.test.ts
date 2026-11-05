@@ -172,7 +172,7 @@ it('resumes the exact native conversation and stays in act mode', async () => {
   });
   expect(server.received.some((m) => m.method === 'authenticate')).toBe(false);
   for (const mode of ['approval-required', 'auto-accept-edits', 'auto', 'full-access'] as const)
-    expect(clineAcp.sessionMode?.(mode)).toBe('act');
+    expect(clineAcp.sessionMode?.(mode, undefined)).toBe('act');
 });
 
 it("allows the session's own MCP tools once, and asks for a connector's", async () => {
@@ -354,8 +354,9 @@ it('checks the sign-in from the saved file or an API key, without starting Cline
   dirs.push(dir);
   const path = join(dir, 'providers.json');
   const handshake = vi.fn();
+  const request = vi.fn();
   const check = (env: Record<string, string>) =>
-    clineAcp.checkSignIn!({ binaryPath: 'cline', cwd: dir, env, handshake });
+    clineAcp.checkSignIn!({ binaryPath: 'cline', cwd: dir, env, handshake, request });
   await expect(check({ CLINE_PROVIDER_SETTINGS_PATH: path })).resolves.toMatchObject({
     status: 'unauthenticated',
   });
