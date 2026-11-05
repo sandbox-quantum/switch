@@ -68,6 +68,11 @@ switch-core talks only to this contract; the backend behind it is configuration.
 - **Auth:** with `DECISION_SERVICE_TOKEN` set, every request except
   `GET /health` needs `Authorization: Bearer <token>`. Unset means no auth,
   for use inside a cluster behind a NetworkPolicy.
+- **The model server's token:** with `MODEL_SERVER_TOKEN` set, the service
+  sends it as `Authorization: Bearer <token>` to the llama.cpp and SystemOne
+  servers, so they can require it: llama.cpp with `--api-key` (or
+  `LLAMA_API_KEY`), the Strands server with `STRANDS_API_KEY`. Neither guards
+  `/health`. Never logged.
 - **Per-request backend override**, so a workspace can choose Haiku without a
   restart. The headers are never logged.
   - `X-Decision-Backend`: `default` (or absent) for the configured backend;
@@ -106,6 +111,7 @@ switch-core talks only to this contract; the backend behind it is configuration.
 | `DECISION_HISTORY_LIMIT` | `8` | recent and thread messages kept, each (8 recent + 8 thread). Measured on an L4: a room at switch-core's full limits took 0.55 s with 30 and 0.23 s with 8, with the same accuracy |
 | `DECISION_WITH_REASON` | `1` | `0` drops the reason from Haiku's tool call |
 | `DECISION_SERVICE_TOKEN` | unset | bearer token for everything but `/health` |
+| `MODEL_SERVER_TOKEN` | unset | bearer token sent to the llama.cpp or SystemOne server |
 | `DECISION_BEDROCK_ENABLED` | unset | `1` lets a request choose `bedrock` |
 | `DECISION_BEDROCK_MODEL` | `us.anthropic.claude-haiku-5-5-v1:0` | Bedrock model or inference profile |
 | `AWS_REGION`, `AWS_PROFILE` | `us-east-1`, unset | standard AWS credential chain |
@@ -138,7 +144,9 @@ downloads the checkpoint and its base model (about 17 GB) into `/models`.
 weights once at load, which on an L4 gives the same answers in 0.26 s instead
 of 0.42 s for a typical room and about 3.9 decisions a second instead of 2.4.
 It's configured by env only (`STRANDS_CHECKPOINT`, `STRANDS_REVISION`,
-`STRANDS_BASE_REVISION`, `STRANDS_MODEL_NAME`, `STRANDS_MAX_BATCH`). The image
+`STRANDS_BASE_REVISION`, `STRANDS_MODEL_NAME`, `STRANDS_MAX_BATCH`, and
+`STRANDS_API_KEY`, which when set is required as a bearer token on everything
+but `/health`). The image
 pins the checkpoint and its base model to Hugging Face commits
 (`STRANDS_REVISION`, `STRANDS_BASE_REVISION`); the base revision must be the one
 the checkpoint records in its `provenance.json`, or the server refuses to

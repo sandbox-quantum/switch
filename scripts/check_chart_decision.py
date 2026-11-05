@@ -5,7 +5,8 @@ The decision service (auto-route) is optional in the chart. Off, nothing of it
 renders and switch-core gets no endpoint. On, the chart runs it beside its
 model server (Strands Decider by default, or Qwen on llama.cpp), points
 switch-core at it and admits only switch-core to it, both by NetworkPolicy and
-by a bearer token the chart generates. Its model weights are pinned to fixed
+by a bearer token the chart generates, which its model server requires
+too. Its model weights are pinned to fixed
 revisions, the same in docker-compose. An endpoint run elsewhere
 can be named instead, but not as well as the chart's own. These are the
 promises deploy/remote/helm/switch/README.md makes about `decision.*`; a render
@@ -199,6 +200,8 @@ def test_strands_decider_is_the_default_model_server() -> None:
         "STRANDS_BASE_REVISION": env["STRANDS_BASE_REVISION"],
         "STRANDS_MODEL_NAME": "strands-decider-E4B",
         "STRANDS_PORT": "8400",
+        # From the decision token Secret: test_the_model_server_requires_the_token_too.
+        "STRANDS_API_KEY": None,
     }, env
     assert [p["containerPort"] for p in server["ports"]] == [8400]
     resources = server["resources"]
@@ -230,7 +233,10 @@ def test_qwen_on_llama_cpp_is_the_alternative() -> None:
 
     server = by_name["model-server"]
     assert server["image"] == "ghcr.io/ggml-org/llama.cpp:server-cuda"
-    assert env_of(server) == {"MODEL_PATH": "/models/Qwen3.5-4B-Q4_K_M.gguf"}
+    assert env_of(server) == {
+        "MODEL_PATH": "/models/Qwen3.5-4B-Q4_K_M.gguf",
+        "LLAMA_API_KEY": None,
+    }
     assert server["resources"]["limits"]["nvidia.com/gpu"] == 1
     assert server["volumeMounts"] == [
         {"name": "weights", "mountPath": "/models", "readOnly": True}
@@ -371,9 +377,62 @@ def test_the_service_requires_a_token_that_switch_core_sends() -> None:
     decision = containers(objects["Deployment"])["decision"]
     assert secret_refs_of(decision)["DECISION_SERVICE_TOKEN"] == ref
     assert secret_refs_of(core_container(docs))["DECISION_API_KEY"] == ref
-    # The model server is reached only on localhost and takes no token.
+    # The model server listens on the pod's IP (its probes reach it there),
+    # so it takes the same token, and the decision container sends it.
     model_server = containers(objects["Deployment"])["model-server"]
     assert "DECISION_SERVICE_TOKEN" not in secret_refs_of(model_server)
+    assert secret_refs_of(decision)["MODEL_SERVER_TOKEN"] == ref
+
+
+def test_the_model_server_requires_the_token_too() -> None:
+    ref = {"name": f"{RELEASE}-decision-token", "key": "token"}
+    for kind, variable in (
+        ("strands", "STRANDS_API_KEY"),
+        ("llamacpp", "LLAMA_API_KEY"),
+    ):
+        docs = render(
+            "--set",
+            "decision.enabled=true",
+            "--set",
+            f"decision.modelServer.kind={kind}",
+            *FLAGS,
+        )
+        pod = containers(decision_objects(docs)["Deployment"])
+        assert secret_refs_of(pod["model-server"])[variable] == ref, kind
+        assert secret_refs_of(pod["decision"])["MODEL_SERVER_TOKEN"] == ref, kind
+        # The probes stay on /health, which neither server guards.
+        for probe in ("startupProbe", "livenessProbe"):
+            assert pod["model-server"][probe]["httpGet"]["path"] == "/health", kind
+
+    # Your own Secret: both sides read it.
+    docs = render(
+        "--set",
+        "decision.enabled=true",
+        "--set",
+        "decision.modelServer.kind=llamacpp",
+        "--set",
+        "decision.token.existingSecret=my-decision-token",
+        "--set",
+        "decision.token.existingSecretKey=bearer",
+        *FLAGS,
+    )
+    pod = containers(decision_objects(docs)["Deployment"])
+    mine = {"name": "my-decision-token", "key": "bearer"}
+    assert secret_refs_of(pod["model-server"])["LLAMA_API_KEY"] == mine
+    assert secret_refs_of(pod["decision"])["MODEL_SERVER_TOKEN"] == mine
+
+    # No model server, nothing to send it to.
+    docs = render(
+        "--set",
+        "decision.enabled=true",
+        "--set",
+        "decision.modelServer.enabled=false",
+        "--set",
+        "decision.backend=anthropic",
+        *FLAGS,
+    )
+    decision = containers(decision_objects(docs)["Deployment"])["decision"]
+    assert "MODEL_SERVER_TOKEN" not in secret_refs_of(decision)
 
 
 def test_an_existing_token_secret_replaces_the_generated_one() -> None:
@@ -527,6 +586,7 @@ TESTS: list[Callable[[], None]] = [
     test_an_endpoint_elsewhere,
     test_the_service_requires_a_token_that_switch_core_sends,
     test_an_existing_token_secret_replaces_the_generated_one,
+    test_the_model_server_requires_the_token_too,
     test_the_qwen_weights_are_pinned_and_a_bad_file_is_deleted,
     test_the_strands_checkpoint_and_base_are_pinned,
     test_compose_pins_the_same_weights_as_the_chart,

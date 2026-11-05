@@ -345,6 +345,14 @@ def model_server(settings: Settings) -> str:
     )
 
 
+def model_server_headers(settings: Settings) -> dict[str, str]:
+    """The llama.cpp or SystemOne server's bearer token, when one is set. The
+    headers are never logged."""
+    if settings.model_server_token is None:
+        return {}
+    return {"Authorization": f"Bearer {settings.model_server_token}"}
+
+
 async def ask(
     client: httpx.AsyncClient,
     settings: Settings,
@@ -367,7 +375,12 @@ async def ask(
             "chat_template_kwargs": {"enable_thinking": False},
         }
         try:
-            r = await client.post(url, json=payload, timeout=settings.timeout_s)
+            r = await client.post(
+                url,
+                json=payload,
+                headers=model_server_headers(settings),
+                timeout=settings.timeout_s,
+            )
         except httpx.HTTPError as exc:
             raise ModelServerError(
                 f"model server {url} unreachable: {type(exc).__name__}: {exc}"
@@ -379,9 +392,11 @@ async def ask(
             )
         return read_letter_logprobs(r.json(), letters)
     options = [a.name for a in req.agents] + [NONE]
+    headers: dict[str, str] = {}
     if settings.backend == "systemone":
         url = settings.systemone_url
         payload = systemone_request(req, settings.model, settings.history_limit)
+        headers = model_server_headers(settings)
     else:
         url = f"{settings.ollama_url}/api/chat"
         payload = {
@@ -393,7 +408,9 @@ async def ask(
             "options": {"temperature": 0},
         }
     try:
-        r = await client.post(url, json=payload, timeout=settings.timeout_s)
+        r = await client.post(
+            url, json=payload, headers=headers, timeout=settings.timeout_s
+        )
     except httpx.HTTPError as exc:
         raise ModelServerError(
             f"model server {url} unreachable: {type(exc).__name__}: {exc}"

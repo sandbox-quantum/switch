@@ -5,8 +5,9 @@ adapter merged into the base weights.
 
 Reads STRANDS_CHECKPOINT, STRANDS_REVISION, STRANDS_BASE_REVISION,
 STRANDS_MODEL_NAME, STRANDS_PORT (default 8400), STRANDS_HOST (default
-0.0.0.0), STRANDS_DEVICE (default cuda) and STRANDS_MAX_BATCH (default 32,
-requests evaluated together).
+0.0.0.0), STRANDS_DEVICE (default cuda), STRANDS_MAX_BATCH (default 32,
+requests evaluated together) and STRANDS_API_KEY (optional: when set, every
+request but GET /health needs it as a bearer token; see bearer.py).
 
 STRANDS_REVISION is the Hugging Face commit of the checkpoint to download, and
 STRANDS_BASE_REVISION the commit of its base model, so a new push to either
@@ -28,6 +29,7 @@ import time
 
 import torch
 import uvicorn
+from bearer import require_bearer
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from huggingface_hub import snapshot_download
@@ -49,6 +51,7 @@ PORT = int(os.environ.get("STRANDS_PORT", "8400"))
 HOST = os.environ.get("STRANDS_HOST", "0.0.0.0")
 DEVICE = os.environ.get("STRANDS_DEVICE", "cuda")
 MAX_BATCH = int(os.environ.get("STRANDS_MAX_BATCH", "32"))
+API_KEY = os.environ.get("STRANDS_API_KEY") or None
 
 
 def pinned_checkpoint() -> str:
@@ -100,6 +103,7 @@ def load_engine() -> SystemOneEngine:
 
 engine = load_engine()
 app = FastAPI(title="Strands Decider (adapter merged)")
+require_bearer(app, API_KEY)
 
 
 @app.get("/health")

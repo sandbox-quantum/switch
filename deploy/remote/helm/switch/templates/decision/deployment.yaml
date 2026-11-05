@@ -131,6 +131,11 @@ spec:
             - name: DECISION_MODEL
               value: {{ . | quote }}
             {{- end }}
+            {{- if $kind }}
+            # Sent to the model server beside it, which refuses everything but
+            # /health without it.
+            {{- include "switch.decisionTokenEnv" (dict "root" $ "name" "MODEL_SERVER_TOKEN") | nindent 12 }}
+            {{- end }}
             {{- if eq $kind "strands" }}
             - name: SYSTEMONE_URL
               value: "http://127.0.0.1:{{ $ms.strands.port }}/v1/systemone"
@@ -197,6 +202,8 @@ spec:
               value: {{ required "decision.modelServer.strands.modelName is required" $st.modelName | quote }}
             - name: STRANDS_PORT
               value: {{ $st.port | quote }}
+            # Every request but /health needs it; the decision container sends it.
+            {{- include "switch.decisionTokenEnv" (dict "root" $ "name" "STRANDS_API_KEY") | nindent 12 }}
             {{- with include "switch.decisionHfToken" . }}
             {{- . | trim | nindent 12 }}
             {{- end }}
@@ -247,6 +254,9 @@ spec:
           env:
             - name: MODEL_PATH
               value: "/models/{{ include "switch.decisionModelFile" . }}"
+            # llama-server's --api-key: every request but /health needs it; the
+            # decision container sends it.
+            {{- include "switch.decisionTokenEnv" (dict "root" $ "name" "LLAMA_API_KEY") | nindent 12 }}
           ports:
             - name: model
               containerPort: {{ $llama.port }}
