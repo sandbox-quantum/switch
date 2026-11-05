@@ -384,6 +384,9 @@ class RocketChatAdapter(PlatformAdapter):
         message = event.message
         if any(message.get(field) for field in _SEEN_FIELDS):
             return
+        sender = message.get("u")
+        if isinstance(sender, dict) and sender.get("_id") == self._config.user_id:
+            return
         room_id = str(message.get("rid") or "")
         await self._relay(message, _channel_type(event.room_type), event.room_name)
         if room_id:

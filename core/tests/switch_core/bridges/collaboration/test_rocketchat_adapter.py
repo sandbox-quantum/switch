@@ -346,6 +346,7 @@ class TestInbound:
             _event(_message(u={"_id": BOT_ID, "username": "switchbot"}))
         )
         assert received.messages == []
+        assert server.bodies("/api/v1/subscriptions.read") == []
 
     @pytest.mark.parametrize(
         "change",
