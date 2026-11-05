@@ -45,6 +45,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery import router as router_module
 from switch_core.delivery.conversation import ConversationSettings
+from switch_core.delivery.recipient import AgentRecipient
 from switch_core.transport import RoomRef
 from tests.routing import Process, process_on
 from tests.switch_core.delivery.world import World
@@ -561,6 +562,92 @@ class TestAttachments:
                 .where(AgentEventRow.message_key == told)
             )
         assert count == 1
+
+    async def test_a_post_given_up_on_reads_only_what_came_before_it(
+        self, room: Journey, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Another agent speaks in the thread while the post waits for files
+        # that never come: written after the post began, it does not count.
+        monkeypatch.setattr(router_module, "ATTACHMENT_GROUP_TIMEOUT_SECONDS", 60.0)
+        answer = await room.post("helper", "Send me the screenshots", at=0)
+        await room.send_file(
+            "alice",
+            "one.png",
+            at=10,
+            thread=answer,
+            group={"id": "grp-3", "index": 0, "total": 3},
+        )
+        # Written after the first file. At the same moment: a member who
+        # joined after a post began is not given it, and this world's members
+        # joined moments ago, so the file is not moved back past them.
+        await room.post("reviewer", "I can look too", at=10, thread=answer)
+
+        await room.after_the_wait()
+
+        assert await room.reached("grp-3") == {"helper"}
+
+    async def test_a_post_is_delivered_in_the_thread_it_was_routed_by(
+        self, room: Journey
+    ) -> None:
+        # Only the first file carries the thread, and the post completes on
+        # a later one.
+        answer = await room.post("helper", "Send me the screenshots", at=0)
+        for index, name in enumerate(("one.png", "two.png")):
+            await room.send_file(
+                "alice",
+                name,
+                at=10,
+                thread=answer if index == 0 else None,
+                group={"id": "grp-4", "index": index, "total": 2},
+            )
+
+        assert await room.reached("grp-4") == {"helper"}
+        payload = (await room.payloads("grp-4"))["helper"]
+        assert payload.thread_id == answer
+
+    async def test_a_slow_post_is_timed_from_its_first_file(
+        self, room: Journey
+    ) -> None:
+        # The first file is inside the window after the agent's answer; the
+        # last lands outside it. The post is as old as its first file.
+        await room.say("alice", "@helper can you read screenshots?", at=0)
+        await room.post("helper", "Yes, send them", at=5)
+        await room.send_file(
+            "alice", "one.png", at=300, group={"id": "grp-5", "index": 0, "total": 2}
+        )
+        await room.send_file(
+            "alice", "two.png", at=330, group={"id": "grp-5", "index": 1, "total": 2}
+        )
+
+        assert await room.reached("grp-5") == {"helper"}
+
+    async def test_a_filename_is_not_read_as_text(self, room: Journey) -> None:
+        # With no caption the file's body is its filename, which looks like
+        # a mention here. It is no text of the sender's.
+        answer = await room.post("helper", "Which report?", at=0)
+
+        told = await room.send_file("alice", "@2024-q3.csv", at=10, thread=answer)
+
+        assert await room.reached(told) == {"helper"}
+
+    async def test_a_post_not_known_to_name_nobody_does_not_follow(
+        self, room: Journey, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Whether the post names reviewer cannot be worked out. It may have
+        # (by alias or role), so it is not handed to the thread's owner.
+        answer = await room.post("helper", "Which log?", at=0)
+        addressed_by = AgentRecipient.addressed_by
+
+        async def failing(self: AgentRecipient, session: Any, event: Any) -> bool:
+            if self.agent.name == room.world.agents["reviewer"].name:
+                raise RuntimeError("cannot tell")
+            return await addressed_by(self, session, event)
+
+        monkeypatch.setattr(AgentRecipient, "addressed_by", failing)
+
+        told = await room.send_file("alice", "app.log", at=10, thread=answer)
+
+        assert await room.reached(told) == set()
 
 
 class TestWithTheFlagOff:

@@ -865,14 +865,14 @@ class AgentRecipient:
 
         The message is anchored on the first file (index 0) when it arrived,
         so its id and time are the ones the sender was given, whichever file
-        completed it. `lead` is the file the rest is taken from when the first
-        is missing, and whose thread and sender name the message carries: the
-        file that completed the post, or for a post given up on, the first of
-        its files written. A post given up on (`complete` False) says in its
+        completed it, and its thread is the message's (`post_anchor`). `lead`
+        is the file the rest is taken from when the first is missing, and
+        whose sender name the message carries: the file that completed the
+        post, or for a post given up on, the first of its files written. A post given up on (`complete` False) says in its
         body how many files arrived.
         """
         meta = self._meta
-        anchor = first_file(files) or lead
+        anchor = post_anchor(files, lead)
         gate = _GateOutcome(addressed=False, refusal=None)
         followed = False
         if named:
@@ -889,7 +889,8 @@ class AgentRecipient:
                 "Media received without sender name, using the sender id: %s",
                 sender_name,
             )
-        thread_id = lead.thread_root_id
+        # The thread the rules routed the post by (`_post_as_message`).
+        thread_id = anchor.thread_root_id
         group = parse_attachment_group(lead.content)
         total = group[2] if group is not None else 1
 
@@ -1934,6 +1935,21 @@ def file_index(part: InboundMedia) -> int:
 def first_file(parts: list[InboundMedia]) -> InboundMedia | None:
     """The file a post is anchored on, index 0, when it is among `parts`."""
     return next((part for part in parts if file_index(part) == 0), None)
+
+
+def post_anchor(parts: list[InboundMedia], lead: InboundMedia) -> InboundMedia:
+    """The file a post's text, thread and time are taken from: its first
+    file, or `lead` when the first is missing."""
+    return first_file(parts) or lead
+
+
+def caption_of(file: InboundMedia) -> str:
+    """The text the sender wrote with a file, or empty when there is none.
+
+    Without a caption a file's body is its filename (`media_content`); with
+    one, the body is the caption and the filename is carried apart.
+    """
+    return (file.body or "") if "filename" in file.content else ""
 
 
 def command_event(row: InboundCustomEvent) -> CommandEvent:
