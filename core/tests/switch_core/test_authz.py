@@ -8,9 +8,14 @@ from switch_core.authz import (
     Principal,
     administers_tenant,
     can,
+    can_change_organization_member,
+    can_change_workspace_member,
+    can_delete_api_key,
     can_delete_room_document,
+    can_delete_workspace,
     can_manage,
     can_unlink_from_room,
+    owns,
     require,
     require_manage,
     require_visibility_change,
@@ -241,3 +246,69 @@ class TestRequireVisibilityChange:
         owner = Principal("u-owner", False)
         require_visibility_change(owner, self._open(), "private", "private", "package")
         require_visibility_change(ADMIN, self._open(), "private", "private", "package")
+
+
+class TestOwns:
+    def test_only_the_owner_owns_it_whatever_their_role(self) -> None:
+        assert owns(ALICE, "u-alice")
+        assert not owns(ADMIN, "u-alice")
+
+    def test_a_missing_owner_matches_nobody(self) -> None:
+        assert not owns(ANON, None)
+
+
+class TestCanChangeWorkspaceMember:
+    def test_an_admin_may_change_another_member(self) -> None:
+        assert can_change_workspace_member(
+            "u-admin", "u-bob", administers=True, member_is_organization_admin=False
+        )
+
+    def test_a_member_may_not(self) -> None:
+        assert not can_change_workspace_member(
+            "u-alice", "u-bob", administers=False, member_is_organization_admin=False
+        )
+
+    def test_nobody_may_change_their_own_row(self) -> None:
+        assert not can_change_workspace_member(
+            "u-admin", "u-admin", administers=True, member_is_organization_admin=False
+        )
+
+    def test_nobody_may_change_an_organization_admins_row_here(self) -> None:
+        assert not can_change_workspace_member(
+            "u-admin", "u-bob", administers=True, member_is_organization_admin=True
+        )
+
+
+class TestCanChangeOrganizationMember:
+    def test_whoever_passes_the_gate_may_change_someone_else(self) -> None:
+        assert can_change_organization_member("u-ada", "u-bob", permitted=True)
+        assert not can_change_organization_member("u-ada", "u-bob", permitted=False)
+
+    def test_nobody_may_change_their_own_row(self) -> None:
+        assert not can_change_organization_member("u-ada", "u-ada", permitted=True)
+
+
+class TestCanDeleteWorkspace:
+    def test_an_admin_member_may_delete_it(self) -> None:
+        assert can_delete_workspace(tenant_role="admin", is_default=False)
+
+    @pytest.mark.parametrize("tenant_role", ["member", None])
+    def test_no_one_else_may_whatever_else_they_administer(
+        self, tenant_role: str | None
+    ) -> None:
+        # An organization admin, or the operator, holds no admin row here.
+        assert not can_delete_workspace(tenant_role=tenant_role, is_default=False)
+
+    def test_nobody_may_delete_the_default_workspace(self) -> None:
+        assert not can_delete_workspace(tenant_role="admin", is_default=True)
+
+
+class TestCanDeleteApiKey:
+    def test_the_owner_may_delete_their_own_key(self) -> None:
+        assert can_delete_api_key(ALICE, "u-alice", is_agent_key=False)
+
+    def test_not_an_agents_key(self) -> None:
+        assert not can_delete_api_key(ALICE, "u-alice", is_agent_key=True)
+
+    def test_not_someone_elses_even_as_an_admin(self) -> None:
+        assert not can_delete_api_key(ADMIN, "u-alice", is_agent_key=False)
