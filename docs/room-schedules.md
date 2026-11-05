@@ -39,6 +39,7 @@ At firing, Switch rechecks the author's current authority and the room's current
 agent membership. It skips targets that have left. A schedule with no remaining
 targets, an archived room, or an author who can no longer manage the room is
 paused with a reason shown in Configuration. Correct the cause and resume it.
+Deleting the author's account removes their schedules.
 
 Edits and pauses serialize with a firing already in progress. A message committed
 before a pause or deletion is accepted remains in the room.

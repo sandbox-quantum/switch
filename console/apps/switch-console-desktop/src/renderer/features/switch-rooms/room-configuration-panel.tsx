@@ -200,7 +200,11 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             administersWorkspace={administersWorkspaceById(workspaceId)}
           />
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
-          <RoomSchedulesSection key={`schedules-${room.id}`} workspaceId={workspaceId} room={room} />
+          <RoomSchedulesSection
+            key={`schedules-${room.id}`}
+            workspaceId={workspaceId}
+            room={room}
+          />
           <RoomInfoSection room={room} />
           <section
             id="room-settings-archive"
