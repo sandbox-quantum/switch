@@ -273,7 +273,7 @@ export function errorText(detail: unknown, fallback: string): string {
   return fallback;
 }
 
-async function jsonRequest<T>(
+export async function jsonRequest<T>(
   path: string,
   method: string,
   body?: unknown,

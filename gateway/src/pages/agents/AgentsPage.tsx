@@ -26,8 +26,11 @@ import { useNavigate } from "react-router";
 import DataTable from "../../components/DataTable";
 import { type AgentSummary, deleteAgent } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { useAgents } from "../../data/hooks";
+import { useAgents, useHostedV2 } from "../../data/hooks";
+import { useCloudView } from "../../data/hostedCloud";
 import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
+import { type CloudPresentation, cloudStatusFor } from "./cloud/cloudAgentState";
+import YourCloudPanel from "./cloud/YourCloudPanel";
 import RegisterAgentDialog from "./RegisterAgentDialog";
 
 // Connector type is a category, not a status. Colour here would compete with
@@ -38,6 +41,10 @@ export default function AgentsPage() {
   const navigate = useNavigate();
   const { user, canAdminTenant: isAdmin } = useAuth();
   const { data: agents, loading, refetch } = useAgents();
+  // Hosted agents v2 only: with it off (or still loading) nothing below is
+  // read and neither the panel nor the Cloud column exists.
+  const hostedV2 = useHostedV2() === true;
+  const cloud = useCloudView(hostedV2);
   const [deleteTarget, setDeleteTarget] = useState<AgentSummary | null>(null);
   const [deleteNotice, setDeleteNotice] = useState<{
     severity: "warning" | "error";
@@ -154,9 +161,52 @@ export default function AgentsPage() {
     refetch();
   }, [deleteTarget, refetch]);
 
+  // Each agent's state on the person's cloud; worked out once per read.
+  const cloudStatus = useMemo(() => {
+    const onBox = new Set(cloud.machine?.agents ?? []);
+    const now = new Date();
+    const map = new Map<string, CloudPresentation>();
+    for (const agent of agents ?? []) {
+      const shown = cloudStatusFor(agent.id, cloud.agents, onBox, now);
+      if (shown) map.set(agent.id, shown);
+    }
+    return map;
+  }, [agents, cloud.agents, cloud.machine]);
+
   const columns = useMemo<GridColDef<AgentSummary>[]>(
     () => [
       { field: "name", headerName: "Name", flex: 1, minWidth: 200 },
+      ...(hostedV2
+        ? [
+            {
+              field: "cloud_status",
+              headerName: "Cloud",
+              width: 220,
+              sortable: false,
+              valueGetter: (_value: unknown, row: AgentSummary) =>
+                cloudStatus.get(row.id)?.label ?? "",
+              renderCell: ({ row }: { row: AgentSummary }) => {
+                const shown = cloudStatus.get(row.id);
+                if (!shown)
+                  return (
+                    <Box component="span" sx={{ color: "text.secondary" }}>
+                      {EM_DASH}
+                    </Box>
+                  );
+                return (
+                  <Box component="span" title={shown.when ?? undefined}>
+                    {shown.label}
+                    {shown.detail && (
+                      <Box component="span" sx={{ color: "text.secondary" }}>
+                        {` · ${shown.detail}`}
+                      </Box>
+                    )}
+                  </Box>
+                );
+              },
+            } satisfies GridColDef<AgentSummary>,
+          ]
+        : []),
       {
         field: "connector_type",
         headerName: "Agent Type",
@@ -224,7 +274,7 @@ export default function AgentsPage() {
         },
       },
     ],
-    [isAdmin, user?.id, parentNameById],
+    [isAdmin, user?.id, parentNameById, hostedV2, cloudStatus],
   );
 
   return (
@@ -239,6 +289,10 @@ export default function AgentsPage() {
           Register Agent
         </Button>
       </Stack>
+
+      {hostedV2 && cloud.machine && (
+        <YourCloudPanel machine={cloud.machine} onChanged={cloud.refresh} />
+      )}
 
       {deleteNotice && (
         <Alert

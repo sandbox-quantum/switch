@@ -17,6 +17,7 @@ vi.mock("../../data/AuthContext", () => ({
 
 vi.mock("../../data/hooks", () => ({
   useAgents: vi.fn(),
+  useHostedV2: vi.fn(() => false),
 }));
 
 vi.mock("../../data/api", async (importOriginal) => {
@@ -31,11 +32,18 @@ vi.mock("./RegisterAgentDialog", () => ({ default: () => null }));
 vi.mock("../../components/DataTable", () => ({
   default: ({ rows, columns }: { rows: AgentSummary[]; columns: GridColDef<AgentSummary>[] }) => {
     const actions = columns.find((c) => c.field === "actions");
+    const cloud = columns.find((c) => c.field === "cloud_status");
     return (
       <div>
+        {columns.map((c) => (
+          <span key={c.field} data-testid="column">
+            {c.headerName}
+          </span>
+        ))}
         {rows.map((row) => (
           <div key={row.id} data-testid={`row-${row.name}`}>
             {row.name}
+            {cloud && <span data-testid="cloud">{cloud.renderCell?.({ row } as never)}</span>}
             {actions?.renderCell?.({ row } as never)}
           </div>
         ))}
@@ -106,5 +114,99 @@ describe("AgentsPage delete", () => {
 
     await waitFor(() => expect(api.deleteAgent).toHaveBeenCalledWith("a1"));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("AgentsPage with hosted agents v2", () => {
+  const box = {
+    machine_id: "m-1",
+    state: "retained",
+    desired_state: "retained",
+    stop_reason: null,
+    sleeping: false,
+    revision: 1,
+    agents: ["a1", "a2"],
+    controller_id: "c-1",
+    backend: "box",
+    room: null,
+    awake: null,
+    ai_calls_today: null,
+  };
+  const others = [
+    agent,
+    { ...agent, id: "a2", name: "stopped-one" },
+    { ...agent, id: "a3", name: "<b>local</b>" },
+  ] as AgentSummary[];
+  let fetch: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: { id: "u1" },
+      canAdminTenant: false,
+    } as unknown as ReturnType<typeof useAuth>);
+    vi.mocked(hooks.useAgents).mockReturnValue({
+      data: others,
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    fetch = vi.fn(async (url: string) => {
+      const body = url.endsWith("/hosted-machines")
+        ? { available: true, machines: [box] }
+        : { available: true, agents: [{ agent_id: "a1", state: "resting", box_stopped: true }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.mocked(hooks.useHostedV2).mockReturnValue(false);
+  });
+
+  it("with v2 off, shows no panel or Cloud column and asks nothing", async () => {
+    vi.mocked(hooks.useHostedV2).mockReturnValue(false);
+    render(<AgentsPage />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.queryByRole("region", { name: "Your cloud" })).toBeNull();
+    expect(screen.queryByText("Your cloud")).toBeNull();
+    expect(screen.getAllByTestId("column").map((c) => c.textContent)).not.toContain("Cloud");
+    expect(screen.queryAllByTestId("cloud")).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("while the flag is still loading, shows and asks nothing", async () => {
+    vi.mocked(hooks.useHostedV2).mockReturnValue(null);
+    render(<AgentsPage />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.queryByText("Your cloud")).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("with v2 on, shows the panel and each agent's cloud state", async () => {
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+
+    expect(await screen.findByText("Your cloud")).toBeTruthy();
+    expect(screen.getByText("Start it to add or use an agent.")).toBeTruthy();
+    expect(screen.getAllByTestId("column").map((c) => c.textContent)).toContain("Cloud");
+    await waitFor(() =>
+      expect(within(screen.getByTestId("row-notes-taker")).getByTestId("cloud").textContent).toBe(
+        "Resting · Starts when messaged",
+      ),
+    );
+    expect(within(screen.getByTestId("row-stopped-one")).getByTestId("cloud").textContent).toBe(
+      "Stopped",
+    );
+    const local = screen.getByTestId("row-<b>local</b>");
+    expect(within(local).getByTestId("cloud").textContent).toBe("—");
+    expect(local.querySelector("b")).toBeNull();
+    const urls = fetch.mock.calls.map((call) => call[0]);
+    expect(new Set(urls)).toEqual(
+      new Set(["/gateway/hosted-machines", "/gateway/shared-cloud/agents"]),
+    );
   });
 });
