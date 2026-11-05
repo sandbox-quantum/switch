@@ -645,11 +645,7 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
         yaml=ROOM_TEMPLATE,
     )
     templates = AgentTemplates(
-        TemplateStore(),
-        max_bytes=64 * 1024,
-        agent_management=False,
-        switch_buddy=False,
-        telemetry=None,
+        TemplateStore(), max_bytes=64 * 1024, switch_buddy=False, telemetry=None
     )
     async with tools["session_factory"]() as session:
         agent = await session.get(Agent, tools["agent_id"])
@@ -893,9 +889,8 @@ async def test_an_official_template_is_read_and_never_changed(tools, caplog):
     detail = await _as(
         tools["agent_id"], get_template, template_id="official:switch-expert"
     )
-    # Without agent management, the document Switch Console runs the agent of.
     assert detail["saved_by"] == "Switch"
-    assert detail["content"].startswith("version: 1")
+    assert detail["content"].startswith("version: 2")
     assert "Switch expert" in detail["name"]
 
     with pytest.raises(AgentRefused, match="comes with Switch"):
@@ -920,22 +915,6 @@ async def test_a_server_with_switch_buddy_offers_it_instead_of_the_expert(tools)
     ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
     assert "official:switch-buddy" in ids
     assert "official:switch-expert" not in ids
-
-
-@pytest.mark.asyncio
-async def test_official_room_templates_need_agent_management(tools):
-    """They create agents on the deployer's machines, which only agent
-    management can do."""
-    ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
-    assert "official:switch-expert" in ids
-    assert not any(
-        i.startswith("official:") and i != "official:switch-expert" for i in ids
-    )
-    with pytest.raises(AgentRefused) as refused:
-        await _as(
-            tools["agent_id"], get_template, template_id="official:incident-war-room"
-        )
-    assert refused.value.reason == "not_found"
 
 
 @pytest.mark.asyncio

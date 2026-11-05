@@ -183,8 +183,7 @@ bridge:
 **Switch Console.** A room whose `bridge` is `Switch Console` is on no
 messaging app. The person who runs the template is in it, so it shows up in
 their Switch Console chats; when an agent runs the template, that's the
-agent's owner. It names no `users`, and it needs the server's `group_chats`
-flag: without it the value is refused. A `bridge` param offers it after the
+agent's owner. It names no `users`. A `bridge` param offers it after the
 messaging apps, and `$first` never picks it, so a template gets it only by
 naming it, as a value or in a chain (`default: [Switch Console, $first]`).
 
@@ -686,7 +685,7 @@ Switch, under `official:` ids (`official:switch-expert`), first in every
 listing, to people and agents alike. Their source is in the repository
 (`core/switch_core/official_templates/`, the Switch expert copied from
 `switch-expert/`); where a template has a version for servers without agent
-management, the `agent_management` feature flag picks which one is served.
+management, Switch Console serves it to those older servers.
 Nobody can change or delete an official template: save a copy under another
 name to change it.
 

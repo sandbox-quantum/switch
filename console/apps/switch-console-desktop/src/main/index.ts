@@ -79,8 +79,8 @@ if (import.meta.env.DEV) {
 serverVersionChoice();
 
 const LOCAL_HOST_SHUTDOWN_MS = 5000;
-/** Long enough for switch-core's own stop grace, PostgreSQL and Mattermost's
- * containers; the window is gone by then, so nobody watches it. */
+/** Long enough for switch-core's own stop grace and PostgreSQL's container;
+ * the window is gone by then, so nobody watches it. */
 const LOCAL_SERVER_SHUTDOWN_MS = 30_000;
 
 if (process.platform === 'linux') {

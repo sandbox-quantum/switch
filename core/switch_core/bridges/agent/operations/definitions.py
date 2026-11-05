@@ -60,7 +60,7 @@ from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
@@ -971,15 +971,12 @@ async def create_room(
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
-    Rooms are bridged by default: omitting `bridge_id` uses the instance's
-    default bridge (on a standalone deployment, the bundled Mattermost), so the
-    room is readable by humans without the caller knowing the deployment's
-    topology. Pass `bridge_id` to choose a specific bridge — call
-    `list_bridges` to discover ids and present the choice to the user. Pass
-    `internal_only=True` for an agent-only room with no external channel.
-
-    If the instance has no default bridge configured and you omit `bridge_id`,
-    the room is created internal-only.
+    Omitting `bridge_id` uses the instance's default bridge if one is
+    configured; otherwise the room is unbridged and its people (its creator and
+    the `user_names` given) read it in Switch Console. Pass `bridge_id` to
+    choose a specific bridge — call `list_bridges` to discover ids and present
+    the choice to the user. Pass `internal_only=True` for an agent-only room
+    with no external channel.
 
     Args:
         name: Display name for the room.
@@ -2076,7 +2073,6 @@ def _agent_templates() -> AgentTemplates:
     return AgentTemplates(
         TemplateStore(),
         max_bytes=protocol.config.template_max_bytes,
-        agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=protocol.config.feature_flags[SWITCH_BUDDY],
         telemetry=protocol.telemetry,
     )

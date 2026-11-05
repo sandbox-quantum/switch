@@ -593,7 +593,6 @@ async def test_an_official_template_is_listed_served_and_never_changed(
         False,
     )
     detail = (await client.get("/templates/official:switch-expert")).json()
-    # The test config turns agent management on: the server-run document.
     assert detail["content"].startswith("version: 2")
     content = await client.get("/templates/official:switch-expert/content")
     assert content.status_code == 200

@@ -1,0 +1,36 @@
+{{- $name := printf "%s-mattermost-data" (include "switch.fullname" .) }}
+{{- $existing := lookup "v1" "PersistentVolumeClaim" .Release.Namespace $name }}
+{{- if or .Values.retainMattermostData $existing }}
+# shortcut: kept only so upgrades leave the old Mattermost volume behind; delete in a later release
+# Rendered where an earlier release created it (found by lookup) or when
+# retainMattermostData is set, for renderers without cluster access (helm
+# template, Argo CD, Flux), which see no lookup result. Nothing mounts it.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  {{- if $existing }}
+  accessModes:
+    {{- toYaml $existing.spec.accessModes | nindent 4 }}
+  {{- with $existing.spec.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $existing.spec.resources.requests.storage }}
+  {{- else }}
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.global.storageClass }}
+  storageClassName: {{ .Values.global.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.retainedMattermostDataSize }}
+  {{- end }}
+{{- end }}

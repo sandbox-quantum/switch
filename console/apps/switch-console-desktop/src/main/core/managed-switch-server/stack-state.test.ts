@@ -39,10 +39,8 @@ const secrets: LocalServerSecrets = {
   secretKeys: 'console:secret-keys-value',
   controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'gw-admin',
-  mattermostAdminPassword: 'mm-admin',
-  mattermostUserPassword: 'mm-user',
 };
-const ports = { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 };
+const ports = { gateway: 51000, api: 51001, postgres: 51003 };
 
 function envFor(overrides: Partial<LocalServerSecrets> = {}, version = '0.27.0'): string {
   return buildEnvFile({

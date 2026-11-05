@@ -108,7 +108,7 @@ def _released_as_served(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _buddy() -> OfficialTemplate:
-    buddy = official_template(BUDDY_ID, True, switch_buddy=True)
+    buddy = official_template(BUDDY_ID, switch_buddy=True)
     assert buddy is not None
     return buddy
 
@@ -133,7 +133,6 @@ def _updates(harness: Harness) -> TemplateUpdates:
         session_factory=harness.session_factory,
         management=harness.management.service,
         protocol=harness.protocol,
-        agent_management=True,
         switch_buddy=True,
     )
 

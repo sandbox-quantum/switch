@@ -14,8 +14,7 @@ global:
   # the endpoint and any load balancer stop routing to it while its replacement
   # is already serving, and the roll answers no requests with 502/503s. Only
   # rendered on Kubernetes 1.30+ (the native `sleep` lifecycle action); 0 turns
-  # it off. Mattermost rolls with Recreate, where there is no replacement to
-  # drain to, so it gets no hook. switch-core gets none either: with more than
+  # it off. switch-core gets none: with more than
   # one replica it drains itself after SIGTERM, leaving readiness and serving
   # on for a few seconds once it has handed its work over.
   preStopSleepSeconds: 5
@@ -101,10 +100,9 @@ ingress:
 #        postgresql.owner.existingSecret is set),
 #      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD (unless switchCore.oidc.enabled with
-#        passwordLoginEnabled false, and Mattermost off),
+#        passwordLoginEnabled false),
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
-#      CONTROLLER_TOKEN_SECRET (with the agent_management feature flag on),
-#      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
+#      CONTROLLER_TOKEN_SECRET,
 #      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled),
 #      WORKOS_API_KEY (if switchCore.organizationDirectory.mode is workos).
 secrets:
@@ -136,15 +134,12 @@ secrets:
   # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
   gatewayAdminEmail: ""
-  # Required while password login is on (or with Mattermost); may be left
-  # empty with switchCore.oidc.passwordLoginEnabled false.
+  # Required while password login is on; may be left empty with
+  # switchCore.oidc.passwordLoginEnabled false.
   gatewayAdminPassword: ""
-  mattermostAdminPassword: ""
-  mattermostUserPassword: ""
-  # Signs agent controllers' access tokens (required with "agent_management" in
-  # switchCore.featureFlags.enabled), at least 32 characters. Kept apart from
-  # secretKeys so rotating either never invalidates the other. Generate one
-  # with: openssl rand -hex 32
+  # Signs agent controllers' access tokens. Required, at least 32 characters.
+  # Kept apart from secretKeys so rotating either never invalidates the other.
+  # Generate one with: openssl rand -hex 32
   controllerTokenSecret: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
@@ -225,9 +220,7 @@ switchCore:
   googleWorkspaceClientSecret: ""
   hostedControllerSecret: ""
   # How many cloud machines may run at once; 0 means this server cannot run
-  # them. Cloud machines run the agent controller, so above 0 this needs the
-  # "agent_management" feature flag. The "hosted_agents" flag is what offers
-  # them in Switch Console.
+  # them. The "hosted_agents" flag is what offers them in Switch Console.
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
@@ -440,9 +433,8 @@ switchCore:
   # once every API client authenticating against this deployment handles it.
   tenantChoiceEnabled: false
   # Agent management: managed agents, and the agent controllers (Switch Console,
-  # or switch-agent-controller on a user's own machine) that run them. Turned on
-  # by the "agent_management" feature flag (featureFlags.enabled below). Needs
-  # secrets.controllerTokenSecret, and `/v1` routed to switch-core
+  # or switch-agent-controller on a user's own machine) that run them. Always
+  # on. Needs secrets.controllerTokenSecret, and `/v1` routed to switch-core
   # (ingress.agentApiPaths does by default).
   agentManagement:
     # How often a controller must report; one silent for three of these is
@@ -499,21 +491,21 @@ switchCore:
     # The package's SHA-256, 64 lowercase hex characters.
     sha256: ""
   # Private hosts switch-core may reach at a URL a tenant or agent supplied —
-  # a Mattermost server, an agent icon. Hostnames or CIDRs.
-  # Anything else that is not a public address is refused, and link-local and
-  # cloud metadata addresses are refused even when listed. The bundled
-  # Mattermost (mattermost.enabled) is added automatically.
+  # a Mattermost server, an agent icon. Hostnames or CIDRs. Anything else that
+  # is not a public address is refused, and link-local and cloud metadata
+  # addresses are refused even when listed.
   outbound:
     allowedPrivateHosts: []
   # Feature flags turned on for this deployment (FEATURE_FLAGS_ENABLED), e.g.
   # ["ecosystem.show_owners"]. Every other flag is off, and no one can change
   # them while the server runs. An unknown flag stops switch-core at startup.
-  # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
-  # hosted_agents, service_connections, agent_chats, follow_the_conversation,
-  # switch_buddy, buddy_slack_handoff, decision_routing,
+  # Known flags: ecosystem.show_owners, switch_cloud, hosted_agents,
+  # service_connections, follow_the_conversation, switch_buddy,
+  # buddy_slack_handoff, decision_routing,
   # additional_messaging_platforms (WhatsApp, Google Chat, Zulip, Signal,
-  # Matrix, Rocket.Chat, Webex), gateway_v2
-  # (development and staging only until the new dashboard layout is finished).
+  # Matrix, Rocket.Chat, Webex), gateway_v2 (development and staging only
+  # until the new dashboard layout is finished). agent_chats, group_chats
+  # and agent_management are accepted for old configs; always on.
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people
@@ -739,10 +731,9 @@ switchCore:
   # published here is the bad case — the cards carry buttons, and every press
   # fails. Enable this, or clear the address; do not leave the two disagreeing.
   #
-  # Any Mattermost inside the cluster needs only the Service port below, and
-  # the one this chart deploys is also told to accept that address when this is
-  # enabled — Mattermost refuses to call a private host it has not been given,
-  # so a server you manage yourself needs that entry adding even in-cluster.
+  # A Mattermost inside the cluster needs only the Service port below, plus
+  # that address in its AllowedUntrustedInternalConnections — Mattermost
+  # refuses to call a private host it has not been given.
   # `helm install` prints the callback_base_url to configure on the bridge. A
   # Mattermost OUTSIDE the cluster needs a route you own as well: this is a
   # port switch-core binds, not necessarily a published host port, and the
@@ -864,6 +855,14 @@ retainTuwunelData: true
 # Must match what the volume was created with. Shrinking a PVC is rejected.
 retainedTuwunelDataSize: 10Gi
 
+# ── Retained Mattermost disk ──────────────────────────────────────────────────
+# The chart no longer deploys Mattermost. An upgrade that finds its old volume
+# keeps it (annotated keep). Renderers without cluster access (helm template,
+# Argo CD, Flux) cannot find it and would prune it: set true there to keep it.
+retainMattermostData: false
+# Must match what the volume was created with (the old mattermost.persistence.size).
+retainedMattermostDataSize: 2Gi
+
 # ── Client identity ───────────────────────────────────────────────────────────
 # The server half of every client id (@localpart:<serverName>). Nothing is
 # contacted at it — it is a naming scheme, not an address — but the ids are
@@ -871,38 +870,6 @@ retainedTuwunelDataSize: 10Gi
 # account.
 clientIdentity:
   serverName: "switch.local"
-
-# ── Mattermost ───────────────────────────────────────────────────────────────
-mattermost:
-  enabled: true
-  # Pinned for reproducibility (floating :latest makes installs non-deterministic
-  # and can silently jump major versions). Mattermost does not support
-  # downgrades, so bump this deliberately. Requires >= v10.2 (see the API post
-  # deletion setting below).
-  image: mattermost/mattermost-team-edition:11.8.3
-  imagePullPolicy: IfNotPresent
-  adminUser: admin
-  teamName: switch
-  regularUser: user
-  siteUrl: ""
-  # User-facing Mattermost URL, used to build channel deeplinks (the
-  # mattermost:// links surfaced in Switch Console). Distinct from the internal
-  # cluster address Switch connects to. Empty → falls back to the internal URL.
-  publicUrl: ""
-  maxUsersPerTeam: 1000
-  replicaCount: 1
-  service:
-    type: ClusterIP
-    port: 8065
-  persistence:
-    size: 2Gi
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "250m"
-    limits:
-      memory: "512Mi"
-      cpu: "500m"
 
 # ── Decision service (auto-route) ─────────────────────────────────────────────
 # The service switch-core asks who should answer an untagged message in a room
@@ -1097,14 +1064,6 @@ decision:
     existingSecret: ""
     existingSecretKey: token
 
-# ── Setup Job ─────────────────────────────────────────────────────────────────
-setup:
-  image: setup:latest
-  # Empty: IfNotPresent when the image is pinned by digest (as in a published
-  # chart), Always otherwise. Set it to override.
-  imagePullPolicy: ""
-  backoffLimit: 5
-
 # ── PostgreSQL ────────────────────────────────────────────────────────────────
 postgresql:
   # managed  -> this chart runs an in-cluster Postgres StatefulSet (below).
@@ -1113,8 +1072,8 @@ postgresql:
   #             connects to postgresql.external.* instead.
   mode: managed
 
-  # TLS mode for connecting to Postgres, applied to BOTH switch-core (asyncpg)
-  # and Mattermost. libpq/asyncpg values: disable | allow | prefer | require |
+  # TLS mode for connecting to Postgres, applied to switch-core (asyncpg).
+  # libpq/asyncpg values: disable | allow | prefer | require |
   # verify-ca | verify-full. Keep "disable" for the in-cluster managed DB;
   # managed cloud databases generally require "require" or stricter.
   sslMode: disable
@@ -1129,7 +1088,7 @@ postgresql:
   #
   # Supply it inline as `contents` (rendered into a chart-managed ConfigMap) or
   # name a ConfigMap you already have — not both. It is mounted into
-  # switch-core, the migration Job and Mattermost, all of which connect.
+  # switch-core and the migration Job, both of which connect.
   #
   # verify-full additionally checks the hostname, so external.host must be the
   # name the certificate was issued for — for RDS the instance endpoint, not a
@@ -1148,7 +1107,7 @@ postgresql:
   # past the server's TTL loses its connection — so under-sizing this shows up
   # as fleet-wide agent disconnects, not as database errors.
   # size + maxOverflow must stay under Postgres max_connections, remembering
-  # Mattermost and Keycloak share the same instance. The pool is per pod: every
+  # anything else sharing the same instance. The pool is per pod: every
   # replica holds its own, plus four LISTEN connections (and one for the
   # database sampler when metrics are exported), and a rolling deploy of
   # several replicas runs one extra pod. switch-core adds this up at boot
@@ -1244,14 +1203,6 @@ postgresql:
   # next release that carries a migration. Set owner.username at the same time
   # you repoint external.username, not afterwards.
   #
-  # Setting it also decides what Mattermost connects as. In existing mode the
-  # chart has one username value for both roles, so Mattermost follows
-  # external.username unless an owner is configured — onto the restricted role,
-  # which has no rights in the "mattermost" database and cannot create or
-  # migrate its schema. With owner.username set, Mattermost uses the owner and
-  # switch-core alone uses the restricted role. See switch.mattermostDbUser in
-  # templates/_helpers.tpl.
-  #
   # mode: managed can create the runtime role itself (see
   # postgresql.managed.runtimeUsername, templates/postgresql/configmap-init.yaml
   # for fresh installs and templates/switch-core/create-runtime-role-job.yaml
@@ -1292,7 +1243,7 @@ postgresql:
   requireRestrictedRole: true
 
   # ── mode: existing ──────────────────────────────────────────────────────────
-  # Only used when mode=existing. The `switch` and `mattermost` databases and
+  # Only used when mode=existing. The `switch` database and
   # the user must already exist; the password comes from the Secret above.
   external:
     host: ""

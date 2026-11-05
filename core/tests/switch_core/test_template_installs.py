@@ -20,7 +20,7 @@ from switch_core.template_installs import (
 
 
 def _buddy() -> Any:
-    buddy = official_template("official:switch-buddy", True, switch_buddy=True)
+    buddy = official_template("official:switch-buddy", switch_buddy=True)
     assert buddy is not None
     return buddy
 
@@ -32,32 +32,20 @@ def test_equal_values_have_equal_fingerprints_and_none_is_a_value():
 
 
 def test_an_official_document_is_recognised_word_for_word():
-    source = vouched_source(
-        _buddy().content, None, agent_management=True, switch_buddy=True
-    )
+    source = vouched_source(_buddy().content, None, switch_buddy=True)
     assert source == InstallSource(
         "official", "official:switch-buddy", "switch-buddy", _buddy().version
     )
 
 
 def test_an_official_document_is_not_recognised_where_it_is_not_served():
-    assert (
-        vouched_source(
-            _buddy().content, None, agent_management=True, switch_buddy=False
-        )
-        is None
-    )
+    assert vouched_source(_buddy().content, None, switch_buddy=False) is None
 
 
 def test_a_changed_document_has_no_source_even_naming_its_template():
     changed = _buddy().content + "\n# mine\n"
-    assert (
-        vouched_source(changed, None, agent_management=True, switch_buddy=True) is None
-    )
-    assert (
-        vouched_source(changed, _buddy(), agent_management=True, switch_buddy=True)
-        is None
-    )
+    assert vouched_source(changed, None, switch_buddy=True) is None
+    assert vouched_source(changed, _buddy(), switch_buddy=True) is None
 
 
 def test_a_saved_template_is_the_source_of_its_own_document():
@@ -66,9 +54,9 @@ def test_a_saved_template_is_the_source_of_its_own_document():
     )
     saved.content = "agent: {}\n"
     saved.version = 4
-    assert vouched_source(
-        "agent: {}\n", saved, agent_management=True, switch_buddy=True
-    ) == InstallSource("saved", "t-1", "helper", 4)
+    assert vouched_source("agent: {}\n", saved, switch_buddy=True) == InstallSource(
+        "saved", "t-1", "helper", 4
+    )
 
 
 def test_agents_are_rendered_by_their_template_key():

@@ -27,7 +27,6 @@ import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon'
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast as showToast } from '@renderer/lib/hooks/use-toast';
-import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -45,10 +44,6 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
-import {
-  ambiguousBundledBridgeMessage,
-  bundledMattermostBridge,
-} from '@shared/core/switch-servers/bundled-bridge';
 import type {
   LinkedIdentity,
   PendingIdentity,
@@ -134,12 +129,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const administers = administersWorkspaceInScope(serverId);
   const isAdmin = administers && !personal;
-  const flags = useFeatureFlags(serverId);
-  // With chats on, Switch Console's own chats and rooms need no messaging app.
-  const chatsWithoutApp = flags.agent_chats || flags.group_chats;
-  // Only a stack Switch Console runs has a chat whose credentials it generated and
-  // can therefore show; anyone else's Mattermost is their own to hand out.
-  const isManaged = !!switchServersStore.servers.find((s) => s.id === serverId)?.managed;
 
   const bridgesQuery = useQuery({
     queryKey: ['remote-bridges', workspaceId],
@@ -148,23 +137,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   });
 
   const bridges = useMemo(() => orderBridges(bridgesQuery.data ?? []), [bridgesQuery.data]);
-  // Only the bundled Mattermost has those generated credentials; a Mattermost
-  // the user connected themselves beside it does not.
-  const bundledChoice = useMemo(
-    () => (isManaged ? bundledMattermostBridge(bridges) : null),
-    [isManaged, bridges]
-  );
-  const bundledBridgeId = bundledChoice?.kind === 'bundled' ? bundledChoice.bridge.id : null;
-  const ambiguousBundledIds =
-    bundledChoice?.kind === 'ambiguous' ? bundledChoice.bridgeIds.join(',') : null;
-  useEffect(() => {
-    if (ambiguousBundledIds !== null) {
-      log.warn(
-        `Not showing the bundled Mattermost sign-in. ${ambiguousBundledBridgeMessage(ambiguousBundledIds.split(','))}`,
-        { serverId }
-      );
-    }
-  }, [ambiguousBundledIds, serverId]);
 
   // Which platforms the signed-in user may connect another chat on. Asked only
   // once there is a connection whose chats arrive that way, which also keeps
@@ -390,13 +362,11 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
         </p>
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">
-          {chatsWithoutApp
-            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : administers ? 'Connect one from Admin to also reach your agents from Slack, Discord and others.' : 'An admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
-            : isAdmin
-              ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
-              : administers
-                ? 'No messaging app is connected. Connect one from Admin.'
-                : 'No messaging app is connected. An admin of this workspace can connect one.'}
+          {isAdmin
+            ? 'No messaging app is connected. Rooms are chats in Switch Console; connect one to reach them from Slack, Discord and others too.'
+            : administers
+              ? 'No messaging app is connected. Rooms are chats in Switch Console; connect one from Admin to reach them from Slack, Discord and others too.'
+              : 'No messaging app is connected. An admin of this workspace can connect one.'}
         </p>
       ) : (
         <div className="mt-2 flex flex-col">
@@ -404,7 +374,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
             <Fragment key={bridge.id}>
               <MessagingAppRow
                 workspaceId={workspaceId}
-                serverId={serverId}
                 bridge={bridge}
                 /* Nothing is drawn in the identity column until the list
                     arrives: "not linked" and "not known yet" look identical,
@@ -427,7 +396,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                       }
                     : null
                 }
-                showBundledSignIn={bridge.id === bundledBridgeId}
                 isAdmin={isAdmin}
                 personal={personal}
                 savingChannelCreation={savingBridgeId === bridge.id}
@@ -515,20 +483,18 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
  * Only Link stays outside the menu: an app you have not claimed an account on
  * has exactly one thing worth doing to it, and burying that is what would make
  * the row's warning unactionable. Everything else — changing or dropping the
- * account, requiring older links be confirmed, channel creation, the bundled
- * chat's credentials, opening the app, replacing its token, disconnecting it —
+ * account, requiring older links be confirmed, channel creation, opening the
+ * app, replacing its token, disconnecting it —
  * is in the menu.
  */
 export function MessagingAppRow({
   workspaceId,
-  serverId,
   bridge,
   identities,
   pending,
   currentUserId,
   onReleased,
   olderLinks,
-  showBundledSignIn,
   isAdmin,
   personal = false,
   savingChannelCreation,
@@ -540,8 +506,6 @@ export function MessagingAppRow({
   /** Null while this install has not resolved the server's workspace; the
    *  identity actions are the only thing that needs it, and they wait. */
   workspaceId: string | null;
-  /** Only for the bundled chat's sign-in, which is about the gateway. */
-  serverId: string;
   bridge: RemoteBridge;
   /** Accounts linked to the user in this workspace, or null while unknown. */
   identities: LinkedIdentity[] | null;
@@ -552,7 +516,6 @@ export function MessagingAppRow({
   /** Set for an admin when the app has links made before links had to be
    *  confirmed: how many, and how to stop trusting them. */
   olderLinks: { count: number; onRequireConfirmation: () => void } | null;
-  showBundledSignIn: boolean;
   isAdmin: boolean;
   /** Only your own side of the app, as Settings shows it: no workspace settings in the menu. */
   personal?: boolean;
@@ -566,7 +529,6 @@ export function MessagingAppRow({
   onDisconnect: () => void;
 }) {
   const showClaimIdentity = useShowModal('claimIdentityModal');
-  const showBundledChatSignIn = useShowModal('bundledChatSignInModal');
   const showTeamsPlacement = useShowModal('teamsPlacementModal');
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
@@ -905,17 +867,7 @@ export function MessagingAppRow({
               </>
             )}
 
-            {(showBundledSignIn || bridge.homeUrl) && <DropdownMenuSeparator />}
-            {showBundledSignIn && (
-              <DropdownMenuItem
-                onClick={() =>
-                  showBundledChatSignIn({ serverId, bridgeDisplayName: bridge.displayName })
-                }
-              >
-                <KeyRound className="size-4" />
-                Sign-in details…
-              </DropdownMenuItem>
-            )}
+            {bridge.homeUrl && <DropdownMenuSeparator />}
             {/* Offered only when the link resolves — an older server, or a bridge
               that is down, reports none. */}
             {bridge.homeUrl && (

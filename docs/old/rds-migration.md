@@ -29,9 +29,7 @@ Read this before choosing an instance shape; two of these have bitten people.
 - **Attachments live in the database.** `media_blobs.data` is a `bytea` column,
   so uploads count against storage and against backup size. Size the volume
   against attachment traffic, not against row counts.
-- **Two databases on one instance.** The chart provisions `switch` and
-  `mattermost` on the same server. Both move together, or the Mattermost bridge
-  loses its state.
+- **Database provisioning.** The chart provisions the `switch` database.
 - **Two roles, not one.** Row-level security is inert against the role that
   owns the tables it protects — Postgres exempts a table's owner from its own
   policies — so the connection switch-core serves requests as must be a
@@ -46,7 +44,7 @@ Read this before choosing an instance shape; two of these have bitten people.
   on every authenticated request and every agent connection beats every 2s, so
   the pool is a function of fleet size. RDS derives `max_connections` from
   instance memory by default — check the resolved value against
-  `replicas × 41 + Mattermost's pool + headroom` rather than assuming.
+  `replicas × 41 + headroom` rather than assuming.
 
 ## 2. Instance shape
 
@@ -75,7 +73,7 @@ The chart can already point at an external database:
 `postgresql.mode: existing` skips the StatefulSet and connects to
 `postgresql.external.{host,port,username,database}`, with the password from a
 Secret (`existingSecret` supports external-secrets). `sslMode` is plumbed
-through to both switch-core and Mattermost.
+through to switch-core.
 
 What was missing was a certificate authority. A verifying TLS mode had no way
 to be told which one to trust, so `verify-ca` and `verify-full` fell back to
@@ -88,7 +86,7 @@ halves of that are now closed:
   rather than discovered on the first connection.
 - `postgresql.caBundle` in the chart carries the bundle — inline, or the name
   of a ConfigMap you already have — and mounts it into everything that connects:
-  switch-core, the migration Job and Mattermost. A verifying `sslMode` with no
+  switch-core and the migration Job. A verifying `sslMode` with no
   bundle, or a bundle with a mode that would ignore it, fails at template time
   rather than rolling out pods that cannot connect.
 
@@ -178,7 +176,7 @@ so there is nothing to reset behind a replicated cutover.
 
 1. Provision the instance (§2) and confirm it is reachable from the cluster and
    from nowhere else.
-2. Create the `switch` and `mattermost` databases and the application role. The
+2. Create the `switch` database and the application role. The
    RDS master user is not a superuser, and `pg_dumpall` needs privileges it does
    not have — so recreate roles by hand rather than restoring a globals dump.
 
@@ -190,10 +188,12 @@ so there is nothing to reset behind a replicated cutover.
    ```sql
    CREATE ROLE switch_app LOGIN PASSWORD '<generate one>'
      NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+   CREATE DATABASE switch OWNER <master user>;
+   GRANT CONNECT ON DATABASE switch TO switch_app;
    ```
 
    That is the only manual step in the database. Nothing here grants
-   `switch_app` anything on `switch` or `mattermost` — switch-core does that
+   `switch_app` anything on `switch` — switch-core does that
    itself at boot, from the owner connection (the RDS master user, over
    `DB_OWNER_USER` / `DB_OWNER_PASSWORD`), immediately after running Alembic.
    The master user stays the schema owner throughout; it is configured as the
@@ -222,10 +222,7 @@ so there is nothing to reset behind a replicated cutover.
    - **`external.username` moved, `owner.username` left empty.** switch-core
      has no owner to migrate as, so it migrates as the restricted role. With
      nothing pending that is a no-op and the deployment comes up clean; the
-     next release carrying a migration dies at boot. Mattermost breaks
-     immediately, though, because in existing mode it follows
-     `external.username` unless an owner is configured, and the restricted
-     role has no rights in the `mattermost` database.
+     next release carrying a migration dies at boot.
    - **`owner.username` set, `external.username` left at the master user.**
      switch-core refuses to serve: the runtime connection owns the tables its
      own policies protect, so the policies are inert against it and tenants
