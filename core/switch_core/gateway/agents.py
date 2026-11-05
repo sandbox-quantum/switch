@@ -12,6 +12,7 @@ from switch_core.accounts.transfer import (
     agent_transfer_facts,
     agent_transfer_refusal,
 )
+from switch_core.addressing import never_allows
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
 from switch_core.agent_icon import (
     InvalidIconUrl,
@@ -811,6 +812,16 @@ async def update_addressing_policy(
             detail="Only the agent's owner or an admin can change its addressing policy.",
         )
 
+    dead = [
+        f"rule {number}: {why}"
+        for number, rule in enumerate(req.policy.rules if req.policy else [], 1)
+        if (why := never_allows(rule)) is not None
+    ]
+    if dead:
+        raise HTTPException(
+            status_code=422,
+            detail="These rules can never let anyone in: " + "; ".join(dead) + ".",
+        )
     stored = req.policy.model_dump() if req.policy is not None else None
     await agent_store.update(session, agent_id, addressing_policy=stored)
     await session.commit()

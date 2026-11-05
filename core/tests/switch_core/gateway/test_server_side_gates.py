@@ -245,3 +245,41 @@ async def test_attaching_what_is_already_attached_changes_nothing(
                 ).all()
     assert all(status < 300 for status in statuses), statuses
     assert len(held) == 1
+
+
+async def test_saving_an_addressing_rule_that_can_never_match_is_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """It would let nobody in while looking as if it did, and a policy of
+    nothing else would shut the agent off, its owner included."""
+    gateway = build_gateway(session_factory)
+    people = await seed_people(session_factory)
+    headers = people.headers(Persona.OWNER)
+    async with client(gateway) as http:
+        world = World(session_factory, people, "dead-rule", http, gateway)
+        path = f"/gateway/agents/{await world.agent()}/addressing-policy"
+        dead = await http.put(
+            path,
+            json={
+                "policy": {
+                    "rules": [
+                        {"users": [], "agents": [], "owner": True},
+                        {"rooms": [], "owner": True},
+                    ]
+                }
+            },
+            headers=headers,
+        )
+        kept = (
+            await http.get(path.removesuffix("/addressing-policy"), headers=headers)
+        ).json()
+        owner_only = await http.put(
+            path,
+            json={"policy": {"rules": [{"users": [], "agents": [], "owner": True}]}},
+            headers=headers,
+        )
+    assert dead.status_code == 422, dead.text
+    assert "rule 2: it names no rooms" in dead.json()["detail"]
+    assert "rule 1" not in dead.json()["detail"]
+    assert kept["addressing_policy"] is None
+    assert owner_only.status_code == 200, owner_only.text

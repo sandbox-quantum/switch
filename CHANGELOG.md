@@ -341,6 +341,12 @@ version of their own to them without also giving them a release of their own.
   `DELETE /documents/{id}` refuse one with a 409, and its library flags say no.
 - **Revoking an invitation that has already ended is refused** with a 409,
   rather than rewriting when, and by whom, it ended.
+- **An addressing rule that can never let anyone in is refused when it is
+  saved**, with a 422 naming the rule and why: one that names no rooms or no
+  room groups, or lets in no people, no agents, not the owner and not the
+  platform. Next to other rules it changed nothing while looking as if it did,
+  and a policy of only such rules shut the agent off, its owner included.
+  Policies already saved are left as they are.
 - **One role runs a workspace: owner merges into admin.** Every workspace
   `owner` becomes an `admin`, and every admin now manages every member, other
   admins included, as well as everything an owner could. A workspace always
