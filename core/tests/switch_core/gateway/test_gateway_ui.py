@@ -428,6 +428,7 @@ def test_a_page_carries_the_csp_and_refuses_framing(dist: Path) -> None:
             "img-src 'self' blob: data:"
         )
         assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.parametrize("config", _GATEWAY_NGINX, ids=lambda path: path.name)

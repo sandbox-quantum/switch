@@ -192,6 +192,8 @@ class GatewayUiMiddleware:
                 # W.8: no framing, scripts from the server only (origin_check).
                 "Content-Security-Policy": CONTENT_SECURITY_POLICY,
                 "X-Frame-Options": "DENY",
+                # The same set the gateway's nginx sends on these pages.
+                "X-Content-Type-Options": "nosniff",
             },
         )
         await response(scope, receive, send)
