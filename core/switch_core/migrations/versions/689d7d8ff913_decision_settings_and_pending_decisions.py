@@ -23,7 +23,7 @@ Expand only: a process from before this revision never reads either table,
 and decides untagged messages in memory, as it always did.
 
 Revision ID: 689d7d8ff913
-Revises: c3d9a1f7b246
+Revises: a3d9f6c2b871
 Create Date: 2026-10-27 00:00:00.000000
 
 """
@@ -34,7 +34,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "689d7d8ff913"
-down_revision: str | Sequence[str] | None = "c3d9a1f7b246"
+down_revision: str | Sequence[str] | None = "a3d9f6c2b871"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
