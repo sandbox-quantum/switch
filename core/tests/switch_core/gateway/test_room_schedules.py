@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import TENANT_ZERO_ID, Room, RoomSchedule, User
@@ -17,10 +18,117 @@ from switch_core.gateway.room_schedules import (
     list_schedules,
     pause_schedule,
 )
-from tests.routing import make_room
-from tests.switch_core.test_room_scheduler_atomic import setup_schedule
+from switch_core.scheduling.runner import RoomScheduler
+from tests.routing import make_room, process_on
+from tests.switch_core.test_room_scheduler_atomic import (
+    counts,
+    scheduler,
+    setup_schedule,
+)
 
 SessionFactory = async_sessionmaker[AsyncSession]
+
+
+async def test_redundant_resume_preserves_due_work_and_author(
+    session_factory: SessionFactory,
+) -> None:
+    schedule_id = await setup_schedule(session_factory)
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        row = await session.get(RoomSchedule, schedule_id)
+        assert row is not None
+        row.cron = "* * * * *"
+        original_due, original_author = row.next_run_at, row.author_id
+        other = User(name="admin", email="admin@example.invalid", role="admin")
+        session.add(other)
+        await session.commit()
+        result = await pause_schedule(
+            row.room_id,
+            row.id,
+            SchedulePause(paused=False),
+            session,
+            RoomStore(),
+            other,
+            True,
+        )
+        assert result.next_run_at == original_due
+        assert row.author_id == original_author
+    worker = RoomScheduler(session_factory, process_on(session_factory).router)
+    assert await worker.fire_one(TENANT_ZERO_ID)
+    assert not await worker.fire_one(TENANT_ZERO_ID)
+    assert (await counts(session_factory))[:2] == (1, 1)
+
+
+async def test_list_batches_targets_and_history_with_empty_rows(
+    session_factory: SessionFactory,
+) -> None:
+    schedule_id = await setup_schedule(session_factory)
+    assert await scheduler(session_factory).fire_one(TENANT_ZERO_ID)
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        row = await session.get(RoomSchedule, schedule_id)
+        assert row is not None
+        user = await session.get(User, row.author_id)
+        assert user is not None
+        empty = RoomSchedule(
+            room_id=row.room_id,
+            author_id=user.id,
+            body="No targets remain",
+            timezone="UTC",
+            paused=True,
+        )
+        session.add(empty)
+        await session.commit()
+        statements: list[str] = []
+
+        def record(connection, cursor, statement, parameters, context, executemany):
+            if (
+                statement.lstrip().upper().startswith("SELECT")
+                and "room_schedule" in statement
+            ):
+                statements.append(statement)
+
+        engine = session.get_bind()
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            rows = {
+                item.id: item
+                for item in await list_schedules(
+                    row.room_id, session, RoomStore(), user, False
+                )
+            }
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        assert len(statements) == 3
+        assert rows[row.id].agent_ids and rows[row.id].last_run_at is not None
+        assert rows[empty.id].agent_ids == []
+        assert rows[empty.id].last_run_at is None
+        await delete_schedule(row.room_id, row.id, session, RoomStore(), user, False)
+        await delete_schedule(row.room_id, empty.id, session, RoomStore(), user, False)
+        assert (
+            await list_schedules(row.room_id, session, RoomStore(), user, False) == []
+        )
+
+
+async def test_completed_one_off_still_requires_edit_before_resume(
+    session_factory: SessionFactory,
+) -> None:
+    schedule_id = await setup_schedule(session_factory)
+    assert await scheduler(session_factory).fire_one(TENANT_ZERO_ID)
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        row = await session.get(RoomSchedule, schedule_id)
+        assert row is not None
+        user = await session.get(User, row.author_id)
+        assert user is not None
+        with pytest.raises(HTTPException) as exc:
+            await pause_schedule(
+                row.room_id,
+                row.id,
+                SchedulePause(paused=False),
+                session,
+                RoomStore(),
+                user,
+                False,
+            )
+        assert exc.value.status_code == 409
 
 
 def request(agent_id: str) -> ScheduleInput:

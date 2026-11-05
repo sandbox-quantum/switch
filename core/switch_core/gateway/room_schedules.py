@@ -107,35 +107,50 @@ async def find_schedule(
 
 
 async def detail(session: AsyncSession, row: RoomSchedule) -> ScheduleDetail:
-    targets = list(
-        (
-            await session.scalars(
-                select(RoomScheduleTarget.agent_id)
-                .where(
-                    RoomScheduleTarget.schedule_id == row.id,
-                    RoomScheduleTarget.tenant_id == require_tenant_id(),
-                )
-                .order_by(RoomScheduleTarget.agent_id)
-            )
-        ).all()
-    )
-    last_run = await session.scalar(
-        select(func.max(RoomScheduleRun.scheduled_for)).where(
-            RoomScheduleRun.schedule_id == row.id,
-            RoomScheduleRun.tenant_id == require_tenant_id(),
+    return (await details(session, [row]))[0]
+
+
+async def details(
+    session: AsyncSession, rows: list[RoomSchedule]
+) -> list[ScheduleDetail]:
+    if not rows:
+        return []
+    ids = [row.id for row in rows]
+    targets: dict[str, list[str]] = {}
+    for schedule_id, agent_id in await session.execute(
+        select(RoomScheduleTarget.schedule_id, RoomScheduleTarget.agent_id)
+        .where(
+            RoomScheduleTarget.schedule_id.in_(ids),
+            RoomScheduleTarget.tenant_id == require_tenant_id(),
         )
-    )
-    return ScheduleDetail(
-        id=row.id,
-        body=row.body,
-        agent_ids=targets,
-        timezone=row.timezone,
-        cron=row.cron,
-        next_run_at=row.next_run_at,
-        paused=row.paused,
-        last_error=row.last_error,
-        last_run_at=last_run,
-    )
+        .order_by(RoomScheduleTarget.agent_id)
+    ):
+        targets.setdefault(schedule_id, []).append(agent_id)
+    last_runs = {
+        schedule_id: last_run
+        for schedule_id, last_run in await session.execute(
+            select(RoomScheduleRun.schedule_id, func.max(RoomScheduleRun.scheduled_for))
+            .where(
+                RoomScheduleRun.schedule_id.in_(ids),
+                RoomScheduleRun.tenant_id == require_tenant_id(),
+            )
+            .group_by(RoomScheduleRun.schedule_id)
+        )
+    }
+    return [
+        ScheduleDetail(
+            id=row.id,
+            body=row.body,
+            agent_ids=targets.get(row.id, []),
+            timezone=row.timezone,
+            cron=row.cron,
+            next_run_at=row.next_run_at,
+            paused=row.paused,
+            last_error=row.last_error,
+            last_run_at=last_runs.get(row.id),
+        )
+        for row in rows
+    ]
 
 
 async def apply_input(
@@ -197,7 +212,7 @@ async def list_schedules(
             .order_by(RoomSchedule.id)
         )
     ).all()
-    return [await detail(session, row) for row in rows]
+    return await details(session, list(rows))
 
 
 @router.post("/rooms/{room_id}/schedules", status_code=201)
@@ -251,9 +266,9 @@ async def pause_schedule(
 ) -> ScheduleDetail:
     await managed_room(session, rooms, room_id, user, is_admin)
     row = await find_schedule(session, room_id, schedule_id)
-    if not data.paused:
-        if row.next_run_at is None and row.cron is None:
-            raise HTTPException(409, "Edit the time to run a completed schedule again")
+    if not data.paused and row.next_run_at is None and row.cron is None:
+        raise HTTPException(409, "Edit the time to run a completed schedule again")
+    if not data.paused and row.paused:
         if row.cron:
             now = (await session.execute(select(func.clock_timestamp()))).scalar_one()
             try:

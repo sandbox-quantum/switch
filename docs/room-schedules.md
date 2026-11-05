@@ -47,7 +47,12 @@ before a pause or deletion is accepted remains in the room.
 ## Reliability
 
 The message, its routed agent events, the run receipt, and the next scheduled
-time are written in one PostgreSQL transaction. Failure before the commit leaves
+time are written in one PostgreSQL transaction. The receipt records the committed
+room post. As with ordinary mentions, Switch can log an individual agent's routing
+failure and still accept the room post. Recovery after a missed notification
+applies to agent events successfully stored by the router.
+
+Failure before the commit leaves
 the occurrence due. After commit, another worker sees the advanced schedule and
 does not create the occurrence again. All server replicas may run the scheduler;
 row locks ensure only one claims each due occurrence.

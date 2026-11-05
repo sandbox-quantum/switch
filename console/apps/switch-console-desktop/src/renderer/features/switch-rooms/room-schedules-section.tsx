@@ -12,6 +12,7 @@ import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import type { RemoteRoomSchedule } from '@shared/core/switch-servers/room-schedules';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
+import { scheduleTime } from './schedule-time';
 
 export const RoomSchedulesSection = observer(function RoomSchedulesSection({
   workspaceId,
@@ -132,7 +133,7 @@ export const RoomSchedulesSection = observer(function RoomSchedulesSection({
             {row.paused
               ? 'Paused'
               : row.nextRunAt
-                ? `Next: ${new Date(row.nextRunAt).toLocaleString(undefined, { timeZone: row.timezone })} (${row.timezone})`
+                ? `Next: ${scheduleTime(row.nextRunAt, row.timezone)}`
                 : 'Completed'}
             {row.cron ? ` · ${row.cron}` : ''}
           </p>
