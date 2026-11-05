@@ -365,7 +365,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, "hubspot"}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -389,6 +389,11 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
+        assert apps["hubspot"]["redirect_uris"] == [
+            f"http://127.0.0.1:{port}/switch-services/callback"
+            for port in [39241, 39242, 39243, 39244, 39245]
+        ] + [f"{PUBLIC}/gateway/service-connections/hubspot/flows/callback"]
+        assert apps["hubspot"]["scopes"] == []
         assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
     async def test_an_unknown_service_is_not_found(
