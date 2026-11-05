@@ -329,3 +329,83 @@ describe("the Vertex key file", () => {
     expect(JSON.parse(opened.credential).credentials).toEqual(KEY);
   });
 });
+
+/**
+ * Engineer-4's vectors (`eng4-seal-vectors-v1.json`, sha256 a63a018ac2b8…),
+ * made with Node and opened by the real `openProviderLogin`: a plain API key,
+ * and an auth-json login with non-ASCII text. Test-only keys from public labels.
+ */
+const NODE_VECTORS = [
+  {
+    "name": "api-key",
+    "publicKey": "ktZe7WNmMHC+rVeoS095CZx8Rg9d7rtzvPa8VRGUDF0=",
+    "ephemeralPrivate": "ENmIXLuUfREaW0TlQHDnTrG4ywg19amc2TJTn1qETMQ=",
+    "nonce": "4LlQffjWW+qLZQvX",
+    "controllerId": "ctrl-test-0001",
+    "provider": "claude",
+    "login": {
+      "kind": "api-key",
+      "credential": "sk-test-NOT-A-REAL-KEY"
+    },
+    "expected": {
+      "alg": "X25519-HKDF-SHA256-A256GCM",
+      "key_id": "c1fede7e7d831d12",
+      "ephemeral_key": "oNmNRicMx0Iu+8N8pnIHvxDiayoblRKJMkfY28z8yzk=",
+      "nonce": "4LlQffjWW+qLZQvX",
+      "ciphertext": "czAlbcaxteqT0lp1ATTCNJkNLCHcbeTc+GU1Ab6et3o2R7IIN9XSh5S9tSPqyF+C3iQEFrEbuBCzv3iKHLlxfO6yEeLaFxQ3"
+    }
+  },
+  {
+    "name": "auth-json unicode",
+    "publicKey": "coH6ePipAfZod4QkeGOfrCRQPoFkiNe1MW0y+ddZ2gA=",
+    "ephemeralPrivate": "y0dcrILl+27bT6rhhk1+P9nC001frBaeFveR8VCkD8g=",
+    "nonce": "UjaGXxwTPp9lGsYF",
+    "controllerId": "ctrl-test-0002",
+    "provider": "codex",
+    "login": {
+      "kind": "auth-json",
+      "credential": "{\"note\":\"tëst ✓ — not real\"}"
+    },
+    "expected": {
+      "alg": "X25519-HKDF-SHA256-A256GCM",
+      "key_id": "a83f453063543d41",
+      "ephemeral_key": "FRhstdyAASZkvQ7FcnN/PqweMq9af4y/8/04doZhzA0=",
+      "nonce": "UjaGXxwTPp9lGsYF",
+      "ciphertext": "IByKSYBvCFrbt5d1JCBSWyjh2UJrNQStKF2n5vaVMJXYKrODttTFHbW9tH8/mvZDnEeLCdfMOqOmSC19c7MERnS7jMXmC+30/yX7qhsEZ12CMDmdps6OHqU="
+    }
+  }
+] as const;
+
+describe("engineer-4's Node vectors", () => {
+  it.each(NODE_VECTORS.map((v) => [v.name, v] as const))("%s: matches byte for byte", async (_name, v) => {
+    const pkcs8 = new Uint8Array([
+      0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
+      ...bytes(v.ephemeralPrivate),
+    ]);
+    const privateKey = await subtle.importKey("pkcs8", pkcs8, { name: "X25519" }, false, ["deriveBits"]);
+    const fixedPair = {
+      privateKey,
+      publicKey: await subtle.importKey("raw", bytes(v.expected.ephemeral_key), { name: "X25519" }, true, []),
+    };
+    const keys = vi.spyOn(subtle, "generateKey").mockResolvedValue(fixedPair as never);
+    const random = vi
+      .spyOn(globalThis.crypto, "getRandomValues")
+      .mockImplementation(<T extends ArrayBufferView | null>(array: T): T => {
+        (array as unknown as Uint8Array).set(bytes(v.nonce));
+        return array;
+      });
+    try {
+      const sealed = await sealLogin({
+        publicKey: v.publicKey,
+        keyId: v.expected.key_id,
+        controllerId: v.controllerId,
+        provider: v.provider,
+        login: v.login as ProviderLogin,
+      });
+      expect(sealed).toEqual(v.expected);
+    } finally {
+      keys.mockRestore();
+      random.mockRestore();
+    }
+  });
+});
