@@ -49,6 +49,7 @@ def _to_detail(
     documents_count: int = 0,
     attached_rooms_count: int = 0,
     hidden_rooms_count: int,
+    can_read: bool,
 ) -> PackageDetail:
     return PackageDetail(
         id=pkg.id,
@@ -64,6 +65,7 @@ def _to_detail(
         attached_rooms_count=attached_rooms_count,
         hidden_rooms_count=hidden_rooms_count,
         created_at=str(pkg.created_at),
+        can_read=can_read,
     )
 
 
@@ -96,6 +98,7 @@ async def _enrich(
             documents_count=doc_counts.get(p.id, 0),
             attached_rooms_count=rooms[p.id].attached,
             hidden_rooms_count=rooms[p.id].hidden,
+            can_read=can(reader, "read", p),
         )
         for p in pkgs
     ]
@@ -441,10 +444,9 @@ async def list_room_packages(
 ) -> list[PackageDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     pkgs = await resource_service.list_room_packages(session, room_id)
-    principal = Principal(user.id, is_admin)
-    readable = {p.id for p in pkgs if can(principal, "read", p)}
-    details = await _enrich(session, pkgs, resource_service, user_store, principal)
-    return [d.model_copy(update={"can_read": d.id in readable}) for d in details]
+    return await _enrich(
+        session, pkgs, resource_service, user_store, Principal(user.id, is_admin)
+    )
 
 
 @router.post("/rooms/{room_id}/packages/{package_id}", status_code=201)

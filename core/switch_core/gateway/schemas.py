@@ -306,11 +306,6 @@ class AgentSummary(BaseModel):
     # owner-restricted without fetching each one — the console warns about
     # exactly that, and per-agent reads would make it a request storm.
     addressing_policy: AddressingPolicy | None = None
-    # Whether the caller may manage the agent (rename it, edit its options and
-    # who may address it): its owner or a workspace admin. Decided here by
-    # `switch_core.authz` so the Gateway does not repeat the rule; set by the
-    # Gateway routes, and left out of what agents read.
-    can_manage: bool = False
 
 
 class AgentToolSummary(BaseModel):
@@ -377,6 +372,21 @@ class AgentDetail(AgentSummary):
     rooms: list[AgentRoomMembership]
     sessions: list[AgentSessionDetail]
     children: list[AgentSummary]
+
+
+# What the caller may do with an agent, as the Gateway reports it. These live
+# on Gateway-only models rather than on `AgentSummary`, which the agent tools
+# share, so an agent never reads them. Each is decided by `switch_core.authz`
+# so no client repeats the rule.
+class GatewayAgentSummary(AgentSummary):
+    # Rename it, edit its options and who may address it, delete it: its owner
+    # or a workspace admin.
+    can_manage: bool
+
+
+class GatewayAgentDetail(AgentDetail):
+    can_manage: bool
+    children: list[GatewayAgentSummary]  # type: ignore[assignment]  # narrows the base type
 
 
 class NamedEntry(BaseModel):
@@ -483,7 +493,7 @@ class RenameAgentResponse(BaseModel):
     `templates_mentioning_old_name` lists saved templates whose text still
     says the old name."""
 
-    agent: AgentSummary
+    agent: GatewayAgentSummary
     old_name: str
     bridge_failures: list[str]
     templates_mentioning_old_name: list[str]
@@ -1742,7 +1752,7 @@ class PackageDetail(BaseModel):
     # packages the caller may read, except a room's package list: a private
     # package its owner attached is listed to every reader of the room, and the
     # Gateway shows that one without a link.
-    can_read: bool = True
+    can_read: bool
 
 
 class PackageCreateRequest(BaseModel):
