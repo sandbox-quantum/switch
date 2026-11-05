@@ -215,7 +215,11 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      requireHttpMcp(
+        hooks.label,
+        input.mcpServers,
+        agent.mcpCapabilities?.http ?? hooks.mcpCapabilities?.http
+      );
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -267,6 +271,13 @@ export class AcpAdapter implements ProviderAdapter {
       await client.dispose();
       this.sessions.delete(state.id);
       if (cause instanceof ProviderConversationUnavailableError) throw cause;
+      if (input.resume && hooks.conversationUnavailable?.(cause))
+        throw new ProviderConversationUnavailableError(
+          hooks.provider,
+          state.id,
+          `${hooks.label} could not find the saved conversation.`,
+          { cause }
+        );
       const details =
         cause instanceof JsonRpcError &&
         typeof cause.data === 'object' &&
@@ -495,8 +506,11 @@ export class AcpAdapter implements ProviderAdapter {
     const vendor = this.hooks.permission?.(context, request);
     if (vendor) return await vendor;
     const { toolCall } = request;
-    const once = request.options.find((option) => option.kind === 'allow_once');
-    const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    const permissionOptions = this.hooks.permissionOptions?.(request.options) ?? request.options;
+    const once = permissionOptions.find((option) => option.kind === 'allow_once');
+    const server =
+      this.hooks.mcpServerOf?.(toolCall, state.mcpNames) ??
+      state.toolServers.get(toolCall.toolCallId);
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
     if (
@@ -507,7 +521,7 @@ export class AcpAdapter implements ProviderAdapter {
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
-    for (const option of request.options) {
+    for (const option of permissionOptions) {
       const decision =
         option.kind === 'allow_once'
           ? 'accept'
@@ -596,7 +610,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
-    const server = this.hooks.mcpServerOf?.(update);
+    const server = this.hooks.mcpServerOf?.(update, state.mcpNames);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
     const text = (update.content ?? [])
       .map((part) =>
