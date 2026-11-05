@@ -29,18 +29,19 @@ type MemberRow = Member & { id: string };
 interface Props {
   tenantId: string;
   selfId: string;
+  /** Unused: each row carries what the caller may do with it. Still accepted
+   * so the pages that pass it need no change in the same release. */
   canAdmin: boolean;
 }
 
-/** An admin may manage every member, other admins included. The server
- * enforces the same, and refuses to demote or remove the last admin — its
- * message is shown as is.
- *
- * An organization admin administers every workspace of the organization, so
- * their row here is read-only: the role comes from the organization, and is
- * changed on its page. One with no membership of their own here is listed
- * "via the organization". */
-export default function MembersSection({ tenantId, selfId, canAdmin }: Props) {
+/** Each row offers what the server says the caller may do with it: an admin
+ * may change and remove every member, other admins included, but not their
+ * own row (another admin steps them down) and not an organization admin's,
+ * whose role comes from the organization and is changed on its page. One
+ * with no membership of their own here is listed "via the organization". The
+ * server refuses to demote or remove the last admin when asked — its message
+ * is shown as is. */
+export default function MembersSection({ tenantId, selfId }: Props) {
   const load = useCallback(() => fetchMembers(tenantId), [tenantId]);
   const { data: members, error, loading, refetch } = useLoad(load);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -66,7 +67,6 @@ export default function MembersSection({ tenantId, selfId, canAdmin }: Props) {
   );
 
   const columns = useMemo<GridColDef<MemberRow>[]>(() => {
-    const mayManage = (row: MemberRow) => canAdmin && row.organization_role !== "org_admin";
     const roles: TenantRole[] = ["admin", "member"];
     return [
       {
@@ -82,7 +82,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin }: Props) {
         headerName: "Role",
         width: 210,
         renderCell: ({ row }) =>
-          mayManage(row) ? (
+          row.can_change_role ? (
             <Select
               size="small"
               value={row.role}
@@ -140,7 +140,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin }: Props) {
         width: 60,
         sortable: false,
         renderCell: ({ row }) =>
-          mayManage(row) && row.user_id !== selfId ? (
+          row.can_remove ? (
             <Tooltip title="Remove from workspace">
               <span>
                 <IconButton
@@ -156,7 +156,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin }: Props) {
           ) : null,
       },
     ];
-  }, [act, busy, canAdmin, selfId, tenantId]);
+  }, [act, busy, selfId, tenantId]);
 
   return (
     <Stack spacing={1.5}>

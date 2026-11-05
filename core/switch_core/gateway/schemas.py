@@ -1081,9 +1081,12 @@ class OperatorWorkspaceResponse(BaseModel):
 class CurrentTenantResponse(TenantMembershipResponse):
     """The tenant this request is bound to. `administers` is whether the
     caller may manage it — an `admin` membership, `org_admin` of its
-    organization, or the operator bit, which no membership role shows."""
+    organization, or the operator bit, which no membership role shows.
+    `can_delete` is whether they may delete it (`authz.can_delete_workspace`):
+    by their own admin membership, never the server's default workspace."""
 
     administers: bool
+    can_delete: bool
 
 
 class TenantCreateRequest(BaseModel):
@@ -1357,6 +1360,15 @@ class MemberDetail(BaseModel):
     service_account: bool
     organization_role: str | None
     via_organization: bool
+    # What the caller may do with this member (`authz.can_change_workspace_member`):
+    # an admin of the workspace, never on their own row and never on an
+    # organization admin's. That the last admin stays and that someone still
+    # owning agents can't be removed is checked when it is asked.
+    can_change_role: bool
+    can_remove: bool
+    # Whether the caller may hand them something they own: a member of the
+    # workspace by their own membership, and not the caller.
+    can_receive_transfer: bool
 
 
 class UsageTotalResponse(BaseModel):

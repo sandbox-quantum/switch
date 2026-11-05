@@ -18,6 +18,8 @@ from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
     administers_tenant,
+    can_change_workspace_member,
+    can_delete_workspace,
     effective_tenant_role,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -37,6 +39,7 @@ from switch_core.db.audit import (
     record_audit_event,
 )
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Invitation,
     Organization,
     OrganizationMember,
@@ -72,6 +75,7 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
+    get_tenant_is_admin,
     initial_tenant_claim,
     list_tenant_memberships,
     may_bind_tenant,
@@ -198,8 +202,19 @@ def _invitation_detail(invitation: Invitation) -> InvitationDetail:
 
 
 def _member_detail(
-    user: User, membership: TenantMember, organization_role: str | None
+    user: User,
+    membership: TenantMember,
+    organization_role: str | None,
+    *,
+    caller_id: str,
+    administers: bool,
 ) -> MemberDetail:
+    may_change = can_change_workspace_member(
+        caller_id,
+        user.id,
+        administers=administers,
+        member_is_organization_admin=organization_role == ORGANIZATION_ADMIN_ROLE,
+    )
     return MemberDetail(
         user_id=user.id,
         name=user.name,
@@ -209,7 +224,17 @@ def _member_detail(
         service_account=is_bootstrap_owner(user),
         organization_role=organization_role,
         via_organization=False,
+        can_change_role=may_change,
+        can_remove=may_change,
+        can_receive_transfer=user.id != caller_id,
     )
+
+
+def _refuse_acting_on_yourself(caller_id: str, user_id: str, detail: str) -> None:
+    """Raise 403 if a member route names the caller: stepping down or leaving
+    is done by another admin, so nobody locks themselves out by mistake."""
+    if user_id == caller_id:
+        raise HTTPException(status_code=403, detail=detail)
 
 
 async def _refuse_organization_admin(
@@ -326,6 +351,9 @@ async def current_tenant(
             is_operator=user.role == "admin",
             tenant_role=tenant_role,
             organization_role=organization_role,
+        ),
+        can_delete=can_delete_workspace(
+            tenant_role=tenant_role, is_default=tenant.id == TENANT_ZERO_ID
         ),
     )
 
@@ -1356,12 +1384,14 @@ async def list_members(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[MemberDetail]:
     """Every member of the bound tenant, then every `org_admin` of its
     organization who is not one, as `admin` via the organization. Any member
     may list their own workspace's roster; changing or removing one is
     admin-gated below."""
+    caller_id = user.id
     _require_bound_tenant(tenant_id)
     tenant = await session.get(Tenant, tenant_id)
     organization_roles: dict[str, str] = {}
@@ -1375,23 +1405,34 @@ async def list_members(
                 organization_admins.append((user, member))
     members = await user_store.list_tenant_members(session)
     roster = [
-        _member_detail(user, membership, organization_roles.get(user.id))
-        for user, membership in members
+        _member_detail(
+            person,
+            membership,
+            organization_roles.get(person.id),
+            caller_id=caller_id,
+            administers=is_admin,
+        )
+        for person, membership in members
     ]
-    listed = {user.id for user, _ in members}
+    listed = {person.id for person, _ in members}
     roster.extend(
         MemberDetail(
-            user_id=user.id,
-            name=user.name,
-            email=user.email,
+            user_id=person.id,
+            name=person.name,
+            email=person.email,
             role=ORGANIZATION_ADMIN_TENANT_ROLE,
             created_at=str(member.created_at),
-            service_account=is_bootstrap_owner(user),
+            service_account=is_bootstrap_owner(person),
             organization_role=member.role,
             via_organization=True,
+            # Changed only through the organization's members; and a transfer
+            # needs a membership here, which they don't hold.
+            can_change_role=False,
+            can_remove=False,
+            can_receive_transfer=False,
         )
-        for user, member in organization_admins
-        if user.id not in listed
+        for person, member in organization_admins
+        if person.id not in listed
     )
     return roster
 
@@ -1411,6 +1452,11 @@ async def update_member_role(
     can manage it, and getting one back takes the server's operator.
     """
     _require_bound_tenant(tenant_id)
+    _refuse_acting_on_yourself(
+        admin.id,
+        user_id,
+        "You can't change your own role. Another admin of this workspace can.",
+    )
     role = _member_role(req.role)
 
     membership = await session.get(TenantMember, (tenant_id, user_id))
@@ -1441,6 +1487,8 @@ async def update_member_role(
         user,
         membership,
         await user_store.organization_role(session, tenant_id, user_id),
+        caller_id=admin.id,
+        administers=True,
     )
 
 
@@ -1485,6 +1533,11 @@ async def remove_member(
     owner's own connections or machine).
     """
     _require_bound_tenant(tenant_id)
+    _refuse_acting_on_yourself(
+        admin.id,
+        user_id,
+        "You can't remove yourself. Another admin of this workspace can.",
+    )
     # Locked until the removal commits, as handing the member something locks
     # it (`accounts/transfer.py`), so no agent reaches them after the check
     # below finds none.

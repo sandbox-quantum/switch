@@ -113,7 +113,8 @@ class TestMembershipEvents:
             response = await client.patch(
                 f"/tenants/{TENANT_A}/members/{admin_id}", json={"role": "member"}
             )
-        assert response.status_code == 409
+        # Your own role is changed by another admin.
+        assert response.status_code == 403
 
         assert await _events(session_factory, TENANT_A) == []
 

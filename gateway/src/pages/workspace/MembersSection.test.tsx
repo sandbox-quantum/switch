@@ -13,6 +13,9 @@ const member = (overrides: Record<string, unknown>) => ({
   created_at: "2026-01-01",
   organization_role: "member",
   via_organization: false,
+  can_change_role: false,
+  can_remove: false,
+  can_receive_transfer: true,
   ...overrides,
 });
 
@@ -22,6 +25,35 @@ describe("MembersSection", () => {
     vi.unstubAllGlobals();
   });
 
+  it("offers each row only what the server says the caller may do", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify([
+              member({ user_id: "u1", name: "Me", email: "me@example.com", role: "admin" }),
+              member({
+                user_id: "u2",
+                name: "Bob",
+                email: "bob@example.com",
+                can_change_role: true,
+                can_remove: true,
+              }),
+            ]),
+          ),
+      ),
+    );
+
+    render(<MembersSection tenantId="t1" selfId="u1" canAdmin />);
+
+    expect(await screen.findByLabelText("Role for bob@example.com")).toBeTruthy();
+    expect(screen.getByLabelText("Remove bob@example.com")).toBeTruthy();
+    // Your own row: another admin changes or removes it.
+    expect(screen.queryByLabelText("Role for me@example.com")).toBeNull();
+    expect(screen.queryByLabelText("Remove me@example.com")).toBeNull();
+  });
+
   it("shows organization admins read-only, and the rest manageable", async () => {
     vi.stubGlobal(
       "fetch",
@@ -29,7 +61,13 @@ describe("MembersSection", () => {
         async () =>
           new Response(
             JSON.stringify([
-              member({ user_id: "u2", name: "Bob", email: "bob@example.com" }),
+              member({
+                user_id: "u2",
+                name: "Bob",
+                email: "bob@example.com",
+                can_change_role: true,
+                can_remove: true,
+              }),
               member({
                 user_id: "u3",
                 name: "Cy",
