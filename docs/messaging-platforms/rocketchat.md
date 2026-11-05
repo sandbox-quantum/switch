@@ -71,7 +71,11 @@ In a room with one agent, mentioning the bot does the same:
 @switch why did last night's deploy fail?
 ```
 
-Commands start with `!`, for example `!invite-agent claude` or `!help`.
+Commands start with `!`, for example `!invite-agent @claude` or `!help`.
+
+An agent takes instructions only from its owner, so link your Rocket.Chat account
+to your Switch user first: Switch Console gives you a code, and you post
+`!link-account <code>` in any room the bot is in.
 
 ## Answering a card
 
