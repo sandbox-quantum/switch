@@ -83,7 +83,14 @@ it('recognises token and bring-your-own-key sign-ins in the environment', () => 
   expect(copilotEnvSignIn({ COPILOT_GITHUB_TOKEN: 'x' })).toBe(true);
   expect(copilotEnvSignIn({ GITHUB_TOKEN: 'x' })).toBe(true);
   expect(copilotEnvSignIn({ COPILOT_PROVIDERS_CONFIG: '{}' })).toBe(true);
-  expect(copilotEnvSignIn({ COPILOT_PROVIDER_TYPE: 'openai' })).toBe(true);
+  expect(copilotEnvSignIn({ COPILOT_PROVIDER_TYPE: 'openai' })).toBe(false);
+  expect(
+    copilotEnvSignIn({
+      COPILOT_PROVIDER_TYPE: 'openai',
+      COPILOT_PROVIDER_BASE_URL: 'https://api',
+      COPILOT_PROVIDER_API_KEY: 'key',
+    })
+  ).toBe(true);
   expect(copilotEnvSignIn({ COPILOT_PROVIDER_BASE_URL: ' ' })).toBe(false);
   expect(copilotEnvSignIn({})).toBe(false);
 });
@@ -123,7 +130,14 @@ function signInInput(
 
 it('answers the sign-in check from the environment, the saved login, then the handshake', async () => {
   const withToken = await copilotAcp.checkSignIn!(
-    signInInput({ COPILOT_PROVIDER_TYPE: 'openai' }, [{ id: 'copilot-login' }])
+    signInInput(
+      {
+        COPILOT_PROVIDER_TYPE: 'openai',
+        COPILOT_PROVIDER_BASE_URL: 'https://api',
+        COPILOT_PROVIDER_API_KEY: 'key',
+      },
+      [{ id: 'copilot-login' }]
+    )
   );
   expect(withToken.status).toBe('authenticated');
 
