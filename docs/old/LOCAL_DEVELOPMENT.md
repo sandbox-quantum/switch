@@ -230,7 +230,9 @@ Auto-route (the `decision_routing` feature flag) asks a decision service who
 should answer an untagged message. `just decision-up` starts one beside the
 stack: the decision service on `:8230` (`DECISION_PORT` to change it) and a
 llama.cpp server for its model, Qwen3.5-4B in 4-bit, whose weights (about
-2.7 GB) download once into the `decision-models` volume. It is the compose
+2.7 GB) download once into the `decision-models` volume, from a fixed
+Hugging Face commit and checked against their SHA-256 (a file that fails is
+deleted and downloaded again). It is the compose
 `decision` profile; `just decision-up gpu` is the `decision-gpu` profile, for
 Linux with an NVIDIA GPU and the NVIDIA Container Toolkit.
 

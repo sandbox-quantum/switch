@@ -137,8 +137,12 @@ downloads the checkpoint and its base model (about 17 GB) into `/models`.
 `strands-decider serve`: it merges the checkpoint's LoRA adapter into the base
 weights once at load, which on an L4 gives the same answers in 0.26 s instead
 of 0.42 s for a typical room and about 3.9 decisions a second instead of 2.4.
-It's configured by env only (`STRANDS_CHECKPOINT`, `STRANDS_MODEL_NAME`,
-`STRANDS_MAX_BATCH`):
+It's configured by env only (`STRANDS_CHECKPOINT`, `STRANDS_REVISION`,
+`STRANDS_BASE_REVISION`, `STRANDS_MODEL_NAME`, `STRANDS_MAX_BATCH`). The image
+pins the checkpoint and its base model to Hugging Face commits
+(`STRANDS_REVISION`, `STRANDS_BASE_REVISION`); the base revision must be the one
+the checkpoint records in its `provenance.json`, or the server refuses to
+start:
 
 ```
 docker build -t switch-decision-strands decision/model-servers/strands/
@@ -152,8 +156,8 @@ docker run -d -p 8230:8230 \
 
 The image pins `strands-decider==0.2.0` and every dependency by hash
 (`model-servers/strands/requirements.txt`, compiled from `requirements.in`
-with the command at its top). `STRANDS_CHECKPOINT` and `STRANDS_MODEL_NAME`
-choose another checkpoint.
+with the command at its top). `STRANDS_CHECKPOINT`, the two revisions and
+`STRANDS_MODEL_NAME` choose another checkpoint.
 
 Qwen3.5-4B on the llama.cpp server image:
 

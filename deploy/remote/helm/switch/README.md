@@ -333,9 +333,24 @@ no further setup.
   probe allows 30 minutes (`decision.modelServer.strands.startupProbe`), and
   the decision service reports not ready until then. Later starts only load
   the weights, a few minutes. For Qwen, an init container downloads the GGUF
-  file (`decision.modelServer.llamacpp.model`: URL, file name, optional
-  SHA-256) first. `decision.modelServer.hfTokenSecret` names a Secret with a
-  Hugging Face token, for a gated checkpoint or higher Hub rate limits.
+  file (`decision.modelServer.llamacpp.model`: URL, file name, SHA-256) first.
+  `decision.modelServer.hfTokenSecret` names a Secret with a Hugging Face
+  token, for a gated checkpoint or higher Hub rate limits.
+- **Pinned weights.** Every model is downloaded at a fixed Hugging Face
+  commit, so a new push upstream changes nothing that runs:
+  - Qwen's URL names a commit (`…/resolve/<commit>/…`), and the init container
+    checks the file's SHA-256 (`model.sha256`). A file already on the volume
+    that fails the check is deleted and downloaded again; a fresh download
+    that fails it is deleted before the init container exits non-zero, so the
+    next start downloads it again rather than failing on every restart.
+  - Strands Decider's checkpoint is downloaded at
+    `decision.modelServer.strands.revision` and its base model at
+    `baseRevision` (`STRANDS_REVISION`, `STRANDS_BASE_REVISION`). The base
+    revision must be the one the checkpoint records in its `provenance.json`,
+    the one it was trained on; the server refuses to start otherwise.
+
+  To move to a newer model, set the URL, file and SHA-256 together (or both
+  Strands revisions), from the model's Hugging Face page.
 - **Licence.** Strands Decider is Apache-2.0, but its 4B checkpoint is built on
   Google's Gemma 4 (`google/gemma-4-E4B-it`), whose terms apply to anyone
   deploying it. The chart downloads the weights at deploy time from Hugging
