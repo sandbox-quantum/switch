@@ -107,11 +107,29 @@ only: `GET`, `PUT` and `DELETE /gateway/decision-settings`, and
 ## In a room
 
 `!auto-route on` and the auto-route toggle on the room page (Console and the
-gateway, `PUT /gateway/rooms/{id}/auto-route`, for the room's owner and
-workspace admins) set the same switch. Turning it on is refused, with the
-reason and who can fix it, where it cannot act: the flag is off, or the
-workspace resolves to no backend. A room's detail reports
+gateway, `PUT /gateway/rooms/{id}/auto-route`) set the same switch. Turning it
+on is refused, with the reason and who can fix it, where it cannot act: the
+flag is off, or the workspace resolves to no backend. A room's detail reports
 `auto_route: {on, available, reason, fallback_agent, fallback_agent_name}`.
+
+### Who can change it
+
+- **Turning auto-route on or off** takes write access to the room, the same as
+  `!follow-ups` and `!assign-agent`: its owner, a workspace admin, or anyone
+  on a room everyone may write to. In chat, anyone who can post in the room
+  may send `!auto-route on|off`. In Console and on the gateway's room page the
+  toggle follows the room's `can_write`, and is shown disabled, with the
+  reason, to someone who can see the room but not write to it. The API
+  answers 403 without write access.
+- **Naming or clearing the triage agent** takes the room's owner or a
+  workspace admin (the room's `can_manage`), because it chooses an agent that
+  gets messages nobody addressed to it. `!auto-route fallback @agent|off` from
+  anyone else is refused with a reply saying who can; the picker in Console
+  and on the gateway is read-only for them ("Only the room's owner or a
+  workspace admin can change this"); and a `PUT` carrying `fallback_agent`
+  answers 403. Anyone may see which agent it is.
+- **Choosing the workspace's decision backend** stays with workspace admins
+  (above).
 
 ### When there is no backend
 
