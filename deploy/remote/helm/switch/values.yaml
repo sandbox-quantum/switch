@@ -453,6 +453,19 @@ switchCore:
   # switch_buddy, buddy_slack_handoff.
   featureFlags:
     enabled: []
+  # Catalog services turned off on this server, each with the reason people
+  # see (DISABLED_SERVICES), e.g. {"google-workspace": "Paused while we review
+  # access."}. An empty reason shows "Switched off on this server." People
+  # cannot connect, grant or issue a turned-off service, but they can
+  # disconnect it. An unknown slug stops switch-core at startup.
+  disabledServices: {}
+  # Services that ask for less access than their full scopes
+  # (SERVICE_ACCESS_PROFILES), e.g. {"google-workspace": "drive-file"}. Only
+  # google-workspace has a profile now: drive-file asks for drive.file in place
+  # of Google's restricted drive and drive.readonly scopes. If you change it,
+  # people must reconnect. An unknown service or profile stops switch-core at
+  # startup. Empty: full scopes.
+  serviceAccessProfiles: {}
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
   # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
   # anything that speaks SMTP). Off, the invitation is still created and the

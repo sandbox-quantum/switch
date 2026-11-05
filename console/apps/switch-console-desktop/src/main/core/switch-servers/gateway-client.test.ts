@@ -648,7 +648,15 @@ describe('room creation', () => {
       }) as never
     );
 
-    await createRoom(SERVER, { name: 'design', description: 'd', bridgeId: null, agentIds: [] });
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: null,
+      agentIds: [],
+      channel: null,
+      groupId: null,
+      access: null,
+    });
 
     expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({ bridge_id: null, internal_only: true });
   });
@@ -673,6 +681,9 @@ describe('room creation', () => {
       description: 'd',
       bridgeId: 'b1',
       agentIds: ['a1'],
+      channel: null,
+      groupId: null,
+      access: null,
     });
 
     const body = bodyOf(fetchMock.mock.calls[0]);
@@ -685,6 +696,69 @@ describe('room creation', () => {
     });
     expect(body).not.toHaveProperty('internal_only');
     expect(room.ownerId).toBe('u1');
+  });
+
+  it('asks for a private channel, a group and an access level when chosen', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_private',
+        agent_count: 0,
+        bridge_display_name: 'Slack',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: 'b1',
+      agentIds: [],
+      channel: { kind: 'new', private: true },
+      groupId: 'g1',
+      access: 'read_only',
+    });
+
+    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({
+      channel_type: 'channel_private',
+      group_id: 'g1',
+      read_visibility: 'public',
+      write_visibility: 'private',
+    });
+  });
+
+  it('binds an existing channel by id and leaves its type and access to the server', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_public',
+        agent_count: 0,
+        bridge_display_name: 'Slack',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: 'b1',
+      agentIds: [],
+      channel: { kind: 'existing', externalChannelId: 'C123' },
+      groupId: null,
+      access: null,
+    });
+
+    const body = bodyOf(fetchMock.mock.calls[0]);
+    expect(body).toMatchObject({ external_channel_id: 'C123' });
+    expect(body).not.toHaveProperty('channel_type');
+    expect(body).not.toHaveProperty('read_visibility');
+    expect(body).not.toHaveProperty('group_id');
   });
 
   it('sends blank instructions as null rather than an empty string', async () => {
@@ -707,6 +781,9 @@ describe('room creation', () => {
       instructions: '   ',
       bridgeId: 'b1',
       agentIds: [],
+      channel: null,
+      groupId: null,
+      access: null,
     });
 
     expect(bodyOf(fetchMock.mock.calls[0]).instructions).toBeNull();
@@ -716,7 +793,15 @@ describe('room creation', () => {
     fetchMock.mockResolvedValue(errorResponse(400, '{"detail":"Bridge not running: b1"}') as never);
 
     await expect(
-      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+      createRoom(SERVER, {
+        name: 'x',
+        description: 'y',
+        bridgeId: 'b1',
+        agentIds: [],
+        channel: null,
+        groupId: null,
+        access: null,
+      })
     ).rejects.toMatchObject({ status: 400, detail: 'Bridge not running: b1' });
   });
 
@@ -739,7 +824,15 @@ describe('room creation', () => {
     fetchMock.mockResolvedValue(errorResponse(502, '<html>bad gateway</html>') as never);
 
     await expect(
-      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+      createRoom(SERVER, {
+        name: 'x',
+        description: 'y',
+        bridgeId: 'b1',
+        agentIds: [],
+        channel: null,
+        groupId: null,
+        access: null,
+      })
     ).rejects.toMatchObject({ status: 502, detail: undefined });
   });
 });
