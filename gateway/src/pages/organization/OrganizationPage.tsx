@@ -89,16 +89,16 @@ export default function OrganizationPage() {
   if (tenant.organization_id === null) {
     return <Alert severity="info">This workspace belongs to no organization.</Alert>;
   }
-  const isAdmin = capabilities.administersOrganization;
+  const isAdmin = organization?.administers === true;
 
   return (
     <Box>
       <OrganizationHeading organization={organization} isAdmin={isAdmin} />
       {error && <Alert severity="error">{error}</Alert>}
       <Stack spacing={4}>
-        {(isAdmin || capabilities.isOperator) && <OrganizationIssuesNotice key={membersChanged} />}
+        {organization?.can_manage_members && <OrganizationIssuesNotice key={membersChanged} />}
         <WorkspacesSection currentId={tenant.id} canAdd={session.can_add_workspace} />
-        {(isAdmin || capabilities.isOperator) && (
+        {organization !== null && (isAdmin || capabilities.isOperator) && (
           <MembersSection
             session={session}
             organizationId={tenant.organization_id}
@@ -115,22 +115,17 @@ export default function OrganizationPage() {
   );
 }
 
-// The new layout's Organization settings. Only the organization's admins and
-// the operator reach them (see the route table), in a workspace that belongs
-// to an organization.
+// The new layout's Organization settings. The route table admits the
+// organization's admins, and the operator to General, Workspaces and Users.
 
 export function OrganizationGeneralPage() {
-  const { capabilities } = useAuth();
   const { data: organization, error } = useOrganization();
   return (
     <Box>
-      <OrganizationHeading
-        organization={organization}
-        isAdmin={capabilities.administersOrganization}
-      />
+      <OrganizationHeading organization={organization} isAdmin={organization?.administers === true} />
       {error && <Alert severity="error">{error}</Alert>}
       <Stack spacing={4}>
-        <OrganizationIssuesNotice />
+        {organization?.can_manage_members && <OrganizationIssuesNotice />}
       </Stack>
     </Box>
   );
@@ -144,23 +139,23 @@ export function OrganizationWorkspacesPage() {
 }
 
 export function OrganizationUsersPage() {
-  const { session, capabilities } = useAuth();
+  const { session } = useAuth();
   const { data: organization, error } = useOrganization();
   // As on the organization page: a change to the members can make an issue
   // or settle one.
   const [membersChanged, setMembersChanged] = useState(0);
   const onMembersChanged = useCallback(() => setMembersChanged((n) => n + 1), []);
   const tenant = session?.tenant;
-  if (!session || !tenant?.organization_id) return <CircularProgress />;
+  if (error) return <Alert severity="error">{error}</Alert>;
+  if (!session || !tenant?.organization_id || organization === null) return <CircularProgress />;
   return (
     <Stack spacing={4}>
-      {error && <Alert severity="error">{error}</Alert>}
-      <OrganizationIssuesNotice key={membersChanged} />
+      {organization.can_manage_members && <OrganizationIssuesNotice key={membersChanged} />}
       <MembersSection
         session={session}
         organizationId={tenant.organization_id}
         organization={organization}
-        isAdmin={capabilities.administersOrganization}
+        isAdmin={organization.administers}
         onChanged={onMembersChanged}
       />
     </Stack>

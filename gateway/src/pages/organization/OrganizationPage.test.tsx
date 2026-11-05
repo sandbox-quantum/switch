@@ -44,7 +44,14 @@ function answer(routes: Record<string, unknown>) {
     if (!(key in routes)) {
       return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
     }
-    const answered = routes[key];
+    let answered = routes[key];
+    // The organization's own answers, as the server gives them to someone
+    // holding that role, unless the test says otherwise.
+    if (key === "GET /organizations/current" && !(answered instanceof Refusal)) {
+      const organization = answered as Record<string, unknown>;
+      const admin = organization.role === "org_admin";
+      answered = { administers: admin, can_manage_members: admin, ...organization };
+    }
     if (answered instanceof Refusal) {
       return new Response(JSON.stringify({ detail: answered.detail }), {
         status: answered.status,
@@ -171,7 +178,7 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
     expect(
-      screen.getByText(
+      await screen.findByText(
         "Your workspaces use the server's Airtable client. Add your organization's own to use that instead.",
       ),
     ).toBeTruthy();
@@ -363,12 +370,14 @@ describe("OrganizationPage", () => {
 
   it("tells the operator why where the organization has an admin", async () => {
     signedInAs(session(null, false, true));
-    answer(operatorRoutes(new Refusal(403, "Only an organization admin may do this")));
+    const fetchMock = answer(operatorRoutes(new Refusal(403, "Only an organization admin may do this")));
 
     render(<OrganizationPage />);
 
     expect(await screen.findByText(/only while it has no admin/)).toBeTruthy();
     expect(screen.queryByText("Only an organization admin may do this")).toBeNull();
+    const asked = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(asked.filter((path) => path.endsWith("/issues"))).toEqual([]);
   });
 
   it("shows the operator a failure as a failure", async () => {

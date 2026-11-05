@@ -573,10 +573,20 @@ describe("the new layout (gateway_v2)", () => {
       expect(await menuLabels("Organization settings")).toContain("Connectors and apps");
     });
 
-    it("lets the operator in, to restore an organization's admin", async () => {
+    it("lets the operator in, to restore an organization's admin, and no further", async () => {
       mockFetch(signedInAs("operator", { flags: V2 }));
       renderAt("/settings/org/users");
-      expect(await menuLabels("Organization settings")).toContain("Users");
+      expect(await menuLabels("Organization settings")).toEqual([
+        "General",
+        "Workspaces",
+        "Users",
+        "‹ Workspace settings",
+      ]);
+      cleanup();
+
+      mockFetch(signedInAs("operator", { flags: V2 }));
+      renderAt("/settings/org/audit-log");
+      expect(await screen.findByText("Only the organization's admins can open this page.")).toBeTruthy();
     });
 
     it("keeps workspace admins and members out, showing no menu", async () => {

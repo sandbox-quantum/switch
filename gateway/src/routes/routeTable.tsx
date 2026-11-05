@@ -26,6 +26,7 @@ import {
   inOrganization,
   operators,
   organizationAdmins,
+  organizationAdminsOnly,
   organizationConnectorApps,
   serviceConnections,
   workspaceAdmins,
@@ -159,7 +160,7 @@ function redirect(path: string, layouts: readonly Layout[], to: string): Redirec
   return { kind: "redirect", path, layouts, to };
 }
 
-const orgConnectors = allOf(serviceConnections, organizationConnectorApps);
+const orgConnectors = allOf(organizationAdminsOnly, serviceConnections, organizationConnectorApps);
 
 export const ROUTES: readonly AppRoute[] = [
   redirect("/", CURRENT, "/rooms"),
@@ -256,8 +257,8 @@ export const ROUTES: readonly AppRoute[] = [
     <PlannedPage title="Your account" />,
   ),
 
-  // Organization settings: the area itself admits only the organization's
-  // admins and the operator.
+  // Organization settings: the area admits the organization's admins, and
+  // the operator to restore one; its pages beyond that are the admins' alone.
   areaIndex("/settings/org", "organization"),
   redirect("/settings/org", CURRENT, "/organization"),
   settingsPage(
@@ -290,21 +291,21 @@ export const ROUTES: readonly AppRoute[] = [
     "/settings/org/guardrails",
     "organization",
     "Guardrails",
-    everyone,
+    organizationAdminsOnly,
     <PlannedPage title="Guardrails" />,
   ),
   settingsPage(
     "/settings/org/devices",
     "organization",
     "Devices",
-    everyone,
+    organizationAdminsOnly,
     <PlannedPage title="Devices" />,
   ),
   settingsPage(
     "/settings/org/audit-log",
     "organization",
     "Audit log",
-    everyone,
+    organizationAdminsOnly,
     <OrganizationAuditLogPage />,
   ),
   redirect("/settings/org/audit-log", CURRENT, "/organization"),

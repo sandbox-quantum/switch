@@ -70,12 +70,21 @@ export const operators: Rule = (caps) =>
 export const inOrganization: Rule = (caps) =>
   caps.inOrganization ? ALLOWED : notPermitted("This workspace belongs to no organization.");
 
+const ONLY_ORGANIZATION_ADMINS = "Only the organization's admins can open this page.";
+
 /** The organization's admins, and the operator, who may need to restore one. */
 export const organizationAdmins: Rule = (caps) => {
   if (!caps.inOrganization) return inOrganization(caps);
   return caps.administersOrganization || caps.isOperator
     ? ALLOWED
-    : notPermitted("Only the organization's admins can open this page.");
+    : notPermitted(ONLY_ORGANIZATION_ADMINS);
+};
+
+/** The organization's admins alone: the operator restores an admin, and
+ * goes no further. */
+export const organizationAdminsOnly: Rule = (caps) => {
+  if (!caps.inOrganization) return inOrganization(caps);
+  return caps.administersOrganization ? ALLOWED : notPermitted(ONLY_ORGANIZATION_ADMINS);
 };
 
 function feature(flag: FeatureFlagKey, what: string): Rule {

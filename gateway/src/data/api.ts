@@ -1340,6 +1340,11 @@ export interface CurrentOrganization {
   // Changes made here to those members are made in that directory too, so
   // they last; the admin may first be sent to sign in there.
   directory_takes_changes: boolean;
+  // Whether the caller is one of its admins, and whether they may manage its
+  // members and read what needs their attention: its admins, or the
+  // operator while it has none.
+  administers: boolean;
+  can_manage_members: boolean;
 }
 
 export interface OperatorWorkspace {
