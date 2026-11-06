@@ -220,7 +220,11 @@ class ActivityItemView(CamelModel):
     updated_at: datetime
 
     @classmethod
-    def of(cls, row: AgentSessionActivityItem) -> ActivityItemView:
+    def of(
+        cls, row: AgentSessionActivityItem, *, show_tool_io: bool
+    ) -> ActivityItemView:
+        """The step as its room shows it now: a tool step's text only while
+        the room shows tool input and output, whatever the row still holds."""
         return cls(
             agent_id=row.agent_id,
             session_id=row.session_id,
@@ -230,7 +234,7 @@ class ActivityItemView(CamelModel):
             revision=row.revision,
             status=row.status,
             title=row.title,
-            text=row.text,
+            text=row.text if show_tool_io or row.kind != "tool-activity" else "",
             command_id=row.command_id,
             room_id=row.room_id,
             thread_id=row.thread_id,
@@ -408,8 +412,11 @@ async def room_activity(
     async with tenant_session(service.session_factory, tenant_id) as session:
         room, _ = await service.require_member(session, tenant_id, user, room_id)
         items, approvals = await service.room_activity(session, room.id)
+        # From the row after the steps were read: a switch-off committed in
+        # between is seen here, and one committed earlier already emptied them.
+        shown = await service.shows_tool_io(session, room.id)
         return RoomActivity(
-            items=[ActivityItemView.of(row) for row in items],
+            items=[ActivityItemView.of(row, show_tool_io=shown) for row in items],
             approvals=[ApprovalRequestView.of(row) for row in approvals],
         )
 
@@ -1072,16 +1079,29 @@ async def _activity_frames(
                 rows = await service.turn_items(
                     session, change.agent_id, change.session_id, change.key
                 )
-            frames = []
+            fresh = []
             for row in rows:
                 key = (row.agent_id, row.session_id, row.turn_id, row.item_id)
                 if row.room_id == change.room_id and sent.get(key, -1) < row.revision:
                     sent[key] = row.revision
-                    view = ActivityItemView.of(row)
-                    frames.append(
-                        _frame("activity", view.model_dump(mode="json", by_alias=True))
-                    )
-            return frames
+                    fresh.append(row)
+            # Read from the room's row after the steps, as the REST read does:
+            # a switch-off committed in between is seen here. Asked only when
+            # a tool step is sent; no other step's text depends on it.
+            shown = False
+            if change.room_id is not None and any(
+                row.kind == "tool-activity" for row in fresh
+            ):
+                shown = await service.shows_tool_io(session, change.room_id)
+            return [
+                _frame(
+                    "activity",
+                    ActivityItemView.of(row, show_tool_io=shown).model_dump(
+                        mode="json", by_alias=True
+                    ),
+                )
+                for row in fresh
+            ]
         request = await service.approval(
             session, change.agent_id, change.session_id, change.key
         )

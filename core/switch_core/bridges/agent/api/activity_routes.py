@@ -95,6 +95,9 @@ class ActivityReport(BaseModel):
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
     )
+    # A tool step's input and output, already redacted by the host. Stored
+    # only in a room that shows them; hosts that predate it do not send it.
+    tool_io: str | None = Field(None, max_length=MAX_TEXT_CHARS)
 
 
 class OptionIn(BaseModel):
@@ -224,6 +227,7 @@ async def report_activity(
             )
             for u in body.usage
         ],
+        tool_io=body.tool_io,
     )
     return ActivityReceipt(recorded=recorded)
 

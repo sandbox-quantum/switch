@@ -1071,9 +1071,11 @@ class AgentSessionActivityPublisher:
         self, key: _Key, agent_id: str, session_id: str, turn_id: str
     ) -> None:
         async with tenant_session(self._sessions, self._tenant_id) as db:
-            view = turn_view(
-                await self._activity.turn(db, agent_id, session_id, turn_id)
-            )
+            rows = await self._activity.turn(db, agent_id, session_id, turn_id)
+            # Built without tool text first: the room the turn names is known
+            # only from its rows, and the room is asked whether it shows tool
+            # text only once the turn is known to be published here.
+            view = turn_view(rows, show_tool_io=False)
             if view is None or view.row.room_id is None:
                 self._forget_turn(key)
                 return
@@ -1082,6 +1084,9 @@ class AgentSessionActivityPublisher:
             if target is None:
                 self._forget_turn(key)
                 return
+            if await self._rooms.show_tool_io(db, room_id):
+                view = turn_view(rows, show_tool_io=True)
+                assert view is not None
             asked_on = (
                 await self._platform_ref(db, target.channel_id, view.row.message_id)
                 or target.thread_ref
@@ -1684,9 +1689,10 @@ class AgentSessionActivityPublisher:
         post = await self._turn_posts.at(db, self._bridge_id, channel_id, ref)
         if post is None:
             return None
-        view = turn_view(
-            await self._activity.turn(db, post.agent_id, post.session_id, post.turn_id)
+        rows = await self._activity.turn(
+            db, post.agent_id, post.session_id, post.turn_id
         )
+        view = turn_view(rows, show_tool_io=False)
         if view is None or view.row.room_id is None:
             return None
         found = await self._rooms.get_with_membership(
@@ -1699,6 +1705,11 @@ class AgentSessionActivityPublisher:
             or not found[1]
         ):
             return None
+        # Asked of the room's row, as drawing the turn asks it, rather than of
+        # a `Room` the caller's session may already hold.
+        if await self._rooms.show_tool_io(db, view.row.room_id):
+            view = turn_view(rows, show_tool_io=True)
+            assert view is not None
         return view, await self._running_turn(db, post.agent_id, post.session_id)
 
 

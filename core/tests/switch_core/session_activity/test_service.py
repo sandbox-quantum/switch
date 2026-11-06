@@ -102,16 +102,21 @@ def _answers(*entries: tuple[str, list[str], str | None]) -> QuestionsResult:
 
 
 async def test_a_step_is_upserted_by_revision_and_announced_by_turn(service, changes):
-    assert await service.report_item(AGENT, SESSION, **_step()) is True
-    assert await service.report_item(AGENT, SESSION, **_step()) is False
+    message = "assistant-message"
+    assert await service.report_item(AGENT, SESSION, **_step(kind=message)) is True
+    assert await service.report_item(AGENT, SESSION, **_step(kind=message)) is False
     assert (
         await service.report_item(
-            AGENT, SESSION, **_step(revision=2, status="completed", text="done")
+            AGENT,
+            SESSION,
+            **_step(kind=message, revision=2, status="completed", text="done"),
         )
         is True
     )
     assert (
-        await service.report_item(AGENT, SESSION, **_step(revision=1, text="stale"))
+        await service.report_item(
+            AGENT, SESSION, **_step(kind=message, revision=1, text="stale")
+        )
         is False
     )
     [step] = await service.turn_items(AGENT, SESSION, "turn-1")

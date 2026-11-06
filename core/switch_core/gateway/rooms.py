@@ -29,7 +29,11 @@ from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
-from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
+from switch_core.db.stores.room_store import (
+    LINKED_CHANNEL_NAME_KEY,
+    RoomStore,
+    show_tool_io_in,
+)
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
@@ -246,6 +250,7 @@ async def _build_room_detail(
         can_write=can(principal, "write", room),
         can_manage=can(principal, "delete", room),
         can_unlink=can_unlink_from_room(principal, takes_part=takes_part),
+        show_tool_io=show_tool_io_in(room.metadata_),
     )
 
 
@@ -939,6 +944,13 @@ async def patch_room(
         raise HTTPException(
             status_code=403, detail="Not authorized to change this room's access"
         )
+    # Whether tool input and output are stored and shown in the room is the
+    # owner's or an admin's call too: it decides what the room's readers see.
+    if req.show_tool_io is not None and not can(principal, "delete", target):
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to change whether this room shows tool activity",
+        )
     try:
         await room_service.update_room(
             room_id,
@@ -951,7 +963,17 @@ async def patch_room(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if req.show_tool_io is not None:
+        # On this request's session, after `update_room` has committed its
+        # own: neither transaction waits on the other. Only the flag changes;
+        # it is committed just below.
+        try:
+            await room_store.set_show_tool_io(session, room_id, req.show_tool_io)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail="Room not found") from e
     await session.commit()
+    if req.show_tool_io is not None:
+        room_service.room_changed(target.tenant_id, room_id)
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")

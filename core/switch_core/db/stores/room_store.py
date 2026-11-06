@@ -1,4 +1,5 @@
-from collections.abc import Collection
+import json
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import NamedTuple
@@ -10,6 +11,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    text,
     true,
     update,
 )
@@ -17,6 +19,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import tuple_ as sa_tuple
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.util import identity_key
 
 from switch_core.authz import require_group_filing
 from switch_core.chats import MEMBER_CLIENT_TYPE
@@ -48,6 +51,15 @@ LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
 FOLLOW_UPS_OFF_KEY = "follow_ups_off"
 # `!assign-agent @name`: the agent id every message in the room goes to.
 MAIN_AGENT_KEY = "main_agent_id"
+# Whether a tool call's input and output may be stored and shown in the room.
+# Absent, or anything but `true`, means no: a room shows them only once its
+# owner or an admin turns this on.
+SHOW_TOOL_IO_KEY = "show_tool_io"
+
+
+def show_tool_io_in(metadata: object) -> bool:
+    """Whether a room's metadata lets it show tool input and output."""
+    return isinstance(metadata, dict) and metadata.get(SHOW_TOOL_IO_KEY) is True
 
 
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
@@ -110,21 +122,111 @@ class RoomStore:
         for a room that does not exist."""
         await self._set_metadata_key(session, room_id, MAIN_AGENT_KEY, agent_id)
 
+    async def show_tool_io(
+        self, session: AsyncSession, room_id: str, *, hold: bool = False
+    ) -> bool:
+        """Whether the room shows tool input and output; False for a room that
+        does not exist.
+
+        Read from the row, not from a `Room` this session may already hold.
+        With `hold`, the row is held against change (`FOR SHARE`) until the
+        transaction ends: a switch-off made meanwhile either commits first,
+        and is seen here, or waits until this transaction has committed; then
+        what it wrote is read, like every stored tool text, stripped while the
+        room is off.
+        """
+        query = select(Room.metadata_).where(Room.id == room_id)
+        if hold:
+            query = query.with_for_update(read=True)
+        found = (await session.execute(query)).one_or_none()
+        return found is not None and show_tool_io_in(found[0])
+
+    async def set_show_tool_io(
+        self, session: AsyncSession, room_id: str, enabled: bool
+    ) -> None:
+        """Turn tool input and output on or off for a room. Only the room's
+        setting changes, in one atomic metadata update. Raises ValueError for
+        a room that does not exist.
+
+        Turning it off touches no stored activity row. Every read made while
+        the room is off strips the tool text (`turn_view`), so nothing needs
+        emptying; and since no row is updated, no change is announced and no
+        message already posted is redrawn, even by a publisher that has
+        restarted and does not remember what it drew. Tool text stored before
+        the switch-off is shown again if the room turns it back on."""
+        if enabled:
+            await self._update_metadata(
+                session, room_id, set_keys={SHOW_TOOL_IO_KEY: True}
+            )
+            return
+        await self._update_metadata(session, room_id, delete_keys=(SHOW_TOOL_IO_KEY,))
+
     async def _set_metadata_key(
         self, session: AsyncSession, room_id: str, key: str, value: object
     ) -> None:
         """Set one key in the room's metadata, or remove it when `value` is
         None, leaving every other key as it was."""
-        room = await session.get(Room, room_id)
-        if room is None:
-            raise ValueError(f"Room {room_id} does not exist")
-        metadata = dict(room.metadata_ or {})
+        missing = f"Room {room_id} does not exist"
         if value is None:
-            metadata.pop(key, None)
+            await self._update_metadata(
+                session, room_id, delete_keys=(key,), missing=missing
+            )
         else:
-            metadata[key] = value
-        room.metadata_ = metadata
+            await self._update_metadata(
+                session, room_id, set_keys={key: value}, missing=missing
+            )
+
+    async def _update_metadata(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        set_keys: Mapping[str, object] | None = None,
+        delete_keys: Collection[str] = (),
+        missing: str | None = None,
+    ) -> None:
+        """Set and remove keys of the room's metadata in one `UPDATE`, every
+        other key left as the row has it when the update runs.
+
+        Every write to an existing room's metadata goes through here. Two
+        writers of different keys cannot undo each other: PostgreSQL computes
+        the new value on the row it has locked, so the second waits for the
+        first and then works on what it committed. Metadata that is not a JSON
+        object (SQL NULL, JSON `null`, anything else) is taken as `{}`. Values
+        go in as JSON text, so a bool stays a bool and a string a string.
+
+        The session's own `Room`, if it holds one, is refreshed afterwards.
+        Raises ValueError (`missing`) when there is no such room.
+        """
+        values = dict(set_keys or {})
+        if set(values) & set(delete_keys):
+            raise ValueError("A metadata key is either set or removed, not both.")
+        params: dict[str, object] = {"room": room_id}
+        expression = (
+            "CASE WHEN jsonb_typeof(metadata) = 'object' "
+            "THEN metadata ELSE '{}'::jsonb END"
+        )
+        for i, key in enumerate(delete_keys):
+            params[f"d{i}"] = key
+            expression = f"({expression}) - CAST(:d{i} AS text)"
+        if values:
+            pairs = []
+            for i, (key, value) in enumerate(values.items()):
+                params[f"k{i}"] = key
+                params[f"v{i}"] = json.dumps(value)
+                pairs.append(f"CAST(:k{i} AS text), CAST(:v{i} AS jsonb)")
+            expression = f"({expression}) || jsonb_build_object({', '.join(pairs)})"
+        # Changes pending on the room go first, so the refresh below cannot
+        # throw them away.
         await session.flush()
+        statement = text(
+            f"UPDATE rooms SET metadata = {expression} WHERE id = :room RETURNING id"
+        )
+        if (await session.execute(statement, params)).one_or_none() is None:
+            raise ValueError(missing or f"Room not found: {room_id}")
+        held = session.sync_session.identity_map.get(identity_key(Room, room_id))
+        if held is not None:
+            await session.refresh(held, ["metadata_"])
 
     async def get_with_membership(
         self, session: AsyncSession, room_id: str, agent_id: str
@@ -864,10 +966,9 @@ class RoomStore:
         room = await session.get(Room, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        if name is not None and name != room.name:
+        named = name is not None and name != room.name
+        if named:
             room.name = name
-            # Named by someone: a platform's channel name no longer replaces it.
-            room.metadata_ = {**(room.metadata_ or {}), NAME_SOURCE_KEY: "custom"}
         if description is not None:
             room.description = description
         if instructions is not None:
@@ -878,6 +979,11 @@ class RoomStore:
             room.read_visibility = read_visibility
         if write_visibility is not None:
             room.write_visibility = write_visibility
+        if named:
+            # Named by someone: a platform's channel name no longer replaces it.
+            await self._update_metadata(
+                session, room_id, set_keys={NAME_SOURCE_KEY: "custom"}
+            )
         await session.flush()
 
     async def set_platform_name(
@@ -889,12 +995,14 @@ class RoomStore:
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
         room.name = name
-        room.metadata_ = {
-            **(room.metadata_ or {}),
-            NAME_SOURCE_KEY: "channel",
-            LINKED_CHANNEL_NAME_KEY: channel_name,
-        }
-        await session.flush()
+        await self._update_metadata(
+            session,
+            room_id,
+            set_keys={
+                NAME_SOURCE_KEY: "channel",
+                LINKED_CHANNEL_NAME_KEY: channel_name,
+            },
+        )
 
     async def follow_channel_name(
         self,
@@ -924,14 +1032,9 @@ class RoomStore:
     async def record_channel_name(
         self, session: AsyncSession, room_id: str, channel_name: str
     ) -> None:
-        room = await session.get(Room, room_id)
-        if room is None:
-            raise ValueError(f"Room not found: {room_id}")
-        room.metadata_ = {
-            **(room.metadata_ or {}),
-            LINKED_CHANNEL_NAME_KEY: channel_name,
-        }
-        await session.flush()
+        await self._update_metadata(
+            session, room_id, set_keys={LINKED_CHANNEL_NAME_KEY: channel_name}
+        )
 
     async def set_group(
         self,

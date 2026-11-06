@@ -127,6 +127,9 @@ class RoomDetail(RoomSummary):
     # when it has not seen one. A room not named after its channel can take
     # it with `POST /rooms/{id}/sync-name`.
     linked_channel_name: str | None = None
+    # Whether agents' tool steps in this room carry their input and output.
+    # Off unless the room's owner or an admin turned it on.
+    show_tool_io: bool
 
 
 class RoomCreateRequest(BaseModel):
@@ -160,6 +163,11 @@ class RoomUpdateRequest(BaseModel):
     admin_mode: bool | None = None
     read_visibility: str | None = None
     write_visibility: str | None = None
+    # Owner or admin only, like the visibility fields. Turning it off only
+    # drops the setting: while it is off every read shows tool steps without
+    # their text. Input and output already stored are kept, and show again if
+    # it is turned back on.
+    show_tool_io: bool | None = None
 
 
 class RoomSetGroupRequest(BaseModel):

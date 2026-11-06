@@ -51,8 +51,9 @@ async def test_one_update_reads_one_room_and_one_step(
             sent,
         )
     assert frames is not None and len(frames) == 1
-    # The tenant binding, the access check for this room, and the one step.
-    assert (step.count, step.rows) == (3, 3)
+    # The tenant binding, the access check for this room, the one step, and
+    # the room's tool I/O flag read after it.
+    assert (step.count, step.rows) == (4, 4)
 
     # The same revision again, as a burst of announcements delivers it: no read.
     with statement_counts.scope("again") as again:
@@ -71,7 +72,8 @@ async def test_one_update_reads_one_room_and_one_step(
             chats.service, TENANT, chats.alice, _turn_change(agent, room_id, "t1"), sent
         )
     assert frames is not None and len(frames) == 50
-    assert turn.count == 3
+    # The same four statements, the turn read in one.
+    assert turn.count == 4
 
 
 async def test_a_viewer_taken_out_of_the_room_gets_nothing_more(

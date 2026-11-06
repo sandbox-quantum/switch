@@ -800,6 +800,10 @@ class ChatService:
             (require_tenant_id(), agent_id, session_id, turn_id, item_id),
         )
 
+    async def shows_tool_io(self, session: AsyncSession, room_id: str) -> bool:
+        """Whether the room shows tool input and output, read from its row now."""
+        return await self._room_store.show_tool_io(session, room_id)
+
     async def reads_room(
         self, session: AsyncSession, tenant_id: str, user_id: str, room_id: str | None
     ) -> tuple[bool, bool]:

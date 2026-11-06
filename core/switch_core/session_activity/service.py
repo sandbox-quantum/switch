@@ -199,11 +199,20 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        tool_io: str | None = None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
         `usage` is what the turn spent, and only a turn's own row, reported as
         ended, carries it.
+
+        `tool_io` is a tool call's input and output, and only a tool step
+        carries it. It is stored as the step's text only in a room that shows
+        tool input and output (`RoomStore.show_tool_io`); anywhere else the
+        step is stored with no text. The room's setting is read held against
+        change. Switching it off only drops the setting: text already stored
+        is kept, every read while it is off shows tool steps without it, and
+        it shows again if the setting is turned back on.
         """
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
@@ -230,7 +239,15 @@ class AgentSessionActivityService:
             raise SessionError(
                 "INVALID_EVENT", "Only an ended turn's own row carries its usage."
             )
-        if len(title) > MAX_TITLE_CHARS or len(text) > MAX_TEXT_CHARS:
+        if tool_io is not None and kind != "tool-activity":
+            raise SessionError(
+                "INVALID_EVENT", "Only a tool step carries its input and output."
+            )
+        if (
+            len(title) > MAX_TITLE_CHARS
+            or len(text) > MAX_TEXT_CHARS
+            or len(tool_io or "") > MAX_TEXT_CHARS
+        ):
             raise SessionError(
                 "INVALID_EVENT",
                 f"A step's title is at most {MAX_TITLE_CHARS} characters and its "
@@ -240,6 +257,17 @@ class AgentSessionActivityService:
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
             if room_id is not None:
                 await self._require_member(db, agent_id, room_id)
+            if kind == "tool-activity":
+                # A tool step's stored text is only ever its `tool_io`, in a
+                # room that shows it; the reported `text` is never kept, so
+                # leaving `tool_io` out cannot get round the room's consent.
+                # The room is read (and held) only when there is `tool_io`.
+                shown = (
+                    tool_io is not None
+                    and room_id is not None
+                    and await self._rooms.show_tool_io(db, room_id, hold=True)
+                )
+                text = tool_io if shown and tool_io is not None else ""
             prior_status = (
                 await self._activity.status_for_update(
                     db, agent_id, session_id, turn_id, item_id
