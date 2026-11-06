@@ -124,6 +124,10 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **Pi is a provider an agent can run on.** `pi` is accepted wherever a provider
+  is named (a definition, a template, the gateway's provider list) and has no
+  advanced settings; its owner signs it in on the machine it runs on with `pi`,
+  then `/login`.
 - **The server's administrator can delete someone's account.** The Users page
   has a Delete action (`DELETE /users/{id}`) that removes the account in every
   workspace, with the same refusals as deleting your own. Administrator
@@ -2557,6 +2561,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Pi as an agent provider.** A Switch agent can run on [Pi](https://pi.dev)
+  (`@earendil-works/pi-coding-agent`) from the create-agent flow, with the models
+  of the providers Pi is signed in to. Pi has no permission system of its own, so
+  each session loads a small extension of Switch's, for that session only and
+  never into Pi's configuration, which registers the session's Switch tools,
+  asks before commands, edits and connector tools (in `auto` mode too, since Pi
+  has no reviewer), and gives the agent an `ask_user` tool. Sign-in is read from
+  the models Pi lists and never starts a login: sign in with `pi`, then
+  `/login`, or set a provider API key where the agent runs; the agent controller
+  checks and reports Pi like the other providers. A message sent mid-turn is
+  queued, `!interrupt` stops the turn, and the conversation resumes from Pi's
+  session file. Console does not send Pi a login.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

@@ -154,6 +154,17 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="pi",
+        label="Pi",
+        sign_in_command="pi",
+        tools=(
+            ToolSpec(name="bash", description="Executes shell commands"),
+            ToolSpec(name="edit", description="Edits existing files"),
+            ToolSpec(name="write", description="Writes files"),
+            ToolSpec(name="read", description="Reads file contents"),
+        ),
+    ),
 )
 
 

@@ -52,6 +52,8 @@ export type {
 } from './acp/hooks';
 export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
 export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
+export type { PiAdapterOptions } from './pi/pi-adapter';
+export { createPiAdapter, PiAdapter } from './pi/pi-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';

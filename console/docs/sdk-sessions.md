@@ -381,7 +381,8 @@ resumes or attaches, including ones started automatically:
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
-  uses Smart Auto, and Antigravity approves edits and asks before commands.
+  uses Smart Auto, Antigravity approves edits and asks before commands, and Pi,
+  which has no review of its own, asks as it does without auto mode.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 
