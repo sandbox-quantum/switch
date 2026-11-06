@@ -113,9 +113,8 @@ Switch under Settings, Integrations, Connected Apps.
 Inspect `get_user_details`' current schema and request only
 `include: ["TOOL_INFORMATION"]` where supported. The default request can also
 ask for `USER_INFORMATION`, which was refused with the minimal contact-read
-consent during live testing. Tool information alone reported contact READ
-available, and a CONTACT search returned one record in the user's room report;
-inspect actual tool activity before treating that report as independently
-verified proof. Do not add user-profile scopes to fix an unneeded section.
+consent during live testing. Check the returned contact READ and search-tool
+availability before attempting a CRM read. Do not add user-profile scopes to
+fix an unneeded section.
 Use `search_crm_objects`' actual schema, limit the read, and keep record values,
 account IDs and emails out of a public demo.

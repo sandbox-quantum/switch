@@ -23,7 +23,6 @@ up or renew.
 - When a tool is refused, tell the user what you could not do. If Switch says
   the grant was removed or the connection must be reconnected, your owner has
   to do that.
-- Never print, log or store a credential.
 
 ## Finding the tools
 
