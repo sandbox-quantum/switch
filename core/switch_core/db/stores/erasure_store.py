@@ -59,6 +59,10 @@ ERASED_NAME = "erased person"
 #: The name a deleted account's messages, and the member client that sent
 #: them, carry from then on.
 FORMER_MEMBER_NAME = "Former member"
+#: The shortest name taken out of a direct room's name and description. A
+#: single character, even as a whole word, is as likely to be something else
+#: in the text as the person; the room keeps it rather than lose its sense.
+MIN_SCRUBBED_NAME_LENGTH = 2
 #: How Switch Console describes a chat it creates (`ChatService`): this,
 #: then the agents and people in it, joined by `CONSOLE_CHAT_SEPARATOR`.
 CONSOLE_CHAT_PREFIX = "Switch Console chat with "
@@ -558,12 +562,16 @@ class ErasureStore:
         ).scalars()
         scrubbed = 0
         # Longest first, so a name that contains another is replaced whole.
-        ordered = sorted(names, key=len, reverse=True)
+        patterns = [
+            _whole_name(person_name)
+            for person_name in sorted(names, key=len, reverse=True)
+            if len(person_name) >= MIN_SCRUBBED_NAME_LENGTH
+        ]
         for room in rooms:
             name, description = room.name, room.description
-            for person_name in ordered:
-                name = name.replace(person_name, ERASED_NAME)
-                description = description.replace(person_name, ERASED_NAME)
+            for pattern in patterns:
+                name = pattern.sub(ERASED_NAME, name)
+                description = pattern.sub(ERASED_NAME, description)
             if (name, description) != (room.name, room.description):
                 room.name, room.description = name, description
                 scrubbed += 1
@@ -745,3 +753,9 @@ class ErasureStore:
             .where(Client.tenant_id == require_tenant_id(), Client.id == client_id)
             .values(display_name=name, user_id=None)
         )
+
+
+def _whole_name(name: str) -> re.Pattern[str]:
+    """`name` where it stands as a word of its own, so "al" leaves "Albert"
+    and "dial" alone."""
+    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")

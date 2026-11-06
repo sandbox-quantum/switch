@@ -607,6 +607,27 @@ class TestErasing:
             )
         assert copies == {"$bo"}
 
+    async def test_a_name_leaves_direct_rooms_only_where_it_is_a_whole_word(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            dm = Room(
+                transport_room_id=f"!dm-{uuid.uuid4().hex[:8]}:test",
+                name="Acme Slack: al / Albert's helper",
+                description="a dial for al",
+                channel_type="direct",
+            )
+            session.add(dm)
+            await session.flush()
+
+            scrubbed = await ErasureStore().scrub_former_direct_rooms(
+                session, [dm.id], ["al", "a", ""]
+            )
+
+        assert scrubbed == 1
+        assert dm.name == "Acme Slack: erased person / Albert's helper"
+        assert dm.description == "a dial for erased person"
+
 
 class TestQueue:
     async def test_people_are_listed_with_their_message_counts_and_claimants(
