@@ -11,10 +11,38 @@ import {
   type AcpElicitationRequest,
 } from '../antigravity/antigravity-adapter';
 import type { UserInputQuestion } from '../events';
+import { AGENT_ENV_VARS } from '../host/agent-env-vars';
 import { optionalText } from '../host/provider-home';
 import { loginWontHelp, readiness, signInWith, type ProviderReadiness } from '../readiness';
 
 const KIMI_LOGIN = 'kimi login';
+
+/** What Kimi reads to find its home and shell, and the `KIMI_MODEL_*` model it can run on instead. */
+const KIMI_ENV = [
+  'KIMI_CODE_HOME',
+  'KIMI_SHELL_PATH',
+  'KIMI_MODEL_NAME',
+  'KIMI_MODEL_API_KEY',
+  'KIMI_MODEL_PROVIDER_TYPE',
+  'KIMI_MODEL_BASE_URL',
+  'KIMI_MODEL_CAPABILITIES',
+  'KIMI_MODEL_MAX_CONTEXT_SIZE',
+  'KIMI_MODEL_MAX_OUTPUT_SIZE',
+  'KIMI_MODEL_DISPLAY_NAME',
+  'KIMI_MODEL_REASONING_KEY',
+  'KIMI_MODEL_ADAPTIVE_THINKING',
+  'KIMI_MODEL_THINKING_EFFORT',
+];
+
+/** Variables a session host passes to Kimi; any other is unset in its sessions. */
+const PASSED_TO_SESSIONS = new Set<string>([...AGENT_ENV_VARS, ...KIMI_ENV]);
+
+interface KimiProvider {
+  api_key?: unknown;
+  api_key_env?: unknown;
+  env?: unknown;
+  oauth?: { key?: unknown };
+}
 
 /**
  * Kimi's `yolo` ("Ask When Needed") runs routine work and still asks for risky commands,
@@ -74,21 +102,34 @@ export async function checkKimiSignIn(
   const home = env.KIMI_CODE_HOME || join(homedir(), '.kimi-code');
   const text = await optionalText(join(home, 'config.toml'));
   if (text === null) return signedOut;
-  let providers: Record<string, { api_key?: unknown; oauth?: { key?: unknown } }>;
+  let providers: Record<string, KimiProvider>;
   try {
     providers = (parse(text).providers ?? {}) as typeof providers;
   } catch {
     return readiness('unknown', "Could not read Kimi Code's config.toml.");
   }
-  // shortcut: api_key_env is not detected; add it if users ask.
+  let keyEnvProblem: string | undefined;
   for (const provider of Object.values(providers)) {
     if (typeof provider.api_key === 'string' && provider.api_key)
+      return readiness('authenticated', 'Signed in.');
+    // A provider with `api_key_env` takes its key from that variable and nowhere else.
+    if (typeof provider.api_key_env === 'string' && provider.api_key_env) {
+      const name = provider.api_key_env;
+      if (!env[name]?.trim())
+        keyEnvProblem ??= `config.toml reads the API key from ${name}, which is not set.`;
+      else if (!PASSED_TO_SESSIONS.has(name))
+        keyEnvProblem ??= `config.toml reads the API key from ${name}, which Switch does not pass to sessions. Use one it passes, such as KIMI_API_KEY.`;
+      else return readiness('authenticated', `Signs in with the ${name} it was given.`);
+      continue;
+    }
+    const table = typeof provider.env === 'object' && provider.env ? provider.env : {};
+    if (Object.entries(table).some(([key, value]) => key.endsWith('_API_KEY') && value))
       return readiness('authenticated', 'Signed in.');
     const name = /^oauth\/([\w-]+)$/.exec(String(provider.oauth?.key ?? ''))?.[1];
     if (name && (await hasRefreshToken(join(home, 'credentials', `${name}.json`))))
       return readiness('authenticated', 'Signed in.');
   }
-  return signedOut;
+  return keyEnvProblem ? loginWontHelp(readiness('unauthenticated', keyEnvProblem)) : signedOut;
 }
 
 export const kimiAcp: AcpProviderHooks = {
@@ -111,14 +152,7 @@ export const kimiAcp: AcpProviderHooks = {
     exitsOnClosedInput: true,
   }),
   loginCommand: KIMI_LOGIN,
-  inheritEnv: [
-    'KIMI_CODE_HOME',
-    'KIMI_SHELL_PATH',
-    'KIMI_MODEL_NAME',
-    'KIMI_MODEL_API_KEY',
-    'KIMI_MODEL_PROVIDER_TYPE',
-    'KIMI_MODEL_BASE_URL',
-  ],
+  inheritEnv: KIMI_ENV,
   checkSignIn: ({ env }) => checkKimiSignIn(env),
   sessionMode: (runtimeMode, modes) => {
     const mode = KIMI_MODES[runtimeMode];

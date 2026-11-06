@@ -129,7 +129,8 @@ export {
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
 export { controllerConnectionId } from './host/connection-id';
-export { AGENT_ENV_VARS, EXECUTION_INHERIT_ENV } from './host/agent-env';
+export { AGENT_ENV_VARS } from './host/agent-env-vars';
+export { EXECUTION_INHERIT_ENV } from './host/agent-env';
 export { SHARED_GROUP_ENV } from './host/host-permissions';
 export {
   type HostedCredential,

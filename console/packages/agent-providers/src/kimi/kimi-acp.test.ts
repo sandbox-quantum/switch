@@ -58,6 +58,7 @@ key = "oauth/kimi-code-env-0123456789abcdef"
 api_key = "not-a-provider"
 `;
 const CREDENTIAL = 'credentials/kimi-code-env-0123456789abcdef.json';
+const keyEnvConfig = (name: string) => `[providers.kimi]\ntype = "kimi"\napi_key_env = "${name}"\n`;
 
 it.each([
   ['no home', {}, {}],
@@ -94,6 +95,18 @@ it.each([
   ],
   ['a provider API key', { 'config.toml': oauthConfig('sk-synthetic') }, {}],
   [
+    'a key in the provider env table',
+    {
+      'config.toml': '[providers.kimi]\ntype = "kimi"\n[providers.kimi.env]\nKIMI_API_KEY = "k"\n',
+    },
+    {},
+  ],
+  [
+    'api_key_env naming a variable sessions get',
+    { 'config.toml': keyEnvConfig('MOONSHOT_API_KEY') },
+    { MOONSHOT_API_KEY: 'k' },
+  ],
+  [
     'KIMI_MODEL_NAME and KIMI_MODEL_API_KEY with no home',
     {},
     { KIMI_MODEL_NAME: 'kimi-k3', KIMI_MODEL_API_KEY: 'k' },
@@ -114,6 +127,31 @@ it('says KIMI_MODEL_API_KEY is missing, not to sign in, when only KIMI_MODEL_NAM
     loginHelps: false,
   });
 });
+
+it.each([
+  [
+    'is not set',
+    'MOONSHOT_API_KEY',
+    {},
+    'config.toml reads the API key from MOONSHOT_API_KEY, which is not set.',
+  ],
+  [
+    'is not passed to sessions',
+    'MY_KIMI_KEY',
+    { MY_KIMI_KEY: 'k' },
+    'config.toml reads the API key from MY_KIMI_KEY, which Switch does not pass to sessions. Use one it passes, such as KIMI_API_KEY.',
+  ],
+])(
+  'says why, not to sign in, when the api_key_env variable %s',
+  async (_name, variable, env, message) => {
+    const dir = await home({ 'config.toml': keyEnvConfig(variable) });
+    expect(await checkKimiSignIn({ KIMI_CODE_HOME: dir, ...env })).toMatchObject({
+      status: 'unauthenticated',
+      message,
+      loginHelps: false,
+    });
+  }
+);
 
 it('reports the sign-in unknown when config.toml does not parse', async () => {
   const dir = await home({ 'config.toml': '[providers\napi_key = ' });
@@ -337,6 +375,13 @@ it('passes through what Kimi reads to find its home or sign in with a key', () =
     'KIMI_MODEL_API_KEY',
     'KIMI_MODEL_PROVIDER_TYPE',
     'KIMI_MODEL_BASE_URL',
+    'KIMI_MODEL_CAPABILITIES',
+    'KIMI_MODEL_MAX_CONTEXT_SIZE',
+    'KIMI_MODEL_MAX_OUTPUT_SIZE',
+    'KIMI_MODEL_DISPLAY_NAME',
+    'KIMI_MODEL_REASONING_KEY',
+    'KIMI_MODEL_ADAPTIVE_THINKING',
+    'KIMI_MODEL_THINKING_EFFORT',
   ]);
 });
 
