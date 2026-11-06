@@ -25,3 +25,7 @@ https://github.com/sandbox-quantum/switch/issues/830#issuecomment-6678453089
 
 Automated fake-vendor tests do not establish actual vendor login, account,
 quota, room grants, refresh or demo success.
+
+Regression coverage includes unchanged and replacement-race saved clients for
+both server and organization selection, including the right cache notification.
+The organization fixture selects a synthetic adapter; this is not vendor proof.
