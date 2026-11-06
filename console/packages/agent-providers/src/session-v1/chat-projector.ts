@@ -96,7 +96,10 @@ export class ChatProjector {
             : event.item.type === 'user_message'
               ? 'user-message'
               : 'tool-activity';
-        // Raw tool output and vendor payloads are not a shared tool summary.
+        // Raw tool output and vendor payloads are not a shared tool summary:
+        // they are never published, journaled or snapshotted. The host's
+        // reporter sends Switch a redacted, bounded detail of a finished call
+        // with its row, which Switch keeps only for a room that opted in.
         const item: Item = {
           itemId: key,
           turnId: event.turnId,
@@ -128,7 +131,9 @@ export class ChatProjector {
         return this.emitItem(buffered, now, false);
       }
       case 'item.delta':
-        return []; // Tool output and reasoning stay on the execution host.
+        // Tool output and reasoning stay on the execution host; only the
+        // reporter's redacted detail of a finished call leaves it.
+        return [];
       default:
         return [];
     }

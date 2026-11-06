@@ -4,21 +4,33 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session, Snapshot } from '@switch-console/shared/session-v1';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type ConversationHistoryTurn,
   ProviderConversationUnavailableError,
   type ProviderAdapter,
+  type ProviderSessionStartInput,
   type TurnAttachment,
 } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
+import type { Report } from './activity-reporter';
 import { Redactions } from './redaction';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
-import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
+import {
+  parkAfterMs,
+  refusedFieldFallbacks,
+  RequestError,
+  RESET_HOLD_MS,
+  runSharedHost,
+  sessionBusy,
+  toolDetailRegistry,
+} from './shared-host';
 import { hostParked } from './shared-state';
+import { hostKnownValues } from './tool-detail-known-values';
+import { buildRegistry, MARKER, redactText } from './tool-detail-redaction';
 
 // Every step here writes the session journal and flushes it to disk, and
 // Windows runners take many times longer over that. The waits have no deadline
@@ -163,6 +175,11 @@ async function start(
     developerMessages?: string[];
     /** The session continues a conversation started outside Switch, which had these turns. */
     continuing?: ConversationHistoryTurn[];
+    /** The agent's environment and MCP servers, as the provider is given them. */
+    env?: Record<string, string>;
+    mcpServers?: ProviderSessionStartInput['mcpServers'];
+    /** The session's service tokens, to add to while it runs. */
+    redactions?: Redactions;
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
@@ -304,7 +321,7 @@ async function start(
   const running = runSharedHost(
     {
       root,
-      redactions: new Redactions(),
+      redactions: opts.redactions ?? new Redactions(),
       serviceNotices: new ServiceNotices(),
       agentApiUrl: 'http://127.0.0.1/agent',
       token: randomUUID(),
@@ -313,8 +330,8 @@ async function start(
         sessionId: 'session',
         cwd: base,
         runtimeMode: 'approval-required',
-        env: {},
-        mcpServers: {},
+        env: opts.env ?? {},
+        mcpServers: opts.mcpServers ?? {},
         connectorMcpServers: [],
         ...(continuing ? { resume: { nativeSessionId: 'cli-copy' } } : {}),
       },
@@ -1577,3 +1594,351 @@ it('tells the room once when every post of a turn was refused, and not when one 
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+describe('tool rows', () => {
+  // Synthetic, put together at run time.
+  const envSecret = ['Qm7v', 'R2Xk', '9pT4', 'Lz8W'].join('');
+  const bearer = ['Hq7L', 'z2Wx', '9Pd4', 'Rt6N'].join('');
+  const stdioSecret = ['Vb6N', 'c8Md', '0Ke2', 'Lf4H'].join('');
+  const late = ['Zq9X', 'm4Kp', '7Wd2', 'Ns5R'].join('');
+  const mcpServers: ProviderSessionStartInput['mcpServers'] = {
+    docs: {
+      transport: 'http',
+      url: 'https://mcp.example/docs',
+      headers: { Authorization: `Bearer ${bearer}` },
+    },
+    local: { transport: 'stdio', command: 'node', args: [], env: { LOCAL_API_KEY: stdioSecret } },
+  };
+
+  const toolRows = (host: Harness) => {
+    const rows = host.switchCore.calls.filter(
+      (c) => c.path.endsWith('/activity') && (c.body as { kind: string }).kind === 'tool-activity'
+    );
+    return rows.map((c) => c.body as Record<string, unknown>);
+  };
+
+  /** A finished command in the host's first turn, as the provider reports it. */
+  const ran = (host: Harness, id: string, line: string, output: string) =>
+    host.emit({
+      type: 'item.completed',
+      turnId: host.turns[0]!.turnId,
+      item: {
+        id,
+        type: 'command_execution',
+        status: 'completed',
+        title: line,
+        text: output,
+        payload: { command: line },
+      },
+    });
+
+  it('registry: the session tokens, the secret environment and the MCP servers’ secrets', () => {
+    const redactions = new Redactions();
+    redactions.add(late);
+    const input = { env: { DEPLOY_TOKEN: envSecret }, mcpServers };
+    const registry = toolDetailRegistry(redactions, input);
+    for (const value of [late, envSecret, bearer, stdioSecret])
+      expect(registry.bases, value.slice(0, 4)).toContain(value);
+    // The env/MCP source is the one addition to the session's own list.
+    expect(registry).toEqual(buildRegistry([...redactions.list(), ...hostKnownValues(input)]));
+  });
+
+  it('shows text naming the `Bearer` scheme; the token itself is still masked', () => {
+    const registry = toolDetailRegistry(new Redactions(), { env: {}, mcpServers });
+    const check = (raw: string) => redactText(raw, registry).text;
+    const prose = 'Bearer scheme accepted\nbearer realm="docs"\n';
+    expect(check(prose)).toBe(prose);
+    expect(check(`token ${bearer} sent`)).toBe(`token ${MARKER} sent`);
+    expect(check(`Authorization: Bearer ${bearer}`)).not.toContain(bearer);
+  });
+
+  it('shows a line naming a decoded `Basic` user; the password is still masked', () => {
+    // Synthetic, put together at run time.
+    const user = 'postgres';
+    const password = ['Ns3H', 'k8Qz', '6Fv1'].join('');
+    const basic = Buffer.from(`${user}:${password}`).toString('base64');
+    const registry = toolDetailRegistry(new Redactions(), {
+      env: {},
+      mcpServers: {
+        db: { transport: 'http', url: 'https://x', headers: { Authorization: `Basic ${basic}` } },
+      },
+    });
+    const check = (raw: string) => redactText(raw, registry).text;
+    expect(check('psql -U postgres -h db')).toBe('psql -U postgres -h db');
+    expect(check(`login ${user}:${password} ok`)).toBe(`login ${MARKER} ok`);
+    expect(check(`pass ${password} ok`)).toBe(`pass ${MARKER} ok`);
+  });
+
+  it('sends a `Bearer $TOKEN` title as it is; its detail is the line with the variable masked', async () => {
+    const host = await start({ rooms: true, mcpServers });
+    try {
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Run it') });
+      await until(() => expect(host.turns).toHaveLength(1));
+      const line = 'curl -H "Authorization: Bearer $TOKEN" https://mcp.example/docs';
+      const output = 'Bearer scheme accepted\n';
+      ran(host, 'call', line, output);
+      await until(() => expect(toolRows(host)).toHaveLength(1));
+      const [row] = toolRows(host);
+      expect(row).toMatchObject({ status: 'completed', title: line });
+      // The shared pattern masks `$TOKEN` and stops at the JSON escape.
+      const shown = 'curl -H "Authorization: [REDACTED]" https://mcp.example/docs';
+      expect(row!.tool_io).toBe(
+        `Input\n${JSON.stringify({ command: shown }, null, 2)}\n\nOutput\n${output}`
+      );
+      expect(row!.tool_io).toContain('\\"Authorization: [REDACTED]\\" https://');
+      expect(row!.tool_io).not.toContain('$TOKEN');
+      expect(row!.tool_io).not.toContain(bearer);
+    } finally {
+      expect(await host.stop()).toBeNull();
+    }
+  }, 20000);
+
+  it('masks an MCP server’s `X-Api-Key` in a call’s detail', async () => {
+    // Synthetic, put together at run time.
+    const apiKey = ['Zq8W', 'v3Lm', '5Tr7', 'Hq2N'].join('');
+    const host = await start({
+      rooms: true,
+      mcpServers: {
+        user: { transport: 'http', url: 'https://mcp.example/x', headers: { 'X-Api-Key': apiKey } },
+      },
+    });
+    try {
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Run it') });
+      await until(() => expect(host.turns).toHaveLength(1));
+      ran(host, 'call', `echo ${apiKey}`, `${apiKey}\n`);
+      await until(() => expect(toolRows(host)).toHaveLength(1));
+      const [row] = toolRows(host);
+      expect(row).toMatchObject({ status: 'completed' });
+      expect(row!.tool_io).toBe(
+        'Input\n{\n  "command": "echo [REDACTED]"\n}\n\nOutput\n[REDACTED]\n'
+      );
+      expect(row!.tool_io).not.toContain(apiKey);
+    } finally {
+      expect(await host.stop()).toBeNull();
+    }
+  }, 20000);
+
+  it('sends a finished call’s detail with every known value masked, and one added since', async () => {
+    const redactions = new Redactions();
+    const host = await start({
+      rooms: true,
+      env: { DEPLOY_TOKEN: envSecret },
+      mcpServers,
+      redactions,
+    });
+    try {
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Run it') });
+      await until(() => expect(host.turns).toHaveLength(1));
+      const line = `echo ${envSecret} ${bearer} ${stdioSecret}`;
+      ran(host, 'first', line, `${envSecret}\n${bearer}\n${stdioSecret}\n`);
+      await until(() => expect(toolRows(host)).toHaveLength(1));
+      const [first] = toolRows(host);
+      expect(first).toMatchObject({ status: 'completed', room_id: 'room' });
+      expect(first!.tool_io).toBe(
+        'Input\n{\n  "command": "echo [REDACTED] [REDACTED] [REDACTED]"\n}\n\n' +
+          'Output\n[REDACTED]\n[REDACTED]\n[REDACTED]\n'
+      );
+
+      // A token handed out since is in the next report's registry.
+      redactions.add(late);
+      ran(host, 'second', 'printenv LATE', `${late}\n`);
+      await until(() => expect(toolRows(host)).toHaveLength(2));
+      expect(toolRows(host)[1]!.tool_io).toBe(
+        'Input\n{\n  "command": "printenv LATE"\n}\n\nOutput\n[REDACTED]\n'
+      );
+    } finally {
+      expect(await host.stop()).toBeNull();
+    }
+  }, 20000);
+
+  it('sends a call’s title alone to a server that predates the detail', async () => {
+    const host = await start({ rooms: true });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const served = globalThis.fetch;
+    vi.stubGlobal('fetch', async (url: string, options: RequestInit = {}) => {
+      const response = await served(url, options);
+      const body = typeof options.body === 'string' ? (JSON.parse(options.body) as object) : {};
+      if (new URL(url).pathname.endsWith('/activity') && 'tool_io' in body)
+        return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
+      return response;
+    });
+    try {
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Run it') });
+      await until(() => expect(host.turns).toHaveLength(1));
+      ran(host, 'call', 'ls', 'a.txt\n');
+      await until(() => expect(toolRows(host)).toHaveLength(2));
+      const [refused, resent] = toolRows(host);
+      const shown = 'Input\n{\n  "command": "ls"\n}\n\nOutput\na.txt\n';
+      expect(refused).toMatchObject({ title: 'ls', tool_io: shown });
+      expect(resent).toMatchObject({ title: 'ls', item_id: refused!.item_id });
+      expect(resent!.revision).toBe(refused!.revision);
+      expect(resent).not.toHaveProperty('tool_io');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('the room shows its title only'));
+      expect(String(warn.mock.calls.map((call) => call.join(' ')))).not.toContain('a.txt');
+
+      // Reporting carries on: the turn's end is reported after it.
+      host.emit({
+        type: 'turn.completed',
+        turnId: host.turns[0]!.turnId,
+        outcome: 'completed',
+        usage: [],
+      });
+      await until(() =>
+        expect(
+          host.switchCore.calls.some(
+            (c) =>
+              c.path.endsWith('/activity') &&
+              (c.body as { kind: string; status: string }).kind === 'turn' &&
+              (c.body as { status: string }).status === 'completed'
+          )
+        ).toBe(true)
+      );
+    } finally {
+      expect(await host.stop()).toBeNull();
+    }
+  }, 20000);
+});
+
+describe('fields a server that predates them refuses', () => {
+  const refusal = new RequestError('', 422, 'Switch refused /activity (422): extra_forbidden');
+  const row = (fields: { usage?: boolean; tool_io?: boolean }): Report => ({
+    kind: 'activity',
+    row: {
+      turn_id: 'turn',
+      item_id: 'item',
+      kind: fields.usage ? 'turn' : 'tool-activity',
+      revision: 1,
+      status: 'completed',
+      title: 'ls',
+      text: '',
+      command_id: null,
+      room_id: 'room',
+      thread_id: null,
+      message_id: null,
+      occurred_at: '2026-10-31T00:00:00.000Z',
+      ...(fields.usage
+        ? {
+            usage: [
+              {
+                model: 'big',
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+              },
+            ],
+          }
+        : {}),
+      ...(fields.tool_io ? { tool_io: 'Input\n{}' } : {}),
+    },
+  });
+  /** A server that refuses every row carrying one of `refuses`, and what it was sent. */
+  const server = (refuses: readonly ('usage' | 'tool_io')[]) => {
+    const sent: Report[] = [];
+    const send = async (report: Report) => {
+      sent.push(report);
+      if (report.kind === 'activity' && refuses.some((field) => field in report.row)) throw refusal;
+    };
+    return { sent, ...refusedFieldFallbacks(send) };
+  };
+  const fieldsOf = (sent: Report[]) =>
+    sent.map((report) =>
+      report.kind === 'activity' ? ['usage', 'tool_io'].filter((field) => field in report.row) : []
+    );
+
+  it('sends a row again without its usage, and only for a 422 on a row that has it', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const refusing = server(['usage']);
+    expect(await refusing.sentWithoutUsage(row({ usage: true }), refusal)).toBe(true);
+    expect(fieldsOf(refusing.sent)).toEqual([[]]);
+    expect(await refusing.sentWithoutUsage(row({}), refusal)).toBe(false);
+    const other = new RequestError('', 400, 'Switch refused /activity (400)');
+    expect(await refusing.sentWithoutUsage(row({ usage: true }), other)).toBe(false);
+    expect(refusing.sent).toHaveLength(1);
+  });
+
+  it('sends a row again without its tool detail, and only for a 422 on a row that has it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const refusing = server(['tool_io']);
+    expect(await refusing.sentWithoutToolIo(row({ tool_io: true }), refusal)).toBe(true);
+    expect(fieldsOf(refusing.sent)).toEqual([[]]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0])).not.toContain('Input');
+    expect(await refusing.sentWithoutToolIo(row({}), refusal)).toBe(false);
+    const close: Report = { kind: 'approval.close', requestId: 'r' };
+    expect(await refusing.sentWithoutToolIo(close, refusal)).toBe(false);
+    expect(refusing.sent).toHaveLength(1);
+  });
+
+  it('a row with both: without the detail first, then without the usage only if refused again', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const both = row({ usage: true, tool_io: true });
+    const detailOnly = server(['tool_io']);
+    expect(await detailOnly.sentWithoutToolIo(both, refusal)).toBe(true);
+    expect(fieldsOf(detailOnly.sent)).toEqual([['usage']]);
+
+    const neither = server(['tool_io', 'usage']);
+    expect(await neither.sentWithoutToolIo(both, refusal)).toBe(true);
+    expect(fieldsOf(neither.sent)).toEqual([['usage'], []]);
+  });
+
+  it('gives up on a row refused for something else once its new fields are gone', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const always = new RequestError('', 422, 'Switch refused /activity (422): other');
+    const sent: Report[] = [];
+    const send = async (report: Report) => {
+      sent.push(report);
+      throw always;
+    };
+    const { sentWithoutToolIo } = refusedFieldFallbacks(send);
+    expect(await sentWithoutToolIo(row({ usage: true, tool_io: true }), refusal)).toBe(true);
+    expect(fieldsOf(sent)).toEqual([['usage'], []]);
+    expect(String(warn.mock.calls.at(-1))).toContain('other');
+  });
+
+  // Refused once more for something else, the row is refused
+  // like any other, and reporting goes on; the host does not fail.
+  for (const [status, code] of [
+    [403, 'NOT_AUTHORIZED'],
+    [404, 'NOT_FOUND'],
+  ] as const) {
+    const again = new RequestError(code, status, `Switch refused /activity (${status}): ${code}`);
+    /** A server that refuses `field` with 422 and the row without it with `again`. */
+    const refusingThen = (field: 'usage' | 'tool_io') => {
+      const sent: Report[] = [];
+      const send = async (report: Report) => {
+        sent.push(report);
+        throw report.kind === 'activity' && field in report.row ? refusal : again;
+      };
+      return { sent, ...refusedFieldFallbacks(send) };
+    };
+
+    it(`warns and skips a row refused with ${status} once its tool detail is gone`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const refusing = refusingThen('tool_io');
+      expect(await refusing.sentWithoutToolIo(row({ tool_io: true }), refusal)).toBe(true);
+      expect(fieldsOf(refusing.sent)).toEqual([[]]);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[1])).toContain(`(${status}): ${code}`);
+    });
+
+    it(`warns and skips a row refused with ${status} once its usage is gone`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const refusing = refusingThen('usage');
+      expect(await refusing.sentWithoutUsage(row({ usage: true }), refusal)).toBe(true);
+      expect(fieldsOf(refusing.sent)).toEqual([[]]);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[1])).toContain(`(${status}): ${code}`);
+    });
+  }
+
+  it('still fails on an error that is not a refusal', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const broken = new Error('socket closed');
+    const { sentWithoutToolIo, sentWithoutUsage } = refusedFieldFallbacks(async () => {
+      throw broken;
+    });
+    await expect(sentWithoutToolIo(row({ tool_io: true }), refusal)).rejects.toBe(broken);
+    await expect(sentWithoutUsage(row({ usage: true }), refusal)).rejects.toBe(broken);
+  });
+});

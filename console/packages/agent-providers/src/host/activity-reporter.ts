@@ -3,6 +3,9 @@ import type { Origin, ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { TokenUsage } from '../events';
 import { Journal } from './journal';
+import type { ToolDetailParts } from './tool-detail-buffer';
+import type { Registry } from './tool-detail-redaction';
+import { toolIoText } from './tool-detail-text';
 
 /**
  * What Switch shows of a session on messaging platforms, derived from the
@@ -36,7 +39,24 @@ export type ActivityRow = {
    * there is nothing to say, so a server that predates it takes the row.
    */
   usage?: UsageRow[];
+  /**
+   * A finished tool call's input and output, redacted and cut to its budget
+   * (`toolIoText`), on a row placed in a room. Left out when there is none,
+   * so a server that predates it takes the row; Switch keeps it only for a
+   * room that shows tool detail.
+   */
+  tool_io?: string;
 };
+
+/**
+ * What the session host still holds of a tool call, and the registry of the
+ * values known now to check it against; null when the host has nothing to
+ * give.
+ */
+export type ToolDetailLookup = (
+  turnId: string,
+  itemId: string
+) => { detail: ToolDetailParts | null; registry: Registry } | null;
 
 export type UsageRow = {
   model: string;
@@ -116,7 +136,8 @@ export class ActivityReporter {
   reports(
     event: ServerEvent,
     originOf: (turnId: string) => Origin | null,
-    usageOf: (turnId: string) => TokenUsage[]
+    usageOf: (turnId: string) => TokenUsage[],
+    toolDetailOf: ToolDetailLookup
   ): Report[] {
     const body = event.body;
     const place = (turnId: string): Placement => {
@@ -153,6 +174,9 @@ export class ActivityReporter {
       }
       case 'item.upsert': {
         const { item } = body;
+        const placement = place(item.turnId);
+        const toolIo =
+          item.kind === 'tool-activity' ? toolIoOf(item, placement, toolDetailOf) : null;
         return [
           {
             kind: 'activity',
@@ -165,8 +189,9 @@ export class ActivityReporter {
               title: truncate(item.title, MAX_TITLE),
               text: truncate(item.text, MAX_TEXT),
               command_id: null,
-              ...place(item.turnId),
+              ...placement,
               occurred_at: event.occurredAt,
+              ...(toolIo !== null ? { tool_io: toolIo } : {}),
             },
           },
         ];
@@ -278,6 +303,24 @@ function usageRow(usage: TokenUsage): UsageRow {
     cache_read_tokens: usage.cacheReadTokens,
     cache_write_tokens: usage.cacheWriteTokens,
   };
+}
+
+/**
+ * A finished tool call's detail, for a row placed in a room; null otherwise.
+ * It cannot stop the reporting: a failed lookup or detail is left out.
+ */
+function toolIoOf(
+  item: { turnId: string; itemId: string; status: string },
+  placement: Placement,
+  toolDetailOf: ToolDetailLookup
+): string | null {
+  if (item.status === 'in-progress' || placement.room_id === null) return null;
+  try {
+    const found = toolDetailOf(item.turnId, item.itemId);
+    return found?.detail ? toolIoText(found.detail, found.registry) : null;
+  } catch {
+    return null;
+  }
 }
 
 function truncate(text: string, limit: number): string {

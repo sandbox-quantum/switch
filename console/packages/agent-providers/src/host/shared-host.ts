@@ -5,7 +5,12 @@ import { commandSchema, hasOwnActivity } from '@switch-console/shared/session-v1
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
-import { ActivityReporter, type Report } from './activity-reporter';
+import {
+  ActivityReporter,
+  type ActivityRow,
+  type Report,
+  type ToolDetailLookup,
+} from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
@@ -60,6 +65,8 @@ import {
   roomInstructionsNote,
   roomInstructionsUnreadNote,
 } from './told-room-instructions';
+import { hostKnownValues } from './tool-detail-known-values';
+import { buildRegistry, type Registry } from './tool-detail-redaction';
 import { startVendorClis } from './vendor-cli';
 import {
   CALL_TIMEOUT_MS,
@@ -70,6 +77,20 @@ import {
 
 /** How long a faulted host waits for its last reports to reach Switch before it stops. */
 const FINAL_REPORT_MS = 5_000;
+
+/**
+ * The values a tool call's detail is masked with, as they stand now: the
+ * session's service tokens and, from the env/MCP source
+ * (`tool-detail-known-values.ts`), the agent's secret environment and its MCP
+ * servers' secrets. Built for every report, so a token added since the last
+ * one is in it.
+ */
+export function toolDetailRegistry(
+  redactions: Redactions,
+  input: Pick<ProviderSessionStartInput, 'env' | 'mcpServers'>
+): Registry {
+  return buildRegistry([...redactions.list(), ...hostKnownValues(input)]);
+}
 
 /**
  * A session run on behalf of its agent.
@@ -209,7 +230,8 @@ export function postedToRoom(name: string, result: unknown): boolean {
 }
 
 class TransportError extends Error {}
-class RequestError extends Error {
+/** A request Switch answered with an error. Exported for the tests. */
+export class RequestError extends Error {
   constructor(
     readonly code: string,
     readonly status: number,
@@ -217,6 +239,60 @@ class RequestError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * What a host does when a server that predates a row's newer fields refuses
+ * the row for one of them: sends it again without. Exported for the tests;
+ * `runSharedHost` builds these over its own `send`.
+ *
+ * @internal
+ */
+export function refusedFieldFallbacks(send: (report: Report) => Promise<void>) {
+  // The row sent again without a field. Refused once more, it is refused for
+  // something else, like any row Switch refuses: the host says so and goes on
+  // reporting, as it did for the row before the field was added.
+  const resent = async (row: ActivityRow): Promise<RequestError | null> => {
+    try {
+      await send({ kind: 'activity', row });
+      return null;
+    } catch (again) {
+      if (!(again instanceof RequestError)) throw again;
+      return again;
+    }
+  };
+  const refusedAgain = (row: ActivityRow, again: RequestError) =>
+    console.warn(
+      `Switch refused a row of turn ${row.turn_id} again without its newer fields; it is not shown on messaging platforms: ${again.message}`
+    );
+  // A server that predates usage refuses a row that carries it. The row is
+  // what platforms draw, so it goes again without, and the spend is not counted.
+  const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
+    if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
+    const { usage: _usage, ...row } = item.row;
+    console.warn(
+      `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+    );
+    const again = await resent(row);
+    if (again) refusedAgain(row, again);
+    return true;
+  };
+  // Nor does it take a tool call's detail. The row goes again without it,
+  // so the room shows the call's title only; a row refused once more for
+  // its usage goes again without that too.
+  const sentWithoutToolIo = async (item: Report, error: RequestError): Promise<boolean> => {
+    if (item.kind !== 'activity' || item.row.tool_io === undefined || error.status !== 422)
+      return false;
+    const { tool_io: _toolIo, ...row } = item.row;
+    console.warn(
+      `Switch refused the detail of a tool call in turn ${row.turn_id}, so the room shows its title only: ${error.message}`
+    );
+    const again = await resent(row);
+    if (again && !(await sentWithoutUsage({ kind: 'activity', row }, again)))
+      refusedAgain(row, again);
+    return true;
+  };
+  return { sentWithoutUsage, sentWithoutToolIo };
 }
 
 /** How a room control names the session's current generation and turn. */
@@ -474,17 +550,13 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
-      console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
-      );
-      await send({ kind: 'activity', row });
-      return true;
-    };
+    const { sentWithoutUsage, sentWithoutToolIo } = refusedFieldFallbacks(send);
+    // What the host holds of a tool call, read alone, and the values known
+    // as the row is reported.
+    const toolDetailOf: ToolDetailLookup = (turnId, itemId) => ({
+      detail: host!.toolDetail(turnId, itemId),
+      registry: toolDetailRegistry(options.redactions, options.input),
+    });
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
@@ -496,7 +568,8 @@ export async function runSharedHost(
         const reports = reporter.reports(
           event,
           (turnId) => host!.originOf(turnId),
-          (turnId) => host!.usageOf(turnId)
+          (turnId) => host!.usageOf(turnId),
+          toolDetailOf
         );
         for (const item of reports) {
           try {
@@ -504,6 +577,7 @@ export async function runSharedHost(
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
+            if (await sentWithoutToolIo(item, error)) continue;
             if (await sentWithoutUsage(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.

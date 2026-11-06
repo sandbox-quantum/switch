@@ -36,7 +36,7 @@ import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
-import { ToolDetailBuffer } from './tool-detail-buffer';
+import { ToolDetailBuffer, type ToolDetailParts } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -136,7 +136,11 @@ export class HostedSession {
   private readonly listeners = new Set<(event: ServerEvent) => void>();
   /** Recent reasoning, in memory only: never published, journaled or replayed. */
   private readonly reasoningBuffer = new ReasoningBuffer();
-  /** Recent tool input and output, in memory only, under the same rules as reasoning. */
+  /**
+   * Recent tool input and output, in memory only, never published, journaled
+   * or replayed. A redacted, bounded detail of a finished call goes to Switch
+   * with its row (`toolDetail`), which keeps it only for a room that opted in.
+   */
   private readonly toolDetails = new ToolDetailBuffer();
   private activeTurn: string | null = null;
   private serial: Promise<unknown> = Promise.resolve();
@@ -724,6 +728,13 @@ export class HostedSession {
       ...this.reasoningBuffer.list(epoch, turnIds),
       tools: this.toolDetails.list(epoch, turnIds),
     };
+  }
+  /**
+   * The detail still held of the tool call projected as `itemId` in
+   * `turnId`, for this epoch, read alone (`ToolDetailBuffer.detail`).
+   */
+  toolDetail(turnId: string, itemId: string): ToolDetailParts | null {
+    return this.toolDetails.detail(this.config.session.epoch, turnId, itemId);
   }
   replay(after: number): { events: ServerEvent[]; throughSequence: number } {
     return {
