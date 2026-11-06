@@ -63,6 +63,15 @@ export function awakeText(box: OverviewBox): string {
   return box.awake === null ? "—" : `${box.awake.running} of ${box.awake.max} awake`;
 }
 
+/** The agents' workspace disk in use, out of its size: shown only when the box
+ *  marks its figure as the workspace disk, so the system disk never shows. */
+export const DISK_NOT_AVAILABLE = "Not available";
+export function diskText(box: OverviewBox): string {
+  const disk = box.workspaceDisk;
+  if (!disk) return DISK_NOT_AVAILABLE;
+  return `${gb(disk.totalBytes - disk.availableBytes)} of ${gb(disk.totalBytes)}`;
+}
+
 /** Memory in use, and out of the box's memory when Core sends it. */
 export function memoryText(box: OverviewBox): string {
   if (box.memoryUsedBytes === null) return "—";
@@ -186,6 +195,7 @@ export default function BoxesTab() {
             <TableCell>Machine</TableCell>
             <TableCell>Agents</TableCell>
             <TableCell>Memory</TableCell>
+            <TableCell>Disk</TableCell>
             <TableCell align="right">Restarts today</TableCell>
             <TableCell aria-label="Actions" />
           </TableRow>
@@ -193,7 +203,7 @@ export default function BoxesTab() {
         <TableBody>
           {shown.length === 0 && (
             <TableRow>
-              <TableCell colSpan={9}>
+              <TableCell colSpan={10}>
                 <Typography variant="body2" color="text.secondary">
                   {overview.boxes.length === 0 ? EMPTY : NO_MATCH}
                 </Typography>
@@ -271,6 +281,9 @@ export default function BoxesTab() {
                 </TableCell>
                 <TableCell>{awakeText(b)}</TableCell>
                 <TableCell>{memoryText(b)}</TableCell>
+                <TableCell sx={b.workspaceDisk ? undefined : { color: "text.secondary" }}>
+                  {diskText(b)}
+                </TableCell>
                 <TableCell align="right">{b.restartsToday === null ? "—" : b.restartsToday}</TableCell>
                 <TableCell align="right">
                   {current && (

@@ -5,7 +5,7 @@ import { REFRESH_MS, STALE } from "../overview/overview";
 import { B1, U1, U3, U4, W2, boxRow, fixture, machineId } from "../overview/testing";
 import { HostedContext } from "../HostedContext";
 import { MARKER, answer, answers, renderTab } from "../w5shared/testing";
-import BoxesTab, { BADGES, EMPTY, NO_MATCH } from "./BoxesTab";
+import BoxesTab, { BADGES, DISK_NOT_AVAILABLE, EMPTY, NO_MATCH } from "./BoxesTab";
 import { BODY, PLACEHOLDER } from "./ShowNameDialog";
 
 vi.mock("../../../data/AuthContext", () => ({
@@ -363,5 +363,34 @@ describe("the Boxes filter bar and rows (UX, operators 3 and 5)", () => {
     expect(first.getByRole("link", { name: "shared-1 · zone-a" }).getAttribute("href")).toBe(
       `/hosted/machines/${machineId("shared-1")}`,
     );
+  });
+});
+
+describe("the Boxes disk column", () => {
+  afterEach(() => cleanup());
+
+  function withDisk(disk: unknown): Record<string, unknown> {
+    const raw = fixture();
+    const boxes = raw.boxes as Record<string, unknown>[];
+    boxes[0] = { ...boxes[0], disk };
+    return raw;
+  }
+
+  it("shows the workspace disk in use out of its size", () => {
+    renderTab(BoxesTab, {
+      overview: withDisk({ total_bytes: 15 * 1024 ** 3, available_bytes: 12.9 * 1024 ** 3, scope: "workspace" }),
+    });
+    expect(rowOf("k1-4f2a 91aa 0b1c").getByText("2.1 GB of 15.0 GB")).toBeTruthy();
+  });
+
+  it.each([
+    ["an older box with no scope", { total_bytes: 8 * 1024 ** 3, available_bytes: 1024 ** 3 }],
+    ["a figure marked unknown", { total_bytes: 8 * 1024 ** 3, available_bytes: 1024 ** 3, scope: "unknown" }],
+    ["no reading", null],
+  ])("never shows the system disk: %s reads Not available", (_case, disk) => {
+    renderTab(BoxesTab, { overview: withDisk(disk) });
+    const row = rowOf("k1-4f2a 91aa 0b1c");
+    expect(row.getByText(DISK_NOT_AVAILABLE)).toBeTruthy();
+    expect(row.queryByText(/7\.0 GB/)).toBeNull();
   });
 });
