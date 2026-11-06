@@ -22,17 +22,21 @@ from switch_core.accounts import deletion as deletion_module
 from switch_core.accounts.deletion import (
     USER_REFERENCES,
     AccountDeletion,
+    AccountDeletionIncomplete,
     Workspace,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
+    AgentEventRow,
     ApiKey,
     AuditEvent,
     Client,
+    ClientRoom,
     CloudMachine,
     Invitation,
+    Message,
     MessagingInstall,
     OidcIdentity,
     Organization,
@@ -51,6 +55,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.document_store import DocumentStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
@@ -276,6 +281,63 @@ async def test_the_only_admin_of_a_shared_workspace_is_refused(
             session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
     assert reason is not None and "only admin of Acme" in reason
+
+
+async def test_becoming_the_only_admin_after_the_check_stops_before_anything_changes(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The other admin was demoted after `refusal` passed: nothing of the
+    person's in the workspace is deleted, archived or renamed."""
+    deletion, protocol, _ = _deletion(session_factory)
+    async with session_factory() as session:
+        leaving = await _user(session, "leaving")
+        other = await _user(session, "other")
+        await _member(session, TENANT_ZERO_ID, leaving, "admin")
+        await _member(session, TENANT_ZERO_ID, other, "member")
+        agent = await _agent(session, TENANT_ZERO_ID, leaving, "helper")
+        theirs = Client(
+            transport_user_id=f"@switch-member-{leaving.id}:test",
+            display_name="leaving",
+            type="member",
+            user_id=leaving.id,
+        )
+        room = Room(
+            transport_room_id=f"!{uuid.uuid4().hex}:test", name="Chat", description=""
+        )
+        session.add_all([theirs, room])
+        await session.flush()
+        await MessageStore().create(
+            session,
+            Message(
+                room_id=room.id,
+                transport_event_id="$mine",
+                sender_id=theirs.transport_user_id,
+                sender_client_id=theirs.id,
+                sender_name="leaving",
+                event_type="m.room.message",
+                content={"body": "hi", "sender_name": "leaving"},
+            ),
+            [],
+        )
+        await session.commit()
+        leaving_id, agent_id = leaving.id, agent.id
+
+    async with session_factory() as session:
+        user = await session.get(User, leaving_id)
+        assert user is not None
+        with pytest.raises(AccountDeletionIncomplete) as raised:
+            await deletion.delete(
+                session,
+                user,
+                [Workspace(TENANT_ZERO_ID, "Acme", "admin")],
+                actor_id=leaving_id,
+            )
+
+    assert "Nothing of theirs there has changed" in str(raised.value.__cause__)
+    async with session_factory() as session:
+        message = (await session.execute(select(Message))).scalar_one()
+        assert message.sender_name == "leaving"
+        assert await session.get(Agent, agent_id) is not None
 
 
 async def test_an_org_admin_with_a_member_row_takes_no_admin_away(
@@ -905,3 +967,219 @@ async def test_the_successor_is_the_longest_standing_admin_then_the_lowest_id(
 
     async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
         assert await deletion._successor(session, leaving_id) == expected
+
+
+async def test_a_deleted_accounts_messages_stay_under_former_member(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Their name leaves everything they sent from Switch Console, the agents'
+    copies, the member client and the Console chat descriptions; what anyone
+    else wrote, mentions and quotes of them included, is untouched."""
+    monkeypatch.setattr(deletion_module, "RENAME_BATCH", 2)
+    deletion, _, _ = _deletion(session_factory)
+    async with session_factory() as session:
+        admin = await _user(session, "admin")
+        leaving = await _user(session, "leaving")
+        await _member(session, TENANT_ZERO_ID, admin, "admin")
+        await _member(session, TENANT_ZERO_ID, leaving, "member")
+        agent = await _agent(session, TENANT_ZERO_ID, admin, "helper")
+        theirs = Client(
+            transport_user_id=f"@switch-member-{leaving.id}:test",
+            display_name="leaving",
+            type="member",
+            user_id=leaving.id,
+        )
+        admins = Client(
+            transport_user_id=f"@switch-member-{admin.id}:test",
+            display_name="admin",
+            type="member",
+            user_id=admin.id,
+        )
+        chat = Room(
+            transport_room_id=f"!{uuid.uuid4().hex}:test",
+            name="Chat",
+            description="Switch Console chat with helper, leaving, admin",
+        )
+        other_chat = Room(
+            transport_room_id=f"!{uuid.uuid4().hex}:test",
+            name="Other",
+            description="Switch Console chat with helper, leaving",
+        )
+        session.add_all([theirs, admins, chat, other_chat])
+        await session.flush()
+        session.add(ClientRoom(client_id=theirs.id, room_id=chat.id))
+        store = MessageStore()
+
+        async def say(sender: Client, event_id: str, content: dict[str, Any]) -> None:
+            await store.create(
+                session,
+                Message(
+                    room_id=chat.id,
+                    transport_event_id=event_id,
+                    sender_id=sender.transport_user_id,
+                    sender_client_id=sender.id,
+                    sender_name=sender.display_name,
+                    event_type="m.room.message",
+                    content=content,
+                ),
+                [],
+            )
+
+        for i in range(3):
+            await say(theirs, f"$mine-{i}", {"body": "hi", "sender_name": "leaving"})
+        await say(
+            theirs,
+            "$command",
+            {
+                "command": "stop",
+                "user_id": theirs.transport_user_id,
+                "user_name": "leaving",
+            },
+        )
+        await say(theirs, "$custom", {"com.switch.marker": True})
+        await say(
+            admins,
+            "$admin",
+            {"body": "as leaving said", "sender_name": "admin", "quote": "leaving"},
+        )
+        session.add(
+            AgentEventRow(
+                agent_id=agent.id,
+                seq=1,
+                room_id=chat.id,
+                room_seq=1,
+                message_key="$mine-0",
+                type="message",
+                payload={
+                    "type": "message",
+                    "payload": {
+                        "sender": theirs.transport_user_id,
+                        "sender_name": "leaving",
+                        "body": "hi",
+                    },
+                },
+                notifiable=True,
+            )
+        )
+        await session.commit()
+        ids = {
+            "leaving": leaving.id,
+            "theirs": theirs.id,
+            "chat": chat.id,
+            "other_chat": other_chat.id,
+        }
+
+    async with session_factory() as session:
+        user = await session.get(User, ids["leaving"])
+        assert user is not None
+        workspaces = await deletion.with_former_workspaces(
+            user.id, [Workspace(id=TENANT_ZERO_ID, name="Zero", role="member")]
+        )
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
+
+    async with session_factory() as session:
+        rows = {
+            m.transport_event_id: (m.sender_name, m.content)
+            for m in (await session.execute(select(Message))).scalars()
+        }
+        client = await session.get(Client, ids["theirs"])
+        chat_after = await session.get(Room, ids["chat"])
+        other_after = await session.get(Room, ids["other_chat"])
+        copy = (await session.execute(select(AgentEventRow))).scalar_one()
+    for i in range(3):
+        assert rows[f"$mine-{i}"] == (
+            "Former member",
+            {"body": "hi", "sender_name": "Former member"},
+        )
+    assert rows["$command"][1]["user_name"] == "Former member"
+    assert rows["$custom"] == ("Former member", {"com.switch.marker": True})
+    assert rows["$admin"] == (
+        "admin",
+        {"body": "as leaving said", "sender_name": "admin", "quote": "leaving"},
+    )
+    assert client is not None
+    assert (client.display_name, client.user_id) == ("Former member", None)
+    assert chat_after is not None and other_after is not None
+    assert (
+        chat_after.description
+        == "Switch Console chat with helper, Former member, admin"
+    )
+    assert other_after.description == "Switch Console chat with helper, leaving"
+    assert copy.payload["payload"]["sender_name"] == "Former member"
+
+
+async def test_invitations_addressed_to_a_deleted_account_go_everywhere(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Live, expired or revoked, in a workspace they were in or one that only
+    invited them; an invitation to anyone else stays."""
+    deletion, _, _ = _deletion(session_factory)
+    elsewhere = f"elsewhere-{uuid.uuid4().hex[:6]}"
+    async with session_factory() as session:
+        session.add(Tenant(id=elsewhere, slug=elsewhere, name="Elsewhere"))
+        await session.flush()
+        admin = await _user(session, "admin")
+        leaving = await _user(session, "leaving")
+        await _member(session, TENANT_ZERO_ID, admin, "admin")
+        await _member(session, TENANT_ZERO_ID, leaving, "member")
+        await session.commit()
+        ids = {"admin": admin.id, "leaving": leaving.id}
+
+    def invitation(tenant_id: str, email: str, **kwargs: Any) -> Invitation:
+        return Invitation(
+            tenant_id=tenant_id,
+            role="member",
+            email=email,
+            token_hash=uuid.uuid4().hex,
+            expires_at=kwargs.get("expires_at", datetime.now(UTC) + timedelta(days=7)),
+            revoked_at=kwargs.get("revoked_at"),
+            uses_remaining=1,
+            created_by=ids["admin"],
+        )
+
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        session.add_all(
+            [
+                invitation(TENANT_ZERO_ID, "Leaving@Example.test"),
+                invitation(TENANT_ZERO_ID, "someone@example.test"),
+            ]
+        )
+        await session.commit()
+    async with tenant_session(session_factory, elsewhere) as session:
+        await _member(session, elsewhere, admin, "admin")
+        session.add_all(
+            [
+                invitation(
+                    elsewhere,
+                    "leaving@example.test",
+                    expires_at=datetime.now(UTC) - timedelta(days=1),
+                ),
+                invitation(
+                    elsewhere, "leaving@example.test", revoked_at=datetime.now(UTC)
+                ),
+            ]
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        user = await session.get(User, ids["leaving"])
+        assert user is not None
+        workspaces = await deletion.with_former_workspaces(
+            user.id, [Workspace(id=TENANT_ZERO_ID, name="Zero", role="member")]
+        )
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
+
+    left: list[str | None] = []
+    for tenant_id in (TENANT_ZERO_ID, elsewhere):
+        async with tenant_session(session_factory, tenant_id) as session:
+            left += list(
+                (
+                    await session.execute(
+                        select(Invitation.email).where(
+                            Invitation.tenant_id == tenant_id
+                        )
+                    )
+                ).scalars()
+            )
+    assert left == ["someone@example.test"]

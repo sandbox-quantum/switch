@@ -764,6 +764,8 @@ export interface ApiKeyDetail {
   type: string;
   key_prefix: string;
   created_at: string;
+  /** `null` for a key that never expires. */
+  expires_at: string | null;
 }
 
 export interface CreateApiKeyResult {
@@ -771,18 +773,25 @@ export interface CreateApiKeyResult {
   label: string;
   key: string;
   created_at: string;
+  expires_at: string | null;
 }
+
+/** Days until a new key stops working, or `"never"`. The server allows 1–365. */
+export type ApiKeyLifetime = number | "never";
 
 export async function fetchApiKeys(): Promise<ApiKeyDetail[] | null> {
   return fetchJson<ApiKeyDetail[]>("/api-keys");
 }
 
-export async function createApiKey(label: string): Promise<CreateApiKeyResult> {
+export async function createApiKey(
+  label: string,
+  expiresInDays: ApiKeyLifetime,
+): Promise<CreateApiKeyResult> {
   const res = await fetch(`${BASE}/api-keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, expires_in_days: expiresInDays }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
@@ -1122,6 +1131,12 @@ export async function logout(): Promise<void> {
     method: "POST",
     credentials: "include",
   });
+}
+
+// Ends every session the account holds, this one included: a copied cookie or
+// a browser left signed in elsewhere stops working at once.
+export async function signOutEverywhere(): Promise<void> {
+  await jsonRequest("/auth/sessions/revoke", "POST");
 }
 
 export async function fetchMe(): Promise<UserInfo | null> {
@@ -1473,6 +1488,110 @@ export interface CreateInvitationInput {
   email: string | null;
   expires_in_hours: number;
   uses_remaining: number;
+}
+
+// ── Data retention ─────────────────────────────────────────────────────────
+
+export const MAX_MESSAGE_RETENTION_DAYS = 3650;
+
+export interface RetentionPolicy {
+  // Null means messages are kept forever.
+  message_retention_days: number | null;
+  updated_at: string | null;
+  updated_by_user_id: string | null;
+}
+
+export interface RetentionPreview {
+  message_retention_days: number;
+  messages_to_delete: number;
+}
+
+export async function fetchRetentionPolicy(tenantId: string): Promise<RetentionPolicy> {
+  return jsonRequest<RetentionPolicy>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention`,
+    "GET",
+  );
+}
+
+export async function previewRetentionPolicy(
+  tenantId: string,
+  days: number,
+): Promise<RetentionPreview> {
+  return jsonRequest<RetentionPreview>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention/preview?days=${days}`,
+    "GET",
+  );
+}
+
+export async function setRetentionPolicy(
+  tenantId: string,
+  days: number,
+): Promise<RetentionPolicy> {
+  return jsonRequest<RetentionPolicy>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention`,
+    "PUT",
+    { message_retention_days: days },
+  );
+}
+
+export async function clearRetentionPolicy(tenantId: string): Promise<RetentionPolicy> {
+  return jsonRequest<RetentionPolicy>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention`,
+    "DELETE",
+  );
+}
+
+// ── Erasing a person ───────────────────────────────────────────────────────
+
+export interface PersonClaimant {
+  user_id: string;
+  name: string;
+}
+
+/** `identity`: someone on a connected app, `id` is their platform identity.
+ * `former`: someone on an app since disconnected, `id` is the sender id their
+ * messages carry, and `bridge_name` is null. `member`: someone taking part
+ * from Switch Console, `id` is their member client, `platform` is `switch` and
+ * `bridge_name` is null; a deleted account's is named "Former member". */
+export interface Person {
+  id: string;
+  kind: "identity" | "former" | "member";
+  username: string;
+  platform: string;
+  bridge_name: string | null;
+  message_count: number;
+  claimed_by: PersonClaimant[];
+}
+
+export type ErasureState = "queued" | "running" | "done" | "failed";
+
+export interface Erasure {
+  id: string;
+  state: ErasureState;
+  identities: number;
+  identities_erased: number;
+  messages_deleted: number;
+  files_deleted: number;
+  error: string | null;
+  requested_by_user_id: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export async function fetchPeople(tenantId: string): Promise<Person[]> {
+  return jsonRequest<Person[]>(`/tenants/${encodeURIComponent(tenantId)}/people`, "GET");
+}
+
+export async function fetchErasures(tenantId: string): Promise<Erasure[]> {
+  return jsonRequest<Erasure[]>(`/tenants/${encodeURIComponent(tenantId)}/erasures`, "GET");
+}
+
+export async function erasePeople(tenantId: string, people: Person[]): Promise<Erasure> {
+  return jsonRequest<Erasure>(`/tenants/${encodeURIComponent(tenantId)}/erasures`, "POST", {
+    external_user_ids: people.filter((p) => p.kind === "identity").map((p) => p.id),
+    former_sender_ids: people.filter((p) => p.kind === "former").map((p) => p.id),
+    member_client_ids: people.filter((p) => p.kind === "member").map((p) => p.id),
+  });
 }
 
 export async function fetchInvitations(tenantId: string): Promise<Invitation[]> {

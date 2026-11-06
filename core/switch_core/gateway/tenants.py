@@ -37,9 +37,11 @@ from switch_core.db.audit import (
     record_audit_event,
 )
 from switch_core.db.models import (
+    MAX_MESSAGE_RETENTION_DAYS,
     Invitation,
     Organization,
     OrganizationMember,
+    PersonErasure,
     Tenant,
     TenantJoinDomain,
     TenantMember,
@@ -54,6 +56,11 @@ from switch_core.db.stores.budget_store import (
     BudgetStanding,
     BudgetStore,
 )
+from switch_core.db.stores.erasure_store import (
+    ErasureAlreadyQueued,
+    ErasureStore,
+    UnknownIdentity,
+)
 from switch_core.db.stores.invitation_store import (
     InvitationNotUsableError,
     InvitationStore,
@@ -64,6 +71,7 @@ from switch_core.db.stores.join_domain_store import (
     JoinDomainStore,
 )
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -77,6 +85,7 @@ from switch_core.gateway.auth import (
     may_bind_tenant,
     record_operator_entry,
     require_tenant_admin,
+    session_auth_time,
     set_session_cookie,
     tenant_of_invitation_token,
     tenants_open_to,
@@ -90,12 +99,14 @@ from switch_core.gateway.dependencies import (
     get_budget_store,
     get_client_lifecycle,
     get_config,
+    get_erasure_store,
     get_invitation_store,
     get_invite_mailer,
     get_join_domain_store,
     get_organization_directory,
     get_organization_store,
     get_protocol,
+    get_retention_store,
     get_session,
     get_session_factory,
     get_system_session,
@@ -116,7 +127,10 @@ from switch_core.gateway.schemas import (
     BudgetCreateRequest,
     BudgetResponse,
     BudgetUpdateRequest,
+    ClaimantDetail,
     CurrentTenantResponse,
+    ErasureCreateRequest,
+    ErasureDetail,
     InvitationAcceptRequest,
     InvitationCreateRequest,
     InvitationCreateResponse,
@@ -128,6 +142,10 @@ from switch_core.gateway.schemas import (
     MemberDetail,
     MemberUpdateRequest,
     OperatorWorkspaceResponse,
+    PersonDetail,
+    RetentionPolicyRequest,
+    RetentionPolicyResponse,
+    RetentionPreviewResponse,
     SessionUserResponse,
     TenantCreateRequest,
     TenantDeleteRequest,
@@ -333,6 +351,7 @@ async def current_tenant(
 @router.post("/tenants", status_code=201, deprecated=True)
 async def create_tenant(
     req: TenantCreateRequest,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
@@ -364,6 +383,7 @@ async def create_tenant(
         config,
         name=req.name,
         workspace_name=req.name,
+        auth_time=session_auth_time(request),
     )
     return created.workspace
 
@@ -372,6 +392,7 @@ async def create_tenant(
 async def delete_tenant(
     tenant_id: str,
     req: TenantDeleteRequest,
+    request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[
@@ -428,6 +449,7 @@ async def delete_tenant(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        session_auth_time(request),
     )
     return {"ok": True}
 
@@ -435,6 +457,7 @@ async def delete_tenant(
 @router.post("/tenants/{tenant_id}/switch")
 async def switch_tenant(
     tenant_id: str,
+    request: Request,
     response: Response,
     user_id: Annotated[str, Depends(get_authenticated_user_id)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
@@ -471,7 +494,12 @@ async def switch_tenant(
     await user_store.record_last_tenant(session, user, tenant_id)
     await session.commit()
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant_id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant_id,
+        session_auth_time(request),
     )
     return _session_response(user)
 
@@ -783,6 +811,297 @@ async def delete_budget(
     return Response(status_code=204)
 
 
+def _retention_response(
+    days: int | None, updated_at: datetime | None, updated_by: str | None
+) -> RetentionPolicyResponse:
+    return RetentionPolicyResponse(
+        message_retention_days=days,
+        updated_at=updated_at,
+        updated_by_user_id=updated_by,
+    )
+
+
+@router.get("/tenants/{tenant_id}/retention")
+async def get_retention_policy(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> RetentionPolicyResponse:
+    """How long the bound tenant keeps room messages. Admins only."""
+    _require_bound_tenant(tenant_id)
+    policy = await retention_store.get_policy(session)
+    if policy is None:
+        return _retention_response(None, None, None)
+    return _retention_response(
+        policy.message_retention_days, policy.updated_at, policy.updated_by_user_id
+    )
+
+
+@router.get("/tenants/{tenant_id}/retention/preview")
+async def preview_retention_policy(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+    days: Annotated[int, Query(ge=1, le=MAX_MESSAGE_RETENTION_DAYS)],
+) -> RetentionPreviewResponse:
+    """How many messages a window of `days` would delete if it applied now,
+    so the change can be confirmed before it is made. Admins only."""
+    _require_bound_tenant(tenant_id)
+    count = await retention_store.count_messages_before(
+        session, datetime.now(UTC) - timedelta(days=days)
+    )
+    return RetentionPreviewResponse(
+        message_retention_days=days, messages_to_delete=count
+    )
+
+
+@router.put("/tenants/{tenant_id}/retention")
+async def set_retention_policy(
+    tenant_id: str,
+    body: RetentionPolicyRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> RetentionPolicyResponse:
+    """Delete the bound tenant's room messages once they are older than
+    `message_retention_days`. Admins only, by their own admin membership:
+    the messages it deletes cannot be brought back.
+
+    Takes effect at the next hourly retention pass, not in this request.
+    """
+    _require_bound_tenant(tenant_id)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "set when messages are deleted"
+    )
+    previous = await retention_store.get_policy(session)
+    previous_days = None if previous is None else previous.message_retention_days
+    policy = await retention_store.set_policy(
+        session, message_retention_days=body.message_retention_days, user_id=user.id
+    )
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.RETENTION_POLICY_SET,
+        target_type="tenant",
+        target_id=tenant_id,
+        details={
+            "message_retention_days": body.message_retention_days,
+            "previous_message_retention_days": previous_days,
+        },
+    )
+    await session.commit()
+    return _retention_response(
+        policy.message_retention_days, policy.updated_at, policy.updated_by_user_id
+    )
+
+
+@router.delete("/tenants/{tenant_id}/retention")
+async def clear_retention_policy(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+) -> RetentionPolicyResponse:
+    """Keep the bound tenant's messages forever. Admins only.
+
+    Messages already deleted stay deleted. Clearing a policy that is not set
+    succeeds and records nothing.
+    """
+    _require_bound_tenant(tenant_id)
+    previous = await retention_store.get_policy(session)
+    if previous is not None:
+        previous_days = previous.message_retention_days
+        await retention_store.clear_policy(session)
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=user.id,
+            action=AuditAction.RETENTION_POLICY_CLEARED,
+            target_type="tenant",
+            target_id=tenant_id,
+            details={"previous_message_retention_days": previous_days},
+        )
+        await session.commit()
+    return _retention_response(None, None, None)
+
+
+#: The `platform` a person taking part from Switch Console is listed under.
+SWITCH_CONSOLE_PLATFORM = "switch"
+
+
+def _erasure_detail(erasure: PersonErasure) -> ErasureDetail:
+    return ErasureDetail(
+        id=erasure.id,
+        state=erasure.state,  # type: ignore[arg-type]
+        identities=len(erasure.external_user_ids)
+        + len(erasure.former_sender_ids)
+        + len(erasure.member_client_ids),
+        identities_erased=erasure.identities_erased,
+        messages_deleted=erasure.messages_deleted,
+        files_deleted=erasure.files_deleted,
+        error=erasure.error,
+        requested_by_user_id=erasure.requested_by_user_id,
+        created_at=erasure.created_at,
+        completed_at=erasure.completed_at,
+    )
+
+
+async def _require_admin_membership(
+    session: AsyncSession,
+    user_store: UserStore,
+    tenant_id: str,
+    user: User,
+    action: str,
+) -> None:
+    """What cannot be undone, erasing a person or setting messages to be
+    deleted, takes, like deleting the workspace, the caller's own admin
+    membership: not the deployment operator's bypass, and not an organization
+    admin acting as one. `action` completes "Only a workspace admin may"."""
+    if await user_store.tenant_role(session, tenant_id, user.id) != "admin":
+        raise HTTPException(
+            status_code=403, detail=f"Only a workspace admin may {action}"
+        )
+
+
+@router.get("/tenants/{tenant_id}/people")
+async def list_people(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    erasure_store: Annotated[ErasureStore, Depends(get_erasure_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> list[PersonDetail]:
+    """Everyone seen in the bound tenant's rooms: through a chat app, with how
+    many messages each sent and which members claim them, including former
+    participants from apps since disconnected, and from Switch Console,
+    including deleted accounts. Admins only, by their own admin membership:
+    this is the list a person is erased from."""
+    _require_bound_tenant(tenant_id)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "erase people"
+    )
+    people = [
+        PersonDetail(
+            id=person.external_user_id,
+            kind="identity",
+            username=person.username,
+            platform=person.platform,
+            bridge_name=person.bridge_name,
+            message_count=person.message_count,
+            claimed_by=[
+                ClaimantDetail(user_id=c.user_id, name=c.name)
+                for c in person.claimed_by
+            ],
+        )
+        for person in await erasure_store.list_people(session)
+    ]
+    people += [
+        PersonDetail(
+            id=former.sender_id,
+            kind="former",
+            username=", ".join(former.names) or former.sender_id,
+            platform=former.platform,
+            bridge_name=None,
+            message_count=former.message_count,
+            claimed_by=[],
+        )
+        for former in await erasure_store.list_former_participants(session)
+    ]
+    people += [
+        PersonDetail(
+            id=member.client_id,
+            kind="member",
+            username=member.name,
+            platform=SWITCH_CONSOLE_PLATFORM,
+            bridge_name=None,
+            message_count=member.message_count,
+            claimed_by=[],
+        )
+        for member in await erasure_store.list_members(session)
+    ]
+    return sorted(people, key=lambda p: (p.username.lower(), p.id))
+
+
+@router.get("/tenants/{tenant_id}/erasures")
+async def list_erasures(
+    tenant_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    erasure_store: Annotated[ErasureStore, Depends(get_erasure_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> list[ErasureDetail]:
+    """The bound tenant's erasure requests, newest first. Admins only, by
+    their own admin membership."""
+    _require_bound_tenant(tenant_id)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "erase people"
+    )
+    return [
+        _erasure_detail(e) for e in await erasure_store.list_erasures(session, limit=50)
+    ]
+
+
+@router.post("/tenants/{tenant_id}/erasures", status_code=202)
+async def create_erasure(
+    tenant_id: str,
+    body: ErasureCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    erasure_store: Annotated[ErasureStore, Depends(get_erasure_store)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> ErasureDetail:
+    """Queue the erasure of one person: every message the named identities
+    and member clients sent, their files, and the platform identities
+    themselves. Admins only, by their own admin membership.
+
+    Answered once queued; the work runs in the background within seconds and
+    `GET .../erasures` reports its progress. 404 names an identity that is not
+    in this workspace; 409 means one is already being erased.
+    """
+    _require_bound_tenant(tenant_id)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "erase people"
+    )
+    ids = list(dict.fromkeys(body.external_user_ids))
+    former_ids = list(dict.fromkeys(body.former_sender_ids))
+    member_ids = list(dict.fromkeys(body.member_client_ids))
+    try:
+        erasure = await erasure_store.queue(
+            session,
+            external_user_ids=ids,
+            former_sender_ids=former_ids,
+            member_client_ids=member_ids,
+            requested_by_user_id=user.id,
+        )
+    except UnknownIdentity as exc:
+        raise HTTPException(
+            status_code=404, detail="Person not found in this workspace"
+        ) from exc
+    except ErasureAlreadyQueued as exc:
+        raise HTTPException(
+            status_code=409, detail="This person is already being erased"
+        ) from exc
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        action=AuditAction.PERSON_ERASURE_REQUESTED,
+        target_type="person_erasure",
+        target_id=erasure.id,
+        details={
+            "external_user_ids": ids,
+            "former_participants": len(former_ids),
+            "member_client_ids": member_ids,
+        },
+    )
+    await session.commit()
+    return _erasure_detail(erasure)
+
+
 @router.get("/tenants/{tenant_id}/invitations")
 async def list_invitations(
     tenant_id: str,
@@ -856,6 +1175,7 @@ async def revoke_invitation(
 @router.post("/invitations/accept")
 async def accept_invitation(
     req: InvitationAcceptRequest,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session_factory: Annotated[
@@ -914,7 +1234,12 @@ async def accept_invitation(
         )
 
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant_id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant_id,
+        session_auth_time(request),
     )
     return membership
 
@@ -1098,6 +1423,7 @@ async def list_my_invitations(
 @router.post("/invitations/mine/accept")
 async def accept_my_invitation(
     req: AddressedInvitationAcceptRequest,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session_factory: Annotated[
@@ -1145,6 +1471,7 @@ async def accept_my_invitation(
         config.keyring,
         config.gateway_cookie_secure,
         req.tenant_id,
+        session_auth_time(request),
     )
     return membership
 
@@ -1295,6 +1622,7 @@ async def list_joinable_tenants(
 @router.post("/joinable-tenants/{tenant_id}/join")
 async def join_tenant_by_domain(
     tenant_id: str,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session_factory: Annotated[
@@ -1342,7 +1670,12 @@ async def join_tenant_by_domain(
         membership, user = await _enter(session, tenant_id, caller, user_store)
 
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant_id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant_id,
+        session_auth_time(request),
     )
     return membership
 

@@ -17,6 +17,7 @@ The HTTP tests drive the real auth router against real Postgres, as
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -74,7 +75,15 @@ async def _admin_client(
         )
         await _USER_STORE.create(session, admin)
         await session.commit()
-    token = create_jwt(admin.id, admin.email, "admin", _KEYRING, None)
+    token = create_jwt(
+        admin.id,
+        admin.email,
+        "admin",
+        _KEYRING,
+        None,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",

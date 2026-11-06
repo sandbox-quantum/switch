@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -64,6 +65,7 @@ async def list_api_keys(
             type=k.type,
             key_prefix=k.key_hash[:12],
             created_at=str(k.created_at),
+            expires_at=k.expires_at,
         )
         for k in keys
     ]
@@ -79,6 +81,11 @@ async def create_api_key(
 ) -> CreateApiKeyResponse:
     plaintext = secrets.token_urlsafe(32)
     key_hash = hashlib.sha256(plaintext.encode()).hexdigest()
+    expires_at = (
+        None
+        if req.expires_in_days == "never"
+        else datetime.now(UTC) + timedelta(days=req.expires_in_days)
+    )
 
     key = ApiKey(
         user_id=user.id,
@@ -86,6 +93,7 @@ async def create_api_key(
         encrypted_key=config.keyring.encrypt(plaintext),
         label=req.label,
         type="registration",
+        expires_at=expires_at,
     )
     await api_key_store.create(session, key)
     await record_audit_event(
@@ -95,7 +103,11 @@ async def create_api_key(
         action=AuditAction.API_KEY_CREATED,
         target_type="api_key",
         target_id=key.id,
-        details={"label": key.label, "type": key.type},
+        details={
+            "label": key.label,
+            "type": key.type,
+            "expires_at": None if expires_at is None else expires_at.isoformat(),
+        },
     )
     await session.commit()
 
@@ -108,6 +120,7 @@ async def create_api_key(
         label=key.label,
         key=plaintext,
         created_at=str(key.created_at),
+        expires_at=key.expires_at,
     )
 
 
