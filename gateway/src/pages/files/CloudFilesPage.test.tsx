@@ -331,10 +331,53 @@ describe("Your cloud files (Switch web)", () => {
     open();
     fireEvent.click(await screen.findByRole("button", { name: /gone\.txt/ }));
     const dialog = await screen.findByRole("dialog");
-    expect(await within(dialog).findByText("That file or folder isn’t there any more.")).toBeTruthy();
+    expect(await within(dialog).findByText("This file isn’t there any more.")).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Download" })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Next file" })).toHaveProperty("disabled", false);
     fireEvent.keyDown(dialog, { key: "ArrowRight" });
     expect(await within(dialog).findByText("Your cloud is resting.")).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Wake it" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Download" })).toBeTruthy();
     expect(dialog.querySelector('[role="progressbar"]')).toBeNull();
+  });
+
+  it("Wake it wakes the box once and reads the same file again until it's up", async () => {
+    let up = false;
+    const reads: string[] = [];
+    routes = [
+      boxWithAgent,
+      listing({ "": [file("menu.txt", 5)] }),
+      (url) => (url.pathname === "/gateway/hosted-machines/ensure" ? json({}) : undefined),
+      (url) => {
+        if (url.pathname !== "/gateway/cloud-files/content") return undefined;
+        reads.push(url.searchParams.get("path") ?? "");
+        return up
+          ? new Response(new TextEncoder().encode("rye 3"), { status: 206, headers: { "content-range": "bytes 0-4/5" } })
+          : json({ detail: { code: "box_resting" } }, 409);
+      },
+    ];
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      open();
+      fireEvent.click(await screen.findByRole("button", { name: /menu\.txt/ }));
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(await within(dialog).findByRole("button", { name: "Wake it" }));
+      expect(await within(dialog).findByText(/Waking your cloud/)).toBeTruthy();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_500);
+      });
+      expect(within(dialog).getByText(/Waking your cloud/)).toBeTruthy();
+      up = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_500);
+      });
+      expect(await within(dialog).findByText("rye 3")).toBeTruthy();
+      const ensures = fetchMock.mock.calls.filter(([input]) => String(input).includes("/ensure"));
+      expect(ensures).toHaveLength(1);
+      expect(new Set(reads)).toEqual(new Set(["menu.txt"]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a binary file named .txt can't be previewed", async () => {

@@ -15,7 +15,7 @@ import {
   useTheme,
 } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
-import { readCloudFile } from "../../data/cloudFiles";
+import { readCloudFile, wakeBox } from "../../data/cloudFiles";
 import { absoluteTitle, formatRelative } from "../../theme/hootFormat";
 import {
   type CloudFileEntry,
@@ -35,6 +35,7 @@ import {
   videoTypeFromBytes,
 } from "./cloudFiles";
 import { PathCrumbs } from "./PathCrumbs";
+import { WAKE_FAILED_MESSAGE, WAKE_GIVE_UP_MS, WAKE_RETRY_MS } from "./useCloudFiles";
 import { neighbourFiles } from "./previewFormat";
 import { CodeView, CsvView, JsonView, MarkdownView, PlainText, VideoView } from "./previewViews";
 
@@ -45,7 +46,15 @@ type Preview =
   | { kind: "csv"; text: string; delimiter: "," | "\t" }
   | { kind: "code"; text: string; language: string }
   | { kind: "download"; reason: NoPreviewReason }
+  /** The file was deleted while the list was open. */
+  | { kind: "gone" }
+  /** The box went to rest; Wake it wakes it and reads the same file again. */
+  | { kind: "resting" }
+  | { kind: "waking" }
   | { kind: "error"; message: string };
+
+/** While waking, these mean "not up yet": read again shortly. */
+const NOT_UP_YET = new Set(["box_resting", "files_elsewhere", "unreachable"]);
 
 /** Whether a key press came from something that uses the arrow keys itself. */
 function keepsArrows(target: EventTarget | null): boolean {
@@ -86,6 +95,21 @@ export function FilePreviewModal({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const returnTo = useRef<HTMLElement | null>(null);
+  // Wake it: one ensure per modal, then this file read again every few seconds until the box answers.
+  const woke = useRef(false);
+  const wakeUntil = useRef<number | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  // Moving to another file ends any wake loop for the last one.
+  useEffect(() => {
+    wakeUntil.current = null;
+  }, [path]);
   const { previous, next } = neighbourFiles(entries, entry.name);
 
   // Focus goes back to the row of the last file shown, which may not be the one first clicked.
@@ -103,9 +127,10 @@ export function FilePreviewModal({
     }
     let url: string | null = null;
     let current = true;
+    let retry: number | undefined;
     // Closing the modal or moving to another file stops this file's reads before the next range.
     const reading = new AbortController();
-    setPreview({ kind: "loading" });
+    setPreview(wakeUntil.current === null ? { kind: "loading" } : { kind: "waking" });
     const max = kind.kind === "image" ? IMAGE_PREVIEW_MAX_BYTES : kind.kind === "video" ? VIDEO_PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES;
     readCloudFile(path, max, undefined, reading.signal)
       .then((bytes) => {
@@ -121,6 +146,7 @@ export function FilePreviewModal({
           url = URL.createObjectURL(new Blob([bytes], { type }));
           return setPreview({ kind: "video", url });
         }
+        wakeUntil.current = null;
         if (!looksLikeText(bytes)) return setPreview({ kind: "download", reason: "type" });
         const text = new TextDecoder().decode(bytes);
         if (kind.kind === "csv") setPreview({ kind: "csv", text, delimiter: kind.delimiter });
@@ -128,15 +154,44 @@ export function FilePreviewModal({
         else setPreview({ kind: kind.kind, text });
       })
       .catch((error: unknown) => {
-        if (current)
-          setPreview({ kind: "error", message: cloudFilesMessage(error instanceof CloudFilesError ? error.code : "unknown") });
+        if (!current) return;
+        const code = error instanceof CloudFilesError ? error.code : "unknown";
+        if (wakeUntil.current !== null && NOT_UP_YET.has(code)) {
+          if (Date.now() < wakeUntil.current) {
+            retry = window.setTimeout(() => setAttempt((n) => n + 1), WAKE_RETRY_MS);
+            return;
+          }
+          wakeUntil.current = null;
+          return setPreview({ kind: "error", message: cloudFilesMessage("timeout") });
+        }
+        wakeUntil.current = null;
+        if (code === "not_found") return setPreview({ kind: "gone" });
+        if (code === "box_resting") return setPreview({ kind: "resting" });
+        setPreview({ kind: "error", message: cloudFilesMessage(code) });
       });
     return () => {
       current = false;
       reading.abort();
+      window.clearTimeout(retry);
       if (url) URL.revokeObjectURL(url);
     };
-  }, [path, entry.name, entry.size]);
+  }, [path, entry.name, entry.size, attempt]);
+
+  const wake = async () => {
+    setPreview({ kind: "waking" });
+    if (!woke.current) {
+      woke.current = true;
+      try {
+        await wakeBox();
+      } catch {
+        if (mounted.current) setPreview({ kind: "error", message: WAKE_FAILED_MESSAGE });
+        return;
+      }
+    }
+    if (!mounted.current) return;
+    wakeUntil.current = Date.now() + WAKE_GIVE_UP_MS;
+    setAttempt((n) => n + 1);
+  };
 
   const save = async () => {
     setSaving(true);
@@ -212,15 +267,17 @@ export function FilePreviewModal({
           <IconButton size="small" aria-label="Next file" disabled={!next} onClick={() => next && onShow(next)}>
             <ChevronRight fontSize="small" />
           </IconButton>
-          <Button
-            size="small"
-            variant="contained"
-            startIcon={saving ? <CircularProgress size={14} /> : <DownloadOutlined />}
-            disabled={saving}
-            onClick={() => void save()}
-          >
-            Download
-          </Button>
+          {preview.kind !== "gone" && (
+            <Button
+              size="small"
+              variant="contained"
+              startIcon={saving ? <CircularProgress size={14} /> : <DownloadOutlined />}
+              disabled={saving}
+              onClick={() => void save()}
+            >
+              Download
+            </Button>
+          )}
           <IconButton size="small" aria-label="Close preview" onClick={onClose}>
             <Close fontSize="small" />
           </IconButton>
@@ -232,13 +289,13 @@ export function FilePreviewModal({
             {saveError}
           </Alert>
         )}
-        <PreviewBody preview={preview} name={entry.name} />
+        <PreviewBody preview={preview} name={entry.name} onWake={() => void wake()} />
       </Box>
     </Dialog>
   );
 }
 
-function PreviewBody({ preview, name }: { preview: Preview; name: string }) {
+function PreviewBody({ preview, name, onWake }: { preview: Preview; name: string; onWake: () => void }) {
   switch (preview.kind) {
     case "loading":
       return <CircularProgress size={18} />;
@@ -270,6 +327,31 @@ function PreviewBody({ preview, name }: { preview: Preview; name: string }) {
             ? "This file is too large to preview. Download it to open it on your computer."
             : "This file can’t be previewed here. Download it to open it on your computer."}
         </Typography>
+      );
+    case "gone":
+      return (
+        <Typography variant="body2" color="text.secondary">
+          This file isn’t there any more.
+        </Typography>
+      );
+    case "resting":
+      return (
+        <Stack spacing={1.5} alignItems="flex-start">
+          <Typography variant="body2">Your cloud is resting.</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Wake it to see this file; it counts as awake time.
+          </Typography>
+          <Button variant="contained" size="small" onClick={onWake}>
+            Wake it
+          </Button>
+        </Stack>
+      );
+    case "waking":
+      return (
+        <Stack direction="row" spacing={1} alignItems="center">
+          <CircularProgress size={18} />
+          <Typography variant="body2">Waking your cloud… This usually takes a minute or two.</Typography>
+        </Stack>
       );
     case "error":
       return <Alert severity="error">{preview.message}</Alert>;

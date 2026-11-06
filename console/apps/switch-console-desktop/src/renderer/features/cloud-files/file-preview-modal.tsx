@@ -17,6 +17,7 @@ import { formatChanged, formatChangedFull, formatSize } from './cloud-files-form
 import { FileText } from './file-markdown';
 import { CodeView, CsvView, JsonView, MarkdownView, VideoView } from './preview-content';
 import { neighbourFiles } from './preview-format';
+import { WAKE_FAILED_MESSAGE, WAKE_GIVE_UP_MS, WAKE_RETRY_MS } from './use-cloud-files';
 
 type Preview =
   | { kind: 'loading' }
@@ -25,7 +26,16 @@ type Preview =
   | { kind: 'csv'; text: string; delimiter: ',' | '\t' }
   | { kind: 'code'; text: string; language: string }
   | { kind: 'download'; reason: NoPreviewReason }
-  | { kind: 'error'; code: CloudFilesCode };
+  /** The file was deleted while the list was open. */
+  | { kind: 'gone' }
+  /** The box went to rest; Wake it wakes it and reads the same file again. */
+  | { kind: 'resting' }
+  | { kind: 'waking' }
+  | { kind: 'error'; code: CloudFilesCode }
+  | { kind: 'wake_failed' };
+
+/** While waking, these mean "not up yet": read again shortly. */
+const NOT_UP_YET = new Set<CloudFilesCode>(['box_resting', 'files_elsewhere', 'unreachable']);
 
 const VIDEO_TYPES = new Set(['video/mp4', 'video/webm']);
 
@@ -75,6 +85,21 @@ export function FilePreviewModal({
   const [preview, setPreview] = useState<Preview>({ kind: 'loading' });
   const [saving, setSaving] = useState(false);
   const returnTo = useRef<HTMLElement | null>(null);
+  // Wake it: one ensure per modal, then this file read again every few seconds until the box answers.
+  const woke = useRef(false);
+  const wakeUntil = useRef<number | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  // Moving to another file ends any wake loop for the last one.
+  useEffect(() => {
+    wakeUntil.current = null;
+  }, [path]);
   const { previous, next } = neighbourFiles(entries, entry.name);
 
   // Focus goes back to the row of the last file shown, which may not be the one first clicked.
@@ -88,12 +113,27 @@ export function FilePreviewModal({
   useEffect(() => {
     let url: string | null = null;
     let current = true;
-    setPreview({ kind: 'loading' });
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    setPreview(wakeUntil.current === null ? { kind: 'loading' } : { kind: 'waking' });
     void rpc.cloudFiles
       .preview({ serverId, path, name: entry.name, size: entry.size })
       .then((result) => {
         if (!current) return;
-        if (!result.ok) return setPreview({ kind: 'error', code: result.code });
+        if (!result.ok) {
+          if (wakeUntil.current !== null && NOT_UP_YET.has(result.code)) {
+            if (Date.now() < wakeUntil.current) {
+              retry = setTimeout(() => setAttempt((n) => n + 1), WAKE_RETRY_MS);
+              return;
+            }
+            wakeUntil.current = null;
+            return setPreview({ kind: 'error', code: 'timeout' });
+          }
+          wakeUntil.current = null;
+          if (result.code === 'not_found') return setPreview({ kind: 'gone' });
+          if (result.code === 'box_resting') return setPreview({ kind: 'resting' });
+          return setPreview({ kind: 'error', code: result.code });
+        }
+        wakeUntil.current = null;
         const value = result.value;
         if (value.kind === 'image') {
           url = blobUrl(value.data, attachmentBlobType(value.mimeType));
@@ -108,9 +148,26 @@ export function FilePreviewModal({
       });
     return () => {
       current = false;
+      clearTimeout(retry);
       if (url) URL.revokeObjectURL(url);
     };
-  }, [serverId, path, entry.name, entry.size]);
+  }, [serverId, path, entry.name, entry.size, attempt]);
+
+  const wake = async () => {
+    setPreview({ kind: 'waking' });
+    if (!woke.current) {
+      woke.current = true;
+      try {
+        await rpc.switchServers.ensureCloudMachine(serverId);
+      } catch {
+        if (mounted.current) setPreview({ kind: 'wake_failed' });
+        return;
+      }
+    }
+    if (!mounted.current) return;
+    wakeUntil.current = Date.now() + WAKE_GIVE_UP_MS;
+    setAttempt((n) => n + 1);
+  };
 
   const save = async () => {
     setSaving(true);
@@ -172,10 +229,12 @@ export function FilePreviewModal({
             >
               <ChevronRight className="size-4" />
             </Button>
-            <Button size="sm" disabled={saving} onClick={() => void save()}>
-              {saving ? <Spinner /> : <Download className="size-3.5" aria-hidden />}
-              Download
-            </Button>
+            {preview.kind !== 'gone' && (
+              <Button size="sm" disabled={saving} onClick={() => void save()}>
+                {saving ? <Spinner /> : <Download className="size-3.5" aria-hidden />}
+                Download
+              </Button>
+            )}
             <DialogClose
               render={<Button variant="ghost" size="icon-sm" aria-label="Close preview" />}
             >
@@ -184,14 +243,22 @@ export function FilePreviewModal({
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-auto p-4" data-preview-body="">
-          <PreviewBody preview={preview} name={entry.name} />
+          <PreviewBody preview={preview} name={entry.name} onWake={() => void wake()} />
         </div>
       </DialogContent>
     </Dialog>
   );
 }
 
-function PreviewBody({ preview, name }: { preview: Preview; name: string }) {
+function PreviewBody({
+  preview,
+  name,
+  onWake,
+}: {
+  preview: Preview;
+  name: string;
+  onWake: () => void;
+}) {
   switch (preview.kind) {
     case 'loading':
       return (
@@ -225,6 +292,32 @@ function PreviewBody({ preview, name }: { preview: Preview; name: string }) {
           {preview.reason === 'too_large'
             ? 'This file is too large to preview. Download it to open it on your computer.'
             : 'This file can’t be previewed here. Download it to open it on your computer.'}
+        </p>
+      );
+    case 'gone':
+      return <p className="text-sm text-foreground-muted">This file isn’t there any more.</p>;
+    case 'resting':
+      return (
+        <div className="flex flex-col items-start gap-2 text-sm">
+          <p>Your cloud is resting.</p>
+          <p className="text-foreground-muted">
+            Wake it to see this file; it counts as awake time.
+          </p>
+          <Button size="sm" onClick={onWake}>
+            Wake it
+          </Button>
+        </div>
+      );
+    case 'waking':
+      return (
+        <div className="flex items-center gap-2 text-sm text-foreground-muted">
+          <Spinner /> Waking your cloud… This usually takes a minute or two.
+        </div>
+      );
+    case 'wake_failed':
+      return (
+        <p role="alert" className="text-sm text-destructive">
+          {WAKE_FAILED_MESSAGE}
         </p>
       );
     case 'error':

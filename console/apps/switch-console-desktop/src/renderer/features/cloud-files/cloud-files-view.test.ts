@@ -14,6 +14,7 @@ import {
 const flagsState = new Map<string, ServerFeatureFlags>();
 const list = vi.fn();
 const preview = vi.fn();
+const ensureCloudMachine = vi.fn(async (_serverId: string) => {});
 const params = vi.hoisted(() => ({
   value: { serverId: 's1' } as { serverId: string; agent?: string; path?: string },
 }));
@@ -33,7 +34,9 @@ vi.mock('@renderer/lib/ipc', () => ({
       saveFile: vi.fn(),
       saveZip: vi.fn(),
     },
-    switchServers: { ensureCloudMachine: vi.fn() },
+    switchServers: {
+      ensureCloudMachine: (serverId: string) => ensureCloudMachine(serverId),
+    },
   },
 }));
 vi.mock('@renderer/features/cloud-agents/use-cloud-agents', () => ({
@@ -399,11 +402,51 @@ describe('Your cloud files', () => {
     }));
     const view = await open();
     await click(button(view.host, 'gone.txt'));
-    expect(text(dialog()!)).toContain('isn’t there any more');
+    expect(text(dialog()!)).toContain('This file isn’t there any more.');
+    expect(button(dialog()!, 'Download')).toBeUndefined();
+    expect(dialog()?.querySelector<HTMLButtonElement>('[aria-label="Next file"]')?.disabled).toBe(
+      false
+    );
     await press('ArrowRight');
-    expect(text(dialog()!)).toContain('Your cloud is resting');
+    expect(text(dialog()!)).toContain('Your cloud is resting.');
+    expect(button(dialog()!, 'Wake it')).toBeDefined();
+    expect(button(dialog()!, 'Download')).toBeDefined();
     expect(text(dialog()!)).not.toContain('Loading the preview');
     view.done();
+  });
+
+  it('Wake it wakes the box once and reads the same file again until it’s up', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      flagsState.set('s1', on('s1'));
+      list.mockResolvedValue({ ok: true, value: { entries: [file('menu.txt')] } });
+      let up = false;
+      preview.mockImplementation(async () =>
+        up
+          ? { ok: true, value: { kind: 'text', text: 'rye 3' } }
+          : { ok: false, code: 'box_resting' }
+      );
+      const view = await open();
+      await click(button(view.host, 'menu.txt'));
+      await click(button(dialog()!, 'Wake it'));
+      expect(text(dialog()!)).toContain('Waking your cloud');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_500);
+      });
+      expect(text(dialog()!)).toContain('Waking your cloud');
+      up = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_500);
+      });
+      expect(text(dialog()!)).toContain('rye 3');
+      expect(ensureCloudMachine).toHaveBeenCalledTimes(1);
+      expect(new Set(preview.mock.calls.map(([call]) => (call as { name: string }).name))).toEqual(
+        new Set(['menu.txt'])
+      );
+      view.done();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('too large says so, and offers Download', async () => {
