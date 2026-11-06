@@ -1363,6 +1363,17 @@ export interface OrganizationServices {
   services: OrganizationService[];
 }
 
+interface FeatureFlagsResponse {
+  flags: { key: string; enabled: boolean }[];
+}
+
+/** The deployment's feature flags, each on or off. Any signed-in caller may
+ * read them; they decide which routes the server mounts. */
+export async function fetchFeatureFlags(): Promise<Record<string, boolean>> {
+  const { flags } = await jsonRequest<FeatureFlagsResponse>("/feature-flags", "GET");
+  return Object.fromEntries(flags.map((flag) => [flag.key, flag.enabled]));
+}
+
 export async function fetchOrganizationServices(): Promise<OrganizationServices> {
   return jsonRequest<OrganizationServices>("/organizations/current/services", "GET");
 }

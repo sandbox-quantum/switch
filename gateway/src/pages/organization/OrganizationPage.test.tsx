@@ -71,6 +71,14 @@ function signedInAs(current: Session) {
   return refresh;
 }
 
+/** `GET /feature-flags`, with organizations' own apps on or off. */
+const flags = (organizationApps: boolean) => ({
+  flags: [
+    { key: "service_connections", enabled: true },
+    { key: "organization_connector_apps", enabled: organizationApps },
+  ],
+});
+
 const workspace = (id: string, name: string) => ({
   id,
   slug: id,
@@ -126,6 +134,8 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
+      "GET /feature-flags": flags(true),
+      "GET /organizations/current/services": { workspaces: 1, services: [] },
       "GET /organizations/current/connector-apps": {
         public_url: "https://switch.example.test",
         apps: [
@@ -150,7 +160,7 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
     expect(
-      screen.getByText(
+      await screen.findByText(
         "Your workspaces use the server's Airtable client. Add your organization's own to use that instead.",
       ),
     ).toBeTruthy();
@@ -182,6 +192,8 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
+      "GET /feature-flags": flags(true),
+      "GET /organizations/current/connector-apps": { public_url: null, apps: [] },
       "GET /organizations/current/services": { workspaces: 3, services: [github] },
       "PUT /organizations/current/services/github": { warning: null },
     });
@@ -204,7 +216,7 @@ describe("OrganizationPage", () => {
     );
   });
 
-  it("shows no connectors where the server keeps them to itself", async () => {
+  it("neither shows nor asks for services or connectors where the server keeps them to itself", async () => {
     signedInAs(session("org_admin", true));
     const fetchMock = answer({
       "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
@@ -212,20 +224,35 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
       "GET /organizations/current/issues": [],
+      "GET /feature-flags": flags(false),
     });
 
     render(<OrganizationPage />);
 
     expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/gateway/organizations/current/connector-apps",
-        expect.anything(),
-      ),
+      expect(fetchMock).toHaveBeenCalledWith("/gateway/feature-flags", expect.anything()),
     );
     await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
     expect(screen.queryByRole("heading", { name: "Connectors" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Services" })).toBeNull();
+    const asked = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(asked.filter((url) => /current\/(services|connector-apps)/.test(url))).toEqual([]);
     expect(screen.queryByText(/unmocked/)).toBeNull();
+  });
+
+  it("asks a member nothing about the server's flags", async () => {
+    signedInAs(session("member", false));
+    const fetchMock = answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "member" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+    });
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByText("Acme (current)")).toBeTruthy();
+    const asked = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(asked.filter((url) => url.includes("feature-flags"))).toEqual([]);
   });
 
   it("shows what a demotion could not revoke at a vendor", async () => {

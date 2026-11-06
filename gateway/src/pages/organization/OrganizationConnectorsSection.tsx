@@ -15,13 +15,17 @@ function Heading({ publicUrl }: { publicUrl: string | null }) {
   );
 }
 
+/** What an org admin reads if the routes are missing all the same. */
+const ORGANIZATION_APPS_NOT_ENABLED =
+  "Organizations' own connector apps are not enabled on this server.";
+
 /** The apps the organization's workspaces sign in through, for its admins.
- * Shown only where the server lets organizations save their own. */
+ * The page shows it only where the server lets organizations save their own. */
 export default function OrganizationConnectorsSection() {
   return (
     <ConnectorAppsList
       scope="organization"
-      notEnabled={null}
+      notEnabled={ORGANIZATION_APPS_NOT_ENABLED}
       heading={(publicUrl) => <Heading publicUrl={publicUrl} />}
     />
   );
