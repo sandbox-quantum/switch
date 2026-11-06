@@ -202,8 +202,18 @@ async def _cap_reached(
     )
     if (recent or 0) >= per_minute:
         return "rate"
-    # A revived machine still counts from its old box until its new one is
-    # made: that over-counts by a box at most, never under (the safe side).
+    if await boxes_made(session) >= ceiling:
+        return "ceiling"
+    return None
+
+
+async def boxes_made(session: AsyncSession) -> int:
+    """The boxes counted against `hosted_box_ceiling`: machines a provision
+    made and that aren't deleted. The one count both the ceiling check and the
+    operator overview use, so the page never disagrees with a refusal.
+
+    A revived machine still counts from its old box until its new one is
+    made: that over-counts by a box at most, never under (the safe side)."""
     made_ids = select(ServerAuditEvent.details["machine_id"].astext).where(
         ServerAuditEvent.action == ACTION,
         ServerAuditEvent.details["phase"].astext == "result",
@@ -214,9 +224,7 @@ async def _cap_reached(
         .select_from(CloudMachine)
         .where(CloudMachine.state != "deleted", CloudMachine.id.in_(made_ids))
     )
-    if (made or 0) >= ceiling:
-        return "ceiling"
-    return None
+    return made or 0
 
 
 async def box_allowed(

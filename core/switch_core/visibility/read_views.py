@@ -52,6 +52,7 @@ from switch_core.visibility.audit_log import (
     check_reason,
     record_operator_result,
 )
+from switch_core.visibility.box_provision import box_provisioning_on, boxes_made
 from switch_core.visibility.cluster_report import latest_cluster_report
 from switch_core.visibility.dependencies import get_keyed_id_key
 from switch_core.visibility.guards import require_operator, require_workspace_admin
@@ -314,6 +315,14 @@ class DiskUsage(BaseModel):
     scope: Literal["workspace", "unknown"] | None = None
 
 
+class BoxCeiling(BaseModel):
+    """Boxes made against the ceiling the provisioner refuses at (operators
+    only): two integers, the same count as the ceiling check."""
+
+    made: int
+    ceiling: int
+
+
 class OverviewBox(BaseModel):
     box: str
     user: str
@@ -390,12 +399,29 @@ def box_awake(reports: list[dict], now: datetime) -> AwakeCount | None:
     )
 
 
+async def _box_ceiling(
+    factory: async_sessionmaker[AsyncSession], config: SwitchConfig
+) -> BoxCeiling | None:
+    """Boxes made against `hosted_box_ceiling`, or None while box provisioning
+    (V0) is off and nothing enforces it."""
+    ceiling = getattr(config, "hosted_box_ceiling", None)
+    if not box_provisioning_on(config):
+        return None
+    if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
+        return None
+    with no_tenant():
+        async with factory() as session:
+            return BoxCeiling(made=await boxes_made(session), ceiling=ceiling)
+
+
 def _iso(moment: datetime | None) -> str | None:
     return None if moment is None else moment.isoformat()
 
 
 class Overview(BaseModel):
     viewer: Literal["operator"]
+    # Null when box provisioning is off, since no ceiling is enforced then.
+    box_ceiling: BoxCeiling | None = None
     people: list[OverviewPerson]
     room: Literal["plenty", "limited", "full", "unknown"]
     cost: OverviewCost
@@ -540,6 +566,7 @@ async def shared_cloud_overview(
     )
     return Overview(
         viewer="operator",
+        box_ceiling=await _box_ceiling(factory, config),
         people=people,
         room="unknown",
         cost=OverviewCost(

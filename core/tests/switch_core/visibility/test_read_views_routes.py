@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
+from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
     AgentController,
     ServerAuditEvent,
@@ -340,6 +341,82 @@ async def test_members_never_see_a_box_s_capacity(views, who) -> None:
     assert answer.status_code == 403
     assert "memory_total_bytes" not in answer.text
     assert "awake" not in answer.text
+
+
+# --- the overview: boxes made against the ceiling ---------------------------------------------
+
+
+def _config(views):
+    return views.app.dependency_overrides[get_config]()
+
+
+async def _provision_event(views, machine_id: str, **details) -> None:
+    with no_tenant():
+        async with views.base.factory() as session:
+            await record_server_audit_event(
+                session,
+                actor_user_id=None,
+                action=ServerAuditAction.HOSTED_BOX_PROVISION,
+                target_type="box",
+                target_id=KEY.keyed_id(KeyedIdKind.BOX, machine_id),
+                details={"machine_id": machine_id, **details},
+            )
+            await session.commit()
+
+
+async def test_the_overview_counts_boxes_made_against_the_ceiling(views) -> None:
+    """The provisioner's own count: a box made and not deleted. A request that
+    hasn't finished, or one that failed, doesn't count."""
+    await enrolled(views.base, agents=0)
+    config = _config(views)
+    config.hosted_box_provisioning = True
+    config.hosted_box_ceiling = 20
+    await _provision_event(views, views.base.machine_id, phase="requested")
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["box_ceiling"] == {"made": 0, "ceiling": 20}
+    await _provision_event(
+        views, views.base.machine_id, phase="result", result="failed"
+    )
+    assert (await views.client.get(OVERVIEW)).json()["box_ceiling"] == {
+        "made": 0,
+        "ceiling": 20,
+    }
+    await _provision_event(views, views.base.machine_id, phase="result", result="done")
+    assert (await views.client.get(OVERVIEW)).json()["box_ceiling"] == {
+        "made": 1,
+        "ceiling": 20,
+    }
+    # A deleted box no longer counts, as the provisioner sees it.
+    await update_machine(views.base.factory, views.base.machine_id, state="deleted")
+    assert (await views.client.get(OVERVIEW)).json()["box_ceiling"] == {
+        "made": 0,
+        "ceiling": 20,
+    }
+
+
+async def test_with_box_provisioning_off_there_is_no_ceiling(views) -> None:
+    await enrolled(views.base, agents=0)
+    config = _config(views)
+    config.hosted_box_provisioning = False
+    config.hosted_box_ceiling = 20
+    await _provision_event(views, views.base.machine_id, phase="result", result="done")
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["box_ceiling"] is None
+
+
+@pytest.mark.parametrize("who", ["owner", "second", "admin", "deployment_admin"])
+async def test_members_never_see_the_ceiling(views, who) -> None:
+    await enrolled(views.base, agents=0)
+    config = _config(views)
+    config.hosted_box_provisioning = True
+    config.hosted_box_ceiling = 20
+    views.as_(who)
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 403
+    assert "box_ceiling" not in answer.text
+    assert "ceiling" not in answer.text
 
 
 # --- the overview: nodes from the cluster report ------------------------------------------------
