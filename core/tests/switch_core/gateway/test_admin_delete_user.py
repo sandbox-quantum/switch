@@ -81,7 +81,9 @@ def _app(
 
 
 def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
-    token = create_jwt(user_id, email, "user", TEST_KEYRING, TENANT_ZERO_ID)
+    token = create_jwt(
+        user_id, email, "user", TEST_KEYRING, TENANT_ZERO_ID, session_version=0
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",

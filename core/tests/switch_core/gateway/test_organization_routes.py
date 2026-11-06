@@ -137,7 +137,12 @@ def _app(
 
 def _client(app: FastAPI, user_id: str, tenant_id: str | None) -> httpx.AsyncClient:
     token = create_jwt(
-        user_id, f"{user_id}@example.invalid", "user", _KEYRING, tenant_id
+        user_id,
+        f"{user_id}@example.invalid",
+        "user",
+        _KEYRING,
+        tenant_id,
+        session_version=0,
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

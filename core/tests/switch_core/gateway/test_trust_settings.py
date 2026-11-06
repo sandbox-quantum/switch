@@ -65,7 +65,12 @@ async def _add_user(
 def _cookies_for(user: User) -> dict[str, str]:
     return {
         "switch_auth": create_jwt(
-            user.id, user.email, user.role, TEST_KEYRING, TENANT_ZERO_ID
+            user.id,
+            user.email,
+            user.role,
+            TEST_KEYRING,
+            TENANT_ZERO_ID,
+            session_version=0,
         )
     }
 

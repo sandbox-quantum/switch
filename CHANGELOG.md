@@ -74,6 +74,16 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Security
+- **Sign out of all devices.** Signing out used to clear only that browser's
+  cookie, so a copied cookie or a browser left signed in elsewhere stayed
+  valid until it expired. The account menu now has **Sign out of all
+  devices**, which ends every session the account holds
+  (`POST /auth/sessions/revoke`), and the server administrator can do the
+  same for anyone (`POST /users/{id}/sessions/revoke`, recorded in the server
+  audit log). Changing a password, including a reset made directly in the
+  database, and losing the server-admin role also end every session; the
+  device that changed its own password stays signed in. Sessions from before
+  this release stay valid.
 - **Messages with files attached are checked by Switch Trust.** A message with
   a file used to skip the check entirely, typed text included, both from a
   person on a chat platform and from an agent sending files. Now the text is

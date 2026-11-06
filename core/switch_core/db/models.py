@@ -70,6 +70,11 @@ from switch_core.db.session_activity_notify_ddl import (
     CREATE_APPROVAL_STATE_TRIGGER,
     CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION,
 )
+from switch_core.db.session_version_ddl import (
+    CREATE_SESSION_VERSION_FUNCTION,
+    CREATE_SESSION_VERSION_TRIGGER,
+    DROP_SESSION_VERSION_TRIGGER,
+)
 from switch_core.db.tenant_lookup import attach_tenant_lookups
 from switch_core.tenant_context import current_organization_id, current_tenant_id
 
@@ -374,6 +379,28 @@ class User(Base):
     workspaces_created: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
+    # Every session cookie carries the value it was minted with, and one that
+    # no longer matches is refused, so incrementing it signs the person out
+    # everywhere. `db/session_version_ddl.py` increments it on a password or
+    # server-admin change; "Sign out of all devices" does it directly.
+    session_version: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
+    )
+
+
+# Changing a password or losing the server-admin role ends every session. As
+# for the triggers below, `create_all` builds it for the tests and real
+# databases get it from a migration. The SQL lives in
+# `db/session_version_ddl.py`.
+for _ddl in (CREATE_SESSION_VERSION_FUNCTION, CREATE_SESSION_VERSION_TRIGGER):
+    event.listen(
+        User.__table__, "after_create", DDL(_ddl).execute_if(dialect="postgresql")
+    )
+event.listen(
+    User.__table__,
+    "before_drop",
+    DDL(DROP_SESSION_VERSION_TRIGGER).execute_if(dialect="postgresql"),
+)
 
 
 # An OIDC login matches an account on email case-insensitively (CHOO-2624):

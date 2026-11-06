@@ -122,6 +122,9 @@ class ServerAuditAction(StrEnum):
     USER_DELETED = "user.deleted"
     USER_DELETION_REFUSED = "user.deletion_refused"
     USER_DELETION_FAILED = "user.deletion_failed"
+    # Every session the account held was ended, by the person ("Sign out of
+    # all devices") or by the operator for them.
+    USER_SESSIONS_ENDED = "user.sessions_ended"
     WORKSPACE_DELETED = "workspace.deleted"
     # WorkOS refused where the directory mirror had got to in its events, and
     # the mirror started again from now, with a full check of every linked

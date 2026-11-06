@@ -60,6 +60,10 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
+# The `users.session_version` a session was minted with. A cookie minted before
+# the claim existed carries none and counts as 0, the value every account
+# started at, so the deploy that added it signed nobody out.
+SESSION_VERSION_CLAIM = "sv"
 
 # The `error` discriminator on the three tenant-resolution failures a client
 # has to tell apart. A bare `{"detail": [...]}` is indistinguishable from
@@ -103,7 +107,13 @@ async def verify_password_off_loop(password: str, password_hash: str | None) -> 
 
 
 def create_jwt(
-    user_id: str, email: str, role: str, keyring: Keyring, tenant_id: str | None
+    user_id: str,
+    email: str,
+    role: str,
+    keyring: Keyring,
+    tenant_id: str | None,
+    *,
+    session_version: int,
 ) -> str:
     """Sign a session JWT. `tenant_id` is the caller's selected tenant, or
     `None` for a session that has not selected one yet (a fresh login, or a
@@ -118,6 +128,7 @@ def create_jwt(
         "email": email,
         "role": role,
         "tenant_id": tenant_id,
+        SESSION_VERSION_CLAIM: session_version,
         "exp": datetime.datetime.now(datetime.UTC)
         + datetime.timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.datetime.now(datetime.UTC),
@@ -149,7 +160,14 @@ def set_session_cookie(
     `secure` gates the Secure flag: True on HTTPS deployments so the JWT is
     never sent over plain HTTP, False for local dev served over http://.
     """
-    token = create_jwt(user.id, user.email, user.role, keyring, tenant_id)
+    token = create_jwt(
+        user.id,
+        user.email,
+        user.role,
+        keyring,
+        tenant_id,
+        session_version=user.session_version,
+    )
     response.set_cookie(
         key="switch_auth",
         value=token,
@@ -205,7 +223,7 @@ async def _authenticate(
     one) and `get_authenticated_user_id` (which deliberately does not).
     """
     payload = _session_claims(request, config)
-    await _require_user_exists(session_factory, user_store, payload["sub"])
+    await _require_current_session(session_factory, user_store, payload)
     return payload
 
 
@@ -214,6 +232,32 @@ def _session_claims(request: HTTPConnection, config: SwitchConfig) -> dict:
     if token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return decode_jwt(token, config.keyring)
+
+
+def _session_version(payload: dict) -> int:
+    return int(payload.get(SESSION_VERSION_CLAIM, 0))
+
+
+def _refuse_ended_session(current_version: int, payload: dict) -> None:
+    """401 for a cookie minted before the account's sessions were ended: a
+    password change, losing the server-admin role, or "Sign out of all
+    devices" (`users.session_version`)."""
+    if current_version != _session_version(payload):
+        raise HTTPException(status_code=401, detail="Session ended")
+
+
+async def _require_current_session(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    payload: dict,
+) -> None:
+    """The cookie's subject still exists and its sessions were not ended
+    since this one was minted."""
+    async with session_factory() as system_session:
+        version = await user_store.session_version(system_session, payload["sub"])
+    if version is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    _refuse_ended_session(version, payload)
 
 
 async def _require_user_exists(
@@ -998,6 +1042,7 @@ async def _bound_user(
         if user is None:
             # Deleted between the two reads; rare, and still not a 500.
             raise HTTPException(status_code=401, detail="User not found")
+        _refuse_ended_session(user.session_version, payload)
         request.state.platform_access = (
             user.role == "admin"
             and not await user_store.administers_by_role(session, tenant_id, user_id)
@@ -1050,6 +1095,7 @@ async def authenticate_socket(
     """
     payload = _session_claims(connection, config)
     user_id: str = payload["sub"]
+    await _require_current_session(session_factory, user_store, payload)
     tenant_id = await _resolve_tenant_id(
         session_factory,
         user_store,

@@ -1124,6 +1124,12 @@ export async function logout(): Promise<void> {
   });
 }
 
+// Ends every session the account holds, this one included: a copied cookie or
+// a browser left signed in elsewhere stops working at once.
+export async function signOutEverywhere(): Promise<void> {
+  await jsonRequest("/auth/sessions/revoke", "POST");
+}
+
 export async function fetchMe(): Promise<UserInfo | null> {
   return fetchJson<UserInfo>("/auth/me");
 }

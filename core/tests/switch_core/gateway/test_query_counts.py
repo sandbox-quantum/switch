@@ -130,7 +130,9 @@ def _app(
 
 
 def _client(app: Any, user: User) -> httpx.AsyncClient:
-    token = create_jwt(user.id, user.email, user.role, _KEYRING, TENANT_ZERO_ID)
+    token = create_jwt(
+        user.id, user.email, user.role, _KEYRING, TENANT_ZERO_ID, session_version=0
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",

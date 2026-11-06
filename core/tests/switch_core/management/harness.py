@@ -343,7 +343,7 @@ async def add_member(
 def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
     return {
         "switch_auth": create_jwt(
-            user.id, user.email, user.role, TEST_KEYRING, tenant_id
+            user.id, user.email, user.role, TEST_KEYRING, tenant_id, session_version=0
         )
     }
 

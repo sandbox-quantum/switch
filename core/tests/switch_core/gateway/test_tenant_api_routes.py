@@ -253,7 +253,7 @@ async def _make_member(
 
 
 def _token(user_id: str, email: str, tenant_id: str | None) -> str:
-    return create_jwt(user_id, email, "user", _KEYRING, tenant_id)
+    return create_jwt(user_id, email, "user", _KEYRING, tenant_id, session_version=0)
 
 
 def _tenant_claim(response: httpx.Response) -> str | None:
@@ -462,7 +462,14 @@ class TestCreateTenant:
         user_id = await _make_unaffiliated_user(
             session_factory, name="operator", role="admin"
         )
-        token = create_jwt(user_id, "operator@example.invalid", "admin", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "operator@example.invalid",
+            "admin",
+            _KEYRING,
+            None,
+            session_version=0,
+        )
 
         app = _app(session_factory, signup_mode="invite_only")
         async with _client(app, token) as client:
@@ -479,7 +486,14 @@ class TestCreateTenant:
         user_id = await _make_unaffiliated_user(
             session_factory, name="operator", role="admin"
         )
-        token = create_jwt(user_id, "operator@example.invalid", "admin", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "operator@example.invalid",
+            "admin",
+            _KEYRING,
+            None,
+            session_version=0,
+        )
         lifecycle = ClientLifecycleService(
             provisioning=MagicMock(),
             client_store=MagicMock(),
@@ -771,7 +785,12 @@ class TestWorkspaceCreationLimit:
             session_factory, name="demoted", tenant_id=TENANT_A, role="member"
         )
         stale_operator_token = create_jwt(
-            user_id, "demoted@example.invalid", "admin", _KEYRING, TENANT_A
+            user_id,
+            "demoted@example.invalid",
+            "admin",
+            _KEYRING,
+            TENANT_A,
+            session_version=0,
         )
 
         async with _client(
@@ -3022,7 +3041,12 @@ class TestErasureRoutes:
             user_role="admin",
         )
         operator = create_jwt(
-            operator_id, "erase-operator@example.invalid", "admin", _KEYRING, TENANT_A
+            operator_id,
+            "erase-operator@example.invalid",
+            "admin",
+            _KEYRING,
+            TENANT_A,
+            session_version=0,
         )
         person_id = await self._person(session_factory, "ana")
 

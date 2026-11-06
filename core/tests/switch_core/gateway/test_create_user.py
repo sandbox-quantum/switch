@@ -74,7 +74,9 @@ async def _admin_client(
         )
         await _USER_STORE.create(session, admin)
         await session.commit()
-    token = create_jwt(admin.id, admin.email, "admin", _KEYRING, None)
+    token = create_jwt(
+        admin.id, admin.email, "admin", _KEYRING, None, session_version=0
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",

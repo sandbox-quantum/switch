@@ -9,6 +9,7 @@ import {
   fetchTeamsAppPackage,
   removeBridgeFromTeam,
   setDefaultTeamsTeam,
+  signOutEverywhere,
 } from "./api";
 
 describe("errorText", () => {
@@ -217,5 +218,25 @@ describe("fetchTeamsAppPackage", () => {
     await expect(fetchTeamsAppPackage("b1")).rejects.toThrow(
       "This deployment has no distributed Teams app.",
     );
+  });
+});
+
+describe("signOutEverywhere", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the server to end every session", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await signOutEverywhere();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/auth/sessions/revoke");
+    expect(init.method).toBe("POST");
+  });
+
+  it("throws when the server refuses", async () => {
+    respond(401, { detail: "Session ended" });
+    await expect(signOutEverywhere()).rejects.toBeInstanceOf(ApiError);
   });
 });
