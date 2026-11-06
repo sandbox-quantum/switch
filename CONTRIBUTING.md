@@ -8,6 +8,9 @@ report a security vulnerability, follow [SECURITY.md](SECURITY.md) rather than
 opening an issue.
 
 ## Development setup
+## Development setup
+
+> Looking for a quick start? See the **[Contributor Quickstart](docs/contributing/quickstart.md)** for a 15-minute walkthrough from a fresh clone to your first agent reply in a room.
 
 **Prerequisites:** [Docker](https://docs.docker.com/get-docker/),
 [uv](https://docs.astral.sh/uv/), and [just](https://github.com/casey/just)
