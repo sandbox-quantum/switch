@@ -5,6 +5,8 @@ import { type ReactNode, useState } from 'react';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -19,9 +21,10 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { Input } from '@renderer/lib/ui/input';
+import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type { RoomResource, RoomResourceKind } from '@shared/core/switch-servers/switch-servers';
 import { useRoomDetail } from './room-participants';
-import { attachableResources, resourcesByOrigin } from './room-resources';
+import { attachableResources, opensInResources, resourcesByOrigin } from './room-resources';
 
 const KIND_LABEL: Record<RoomResourceKind, { title: string; noun: string; none: string }> = {
   references: { title: 'References', noun: 'reference', none: 'No references attached.' },
@@ -116,6 +119,13 @@ const ResourceSection = observer(function ResourceSection({
   canUnlink: boolean;
 }) {
   const queryClient = useQueryClient();
+  const { navigate } = useNavigate();
+  const serverId = workspacesStore.serverIdFor(workspaceId);
+  // Who is looking, to tell which attached items their Resources page opens for.
+  const viewer = {
+    id: serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null,
+    isAdmin: administersWorkspaceById(workspaceId),
+  };
   const key = roomResourcesKey(workspaceId, roomId, kind);
   const attached = useQuery({
     queryKey: key,
@@ -247,6 +257,14 @@ const ResourceSection = observer(function ResourceSection({
           roomId={roomId}
           document={reading}
           onClose={() => setReading(null)}
+          onOpenInResources={
+            serverId !== null && opensInResources(reading, viewer)
+              ? () => {
+                  setReading(null);
+                  navigate('libraryItem', { serverId, kind: 'documents', itemId: reading.id });
+                }
+              : null
+          }
         />
       )}
     </section>
@@ -451,11 +469,14 @@ function DocumentDialog({
   roomId,
   document,
   onClose,
+  onOpenInResources,
 }: {
   workspaceId: string;
   roomId: string;
   document: RoomResource;
   onClose: () => void;
+  /** Opens a document from Resources on its own page there; null for one written in the room. */
+  onOpenInResources: (() => void) | null;
 }) {
   // The room's listing already carries the content; an older server's may not.
   const content = useQuery({
@@ -490,9 +511,20 @@ function DocumentDialog({
               {failureText(content.error, 'Could not read this document.')}
             </p>
           ) : (
-            <pre className="rounded-md bg-background-1 p-3 font-mono text-xs whitespace-pre-wrap text-foreground">
-              {content.data.content}
-            </pre>
+            <div className="rounded-md border border-border px-4 py-3">
+              {content.data.content.trim() ? (
+                <MarkdownRenderer content={content.data.content} variant="compact" />
+              ) : (
+                <p className="text-sm text-foreground-muted italic">Empty.</p>
+              )}
+            </div>
+          )}
+          {onOpenInResources && (
+            <div className="flex justify-end">
+              <Button size="sm" variant="outline" onClick={onOpenInResources}>
+                Open in Resources
+              </Button>
+            </div>
           )}
         </DialogContentArea>
       </DialogContent>
