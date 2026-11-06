@@ -36,6 +36,7 @@ import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
+import { revisedPromptText } from './room-prompt';
 import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
@@ -1172,13 +1173,14 @@ export class HostedSession {
         // A new command rather than a write through the queued one: that
         // object is the accepted command, and what it was accepted as is what
         // a replay of it is held to.
-        this.queue[index] = { ...queued, body: { ...queued.body, text: body.text } };
+        const text = revisedPromptText(queued.body.text, body.text);
+        this.queue[index] = { ...queued, body: { ...queued.body, text } };
         const itemId = `user-${body.turnId}`;
         const item = this.snapshot().items.find((each) => each.itemId === itemId);
         if (!item) throw new Error(`NOT_FOUND: ${itemId} was never published.`);
         await this.publish({
           type: 'item.upsert',
-          item: { ...item, revision: item.revision + 1, text: body.text },
+          item: { ...item, revision: item.revision + 1, text },
         });
       } else if (body.type === 'session.stop') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
