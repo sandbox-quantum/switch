@@ -391,10 +391,7 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
-        assert [entry["slug"] for entry in body["registered"]] == [
-            "atlassian",
-            "linear",
-        ]
+        assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
     async def test_an_unknown_service_is_not_found(
         self, world: World, operator

@@ -66,9 +66,16 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog", "linear"}
+    assert set(adapters) == {"github", "atlassian", "datadog"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
+
+
+def test_disabled_linear_never_gets_an_adapter() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    assert "linear" not in adapters
 
 
 def test_github_without_the_app_is_left_not_set_up() -> None:
@@ -103,23 +110,6 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
         "search:confluence:agent-interface write:jira:agent-interface "
         "write:confluence:agent-interface"
     )
-
-
-def test_linear_needs_no_settings_and_registers_its_redirect_and_scopes() -> None:
-    adapters = build_adapters(
-        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
-    )
-    adapter = adapters["linear"]
-    assert isinstance(adapter, OAuthAdapter)
-    client = adapter._client
-    assert isinstance(client, RegisteredClient)
-    # Linear matches no loopback port, so the one portless loopback redirect
-    # is registered; Core's callback needs a public address this server has
-    # not got, so it is not.
-    assert client._request["redirect_uris"] == [
-        "http://127.0.0.1/switch-services/callback"
-    ]
-    assert client._request["scope"] == "read openid email write"
 
 
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:

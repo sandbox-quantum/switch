@@ -1,3 +1,5 @@
+> Draft for a future Linear connector. Linear is disabled while identity is unresolved; this skill is not loaded by the catalog.
+
 ---
 name: linear
 description: How to work with Linear issues, projects and comments through the Linear connection your owner granted this agent. Load before reading, searching, creating or changing Linear issues, projects, comments or project updates.

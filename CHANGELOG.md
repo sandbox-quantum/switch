@@ -147,12 +147,6 @@ version of their own to them without also giving them a release of their own.
   history is kept, and the deletion is recorded in the server audit log. The
   server's default workspace can't be deleted. Deleting your account now also
   deletes a workspace you leave empty.
-- **Linear service connection.** People can connect Linear through its MCP
-  server and grant agents access within their own Linear permissions.
-  Sign-in uses dynamic OAuth client registration and
-  verifies the OIDC ID token to identify the account: an OAuth catalog
-  entry's identity may now be `type: oidc` with a pinned `issuer`, in place of
-  a GET of an account endpoint (#770).
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
