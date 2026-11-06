@@ -1,10 +1,11 @@
 /* Generates `src/theme/hoot-tokens.ts` from `src/theme/hoot.css`.
  *
  * `hoot.css` is vendored verbatim from the Hoot design system and is the single
- * source of truth for token values. Its colours are authored in oklch, which
- * MUI's colour manipulators (alpha/lighten/darken/contrast) cannot parse, so
- * the palette needs sRGB. This script does that conversion once, at build time,
- * rather than duplicating the values by hand.
+ * source of truth for token values. Its colours are authored in oklch, often as
+ * var() references to other tokens or color-mix() washes of them, none of which
+ * MUI's colour manipulators (alpha/lighten/darken/contrast) can parse, so the
+ * palette needs sRGB. This script resolves every colour token per scheme and
+ * converts it once, at build time, rather than duplicating the values by hand.
  *
  * Run: npm run gen:tokens
  */
@@ -16,8 +17,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CSS_PATH = resolve(HERE, "../src/theme/hoot.css");
 const OUT_PATH = resolve(HERE, "../src/theme/hoot-tokens.ts");
 
-/** oklch(L C H [/ A]) -> "#rrggbb" or "rgba(r, g, b, a)". Throws on anything else. */
-function oklchToSrgb(raw) {
+/** oklch(L C H [/ A]) -> { L, C, H, alpha }. Throws on anything else. */
+function parseOklch(raw) {
   const match = /^oklch\(\s*([^\s)]+)\s+([^\s)]+)\s+([^\s/)]+)\s*(?:\/\s*([^\s)]+)\s*)?\)$/.exec(raw);
   if (!match) throw new Error(`not an oklch() colour: ${raw}`);
 
@@ -27,12 +28,17 @@ function oklchToSrgb(raw) {
     return value;
   };
 
-  const L = num(match[1]);
-  const C = num(match[2]);
-  const hDeg = num(match[3]);
-  const alpha = match[4] === undefined ? 1 : num(match[4]);
+  return {
+    L: num(match[1]),
+    C: num(match[2]),
+    H: num(match[3]),
+    alpha: match[4] === undefined ? 1 : num(match[4]),
+  };
+}
 
-  const h = (hDeg * Math.PI) / 180;
+/** { L, C, H, alpha } -> "#rrggbb" or "rgba(r, g, b, a)". */
+function toSrgb({ L, C, H, alpha }) {
+  const h = (H * Math.PI) / 180;
   const a = C * Math.cos(h);
   const b = C * Math.sin(h);
 
@@ -58,48 +64,137 @@ function oklchToSrgb(raw) {
   return `#${channels.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
 }
 
-/** Pull `--hoot-*: value;` declarations out of the block introduced by `selector`. */
-function readBlock(css, selector) {
-  const start = css.indexOf(selector);
-  if (start === -1) throw new Error(`selector not found in hoot.css: ${selector}`);
-  const open = css.indexOf("{", start);
-  const close = css.indexOf("}", open);
-  if (open === -1 || close === -1) throw new Error(`malformed block for selector: ${selector}`);
+const OVERRIDE_SELECTOR = ':root, [data-mui-color-scheme="light"], [data-mui-color-scheme="dark"]';
 
-  const tokens = {};
-  for (const line of css.slice(open + 1, close).split("\n")) {
-    const decl = /^\s*--hoot-([a-z0-9-]+)\s*:\s*([^;]+);/.exec(line);
-    if (decl) tokens[decl[1]] = decl[2].trim();
+/** Every top-level block in the file: its selector and its `--hoot-*` declarations. */
+function readBlocks(css) {
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const blocks = [];
+  for (const match of withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const tokens = {};
+    for (const decl of match[2].matchAll(/--hoot-([a-z0-9_-]+)\s*:\s*([^;]+);/g)) {
+      tokens[decl[1]] = decl[2].replace(/\s+/g, " ").trim();
+    }
+    blocks.push({ selector: match[1].replace(/\s+/g, " ").trim(), tokens });
   }
-  if (Object.keys(tokens).length === 0) throw new Error(`no --hoot-* tokens in block: ${selector}`);
-  return tokens;
+  return blocks;
+}
+
+/**
+ * The tokens <html> carries under each scheme, in cascade order: the light
+ * block also matches `:root`, so it applies in both; the dark block overrides
+ * it; the theme-independent `:root` blocks come after and win over both; the
+ * gateway's overrides, which name every scheme, come last and win over all of
+ * them. Outside the overrides, a token declared in more than one block is
+ * refused, because which one wins would then rest on source order alone.
+ */
+function schemeScopes(blocks) {
+  const light = blocks.filter((b) => b.selector === ':root, [data-mui-color-scheme="light"]');
+  const dark = blocks.filter((b) => b.selector === '[data-mui-color-scheme="dark"]');
+  const shared = blocks.filter((b) => b.selector === ":root");
+  const overrides = blocks.filter((b) => b.selector === OVERRIDE_SELECTOR);
+  if (light.length !== 1 || dark.length !== 1 || shared.length === 0) {
+    throw new Error(
+      `expected one light block, one dark block and at least one :root block; got ${light.length}, ${dark.length} and ${shared.length}`,
+    );
+  }
+  const unexpected = blocks.filter((b) => ![...light, ...dark, ...shared, ...overrides].includes(b));
+  if (unexpected.length > 0) {
+    throw new Error(`unexpected selector(s) in hoot.css: ${unexpected.map((b) => b.selector).join(", ")}`);
+  }
+
+  const sharedTokens = {};
+  for (const block of shared) {
+    for (const [name, value] of Object.entries(block.tokens)) {
+      if (name in sharedTokens) throw new Error(`--hoot-${name} is declared in two :root blocks`);
+      sharedTokens[name] = value;
+    }
+  }
+  for (const scheme of [light[0], dark[0]]) {
+    const clash = Object.keys(scheme.tokens).filter((name) => name in sharedTokens);
+    if (clash.length > 0) {
+      throw new Error(`declared both per scheme and in :root: ${clash.map((n) => `--hoot-${n}`).join(", ")}`);
+    }
+  }
+
+  const overrideTokens = {};
+  for (const block of overrides) {
+    for (const [name, value] of Object.entries(block.tokens)) {
+      if (!(name in light[0].tokens || name in sharedTokens)) {
+        throw new Error(`--hoot-${name} is overridden but upstream does not declare it`);
+      }
+      overrideTokens[name] = value;
+    }
+  }
+
+  return {
+    light: { ...light[0].tokens, ...sharedTokens, ...overrideTokens },
+    dark: { ...light[0].tokens, ...dark[0].tokens, ...sharedTokens, ...overrideTokens },
+  };
+}
+
+/**
+ * A token's value as a colour, following var() references and
+ * `color-mix(in oklch, <colour> N%, transparent)` washes. Null for a token
+ * that is not a colour (a length, a shadow). Throws on a colour written in a
+ * form this script does not resolve, so it can never be silently dropped.
+ */
+function resolveColour(scope, name, seen = []) {
+  if (seen.includes(name)) throw new Error(`var() cycle: ${[...seen, name].map((n) => `--hoot-${n}`).join(" -> ")}`);
+  const raw = scope[name];
+  if (raw === undefined) throw new Error(`--hoot-${seen.at(-1)} refers to undefined --hoot-${name}`);
+  return resolveValue(scope, raw, [...seen, name]);
+}
+
+function resolveValue(scope, raw, seen) {
+  const ref = /^var\(--hoot-([a-z0-9_-]+)\)$/.exec(raw);
+  if (ref) return resolveColour(scope, ref[1], seen);
+
+  const mix = /^color-mix\(in oklch,\s*(.+?)\s+([\d.]+)%,\s*transparent\)$/.exec(raw);
+  if (mix) {
+    const colour = resolveValue(scope, mix[1], seen);
+    if (colour === null) throw new Error(`color-mix() of a non-colour: ${raw}`);
+    return { ...colour, alpha: colour.alpha * (Number(mix[2]) / 100) };
+  }
+
+  if (raw.startsWith("oklch(")) return parseOklch(raw);
+  if (/^(#|rgb|hsl|color|lab|lch|oklab)/.test(raw)) throw new Error(`colour format the generator does not resolve: ${raw}`);
+  return null;
 }
 
 /** camelCase a kebab token name so it reads naturally in TS. */
-const camel = (name) => name.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
+const camel = (name) => name.replace(/[-_]([a-z0-9])/g, (_, c) => c.toUpperCase());
 
-function emit(tokens) {
-  const lines = Object.entries(tokens)
-    .filter(([, value]) => value.startsWith("oklch("))
-    .map(([name, value]) => `  ${camel(name)}: "${oklchToSrgb(value)}",`);
-  return lines.join("\n");
+function emit(scope) {
+  return Object.keys(scope)
+    .sort()
+    .flatMap((name) => {
+      const colour = resolveColour(scope, name);
+      return colour === null ? [] : [`  ${camel(name)}: "${toSrgb(colour)}",`];
+    })
+    .join("\n");
 }
 
-const css = readFileSync(CSS_PATH, "utf8");
-const light = readBlock(css, '[data-mui-color-scheme="light"]');
-const dark = readBlock(css, '[data-mui-color-scheme="dark"]');
+const scopes = schemeScopes(readBlocks(readFileSync(CSS_PATH, "utf8")));
+const light = emit(scopes.light);
+const dark = emit(scopes.dark);
+const keys = (lines) => lines.split("\n").map((line) => line.split(":")[0]);
+if (keys(light).join() !== keys(dark).join()) {
+  throw new Error("the light and dark schemes resolve to different sets of colour tokens");
+}
 
 const out = `/* GENERATED by scripts/gen-hoot-tokens.mjs from src/theme/hoot.css — do not edit.
-   hoot.css is the source of truth; these are its oklch colours converted to sRGB
-   because MUI's palette and colour manipulators cannot parse oklch.
+   hoot.css is the source of truth; these are its colour tokens resolved per
+   scheme and converted to sRGB, because MUI's palette and colour manipulators
+   cannot parse oklch, var() or color-mix().
    Regenerate with: npm run gen:tokens */
 
 export const HOOT_LIGHT = {
-${emit(light)}
+${light}
 } as const;
 
 export const HOOT_DARK = {
-${emit(dark)}
+${dark}
 } as const;
 
 export type HootColorToken = keyof typeof HOOT_LIGHT;

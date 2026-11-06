@@ -52,15 +52,19 @@ const palette = (t: HootTokens, mode: "light" | "dark"): PaletteOptions => ({
   secondary: { main: t.secondary, contrastText: t.secondaryForeground },
   error: { main: t.destructive, contrastText: t.destructiveForeground },
   success: { main: t.success, contrastText: t.successForeground },
-  warning: { main: t.warning, contrastText: t.warningForeground },
+  // Hoot pairs brand black, never white, with its orange.
+  warning: { main: t.warning, contrastText: t.brandBlack },
   background: {
     default: t.background,
     paper: t.card,
-    canvas: mode === "light" ? "#f4eee6" : "#0b0b0e",
+    canvas: t.canvas,
     nav: t.sidebar,
     surface: t.surface,
   },
-  text: { primary: t.foreground, secondary: t.mutedForeground, disabled: t.mutedForeground },
+  // Disabled text is Hoot's disabled-field grey, not the secondary text
+  // colour: a control that is disabled has to look it, since "disabled, with
+  // the reason" is how the gateway shows an action the viewer may not take.
+  text: { primary: t.foreground, secondary: t.mutedForeground, disabled: t.fieldDisabledForeground },
   divider: t.border,
 });
 
@@ -115,11 +119,11 @@ export const APP_THEME = () =>
       subtitle2: { fontSize: "0.875rem", lineHeight: "1.25rem", fontWeight: 500 },
       body1: { fontSize: "0.9375rem", lineHeight: "1.5rem" },
       body2: { fontSize: "0.875rem", lineHeight: "1.25rem" },
-      caption: { fontSize: "0.75rem", lineHeight: "1rem" },
+      caption: { fontSize: "0.8125rem", lineHeight: "1rem" },
       // Section labels: small, uppercase, letter-spaced, muted — segmenting
       // dense screens without adding chrome.
       overline: {
-        fontSize: "0.75rem",
+        fontSize: "0.8125rem",
         lineHeight: "1rem",
         fontWeight: 600,
         letterSpacing: "0.08em",
@@ -222,7 +226,7 @@ export const APP_THEME = () =>
       MuiDrawer: {
         defaultProps: {
           elevation: 0,
-          slotProps: { backdrop: { sx: { backgroundColor: "rgb(0 0 0 / 0.6)" } } },
+          slotProps: { backdrop: { sx: { backgroundColor: hootVar("overlay") } } },
         },
         styleOverrides: { paper: { backgroundColor: hootVar("canvas"), borderRight: "none" } },
       },
@@ -230,7 +234,7 @@ export const APP_THEME = () =>
       // menus and popovers mount an invisible backdrop that must stay invisible.
       MuiDialog: {
         defaultProps: {
-          slotProps: { backdrop: { sx: { backgroundColor: "rgb(0 0 0 / 0.6)" } } },
+          slotProps: { backdrop: { sx: { backgroundColor: hootVar("overlay") } } },
         },
         styleOverrides: {
           paper: { borderRadius: RADIUS_LG, boxShadow: MODAL, backgroundColor: hootVar("card") },
@@ -261,24 +265,76 @@ export const APP_THEME = () =>
         defaultProps: { elevation: 4 },
         styleOverrides: { paper: { borderRadius: RADIUS_LG, boxShadow: POPOVER } },
       },
+      // Hoot's field chrome: a white field on a hairline with one soft shadow,
+      // and on focus a full-strength border with a soft ring hugging it.
       MuiOutlinedInput: {
         styleOverrides: {
           root: {
-            borderRadius: RADIUS,
-            backgroundColor: "transparent",
-            "& .MuiOutlinedInput-notchedOutline": { borderColor: hootVar("input") },
-            "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: hootVar("border-strong") },
+            borderRadius: RADIUS - 2,
+            backgroundColor: hootVar("field"),
+            boxShadow: hootVar("field-shadow"),
+            transition: "box-shadow 150ms",
+            "& .MuiOutlinedInput-notchedOutline": {
+              borderColor: hootVar("field-border"),
+              transition: "border-color 150ms",
+            },
+            "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: hootVar("field-border-hover") },
+            "&.Mui-focused": { boxShadow: `${hootVar("field-shadow")}, 0 0 0 2px ${hootVar("field-ring")}` },
             "&.Mui-focused .MuiOutlinedInput-notchedOutline": {
-              borderColor: hootVar("ring"),
+              borderColor: hootVar("field-border-focus"),
               borderWidth: 1,
             },
-            "&.Mui-focused": { outline: `2px solid ${hootVar("ring")}`, outlineOffset: "1px" },
+            "&.Mui-error .MuiOutlinedInput-notchedOutline": { borderColor: hootVar("destructive") },
+            "&.Mui-error.Mui-focused": {
+              boxShadow: `${hootVar("field-shadow")}, 0 0 0 2px ${hootVar("destructive-muted")}`,
+            },
+            "&.Mui-disabled": {
+              backgroundColor: hootVar("field-disabled"),
+              color: hootVar("field-disabled-foreground"),
+              boxShadow: "none",
+            },
+            "&.Mui-disabled .MuiOutlinedInput-notchedOutline": { borderColor: hootVar("field-border") },
           },
           input: { fontSize: "0.875rem" },
         },
       },
       MuiSvgIcon: { defaultProps: { fontSize: "inherit" } },
-      MuiSwitch: { defaultProps: { size: "small" } },
+      // Hoot's switch: a 36x20 pill, ink when on, the field hairline's grey
+      // when off, with a canvas-coloured thumb inside it rather than
+      // overhanging it. Nested under root so it outranks MUI's size styles.
+      MuiSwitch: {
+        defaultProps: { size: "small", disableRipple: true },
+        styleOverrides: {
+          root: {
+            width: 36,
+            height: 20,
+            padding: 0,
+            overflow: "visible",
+            // Disabled dims the whole switch, as Hoot does, rather than
+            // MUI's near-invisible track.
+            "&:has(.Mui-disabled)": { opacity: 0.5 },
+            "& .MuiSwitch-switchBase": {
+              padding: 2,
+              "&.Mui-checked": {
+                transform: "translateX(16px)",
+                "& + .MuiSwitch-track": { backgroundColor: hootVar("primary"), opacity: 1 },
+              },
+              "&.Mui-disabled + .MuiSwitch-track": { opacity: 1 },
+              "&.Mui-focusVisible + .MuiSwitch-track": {
+                outline: `2px solid ${hootVar("ring")}`,
+                outlineOffset: "2px",
+              },
+            },
+            "& .MuiSwitch-thumb": {
+              width: 16,
+              height: 16,
+              boxShadow: "0 1px 3px rgb(0 0 0 / 0.25)",
+              backgroundColor: hootVar("background"),
+            },
+            "& .MuiSwitch-track": { borderRadius: 10, backgroundColor: hootVar("input"), opacity: 1 },
+          },
+        },
+      },
       // Underline tabs with a foreground indicator — chrome recedes.
       MuiTabs: {
         styleOverrides: {
@@ -304,7 +360,7 @@ export const APP_THEME = () =>
         defaultProps: { arrow: true },
         styleOverrides: {
           tooltip: {
-            fontSize: "0.75rem",
+            fontSize: "0.8125rem",
             lineHeight: "1.1rem",
             textAlign: "center",
             borderRadius: RADIUS,

@@ -58,6 +58,16 @@ version of their own to them without also giving them a release of their own.
   redacted had no way to know.
 
 #### Changed
+- **The operator dashboard follows the current Hoot design.** Form fields
+  have a white fill and a firm border and ring when focused; switches are
+  Hoot's pill; errors and delete buttons use Hoot's softer red; captions,
+  section labels and tooltips are 13px; the backdrop behind a dialog is
+  Hoot's warm black; and table headers show the cream band they were always
+  meant to. Warnings stay amber, so they remain easy to tell from errors.
+- **Disabled controls in the operator dashboard look disabled.** A disabled
+  field, its label, and a disabled checkbox or switch looked almost the same
+  as enabled ones; they are now greyed out, so an action you may not take
+  reads as unavailable.
 - **Switch Trust notices about a person's own message reach only that
   person.** When someone's message is blocked, redacted, flagged or not fully
   checked, the notice used to be posted in the channel, where everyone could
