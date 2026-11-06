@@ -463,11 +463,13 @@ class WebexAdapter(PlatformAdapter):
         client = self._require_client()
         name = self._webhook_name()
         left: list[str] = []
-        for hook in await client.webhooks():
+        for hook in await _waiting_out_limits(client.webhooks):
             if hook.get("name") != name or not hook.get("id"):
                 continue
             try:
-                await client.delete_webhook(str(hook["id"]))
+                await _waiting_out_limits(
+                    partial(client.delete_webhook, str(hook["id"]))
+                )
             except WebexAPIError as exc:
                 left.append(f"{hook.get('resource')}:{hook.get('event')} ({exc})")
         if left:

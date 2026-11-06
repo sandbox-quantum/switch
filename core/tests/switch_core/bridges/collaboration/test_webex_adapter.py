@@ -275,6 +275,30 @@ class TestClassifyFailure:
 
 
 class TestStart:
+    async def test_withdrawing_outlasts_a_rate_limit(
+        self, webex: FakeWebex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route(
+            "GET",
+            "/v1/webhooks",
+            lambda r: _ok({"items": [{"id": "mine", "name": adapter._webhook_name()}]}),
+        )
+        answers = iter(
+            [
+                httpx.Response(429, headers={"retry-after": "2"}, json={}),
+                httpx.Response(204),
+            ]
+        )
+        webex.route("DELETE", "/v1/webhooks/mine", lambda r: next(answers))
+
+        async def sleep(seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr(webex_module.asyncio, "sleep", sleep)
+        await adapter.withdraw()
+        assert len(webex.sent("DELETE", "/v1/webhooks/mine")) == 2
+
     async def test_every_webhook_is_made_when_webex_limits_the_rate(
         self, webex: FakeWebex, monkeypatch: pytest.MonkeyPatch
     ) -> None:
