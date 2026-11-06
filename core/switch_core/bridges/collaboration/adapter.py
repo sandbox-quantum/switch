@@ -659,7 +659,7 @@ class PlatformAdapter(ABC):
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         # Set by set_message_edit_handler. Called when someone corrects a post
         # this bridge already relayed. Left unset on a platform that does not
-        # report edits, which is every one but Slack today.
+        # report edits; Slack and Mattermost are the ones that do.
         self._on_message_edit: (
             Callable[[InboundMessageEdit], Awaitable[None]] | None
         ) = None

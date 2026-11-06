@@ -2174,8 +2174,9 @@ class CollaborationCore:
         left exactly as it is and whoever edited is told so; steering a
         running turn is a different thing entirely.
 
-        Only Slack reports edits today. On every other platform this is never
-        called and the agent acts on the original text, as it always has.
+        Only Slack and Mattermost report edits. On every other platform this
+        is never called and the agent acts on the original text, as it always
+        has.
         """
         room_ids = self._channel_to_room.get(edit.channel_id)
         if room_ids is None:
@@ -2223,9 +2224,11 @@ class CollaborationCore:
                 edit.sender_id,
             )
             return
-        # Slack only lets a person edit their own post, so this never refuses
-        # an ordinary correction. It refuses anything that would rewrite
-        # somebody else's words into an agent's prompt.
+        # A person can only edit their own post, so this never refuses an
+        # ordinary correction. It refuses anything that would rewrite somebody
+        # else's words into an agent's prompt. Mattermost names the author
+        # rather than the editor, so an admin allowed to edit other people's
+        # posts is taken for the author there.
         if message is None or message.sender_id != actor_id:
             logger.warning(
                 "Ignoring an edit to %s on bridge %s: %s did not send it.",

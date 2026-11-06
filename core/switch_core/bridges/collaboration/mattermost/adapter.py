@@ -70,6 +70,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
     PrivateNoticeDelivery,
@@ -544,6 +545,9 @@ class MattermostAdapter(PlatformAdapter):
 
         self._seen_post_ids: OrderedDict[str, None] = OrderedDict()
         self._seen_post_ids_max = 1000
+        # Every bot connection in a channel hears the same edit, so each
+        # version of a post is passed on once, keyed "<post_id>:<edit_at>".
+        self._seen_edits: OrderedDict[str, None] = OrderedDict()
         self._seen_lock = threading.Lock()
 
         # (agent_name, post_id) currently carrying the working reaction. A
@@ -2794,6 +2798,10 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
+        if event_type == "post_edited":
+            await self._handle_post_edited(event)
+            return
+
         if event_type != "posted":
             return
 
@@ -2918,6 +2926,83 @@ class MattermostAdapter(PlatformAdapter):
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    async def _handle_post_edited(self, event: dict[str, Any]) -> None:
+        """Someone corrected a post. Carry the new text, not a new post.
+
+        Mattermost also sends `post_edited` when a post is pinned or unpinned
+        and when this bridge updates its own cards. Mattermost moves `edit_at`
+        only when the text or files change, so a pin carries either no
+        `edit_at` or the version already passed on, and the bridge's own
+        posts are dropped. A webhook's post is dropped too: it was relayed under a
+        stand-in, and whoever edits it is a person, not that integration.
+
+        The event names the post's author, not whoever edited it. Only the
+        author can edit a post unless an admin has been given the permission
+        to edit other people's posts.
+        """
+        if self._on_message_edit is None:
+            return
+        post_str = (event.get("data") or {}).get("post")
+        if not post_str:
+            return
+        try:
+            post = json.loads(post_str)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if post.get("type"):
+            return
+        user_id = str(post.get("user_id", ""))
+        if user_id in self._bridge_bot_ids or user_id == self._admin_user_id:
+            return
+        props = post.get("props") or {}
+        if str(props.get("from_webhook", "")).lower() == "true":
+            return
+        edit_at = post.get("edit_at") or 0
+        if not edit_at:
+            return
+        post_id = str(post.get("id", ""))
+        channel_id = str(post.get("channel_id", ""))
+        revision = str(edit_at)
+        if not post_id or not channel_id or not user_id:
+            logger.warning(
+                "Mattermost post_edited in %s is missing the channel, the post "
+                "or its author, so the correction cannot be placed; skipping",
+                channel_id or "an unnamed channel",
+            )
+            return
+        key = f"{post_id}:{revision}"
+        with self._seen_lock:
+            if key in self._seen_edits:
+                return
+            self._seen_edits[key] = None
+            if len(self._seen_edits) > self._seen_post_ids_max:
+                self._seen_edits.popitem(last=False)
+
+        loop = self._main_loop
+        if loop is None or self._admin_driver is None:
+            raise RuntimeError("Cannot handle post_edited event: adapter not started")
+        ws_loop = asyncio.get_event_loop()
+        try:
+            user = await ws_loop.run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
+            username: str = user.get("username", user_id)
+        except Exception:
+            logger.exception("Failed to resolve Mattermost user %s", user_id)
+            username = user_id
+        coro = self._on_message_edit(
+            InboundMessageEdit(
+                channel_id=channel_id,
+                sender_id=user_id,
+                sender_name=username,
+                content=str(post.get("message", "")),
+                message_ref=post_id,
+                revision=revision,
+                root_id=str(post.get("root_id", "")) or None,
+            )
+        )
+        self._dispatch(coro, loop)  # type: ignore[arg-type]
 
     async def _fetch_attachments(
         self, file_ids: list[str], loop: asyncio.AbstractEventLoop
