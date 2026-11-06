@@ -61,7 +61,10 @@ const palette = (t: HootTokens, mode: "light" | "dark"): PaletteOptions => ({
     nav: t.sidebar,
     surface: t.surface,
   },
-  text: { primary: t.foreground, secondary: t.mutedForeground, disabled: t.mutedForeground },
+  // Disabled text is Hoot's disabled-field grey, not the secondary text
+  // colour: a control that is disabled has to look it, since "disabled, with
+  // the reason" is how the gateway shows an action the viewer may not take.
+  text: { primary: t.foreground, secondary: t.mutedForeground, disabled: t.fieldDisabledForeground },
   divider: t.border,
 });
 
@@ -307,13 +310,16 @@ export const APP_THEME = () =>
             height: 20,
             padding: 0,
             overflow: "visible",
+            // Disabled dims the whole switch, as Hoot does, rather than
+            // MUI's near-invisible track.
+            "&:has(.Mui-disabled)": { opacity: 0.5 },
             "& .MuiSwitch-switchBase": {
               padding: 2,
               "&.Mui-checked": {
                 transform: "translateX(16px)",
                 "& + .MuiSwitch-track": { backgroundColor: hootVar("primary"), opacity: 1 },
               },
-              "&.Mui-disabled + .MuiSwitch-track": { opacity: 0.5 },
+              "&.Mui-disabled + .MuiSwitch-track": { opacity: 1 },
               "&.Mui-focusVisible + .MuiSwitch-track": {
                 outline: `2px solid ${hootVar("ring")}`,
                 outlineOffset: "2px",
