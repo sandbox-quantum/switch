@@ -9,6 +9,7 @@ needed.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -59,8 +60,9 @@ async def test_creating_a_room_with_an_agent_one_may_not_invite_is_403() -> None
 async def test_adding_an_agent_on_the_room_page_names_the_user_and_is_403(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _released(*_args: Any, **_kwargs: Any) -> None:
-        return None
+    async def _released(*_args: Any, **_kwargs: Any) -> Any:
+        # A shared room, whose agents the room page may change.
+        return SimpleNamespace(channel_type=None)
 
     monkeypatch.setattr(rooms_routes, "_require_room_released", _released)
     room_service = _RefusingRoomService()
