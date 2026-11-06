@@ -1,0 +1,157 @@
+/**
+ * In a group chat Stop reaches whichever agent is working, and Reset or
+ * Compact goes to the agent picked, or to all of them.
+ */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, expect, it, vi } from 'vitest';
+
+vi.mock('@renderer/lib/ipc', () => ({
+  events: { on: () => () => {} },
+  rpc: { chats: { commands: async () => [] } },
+}));
+vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
+  useFeatureFlags: () => ({ group_chats: true }),
+}));
+
+import { ChatComposer } from '@renderer/features/chats/components/chat-composer';
+import {
+  type ActivityApi,
+  AgentActivities,
+} from '@renderer/features/chats/stores/chat-activity-store';
+import {
+  ChatTimeline,
+  type TimelineApi,
+} from '@renderer/features/chats/stores/chat-timeline-store';
+import type { ChatActivityItem } from '@shared/core/chats/activity';
+import type { ChatAgent } from '@shared/core/chats/chats';
+
+let container: HTMLDivElement | null = null;
+let root: Root | null = null;
+
+afterEach(async () => {
+  if (root) await act(async () => root!.unmount());
+  container?.remove();
+  container = null;
+  root = null;
+});
+
+const agent = (id: string, name: string): ChatAgent => ({
+  id,
+  name,
+  displayName: null,
+  iconUrl: null,
+  provider: null,
+  alias: null,
+  ownerName: null,
+  ownedByViewer: false,
+});
+
+const runningTurn: ChatActivityItem = {
+  agentId: 'agent-b',
+  sessionId: 's1',
+  turnId: 't1',
+  itemId: 'turn',
+  kind: 'turn',
+  revision: 1,
+  status: 'running',
+  title: '',
+  text: '',
+  commandId: null,
+  roomId: 'room-1',
+  threadId: null,
+  messageId: 'm1',
+  occurredAt: '2026-01-01T00:00:00Z',
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+};
+
+async function render() {
+  const control = vi.fn<ActivityApi['control']>(async (input) => `cmd-${input.requestId}`);
+  const api: ActivityApi = {
+    resolve: async () => ({ kind: 'none' }) as never,
+    reasoning: async () => null,
+    watchPlacements: () => () => {},
+    roomActivity: async () => ({ items: [runningTurn], approvals: [] }),
+    roomMessages: () => [],
+    control,
+    retrySupport: async () => 'unknown',
+    answerApproval: async () => {
+      throw new Error('unused');
+    },
+  };
+  const store = new AgentActivities(api, {
+    getItem: () => null,
+    setItem: () => {},
+  });
+  const activities = ['agent-a', 'agent-b'].map((id) => store.acquire('s', 'tenant', 'room-1', id));
+  await vi.waitFor(() => expect(activities[1]!.runningTurn).not.toBeNull());
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () =>
+    root!.render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ChatComposer
+          serverId="s"
+          timeline={new ChatTimeline('room-1', {} as TimelineApi)}
+          agents={[agent('agent-a', 'Alpha'), agent('agent-b', 'Beta')]}
+          people={[]}
+          groupName="Ship review"
+          activities={activities}
+          replyTo={null}
+          onClearReply={() => {}}
+          disabled={null}
+        />
+      </QueryClientProvider>
+    )
+  );
+  return control;
+}
+
+const button = (label: string | RegExp) =>
+  [...document.body.querySelectorAll('button')].find((each) =>
+    typeof label === 'string'
+      ? each.getAttribute('aria-label') === label || each.textContent?.trim() === label
+      : label.test(each.textContent ?? '')
+  );
+
+const click = (label: string | RegExp) =>
+  act(async () => {
+    const found = button(label);
+    if (!found) throw new Error(`no button ${label}`);
+    found.click();
+  });
+
+const sent = (control: ReturnType<typeof vi.fn>) =>
+  control.mock.calls.map(([input]) => [input.agentId, input.command]);
+
+it('shows Stop when only the second agent is working, and stops that agent', async () => {
+  const control = await render();
+  expect(button('Stop reply')).toBeDefined();
+  await click('Stop reply');
+  expect(sent(control)).toEqual([['agent-b', 'interrupt']]);
+});
+
+it('resets only the agent picked, naming it before it is sent', async () => {
+  const control = await render();
+  await click('Context actions');
+  await click(/^Reset context/);
+  expect(document.body.textContent).toContain('Reset which agent?');
+  await click(/Beta$/);
+  expect(document.body.textContent).toContain('Start a fresh conversation for Beta?');
+  await click('Start fresh');
+  expect(sent(control)).toEqual([['agent-b', 'reset']]);
+});
+
+it('compacts every agent when all are picked', async () => {
+  const control = await render();
+  await click('Context actions');
+  await click(/^Compact context/);
+  await click('All agents');
+  expect(sent(control)).toEqual([
+    ['agent-a', 'compact'],
+    ['agent-b', 'compact'],
+  ]);
+});

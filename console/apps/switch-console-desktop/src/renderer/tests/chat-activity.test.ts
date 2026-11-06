@@ -465,6 +465,18 @@ describe('bindTurns', () => {
     ]);
   });
 
+  it('hides Codex and OpenCode posts as it hides Claude Code ones', () => {
+    const turn = turnOf(
+      [
+        row('t1', 'a', { title: 'switch.post_message' }),
+        row('t1', 'b', { title: 'switch_send_targeted_message' }),
+        row('t1', 'c', { title: 'switch.read_context' }),
+      ],
+      'completed'
+    );
+    expect(turnTools(turn).map((each) => each.title)).toEqual(['switch.read_context']);
+  });
+
   it('shows an unfinished tool of an interrupted turn as failed', () => {
     const tool = row('t', 'tool', { status: 'in-progress' });
     expect(toolState(tool, 'running')).toBe('running');

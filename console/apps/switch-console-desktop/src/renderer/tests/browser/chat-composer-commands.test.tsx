@@ -52,7 +52,7 @@ async function render(): Promise<HTMLTextAreaElement> {
           agents={[]}
           people={[]}
           groupName="Ship review"
-          activity={null}
+          activities={[]}
           replyTo={null}
           onClearReply={() => {}}
           disabled={null}
