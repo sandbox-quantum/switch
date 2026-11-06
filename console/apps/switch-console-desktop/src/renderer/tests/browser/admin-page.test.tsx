@@ -552,3 +552,72 @@ it('marks the value the vendor refused, and saves once it is right', async () =>
     SAVED_CHECK,
   ]);
 });
+
+
+it('Check and save labels the catalog-opted client unverified and never ready', async () => {
+  const publicApp = connectorApp({
+    slug: 'hubspot',
+    name: 'HubSpot',
+    source: 'none',
+    client_id: null,
+    saved_client_id: null,
+    secrets: {client_secret:{set:false,last4:null}},
+  });
+  const onSuccess = vi.fn();
+  publicApp.inconclusive_probe = true;
+  switchServers.saveConnectorApp.mockResolvedValueOnce({
+    kind: 'saved',
+    app: { ...publicApp, verification: 'unverified' },
+    checks: [],
+  });
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () =>
+    root!.render(
+      <QueryClientProvider client={client}>
+        <Dialog open>
+          <DialogContent>
+            <ConnectorAppSetupDialog
+              serverId="server"
+              app={publicApp}
+              publicUrl={null}
+              mode="set_up"
+              onSuccess={onSuccess}
+              onClose={() => {}}
+            />
+          </DialogContent>
+        </Dialog>
+      </QueryClientProvider>
+    )
+  );
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  while (!dialog.querySelector('#connector-app-client_id')) {
+    await act(async () => button(/^Next$/, dialog)!.click());
+  }
+  const input = dialog.querySelector<HTMLInputElement>('#connector-app-client_id')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+      input,
+      ' public-client '
+    );
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const secret = dialog.querySelector<HTMLInputElement>('#connector-app-client_secret')!;
+  await act(async () => {Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(secret,'dummy-secret');secret.dispatchEvent(new Event('input',{bubbles:true}));});
+  const save = button(/^Check and save$/, dialog)!;
+  expect(save.disabled).toBe(false);
+  expect(dialog.textContent).toContain('first sign-in');
+  await act(async () => save.click());
+  await vi.waitFor(() =>
+    expect(onSuccess).toHaveBeenCalledWith(
+      'HubSpot configuration saved. Complete a real sign-in to validate it.'
+    )
+  );
+  expect(switchServers.saveConnectorApp).toHaveBeenCalledWith({
+    serverId: 'server',
+    service: 'hubspot',
+    input: { client_id: 'public-client', client_secret:'dummy-secret', replace: false },
+  });
+});

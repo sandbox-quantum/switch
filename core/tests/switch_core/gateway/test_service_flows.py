@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -804,3 +805,72 @@ class TestWorkspaceSwitch:
             "so it still works. Remove Switch under Connected apps in Example.",
         }
         assert await _connection(session_factory, ada.id) is None
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_first_success_marks_only_unchanged_saved_client_verified(
+    session_factory, tmp_path, monkeypatch, changed
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from switch_core.db.models import ServiceAppCredential
+
+    world = _world(session_factory, tmp_path / "catalog")
+    ada = await add_member(session_factory, "ada")
+    # This fixture uses dynamic registration; capture its actual client ID
+    # after starting the flow, then provide the saved-app metadata being checked.
+    async with world.harness.client() as client:
+        console = Console(client, ada)
+        code = await _loopback_code(world, console)
+        flow = await _flow_row(session_factory, console.state)
+        client_id = flow.details["client_id"]
+        async with session_factory() as session:
+            session.add(
+                ServiceAppCredential(
+                    service="example",
+                    client_id=client_id,
+                    settings={"verification": "unverified"},
+                    encrypted_secrets=TEST_KEYRING.encrypt("{}"),
+                    updated_by=ada.id,
+                )
+            )
+            await session.commit()
+        world.harness.gateway_app.state.connector_apps = SimpleNamespace(
+            specs={"example": True},
+            effective=lambda service: SimpleNamespace(source="saved"),
+            apply=AsyncMock(),
+            announce=Mock(),
+        )
+        if changed:
+            original = world.flows.complete
+
+            async def exchange_then_replace(*args, **kwargs):
+                result = await original(*args, **kwargs)
+                async with session_factory() as session:
+                    await session.execute(
+                        update(ServiceAppCredential)
+                        .where(ServiceAppCredential.service == "example")
+                        .values(
+                            client_id="replacement-client", updated_at=datetime.now(UTC)
+                        )
+                    )
+                    await session.commit()
+                return result
+
+            monkeypatch.setattr(world.flows, "complete", exchange_then_replace)
+        complete = await console.complete(code)
+        assert complete.status_code == 200, complete.text
+    async with session_factory() as session:
+        row = await session.scalar(
+            select(ServiceAppCredential).where(
+                ServiceAppCredential.service == "example"
+            )
+        )
+        assert row.settings["verification"] == ("unverified" if changed else "verified")
+    assert world.harness.gateway_app.state.connector_apps.apply.await_count == (
+        0 if changed else 1
+    )
+    assert world.harness.gateway_app.state.connector_apps.announce.call_count == (
+        0 if changed else 1
+    )
