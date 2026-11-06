@@ -25,3 +25,7 @@ No OAuth demo, refresh measurement or PR submission is claimed.
 
 Maintainer clarification:
 https://github.com/sandbox-quantum/switch/issues/830#issuecomment-6678453089
+
+The verification regression also injects bad authorization code, missing scopes
+and absent identity. Each refusal leaves the saved client unverified with no
+connection and no cache announcement, for server and organization selection.

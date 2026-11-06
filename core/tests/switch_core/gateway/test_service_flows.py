@@ -807,10 +807,11 @@ class TestWorkspaceSwitch:
         assert await _connection(session_factory, ada.id) is None
 
 
+@pytest.mark.parametrize("failure", [None, "code", "scope", "identity"])
 @pytest.mark.parametrize("organization", [False, True])
 @pytest.mark.parametrize("changed", [False, True])
 async def test_first_success_marks_only_unchanged_saved_client_verified(
-    session_factory, tmp_path, monkeypatch, changed, organization
+    session_factory, tmp_path, monkeypatch, changed, organization, failure
 ):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock
@@ -898,17 +899,32 @@ async def test_first_success_marks_only_unchanged_saved_client_verified(
                 return result
 
             monkeypatch.setattr(world.flows, "complete", exchange_then_replace)
+        if failure == "code":
+            code = "invalid-code"
+        elif failure == "scope":
+            mint = world.vendor.mint
+            world.vendor.mint = lambda scopes: mint([])
+        elif failure == "identity":
+            world.vendor.account = {}
         complete = await console.complete(code)
-        assert complete.status_code == 200, complete.text
+        if failure is None:
+            assert complete.status_code == 200, complete.text
+        else:
+            assert complete.status_code != 200, complete.text
+            assert await _connection(session_factory, ada.id) is None
     async with session_factory() as session:
         row = await session.scalar(select(model).where(*conditions))
-        assert row.settings["verification"] == ("unverified" if changed else "verified")
+        assert row.settings["verification"] == (
+            "unverified" if changed or failure else "verified"
+        )
     assert world.harness.gateway_app.state.connector_apps.apply.await_count == (
-        0 if changed or organization else 1
+        0 if changed or organization or failure else 1
     )
     assert world.harness.gateway_app.state.connector_apps.announce.call_count == (
-        0 if changed or organization else 1
+        0 if changed or organization or failure else 1
     )
-    assert organization_changed.call_count == (1 if organization and not changed else 0)
-    if organization and not changed:
+    assert organization_changed.call_count == (
+        1 if organization and not changed and not failure else 0
+    )
+    if organization and not changed and not failure:
         organization_changed.assert_called_once_with(organization_id, "example")
