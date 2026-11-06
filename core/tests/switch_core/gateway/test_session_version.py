@@ -10,17 +10,24 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Annotated
 
 import httpx
 import jwt
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import ServerAuditEvent, User
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway.auth import JWT_ALGORITHM, create_jwt, hash_password
+from switch_core.gateway.auth import (
+    JWT_ALGORITHM,
+    AuthenticatedCaller,
+    create_jwt,
+    get_authenticated_caller,
+    hash_password,
+)
 from switch_core.gateway.auth_routes import router
 from switch_core.keys import Keyring, Purpose
 
@@ -131,6 +138,31 @@ class TestTheVersionIsChecked:
             refused = await client.post("/auth/sessions/revoke")
         assert refused.status_code == 401
         assert await _version(session_factory, user_id) == 1
+
+    async def test_a_route_reading_the_caller_without_a_workspace_checks_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id = await _seed_user(session_factory, "caller@example.invalid")
+        app = _app(session_factory)
+
+        @app.get("/caller")
+        async def caller(
+            who: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+        ) -> str:
+            return who.id
+
+        stale = _token(user_id, "caller@example.invalid", "user", 0)
+        async with _client(app, stale) as client:
+            before = await client.get("/caller")
+        async with session_factory() as session:
+            await _USER_STORE.end_sessions(session, user_id)
+            await session.commit()
+        async with _client(app, stale) as client:
+            after = await client.get("/caller")
+
+        assert before.json() == user_id
+        assert after.status_code == 401
+        assert after.json() == {"detail": "Session ended"}
 
     async def test_a_cookie_minted_before_the_claim_existed_counts_as_version_0(
         self, session_factory: async_sessionmaker[AsyncSession]

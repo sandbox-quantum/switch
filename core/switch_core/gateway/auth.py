@@ -430,11 +430,12 @@ async def get_authenticated_caller(
     claims, which are a snapshot from login: an address can change, and a
     revoked operator bit must not stay valid for the life of a cookie.
     """
-    payload = await _authenticate(request, session_factory, user_store, config)
+    payload = _session_claims(request, config)
     async with session_factory() as system_session:
         user = await user_store.get(system_session, payload["sub"])
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    _refuse_ended_session(user.session_version, payload)
     return AuthenticatedCaller(
         id=user.id, email=user.email, is_operator=user.role == "admin"
     )
