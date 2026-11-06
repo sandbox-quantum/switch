@@ -328,12 +328,11 @@ class RoomService:
         """The agent rows for `agent_ids`, in order. An id with no row is
         dropped: it is not an agent whose policy could speak, and the paths
         that cannot proceed without it fail on it further down."""
-        found = []
-        for agent_id in agent_ids:
-            agent = await self._agent_store.get(session, agent_id)
-            if agent is not None:
-                found.append(agent)
-        return found
+        by_id = {
+            agent.id: agent
+            for agent in await self._agent_store.get_many(session, agent_ids)
+        }
+        return [by_id[agent_id] for agent_id in agent_ids if agent_id in by_id]
 
     async def _resolve_ids_to_names(self, agent_ids: list[str]) -> list[str]:
         async with self._session_factory() as session:
