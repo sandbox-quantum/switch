@@ -113,7 +113,10 @@ class FakeLark:
                 return _refused(41050, "no user authority")
             return _ok(user={"name": self.names[open_id]})
         if request.method == "GET" and path.startswith("/open-apis/im/v1/chats/"):
-            return _ok(**self.chats[path.rsplit("/", 1)[1]])
+            chat = self.chats.get(path.rsplit("/", 1)[1])
+            if chat is None:
+                return _refused(232011, "chat not found")
+            return _ok(**chat)
         if request.method == "POST" and (
             path == "/open-apis/im/v1/messages" or path.endswith("/reply")
         ):
@@ -682,6 +685,40 @@ async def test_the_bot_joining_a_chat_creates_its_room() -> None:
     assert join == InboundAppJoin(
         channel_id=CHAT, channel_type="channel_private", channel_name="Payments"
     )
+
+
+async def test_a_chat_that_changed_is_read_again_after_its_update_event() -> None:
+    adapter, lark, _ = await _started()
+    lark.chats[CHAT] = {"chat_mode": "group", "chat_type": "private", "name": "Pay"}
+    assert await adapter.get_channel_type(CHAT) == "channel_private"
+    lark.chats[CHAT] = {"chat_mode": "group", "chat_type": "public", "name": "Pay"}
+    assert await adapter.get_channel_type(CHAT) == "channel_private"
+    await _deliver(adapter, _event("im.chat.updated_v1", {"chat_id": CHAT}))
+    assert await adapter.get_channel_type(CHAT) == "channel_public"
+
+
+async def test_a_cached_chat_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter, lark, _ = await _started()
+    lark.chats[CHAT] = {"chat_mode": "group", "chat_type": "private", "name": "Pay"}
+    assert await adapter.get_channel_type(CHAT) == "channel_private"
+    lark.chats[CHAT] = {"chat_mode": "group", "chat_type": "public", "name": "Pay"}
+    later = time.monotonic() + 120
+    monkeypatch.setattr(time, "monotonic", lambda: later)
+    assert await adapter.get_channel_type(CHAT) == "channel_public"
+
+
+async def test_an_expired_chat_that_cannot_be_refreshed_keeps_its_last_type(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    adapter, lark, _ = await _started()
+    lark.chats[CHAT] = {"chat_mode": "group", "chat_type": "private", "name": "Pay"}
+    assert await adapter.get_channel_type(CHAT) == "channel_private"
+    del lark.chats[CHAT]
+    later = time.monotonic() + 120
+    monkeypatch.setattr(time, "monotonic", lambda: later)
+    with caplog.at_level("WARNING"):
+        assert await adapter.get_channel_type(CHAT) == "channel_private"
+    assert "would not refresh" in caplog.text
 
 
 async def test_people_joining_a_chat_are_reported() -> None:

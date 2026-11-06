@@ -108,6 +108,9 @@ _BUTTON_LABEL_LIMIT = 40
 # Names and chat details looked up from Lark, kept to save a call per message.
 # Safe to lose: a miss is one more lookup.
 _CACHE_SIZE = 2048
+# A chat's mode or visibility can change while another pod holds it cached, so
+# an entry is trusted for this long at most.
+_CHAT_TTL_SECONDS = 60.0
 
 # Lark's links that open a chat in its app, on desktop and mobile alike.
 _APPLINK: dict[Region, str] = {
@@ -208,7 +211,9 @@ class LarkAdapter(PlatformAdapter):
         self._bot_open_id: str | None = None
         self._bot_name: str | None = None
         self._names: OrderedDict[str, str] = OrderedDict()
-        self._chats: OrderedDict[str, tuple[ChannelType, str | None]] = OrderedDict()
+        self._chats: OrderedDict[str, tuple[ChannelType, str | None, float]] = (
+            OrderedDict()
+        )
 
     # ── Credentials and failures ──────────────────────────────────────────────
 
@@ -355,6 +360,8 @@ class LarkAdapter(PlatformAdapter):
             await self._handle_bot_added(payload)
         elif envelope_type == "im.chat.member.user.added_v1":
             await self._handle_users_added(payload)
+        elif envelope_type == "im.chat.updated_v1":
+            self._chats.pop(str(payload.get("chat_id") or ""), None)
         elif envelope_type == "card.action.trigger":
             await self._handle_card_action(payload)
         else:
@@ -666,12 +673,26 @@ class LarkAdapter(PlatformAdapter):
     async def _chat(
         self, chat_id: str, chat_type_hint: object
     ) -> tuple[ChannelType, str | None]:
-        if chat_id in self._chats:
-            return self._chats[chat_id]
+        cached = self._chats.get(chat_id)
+        if cached is not None and cached[2] > time.monotonic():
+            return cached[0], cached[1]
         if chat_type_hint == "p2p":
             found: tuple[ChannelType, str | None] = ("direct", None)
         else:
-            data = await self._client.call("GET", f"/open-apis/im/v1/chats/{chat_id}")
+            try:
+                data = await self._client.call(
+                    "GET", f"/open-apis/im/v1/chats/{chat_id}"
+                )
+            except LarkApiError as error:
+                if cached is None:
+                    raise
+                logger.warning(
+                    "Lark would not refresh chat %s (%s); using the last known "
+                    "type and name",
+                    chat_id,
+                    error,
+                )
+                return cached[0], cached[1]
             if data.get("chat_mode") == "p2p":
                 found = ("direct", None)
             else:
@@ -681,7 +702,8 @@ class LarkAdapter(PlatformAdapter):
                     else "channel_private"
                 )
                 found = (kind, str(data.get("name") or "") or None)
-        self._chats[chat_id] = found
+        self._chats[chat_id] = (*found, time.monotonic() + _CHAT_TTL_SECONDS)
+        self._chats.move_to_end(chat_id)
         while len(self._chats) > _CACHE_SIZE:
             self._chats.popitem(last=False)
         return found
@@ -1020,7 +1042,7 @@ class LarkAdapter(PlatformAdapter):
         kind: ChannelType = (
             "channel_public" if channel_type == "channel_public" else "channel_private"
         )
-        self._chats[chat_id] = (kind, name)
+        self._chats[chat_id] = (kind, name, time.monotonic() + _CHAT_TTL_SECONDS)
         return chat_id
 
     async def add_agents_to_channel(
