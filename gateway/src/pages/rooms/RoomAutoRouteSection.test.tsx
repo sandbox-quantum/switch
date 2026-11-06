@@ -23,6 +23,7 @@ function agent(id: string, name: string): AgentSummary {
     parent_agent_id: null,
     known_agent_type: "claude-code",
     known_agent_options: null,
+    can_manage: false,
   };
 }
 
