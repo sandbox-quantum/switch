@@ -53,7 +53,7 @@ Before installing the agent controller, verify that the host meets the following
 
 | Component | Requirement | Notes |
 |---|---|---|
-| **Operating System** | Linux (Ubuntu 20.04+, Debian 11+, RHEL 9+), macOS (12+), or Windows 10/11 | On Windows, the controller is managed by Switch Console desktop; Linux/macOS support headless service daemons. |
+| **Operating System** | Linux (Ubuntu 20.04+, Debian 11+, RHEL 9+), macOS (12+), or Windows 10/11 | Linux and macOS support background service daemons (`install-service`). On Windows, background services are not supported; run interactively (`run`) or manage via Switch Console desktop. |
 | **Node.js** | **v22.13.0 or later** | Required for built-in `node:sqlite` database storage. Run `node -v` to check. |
 | **Switch Server** | Feature flag enabled: `FEATURE_FLAGS_ENABLED=agent_management` | Behind proxies or ingresses, ensure requests to `/v1` route directly to `switch-core`. |
 | **Network** | Outbound HTTPS and WebSocket access to the Switch server | No inbound listening ports are exposed to external networks. |
@@ -65,7 +65,9 @@ Before installing the agent controller, verify that the host meets the following
 
 ### Method 1: Automated One-Line Installer (Recommended)
 
-The fastest way to install, enroll, and register the controller as a system service is via the one-line script generated on the Switch Gateway **Machines** page:
+The fastest way to install, enroll, and register the controller as a system service is via the one-line command generated on the Switch Gateway **Machines** page:
+
+> **Note:** Open the **Machines** page in Switch Gateway and copy the generated installation command for your machine. The snippet below illustrates its structure; use the command provided by your own Switch instance.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sandbox-quantum/switch/main/console/packages/agent-controller/install.sh \
@@ -78,7 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/sandbox-quantum/switch/main/console
 
 ### Method 2: Manual Installation via npm
 
-Install the package globally using npm:
+You can also install the package globally using npm (`--ignore-scripts` ensures no arbitrary package lifecycle scripts run during installation):
 
 ```bash
 npm install --global --ignore-scripts @switch-console/agent-controller
@@ -147,10 +149,13 @@ Running the controller as a managed background service ensures high availability
 To install the controller as a service running under your current user account:
 
 ```bash
-# 1. Install the service definition
-switch-agent-controller install-service [--env-file /path/to/agents.env]
+# Install service definition under current user
+switch-agent-controller install-service
 
-# 2. On Linux, ensure the user service persists across logouts and starts on boot:
+# Or install with a custom environment file for API keys
+switch-agent-controller install-service --env-file /path/to/agents.env
+
+# On Linux, ensure the user service persists across logouts and starts on boot:
 sudo loginctl enable-linger $USER
 ```
 
@@ -159,7 +164,7 @@ sudo loginctl enable-linger $USER
   - View live logs: `journalctl --user -u switch-agent-controller -f`
 - **macOS:** Generates a launchd agent at `~/Library/LaunchAgents/com.switch.agent-controller.plist`.
   - Logs are streamed to `controller.log` inside the data directory.
-- **Windows:** The service installer is unsupported on Windows; use Switch Console desktop or launch interactive `run` sessions.
+- **Windows:** Background services are not supported (`install-service` is refused on Windows). Run interactively via `switch-agent-controller run` or use the Switch Console desktop app.
 
 To uninstall the service:
 
@@ -209,7 +214,11 @@ switch-agent-controller status --json
 The `doctor` command validates all prerequisites, network reachability, credential validity, provider CLI sign-ins, and service status:
 
 ```bash
-switch-agent-controller doctor [--env-file /path/to/agents.env]
+# Run all pre-flight diagnostic checks
+switch-agent-controller doctor
+
+# Or validate against credentials in an environment file
+switch-agent-controller doctor --env-file /path/to/agents.env
 ```
 
 Example output:
@@ -261,29 +270,32 @@ Switch supports two execution topologies for assigned agents:
 - Configured per-agent in the agent definition.
 - Spawns the agent host in a dedicated, independent process (`--ensure-watch`).
 - Connects to the controller's local hub WebSocket (`ws://127.0.0.1:<port>/hub`).
-- Survives controller restarts: if the controller daemon restarts or self-updates, isolated agent processes remain active and smoothly reconnect once the relay hub recovers.
+- **Survives controller restarts:** Because isolated agents execute in dedicated OS processes outside the main controller daemon, ongoing task executions continue uninterrupted if the controller daemon restarts or self-updates. Once the controller restarts, the isolated agent processes automatically reconnect to the local relay hub without terminating their sessions.
 
 ### 3. Multi-User Linux Sandboxing (`--separate-users`)
 
 For multi-tenant machines, enterprise security compliance, and untrusted execution, Switch provides root-level system sandboxing where **every agent runs as a distinct Linux system user**:
 
 ```bash
-# Set up enterprise user isolation (requires root/sudo)
+# Set up enterprise user isolation with defaults (pool of 16 users)
+sudo switch-agent-controller install-service --separate-users
+
+# Or configure with a custom user, pool size (up to 99), and environment file:
 sudo switch-agent-controller install-service --separate-users \
-  [--user <controller-user>] \
-  [--agent-users 16] \
-  [--env-file /etc/switch/agents.env]
+  --user ubuntu \
+  --agent-users 32 \
+  --env-file /etc/switch/agents.env
 ```
 
 #### What `--separate-users` Does:
-1. **Dedicated User Pool:** Provisions dedicated system users (`sa<uid>-01` through `sa<uid>-16`, belonging to group `switch-agents-<uid>`).
+1. **Dedicated User Pool:** Provisions dedicated system users (`sa<uid>-01` through `sa<uid>-16`, belonging to group `switch-agents-<uid>`). The pool size defaults to 16 and can be configured up to a maximum of 99 users.
 2. **Systemd Unit Template:** Installs template units `switch-agent-<uid>@.service` to manage agent lifetimes individually.
 3. **Polkit Authorization:** Installs fine-grained Polkit rules allowing the non-root controller user to start, stop, and restart only its designated agent units without sudo.
 4. **Filesystem Isolation:** Each agent is jailed inside `/var/lib/switch-agents/<uid>/agent`, with isolated subdirectories for `home/` and `workspace/`. Agents cannot access:
-   - Host user `/home` directories
+   - Host user directories (`/home`, `/root`, `/run/user`)
    - The controller's internal data directory or SQLite database
    - Peer agent processes or workspaces
-   - Cloud instance metadata endpoints (169.254.169.254)
+   - Cloud instance metadata endpoints (`169.254.169.254`)
 
 To uninstall user sandboxing:
 
@@ -357,7 +369,7 @@ For headless cloud VMs with no interactive shell access, machine owners can remo
 
 ### Common Reason Codes
 
-When an agent fails to start or reconcile, the controller assigns it a specific `ReasonCode`. These codes appear in `switch-agent-controller status`, `doctor`, and the Gateway dashboard:
+When an agent fails to start or reconcile, the controller assigns it a specific `ReasonCode`. These codes appear in `switch-agent-controller status` (under failed agent assignments), in `switch-agent-controller doctor` (when diagnosing provider authentication or installation states), and in the Switch Gateway dashboard:
 
 | Reason Code | Meaning | Remediation |
 |---|---|---|
@@ -368,7 +380,7 @@ When an agent fails to start or reconcile, the controller assigns it a specific 
 | `controller_revoked` | The machine was revoked or removed in Switch Gateway. | Re-enroll the host: remove old state in data directory and run `switch-agent-controller enroll` with a new code. |
 | `invalid_credential` | The controller's stored access token was rejected by Switch. | Verify the Switch server URL; re-enroll the machine if the credential was rotated. |
 | `crash_loop` | The agent process crashed 4 times in 10 minutes. | Check agent crash logs in `<data-dir>/agents/<id>/` or `journalctl`; verify workspace permissions. |
-| `capacity_exceeded` | All sandbox user slots are exhausted (`--separate-users`). | Run `install-service --separate-users --agent-users 32` with a higher user limit. |
+| `capacity_exceeded` | All sandbox user slots are currently claimed (`--separate-users`). | The user pool defaults to 16 (max 99). To expand capacity, reinstall with a larger pool: `sudo switch-agent-controller install-service --separate-users --agent-users 32`. |
 | `definition_invalid` | Agent configuration has invalid parameters or references invalid paths. | Check the agent definition in Switch Console / Gateway. |
 | `protocol_unsupported` | The controller is too old for the Switch server protocol. | Update the controller binary: `switch-agent-controller update`. |
 | `taken_over` | A new controller instance opened the stream using the same ID. | Ensure only one controller instance is active per enrolled identity. |
@@ -383,7 +395,7 @@ If the controller stops, it exits with one of the following documented exit code
 | Exit Code | Constant | Meaning | Supervisor Action |
 |---|---|---|---|
 | `0` | `EXIT_OK` | Clean shutdown via `SIGINT`, `SIGTERM`, or command complete. | Do not restart. |
-| `1` | `EXIT_ERROR` | Transient error (network failure, temporary server drop). | **Restart** with exponential backoff. |
+| `1` | `EXIT_FAILURE` | Transient error (network failure, temporary server drop). | **Restart** with exponential backoff. |
 | `2` | `EXIT_CONFIGURATION` | Invalid argument, missing config, unreadable file, or invalid URL. | Do not restart until configuration is corrected. |
 | `3` | `EXIT_REVOKED` | Controller was revoked by the Switch server. | Do not restart; requires re-enrollment. |
 | `4` | `EXIT_TAKEN_OVER` | Another instance connected with this identity. | Do not restart; prevent duplicate processes. |
