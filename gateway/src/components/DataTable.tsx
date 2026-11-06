@@ -2,10 +2,8 @@ import FilterListOutlined from "@mui/icons-material/FilterListOutlined";
 import SearchOutlined from "@mui/icons-material/SearchOutlined";
 import {
   DataGrid,
-  GridColumnMenu,
   type GridColDef,
   type GridColumnMenuItemProps,
-  type GridColumnMenuProps,
   type GridOverlayProps,
   type GridRowId,
   type GridRowParams,
@@ -240,16 +238,14 @@ function FilterMenuItem(props: GridColumnMenuItemProps) {
 }
 
 /** The grid drops its own Filter item when its filtering is off, so ours is
- *  added under its own key, in the place the grid's would take. */
-function TableColumnMenu(props: GridColumnMenuProps) {
-  return (
-    <GridColumnMenu
-      {...props}
-      slots={{ columnMenuTableFilterItem: FilterMenuItem }}
-      slotProps={{ columnMenuTableFilterItem: { displayOrder: 20 } }}
-    />
-  );
-}
+ *  added to the stock column menu under its own key, in the place the grid's
+ *  would take. Given through `slotProps` rather than a wrapper component, so
+ *  the grid still recognises its own menu when deciding whether a header has
+ *  a menu to show. */
+const TABLE_COLUMN_MENU = {
+  slots: { columnMenuTableFilterItem: FilterMenuItem },
+  slotProps: { columnMenuTableFilterItem: { displayOrder: 20 } },
+};
 
 function TableOverlay({ tableEmpty }: GridOverlayProps & { tableEmpty?: ReactNode }) {
   return (
@@ -340,6 +336,8 @@ export default function DataTable<T extends { id: string | number }>({
     ));
   });
 
+  // Tables that leave filtering to the grid keep its own overlays.
+  const tableOverlay = emptyState !== undefined || (ownFiltering && rows.length > 0);
   const pickerColumn = picker ? filterable.find((column) => column.field === picker.field) : undefined;
   const pinnedSx = pinnedRight.length > 0 ? [PINNED_SX, pinnedOffsetsSx(grid.offsets)] : [];
   const extraSx = Array.isArray(sx) ? sx : sx ? [sx] : [];
@@ -369,12 +367,11 @@ export default function DataTable<T extends { id: string | number }>({
       // every column renders rather than only those scrolled into view.
       columnBufferPx={pinnedRight.length > 0 ? 1_000_000 : undefined}
       disableColumnFilter={ownFiltering}
-      {...(rows.length > 0 || emptyState !== undefined
-        ? {
-            slots: { columnMenu: TableColumnMenu, noRowsOverlay: TableOverlay },
-            slotProps: { noRowsOverlay: { tableEmpty: empty } },
-          }
-        : { slots: { columnMenu: TableColumnMenu } })}
+      slots={tableOverlay ? { noRowsOverlay: TableOverlay } : undefined}
+      slotProps={{
+        ...(tableOverlay && { noRowsOverlay: { tableEmpty: empty } }),
+        ...(ownFiltering && { columnMenu: TABLE_COLUMN_MENU }),
+      }}
       sx={[
         HOOT_GRID_SX,
         ...(ownFiltering ? [OWN_FILTERING_SX] : []),
