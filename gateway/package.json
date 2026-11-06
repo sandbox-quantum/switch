@@ -19,6 +19,7 @@
     "@fontsource/space-grotesk": "^5.3.0",
     "@mui/icons-material": "^7.3.10",
     "@mui/material": "^7.3.10",
+    "@mui/x-charts": "8.29.2",
     "@mui/x-data-grid": "^8.29.2",
     "@uiw/react-codemirror": "^4.25.10",
     "react": "^19.1.0",
