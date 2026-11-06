@@ -2,6 +2,36 @@ slug: gitlab
 name: GitLab
 category: Source control
 description: Work with GitLab projects, merge requests and issues.
-enabled: false
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # GitLab supports dynamic client registration for OAuth clients connecting
+    # to its official remote MCP server at https://gitlab.com/api/v4/mcp.
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+# GitLab OAuth access tokens live 2 hours (7200s, documented).
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  servers:
+    - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
+access:
+  read:
+    scopes:
+      - read_user
+      - read_api
+  write:
+    scopes:
+      - read_user
+      - read_api
+      - api
+tools: { mode: pass_through }
