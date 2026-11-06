@@ -296,7 +296,39 @@ export const APP_THEME = () =>
         },
       },
       MuiSvgIcon: { defaultProps: { fontSize: "inherit" } },
-      MuiSwitch: { defaultProps: { size: "small" } },
+      // Hoot's switch: a 36x20 pill, ink when on, the field hairline's grey
+      // when off, with a canvas-coloured thumb inside it rather than
+      // overhanging it. Nested under root so it outranks MUI's size styles.
+      MuiSwitch: {
+        defaultProps: { size: "small", disableRipple: true },
+        styleOverrides: {
+          root: {
+            width: 36,
+            height: 20,
+            padding: 0,
+            overflow: "visible",
+            "& .MuiSwitch-switchBase": {
+              padding: 2,
+              "&.Mui-checked": {
+                transform: "translateX(16px)",
+                "& + .MuiSwitch-track": { backgroundColor: hootVar("primary"), opacity: 1 },
+              },
+              "&.Mui-disabled + .MuiSwitch-track": { opacity: 0.5 },
+              "&.Mui-focusVisible + .MuiSwitch-track": {
+                outline: `2px solid ${hootVar("ring")}`,
+                outlineOffset: "2px",
+              },
+            },
+            "& .MuiSwitch-thumb": {
+              width: 16,
+              height: 16,
+              boxShadow: "0 1px 3px rgb(0 0 0 / 0.25)",
+              backgroundColor: hootVar("background"),
+            },
+            "& .MuiSwitch-track": { borderRadius: 10, backgroundColor: hootVar("input"), opacity: 1 },
+          },
+        },
+      },
       // Underline tabs with a foreground indicator — chrome recedes.
       MuiTabs: {
         styleOverrides: {
