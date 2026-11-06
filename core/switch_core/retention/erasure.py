@@ -1,6 +1,6 @@
 """Erasing a person from a workspace.
 
-A workspace owner queues a request naming one or more platform identities
+A workspace admin queues a request naming one or more platform identities
 (`ErasureStore.queue`), and any former participants: people from a chat app
 since disconnected, whose identity rows went with it. For those only their
 messages, files, approval answers and direct-room names are left to erase
@@ -8,7 +8,7 @@ messages, files, approval answers and direct-room names are left to erase
 
 1. deletes every message the identity sent, in every room, archived ones
    included, in batches with their attachments, bridge post mappings and the
-   copies held for hosted agents;
+   copies stored as events for agents;
 2. stops the client that stood in for them in rooms;
 3. in one transaction, scrubs their name and words from approval answers and
    their name from direct rooms' names, deletes their identity row (its
@@ -252,7 +252,7 @@ class ErasureService:
             db, transport_user_id=transport_user_id, limit=MESSAGE_BATCH
         )
         await self._retention.delete_bridge_mappings(db, deleted.event_ids)
-        await self._erasures.delete_hosted_copies(db, deleted.event_ids)
+        await self._erasures.delete_agent_copies(db, deleted.event_ids)
         await self._erasures.add_progress(
             db, erasure_id, messages=len(deleted.event_ids), files=0, identities=0
         )

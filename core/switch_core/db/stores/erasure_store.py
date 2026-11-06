@@ -32,14 +32,13 @@ from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
+    AgentEventRow,
     ApprovalRequest,
     Client,
     ClientRoom,
     CollaborationBridge,
     ExternalUser,
     ExternalUserClaim,
-    HostedCutoverItem,
-    HostedWakeMailbox,
     Message,
     PersonErasure,
     Room,
@@ -270,7 +269,7 @@ class ErasureStore:
     ) -> PersonErasure:
         """Queue the erasure of these identities, or raise.
 
-        Locks the tenant's erasure queue for the transaction, so two owners
+        Locks the tenant's erasure queue for the transaction, so two admins
         asking at once cannot both pass the "nothing already queued" check.
         """
         tenant_id = require_tenant_id()
@@ -413,24 +412,18 @@ class ErasureStore:
         )
         return result.scalar_one()
 
-    async def delete_hosted_copies(
+    async def delete_agent_copies(
         self, session: AsyncSession, transport_event_ids: Collection[str]
     ) -> None:
-        """Delete the copies of these (deleted) messages held for hosted agents:
-        deliveries not yet admitted, and items a cutover would import."""
+        """Delete the copies of these (deleted) messages stored as events for
+        agents (`agent_events`), which would otherwise outlive them until the
+        event retention sweep."""
         if not transport_event_ids:
             return
-        ids = list(transport_event_ids)
         await session.execute(
-            delete(HostedWakeMailbox).where(
-                HostedWakeMailbox.tenant_id == require_tenant_id(),
-                HostedWakeMailbox.message_id.in_(ids),
-            )
-        )
-        await session.execute(
-            delete(HostedCutoverItem).where(
-                HostedCutoverItem.tenant_id == require_tenant_id(),
-                HostedCutoverItem.message_id.in_(ids),
+            delete(AgentEventRow).where(
+                AgentEventRow.tenant_id == require_tenant_id(),
+                AgentEventRow.message_key.in_(list(transport_event_ids)),
             )
         )
 

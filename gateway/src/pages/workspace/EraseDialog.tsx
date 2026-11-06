@@ -53,7 +53,7 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
 
   // Reset only when a different person is chosen. The list behind `people` is
   // refreshed while other erasures run, and resetting on every refresh would
-  // undo what the owner ticked or typed just before they confirm.
+  // undo what the admin ticked or typed just before they confirm.
   const personId = person?.id;
   useEffect(() => {
     setIncluded(new Set());

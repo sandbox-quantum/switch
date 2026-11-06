@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
     Agent,
+    AgentEventRow,
     ApiKey,
     ApprovalRequest,
     AuditEvent,
@@ -25,8 +26,6 @@ from switch_core.db.models import (
     CollaborationBridge,
     ExternalUser,
     ExternalUserClaim,
-    HostedLaunch,
-    HostedWakeMailbox,
     MediaBlob,
     Message,
     MessageAttachment,
@@ -489,7 +488,7 @@ class TestErasing:
         assert row.answered_by == ERASED_ANSWERER
         assert row.answers == [{"question_id": "q1", "selected_option_ids": ["yes"]}]
 
-    async def test_their_name_leaves_direct_rooms_and_hosted_copies_go(
+    async def test_their_name_leaves_direct_rooms_and_agent_copies_go(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
@@ -515,30 +514,18 @@ class TestErasing:
                     ClientRoom(client_id=client.id, room_id=channel.id),
                 ]
             )
-            message = await _say(session, dm, client, "$to-hosted")
-            owner = User(name="launch-owner", email="lo@example.invalid", role="user")
-            session.add(owner)
-            await session.flush()
-            launch = HostedLaunch(
-                id=f"launch-{uuid.uuid4().hex[:8]}",
-                owner_id=owner.id,
-                name="helper",
-                spec={},
-                state="ready",
-                agent_id=str(uuid.uuid4()),
-            )
-            session.add(launch)
-            await session.flush()
+            message = await _say(session, dm, client, "$to-agent")
+            agent = await _agent(session)
             session.add(
-                HostedWakeMailbox(
-                    agent_id=launch.agent_id,
+                AgentEventRow(
+                    agent_id=agent.id,
+                    seq=1,
                     room_id=dm.id,
-                    message_id=message.transport_event_id,
-                    launch_id=launch.id,
-                    event={"body": "hello"},
-                    addressed_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC),
-                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    room_seq=message.seq,
+                    message_key=message.transport_event_id,
+                    type="message",
+                    payload={"body": "hello"},
+                    notifiable=True,
                 )
             )
             await session.commit()
@@ -552,14 +539,14 @@ class TestErasing:
         async with session_factory() as session:
             dm_after = await session.get(Room, dm_id)
             channel_after = await session.get(Room, channel_id)
-            mailbox = await session.scalar(
-                select(func.count()).select_from(HostedWakeMailbox)
+            copies = await session.scalar(
+                select(func.count()).select_from(AgentEventRow)
             )
         assert dm_after is not None and channel_after is not None
         assert dm_after.name == "Acme Slack: erased person / helper"
         assert dm_after.description == "Acme Slack DM — erased person / helper"
         assert channel_after.name == "Acme Slack: ana-fans"
-        assert mailbox == 0
+        assert copies == 0
 
 
 class TestQueue:

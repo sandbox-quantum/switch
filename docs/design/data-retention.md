@@ -9,7 +9,7 @@ shared picture and not from scratch.
 
 ### A message-retention window per workspace
 
-Each workspace keeps room messages forever until an owner or admin sets a
+Each workspace keeps room messages forever until a workspace admin sets a
 window on the Workspace page ("Data retention"). With a window of N days, room
 messages older than N days are deleted from every room in the workspace,
 archived rooms included. Their attachments go with them, as does the record of
@@ -21,7 +21,7 @@ which chat-platform post carried each message.
 - **API.** `GET`, `PUT` and `DELETE /tenants/{id}/retention` read, set and clear
   the window. `GET /tenants/{id}/retention/preview?days=N` counts what a window
   would delete now, which the page shows before anything is saved. All four are
-  limited to owners and admins.
+  limited to workspace admins.
 - **Audit.** Setting and clearing the window are recorded as
   `retention_policy.set` and `retention_policy.cleared`, with the previous and
   new values.
@@ -75,8 +75,8 @@ covers files left behind by retention and also those left behind when a room is
 deleted, which nothing cleaned up before.
 
 A blob is only a candidate once it is a day old. A file is uploaded before the
-message that carries it, in a separate transaction. A blob named by a pending
-hosted-cutover import is never a candidate.
+message that carries it, in a separate transaction. A blob named by a chat
+upload that is staged but not yet sent is never a candidate.
 
 ### Leftover operational records
 
@@ -121,9 +121,11 @@ below, in the order it is likely to be needed.
 
 ### Erase a person (built)
 
-A workspace owner can erase one person from the People list on the Workspace
-page, for example to answer an Art. 17 request. Admins cannot; the action
-cannot be undone.
+A workspace admin can erase one person from the People list on the Workspace
+page, for example to answer an Art. 17 request. Because it cannot be undone,
+it takes the caller's own admin membership, as deleting the workspace does:
+the deployment operator's bypass and an organization admin acting as one are
+refused.
 
 **Who a person is.** Everyone in a room is a chat-platform identity: an
 `external_users` row on one bridge, standing behind a `clients` row that is
@@ -135,7 +137,7 @@ shared claimant is a hint, not proof of a shared person.
 
 **The flow.**
 
-1. The owner picks the person and confirms by typing their name. The typed
+1. The admin picks the person and confirms by typing their name. The typed
    name is not stored.
 2. `POST /tenants/{id}/erasures` queues a `person_erasures` row naming the
    identities, and records `person_erasure.requested` (who asked, the internal
@@ -145,9 +147,8 @@ shared claimant is a hint, not proof of a shared person.
    marking it running in the same statement and skipping one another process
    holds, and works it. For each identity it:
    - deletes every message it sent, in every room including archived ones, in
-     batches with their attachments, bridge post mappings and the copies held
-     for hosted agents (wake-mailbox deliveries not yet admitted, cutover
-     items), keeping each room's `seq_floor` and adding to the request's
+     batches with their attachments, bridge post mappings and the copies stored
+     as events for agents (`agent_events`), keeping each room's `seq_floor` and adding to the request's
      counts in the same transaction;
    - stops the client that stood in for the person;
    - in one transaction: drops their name and the words they typed from
@@ -161,14 +162,14 @@ shared claimant is a hint, not proof of a shared person.
    - tells the running bridge to forget the identity, so writing again
      provisions a new one;
    - deletes the stored files that only their messages carried, with the same
-     hosted-cutover guard as the hourly sweep but no grace period, because
+     staged-upload guard as the hourly sweep but no grace period, because
      these files are known to have been attached.
 4. The page polls `GET /tenants/{id}/erasures` for progress, and re-reads the
    people list once the last request finishes. On success the request records
    `person_erasure.completed` with its counts.
 5. A failure before an identity's rows are deleted marks the request `failed`
    with the error. It is not retried, and since the identity is still there
-   the owner can queue it again. A failure after (the bridge could not be
+   the admin can queue it again. A failure after (the bridge could not be
    told, the files could not be deleted) is logged as a warning and does not
    fail the request: the identity is gone, so queueing again could not help.
    The bridge forgets on its next restart, and the hourly sweep takes the
@@ -208,28 +209,28 @@ has the shape a bridge gives a person (`@switch-{platform}-{bridge id}-…`) and
 for whom no client row is left. The People list shows them under "Disconnected
 app", named by the display names their messages carry, and an erasure request
 names them by that sender id (`former_sender_ids`). Erasing one deletes their
-messages, files, bridge post mappings and hosted copies, scrubs their approval
+messages, files, bridge post mappings and agent event copies, scrubs their approval
 answers, and replaces their names in the direct rooms among the rooms their
 messages were deleted from, since their memberships went with their client.
 There is no identity left to delete and no bridge to tell. Listing them scans
-the tenant's messages, which is fine for an owner-only page opened rarely; an
+the tenant's messages, which is fine for an admin-only page opened rarely; an
 index on the sender's shape would be the fix if it is not.
 
 ### Data export (not built)
 
-An owner or admin export of everything held about one person in the workspace,
+A workspace admin's export of everything held about one person in the workspace,
 as machine-readable JSON: account fields, platform identities, and messages
 they sent, with attachments. The same identity resolution as erasure applies.
 This is the natural next step, since it needs the same identity lookup as
 erasure (`ErasureStore.people_with_ids`).
 
-### Deleting a workspace (not built)
+### Deleting a workspace (built separately)
 
-`tenants` has no `deleted_at` today. Deleting a workspace needs an ordered
-teardown across every tenant-scoped table, because the tenant foreign keys do
-not cascade. It also needs a grace period and an audit record kept outside the
-tenant. This is a multi-tenancy-phase concern, noted here because it is the
-largest remaining erasure path.
+A workspace admin can delete a workspace once it has been emptied
+(`accounts/workspace_deletion.py`): its own setup goes with it in one
+transaction, including its retention policy and erasure requests, and the
+deletion is recorded in the server's audit log. The workspace's own audit
+history stays, which the audit-log horizon below would bound.
 
 ### The audit log
 
@@ -257,4 +258,4 @@ personal-data processing.
   removes the rows for the messages it deletes, but not these.
 - Expired controller enrolment codes. Each is tied to an `api_keys` row that
   needs to go with it.
-- `tasks`, `hosted_operations` and agent-controller operation history.
+- `tasks` and agent-controller operation history.

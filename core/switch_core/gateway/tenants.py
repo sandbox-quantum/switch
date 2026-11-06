@@ -927,6 +927,7 @@ def _erasure_detail(erasure: PersonErasure) -> ErasureDetail:
         completed_at=erasure.completed_at,
     )
 
+
 async def _require_admin_membership(
     session: AsyncSession, user_store: UserStore, tenant_id: str, user: User
 ) -> None:
@@ -937,7 +938,6 @@ async def _require_admin_membership(
         raise HTTPException(
             status_code=403, detail="Only a workspace admin may erase people"
         )
-
 
 
 @router.get("/tenants/{tenant_id}/people")

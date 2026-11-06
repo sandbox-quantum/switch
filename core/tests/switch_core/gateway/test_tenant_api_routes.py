@@ -49,7 +49,6 @@ from switch_core.db.models import (
     Message,
     Organization,
     OrganizationMember,
-    ProviderConnection,
     Room,
     ServiceTokenIssuance,
     SignInFlow,
@@ -2784,7 +2783,7 @@ class TestRetentionRoutes:
         self, session_factory: async_sessionmaker[AsyncSession], days: int
     ) -> None:
         _, token = await self._member(
-            session_factory, f"retention-range-{days}", "owner"
+            session_factory, f"retention-range-{days}", "admin"
         )
 
         async with _client(_app(session_factory), token) as client:
@@ -2797,7 +2796,7 @@ class TestRetentionRoutes:
     async def test_another_workspace_in_the_path_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        _, token = await self._member(session_factory, "retention-cross", "owner")
+        _, token = await self._member(session_factory, "retention-cross", "admin")
         await _make_tenant(session_factory, TENANT_B)
 
         async with _client(_app(session_factory), token) as client:
@@ -2888,11 +2887,11 @@ class TestErasureRoutes:
             await session.commit()
             return person.id
 
-    async def test_an_owner_lists_people_queues_an_erasure_and_sees_it(
+    async def test_an_admin_lists_people_queues_an_erasure_and_sees_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
-        token = await self._member(session_factory, "erase-owner", "owner")
+        token = await self._member(session_factory, "erase-admin", "admin")
         person_id = await self._person(session_factory, "ana")
 
         async with _client(_app(session_factory), token) as client:
@@ -2935,7 +2934,7 @@ class TestErasureRoutes:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
-        token = await self._member(session_factory, "erase-former", "owner")
+        token = await self._member(session_factory, "erase-former", "admin")
         sender_id = f"@switch-slack-{uuid.uuid4()}-dee:test"
         async with tenant_session(session_factory, TENANT_A) as session:
             room = Room(
@@ -2977,29 +2976,39 @@ class TestErasureRoutes:
         assert queued.status_code == 202
         assert queued.json()["identities"] == 1
 
-    async def test_an_admin_cannot_erase_or_list_people(
+    async def test_a_member_or_an_operator_without_admin_membership_cannot_erase(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
-        token = await self._member(session_factory, "erase-admin", "admin")
+        member = await self._member(session_factory, "erase-member", "member")
+        operator_id = await _make_member(
+            session_factory,
+            name="erase-operator",
+            tenant_id=TENANT_A,
+            role="member",
+            user_role="admin",
+        )
+        operator = create_jwt(
+            operator_id, "erase-operator@example.invalid", "admin", _KEYRING, TENANT_A
+        )
         person_id = await self._person(session_factory, "ana")
 
-        async with _client(_app(session_factory), token) as client:
-            people = await client.get(f"/tenants/{TENANT_A}/people")
-            queued = await client.post(
-                f"/tenants/{TENANT_A}/erasures",
-                json={"external_user_ids": [person_id]},
-            )
-
-        assert people.status_code == 403
-        assert queued.status_code == 403
+        for token in (member, operator):
+            async with _client(_app(session_factory), token) as client:
+                people = await client.get(f"/tenants/{TENANT_A}/people")
+                queued = await client.post(
+                    f"/tenants/{TENANT_A}/erasures",
+                    json={"external_user_ids": [person_id]},
+                )
+            assert people.status_code == 403
+            assert queued.status_code == 403
 
     async def test_a_person_from_another_workspace_is_not_found(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         await _make_tenant(session_factory, TENANT_B)
-        token = await self._member(session_factory, "erase-cross", "owner")
+        token = await self._member(session_factory, "erase-cross", "admin")
         async with tenant_session(session_factory, TENANT_B) as session:
             other_client = Client(
                 transport_user_id=f"@b-{uuid.uuid4().hex[:8]}:test",

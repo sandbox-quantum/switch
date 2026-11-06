@@ -122,7 +122,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
         Everyone seen in this workspace&apos;s rooms through a chat app, including apps since
         disconnected. Erasing
         someone permanently deletes every message they sent and their files, for example to
-        answer a GDPR erasure request. Only owners can see this list.
+        answer a GDPR erasure request. Only workspace admins can see this list.
       </Typography>
       {people.error && <Alert severity="error">{people.error}</Alert>}
       {erasures.error && <Alert severity="error">{erasures.error}</Alert>}
