@@ -274,6 +274,43 @@ it('approves without asking in full access, approves only edits in auto-accept-e
   }
 });
 
+it('types an approval naming no kind by the tool call it updates, and shows its text', async () => {
+  const ask = async (runtimeMode: 'approval-required' | 'auto-accept-edits') => {
+    const { adapter, events, server } = await start(dummy, { runtimeMode });
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call', toolCallId: 'w', title: 'Write a.txt', kind: 'edit' },
+    });
+    server.send({
+      id: 80,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: {
+          toolCallId: 'w',
+          title: 'Write',
+          content: [{ type: 'content', content: { type: 'text', text: 'Requesting approval' } }],
+        },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+    await flush();
+    return { events, server };
+  };
+  const asked = await ask('approval-required');
+  expect(asked.events.find((e) => e.type === 'request.opened')).toMatchObject({
+    requestType: 'file_change_approval',
+    title: 'Write',
+    detail: 'Requesting approval',
+  });
+  const accepted = await ask('auto-accept-edits');
+  expect(accepted.events.some((e) => e.type === 'request.opened')).toBe(false);
+  expect(accepted.server.received.find((m) => m.id === 80)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+});
+
 it('lets vendor extensions ask questions and add items, and cancels them outside a turn', async () => {
   const hooks: AcpProviderHooks = {
     ...dummy,

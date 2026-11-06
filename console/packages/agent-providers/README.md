@@ -95,7 +95,9 @@ Permission requests follow one policy for every ACP agent. A tool on an MCP
 server the session registered is allowed once without asking, as is
 everything in `full-access` and edits in `auto-accept-edits`. Otherwise the
 person is offered allow once, allow for this session and reject; options
-naming a permanent or future policy are never offered.
+naming a permanent or future policy are never offered. A request that names
+no kind has the kind of the tool call it updates, and its text is the
+approval's detail.
 
 **Cursor** extensions: `cursor/ask_question` (several questions, multi-select),
 `cursor/create_plan` (an approval with the plan as its detail),

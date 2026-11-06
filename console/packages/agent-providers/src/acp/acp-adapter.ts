@@ -130,6 +130,8 @@ interface State {
   /** The registered servers whose tools are allowed without asking: all but the connectors. */
   autoApprovedMcpNames: Set<string>;
   toolServers: Map<string, string>;
+  /** The ACP kind each tool call of the turn last reported. */
+  toolKinds: Map<string, string>;
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
@@ -213,6 +215,7 @@ export class AcpAdapter implements ProviderAdapter {
         Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
       ),
       toolServers: new Map(),
+      toolKinds: new Map(),
       prompt: {},
       configOptions: [],
       models: [],
@@ -332,6 +335,7 @@ export class AcpAdapter implements ProviderAdapter {
     state.messageId = randomUUID();
     state.items.clear();
     state.toolServers.clear();
+    state.toolKinds.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
     void this.run(state, input).then(
@@ -533,13 +537,16 @@ export class AcpAdapter implements ProviderAdapter {
     const { toolCall } = request;
     const once = request.options.find((option) => option.kind === 'allow_once');
     const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    // The request's tool call is an update to one the agent may have reported
+    // already, so a kind it leaves out is the kind reported then.
+    const kind = toolCall.kind ?? state.toolKinds.get(toolCall.toolCallId);
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
     if (
       once &&
       ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
         state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
+        (state.runtimeMode === 'auto-accept-edits' && kind === 'edit'))
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
@@ -567,15 +574,19 @@ export class AcpAdapter implements ProviderAdapter {
     }
     options.push({ decision: 'cancel', label: 'Cancel', response: ACP_CANCELLED });
     const mcp = server !== undefined && state.mcpNames.has(server);
+    const detail = (Array.isArray(toolCall.content) ? toolCall.content : [])
+      .flatMap((part) => (part.content?.text ? [part.content.text] : []))
+      .join('\n');
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : kind === 'execute'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
       title: toolCall.title ?? `${this.hooks.label} needs permission`,
+      ...(detail ? { detail } : {}),
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
@@ -634,6 +645,7 @@ export class AcpAdapter implements ProviderAdapter {
     const old = state.items.get(update.toolCallId);
     const server = this.hooks.mcpServerOf?.(update);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
+    if (update.kind) state.toolKinds.set(update.toolCallId, update.kind);
     const text = (update.content ?? [])
       .map((part) =>
         part.type === 'diff' ? `${part.path}\n${part.newText ?? ''}` : (part.content?.text ?? '')

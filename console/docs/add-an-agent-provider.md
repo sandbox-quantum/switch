@@ -83,6 +83,8 @@ the agent advertises. **Don't re-implement any of it in hooks:**
     everything in full access, and edits in auto-accept-edits;
   - otherwise offer allow once, allow for this session, and reject, and never
     offer permanent policies;
+  - type a request that names no kind by the tool call it updates, and show
+    its text as the approval's detail;
 - model selection through a `model` config option or through the session's
   `models` list;
 - cancel, queued turns, process exit and errors.
