@@ -23,6 +23,8 @@ auth:
     loopback_ports: [39241, 39242, 39243, 39244, 39245]
     # Switch cannot read the connector back: the operator confirms in
     # HubSpot that its redirect URLs match Switch's exactly, port included.
+    # Measured HTTP 400 invalid_request with status BAD_AUTH_CODE even for a wrong secret.
+    inconclusive_probe: [{error: invalid_request, body_status: BAD_AUTH_CODE}]
     unchecked: The connector's redirect URLs in HubSpot must match Switch's exactly, port included, or every sign-in fails at consent.
     # No revocation endpoint is advertised and the only documented revoke
     # (a DELETE naming the token in its path) is not one Switch can make.
