@@ -6,36 +6,28 @@ import { Button } from '@renderer/lib/ui/button';
 import { Progress } from '@renderer/lib/ui/progress';
 import { cn } from '@renderer/utils/utils';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
-import {
-  CAPACITY_WORDS,
-  type CapacityLine,
-  DISK_NOT_AVAILABLE,
-  hostedSummary,
-} from './hosted-summary';
+import { type CapacityLine, DISK_NOT_AVAILABLE, hostedSummary } from './hosted-summary';
 import { useCloudMachines } from './use-cloud-agents';
 import { yourCloudView } from './your-cloud';
 
 const localTime = (at: Date) => at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-/** One capacity line with its bar, and "Nearly full" or "Full right now" beside it when it applies. */
+/** One capacity line with its bar, and the advice line under it once it's nearly full or full. */
 function CapacityRow({ line, name }: { line: CapacityLine; name: string }) {
-  const warn = line.step !== 'ok';
   return (
     <div data-capacity={name} data-step={line.step}>
-      <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="text-foreground">{line.label}</span>
-        {warn && (
-          <span
-            className={cn(
-              'font-medium',
-              line.step === 'full' ? 'text-destructive' : 'text-foreground-warning'
-            )}
-          >
-            {CAPACITY_WORDS[line.step as Exclude<CapacityLine['step'], 'ok'>]}
-          </span>
-        )}
-      </div>
+      <p className="text-xs text-foreground">{line.label}</p>
       <Progress value={line.usedPercent} aria-label={line.label} className="mt-1" />
+      {line.advice && (
+        <p
+          className={cn(
+            'mt-1 text-xs',
+            line.step === 'full' ? 'text-destructive' : 'text-foreground-warning'
+          )}
+        >
+          {line.advice}
+        </p>
+      )}
     </div>
   );
 }

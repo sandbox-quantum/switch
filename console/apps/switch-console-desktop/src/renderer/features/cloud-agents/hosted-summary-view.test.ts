@@ -102,6 +102,10 @@ describe('YourCloudSummary', () => {
     expect(step('awake')).toBe('full');
     expect(step('memory')).toBe('nearly_full');
     expect(step('disk')).toBe('ok');
+    // The advice line sits under its bar, and only where it applies.
+    expect(text).toContain('Full right now. New work waits until a place frees up.');
+    expect(text).toContain('Nearly full. Agents may slow down.');
+    expect(view.host.querySelector('[data-capacity="disk"]')?.textContent).not.toContain('Nearly');
     view.done();
   });
 

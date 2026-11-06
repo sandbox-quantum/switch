@@ -4,17 +4,32 @@ import { FULL, NEARLY_FULL } from './your-cloud';
 /** How full a capacity bar is: the same steps and words as Switch web. */
 export type CapacityStep = 'ok' | 'nearly_full' | 'full';
 
-export const CAPACITY_WORDS: Record<Exclude<CapacityStep, 'ok'>, string> = {
-  nearly_full: 'Nearly full',
-  full: 'Full right now',
+type CapacityKind = 'awake' | 'memory' | 'disk';
+
+/** What to do when a bar is nearly full (from 80%) or full (from 95%): the PM's words, the same in Switch web. */
+export const CAPACITY_ADVICE: Record<CapacityKind, Record<Exclude<CapacityStep, 'ok'>, string>> = {
+  awake: {
+    nearly_full: 'Nearly full. Stop agents you’re not using to free places.',
+    full: 'Full right now. New work waits until a place frees up.',
+  },
+  memory: {
+    nearly_full: 'Nearly full. Agents may slow down.',
+    full: 'Full right now. Stop an agent you don’t need.',
+  },
+  disk: {
+    nearly_full: 'Nearly full. Ask your agents to delete files and build output you don’t need.',
+    full: 'Full right now. Agents can’t save more until space is freed.',
+  },
 };
 
-/** One capacity line: "Memory: 3.1 GB of 8.0 GB", with its share and step. */
+/** One capacity line: "Memory: 3.1 GB of 8.0 GB", with its share, step and advice. */
 export type CapacityLine = {
   label: string;
   /** 0 to 100, one decimal. */
   usedPercent: number;
   step: CapacityStep;
+  /** The advice line for a nearly-full or full bar, or null below 80%. */
+  advice: string | null;
 };
 
 export type HostedSummary = {
@@ -30,10 +45,21 @@ export type HostedSummary = {
 
 export const DISK_NOT_AVAILABLE = 'Disk: not available';
 
+/** Amber at 80% and above, red at 95% and above. */
 function step(share: number): CapacityStep {
   if (share >= FULL) return 'full';
-  if (share > NEARLY_FULL) return 'nearly_full';
+  if (share >= NEARLY_FULL) return 'nearly_full';
   return 'ok';
+}
+
+function line(kind: CapacityKind, label: string, share: number): CapacityLine {
+  const at = step(share);
+  return {
+    label,
+    usedPercent: percent(share),
+    step: at,
+    advice: at === 'ok' ? null : CAPACITY_ADVICE[kind][at],
+  };
 }
 
 function percent(share: number): number {
@@ -78,27 +104,15 @@ export function hostedSummary(
     agents: `${count} hosted ${count === 1 ? 'agent' : 'agents'}`,
     awake:
       awake && awakeShare !== null
-        ? {
-            label: `Agents awake: ${awake.running} of ${awake.max}`,
-            usedPercent: percent(awakeShare),
-            step: step(awakeShare),
-          }
+        ? line('awake', `Agents awake: ${awake.running} of ${awake.max}`, awakeShare)
         : null,
     memory:
       room && memoryShare !== null
-        ? {
-            label: `Memory: ${gb(room.used_bytes)} of ${gb(room.total_bytes)}`,
-            usedPercent: percent(memoryShare),
-            step: step(memoryShare),
-          }
+        ? line('memory', `Memory: ${gb(room.used_bytes)} of ${gb(room.total_bytes)}`, memoryShare)
         : null,
     disk:
       disk && diskShare !== null
-        ? {
-            label: `Disk: ${gb(diskUsed)} of ${gb(disk.total_bytes)}`,
-            usedPercent: percent(diskShare),
-            step: step(diskShare),
-          }
+        ? line('disk', `Disk: ${gb(diskUsed)} of ${gb(disk.total_bytes)}`, diskShare)
         : null,
   };
 }
