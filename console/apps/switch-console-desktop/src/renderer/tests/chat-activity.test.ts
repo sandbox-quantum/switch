@@ -250,7 +250,12 @@ describe('placeTurns', () => {
         body: 'I finished without replying. The turn failed: model',
         sentAt: at(2),
       },
-      { ...said('retry', null), body: '!retry @helper q1', sentAt: at(3) },
+      {
+        ...said('retry', null),
+        body: 'Retry requested for helper by me',
+        sender: { kind: 'system', agentId: null, clientId: 'me' },
+        sentAt: at(3),
+      },
       {
         ...said('ack', 'helper'),
         body: 'Trying that message again.',

@@ -130,11 +130,14 @@ async def test_a_posted_control_is_shown_in_the_chat(chats: _Harness) -> None:
     )
     assert page.status_code == 200, page.text
     [shown] = [m for m in page.json()["messages"] if m["messageId"] == command_id]
-    assert shown["body"] == "!reset @helper"
+    assert shown["body"] == "Context reset requested for helper by alice"
+    assert shown["sender"]["kind"] == "system"
 
     listed = await chats.client.get("/chats", headers=chats.as_user(chats.alice))
     [chat] = [c for c in listed.json()["chats"] if c["roomId"] == room_id]
-    assert chat["lastMessage"]["preview"] == "!reset @helper"
+    assert (
+        chat["lastMessage"]["preview"] == "Context reset requested for helper by alice"
+    )
 
 
 async def test_stop_refuses_unless_the_agents_current_turn_is_in_this_chat(
