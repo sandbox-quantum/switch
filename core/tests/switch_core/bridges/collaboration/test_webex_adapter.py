@@ -921,6 +921,27 @@ async def test_a_card_for_someone_mentions_them_beside_it_not_in_it(
     assert ref == "sent-2"
 
 
+async def _another_pod(fake: FakeWebex) -> WebexAdapter:
+    """A second switch-core process taking the bridge over: same Webex, none
+    of the first process's memory."""
+    adapter = adapter_for(fake)
+    heard = Heard()
+    adapter.set_interaction_handler(heard.press)
+    await adapter.start(
+        heard.message, heard.command, heard.agent_join, heard.user_join, heard.app_join
+    )
+    return adapter
+
+
+def _deleted(fake: FakeWebex) -> list[str]:
+    return [path for method, path, _ in fake.calls if method == "DELETE"]
+
+
+def _card_mention_data(fake: FakeWebex, ref: str) -> set[str | None]:
+    [attachment] = fake.messages[ref]["attachments"]
+    return {a["data"].get("mention") for a in attachment["content"]["actions"]}
+
+
 async def test_removing_an_answered_card_removes_its_mention_too(
     fake: FakeWebex, started: tuple[WebexAdapter, Heard]
 ) -> None:
@@ -931,8 +952,66 @@ async def test_removing_an_answered_card_removes_its_mention_too(
 
     await adapter.remove_publication(ROOM, ref)
 
-    deleted = [p for m, p, _ in fake.calls if m == "DELETE"]
-    assert deleted == [f"/v1/messages/{ref}", "/v1/messages/sent-1"]
+    assert _deleted(fake) == ["/v1/messages/sent-1", f"/v1/messages/{ref}"]
+
+
+async def test_a_card_answered_after_the_bridge_moved_pods_takes_its_mention_with_it(
+    fake: FakeWebex, started: tuple[WebexAdapter, Heard]
+) -> None:
+    first, _ = started
+    ref = await first.post_rich(
+        ROOM, "coder", replace(_card(), notify_external_id=PERSON)
+    )
+
+    await (await _another_pod(fake)).remove_publication(ROOM, ref)
+
+    assert _deleted(fake) == ["/v1/messages/sent-1", f"/v1/messages/{ref}"]
+    assert fake.messages == {}
+
+
+async def test_a_card_redrawn_on_another_pod_keeps_its_mention(
+    fake: FakeWebex, started: tuple[WebexAdapter, Heard]
+) -> None:
+    first, _ = started
+    card = replace(_card(), notify_external_id=PERSON)
+    ref = await first.post_rich(ROOM, "coder", card)
+
+    await (await _another_pod(fake)).update_rich(ROOM, "reviewer", ref, card, None)
+    assert _card_mention_data(fake, ref) == {"sent-1"}
+    await (await _another_pod(fake)).remove_publication(ROOM, ref)
+
+    assert _deleted(fake) == ["/v1/messages/sent-1", f"/v1/messages/{ref}"]
+
+
+async def test_a_card_redrawn_as_settled_text_takes_its_mention_down(
+    fake: FakeWebex, started: tuple[WebexAdapter, Heard]
+) -> None:
+    first, _ = started
+    card = replace(_card(), notify_external_id=PERSON)
+    ref = await first.post_rich(ROOM, "coder", card)
+    settled = replace(card, request=card.request.model_copy(update={"state": "closed"}))
+
+    await (await _another_pod(fake)).update_rich(ROOM, "coder", ref, settled, None)
+
+    assert _deleted(fake) == ["/v1/messages/sent-1"]
+    assert "attachments" not in fake.messages[ref]
+
+
+async def test_a_card_for_nobody_carries_no_mention(
+    fake: FakeWebex, started: tuple[WebexAdapter, Heard]
+) -> None:
+    adapter, _ = started
+
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    await adapter.remove_publication(ROOM, ref)
+
+    assert _card_mention_data_of(fake.sent()[0]) == {None}
+    assert _deleted(fake) == [f"/v1/messages/{ref}"]
+
+
+def _card_mention_data_of(body: dict[str, Any]) -> set[str | None]:
+    [attachment] = body["attachments"]
+    return {a["data"].get("mention") for a in attachment["content"]["actions"]}
 
 
 async def test_without_anywhere_for_a_press_to_go_a_card_is_text(
@@ -1117,14 +1196,46 @@ async def test_an_answered_card_is_taken_down(
 ) -> None:
     adapter, _ = started
     assert WebexAdapter.removes_answered_cards is True
+    ref = await adapter.post_rich(ROOM, "coder", _card())
 
-    await adapter.remove_publication(ROOM, "sent-1")
-    fake.fail[("DELETE", "/v1/messages/gone")] = httpx.Response(404)
+    await adapter.remove_publication(ROOM, ref)
+
+    assert ref not in fake.messages
+
+
+async def test_a_card_already_gone_counts_as_taken_down(
+    fake: FakeWebex, started: tuple[WebexAdapter, Heard]
+) -> None:
+    adapter, _ = started
+
     await adapter.remove_publication(ROOM, "gone")
-    fake.fail[("DELETE", "/v1/messages/stuck")] = httpx.Response(403)
 
-    with pytest.raises(RemovalFailed):
-        await adapter.remove_publication(ROOM, "stuck")
+    assert _deleted(fake) == []
+
+
+@pytest.mark.parametrize(
+    ("method", "status", "raised"),
+    [
+        ("GET", 503, RemovalFailed),
+        ("GET", 429, RichContentThrottled),
+        ("DELETE", 403, RemovalFailed),
+    ],
+)
+async def test_a_card_webex_will_not_give_up_is_reported(
+    fake: FakeWebex,
+    started: tuple[WebexAdapter, Heard],
+    method: str,
+    status: int,
+    raised: type[Exception],
+) -> None:
+    adapter, _ = started
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    fake.fail[(method, f"/v1/messages/{ref}")] = httpx.Response(
+        status, headers={"Retry-After": "1"}
+    )
+
+    with pytest.raises(raised):
+        await adapter.remove_publication(ROOM, ref)
 
 
 async def test_a_settled_request_is_drawn_without_buttons(

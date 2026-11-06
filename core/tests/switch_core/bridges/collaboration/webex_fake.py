@@ -88,10 +88,22 @@ class FakeWebex:
                     },
                 )
             self._sent += 1
-            return httpx.Response(200, json={"id": f"sent-{self._sent}"})
+            message_id = f"sent-{self._sent}"
+            if isinstance(body, dict):
+                self.messages[message_id] = dict(body, id=message_id, personId=BOT_ID)
+            return httpx.Response(200, json={"id": message_id})
         if path.startswith("/v1/messages/") and method == "PUT":
+            message_id = path.removeprefix("/v1/messages/")
+            if message_id in self.messages:
+                kept = {
+                    key: value
+                    for key, value in self.messages[message_id].items()
+                    if key not in ("markdown", "text", "attachments")
+                }
+                self.messages[message_id] = dict(kept, **body)
             return httpx.Response(200, json={})
         if path.startswith("/v1/messages/") and method == "DELETE":
+            self.messages.pop(path.removeprefix("/v1/messages/"), None)
             return httpx.Response(204)
         if path.startswith("/v1/attachment/actions/"):
             found = self.actions.get(path.removeprefix("/v1/attachment/actions/"))

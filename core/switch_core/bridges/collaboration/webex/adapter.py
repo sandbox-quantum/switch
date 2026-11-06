@@ -22,6 +22,7 @@ import re
 import secrets
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import httpx
@@ -63,6 +64,7 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
+    Control,
     Drawn,
     offered_controls,
 )
@@ -72,6 +74,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
 )
 from switch_core.bridges.collaboration.webex.cards import (
     MAX_BUTTON_LABEL,
+    card_mention_ref,
     read_press,
     request_card,
 )
@@ -122,6 +125,31 @@ _SETUP_WAIT_DEFAULT = 2.0
 
 def _no_mention(_: str | None) -> None:
     return None
+
+
+# Room kept for the id of the message mentioning whoever a card is for, when
+# deciding whether the card fits: Webex message ids run to about 100 characters.
+_MENTION_REF_ROOM = "x" * 160
+
+
+@dataclass(frozen=True)
+class _Publication:
+    """What a publication shows, before the message mentioning whoever a card
+    is for exists to be named in it."""
+
+    channel_id: str
+    text: str
+    card: tuple[str, list[Control]] | None
+    mention: str | None
+
+    def body(self, mention_ref: str | None) -> dict[str, Any]:
+        body: dict[str, Any] = {"roomId": self.channel_id, "markdown": self.text}
+        if self.card is not None:
+            token, controls = self.card
+            body["attachments"] = [
+                request_card(self.text, token, controls, mention_ref)
+            ]
+        return body
 
 
 async def _patiently[T](call: Callable[[], Awaitable[T]]) -> T:
@@ -246,9 +274,6 @@ class WebexAdapter(PlatformAdapter):
         self._edits: dict[str, int] = {}
         self._drawn: dict[str, str] = {}
         self._space_titles: dict[str, str | None] = {}
-        # A card's companion message naming whoever must answer it, by the
-        # card's ref: Webex refuses a mention in a message that carries a card.
-        self._pings: dict[str, str] = {}
 
     # ── Connecting ───────────────────────────────────────────────────────────
 
@@ -787,11 +812,23 @@ class WebexAdapter(PlatformAdapter):
         self._drawn.pop(message_ref, None)
 
     async def remove_publication(self, channel_id: str, message_ref: str) -> None:
+        """Delete a card and the message beside it mentioning whoever it was for.
+
+        The mention is found in the card itself, so this works in whichever
+        process holds the bridge now. It goes first: a card that outlives a
+        failed attempt still names its mention for the next one.
+        """
         try:
+            try:
+                message = await self._require_client().message(message_ref)
+            except WebexApiError as exc:
+                if exc.status == 404:
+                    return
+                raise
+            mention_ref = card_mention_ref(message)
+            if mention_ref is not None:
+                await self.delete_message(channel_id, mention_ref)
             await self.delete_message(channel_id, message_ref)
-            ping = self._pings.pop(message_ref, None)
-            if ping is not None:
-                await self.delete_message(channel_id, ping)
         except WebexApiError as exc:
             if exc.throttled:
                 raise RichContentThrottled(
@@ -862,9 +899,8 @@ class WebexAdapter(PlatformAdapter):
 
     async def _publication(
         self, channel_id: str, agent_name: str, content: RichContent
-    ) -> tuple[dict[str, Any], str, str | None]:
-        """The message body for `content`, its text for a failure to carry,
-        and for a card, the mention of whoever must answer it.
+    ) -> _Publication:
+        """How `content` is drawn here.
 
         A request that can be answered here is drawn as a card with a button
         per option. Webex refuses a mention in a message that carries a card,
@@ -877,19 +913,31 @@ class WebexAdapter(PlatformAdapter):
             controls = offered_controls(content.request)
             if controls:
                 drawn = self._draw(content, label, controls=True, mentions=False)
-                card = request_card(drawn.text, content.reference.token, controls)
+                token = content.reference.token
+                fitted = request_card(drawn.text, token, controls, _MENTION_REF_ROOM)
                 if (
                     drawn.answerable
-                    and card_message_size(drawn.text, [card]) <= MAX_CARD_MESSAGE_BYTES
+                    and card_message_size(drawn.text, [fitted])
+                    <= MAX_CARD_MESSAGE_BYTES
                 ):
-                    body = {
-                        "roomId": channel_id,
-                        "markdown": drawn.text,
-                        "attachments": [card],
-                    }
-                    return body, drawn.text, self._mention(content.notify_external_id)
+                    mention = self._mention(content.notify_external_id)
+                    return _Publication(
+                        channel_id=channel_id,
+                        text=drawn.text,
+                        card=(token, controls),
+                        mention=(
+                            f"{mention} **{label}** needs your answer:"
+                            if mention
+                            else None
+                        ),
+                    )
         drawn = self._draw(content, label, controls=False, mentions=True)
-        return {"roomId": channel_id, "markdown": drawn.text}, drawn.text, None
+        return _Publication(
+            channel_id=channel_id, text=drawn.text, card=None, mention=None
+        )
+
+    async def _card_mention(self, message_ref: str) -> str | None:
+        return card_mention_ref(await self._require_client().message(message_ref))
 
     async def post_rich(
         self,
@@ -898,31 +946,29 @@ class WebexAdapter(PlatformAdapter):
         content: RichContent,
         thread_root_id: str | None = None,
     ) -> str:
-        body, text, ping = await self._publication(channel_id, agent_name, content)
-        if thread_root_id:
-            body["parentId"] = thread_root_id
+        publication = await self._publication(channel_id, agent_name, content)
         client = self._require_client()
-        ping_ref: str | None = None
+        mention_ref: str | None = None
         try:
-            if ping is not None:
-                label = await self.agent_label_for_body(agent_name)
-                ping_body = {
+            if publication.mention is not None:
+                beside: dict[str, Any] = {
                     "roomId": channel_id,
-                    "markdown": f"{ping} **{label}** needs your answer:",
+                    "markdown": publication.mention,
                 }
                 if thread_root_id:
-                    ping_body["parentId"] = thread_root_id
-                ping_ref = await client.post_message(ping_body)
+                    beside["parentId"] = thread_root_id
+                mention_ref = await client.post_message(beside)
+            body = publication.body(mention_ref)
+            if thread_root_id:
+                body["parentId"] = thread_root_id
             ref = await client.post_message(body)
         except WebexApiError as exc:
-            if ping_ref is not None:
-                await self.delete_message(channel_id, ping_ref)
+            if mention_ref is not None:
+                await self.delete_message(channel_id, mention_ref)
             raise _rich_failure(
-                exc, f"Webex refused the post in space {channel_id}", text
+                exc, f"Webex refused the post in space {channel_id}", publication.text
             ) from exc
-        self._drawn[ref] = text
-        if ping_ref is not None:
-            self._pings[ref] = ping_ref
+        self._drawn[ref] = publication.text
         return ref
 
     async def update_rich(
@@ -940,7 +986,8 @@ class WebexAdapter(PlatformAdapter):
         message finishes showing how the turn went rather than stopping
         wherever the edits ran out.
         """
-        body, text, _ = await self._publication(channel_id, agent_name, content)
+        publication = await self._publication(channel_id, agent_name, content)
+        text = publication.text
         if self._drawn.get(message_ref) == text:
             return
         used = self._edits.get(message_ref, 0)
@@ -956,7 +1003,14 @@ class WebexAdapter(PlatformAdapter):
                 text=text,
             )
         try:
-            await self._edit(message_ref, body)
+            mention_ref = (
+                await self._card_mention(message_ref)
+                if isinstance(content, RequestCard)
+                else None
+            )
+            if mention_ref is not None and publication.card is None:
+                await self.delete_message(channel_id, mention_ref)
+            await self._edit(message_ref, publication.body(mention_ref))
         except WebexApiError as exc:
             raise _rich_failure(
                 exc, f"Webex refused the edit in space {channel_id}", text

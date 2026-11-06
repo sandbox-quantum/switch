@@ -6,6 +6,11 @@ token and the option's position, the same pair a typed answer names, so a
 press and a typed answer mean the same thing and resolve the same way. Neither
 value is trusted: the token is resolved against Switch's record and the
 position against the form that record holds.
+
+A card meant for someone also carries the id of the message beside it that
+mentions them (Webex refuses a mention in a message with a card). It is kept in
+the card rather than anywhere in Switch, so whichever process holds the bridge
+when the card is answered can read it back from Webex and take both down.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ MAX_BUTTON_LABEL = 60
 
 _KIND = "switch"
 _ANSWER = "answer"
+_MENTION = "mention"
 
 
 def _button_label(control: Control) -> str:
@@ -42,23 +48,52 @@ def _button_label(control: Control) -> str:
     return label[: MAX_BUTTON_LABEL - 1].rstrip() + "…"
 
 
-def request_card(text: str, token: str, controls: list[Control]) -> dict[str, Any]:
+def request_card(
+    text: str, token: str, controls: list[Control], mention_ref: str | None
+) -> dict[str, Any]:
     return _card(
         text,
         [
             {
                 "type": "Action.Submit",
                 "title": _button_label(control),
-                "data": {
-                    "kind": _KIND,
-                    "do": _ANSWER,
-                    "token": token,
-                    "position": control.position,
-                },
+                "data": _press_data(token, control.position, mention_ref),
             }
             for control in controls[:MAX_ACTIONS]
         ],
     )
+
+
+def _press_data(token: str, position: int, mention_ref: str | None) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "kind": _KIND,
+        "do": _ANSWER,
+        "token": token,
+        "position": position,
+    }
+    if mention_ref is not None:
+        data[_MENTION] = mention_ref
+    return data
+
+
+def card_mention_ref(message: dict[str, Any]) -> str | None:
+    """The message mentioning whoever a card is for, read from the card message
+    itself, or None if it is not a card or names nobody."""
+    for attachment in message.get("attachments") or []:
+        if not isinstance(attachment, dict):
+            continue
+        if attachment.get("contentType") != CARD_CONTENT_TYPE:
+            continue
+        content = attachment.get("content")
+        actions = content.get("actions") if isinstance(content, dict) else None
+        for action in actions or []:
+            data = action.get("data") if isinstance(action, dict) else None
+            if not isinstance(data, dict) or data.get("kind") != _KIND:
+                continue
+            mention_ref = data.get(_MENTION)
+            if isinstance(mention_ref, str) and mention_ref:
+                return mention_ref
+    return None
 
 
 def _card(text: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
