@@ -12,6 +12,8 @@ must start after it.
 from __future__ import annotations
 
 from switch_core.bridges.collaboration.signal.render import (
+    CHUNK_MAX,
+    chunk_markers,
     render_markdown,
     strip_markers,
 )
@@ -99,3 +101,55 @@ def test_a_defused_mention_before_a_bold_run_counts_the_zwsp() -> None:
     assert (int(start), int(length), style) == (11, 2, "BOLD")
     assert text[11:13] == "hi"
     assert ZERO_WIDTH_SPACE in text  # the ZWSP survives into the sent text
+
+
+# ── Chunking: long replies split, styles recomputed per chunk ────────────────
+
+
+def test_a_message_over_the_limit_splits_on_line_boundaries() -> None:
+    body = "\n".join(f"para {i}: " + "lorem ipsum " * 8 for i in range(12))
+    chunks = chunk_markers(body)
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= CHUNK_MAX, f"chunk of {len(chunk)} chars exceeds the limit"
+    # Nothing is lost or reordered across the split.
+    rejoined = "".join(chunk + "\n" for chunk in chunks[:-1]) + chunks[-1]
+    assert rejoined == body
+
+
+def test_a_short_message_is_a_single_chunk() -> None:
+    assert chunk_markers("hello world") == ["hello world"]
+
+
+def test_a_style_is_not_left_open_across_a_chunk() -> None:
+    # A bold run that straddles the cut must not leave a lone `*` in either
+    # chunk: an emphasis cut by the boundary degrades to plain text. Long
+    # enough that the run is actually split across the CHUNK_MAX boundary.
+    body = "a" * 300 + " **long bold run** " + "b" * 300
+    chunks = chunk_markers(body)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        text, _ = strip_markers(chunk)
+        assert "*" not in text, f"stray marker survived into the text: {chunk!r}"
+        # The styled word survives as plain text in the chunks that hold it.
+    rejoined_text = "".join(strip_markers(chunk)[0] for chunk in chunks)
+    assert "long bold run" in rejoined_text
+
+
+def test_a_markedup_message_split_and_stripped_keeps_each_chunks_ranges() -> None:
+    # The real pipeline: render Markdown, chunk the marker-carrying string,
+    # then strip each chunk on its own so a range never crosses a boundary.
+    markdown = "\n".join(f"**heading {i}** {i}: " + "text " * 40 for i in range(10))
+    rendered = render_markdown(markdown)
+    chunks = chunk_markers(rendered)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        text, ranges = strip_markers(chunk)
+        for r in ranges:
+            start, length, _style = r.split(":")
+            start, length = int(start), int(length)
+            total_units = len(text.encode("utf-16-le")) // 2
+            assert start + length <= total_units, (
+                f"range {r} runs past chunk text {text!r}"
+            )

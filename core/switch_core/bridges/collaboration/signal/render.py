@@ -30,6 +30,14 @@ _STYLE_OF_MARKER = {
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((\S+[^)]*)\)")
 _MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
 
+#: The largest single Signal message the phone shows in full before it folds
+#: to "Read more". Measured on the phone (2026-11-06): 450 chars show whole,
+#: 550 folds; 20k/60k messages fold too but keep their full text under the
+#: fold (a display collapse, not truncation). A 475/500/525 batch is pinned
+#: separately: if 525 shows whole, raise this one line. It is the *body*
+#: budget; the agent-name prefix on the first chunk rides inside it.
+CHUNK_MAX = 450
+
 
 def render_markdown(markdown: str) -> str:
     """Switch Markdown to Signal text carrying this module's markers.
@@ -95,3 +103,50 @@ def strip_markers(rendered: str) -> tuple[str, list[str]]:
             stack.append((style, utf16_pos))
         i += len(marker)
     return "".join(plain), ranges
+
+
+def _safe_cut(text: str, limit: int) -> int:
+    """The best place to split `text` at or before `limit`.
+
+    On a line break when one is late enough to be worth taking (a new chunk
+    starting on its own line reads as a continuation, not a word half-eaten),
+    and never between the two characters of a `**` or `~~` pair — a split
+    there would strand a lone `*` that the next chunk misreads.
+    """
+    cut = min(limit, len(text))
+    newline = text.rfind("\n", 0, cut)
+    if newline > cut // 2:
+        cut = newline
+    if 0 < cut < len(text) and text[cut - 1] == text[cut] and text[cut] in "*~":
+        cut -= 1
+    return max(cut, 1)
+
+
+def chunk_markers(rendered: str, limit: int = CHUNK_MAX) -> list[str]:
+    """A marker-carrying string into pieces each short enough to show in full.
+
+    Pieces are split on line boundaries at `limit`, no line break late
+    enough means the earliest safe cut. No piece is numbered and none is
+    annotated: on the phone they read as a reply that continues, and a piece
+    that fits never triggers Signal's own fold. A style that opens in one
+    piece and would close in the next does not carry across — the pieces are
+    marker-carrying, and the caller runs `strip_markers` over each, so an
+    emphasis cut by the boundary degrades to plain text rather than leaving a
+    stray marker. The first piece keeps whatever sits at the head of `rendered`
+    — on the adapter's path that is the agent-name prefix.
+    """
+    if len(rendered) <= limit:
+        return [rendered]
+    pieces: list[str] = []
+    rest = rendered
+    while rest:
+        if len(rest) <= limit:
+            pieces.append(rest)
+            return pieces
+        cut = _safe_cut(rest, limit)
+        pieces.append(rest[:cut])
+        rest = rest[cut:]
+        if rest.startswith("\n"):
+            # The break is the separator between two messages, not body text.
+            rest = rest[1:]
+    return pieces

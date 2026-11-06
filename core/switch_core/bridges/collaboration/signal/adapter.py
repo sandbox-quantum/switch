@@ -37,6 +37,7 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.signal.render import (
+    chunk_markers,
     render_markdown,
     strip_markers,
 )
@@ -221,24 +222,36 @@ class SignalAdapter(PlatformAdapter):
         """Post `content` as `sender_name`, carrying its styles out.
 
         The content arrives rendered — mass mentions defused, links rewritten
-        — so the emphasis markers it still carries are the last thing to
+        — so the emphasis markers it still carry are the last thing to
         translate into Signal's `textStyle` ranges, on the final string. The
         sender's name is not part of the platform's address (one number posts
-        for every agent), so it is written into the text in bold. A
-        `thread_root_id` becomes the quote's author and timestamp; the ref is
-        the reply's own, so a later edit of it targets the reply, not the root.
+        for every agent), so it is written into the first chunk in bold.
+
+        A message longer than the phone's in-full limit is split on line
+        boundaries into sequential posts; each is stripped into its own
+        ranges, so styles recompute per chunk. A `thread_root_id` quotes the
+        root on the first post; the returned ref is that post's, so a later
+        edit or delete targets the reply, not the root.
         """
-        text, styles = strip_markers(self._attribute(sender_name, content))
-        params: dict[str, object] = {"message": text}
-        if styles:
-            params["textStyle"] = styles
-        params.update(self._chat_target(channel_id))
+        chunks = chunk_markers(self._attribute(sender_name, content))
+        params: dict[str, object] = {}
         if thread_root_id is not None:
             author, timestamp = self._parse_message_ref(thread_root_id)
             params["quoteAuthor"] = author
             params["quoteTimestamp"] = timestamp
-        result = await self._rpc().call("send", **params)
-        return self._message_ref(result)
+        result = None
+        for index, chunk in enumerate(chunks):
+            text, styles = strip_markers(chunk)
+            send_params = dict(params if index == 0 else {})
+            send_params["message"] = text
+            if styles:
+                send_params["textStyle"] = styles
+            send_params.update(self._chat_target(channel_id))
+            if index == 0:
+                result = await self._rpc().call("send", **send_params)
+            else:
+                await self._rpc().call("send", **send_params)
+        return self._message_ref(result) if result is not None else None
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
