@@ -88,9 +88,9 @@ switch-agent-controller enroll \
 
 switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
-switch-agent-controller status [--data-dir <dir>]
+switch-agent-controller status [--data-dir <dir>] [--json]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
-switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
+switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>] [--json]
 switch-agent-controller update [--check]
 ```
 
@@ -109,7 +109,10 @@ switch-agent-controller update [--check]
   characters, not blank). It needs the credential in the data directory, so a
   controller whose credential is handed over with `--credential-stdin` is
   renamed in the gateway instead. It can run while `run` does.
-- `status` reads only local state. It makes no network call.
+- `status` reads only local state. It makes no network call. `--json` writes
+  the same facts as one JSON document, for scripts; the exit code is the same.
+- Output is plain text with no colour codes when it is piped or logged. On a
+  terminal it is coloured, unless `NO_COLOR` is set or `TERM=dumb`.
 - Logging goes to stderr. Set the level with `SWITCH_CONTROLLER_LOG_LEVEL`
   (`debug`, `info`, `warn`, `error`; the default is `info`).
 - Exit codes:
@@ -450,7 +453,10 @@ and install nothing at all while the list of trusted keys is empty.
 falls short: Node, the platform, enrollment, the credential, the server (exchanging
 the credential, so a proxy that does not send `/v1` to switch-core shows up),
 the shared-host bundle, each provider CLI on `PATH` and its sign-in, the service,
-and updates. It exits 1 when a check fails.
+and updates. It puts what to do about a problem under it, ends with a count of
+problems and warnings, and exits 1 when a check fails. `doctor --json` writes
+every check (name, status, detail and fix) as one JSON document, with the same
+exit code.
 
 ### Running under your own supervisor
 

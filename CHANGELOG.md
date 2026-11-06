@@ -4806,6 +4806,10 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **`status --json` and `doctor --json`.** Each writes one JSON document in
+  place of its report, for scripts: `status` the facts it would show, `doctor`
+  every check with its name, status, detail and fix. The exit codes are the
+  same with and without the flag, and the document never holds colour codes.
 - **Tells Switch Console when a session started.** Once Switch has taken a
   session host's start report, the controller Console runs on its own
   computer passes the session's provider and how it started to Console over
@@ -4840,6 +4844,15 @@ tags; see RELEASING.md.
   can run (16 by default).
 
 #### Changed
+- **Easier to read command output.** `status` groups the machine, the
+  controller and its agents into sections, with the agents in a table; `doctor`
+  puts what to do about a problem under it and ends with a count of problems and
+  warnings; `enroll`, `install-service`, `uninstall-service`, `update` and
+  `help` follow the same layout, and `help` opens with a one-line summary of
+  every command. Colour is used only when writing to a terminal, never with
+  `NO_COLOR` set or `TERM=dumb`. What scripts read is unchanged: the
+  `Enrolled as controller <id>` line, `Revoked at:` and `Not enrolled.` in
+  `status`, and every exit code.
 - **Agents' operations go to Switch on the controller's socket.** Every
   operation an agent host calls through the relay
   (`POST /agents/{id}/ops/{operation}`) is sent as a call on the socket the
