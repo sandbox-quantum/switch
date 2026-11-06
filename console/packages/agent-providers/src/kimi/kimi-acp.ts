@@ -86,6 +86,8 @@ export const kimiAcp: AcpProviderHooks = {
     args: ['acp'],
     // A session must not swap its own binary mid-run.
     env: { ...env, KIMI_CODE_NO_AUTO_UPDATE: '1' },
+    // `kimi acp` has no SIGTERM handler; only a closed input lets it finish saving the session.
+    exitsOnClosedInput: true,
   }),
   loginCommand: KIMI_LOGIN,
   inheritEnv: [

@@ -222,3 +222,13 @@ it('passes through what Kimi reads to find its home or sign in with a key', () =
     'KIMI_MODEL_BASE_URL',
   ]);
 });
+
+it('launches kimi acp without self-updates, stopped by closing its input', async () => {
+  const launch = await kimiAcp.launch({ binaryPath: '/bin/kimi', cwd: '/w', env: { HOME: '/h' } });
+  expect(launch).toEqual({
+    command: '/bin/kimi',
+    args: ['acp'],
+    env: { HOME: '/h', KIMI_CODE_NO_AUTO_UPDATE: '1' },
+    exitsOnClosedInput: true,
+  });
+});
