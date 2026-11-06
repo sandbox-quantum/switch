@@ -256,6 +256,19 @@ describe("Your cloud files (Switch web)", () => {
     expect(read).toEqual(["a.txt", "b.txt", "c.txt", "b.txt"]);
   });
 
+  it("closing gives focus back to the last file shown in the list", async () => {
+    routes = [boxWithAgent, listing({ "": [file("a.txt", 1), file("b.txt", 1)] }), content({ "a.txt": text("A"), "b.txt": text("B") })];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /a\.txt/ }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("A");
+    fireEvent.keyDown(dialog, { key: "ArrowRight" });
+    await within(dialog).findByText("B");
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement?.getAttribute("data-cloud-file")).toBe("b.txt"));
+  });
+
   it("an mp4 whose bytes are mp4 plays from a video/mp4 Blob, muted and not autoplaying", async () => {
     const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
     routes = [boxWithAgent, listing({ "": [file("clip.mp4", mp4.length)] }), content({ "clip.mp4": mp4 })];

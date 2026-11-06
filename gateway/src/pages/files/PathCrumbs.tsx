@@ -18,7 +18,7 @@ export function PathCrumbs({
   const top = rootEntries.find((entry) => entry.name === crumbs[0]?.name);
   return (
     <Stack direction="row" alignItems="center" spacing={0.5} component="nav" aria-label="Folder path" sx={{ minWidth: 0 }}>
-      <Link component="button" underline="hover" onClick={() => onOpen("")}>
+      <Link component="button" underline="hover" sx={{ whiteSpace: "nowrap", flexShrink: 0 }} onClick={() => onOpen("")}>
         All files
       </Link>
       {crumbs.map((crumb, index) => (

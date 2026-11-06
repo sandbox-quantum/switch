@@ -104,6 +104,8 @@ export function FilePreviewModal({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      // The list unmounts the modal on close, so focus goes back here, to the last file shown.
+      returnTo.current?.focus();
     };
   }, []);
   // Moving to another file ends any wake loop for the last one.
@@ -224,7 +226,6 @@ export function FilePreviewModal({
       disableRestoreFocus
       aria-labelledby="cloud-file-preview-title"
       slotProps={{
-        transition: { onExited: () => returnTo.current?.focus() },
         paper: { sx: phone ? {} : { width: "90vw", height: "90vh", maxWidth: "90vw", maxHeight: "90vh" } },
       }}
       onKeyDown={(event) => {
@@ -243,10 +244,12 @@ export function FilePreviewModal({
         direction="row"
         alignItems="flex-start"
         justifyContent="space-between"
+        useFlexGap
         spacing={2}
-        sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider", flexShrink: 0 }}
+        sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider", flexShrink: 0, flexWrap: { xs: "wrap", sm: "nowrap" } }}
       >
-        <Box sx={{ minWidth: 0 }}>
+        {/* On a phone the path takes its own line under the buttons, so it isn't squeezed. */}
+        <Box sx={{ minWidth: 0, order: { xs: 2, sm: 0 }, flexBasis: { xs: "100%", sm: "auto" } }}>
           <PathCrumbs
             path={folder}
             rootEntries={rootEntries}
@@ -260,7 +263,7 @@ export function FilePreviewModal({
             {formatSize(entry.size)} · changed <span title={absoluteTitle(changed)}>{formatRelative(changed)}</span>
           </Typography>
         </Box>
-        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0, ml: "auto" }}>
           <IconButton size="small" aria-label="Previous file" disabled={!previous} onClick={() => previous && onShow(previous)}>
             <ChevronLeft fontSize="small" />
           </IconButton>

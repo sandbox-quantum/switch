@@ -356,6 +356,23 @@ describe('Your cloud files', () => {
     view.done();
   });
 
+  it('closing gives focus back to the last file shown in the list', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: [file('a.txt'), file('b.txt')] } });
+    preview.mockImplementation(async ({ name }: { name: string }) => ({
+      ok: true,
+      value: { kind: 'text', text: `inside ${name}` },
+    }));
+    const view = await open();
+    await click(button(view.host, 'a.txt'));
+    await press('ArrowRight');
+    expect(text(dialog()!)).toContain('inside b.txt');
+    await press('Escape');
+    expect(dialog()).toBeNull();
+    expect(document.activeElement?.getAttribute('data-cloud-file')).toBe('b.txt');
+    view.done();
+  });
+
   it('a video answer with any other type is never played', async () => {
     flagsState.set('s1', on('s1'));
     list.mockResolvedValue({ ok: true, value: { entries: [file('clip.mp4')] } });

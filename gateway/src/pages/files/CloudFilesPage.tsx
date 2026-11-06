@@ -114,7 +114,12 @@ export default function CloudFilesPage() {
             direction="row"
             sx={{ minHeight: 480, border: 1, borderColor: "divider", borderRadius: 2, overflow: "hidden" }}
           >
-            <Box component="nav" aria-label="Folders" sx={{ width: 240, flexShrink: 0, borderRight: 1, borderColor: "divider" }}>
+            {/* On a phone there's no room for the side list; the path and the list reach every folder. */}
+            <Box
+              component="nav"
+              aria-label="Folders"
+              sx={{ width: 240, flexShrink: 0, borderRight: 1, borderColor: "divider", display: { xs: "none", sm: "block" } }}
+            >
               <List dense>
                 <ListItemButton
                   selected={folder === ""}
@@ -222,11 +227,12 @@ function FolderList({
         direction="row"
         alignItems="center"
         justifyContent="space-between"
+        useFlexGap
         spacing={1}
-        sx={{ px: 2, py: 1, borderBottom: 1, borderColor: "divider" }}
+        sx={{ px: 2, py: 1, borderBottom: 1, borderColor: "divider", flexWrap: "wrap" }}
       >
         <PathCrumbs path={path} rootEntries={rootEntries} onOpen={onOpenFolder} />
-        <Stack direction="row" alignItems="center" spacing={1} sx={{ flexShrink: 0 }}>
+        <Stack direction="row" alignItems="center" useFlexGap spacing={1} sx={{ flexShrink: { xs: 1, sm: 0 }, minWidth: 0, flexWrap: "wrap" }}>
           <FormControlLabel
             control={<Checkbox size="small" checked={caches} onChange={(event) => setCaches(event.target.checked)} />}
             label={<Typography variant="caption">Include caches</Typography>}
@@ -262,7 +268,7 @@ function FolderList({
                 <TableCell align="right" sx={{ width: 100 }}>
                   Size
                 </TableCell>
-                <TableCell align="right" sx={{ width: 140 }}>
+                <TableCell align="right" sx={{ width: 140, display: { xs: "none", sm: "table-cell" } }}>
                   Changed
                 </TableCell>
               </TableRow>
@@ -308,8 +314,14 @@ function FolderList({
                         </Link>
                       )}
                     </TableCell>
-                    <TableCell align="right">{entry.kind === "file" ? formatSize(entry.size) : EM_DASH}</TableCell>
-                    <TableCell align="right" title={absoluteTitle(new Date(entry.mtime).toISOString())}>
+                    <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                      {entry.kind === "file" ? formatSize(entry.size) : EM_DASH}
+                    </TableCell>
+                    <TableCell
+                      align="right"
+                      title={absoluteTitle(new Date(entry.mtime).toISOString())}
+                      sx={{ display: { xs: "none", sm: "table-cell" } }}
+                    >
                       {formatRelative(new Date(entry.mtime).toISOString())}
                     </TableCell>
                   </TableRow>

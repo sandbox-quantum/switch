@@ -94,6 +94,8 @@ export function FilePreviewModal({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      // The list unmounts the modal on close, so focus goes back here, to the last file shown.
+      returnTo.current?.focus();
     };
   }, []);
   // Moving to another file ends any wake loop for the last one.
@@ -182,7 +184,6 @@ export function FilePreviewModal({
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
-        finalFocus={returnTo}
         className="h-[90dvh] w-[90vw] max-w-[90vw] max-sm:h-dvh max-sm:max-h-dvh max-sm:w-screen max-sm:max-w-none max-sm:rounded-none sm:max-w-[90vw]"
         onKeyDown={(event) => {
           if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
