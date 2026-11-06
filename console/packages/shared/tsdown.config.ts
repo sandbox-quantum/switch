@@ -3,6 +3,7 @@ import { defineConfig } from 'tsdown';
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
+    redaction: 'src/redaction.ts',
     'session-v1': 'src/session-v1/index.ts',
     'windows-spawn': 'src/windows-spawn.ts',
   },

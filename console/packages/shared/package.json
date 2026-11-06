@@ -17,6 +17,10 @@
       "default": "./dist/index.mjs"
     },
     "./package.json": "./package.json",
+    "./redaction": {
+      "types": "./dist/redaction.d.mts",
+      "default": "./dist/redaction.mjs"
+    },
     "./session-v1": {
       "types": "./dist/session-v1.d.mts",
       "default": "./dist/session-v1.mjs"

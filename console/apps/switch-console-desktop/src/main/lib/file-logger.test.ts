@@ -254,6 +254,20 @@ describe('redactSecrets (write path)', () => {
     expect(redactSecrets(input)).toContain(retained);
   });
 
+  it('redacts a secret on the next line of a string the entry serializes', () => {
+    // The line is written as JSON, so a newline before the secret reaches the
+    // patterns as `\n`, whose `n` would hide a word boundary.
+    const token = ['sk', '-', 'a'.repeat(24)].join('');
+    const password = ['hun', 'ter2'].join('');
+    for (const space of ['\n', '\t', '\r']) {
+      const written = redactSecrets(
+        JSON.stringify({ message: `cat <<'EOF'${space}${token}${space}password=${password}` })
+      );
+      expect(written).not.toContain(token);
+      expect(written).not.toContain(password);
+    }
+  });
+
   it('composes with the export pass, which then removes the rest', () => {
     const line = 'ssh to 192.168.1.25 with token ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
