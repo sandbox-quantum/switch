@@ -6,6 +6,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { AcpSignInInput } from '../acp/hooks';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
+import { executionEnvironment } from '../host/shared-config';
 
 vi.mock('node:fs/promises', async (original) => ({
   ...(await original<typeof fs>()),
@@ -97,6 +98,22 @@ it('recognises token and bring-your-own-key sign-ins in the environment', () => 
   expect(copilotEnvSignIn({})).toBe(false);
 });
 
+it('passes inline BYOK variables to the child CLI', async () => {
+  vi.stubEnv('COPILOT_PROVIDER_TYPE', 'openai');
+  vi.stubEnv('COPILOT_PROVIDER_BASE_URL', 'https://api.example.test');
+  vi.stubEnv('COPILOT_PROVIDER_API_KEY', 'key');
+  vi.stubEnv('COPILOT_PROVIDER_BEARER_TOKEN', 'bearer');
+  vi.stubEnv('COPILOT_PROVIDER_API_KEY_COMMAND', 'print-key');
+  const env = await executionEnvironment(process.cwd(), {}, undefined, copilotAcp.inheritEnv ?? []);
+  expect(env).toMatchObject({
+    COPILOT_PROVIDER_TYPE: 'openai',
+    COPILOT_PROVIDER_BASE_URL: 'https://api.example.test',
+    COPILOT_PROVIDER_API_KEY: 'key',
+    COPILOT_PROVIDER_BEARER_TOKEN: 'bearer',
+    COPILOT_PROVIDER_API_KEY_COMMAND: 'print-key',
+  });
+});
+
 async function copilotHome(config: string | null): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), 'copilot-home-'));
   if (config !== null) {
@@ -157,5 +174,5 @@ it('answers the sign-in check from the environment, the saved login, then the ha
   expect(signedOut.message).toContain('copilot login');
 
   const noMethods = await copilotAcp.checkSignIn!(signInInput({ COPILOT_HOME: emptyHome }, []));
-  expect(noMethods.status).toBe('authenticated');
+  expect(noMethods.status).toBe('unknown');
 });
