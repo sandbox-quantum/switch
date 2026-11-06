@@ -42,13 +42,15 @@ mcp:
   servers:
     - { name: sentry, url: "https://mcp.sentry.dev/mcp" }
 access:
-  # Sentry grants these four scopes to every sign-in, whatever the person
-  # picks on its consent screen, so a read level cannot be told from a write
-  # one and every connection is granted the write level. What they pick there
-  # is what limits the tools: "Inspect Issues & Events" alone gives read-only
-  # tools, and Seer, "Triage Issues" and "Manage Projects & Teams" add their
-  # own. Sentry remembers the choice for the next sign-in. Not asked for:
-  # alerts:write.
+  # One level, read and write. Sentry grants these four scopes to every
+  # sign-in, whatever the person picks on its consent screen, so its scopes
+  # cannot make a connection read-only. The loader needs a read level, so it
+  # lists the same scopes: Switch asks for the write scopes, every connection
+  # is granted the write level, and Console labels it "Read and write". What
+  # the person picks on Sentry's consent screen limits the tools:
+  # "Inspect Issues & Events" alone gives read-only tools, and Seer,
+  # "Triage Issues" and "Manage Projects & Teams" add their own. Sentry
+  # remembers the choice for the next sign-in. Not asked for: alerts:write.
   read:
     scopes: [org:read, project:write, team:write, event:write]
   write:
