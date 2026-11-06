@@ -20,7 +20,7 @@ function Where() {
 }
 
 function Alerts() {
-  const { operator, overview, overviewStale, refreshKey, refresh } = useHosted();
+  const { operator, overview, overviewStale, overviewAt, refreshKey, refresh } = useHosted();
   const boxes = (overview as { boxes?: unknown[] } | null)?.boxes?.length ?? "none";
   return (
     <div>
@@ -28,6 +28,7 @@ function Alerts() {
       <p>refreshed {refreshKey}</p>
       <p>boxes {String(boxes)}</p>
       <p>stale {String(overviewStale)}</p>
+      <p>fetched {overviewAt ? "yes" : "no"}</p>
       <button onClick={() => void refresh()}>refresh</button>
     </div>
   );
@@ -278,5 +279,15 @@ describe("the Hosted shell's parts", () => {
   it("has one fixed refusal line", () => {
     render(<HostedRefusal />);
     expect(screen.getByRole("status").textContent).toBe("Operators only");
+  });
+
+  it("tells tabs when it last got a good overview, and keeps that time when a refresh fails", async () => {
+    answer(200, { boxes: [] });
+    renderAt("/hosted/alerts");
+    await screen.findByText("fetched yes");
+    answer(500);
+    fireEvent.click(screen.getByRole("button", { name: "refresh" }));
+    await screen.findByText("stale true");
+    expect(screen.getByText("fetched yes")).toBeTruthy();
   });
 });

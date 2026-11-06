@@ -1,8 +1,19 @@
-import { Box, Paper, Stack, Typography } from "@mui/material";
-import { useMemo } from "react";
+import { Box, LinearProgress, Link as MuiLink, Paper, Stack, Typography } from "@mui/material";
+import { useEffect, useMemo, useState } from "react";
 import { useHosted } from "../HostedContext";
+import { groupedId } from "../hostedActions";
 import AlertTitle from "../w5shared/AlertTitle";
 import { shortTime } from "../w5shared/operatorFetch";
+import AttentionAction from "./AttentionAction";
+import {
+  type Health,
+  HEALTH_WORDS,
+  ceilingLevel,
+  ceilingWords,
+  healthSummary,
+  needsAttention,
+  updatedWords,
+} from "./health";
 import {
   LOAD_ERROR,
   STALE,
@@ -16,6 +27,24 @@ import {
 // p16, at V0. "Waiting for room" waits for a V4 field, so it isn't shown.
 export const OPEN_NOW = "Open now";
 export const NOTHING_OPEN = "No alerts right now."; // copy doc 2bcf4fb6, as on the Alerts tab
+export const NEEDS_ATTENTION = "Needs attention";
+export const NOTHING_NEEDS_ATTENTION = "No boxes need attention.";
+export const HEALTH = "Health";
+export const BOX_CEILING = "Boxes against the ceiling";
+
+const DOT: Record<Health, string> = { green: "success.main", amber: "warning.main", red: "error.main" };
+
+/** The clock, ticking each second while the browser tab is visible. */
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!document.hidden) setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
 
 function Card({
   label,
@@ -104,10 +133,12 @@ function keptApart(overview: Overview): {
 }
 
 /** Switch web → Hosted → Overview (W4, p16 at V0). Read-only: it reads the
- *  overview the shell holds, and asks for a fresh one every 30 seconds. */
+ *  overview the shell holds, and asks for a fresh one every 15 seconds while
+ *  the browser tab is visible. */
 export default function OverviewTab() {
-  const { overview: raw, overviewStale } = useHosted();
+  const { overview: raw, overviewStale, overviewAt, refresh } = useHosted();
   useOverviewRefresh();
+  const now = useNow();
   const overview = useMemo(() => parseOverview(raw), [raw]);
 
   if (overview === null) {
@@ -124,13 +155,57 @@ export default function OverviewTab() {
   const apart = keptApart(overview);
   const open = overview.alerts.filter((a) => a.open);
   const critical = open.filter((a) => a.severity === "critical").length;
+  const attention = needsAttention(overview, now);
+  const summary = healthSummary(overview, attention);
+  const ceiling = overview.boxCeiling;
+  const level = ceilingLevel(ceiling);
 
   return (
     <Stack spacing={2}>
-      {overviewStale && (
-        <Typography variant="body2" color="text.secondary">
-          {STALE}
+      <Paper variant="outlined" sx={{ p: 2 }} component="section" aria-label={HEALTH}>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Box
+            aria-hidden
+            data-testid="health-dot"
+            data-health={summary.health}
+            sx={{ width: 12, height: 12, borderRadius: "50%", bgcolor: DOT[summary.health], flexShrink: 0 }}
+          />
+          <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 600 }}>
+            {HEALTH_WORDS[summary.health]}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {summary.counts} ·{" "}
+            {summary.attention > 0 ? (
+              <MuiLink href="#needs-attention" underline="always">
+                {summary.verdict}
+              </MuiLink>
+            ) : (
+              summary.verdict
+            )}
+          </Typography>
+        </Stack>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }} data-testid="updated">
+          {overviewStale ? STALE : overviewAt ? updatedWords(overviewAt, now) : null}
         </Typography>
+      </Paper>
+      {ceiling && level && (
+        <Paper variant="outlined" sx={{ p: 2 }} component="section" aria-label={BOX_CEILING}>
+          <Typography variant="body2">{BOX_CEILING}</Typography>
+          <LinearProgress
+            variant="determinate"
+            value={Math.min(100, (ceiling.made / ceiling.ceiling) * 100)}
+            color={level === "full" ? "error" : level === "near" ? "warning" : "primary"}
+            aria-label={BOX_CEILING}
+            aria-valuetext={`${ceiling.made} of ${ceiling.ceiling} boxes`}
+            sx={{ my: 1, height: 8, borderRadius: 4 }}
+          />
+          <Typography
+            variant="body2"
+            color={level === "full" ? "error" : level === "near" ? "warning.main" : "text.secondary"}
+          >
+            {ceilingWords(ceiling)}
+          </Typography>
+        </Paper>
       )}
       <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1.5 }}>
         <Card
@@ -164,6 +239,51 @@ export default function OverviewTab() {
           alert={critical > 0}
         />
       </Box>
+      <Paper
+        variant="outlined"
+        sx={{ p: 2 }}
+        component="section"
+        aria-label={NEEDS_ATTENTION}
+        id="needs-attention"
+      >
+        <Typography variant="subtitle2" component="h2" gutterBottom>
+          {NEEDS_ATTENTION}
+        </Typography>
+        {attention.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            {NOTHING_NEEDS_ATTENTION}
+          </Typography>
+        ) : (
+          <Stack spacing={1}>
+            {attention.map((row) => (
+              <Stack
+                key={row.box.box}
+                direction="row"
+                spacing={1}
+                alignItems="center"
+                data-testid={`attention-${row.box.box}`}
+              >
+                <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                  <Typography variant="body2" color={row.severity === "red" ? "error" : "warning.main"}>
+                    {row.words}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Box{" "}
+                    <Box component="code" title={row.box.box} sx={{ fontFamily: "monospace" }}>
+                      {groupedId(row.box.box)}
+                    </Box>{" "}
+                    · user{" "}
+                    <Box component="code" title={row.box.user} sx={{ fontFamily: "monospace" }}>
+                      {groupedId(row.box.user)}
+                    </Box>
+                  </Typography>
+                </Box>
+                <AttentionAction row={row} onDone={() => void refresh()} />
+              </Stack>
+            ))}
+          </Stack>
+        )}
+      </Paper>
       <Paper variant="outlined" sx={{ p: 2 }} component="section" aria-label={OPEN_NOW}>
         <Typography variant="subtitle2" component="h2" gutterBottom>
           {OPEN_NOW}

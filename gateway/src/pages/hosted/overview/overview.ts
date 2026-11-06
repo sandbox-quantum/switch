@@ -10,8 +10,9 @@ import { isRecord, stringOrNull } from "../w5shared/operatorFetch";
 
 export const STALE = "Couldn't refresh just now. These figures may be out of date.";
 export const LOAD_ERROR = "Couldn't load hosted agents. Reload the page to try again.";
-/** How often an open W4 tab asks the shell for a fresh overview. */
-export const REFRESH_MS = 30_000;
+/** How often an open W4 tab asks the shell for a fresh overview, while the
+ *  browser tab is visible (the UX build's live-status rule). */
+export const REFRESH_MS = 15_000;
 
 export type BoxState =
   | "running"
@@ -58,6 +59,10 @@ export interface OverviewBox {
   runningObservedAt: string | null;
   /** For a put-away box: when it goes for good (ISO); null when not set. */
   retainUntil: string | null;
+  /** The agents' workspace disk only (`disk.scope` "workspace"); any other
+   *  scope, or none, reads as null, so no other disk is ever counted.
+   *  Optional, so a box built by hand (tests) needn't name it. */
+  workspaceDisk?: { totalBytes: number; availableBytes: number } | null;
 }
 
 export interface OverviewMachine {
@@ -137,8 +142,15 @@ export interface OverviewAlert {
   open: boolean;
 }
 
+/** Boxes made against the provisioning ceiling, when Core sends it. */
+export interface BoxCeiling {
+  made: number;
+  ceiling: number;
+}
+
 export interface Overview {
   people: OverviewPerson[];
+  boxCeiling: BoxCeiling | null;
   boxes: OverviewBox[];
   machines: OverviewMachine[];
   services: OverviewService[];
@@ -179,6 +191,22 @@ function moment(value: unknown): string | null {
   return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : null;
 }
 
+function workspaceDiskOf(value: unknown): OverviewBox["workspaceDisk"] {
+  if (!isRecord(value) || value.scope !== "workspace") return null;
+  const total = figure(value.total_bytes);
+  const available = figure(value.available_bytes);
+  return total === null || available === null || total === 0 || available > total
+    ? null
+    : { totalBytes: total, availableBytes: available };
+}
+
+function ceilingOf(value: unknown): BoxCeiling | null {
+  if (!isRecord(value)) return null;
+  const made = count(value.made);
+  const ceiling = count(value.ceiling);
+  return made === null || ceiling === null || ceiling === 0 ? null : { made, ceiling };
+}
+
 function awakeOf(value: unknown): OverviewBox["awake"] {
   if (!isRecord(value)) return null;
   const running = count(value.running);
@@ -209,6 +237,7 @@ function box(raw: unknown): OverviewBox | null {
     heartbeatAt: moment(raw.heartbeat_at),
     runningObservedAt: moment(raw.running_observed_at),
     retainUntil: moment(raw.retain_until),
+    workspaceDisk: workspaceDiskOf(raw.disk),
   };
 }
 
@@ -274,6 +303,7 @@ export function parseOverview(raw: unknown): Overview | null {
   const result = raw.isolation.result;
   return {
     people,
+    boxCeiling: ceilingOf(raw.box_ceiling),
     boxes,
     machines,
     services,
@@ -289,14 +319,25 @@ export function parseOverview(raw: unknown): Overview | null {
   };
 }
 
-/** Asks the shell for a fresh overview every 30 seconds while a W4 tab is
- *  open. The shell handles 401 and 403, and keeps the last good answer
- *  (`overviewStale`) when a refresh fails. */
+/** Asks the shell for a fresh overview every 15 seconds while a W4 tab is
+ *  open and the browser tab is visible, and once more when it becomes
+ *  visible again. Nothing is asked while it's hidden. It reads only the
+ *  overview, which never wakes a box. The shell handles 401 and 403, and
+ *  keeps the last good answer (`overviewStale`) when a refresh fails. */
 export function useOverviewRefresh(): void {
   const { refresh } = useHosted();
   useEffect(() => {
-    const timer = setInterval(() => void refresh(), REFRESH_MS);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, REFRESH_MS);
+    const shown = () => {
+      if (!document.hidden) void refresh();
+    };
+    document.addEventListener("visibilitychange", shown);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", shown);
+    };
   }, [refresh]);
 }
 

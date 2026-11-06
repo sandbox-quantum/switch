@@ -15,10 +15,13 @@ export interface HostedState {
   /** True when the latest `refresh()` failed for a reason other than 401 or
    *  403. `overview` then still holds the last good answer. */
   overviewStale: boolean;
+  /** When the shell last got a good overview (ms since the epoch), for
+   *  "Updated N s ago"; null before the first. Optional for tabs' tests. */
+  overviewAt?: number | null;
   /** Bumped on every `refresh()`. */
   refreshKey: number;
   /** Fetches the overview again, and tells every tab (W6 calls it after an
-   *  action, W4 on its 30-second timer). A 401 sends the person to sign in,
+   *  action, W4 on its 15-second timer while the tab is visible). A 401 sends the person to sign in,
    *  and a 403 shows "Operators only", as on first load. */
   refresh: () => Promise<void>;
 }

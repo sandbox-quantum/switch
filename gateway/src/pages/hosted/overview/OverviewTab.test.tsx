@@ -1,9 +1,17 @@
-import { act, cleanup, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MARKER, renderTab } from "../w5shared/testing";
-import OverviewTab, { NOTHING_OPEN, OPEN_NOW } from "./OverviewTab";
+import { MARKER, answer, renderTab } from "../w5shared/testing";
+import { boxPageFor } from "./AttentionAction";
+import OverviewTab, {
+  BOX_CEILING,
+  HEALTH,
+  NEEDS_ATTENTION,
+  NOTHING_NEEDS_ATTENTION,
+  NOTHING_OPEN,
+  OPEN_NOW,
+} from "./OverviewTab";
 import { LOAD_ERROR, REFRESH_MS, STALE, parseOverview } from "./overview";
-import { fixture } from "./testing";
+import { B1, B3, B4, U1, U3, W1, boxRow, fixture } from "./testing";
 
 vi.mock("../../../data/AuthContext", () => ({
   useAuth: () => ({ user: { id: "op-me", name: "Jo Operator" }, refresh: vi.fn() }),
@@ -110,7 +118,7 @@ describe("the Overview tab (W4, p16 at V0)", () => {
     expect(screen.getByRole("alert").textContent).toBe(LOAD_ERROR);
   });
 
-  it("asks the shell for a fresh overview every 30 seconds, and stops when left", () => {
+  it("asks the shell for a fresh overview every 15 seconds, and stops when left", () => {
     vi.useFakeTimers();
     const refresh = vi.fn(async () => undefined);
     const { unmount } = renderTab(OverviewTab, { overview: fixture(), refresh });
@@ -134,5 +142,123 @@ describe("the Overview tab (W4, p16 at V0)", () => {
     expect(parseOverview(raw)?.boxes).toHaveLength(5);
     expect(parseOverview({ ...raw, boxes: undefined })).toBeNull();
     expect(parseOverview({ ...raw, nodes: { machines: "x" } })).toBeNull();
+  });
+
+  it("asks nothing while the browser tab is hidden, and once more when it's shown again", () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn(async () => undefined);
+    let hidden = true;
+    vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
+    renderTab(OverviewTab, { overview: fixture(), refresh });
+    act(() => vi.advanceTimersByTime(REFRESH_MS * 3));
+    expect(refresh).not.toHaveBeenCalled();
+    hidden = false;
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersByTime(REFRESH_MS));
+    expect(refresh).toHaveBeenCalledTimes(2);
+    vi.restoreAllMocks();
+  });
+});
+
+describe("Overview's health, Needs attention and ceiling (UX operators 1, 2, 6, 7)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("sums up health in words beside a coloured dot, linking to the boxes that need attention", () => {
+    renderTab(OverviewTab, { overview: fixture() });
+    const health = within(screen.getByRole("region", { name: HEALTH }));
+    // The fixture has a paused box, a box restarted 3 times today, and an open critical alert.
+    expect(health.getByText("Something's wrong")).toBeTruthy();
+    expect(screen.getByTestId("health-dot").dataset.health).toBe("red");
+    expect(health.getByText(/4 boxes · 1 awake · 5 nodes/)).toBeTruthy();
+    const link = health.getByRole("link", { name: "2 need attention" });
+    expect(link.getAttribute("href")).toBe("#needs-attention");
+  });
+
+  it("lists a paused box with Resume, which goes through the confirm and then refreshes", async () => {
+    const fetchMock = answer(200, { action_id: "a-1" });
+    const refresh = vi.fn(async () => undefined);
+    renderTab(OverviewTab, { overview: fixture(), refresh });
+    const row = within(screen.getByTestId(`attention-${B3}`));
+    expect(row.getByText("Paused by Switch")).toBeTruthy();
+    // Ids only, grouped, with the full id on hover: never a name.
+    expect(row.getByText("k1-0e77 b5aa 0b1c").getAttribute("title")).toBe(B3);
+    expect(row.getByText("k1-f019 c27d 0b51").getAttribute("title")).toBe(U3);
+    fireEvent.click(row.getByRole("button", { name: "Resume" }));
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.change(dialog.getByRole("textbox"), { target: { value: "Ticket 9" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Resume user" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    const [path, init] = fetchMock.mock.calls[0]!;
+    expect(path).toContain(`/shared-cloud/users/${U3}/resume`);
+    expect(JSON.parse(String(init?.body))).toEqual({ reason: "Ticket 9" });
+  });
+
+  it("offers Restart for an awake box with no recent report, and Open, to the box's page, for an error", () => {
+    const raw = fixture();
+    raw.alerts = [];
+    raw.boxes = [
+      { ...boxRow(B1, U1, [W1], "running", "shared-1", 1, 0), heartbeat_at: "2026-01-01T00:00:00Z" },
+      boxRow(B3, U3, [W1], "error", null, null, 0),
+    ];
+    renderTab(OverviewTab, { overview: raw });
+    const list = within(screen.getByRole("region", { name: NEEDS_ATTENTION }));
+    expect(within(list.getByTestId(`attention-${B1}`)).getByText(/^No report for \d+ min$/)).toBeTruthy();
+    expect(within(list.getByTestId(`attention-${B1}`)).getByRole("button", { name: "Restart" })).toBeTruthy();
+    expect(within(list.getByTestId(`attention-${B3}`)).getByText("Error · open it to see why")).toBeTruthy();
+    const open = within(list.getByTestId(`attention-${B3}`)).getByRole("link", { name: "Open" });
+    expect(open.getAttribute("href")).toBe(boxPageFor(B3));
+    expect(boxPageFor(B3)).toBe(`/hosted/boxes/${B3}`);
+    // The error box comes first.
+    expect(list.getAllByTestId(/^attention-/).map((el) => el.dataset.testid)).toEqual([
+      `attention-${B3}`,
+      `attention-${B1}`,
+    ]);
+  });
+
+  it("lists the fixture's box restarted 3 times today with Open", () => {
+    renderTab(OverviewTab, { overview: fixture() });
+    const row = within(screen.getByTestId(`attention-${B4}`));
+    expect(row.getByText("Restarted 3 times today")).toBeTruthy();
+    expect(row.getByRole("link", { name: "Open" }).getAttribute("href")).toBe(boxPageFor(B4));
+  });
+
+  it("says nothing needs attention, and All healthy in green, when that's so", () => {
+    const raw = fixture();
+    raw.alerts = [];
+    raw.boxes = [boxRow(B1, U1, [W1], "running", "shared-1", 1, 0)];
+    renderTab(OverviewTab, { overview: raw });
+    expect(screen.getByText(NOTHING_NEEDS_ATTENTION)).toBeTruthy();
+    expect(screen.getByTestId("health-dot").dataset.health).toBe("green");
+    expect(within(screen.getByRole("region", { name: HEALTH })).getByText(/All healthy/)).toBeTruthy();
+  });
+
+  it("shows the ceiling bar only when Core sends the ceiling, in amber with words from 80%", () => {
+    const raw = fixture();
+    const { update } = renderTab(OverviewTab, { overview: raw });
+    expect(screen.queryByRole("region", { name: BOX_CEILING })).toBeNull();
+    update({ overview: { ...raw, box_ceiling: { made: 16, ceiling: 20 } } });
+    const bar = within(screen.getByRole("region", { name: BOX_CEILING }));
+    expect(bar.getByText("16 of 20 boxes, so new testers may be refused soon")).toBeTruthy();
+    expect(bar.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("16 of 20 boxes");
+  });
+
+  it("says how fresh the figures are, counting up each second, and the stale line when a refresh failed", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse("2026-11-06T12:00:00Z"));
+    const at = Date.now();
+    const { update } = renderTab(OverviewTab, { overview: fixture(), overviewAt: at });
+    expect(screen.getByTestId("updated").textContent).toBe("Updated just now");
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(screen.getByTestId("updated").textContent).toBe("Updated 10 s ago");
+    update({ overview: fixture(), overviewAt: at, overviewStale: true });
+    expect(screen.getByTestId("updated").textContent).toBe(STALE);
   });
 });
