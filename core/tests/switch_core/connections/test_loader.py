@@ -26,18 +26,20 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_its_live_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "google-workspace",
     ]
@@ -46,6 +48,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +179,59 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_dropbox_entry_signs_in_as_dropbox_was_measured_to():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Dropbox registers clients dynamically only for a trusted list, so each
+    # server's operator registers a Dropbox app.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "DROPBOX",
+    )
+    # Back to Switch Console, on the fixed ports the app registers.
+    assert oauth.redirect == ["loopback"]
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    # No refresh token without it.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    # auth/token/revoke takes the access token as its bearer, and ends that
+    # sign-in only.
+    assert (oauth.revocation_discovered, oauth.revocation_by_bearer) == (True, True)
+    assert oauth.revocation_ends_grant is False
+    assert oauth.unchecked is not None and "redirect URIs" in oauth.unchecked
+    assert definition.auth.refresh == "reusable"
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url, identity.body) == (
+        "POST",
+        "https://api.dropboxapi.com/2/users/get_current_account",
+        None,
+    )
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        4 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = ["account_info.read", "files.metadata.read", "files.content.read"]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [*read, "files.content.write"]
+    # The least that works: no permanent delete, shared links, file requests,
+    # or team and member scopes.
+    every = set(definition.access.write.scopes)
+    assert "files.permanent_delete" not in every
+    assert not any(
+        scope.startswith(("sharing.", "file_requests.", "team", "members.", "groups."))
+        for scope in every
+    )
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
