@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These six adapters are the only Console session runtime.
 
 ## Shape
 
@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `junie` | `junie --acp=true` (JetBrains), ACP over stdio, on the generic ACP adapter | Native sessions, resume, MCP over HTTP (confirmed; stdio registers without error but was not confirmed called), config-option model selection. No reachable permission mode: Junie's own (`brave_mode`) is a config option, not ACP's `modes`/`session/set_mode`. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -68,6 +69,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| junie (ACP) | Junie 26.11.3 (3959.5) | not recorded (2026-11-06) | The account used (a Junie API key with no promo code and no JetBrains AI subscription) signs in fine — `session/new` succeeds — but every `session/prompt` answers `stopReason: "cancelled"` with zero tokens spent: "No active AI subscription found." The suite's own `unavailableReason` runs one real turn to check this live and skips with the result, rather than assuming. Also unverified for the same reason: whether Junie calls `session/request_permission` for a real tool call under its default `brave_mode` ("Auto"), how it titles a resolved MCP tool call, and whether it calls a registered stdio MCP server's tools (session creation with one registered produced no protocol error, which is as far as this could be checked). The JetBrains-account browser sign-in also failed independently of the above: both the federated (Google) and native (JetBrains) login options returned "The resource address used to access Junie CLI is not registered as a trusted access address" from JetBrains' own Hub, before reaching any Switch code. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
@@ -86,10 +88,10 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
-binary and arguments, the `authenticate` method, the mode for each runtime
-mode, how a tool call names its MCP server, sign-in checks, and vendor
-extensions.
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/junie/junie-adapter.ts`): binary and arguments, the `authenticate`
+method, the mode for each runtime mode, how a tool call names its MCP
+server, sign-in checks, and vendor extensions.
 
 Permission requests follow one policy for every ACP agent. A tool on an MCP
 server the session registered is allowed once without asking, as is
@@ -127,3 +129,25 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**Junie** signs itself in from a credential file on the execution machine
+(`~/.junie/secure_credentials.json`, written by running `junie` interactively
+once — a JetBrains account browser login or a pasted API key, Switch never
+reads or writes it), the same way Grok and Antigravity's `agy` do: a session
+start never sends `authenticate`. `initialize`'s `authMethods` never changes
+between signed in and out (always exactly one, `jetbrains-account`), so the
+sign-in check instead probes `session/list` (cheaper than Antigravity's
+`session/new`, since Junie also advertises `sessionCapabilities.list`) and
+reads the same `-32000 "Authentication is required..."` it gets back
+signed out. No `sessionMode`: Junie's permission level is `brave_mode`, a
+session config option (`off` "Safe" asks for everything, `brave-auto` "Auto"
+auto-approves safe commands, `on` "Brave" never asks) — not ACP's `modes` or
+`session/set_mode`, which `session/new` never returns here — so it is left
+at Junie's own default and the generic adapter's own per-request permission
+answers do the rest, the same way an unreachable vendor mode is handled for
+Cursor and Grok. Model selection is a `model` config option (`session/
+set_config_option`), covered by the generic path above. No `mcpServerOf` or
+`itemType`: the account used for this work could create a session with a
+registered MCP server (confirmed over HTTP; a stdio server registered with
+no protocol error) but never reach a model turn to see how a resolved tool
+call is shaped (see Known provider limits).
