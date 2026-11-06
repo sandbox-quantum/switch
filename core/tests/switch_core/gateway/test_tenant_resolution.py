@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Annotated
 
@@ -422,6 +423,7 @@ class TestSessionStateEndpoint:
             _KEYRING,
             TENANT_B,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         response = await self._get(session_factory, token, signup_mode="default_tenant")
@@ -444,7 +446,13 @@ class TestSessionStateEndpoint:
     ) -> None:
         user_id = await _make_user(session_factory, name="single", tenant_id=TENANT_B)
         token = create_jwt(
-            user_id, "single@example.invalid", "user", _KEYRING, None, session_version=0
+            user_id,
+            "single@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -467,6 +475,7 @@ class TestSessionStateEndpoint:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -491,6 +500,7 @@ class TestSessionStateEndpoint:
             _KEYRING,
             NOT_A_MEMBER_TENANT,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -523,6 +533,7 @@ class TestSessionStateEndpoint:
             _KEYRING,
             entered,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -552,6 +563,7 @@ class TestSessionStateEndpoint:
             _KEYRING,
             "gone",
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -573,6 +585,7 @@ class TestSessionStateEndpoint:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (await self._get(session_factory, token, signup_mode="open")).json()
@@ -617,6 +630,7 @@ class TestSessionStateEndpoint:
                     _KEYRING,
                     TENANT_ZERO_ID,
                     session_version=0,
+                    auth_time=datetime.now(UTC),
                 ),
                 signup_mode="invite_only",
             )
@@ -631,6 +645,7 @@ class TestSessionStateEndpoint:
                     _KEYRING,
                     TENANT_ZERO_ID,
                     session_version=0,
+                    auth_time=datetime.now(UTC),
                 ),
                 signup_mode="invite_only",
             )
@@ -658,6 +673,7 @@ class TestSessionStateEndpoint:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -680,6 +696,7 @@ class TestSessionStateEndpoint:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -697,7 +714,13 @@ class TestSessionStateEndpoint:
             session_factory, name="mailer", tenant_ids=[TENANT_B]
         )
         token = create_jwt(
-            user_id, "mailer@example.invalid", "user", _KEYRING, None, session_version=0
+            user_id,
+            "mailer@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         off = await self._get(session_factory, token, signup_mode="open")
@@ -737,7 +760,13 @@ class TestAGatewayRequestBindsTheCallersTenant:
             user_id = user.id
 
         token = create_jwt(
-            user_id, "ada@example.invalid", "user", _KEYRING, None, session_version=0
+            user_id,
+            "ada@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
         async with _client(_app(session_factory), token) as client:
             response = await client.get("/whoami")
@@ -780,6 +809,7 @@ class TestAClaimSelectsAMembership:
             _KEYRING,
             TENANT_B,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_app(session_factory), token) as client:
@@ -801,6 +831,7 @@ class TestAClaimSelectsAMembership:
             _KEYRING,
             NOT_A_MEMBER_TENANT,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_app(session_factory), token) as client:
@@ -838,6 +869,7 @@ class TestNoClaimWithSeveralMemberships:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(
@@ -861,6 +893,7 @@ class TestNoClaimWithSeveralMemberships:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_app(session_factory, choice_enabled=True), token) as client:
@@ -908,6 +941,7 @@ class TestNoClaimWithSeveralMemberships:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_app(session_factory, choice_enabled=True), token) as client:
@@ -938,7 +972,13 @@ class TestAUserWithNoMembership:
             user_id = user.id
 
         token = create_jwt(
-            user_id, "orphan@example.invalid", "user", _KEYRING, None, session_version=0
+            user_id,
+            "orphan@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
         async with _client(_app(session_factory), token) as client:
             response = await client.get("/whoami")
@@ -967,6 +1007,7 @@ class TestConcurrentRequests:
                 _KEYRING,
                 None,
                 session_version=0,
+                auth_time=datetime.now(UTC),
             )
             async with _client(app, token) as client:
                 response = await client.get("/whoami", params={"hold": 0.2})
@@ -995,7 +1036,13 @@ class TestListTenantsEndpoint:
             session_factory, name="lister", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
         token = create_jwt(
-            user_id, "lister@example.invalid", "user", _KEYRING, None, session_version=0
+            user_id,
+            "lister@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1024,6 +1071,7 @@ class TestListTenantsEndpoint:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1047,6 +1095,7 @@ class TestSwitchTenantEndpoint:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1073,6 +1122,7 @@ class TestSwitchTenantEndpoint:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1121,7 +1171,13 @@ class TestARequestHoldsOneConnection:
             one_connection_session_factory, name="solo", tenant_id=TENANT_ZERO_ID
         )
         token = create_jwt(
-            user_id, "solo@example.invalid", "user", _KEYRING, None, session_version=0
+            user_id,
+            "solo@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_app(one_connection_session_factory), token) as client:
@@ -1143,6 +1199,7 @@ class TestARequestHoldsOneConnection:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
         app = _app(one_connection_session_factory)
 
@@ -1193,6 +1250,7 @@ class TestTenantListingHoldsOneConnectionAtATime:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(
@@ -1260,6 +1318,7 @@ class TestSigningInHoldsOneConnectionAtATime:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(

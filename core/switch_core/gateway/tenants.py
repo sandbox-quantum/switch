@@ -85,6 +85,7 @@ from switch_core.gateway.auth import (
     may_bind_tenant,
     record_operator_entry,
     require_tenant_admin,
+    session_auth_time,
     set_session_cookie,
     tenant_of_invitation_token,
     tenants_open_to,
@@ -350,6 +351,7 @@ async def current_tenant(
 @router.post("/tenants", status_code=201, deprecated=True)
 async def create_tenant(
     req: TenantCreateRequest,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
@@ -381,6 +383,7 @@ async def create_tenant(
         config,
         name=req.name,
         workspace_name=req.name,
+        auth_time=session_auth_time(request),
     )
     return created.workspace
 
@@ -389,6 +392,7 @@ async def create_tenant(
 async def delete_tenant(
     tenant_id: str,
     req: TenantDeleteRequest,
+    request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[
@@ -445,6 +449,7 @@ async def delete_tenant(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        session_auth_time(request),
     )
     return {"ok": True}
 
@@ -452,6 +457,7 @@ async def delete_tenant(
 @router.post("/tenants/{tenant_id}/switch")
 async def switch_tenant(
     tenant_id: str,
+    request: Request,
     response: Response,
     user_id: Annotated[str, Depends(get_authenticated_user_id)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
@@ -488,7 +494,12 @@ async def switch_tenant(
     await user_store.record_last_tenant(session, user, tenant_id)
     await session.commit()
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant_id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant_id,
+        session_auth_time(request),
     )
     return _session_response(user)
 
@@ -1148,6 +1159,7 @@ async def revoke_invitation(
 @router.post("/invitations/accept")
 async def accept_invitation(
     req: InvitationAcceptRequest,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session_factory: Annotated[
@@ -1206,7 +1218,12 @@ async def accept_invitation(
         )
 
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant_id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant_id,
+        session_auth_time(request),
     )
     return membership
 
@@ -1390,6 +1407,7 @@ async def list_my_invitations(
 @router.post("/invitations/mine/accept")
 async def accept_my_invitation(
     req: AddressedInvitationAcceptRequest,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session_factory: Annotated[
@@ -1437,6 +1455,7 @@ async def accept_my_invitation(
         config.keyring,
         config.gateway_cookie_secure,
         req.tenant_id,
+        session_auth_time(request),
     )
     return membership
 
@@ -1587,6 +1606,7 @@ async def list_joinable_tenants(
 @router.post("/joinable-tenants/{tenant_id}/join")
 async def join_tenant_by_domain(
     tenant_id: str,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session_factory: Annotated[
@@ -1634,7 +1654,12 @@ async def join_tenant_by_domain(
         membership, user = await _enter(session, tenant_id, caller, user_store)
 
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant_id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant_id,
+        session_auth_time(request),
     )
     return membership
 

@@ -8,6 +8,7 @@ change (`db/session_version_ddl.py`) is the one under test, not a stand-in.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -75,7 +76,15 @@ async def _version(
 
 
 def _token(user_id: str, email: str, role: str, version: int) -> str:
-    return create_jwt(user_id, email, role, _KEYRING, None, session_version=version)
+    return create_jwt(
+        user_id,
+        email,
+        role,
+        _KEYRING,
+        None,
+        session_version=version,
+        auth_time=datetime.now(UTC),
+    )
 
 
 def _client(app: FastAPI, token: str) -> httpx.AsyncClient:

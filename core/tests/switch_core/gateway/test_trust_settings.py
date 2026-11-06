@@ -7,6 +7,7 @@ is never echoed back, and a PUT that omits it leaves the stored one alone.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -71,6 +72,7 @@ def _cookies_for(user: User) -> dict[str, str]:
             TEST_KEYRING,
             TENANT_ZERO_ID,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
     }
 

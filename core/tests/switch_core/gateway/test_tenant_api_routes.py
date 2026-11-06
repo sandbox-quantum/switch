@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import jwt
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
@@ -73,14 +74,19 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.auth import (
+    JWT_ALGORITHM,
+    SESSION_MAX_AGE,
+    create_jwt,
+    decode_jwt,
+)
 from switch_core.gateway.invite_mail import (
     InviteEmail,
     InviteEmailFailed,
     InviteMailer,
 )
 from switch_core.gateway.tenants import router as tenants_router
-from switch_core.keys import Keyring
+from switch_core.keys import Keyring, Purpose
 from switch_core.organization_directory import LocalDirectory
 from tests.ownership import NeverOwned
 from tests.switch_core.statement_counts import StatementCounts
@@ -253,7 +259,15 @@ async def _make_member(
 
 
 def _token(user_id: str, email: str, tenant_id: str | None) -> str:
-    return create_jwt(user_id, email, "user", _KEYRING, tenant_id, session_version=0)
+    return create_jwt(
+        user_id,
+        email,
+        "user",
+        _KEYRING,
+        tenant_id,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
 
 
 def _tenant_claim(response: httpx.Response) -> str | None:
@@ -469,6 +483,7 @@ class TestCreateTenant:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         app = _app(session_factory, signup_mode="invite_only")
@@ -493,6 +508,7 @@ class TestCreateTenant:
             _KEYRING,
             None,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
         lifecycle = ClientLifecycleService(
             provisioning=MagicMock(),
@@ -791,6 +807,7 @@ class TestWorkspaceCreationLimit:
             _KEYRING,
             TENANT_A,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(
@@ -1923,6 +1940,48 @@ class TestOrganizationAdmins:
         assert switched.status_code == 200, switched.text
         assert _tenant_claim(switched) == TENANT_B
 
+    @pytest.mark.parametrize(
+        ("signed_in_days_ago", "status"), [(3, 200), (SESSION_MAX_AGE.days + 1, 401)]
+    )
+    async def test_switching_keeps_when_the_session_signed_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        signed_in_days_ago: int,
+        status: int,
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, TENANT_B, members={admin_id: "org_admin"}
+        )
+        signed_in = datetime.now(UTC) - timedelta(days=signed_in_days_ago)
+        token = create_jwt(
+            admin_id,
+            "org-admin@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+        claims = decode_jwt(token, _KEYRING)
+        claims["auth_time"] = int(signed_in.timestamp())
+        forged = jwt.encode(
+            claims,
+            _KEYRING.derive(Purpose.SESSION),
+            algorithm=JWT_ALGORITHM,
+            headers={"kid": _KEYRING.current.id},
+        )
+
+        async with _client(_app(session_factory), forged) as client:
+            switched = await client.post(f"/tenants/{TENANT_B}/switch")
+
+        assert switched.status_code == status, switched.text
+        if status == 200:
+            minted = decode_jwt(switched.cookies["switch_auth"], _KEYRING)
+            assert minted["auth_time"] == int(signed_in.timestamp())
+
     async def test_an_org_admin_may_not_bind_another_organizations_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -3047,6 +3106,7 @@ class TestErasureRoutes:
             _KEYRING,
             TENANT_A,
             session_version=0,
+            auth_time=datetime.now(UTC),
         )
         person_id = await self._person(session_factory, "ana")
 

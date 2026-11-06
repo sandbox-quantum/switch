@@ -84,6 +84,13 @@ version of their own to them without also giving them a release of their own.
   database, and losing the server-admin role also end every session; the
   device that changed its own password stays signed in. Sessions from before
   this release stay valid.
+- **Dashboard sessions end 14 days after sign-in.** A session could be
+  refreshed forever, so a browser that stayed active never had to sign in
+  again. Refreshing or switching workspace now keeps the original sign-in
+  time, and 14 days after it the session ends and the person signs in again,
+  however active they are. A session still ends after 24 hours without a
+  refresh. Sessions from before this release count from when their cookie
+  was issued.
 - **Messages with files attached are checked by Switch Trust.** A message with
   a file used to skip the check entirely, typed text included, both from a
   person on a chat platform and from an agent sending files. Now the text is

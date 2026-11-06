@@ -64,6 +64,14 @@ JWT_EXPIRY_HOURS = 24
 # the claim existed carries none and counts as 0, the value every account
 # started at, so the deploy that added it signed nobody out.
 SESSION_VERSION_CLAIM = "sv"
+# When the person last proved who they are, as a UNIX time. Every re-mint
+# (refresh, switching workspace) carries it forward, and no session outlives
+# it by more than `SESSION_MAX_AGE`, however often it is refreshed: then the
+# person signs in again. A cookie minted before the claim existed is taken
+# to have signed in when it was minted (`iat`), the earliest moment it can
+# vouch for, so the deploy that added it signed nobody out early.
+AUTH_TIME_CLAIM = "auth_time"
+SESSION_MAX_AGE = datetime.timedelta(days=14)
 
 # The `error` discriminator on the three tenant-resolution failures a client
 # has to tell apart. A bare `{"detail": [...]}` is indistinguishable from
@@ -114,6 +122,7 @@ def create_jwt(
     tenant_id: str | None,
     *,
     session_version: int,
+    auth_time: datetime.datetime,
 ) -> str:
     """Sign a session JWT. `tenant_id` is the caller's selected tenant, or
     `None` for a session that has not selected one yet (a fresh login, or a
@@ -122,16 +131,22 @@ def create_jwt(
     The claim only ever *selects*: `_resolve_tenant_id` re-checks it against a
     live membership row on every request, so a forged or stale value buys
     nothing (`docs/old/multi-tenancy-phase2-tenants.md`, §3).
+
+    `auth_time` is when the person signed in: now, for a sign-in, and the
+    presented session's own (`session_auth_time`) for a re-mint. A session
+    signed in `SESSION_MAX_AGE` ago or longer is refused with 401 rather than
+    minted again.
     """
+    now = datetime.datetime.now(datetime.UTC)
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
         "tenant_id": tenant_id,
         SESSION_VERSION_CLAIM: session_version,
-        "exp": datetime.datetime.now(datetime.UTC)
-        + datetime.timedelta(hours=JWT_EXPIRY_HOURS),
-        "iat": datetime.datetime.now(datetime.UTC),
+        AUTH_TIME_CLAIM: int(auth_time.timestamp()),
+        "exp": session_expires_at(now, auth_time),
+        "iat": now,
     }
     return jwt.encode(
         payload,
@@ -141,12 +156,25 @@ def create_jwt(
     )
 
 
+def session_expires_at(
+    now: datetime.datetime, auth_time: datetime.datetime
+) -> datetime.datetime:
+    """When a session minted at `now` expires: `JWT_EXPIRY_HOURS` from now,
+    or `SESSION_MAX_AGE` after its sign-in if that comes first. 401 for a
+    session already past the second."""
+    signed_in_until = auth_time + SESSION_MAX_AGE
+    if signed_in_until <= now:
+        raise HTTPException(status_code=401, detail="Session too old; sign in again")
+    return min(now + datetime.timedelta(hours=JWT_EXPIRY_HOURS), signed_in_until)
+
+
 def set_session_cookie(
     response: Response,
     user: User,
     keyring: Keyring,
     secure: bool,
     tenant_id: str | None,
+    auth_time: datetime.datetime,
 ) -> None:
     """Mint the switch_auth session cookie for an authenticated user.
 
@@ -159,7 +187,13 @@ def set_session_cookie(
 
     `secure` gates the Secure flag: True on HTTPS deployments so the JWT is
     never sent over plain HTTP, False for local dev served over http://.
+
+    `auth_time` is the same as `create_jwt`'s: now for a sign-in, and
+    `session_auth_time(request)` for every re-mint, so refreshing or switching
+    workspace never extends a session past `SESSION_MAX_AGE`.
     """
+    now = datetime.datetime.now(datetime.UTC)
+    expires_at = session_expires_at(now, auth_time)
     token = create_jwt(
         user.id,
         user.email,
@@ -167,6 +201,7 @@ def set_session_cookie(
         keyring,
         tenant_id,
         session_version=user.session_version,
+        auth_time=auth_time,
     )
     response.set_cookie(
         key="switch_auth",
@@ -174,7 +209,7 @@ def set_session_cookie(
         httponly=True,
         samesite="lax",
         secure=secure,
-        max_age=86400,
+        max_age=int((expires_at - now).total_seconds()),
         path="/",
     )
 
@@ -228,10 +263,34 @@ async def _authenticate(
 
 
 def _session_claims(request: HTTPConnection, config: SwitchConfig) -> dict:
+    """The session cookie's claims, verified. Also records on the request
+    when the session signed in, for a route that mints it again
+    (`session_auth_time`)."""
     token = request.cookies.get("switch_auth")
     if token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return decode_jwt(token, config.keyring)
+    payload = decode_jwt(token, config.keyring)
+    request.state.session_auth_time = datetime.datetime.fromtimestamp(
+        payload.get(AUTH_TIME_CLAIM, payload["iat"]), datetime.UTC
+    )
+    return payload
+
+
+def session_auth_time(request: Request) -> datetime.datetime:
+    """When the request's session signed in, for minting it again.
+
+    Set by every dependency that authenticates the session cookie, so a route
+    that re-mints one without having authenticated it is a bug, and fails here
+    rather than starting the session's lifetime over.
+    """
+    auth_time: datetime.datetime | None = getattr(
+        request.state, "session_auth_time", None
+    )
+    if auth_time is None:
+        raise RuntimeError(
+            "session_auth_time read on a request whose session was not authenticated"
+        )
+    return auth_time
 
 
 def _session_version(payload: dict) -> int:

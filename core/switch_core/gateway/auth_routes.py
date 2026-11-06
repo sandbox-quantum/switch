@@ -48,6 +48,7 @@ from switch_core.gateway.auth import (
     list_tenant_memberships,
     operator_entered_workspace,
     require_admin,
+    session_auth_time,
     set_session_cookie,
     tenants_bindable_by,
     verify_password_off_loop,
@@ -178,6 +179,7 @@ async def login(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return _session_response(user)
 
@@ -299,6 +301,7 @@ async def signup(
             config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
+            datetime.now(UTC),
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -328,6 +331,7 @@ async def refresh(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
+        session_auth_time(request),
     )
     return _session_response(user)
 
@@ -676,6 +680,7 @@ async def change_password(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
+        session_auth_time(request),
     )
     return {"ok": True}
 
