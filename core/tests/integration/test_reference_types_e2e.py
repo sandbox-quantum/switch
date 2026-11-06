@@ -32,6 +32,7 @@ from switch_core.bridges.agent.operations.callctx import (
 from switch_core.bridges.agent.operations.context import init_operations_protocol
 from switch_core.bridges.agent.operations.definitions import connect_to_room
 from switch_core.db.models import Reference, User
+from switch_core.room_invites import SystemInviter
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness, SessionEnv
 
@@ -76,7 +77,8 @@ async def _room_with(harness: Harness, name: str, agent_id: str) -> str:
             name=name,
             description="integration reference-type test",
             agent_ids=[agent_id],
-        )
+        ),
+        invited_by=SystemInviter("test"),
     )
     return result.room.id
 

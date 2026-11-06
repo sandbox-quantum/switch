@@ -135,6 +135,7 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
+from switch_core.room_invites import AgentInviter, InviteRefused
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
     is_reserved_mention_name,
@@ -3203,7 +3204,14 @@ class AgentCore:
                 acting_is_admin=owner_is_admin,
             )
             try:
-                result = await self.room_service.create_room(config)
+                result = await self.room_service.create_room(
+                    config,
+                    invited_by=AgentInviter(
+                        agent.id, agent.owner_id, agent.can_manage_agents
+                    ),
+                )
+            except InviteRefused as e:
+                raise PermissionError(str(e)) from e
             except ValueError as e:
                 raise ValueError(f"Failed to create room: {str(e)}") from e
             except PermissionError as e:
@@ -3285,6 +3293,9 @@ class AgentCore:
         include_for: list[str] | None = None
         async with self.session_factory() as session:
             await self._require_room_roster_change(session, agent_id, room_id)
+            caller = await self.agent_store.get(session, agent_id)
+            if caller is None:
+                raise ValueError(f"Unknown agent: {agent_id}")
             if include_subagents:
                 target = await self.agent_store.get_by_name(session, agent_name)
                 if target is None:
@@ -3298,7 +3309,12 @@ class AgentCore:
                 agent_names=[agent_name],
                 include_subagents_for=include_for,
                 added_by_kind="agent",
+                invited_by=AgentInviter(
+                    caller.id, caller.owner_id, caller.can_manage_agents
+                ),
             )
+        except InviteRefused as e:
+            raise PermissionError(str(e)) from e
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e
 

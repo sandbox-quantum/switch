@@ -27,6 +27,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.room_invites import SystemInviter
 from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import RLSHarness
@@ -191,7 +192,8 @@ async def test_create_room_refuses_another_tenants_bridge(setup: Any) -> None:
     svc, tenant_b, bridge_a, core_a = setup
     with tenant_scope(tenant_b), pytest.raises(ValueError, match="Bridge not found"):
         await svc.create_room(
-            RoomCreateConfig(name="r", description="d", bridge_id=bridge_a)
+            RoomCreateConfig(name="r", description="d", bridge_id=bridge_a),
+            invited_by=SystemInviter("test"),
         )
     assert core_a.calls == []
 
@@ -207,7 +209,8 @@ async def test_create_room_refuses_another_tenants_bridge_for_an_existing_channe
                 description="d",
                 bridge_id=bridge_a,
                 external_channel_id="chan-existing",
-            )
+            ),
+            invited_by=SystemInviter("test"),
         )
     assert core_a.calls == []
 
@@ -216,7 +219,8 @@ async def test_link_bridge_refuses_another_tenants_bridge(setup: Any) -> None:
     svc, tenant_b, bridge_a, core_a = setup
     with tenant_scope(tenant_b):
         own = await svc.create_room(
-            RoomCreateConfig(name="r", description="d", internal_only=True)
+            RoomCreateConfig(name="r", description="d", internal_only=True),
+            invited_by=SystemInviter("test"),
         )
         with pytest.raises(ValueError, match="Bridge not found"):
             await svc.link_bridge_to_room(own.room.id, bridge_a, "channel_public")
@@ -227,7 +231,8 @@ async def test_change_bridge_refuses_another_tenants_bridge(setup: Any) -> None:
     svc, tenant_b, bridge_a, core_a = setup
     with tenant_scope(tenant_b):
         own = await svc.create_room(
-            RoomCreateConfig(name="r", description="d", internal_only=True)
+            RoomCreateConfig(name="r", description="d", internal_only=True),
+            invited_by=SystemInviter("test"),
         )
         with pytest.raises(ValueError, match="Bridge not found"):
             await svc.change_bridge(own.room.id, bridge_id=bridge_a)

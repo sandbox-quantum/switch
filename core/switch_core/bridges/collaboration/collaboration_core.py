@@ -70,6 +70,7 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL, RENEW_EVERY_SECONDS
 from switch_core.provisioning import Provisioning
+from switch_core.room_invites import SystemInviter
 from switch_core.room_service import RoomCreateConfig
 from switch_core.room_wide_mention import is_room_wide_mention
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
@@ -1649,7 +1650,10 @@ class CollaborationCore:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
             await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name], added_by_kind="system"
+                room_id,
+                agent_names=[join.agent_name],
+                added_by_kind="system",
+                invited_by=SystemInviter("the platform added the agent to a channel"),
             )
             return
 
@@ -1820,7 +1824,10 @@ class CollaborationCore:
         )
 
         try:
-            result = await self._room_service.create_room(config)
+            result = await self._room_service.create_room(
+                config,
+                invited_by=SystemInviter("the platform delivered a channel"),
+            )
         except IntegrityError:
             # Backstop: the (bridge_id, external_channel_id) unique index
             # rejected a concurrent duplicate. Adopt the room that won the race.

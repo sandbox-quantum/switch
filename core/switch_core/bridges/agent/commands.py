@@ -56,6 +56,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
 from switch_core.platform_access import administers_on_record
+from switch_core.room_invites import ChatInviter, InviteRefused
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -939,14 +940,7 @@ async def _cmd_assign_agent(
             return
         # Admin-owned: the Switch app's client runs it.
         host = cast("CommandConsumer", client)
-        resolver = AddressingResolver(
-            room_store=host._room_store,
-            room_role_store=host._room_role_store,
-            client_store=host.client_store,
-            agent_store=host._agent_store,
-            external_user_store=host._external_user_store,
-            live_connection_ids=host._connections.live_connection_ids,
-        )
+        resolver = _addressing_resolver(host)
         decision = await resolver.permitted(
             session, agent=target, room_id=meta.room_id, sender=event.user_id
         )
@@ -1005,6 +999,17 @@ async def _cmd_unassign_agent(
         event,
         f"**{_label(current)}** is no longer assigned. Agents here only get "
         "messages that mention them, or follow-ups.",
+    )
+
+
+def _addressing_resolver(host: CommandConsumer) -> AddressingResolver:
+    return AddressingResolver(
+        room_store=host._room_store,
+        room_role_store=host._room_role_store,
+        client_store=host.client_store,
+        agent_store=host._agent_store,
+        external_user_store=host._external_user_store,
+        live_connection_ids=host._connections.live_connection_ids,
     )
 
 
@@ -1236,10 +1241,24 @@ async def _cmd_invite(
     # runs this handler — the `room_service` reference lives on CommandConsumer.
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
     # MCP tool) so the agent is invited to the room AND added to any bridged
-    # channel.
-    await cast("CommandConsumer", client)._room_service.add_agents_to_room(
-        meta.room_id, agent_names=[target.name]
-    )
+    # channel. It asks whether the sender may address the agent here.
+    host = cast("CommandConsumer", client)
+    try:
+        await host._room_service.add_agents_to_room(
+            meta.room_id,
+            agent_names=[target.name],
+            invited_by=ChatInviter(_addressing_resolver(host), event.user_id),
+        )
+    except InviteRefused:
+        await _reply(
+            client,
+            room,
+            event,
+            f"You can't add **{_label(target)}** to this room: it doesn't take "
+            "instructions from you here. Ask its owner to add it, or to change "
+            "who can talk to it.",
+        )
+        return
     await _reply(
         client,
         room,
@@ -1312,14 +1331,7 @@ async def _may_remove_agent(
     Anyone the agent would take instructions from may; so may a workspace
     admin, and an agent that manages agents for the target's owner.
     """
-    resolver = AddressingResolver(
-        room_store=host._room_store,
-        room_role_store=host._room_role_store,
-        client_store=host.client_store,
-        agent_store=host._agent_store,
-        external_user_store=host._external_user_store,
-        live_connection_ids=host._connections.live_connection_ids,
-    )
+    resolver = _addressing_resolver(host)
     decision = await resolver.permitted(
         session, agent=target, room_id=room_id, sender=event.user_id
     )

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Room
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.room_invites import SystemInviter
 from switch_core.room_service import RoomCreateConfig, RoomService
 
 
@@ -47,7 +48,8 @@ async def test_a_non_admin_cannot_create_a_room_in_a_group(
                 group_id=group_id,
                 acting_user_id="member",
                 acting_is_admin=False,
-            )
+            ),
+            invited_by=SystemInviter("test"),
         )
 
     async with session_factory() as session:

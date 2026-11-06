@@ -286,6 +286,12 @@ you get back from `send_targeted_message` is `not_permitted` in that agent's
 than sending again. Commands are covered too, so `!reset` on a restricted
 agent is declined the same way.
 
+**The same rule decides who may add the agent to a room.** Whoever its policy
+would let address it in that room may invite it, with `!invite-agent`,
+`invite_agent_to_room`, or by choosing it for a new room; nobody else can, and
+the refusal says whose agent it is. An agent already in a room stays when its
+policy later narrows.
+
 ## Switch Trust guardrails
 
 A deployment may run every message through **Switch Trust**, a guardrails
@@ -568,7 +574,10 @@ carrying a display name addresses no one.
   on bridged Slack, Discord and Telegram channels; Telegram registers it as
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
-  the bot asks for the one it needs and runs when you reply with it.
+  the bot asks for the one it needs and runs when you reply with it. It is
+  refused with the reason unless you may address that agent in the room, or you
+  can manage agents and it belongs to your owner, so relay that rather than
+  retrying.
 - **`remove_agent_from_room`** — take an agent out of a room by name, the
   opposite of `invite_agent_to_room`; any session it had there is
   disconnected. You need not be in the room. Allowed when you may address

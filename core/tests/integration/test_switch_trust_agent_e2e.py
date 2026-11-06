@@ -16,6 +16,7 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import Message
+from switch_core.room_invites import SystemInviter
 from switch_core.room_service import RoomCreateConfig
 from switch_core.trust.client import (
     GuardrailBlockedError,
@@ -109,7 +110,8 @@ async def _setup_room(
             name=f"{agent_name}-room",
             description="integration switch trust test",
             agent_ids=[agent.agent_id],
-        )
+        ),
+        invited_by=SystemInviter("test"),
     )
     await _wait_joined(client, result.room.transport_room_id)
     return agent.agent_id, result.room.id

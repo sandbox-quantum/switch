@@ -48,6 +48,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
+from switch_core.room_invites import Inviter, InviteRefused, refused_agents
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import (
@@ -554,7 +555,9 @@ class RoomService:
             [(external_channel_id, channel_type)]
         )
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: Inviter
+    ) -> RoomCreateResult:
         await self._validate_attachments(config)
         # Before anything is provisioned: a name refused after the channel and
         # the room exist would leave both behind. Alias collisions need the
@@ -572,6 +575,9 @@ class RoomService:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
+        await self._require_may_invite(
+            invited_by, agent_ids, room_id="", group_id=config.group_id
+        )
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
@@ -1023,6 +1029,29 @@ class RoomService:
             raise ValueError(f"Unknown agents: {', '.join(missing)}")
         return [name_to_id[n] for n in unique_names]
 
+    async def _require_may_invite(
+        self,
+        invited_by: Inviter,
+        agent_ids: list[str],
+        *,
+        room_id: str,
+        group_id: str | None,
+    ) -> None:
+        async with self._session_factory() as session:
+            agents = [
+                agent
+                for agent in [
+                    await self._agent_store.get(session, agent_id)
+                    for agent_id in agent_ids
+                ]
+                if agent is not None
+            ]
+            refused = await refused_agents(
+                invited_by, session, agents, room_id=room_id, group_id=group_id
+            )
+        if refused:
+            raise InviteRefused(refused)
+
     async def add_agents_to_room(
         self,
         room_id: str,
@@ -1032,9 +1061,13 @@ class RoomService:
         join_event_listeners: list[str] | None = None,
         added_by_kind: Literal["user", "agent", "system"] = "user",
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
+        *,
+        invited_by: Inviter,
     ) -> None:
-        """`with_agents` runs in the transaction that records the agents, so
-        what it writes commits with them or not at all."""
+        """`invited_by` is asked about every agent not already in the room,
+        before anything is written, and `InviteRefused` names those it refuses.
+        `with_agents` runs in the transaction that records the agents, so what
+        it writes commits with them or not at all."""
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1069,6 +1102,10 @@ class RoomService:
             )
             return
 
+        with tenant_scope(room.tenant_id):
+            await self._require_may_invite(
+                invited_by, new_agent_ids, room_id=room.id, group_id=room.group_id
+            )
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 
         # One binding for the whole membership change: the two writes below

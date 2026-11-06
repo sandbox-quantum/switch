@@ -13,6 +13,7 @@ from switch_core.bridges.agent.operations.callctx import (
     set_call_context,
 )
 from switch_core.bridges.agent.operations.definitions import create_room
+from switch_core.room_invites import SystemInviter
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 
 
@@ -26,7 +27,8 @@ async def test_caller_is_member_follows_agent_names(env) -> None:
         return await protocol.room_service.create_room(
             RoomCreateConfig(
                 name=name, description=description, agent_names=agent_names
-            )
+            ),
+            invited_by=SystemInviter("test"),
         )
 
     protocol.create_moderation_room = create_moderation_room

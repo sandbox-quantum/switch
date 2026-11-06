@@ -25,6 +25,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.keys import Keyring
+from switch_core.room_invites import AgentInviter, InviteRefused
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -189,3 +190,74 @@ class TestRoomRosterAuthz:
         async with session_factory() as session:
             room = await svc._require_room_roster_change(session, admin_agent, room_id)
             assert room.id == room_id
+
+
+class TestInviteAgentToRoom:
+    """The tool adds an agent as the calling agent, which the room service
+    judges by the invited agent's addressing policy."""
+
+    @staticmethod
+    def _room_service(
+        asked: list[dict[str, object]], *, refuse_for: list[object] | None = None
+    ) -> SimpleNamespace:
+        async def add_agents_to_room(room_id: str, **kw: object) -> None:
+            asked.append({"room_id": room_id, **kw})
+            if refuse_for is not None:
+                raise InviteRefused(refuse_for)  # type: ignore[arg-type]
+
+        return SimpleNamespace(add_agents_to_room=add_agents_to_room)
+
+    async def test_the_caller_is_the_inviter(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        owner = await _make_user(session_factory, "owner")
+        caller = await _register(svc, "caller", owner)
+        room_id = await _make_public_room(
+            session_factory, owner_id=owner, member_agent_ids=[caller]
+        )
+        asked: list[dict[str, object]] = []
+        svc.room_service = self._room_service(asked)  # type: ignore[attr-defined]
+
+        await svc.invite_agent_to_room(caller, room_id, "other-agent")
+
+        assert len(asked) == 1
+        assert asked[0]["agent_names"] == ["other-agent"]
+        assert asked[0]["invited_by"] == AgentInviter(caller, owner, False)
+
+    async def test_a_caller_that_manages_agents_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        owner = await _make_user(session_factory, "owner")
+        caller = await _register(svc, "caller", owner)
+        async with session_factory() as session:
+            agent = await svc.agent_store.get(session, caller)
+            assert agent is not None
+            agent.can_manage_agents = True
+            await session.commit()
+        room_id = await _make_public_room(
+            session_factory, owner_id=owner, member_agent_ids=[caller]
+        )
+        asked: list[dict[str, object]] = []
+        svc.room_service = self._room_service(asked)  # type: ignore[attr-defined]
+
+        await svc.invite_agent_to_room(caller, room_id, "other-agent")
+
+        assert asked[0]["invited_by"] == AgentInviter(caller, owner, True)
+
+    async def test_a_refusal_is_a_permission_error_naming_the_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        owner = await _make_user(session_factory, "owner")
+        caller = await _register(svc, "caller", owner)
+        room_id = await _make_public_room(
+            session_factory, owner_id=owner, member_agent_ids=[caller]
+        )
+        svc.room_service = self._room_service(  # type: ignore[attr-defined]
+            [], refuse_for=[SimpleNamespace(name="private-agent")]
+        )
+
+        with pytest.raises(PermissionError, match="private-agent"):
+            await svc.invite_agent_to_room(caller, room_id, "private-agent")

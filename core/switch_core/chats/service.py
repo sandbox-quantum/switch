@@ -99,6 +99,7 @@ from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
 from switch_core.observability.metrics import metrics
 from switch_core.provisioning import Provisioning
+from switch_core.room_invites import UserInviter
 from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import ACTIVITY_RETENTION
@@ -1127,6 +1128,7 @@ class ChatService:
             room.id,
             agent_ids=[agent_id],
             with_agents=lambda session: self._group_if_several_agents(session, room),
+            invited_by=UserInviter(actor.id),
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             return await self._room(session, tenant_id, room_id)
@@ -1558,7 +1560,8 @@ class ChatService:
                                     if greeting is not None
                                     else None
                                 ),
-                            )
+                            ),
+                            invited_by=UserInviter(user.id),
                         )
                     except ValueError as exc:
                         raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
