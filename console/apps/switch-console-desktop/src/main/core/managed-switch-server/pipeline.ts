@@ -1,4 +1,3 @@
-import { userInfo } from 'node:os';
 import { passwordLogin } from '@main/core/switch-servers/auth';
 import {
   assertManagedServerUrlFree,
@@ -7,7 +6,6 @@ import {
 } from '@main/core/switch-servers/servers-store';
 import { updateMyName } from '@main/core/switch-servers/gateway-client';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
-import { execCommand } from '@main/core/app/utils';
 import { log } from '@main/lib/logger';
 import { RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
@@ -38,6 +36,7 @@ import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
 import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
 import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
+import { osUserFullName } from './os-user-name';
 import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
 import { type LocalServerSecrets, withNewerSecrets } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
@@ -469,23 +468,6 @@ async function registerAndSignIn(
   );
 }
 
-async function getOsUserFullName(): Promise<string | null> {
-  if (process.platform === 'darwin') {
-    try {
-      const fullName = await execCommand('id -F', { timeout: 5_000 });
-      const trimmed = fullName.trim();
-      if (trimmed) return trimmed;
-    } catch {
-      // Fall through to username fallback
-    }
-  }
-  try {
-    return userInfo().username;
-  } catch {
-    return null;
-  }
-}
-
 /** {@link registerAndSignIn} with the server's addresses given explicitly, for
  * a server that is not a compose stack (a native local server runs no
  * dashboard of its own, so it has no separate dashboard address). */
@@ -508,7 +490,7 @@ export async function registerManagedServer(
     });
   } else {
     if (login.data.name === 'Admin') {
-      const osUserName = await getOsUserFullName();
+      const osUserName = await osUserFullName();
       if (osUserName) {
         try {
           await updateMyName(server, osUserName);
