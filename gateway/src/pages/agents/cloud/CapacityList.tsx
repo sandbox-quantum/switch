@@ -10,7 +10,7 @@ import { type CapacityLine, DISK_NOT_AVAILABLE, capacityRows } from "./capacity"
 const BAR_COLOUR = { ok: "primary", nearly_full: "warning", full: "error" } as const;
 const ADVICE_COLOUR = { nearly_full: "warning.main", full: "error.main" } as const;
 
-function CapacityRow({ line, name }: { line: CapacityLine; name: string }) {
+export function CapacityRow({ line, name }: { line: CapacityLine; name: string }) {
   return (
     <Box data-capacity={name} data-step={line.step}>
       <Typography variant="body2">{line.label}</Typography>
