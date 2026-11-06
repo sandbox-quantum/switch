@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
@@ -11,7 +11,8 @@ describe.runIf(process.platform === 'win32')('resolving a CLI with where.exe', (
   let bin: string;
   let root: string;
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'where resolution '));
+    // The long form: `where` prints it, where TEMP may be an 8.3 short name.
+    root = realpathSync.native(mkdtempSync(join(tmpdir(), 'where resolution ')));
     bin = join(root, 'KRISHNA ASWANI T', 'AppData', 'Roaming', 'npm');
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, 'opencode'), '#!/bin/sh\n');
