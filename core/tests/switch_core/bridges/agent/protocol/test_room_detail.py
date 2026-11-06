@@ -331,6 +331,32 @@ class TestGetRoomDetail:
         # The chat has no messaging app, so its people are its members.
         assert detail.connected_user_names == ["ada", "bob"]
 
+    async def test_a_console_chat_on_an_app_names_the_accounts_there(self) -> None:
+        room = _room(
+            bridge_id="bridge-1",
+            external_channel_id="D123",
+            metadata_={"chat_operation_id": "op-1"},
+        )
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            client_ids=["client-a"],
+            member_users=[("user-ada", "ada")],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+            },
+            bridges={"bridge-1": SimpleNamespace(display_name="Slack")},
+            ext_users={
+                "bridge-1": [
+                    SimpleNamespace(client_id="client-a", external_username="ada.l")
+                ]
+            },
+        )
+
+        detail = await svc.get_room_detail("agent-1", "room-1")
+
+        assert detail.connected_user_names == ["ada.l"]
+
     async def test_a_room_that_is_not_a_chat_does_not_count_members(self) -> None:
         svc = _build_service(
             room=_room(),

@@ -435,6 +435,7 @@ class TestRoomList:
             chat = next(r for r in rooms if r["is_console_chat"])
             _, detail = await _count(client, statement_counts, f"/rooms/{chat['id']}")
 
+        assert detail["is_console_chat"] is True
         assert detail["connected_user_count"] == 2
         assert detail["connected_user_names"] == chat["connected_user_names"]
         assert detail["connected_user_names"] == sorted(detail["connected_user_names"])

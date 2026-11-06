@@ -26,7 +26,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelType,
     RetireOutcome,
 )
-from switch_core.chats import is_console_chat
+from switch_core.chats import is_console_chat, people_are_members
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -215,7 +215,7 @@ async def _build_room_detail(
         connected_names = sorted(
             ext_client_to_name[cid] for cid in client_ids if cid in ext_client_to_name
         )
-    if is_console_chat(room):
+    if people_are_members(room):
         # A Console chat's people are its members, not accounts on an app.
         members = await room_store.member_users_by_room(session, [room.id])
         connected_names = [name for _, name in members.get(room.id, [])]
@@ -281,6 +281,7 @@ async def _build_room_detail(
             if room.external_channel_id
             else None
         ),
+        is_console_chat=is_console_chat(room),
         can_write=can(principal, "write", room),
         can_manage=can(principal, "delete", room),
         can_unlink=can_unlink_from_room(principal, takes_part=takes_part),
@@ -421,7 +422,7 @@ async def list_rooms(
     client_ids_by_room = await room_store.client_ids_by_room(session, room_ids)
     involved = await room_store.involved_room_ids(session, user.id, room_ids)
     chat_members = await room_store.member_users_by_room(
-        session, [room.id for room in rooms if is_console_chat(room)]
+        session, [room.id for room in rooms if people_are_members(room)]
     )
     # Not held across the deeplinks, which can ask the platform on a cache miss.
     await session.commit()
@@ -429,7 +430,7 @@ async def list_rooms(
     principal = Principal(user.id, is_admin)
     summaries = []
     for room in rooms:
-        if is_console_chat(room):
+        if people_are_members(room):
             # A Console chat's people are its members, not accounts on an app.
             connected_names = [name for _, name in chat_members.get(room.id, [])]
         else:

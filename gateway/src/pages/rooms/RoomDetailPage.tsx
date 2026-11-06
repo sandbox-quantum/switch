@@ -849,6 +849,22 @@ function ParticipantsSection({
         )}
       </Box>
 
+      {room.is_console_chat && !room.bridge_id && (
+        <Box>
+          <Typography variant="body2" gutterBottom>
+            People ({room.connected_user_names.length})
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
+            {room.connected_user_names.map((name) => (
+              <Chip key={name} label={name} size="small" />
+            ))}
+          </Stack>
+          <Typography variant="caption" color="text.secondary">
+            Members of a Switch Console chat are added and removed in Switch Console.
+          </Typography>
+        </Box>
+      )}
+
       {room.bridge_id && !platformMembership && (
         <Box>
           <Typography variant="body2" gutterBottom>
