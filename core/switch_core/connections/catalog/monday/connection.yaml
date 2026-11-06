@@ -1,0 +1,26 @@
+slug: monday
+name: Monday.com
+category: Project management
+description: Read and update Monday.com boards, items, and workspaces.
+enabled: false
+# Monday.com's official remote MCP server at https://mcp.monday.com/mcp and OAuth provider
+# at https://auth.monday.com/oauth2/authorize:
+# - Endpoint metadata (https://auth.monday.com/.well-known/oauth-authorization-server/mcp):
+#     scopes_supported: ["me:read", "boards:read", "boards:write", "workspaces:read"]
+#     grant_types_supported: ["authorization_code"] (no refresh_token grant)
+#     token_endpoint_auth_methods_supported: ["client_secret_post", "none"] (with PKCE S256)
+# - Token lifetime probe:
+#     Monday's OAuth token endpoint (POST https://auth.monday.com/oauth2/token) returns
+#     perpetual access tokens with no expires_in field and no refresh_token. Probing token
+#     refresh returns an unsupported grant error.
+# - Identity probe:
+#     Monday does not offer an RFC 7662 userinfo endpoint; identity resolution requires a
+#     GraphQL POST to https://api.monday.com/v2 with query `{ me { id email } }`.
+#
+# Because Monday.com access tokens do not expire and cannot be refreshed, issuing a pass-through
+# token to an agent poses an unrevokable security risk (docs/design/service-connections-v2.md,
+# "Keys" and "Tokens"; key_never_expires check in commit 26a2c0f1). Switch requires a finite
+# max_lifetime and rotating or renewable refresh for active OAuth entries, so Monday.com is
+# cataloged with enabled: false citing these probe results (#835).
+auth:
+  type: oauth
