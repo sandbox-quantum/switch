@@ -60,6 +60,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
+from switch_core.invites import Inviter
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -1649,7 +1650,9 @@ class CollaborationCore:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
             await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name], added_by_kind="system"
+                room_id,
+                agent_names=[join.agent_name],
+                invited_by=Inviter.system(),
             )
             return
 

@@ -133,6 +133,7 @@ from switch_core.events import (
 from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
+from switch_core.invites import Inviter
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
 from switch_core.room_wide_mention import (
@@ -3279,12 +3280,19 @@ class AgentCore:
     ) -> None:
         """Invite an agent to a room. Requires room membership (or owner/admin).
 
+        The invited agent's addressing policy decides too: an agent that would
+        not take instructions from the caller is not summoned by it either,
+        and `InviteNotPermitted` says so.
+
         When ``include_subagents`` is set, the invited agent's subagents
         (child agents) are added alongside it.
         """
         include_for: list[str] | None = None
         async with self.session_factory() as session:
             await self._require_room_roster_change(session, agent_id, room_id)
+            caller = await self.agent_store.get(session, agent_id)
+            if caller is None:
+                raise ValueError(f"Unknown agent: {agent_id}")
             if include_subagents:
                 target = await self.agent_store.get_by_name(session, agent_name)
                 if target is None:
@@ -3297,7 +3305,7 @@ class AgentCore:
                 room_id,
                 agent_names=[agent_name],
                 include_subagents_for=include_for,
-                added_by_kind="agent",
+                invited_by=Inviter.agent(caller.id, caller.owner_id),
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e

@@ -45,7 +45,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.addressing import allows_on_behalf_of, parse_policy
+from switch_core.addressing import parse_policy
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE, administers_tenant
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
@@ -94,6 +94,12 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import MENTIONS_KEY, AddressingResolver
+from switch_core.invites import (
+    InviteNotPermitted,
+    Inviter,
+    invite_allowed,
+    require_can_invite,
+)
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
@@ -1108,26 +1114,32 @@ class ChatService:
         self, tenant_id: str, actor: User, room_id: str, agent_id: str
     ) -> Room:
         """Manager only, and only an agent the manager may use in this room.
-        Already in is success. A second agent makes a direct chat a group."""
+        Already in is success. A second agent makes a direct chat a group.
+
+        Whether the manager may use it is the agent's addressing policy, and
+        `add_agents_to_room` is what asks: the same question the `!invite-agent`
+        command and the `invite_agent_to_room` tool ask, with the same answer.
+        """
         self._require_group_chats()
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
             await self._require_manager(session, tenant_id, actor, room)
-            await self._require_may_use_agent(
-                session,
-                tenant_id,
-                actor,
-                agent_id,
-                room_id=room.id,
-                group_id=room.group_id,
-            )
+            agent = await self._agent_store.get(session, agent_id)
+            if agent is None or agent.tenant_id != tenant_id:
+                raise ChatError(404, "AGENT_NOT_FOUND", "Agent not found.")
             if agent_id in await self._room_store.get_agent_ids(session, room.id):
                 return room
-        await self._room_service.add_agents_to_room(
-            room.id,
-            agent_ids=[agent_id],
-            with_agents=lambda session: self._group_if_several_agents(session, room),
-        )
+        try:
+            await self._room_service.add_agents_to_room(
+                room.id,
+                agent_ids=[agent_id],
+                invited_by=Inviter.user(actor.id),
+                with_agents=lambda session: self._group_if_several_agents(
+                    session, room
+                ),
+            )
+        except InviteNotPermitted as refused:
+            raise ChatError(403, "AGENT_NOT_ALLOWED", str(refused)) from refused
         async with tenant_session(self.session_factory, tenant_id) as session:
             return await self._room(session, tenant_id, room_id)
 
@@ -1329,18 +1341,25 @@ class ChatService:
     ) -> Agent:
         """The agent, if the user may address it themselves in `room_id`.
 
-        The rule the platform applies when it speaks for a person. Asked
-        before a new room exists, `room_id` is "": a rule naming particular
-        rooms admits nobody into a new one. No claimed platform account is
-        consulted.
+        The rule the platform applies when it speaks for a person, and the
+        same one every invite path applies — the refusal is worded once, in
+        `invites`. Asked before a new room exists, `room_id` is "": a rule
+        naming particular rooms admits nobody into a new one. No claimed
+        platform account is consulted.
         """
         agent = await self._agent_store.get(session, agent_id)
         if agent is None or agent.tenant_id != tenant_id:
             raise ChatError(404, "AGENT_NOT_FOUND", "Agent not found.")
-        if not _may_use(agent, user, room_id=room_id, group_id=group_id):
-            raise ChatError(
-                403, "AGENT_NOT_ALLOWED", "You may not chat with this agent here."
+        try:
+            await require_can_invite(
+                session,
+                agents=[agent],
+                room_id=room_id,
+                group_id=group_id,
+                inviter=Inviter.user(user.id),
             )
+        except InviteNotPermitted as refused:
+            raise ChatError(403, "AGENT_NOT_ALLOWED", str(refused)) from refused
         return agent
 
     async def agent_candidates(
@@ -2348,14 +2367,17 @@ class ChatService:
 
 def _may_use(agent: Agent, user: User, *, room_id: str, group_id: str | None) -> bool:
     """Whether `user` may address `agent` themselves in `room_id` ("" for a
-    room not made yet), with no claimed platform account consulted."""
-    return allows_on_behalf_of(
+    room not made yet), with no claimed platform account consulted.
+
+    What `_require_may_use_agent` refuses on, answered without raising, so
+    the agents offered and the agents accepted cannot disagree.
+    """
+    return invite_allowed(
         parse_policy(agent.addressing_policy),
         room_id=room_id,
         group_id=group_id,
-        user_id=user.id,
-        external_user_ids=[],
         owner_user_id=agent.owner_id,
+        inviter=Inviter.user(user.id),
     )
 
 

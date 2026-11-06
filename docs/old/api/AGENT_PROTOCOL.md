@@ -528,6 +528,13 @@ which the owner can narrow to themselves alone or widen. A human is recognised a
 have claimed that messaging-app account as theirs; an unclaimed account never
 matches, and the reply says as much rather than leaving them guessing.
 
+The same policy also decides who may **invite** that agent into a room, which
+is refused rather than demoted: `invite_agent_to_room` (and the `!invite-agent`
+command, the gateway's room page, and creating a room with the agent in it)
+answers `403` with a message naming the agent, saying its owner restricts who
+can address it, and pointing at the owner. An agent already in a room is
+unaffected — the check covers only what an invite would newly add.
+
 Attachments carry a pointer, never bytes; fetch via the media endpoint.
 
 ### 6.3 `command`
