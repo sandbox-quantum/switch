@@ -22,6 +22,8 @@ rather than about how much room there was.
 
 from __future__ import annotations
 
+import re
+
 from switch_core.bridges.collaboration.session.renderers import MARKDOWN
 from switch_core.bridges.collaboration.session.renderers.neutral import activity_log
 from switch_core.sessions.contract import Item
@@ -75,10 +77,15 @@ def test_every_call_is_there_oldest_first_under_the_state_line() -> None:
     assert lines[1:] == ["⌗ ✓ First", "⌗ ✓ Second", "⌗ ✓ Third"]
 
 
-def test_a_call_that_said_something_says_it_beside_the_name() -> None:
-    lines = _log([_call(title="Ran the tests", text="42 passed")])
+def test_a_calls_detail_is_not_shown_where_the_platform_did_not_ask_for_it() -> None:
+    """The default is no detail at all, not a preview of it. Teams and Telegram
+    never promised a reader what a tool took and gave back, and a room opting
+    in is what makes `text` non-empty — so a preview here would put it in front
+    of readers on a platform that shows no tool detail."""
+    lines = _log([_call(title="Ran the tests", text="SECRET 42 passed")])
 
-    assert lines[1] == "⌗ ✓ Ran the tests — 42 passed"
+    assert lines[1:] == ["⌗ ✓ Ran the tests"]
+    assert not any("SECRET" in line for line in lines)
 
 
 def test_how_a_call_went_is_on_the_line_rather_than_left_to_the_tally() -> None:
@@ -310,3 +317,262 @@ def test_host_text_is_put_through_the_platforms_own_escape() -> None:
 
     assert "*not bold*" in seen
     assert "\\*not bold\\*" in drawn
+
+
+# ── A call's detail, where the platform asks for it ──────────────────────────
+
+# A detail written to get out of its block and do something in the message: an
+# early fence, runs of backticks of every length, every mass mention spelling
+# the platforms have, a mention, a link and emphasis.
+HOSTILE_DETAIL = (
+    "```\nrm -rf /\n```\nafter the fence\n"
+    "` single `` double ```` four ````` five\n"
+    "@channel @here @all @everyone <@123> <!channel>\n"
+    "https://evil.example/landing **x**"
+)
+# What would mean the detail had got out, wherever it showed up outside a block.
+HOSTILE_MARKERS = (
+    "rm -rf",
+    "after the fence",
+    "single",
+    "@channel",
+    "@here",
+    "@all",
+    "@everyone",
+    "<@123>",
+    "<!channel>",
+    "evil.example",
+    "**x**",
+)
+
+_FENCE_LINE = re.compile(r" {0,3}`{3,}[ \t]*")
+
+# The line a detail cut again to fit the message ends with, spelled out here
+# rather than imported so a change to it is a change a test sees.
+SHORTENED = "… (shortened to fit this message)"
+
+
+def fenced(text: str) -> tuple[list[str], list[str]]:
+    """(each block's content, every line outside a block) of a drawn message.
+
+    Read both ways a block can be closed: a line of three or more backticks is
+    a fence (CommonMark), and a block's content must hold no three backticks in
+    a row anywhere (Discord closes on the first it meets). A block left open is
+    a failure, not a reading.
+    """
+    blocks: list[str] = []
+    outside: list[str] = []
+    current: list[str] | None = None
+    for line in text.split("\n"):
+        if _FENCE_LINE.fullmatch(line):
+            if current is None:
+                current = []
+            else:
+                blocks.append("\n".join(current))
+                current = None
+            continue
+        (outside if current is None else current).append(line)
+    assert current is None, f"a block was left open in {text!r}"
+    for block in blocks:
+        assert "```" not in block, f"Discord would close this block early: {block!r}"
+    return blocks, outside
+
+
+def _io_log(
+    items: list[Item],
+    *,
+    limit: int = 10_000,
+    tool_io_limit: int | None = None,
+    escape: object = None,
+) -> str:
+    return activity_log(
+        items,
+        _turn("completed"),
+        escape=_identity if escape is None else escape,  # type: ignore[arg-type]
+        limit=limit,
+        markup=MARKDOWN,
+        elapsed_seconds=None,
+        heading=True,
+        tool_io_limit=limit if tool_io_limit is None else tool_io_limit,
+    )
+
+
+def test_a_platform_that_asks_gets_the_detail_as_a_block_under_its_call() -> None:
+    lines = _io_log([_call(title="Ran the tests", text="42 passed")]).splitlines()
+
+    assert lines[1:] == ["⌗ ✓ Ran the tests", "```", "42 passed", "```"]
+
+
+def test_a_detail_cannot_close_its_own_block_or_reach_the_message() -> None:
+    """Nothing after the closing fence comes from the detail: every marker is
+    inside the one block, read as either parser reads it."""
+    drawn = _io_log(
+        [_call(title="Ran it", text=HOSTILE_DETAIL), _call(title="Then this")]
+    )
+
+    blocks, outside = fenced(drawn)
+
+    assert len(blocks) == 1
+    for marker in HOSTILE_MARKERS:
+        assert not any(marker in line for line in outside), marker
+    for marker in ("@everyone", "<@123>", "<!channel>", "**x**", "after the fence"):
+        assert marker in blocks[0], marker
+    assert outside[-1] == "⌗ ✓ Then this"
+
+
+def test_inside_the_block_the_detail_is_literal_and_escaped_once_at_most() -> None:
+    """The prose escape is wrong inside a block: a backslash put there for the
+    body would show. The title beside it is still prose and still escaped."""
+
+    def _stars(text: str) -> str:
+        return text.replace("*", "\\*")
+
+    drawn = _io_log([_call(title="*bold*", text="**x** and _y_")], escape=_stars)
+
+    blocks, outside = fenced(drawn)
+
+    assert blocks == ["**x** and _y_"]
+    assert "⌗ ✓ \\*bold\\*" in outside
+
+
+def test_a_detail_of_nothing_but_space_draws_no_empty_block() -> None:
+    drawn = _io_log([_call(title="Ran it", text="  \n\n ")])
+
+    assert fenced(drawn)[0] == []
+
+
+def test_a_detail_too_long_for_the_message_is_cut_inside_its_block() -> None:
+    """The fence is never what runs out: the cut is on the detail, and the
+    block is drawn whole around what is kept."""
+    drawn = _io_log([_call(title="Ran it", text="x" * 5000)], limit=500)
+
+    blocks, _outside = fenced(drawn)
+
+    assert len(drawn) <= 500
+    assert len(blocks) == 1
+    assert blocks[0].endswith("\n" + SHORTENED)
+
+
+def test_no_one_detail_spends_more_than_the_platform_allows_one() -> None:
+    drawn = _io_log(
+        [_call(title="Ran it", text="x" * 5000)], limit=10_000, tool_io_limit=80
+    )
+
+    blocks, _outside = fenced(drawn)
+
+    assert len(blocks) == 1
+    assert len("\n```\n" + blocks[0] + "\n```") <= 80
+
+
+def test_several_details_share_the_budget_and_the_message_still_fits() -> None:
+    """CJK and astral text measured as the rest of the message is, smallest
+    detail first so a short one is shown whole, and every call kept."""
+    items = [
+        _call(title=f"Call {index}", text="漢字🙂" * 300 + HOSTILE_DETAIL)
+        for index in range(5)
+    ] + [_call(title="Short one", text="ok")]
+
+    for limit in (300, 800, 2000, 4000):
+        drawn = _io_log(items, limit=limit)
+
+        blocks, outside = fenced(drawn)
+        assert len(drawn) <= limit
+        drawn.encode("utf-8")
+        assert "ok" in blocks
+        assert [line for line in outside if line.startswith("⌗")] == [
+            *(f"⌗ ✓ Call {index}" for index in range(5)),
+            "⌗ ✓ Short one",
+        ]
+        for block in blocks:
+            assert block == "ok" or block.endswith("\n" + SHORTENED)
+        for marker in HOSTILE_MARKERS:
+            assert not any(marker in line for line in outside), (limit, marker)
+
+
+def test_a_detail_never_costs_the_log_a_call() -> None:
+    """The detail is paid for out of what the lines leave. Where the lines do
+    not all fit there is nothing left, and the log is exactly the log a platform
+    showing no detail would draw."""
+    items = [
+        _call(title=f"Call {index} " + "y" * 60, text="z" * 400) for index in range(20)
+    ]
+
+    with_io = _io_log(items, limit=400)
+    without = _io_log(items, limit=400, tool_io_limit=0)
+
+    assert with_io == without
+    assert "z" not in with_io
+
+
+def _host_detail() -> str:
+    """A detail the host clipped to its own 2,000-point cap: 1,997 points, its
+    header saying how much of the head and tail it kept, and its own "…" for
+    the middle it skipped."""
+    head = "\n".join(f"head line {i:03d} " + "." * 39 for i in range(18))[:-62]
+    tail = "\n".join(f"tail line {i:03d} " + "." * 39 for i in range(18))
+    detail = (
+        'Input\n{"command":"make test"}\n\n'
+        "Output — clipped: first 909 and last 971 characters shown;"
+        " the middle was not kept\n" + head + "\n…\n" + tail
+    )
+    assert len(detail) == 1997
+    return detail
+
+
+def _cut_again(block: str, source: str) -> None:
+    """A detail cut to fit the message: the start kept whole lines at a time,
+    the host's header still first, and a last line saying it was shortened —
+    never a bare "…" a reader would take for the host's own."""
+    kept, _, note = block.rpartition("\n")
+    assert note == SHORTENED
+    assert block.startswith("Input\n")
+    assert source.startswith(kept + "\n")
+    assert not block.endswith("\n…")
+
+
+def test_a_detail_too_long_for_discord_says_it_was_shortened() -> None:
+    """The host's own cap is 2,000 points and a Discord message holds 1,978
+    here, so a full detail is always cut a second time."""
+    detail = _host_detail()
+
+    drawn = _io_log([_call(title="Ran make test", text=detail)], limit=1978)
+
+    blocks, outside = fenced(drawn)
+    assert len(drawn) <= 1978
+    assert len(blocks) == 1
+    assert "⌗ ✓ Ran make test" in outside
+    _cut_again(blocks[0], detail)
+
+
+def test_details_sharing_a_mattermost_message_each_say_they_were_shortened() -> None:
+    detail = _host_detail()
+    items = [_call(title=f"Ran make test {index}", text=detail) for index in range(3)]
+
+    drawn = _io_log(items, limit=3977)
+
+    blocks, outside = fenced(drawn)
+    assert len(drawn) <= 3977
+    assert len(blocks) == 3
+    assert sum(line.startswith("⌗") for line in outside) == 3
+    for block in blocks:
+        _cut_again(block, detail)
+
+
+def test_a_detail_that_is_one_long_line_is_still_cut_with_the_note() -> None:
+    drawn = _io_log([_call(title="Ran it", text="x" * 5000)], limit=300)
+
+    blocks, _outside = fenced(drawn)
+    assert len(drawn) <= 300
+    assert len(blocks) == 1
+    kept, _, note = blocks[0].rpartition("\n")
+    assert note == SHORTENED
+    assert kept and set(kept) == {"x"}
+
+
+def test_a_detail_with_no_room_for_the_note_is_left_out_rather_than_bare() -> None:
+    drawn = _io_log(
+        [_call(title="Ran it", text="x" * 5000)], limit=10_000, tool_io_limit=30
+    )
+
+    assert fenced(drawn)[0] == []
+    assert "x" not in drawn

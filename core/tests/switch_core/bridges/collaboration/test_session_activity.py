@@ -510,6 +510,9 @@ async def test_the_text_fallback_carries_the_doing_as_well_as_the_saying() -> No
 
     A fallback holding only the conversation would drop the whole disclosure
     rather than shrink it, which is the one thing this file is here to prevent.
+
+    The doing is a tool entry's title alone: its detail is the call's input
+    and output, which a notification never carries.
     """
     items = await _items()
     asked = next(item for item in items if item.kind == "user-message")
@@ -517,7 +520,8 @@ async def test_the_text_fallback_carries_the_doing_as_well_as_the_saying() -> No
 
     assert asked.text not in text
     assert "same fixture user" in text
-    assert "✗ Ran tests/auth/test_login.py — 1 failed, 41 passed" in text
+    assert "✗ Ran tests/auth/test_login.py\n" in text
+    assert "1 failed, 41 passed" not in text
 
 
 async def test_the_card_and_its_fallback_say_the_same_things() -> None:

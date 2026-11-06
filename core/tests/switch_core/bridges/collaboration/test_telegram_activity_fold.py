@@ -301,3 +301,34 @@ async def test_a_turn_republished_after_a_refusal_still_carries_its_calls() -> N
     fallback = adapter.rich_fallback_text(_ended("Ran a test"))
 
     assert _fold(fallback) == ["⌗ ✓ Ran a test"]
+
+
+async def test_a_calls_detail_never_reaches_telegram_even_when_the_host_sent_one() -> (
+    None
+):
+    """Telegram shows no tool detail. A room that opted in gives a call a
+    non-empty `text`, and nothing of it may reach the fold, on the post or on
+    the edit that ends the turn, or the fallback."""
+    turn = TurnActivity(
+        [
+            _item(itemId="a", title="Ran it", text="TOOL-DETAIL-SECRET <b>x</b>"),
+            _item(itemId="b", title="Then this", text="TOOL-DETAIL-SECRET"),
+        ],
+        _turn("completed"),
+    )
+    posted = _adapter()
+    edited = _adapter()
+
+    await posted.post_rich(CHANNEL, "my-agent", turn, None)
+    ref = await edited.post_rich(CHANNEL, "my-agent", _running(), None)
+    await edited.update_rich(CHANNEL, "my-agent", ref, turn, None)
+
+    assert _fold(_sent(posted)) == ["⌗ ✓ Ran it", "⌗ ✓ Then this"]
+    assert _fold(_last_edit(edited)) == ["⌗ ✓ Ran it", "⌗ ✓ Then this"]
+    sent = [
+        *_bot(posted).messages,
+        *_bot(edited).messages,
+        *_bot(edited).edits,
+    ]
+    assert not any("TOOL-DETAIL-SECRET" in str(message["text"]) for message in sent)
+    assert "TOOL-DETAIL-SECRET" not in posted.rich_fallback_text(turn)

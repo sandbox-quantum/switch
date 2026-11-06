@@ -354,6 +354,11 @@ class Drawn:
     answerable: bool
 
 
+# What `Markup.code_block` breaks up inside a block, and what it breaks it with.
+_BACKTICK_RUN = re.compile(r"`{3,}")
+_ZERO_WIDTH_SPACE = "\u200b"
+
+
 class Markup:
     """The marks the neutral renderer makes, in one platform's spelling.
 
@@ -404,6 +409,30 @@ class Markup:
         fence = "`" * (longest + 1)
         pad = " " if text.startswith("`") or text.endswith("`") else ""
         return f"{fence}{pad}{text}{pad}{fence}"
+
+    def code_block(self, text: str) -> str:
+        """A literal of several lines, fenced on lines of its own.
+
+        `code`'s rule, made to hold on two parsers that close a fence
+        differently. CommonMark closes a fenced block on a line of at least as
+        many backticks as opened it, so a fence longer than the longest run
+        inside is safe there. Discord closes one on the first three backticks
+        it meets, whatever opened it, so a longer fence alone does not hold
+        there — which is why every run of three or more inside is broken up
+        first, a zero-width space between its backticks. What is left has no
+        run of three, and the fence both parsers read is then longer than
+        anything inside it.
+
+        The text arrives already spelled by `literal`; nothing else is escaped
+        here. Not drawn on a platform that shows no tool detail, so the HTML
+        markups do not spell it.
+        """
+        text = _BACKTICK_RUN.sub(
+            lambda run: _ZERO_WIDTH_SPACE.join(run.group(0)), text.rstrip("\n")
+        )
+        longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+        fence = "`" * max(3, longest + 1)
+        return f"{fence}\n{text}\n{fence}"
 
     def command(self, text: str) -> str:
         """The command a card is asking about, set apart from the prose.

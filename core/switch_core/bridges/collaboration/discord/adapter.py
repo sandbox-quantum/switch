@@ -3281,14 +3281,16 @@ class DiscordAdapter(PlatformAdapter):
         current one before deciding whether to press.
         """
         stamp = f"Read <t:{int(snapshot.read_at.timestamp())}:R>"
+        limit = max(1, MAX_MESSAGE - len(stamp) - 1)
         body = activity_log(
             snapshot.items,
             snapshot.turn,
             escape=self._rich_escape,
-            limit=max(1, MAX_MESSAGE - len(stamp) - 1),
+            limit=limit,
             markup=self.rich_markup(),
             elapsed_seconds=snapshot.elapsed_seconds,
             heading=True,
+            tool_io_limit=limit,
         )
         return f"{body}\n{stamp}"
 
@@ -3316,7 +3318,12 @@ class DiscordAdapter(PlatformAdapter):
         )
         view.stop()
         try:
-            await interaction.edit_original_response(content=text, view=view)
+            # The view can show a tool's detail, which may spell `<@id>`/`<@&id>`.
+            await interaction.edit_original_response(
+                content=text,
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         except discord.HTTPException as error:
             logger.warning(
                 "Discord would not carry the activity view for message %s (%s).",

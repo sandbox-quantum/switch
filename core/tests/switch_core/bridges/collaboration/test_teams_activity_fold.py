@@ -18,6 +18,7 @@ The two things that fall out of drawing it that way, and are tested here:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import TurnActivity
@@ -323,3 +324,23 @@ def test_a_log_too_long_for_the_card_is_cut_and_says_how_much_it_cut() -> None:
     assert "not shown" in lines[0]
     assert len("\n".join(lines)) <= 2000
     assert lines[-1] == "⌗ ✓ Call 399"
+
+
+def test_a_calls_detail_never_reaches_teams_even_when_the_host_sent_one() -> None:
+    """Teams shows no tool detail. A room that opted in gives a call a
+    non-empty `text`, and nothing of it may reach the card, its fold, its toast
+    or its fallback — the fold is the call's name and outcome only."""
+    adapter, connector = _teams()
+    turn = TurnActivity(
+        [
+            _item(itemId="a", title="Ran it", text="TOOL-DETAIL-SECRET ```x```"),
+            _item(itemId="b", title="Then this", text="TOOL-DETAIL-SECRET"),
+        ],
+        _turn("completed"),
+    )
+
+    _run(adapter.post_rich(CHANNEL, AGENT, turn, ROOT))
+
+    assert _log_lines(_posted(connector)) == ["⌗ ✓ Ran it", "⌗ ✓ Then this"]
+    assert "TOOL-DETAIL-SECRET" not in json.dumps(connector.sends)
+    assert "TOOL-DETAIL-SECRET" not in adapter.rich_fallback_text(turn)

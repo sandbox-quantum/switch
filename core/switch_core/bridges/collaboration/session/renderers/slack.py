@@ -110,7 +110,6 @@ _MAX_QUESTIONS = 20
 # log is one context block, which takes the same 3000 a section does.
 _MAX_MESSAGE = 2400
 _MAX_ACTIVITY_TITLE = 200
-_MAX_ACTIVITY_DETAIL = 120
 _MAX_ACTIVITY = 2800
 # Blocks per message are capped at 50, and a long turn is cut rather than
 # refused: unlike a form, a turn showing some of itself is still worth reading,
@@ -133,7 +132,13 @@ _MAX_PLAN_TASKS = 50
 _MAX_SECTION_ITEMS = _MAX_PLAN_TASKS - 1
 _MAX_PLAN_TITLE = 150
 _MAX_PLAN_TASK_TITLE = 200
-_MAX_PLAN_TASK_DETAILS = 200
+# A tool card's detail is the host's own redacted excerpt of the call: at most
+# 2,000 code points, the notes it writes at each cut included. This sits above
+# that, so a detail the host already bounded arrives as the host wrote it and
+# never carries a second cut note from here; it only bites on a host that did
+# not bound its detail. What the assembled message can afford is decided
+# afterwards, by `_fit_tool_details`.
+_MAX_TOOL_IO_DETAILS = 2400
 # Prose gets more room than a tool result because it is read rather than
 # scanned, and because a card's detail is the one part of this block Slack will
 # expand on request.
@@ -1067,6 +1072,7 @@ def render_activity(
             items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds
         )
         blocks.append(_context(f"_{state}_"))
+    _fit_tool_details(blocks, _MAX_POST_BYTES)
     return SlackMessage(
         text=render_activity_text(items, turn, elapsed_seconds=elapsed_seconds),
         blocks=blocks,
@@ -1101,6 +1107,9 @@ def render_turn_with_request(
     activity = render_activity(items, turn, elapsed_seconds=elapsed_seconds)
     card = render_request(request, reference)
     blocks = activity.blocks + card.blocks
+    # Measured again with the card in: the activity fitted on its own, and the
+    # request is the half that must not be the one to give way.
+    _fit_tool_details(blocks, _MAX_POST_BYTES)
     text = "\n\n".join(_within([activity.text, card.text], _MAX_TEXT))
     return SlackMessage(text=text, blocks=blocks)
 
@@ -1167,9 +1176,10 @@ def _activity_lines(items: list[Item]) -> list[str]:
     spent = 0
     for position, item in enumerate(reversed(items), start=1):
         title = _fit(item.title, _MAX_ACTIVITY_TITLE) if item.title else "_(untitled)_"
+        # The title only. A tool's detail is the call's own input and output,
+        # and a notification is the one place it would be shown outside the
+        # card a reader chose to open.
         line = f"{_ACTIVITY[item.status]} {title}"
-        if item.text:
-            line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
         if position > _MAX_ACTIVITY_LINES or spent + len(line) + 1 > _MAX_ACTIVITY:
             lines.append(f"_…and {len(items) - position + 1} more before these._")
             break
@@ -1680,10 +1690,33 @@ def _plan_task(item: Item) -> dict[str, Any]:
         "icon": {"type": "icon", "name": _TOOL_ICON},
         "status": _TASK_STATUS[item.status],
     }
-    details = plain_text(item.text) if item.text else ""
-    if details:
-        task["details"] = _rich_text(_truncate_prose(details, _MAX_PLAN_TASK_DETAILS))
+    if item.text:
+        task["details"] = _preformatted(
+            _truncate_prose(item.text, _MAX_TOOL_IO_DETAILS)
+        )
     return task
+
+
+def _preformatted(text: str) -> dict[str, Any]:
+    """A tool's detail as one code block of literal text.
+
+    A call's input and output are shown as the host wrote them: not run through
+    `plain_text`, which would eat the backticks and emphasis marks a command
+    line or a diff is made of. Nothing is escaped either: a plain `text`
+    element is taken to behave as the plain fields measured for a task's title
+    (`_plan_task`) do, keeping `<!here>` as the characters it is. Slack does
+    not document how a `text` element inside a preformatted block treats
+    `<!channel>`, `<@U…>` or a URL, and that has not been measured here.
+    """
+    return {
+        "type": "rich_text",
+        "elements": [
+            {
+                "type": "rich_text_preformatted",
+                "elements": [{"type": "text", "text": text}],
+            }
+        ],
+    }
 
 
 def _rich_text(text: str) -> dict[str, Any]:
@@ -1762,7 +1795,11 @@ def _fit_details(blocks: list[dict[str, Any]], limit: int) -> None:
     which is why running out of retreat here is an exception rather than a
     smaller cut: it would mean cards arriving from somewhere this was not
     written to bound.
+
+    Tool details are not part of this. They have already given way, through
+    `_fit_tool_details`, before any prose is cut.
     """
+    _fit_tool_details(blocks, limit)
     if _weigh(blocks) <= limit:
         return
     details = [
@@ -1784,6 +1821,46 @@ def _fit_details(blocks: list[dict[str, Any]], limit: int) -> None:
         f"the {limit} Slack will take even with every one cut to "
         f"{_DETAIL_RETREAT[-1]} characters."
     )
+
+
+def _fit_tool_details(blocks: list[dict[str, Any]], limit: int) -> None:
+    """Give way with tool details first when `blocks` weighs more than `limit`.
+
+    Measured on the message as it will be sent, because only then is it known
+    how many cards carry a detail and what else shares the message with them.
+    The details are pulled back through `_DETAIL_RETREAT`, each cut saying so,
+    and if the message still does not fit they are removed altogether — a tool
+    card without its detail is exactly the card a call with no detail draws, so
+    what is left is a message this renderer already sends.
+
+    Only tool cards: a remark's detail is what the agent said, and a request's
+    card is something a person has to answer. Neither is touched here, and this
+    never raises — what still does not fit once every tool detail is gone is
+    not a tool detail's doing.
+    """
+    if _weigh(blocks) <= limit:
+        return
+    tasks = [
+        task
+        for block in blocks
+        if block.get("type") == "plan"
+        for task in block.get("tasks", [])
+        if "details" in task and task.get("icon", {}).get("name") == _TOOL_ICON
+    ]
+    texts = [
+        element
+        for task in tasks
+        for part in task["details"]["elements"]
+        for element in part.get("elements", [])
+        if element.get("type") == "text"
+    ]
+    for budget in _DETAIL_RETREAT:
+        for element in texts:
+            element["text"] = _truncate_prose(element["text"], budget)
+        if _weigh(blocks) <= limit:
+            return
+    for task in tasks:
+        del task["details"]
 
 
 def _fit(text: str, limit: int) -> str:

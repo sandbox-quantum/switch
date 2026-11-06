@@ -60,6 +60,7 @@ from .test_mattermost_press import (
     _record,
 )
 from .test_mattermost_sdk_only import _activity, _card, _posts
+from .test_session_activity_log import HOSTILE_DETAIL, HOSTILE_MARKERS, fenced
 
 CALLBACK_URL = f"{CALLBACK_BASE}/collaboration/mattermost/bridge-1/callback"
 OTHER_CHANNEL = "chan-2"
@@ -342,17 +343,78 @@ async def test_the_log_comes_back_to_the_presser_and_not_to_the_channel() -> Non
 
     answer = await adapter._handle_callback(_press())
 
-    assert "Ran the tests — 42 passed" in _shown(answer)
+    assert "Ran the tests" in _shown(answer)
     assert _posts(adapter).created == []
     assert _posts(adapter).patched == []
 
 
 async def test_the_log_is_the_calls_oldest_first_under_the_state_line() -> None:
+    """A call's detail, where the room opted in to it, is a fenced block under
+    its own line rather than a preview beside it."""
     adapter, _ = _viewer()
 
     lines = _shown(await adapter._handle_callback(_press())).splitlines()
 
-    assert lines[1:3] == ["⌗ ✓ Read config.toml", "⌗ ✓ Ran the tests — 42 passed"]
+    assert lines[1:6] == [
+        "⌗ ✓ Read config.toml",
+        "⌗ ✓ Ran the tests",
+        "```",
+        "42 passed",
+        "```",
+    ]
+
+
+async def test_a_calls_detail_is_shown_in_a_block_it_cannot_close() -> None:
+    """Nothing after the closing fence comes from the detail, and the reply
+    still fits the post size every server accepts."""
+    adapter, _ = _viewer()
+    _resolving(
+        adapter,
+        _snapshot(
+            items=[
+                _item(itemId="a", title="Ran it", text=HOSTILE_DETAIL),
+                _item(itemId="b", title="Then this"),
+            ]
+        ),
+    )
+
+    text = _shown(await adapter._handle_callback(_press()))
+
+    blocks, outside = fenced(text)
+    assert len(text) <= 4000
+    assert len(blocks) == 1
+    assert "@channel" in blocks[0]
+    for marker in HOSTILE_MARKERS:
+        assert not any(marker in line for line in outside), marker
+    assert "⌗ ✓ Then this" in outside
+
+
+async def test_several_details_share_the_one_post_mattermost_allows() -> None:
+    adapter, _ = _viewer()
+    items = [
+        _item(itemId=f"i{index}", title=f"Call {index}", text="漢字🙂" * 900)
+        for index in range(6)
+    ] + [_item(itemId="s", title="Short one", text="ok")]
+    _resolving(adapter, _snapshot(items=items))
+
+    text = _shown(await adapter._handle_callback(_press()))
+
+    blocks, outside = fenced(text)
+    assert len(text) <= 4000
+    assert "ok" in blocks
+    assert len(blocks) == 7
+    assert sum(line.startswith("⌗") for line in outside) == 7
+
+
+async def test_what_the_private_reply_is_sent_with() -> None:
+    """Recorded rather than wished for: the text and the flag that skips the
+    Slack conversion, and nothing about link previews or mentions."""
+    adapter, _ = _viewer()
+
+    answer = await adapter._handle_callback(_press())
+
+    assert set(answer) == {"ephemeral_text", "skip_slack_parsing"}
+    assert answer["skip_slack_parsing"] is True
 
 
 async def test_the_log_carries_what_the_agent_said_as_well_as_what_it_did() -> None:

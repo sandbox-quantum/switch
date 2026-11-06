@@ -104,6 +104,8 @@ _LOG_UNTITLED = "(untitled)"
 _LOG_EMPTY = "No activity."
 _LOG_EMPTY_YET = "No activity yet."
 _LOG_CUT = "…{left} earlier in this turn, not shown."
+# The last line of a call's detail that had to be cut again to fit the message.
+_DETAIL_SHORTENED = "… (shortened to fit this message)"
 
 # What kind of line this is, in the column before the outcome. Slack draws the
 # distinction with a card icon; a platform whose log is body text has only the
@@ -388,21 +390,95 @@ def in_activity_log(item: Item) -> bool:
     return item.kind == "assistant-message" and bool(item.text)
 
 
-def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
+def _log_line(item: Item, *, escape: Callable[[str], str], detail: str = "") -> str:
     """One item as the single line the log gives it.
 
     What the agent said is folded onto one line like everything else in here,
     its own paragraph breaks removed: a sentence spread over four lines is
     indistinguishable from four things having happened.
+
+    A call is its name and outcome only. What it took and gave back is the
+    host's detail, shown where the platform asked for it (`detail`, already
+    drawn as a block) and nowhere else — a platform that did not ask is one
+    whose readers were never promised it, so it is not leaked in as a preview.
     """
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
-    line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
-    if item.text:
-        line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
-    return line
+    return f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}{detail}"
+
+
+def _detail_block(
+    text: str, limit: int, *, markup: Markup, literal: Callable[[str], str]
+) -> str:
+    """A call's detail as a block under its line, inside `limit`, or nothing.
+
+    The cut is made on the source and the block drawn whole around what is
+    kept, so a cut detail is still a closed block: the fence is never what
+    runs out. What is kept is the start, ended at a line end where there is
+    one, so the host's own first line (and its note on what it clipped) is
+    still first. The mark saying it was cut is a line of its own inside the
+    block, where it reads as part of the detail rather than as something the
+    log says after it — and it is words, not a bare "…": the host already uses
+    that for a middle it skipped, and a reader could not tell the two apart,
+    nor know that the host's counts above no longer match what is shown.
+    """
+    whole = "\n" + markup.code_block(literal(text))
+    if len(whole) <= limit:
+        return whole
+
+    def drawn(kept: str) -> str:
+        return "\n" + markup.code_block(literal(kept) + "\n" + _DETAIL_SHORTENED)
+
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(drawn(text[:middle])) <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    if low == 0:
+        return ""
+    kept = text[:low]
+    line_end = kept.rfind("\n")
+    if line_end > 0:
+        kept = kept[:line_end]
+    return drawn(kept)
+
+
+def _detail_blocks(
+    items: list[Item],
+    room: int,
+    *,
+    most: int,
+    markup: Markup,
+    escape: Callable[[str], str],
+) -> dict[int, str]:
+    """Each call's detail block, by position, out of the `room` left over.
+
+    Paid for out of what the lines leave, never the other way round: a log
+    that dropped calls to show more of one call's output would undercount the
+    turn. The room is shared, smallest first, so a short detail is shown whole
+    and what it did not need goes to the ones after it; `most` caps any one.
+    """
+    wanted = {
+        position: item.text
+        for position, item in enumerate(items)
+        if item.kind == "tool-activity" and item.text.strip()
+    }
+    literal = markup.literal(escape)
+    blocks: dict[int, str] = {}
+    left = room
+    for drawn, position in enumerate(sorted(wanted, key=lambda at: len(wanted[at]))):
+        if left <= 0:
+            break
+        share = _share(left, most, len(wanted) - drawn)
+        block = _detail_block(wanted[position], share, markup=markup, literal=literal)
+        if block:
+            blocks[position] = block
+            left -= len(block)
+    return blocks
 
 
 def activity_log(
@@ -414,6 +490,7 @@ def activity_log(
     markup: Markup,
     elapsed_seconds: float | None,
     heading: bool,
+    tool_io_limit: int = 0,
 ) -> str:
     """What a turn did and what it said, one to a line, oldest cut first.
 
@@ -438,6 +515,12 @@ def activity_log(
     `heading` says whether the log has to name the turn it belongs to. It does
     wherever it is read apart from that turn's own message; a caller declining
     it is saying the status directly above already names the turn.
+
+    `tool_io_limit` is the most one call's detail may spend, drawn as a block
+    under its line; 0, the default, shows no detail at all. A platform asks for
+    it by passing its limit, and only a platform whose block holds asks: the
+    detail is shown only out of what the lines leave, so turning it on never
+    costs the log a call.
     """
     head = None
     if heading:
@@ -454,10 +537,21 @@ def activity_log(
     if head is not None:
         head = _truncate(head, limit)
         spent = len(head)
+    blocks: dict[int, str] = {}
+    if tool_io_limit > 0:
+        bare = sum(len(_log_line(item, escape=escape)) + 1 for item in shown)
+        blocks = _detail_blocks(
+            shown,
+            limit - spent - bare,
+            most=tool_io_limit,
+            markup=markup,
+            escape=escape,
+        )
     lines: list[str] = []
     omitted = 0
     for position, item in enumerate(reversed(shown), start=1):
-        line = _log_line(item, escape=escape)
+        detail = blocks.get(len(shown) - position, "")
+        line = _log_line(item, escape=escape, detail=detail)
         if spent + len(line) + 1 > limit:
             omitted = len(shown) - position + 1
             break

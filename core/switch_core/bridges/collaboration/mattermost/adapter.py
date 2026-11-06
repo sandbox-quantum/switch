@@ -901,14 +901,16 @@ class MattermostAdapter(PlatformAdapter):
         "moments ago" written here would still say that an hour later.
         """
         stamp = f"_Read at {snapshot.read_at.astimezone(UTC):%H:%M:%S} UTC_"
+        limit = max(1, self.rich_fallback_limit() - len(stamp) - 1)
         body = activity_log(
             snapshot.items,
             snapshot.turn,
             escape=self._rich_escape,
-            limit=max(1, self.rich_fallback_limit() - len(stamp) - 1),
+            limit=limit,
             markup=self.rich_markup(),
             elapsed_seconds=snapshot.elapsed_seconds,
             heading=True,
+            tool_io_limit=limit,
         )
         return f"{body}\n{stamp}"
 

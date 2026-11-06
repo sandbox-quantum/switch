@@ -62,6 +62,7 @@ from .test_discord_sdk_only import (
     _http_error,
     _Thread,
 )
+from .test_session_activity_log import HOSTILE_DETAIL, HOSTILE_MARKERS, fenced
 
 READER_ID = 8181
 OTHER_READER_ID = 8282
@@ -943,6 +944,95 @@ async def test_an_unpublished_bridge_answers_a_stale_button_rather_than_hanging(
 
     assert _shown(press) == ACTIVITY_FAILED
     assert any("nothing to read the log with" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_calls_detail_is_shown_in_a_block_it_cannot_close() -> None:
+    """In a room that opted in the host's detail is here, under its call, as a
+    fenced block. Discord closes a block on the first three backticks it meets,
+    so nothing in the detail may spell three — and nothing after the closing
+    fence comes from it."""
+    adapter, channel = _guild_with({READER_ID})
+    _resolving(
+        adapter,
+        _snapshot(
+            items=[
+                _item(itemId="a", title="Ran it", text=HOSTILE_DETAIL),
+                _item(itemId="b", title="Then this"),
+            ]
+        ),
+    )
+    press = _status_press(channel)
+
+    await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    text = _shown(press)
+    blocks, outside = fenced(text)
+    assert len(text) <= 2000
+    assert len(blocks) == 1
+    assert "@everyone" in blocks[0]
+    assert "<@123>" in blocks[0]
+    for marker in HOSTILE_MARKERS:
+        assert not any(marker in line for line in outside), marker
+    assert "⌗ ✓ Then this" in outside
+
+
+async def test_several_details_share_the_one_message_discord_allows() -> None:
+    adapter, channel = _guild_with({READER_ID})
+    items = [
+        _item(itemId=f"i{index}", title=f"Call {index}", text="漢字🙂" * 600)
+        for index in range(6)
+    ] + [_item(itemId="s", title="Short one", text="ok")]
+    _resolving(adapter, _snapshot(items=items))
+    press = _status_press(channel)
+
+    await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    text = _shown(press)
+    blocks, outside = fenced(text)
+    assert len(text) <= 2000
+    assert "ok" in blocks
+    assert len(blocks) == 7
+    assert sum(line.startswith("⌗") for line in outside) == 7
+
+
+async def test_what_the_private_copy_is_sent_with() -> None:
+    """Recorded rather than wished for: the view's edit passes its content, its
+    Refresh view and an allow-nothing mention policy, and nothing else, so
+    embeds are not suppressed here as the channel sends suppress them."""
+    adapter, channel = _guild_with({READER_ID})
+    _resolving(adapter, _snapshot())
+    press = _status_press(channel)
+
+    await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    assert set(press.shown[0]) == {"content", "view", "allowed_mentions"}
+    allowed = press.shown[0]["allowed_mentions"]
+    assert isinstance(allowed, discord.AllowedMentions)
+    assert allowed.to_dict() == discord.AllowedMentions.none().to_dict()
+
+
+async def test_a_detail_that_spells_mentions_pings_nobody() -> None:
+    """A tool's detail is the host's text, and the view now shows it: a user,
+    a role and `@everyone` in it reach the reader as characters, with no
+    mention of any kind allowed on the edit that carries them."""
+    adapter, channel = _guild_with({READER_ID})
+    detail = "ping <@123> and <@&456> and @everyone"
+    _resolving(
+        adapter,
+        _snapshot(items=[_item(itemId="a", title="Ran it", text=detail)]),
+    )
+    press = _status_press(channel)
+
+    await adapter._handle_interaction(press)  # type: ignore[arg-type]
+
+    text = _shown(press)
+    for mention in ("<@123>", "<@&456>", "@everyone"):
+        assert mention in text, mention
+    sent = press.shown[0]["allowed_mentions"].to_dict()
+    assert sent == {"parse": []}
+    assert "users" not in sent
+    assert "roles" not in sent
+    assert sent.get("replied_user") is not True
 
 
 def test_the_activity_ids_fit_what_discord_carries() -> None:
