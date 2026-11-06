@@ -405,13 +405,12 @@ _UNREAD_IN_ROOM_SQL = text(
         AND m.seq <= :through
         AND m.seq > 0
         AND m.event_type = 'm.room.message'
-        AND m.content->'m.relates_to'->>'rel_type' IS DISTINCT FROM 'm.replace'
         AND m.sender_id <> b.me
         AND NOT EXISTS (
           SELECT 1 FROM agent_events e
           WHERE e.agent_id = :agent_id
             AND e.room_id = :room_id
-            AND e.type = 'message'
+            AND e.type IN ('message', 'message_edit')
             AND e.message_key = {_MESSAGE_KEY_SQL}
             AND e.room_seq >= m.seq
         )
