@@ -602,6 +602,25 @@ class TestInbound:
         assert received.messages[0].channel_name == "Support Desk"
         assert len(webex.sent("GET", "/v1/rooms/room-1")) == 1
 
+    async def test_a_space_the_bot_is_added_to_names_its_room(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, received = await _started(webex)
+        webex.route("GET", "/v1/rooms/room-1", lambda r: _ok({"title": "Support Desk"}))
+        await adapter.dispatch_event(
+            envelope_type="memberships:created",
+            payload=_delivery(
+                "memberships",
+                "created",
+                id="membership-1",
+                roomId="room-1",
+                roomType="group",
+                personId=BOT_ID,
+            ),
+        )
+        [join] = received.app_joins
+        assert join.channel_name == "Support Desk"
+
     async def test_a_message_still_arrives_when_webex_wont_say_the_title(
         self, webex: FakeWebex
     ) -> None:

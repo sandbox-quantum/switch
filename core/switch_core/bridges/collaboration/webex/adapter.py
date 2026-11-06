@@ -821,7 +821,11 @@ class WebexAdapter(PlatformAdapter):
         if person_id == self._bot_id:
             if self._on_app_joined is not None:
                 await self._on_app_joined(
-                    InboundAppJoin(channel_id=room_id, channel_type=channel_type)
+                    InboundAppJoin(
+                        channel_id=room_id,
+                        channel_type=channel_type,
+                        channel_name=await self._space_title(room_id),
+                    )
                 )
             return
         if self._on_user_joined is None:
@@ -835,6 +839,7 @@ class WebexAdapter(PlatformAdapter):
                 channel_type=channel_type,
                 external_user_id=person_id,
                 external_username=name,
+                channel_name=await self._space_title(room_id),
             )
         )
 
