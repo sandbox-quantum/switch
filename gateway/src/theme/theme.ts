@@ -223,7 +223,7 @@ export const APP_THEME = () =>
       MuiDrawer: {
         defaultProps: {
           elevation: 0,
-          slotProps: { backdrop: { sx: { backgroundColor: "rgb(0 0 0 / 0.6)" } } },
+          slotProps: { backdrop: { sx: { backgroundColor: hootVar("overlay") } } },
         },
         styleOverrides: { paper: { backgroundColor: hootVar("canvas"), borderRight: "none" } },
       },
@@ -231,7 +231,7 @@ export const APP_THEME = () =>
       // menus and popovers mount an invisible backdrop that must stay invisible.
       MuiDialog: {
         defaultProps: {
-          slotProps: { backdrop: { sx: { backgroundColor: "rgb(0 0 0 / 0.6)" } } },
+          slotProps: { backdrop: { sx: { backgroundColor: hootVar("overlay") } } },
         },
         styleOverrides: {
           paper: { borderRadius: RADIUS_LG, boxShadow: MODAL, backgroundColor: hootVar("card") },
