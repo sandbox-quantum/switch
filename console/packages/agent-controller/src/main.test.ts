@@ -91,6 +91,70 @@ describe('main', () => {
     expect(stdout.join('')).not.toContain('swcc_secret');
   });
 
+  it.each([
+    ['not-enrolled', null, { state: 'not-enrolled' }],
+    ['revoked', 'revoked', { state: 'none' }],
+  ] as const)(
+    'keeps the status JSON envelope stable for %s state',
+    async (_name, state, assignment) => {
+      if (state) {
+        const store = ControllerStore.open(join(dir, 'controller.db'));
+        store.saveIdentity({
+          controllerId: 'controller-1',
+          server: 'https://switch.example.com',
+          name: 'build-box',
+          enrolledAt: '2026-01-01T00:00:00.000Z',
+        });
+        if (state === 'revoked') store.markRevoked('2026-01-02T00:00:00.000Z');
+        store.close();
+      }
+      expect(await main(['status', '--data-dir', dir, '--json'])).toBe(
+        state ? EXIT_OK : EXIT_FAILURE
+      );
+      const report = JSON.parse(stdout.join('')) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        schemaVersion: 1,
+        command: 'status',
+        ok: Boolean(state),
+        exitCode: state ? 0 : 1,
+        dataDirectory: dir,
+        assignment,
+      });
+      expect(Object.keys(report)).toEqual(
+        expect.arrayContaining([
+          'schemaVersion',
+          'command',
+          'ok',
+          'exitCode',
+          'dataDirectory',
+          'identity',
+          'assignment',
+        ])
+      );
+    }
+  );
+
+  it('reports a saved assignment in the same versioned JSON envelope', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'build-box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.saveAssignment({ revision: 4, agents: [] }, 'etag-4', '2026-01-02T00:00:00.000Z');
+    store.close();
+
+    expect(await main(['status', '--data-dir', dir, '--json'])).toBe(EXIT_OK);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({
+      schemaVersion: 1,
+      command: 'status',
+      ok: true,
+      exitCode: 0,
+      assignment: { state: 'saved', revision: 4, agents: [] },
+    });
+  });
+
   it('does not copy agent failure details into JSON status', async () => {
     const store = ControllerStore.open(join(dir, 'controller.db'));
     store.saveIdentity({
