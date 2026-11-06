@@ -169,7 +169,13 @@ What fits today's catalog, and is in the draft entry:
   `code_challenge_methods_supported`, so `OAuthAdapter.endpoints` refuses it
   ("does not offer PKCE with S256"), though Entra takes S256. Its issuer is
   also the template `https://login.microsoftonline.com/{tenantid}/v2.0`. Named
-  endpoints skip discovery.
+  endpoints skip discovery, but they also send no RFC 8707 `resource`, which
+  the MCP authorization spec says clients must send. Entra's v2.0 endpoint
+  takes a token's audience from the scope's prefix
+  (`api://workiq.svc.cloud.microsoft/…`), so the audience is Work IQ's either
+  way. Microsoft does not say whether v2.0 accepts `resource`, and a probe
+  without a real client stops at an earlier error (AADSTS50059). If Work IQ or
+  Entra needs it, Core needs a way to keep `resource` with named endpoints.
 - **A static client** (`registration: static`, `client_settings:
   MICROSOFT_365`): the metadata has no `registration_endpoint`.
 - **`unchecked`.** Switch checks a static client by redeeming a made-up code
@@ -225,6 +231,8 @@ placeholder.
 5. The credits a typical agent task spends, through `fetch` versus `ask`.
 6. Whether Switch Console's loopback sign-in works with a Web-platform Entra
    app, which would let Microsoft 365 connect like Atlassian.
+7. Whether Entra's v2.0 endpoint accepts an RFC 8707 `resource` beside the
+   scopes, and whether Work IQ accepts a token requested without one.
 
 ## Sources
 
@@ -245,6 +253,8 @@ placeholder.
 - [Microsoft Graph CLI retirement](https://devblogs.microsoft.com/microsoft365dev/microsoft-graph-cli-retirement/) and its [archived repository](https://github.com/microsoftgraph/msgraph-cli)
 - [Authorization code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow)
 - [ID token claims](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference)
+- [Scopes and permissions](https://learn.microsoft.com/en-us/entra/identity-platform/scopes-oidc)
+- [MCP authorization, resource parameter](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
 - [Access tokens](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens)
 - [Redirect URI restrictions](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url)
 - [OpenID Connect Core 1.0, §3.1.3.7](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation)

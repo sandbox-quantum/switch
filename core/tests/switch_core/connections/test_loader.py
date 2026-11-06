@@ -77,6 +77,8 @@ def test_the_microsoft_365_draft_stays_disabled_and_names_entras_endpoints():
     assert definition.auth.identity is None
     assert definition.access.write is None
     assert definition.access.read.scopes == [
+        "openid",
+        "profile",
         "offline_access",
         "api://workiq.svc.cloud.microsoft/WorkIQ.Read",
     ]
