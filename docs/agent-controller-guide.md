@@ -71,7 +71,7 @@ The fastest way to install, enroll, and register the controller as a system serv
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sandbox-quantum/switch/main/console/packages/agent-controller/install.sh \
-  | sh -s -- --server https://switch.example.com --code <ONE_TIME_CODE>
+  | sh -s -- --server https://switch.example.com --code YOUR_ONE_TIME_CODE
 ```
 
 - When run as a regular user with write access to npm's global prefix, it installs globally via `npm install --global`.
@@ -105,7 +105,7 @@ Every machine running an agent controller must be enrolled with your Switch orga
 ```bash
 switch-agent-controller enroll \
   --server https://switch.example.com \
-  --code <code> \
+  --code YOUR_ONE_TIME_CODE \
   --name "prod-worker-01" \
   --description "Production worker running on Ubuntu 24.04" \
   --secret-store file
@@ -113,15 +113,15 @@ switch-agent-controller enroll \
 
 ### Command Options
 
-- `--server <url>` *(Required)*: The base HTTPS URL of your Switch server. Plain `http://` is strictly rejected unless connecting to a loopback address (`127.0.0.1` or `localhost`).
-- `--code <code>` *(Required)*: The 10-minute one-time enrollment code from Gateway.
-- `--name <name>` *(Optional)*: A human-readable display name for this machine (defaults to the system hostname, max 200 characters).
-- `--description <text>` *(Optional)*: Description explaining the purpose or specs of the machine (max 500 characters). Can be updated later with `set-info` or in Gateway.
-- `--data-dir <dir>` *(Optional)*: Custom path for controller state, SQLite database, and workspaces. Defaults to:
+- `--server URL` *(Required)*: The base HTTPS URL of your Switch server. Plain `http://` is strictly rejected unless connecting to a loopback address (`127.0.0.1` or `localhost`).
+- `--code CODE` *(Required)*: The 10-minute one-time enrollment code from Gateway.
+- `--name NAME` *(Optional)*: A human-readable display name for this machine (defaults to the system hostname, max 200 characters).
+- `--description TEXT` *(Optional)*: Description explaining the purpose or specs of the machine (max 500 characters). Can be updated later with `set-info` or in Gateway.
+- `--data-dir DIRECTORY` *(Optional)*: Custom path for controller state, SQLite database, and workspaces. Defaults to:
   - Linux: `~/.local/share/switch-agent-controller` (or `/var/lib/switch-agent-controller-<uid>` in isolated mode)
   - macOS: `~/Library/Application Support/Switch/agent-controller`
   - Windows: `%LOCALAPPDATA%\Switch\agent-controller`
-- `--secret-store <kind>` *(Optional)*: Mechanism used to store long-lived credentials:
+- `--secret-store KIND` *(Optional)*: Mechanism used to store long-lived credentials:
   - `keychain`: macOS Keychain (default on macOS).
   - `file`: Restrictive file permissions `0600` in the data directory (default on Linux and Windows).
   - `secret-service`: Linux desktop secret service (GNOME Keyring / KWallet). Only use if the keyring is unlocked on login/boot.
@@ -269,8 +269,8 @@ Switch supports two execution topologies for assigned agents:
 
 - Configured per-agent in the agent definition.
 - Spawns the agent host in a dedicated, independent process (`--ensure-watch`).
-- Connects to the controller's local hub WebSocket (`ws://127.0.0.1:<port>/hub`).
-- **Survives controller restarts:** Because isolated agents execute in dedicated OS processes outside the main controller daemon, ongoing task executions continue uninterrupted if the controller daemon restarts or self-updates. Once the controller restarts, the isolated agent processes automatically reconnect to the local relay hub without terminating their sessions.
+- Connects to the controller's local hub WebSocket (`ws://127.0.0.1:PORT/hub`).
+- **Survives controller restarts:** Because each isolated agent runs as an independent OS process, it is not terminated when the controller process exits. The isolated host process keeps retrying connection to the local hub and reconnects automatically once the controller restarts. If the controller was updated to a newer package version, it flags the running isolated agent as outdated and restarts it once the agent becomes idle (turning off the host, waiting for completion, and relaunching from the new bundle).
 
 ### 3. Multi-User Linux Sandboxing (`--separate-users`)
 
@@ -373,13 +373,13 @@ When an agent fails to start or reconcile, the controller assigns it a specific 
 
 | Reason Code | Meaning | Remediation |
 |---|---|---|
-| `provider_not_installed` | The requested provider binary was not found on `PATH`. | Install the CLI binary (e.g. `npm install -g @anthropic-ai/claude-code`) and verify `which <binary>`. |
+| `provider_not_installed` | The requested provider binary was not found on `PATH`. | Install the CLI binary (e.g. `npm install -g @anthropic-ai/claude-code`) and verify `which claude` (or the respective provider binary). |
 | `provider_login_missing` | The CLI binary is present but lacks authentication. | Run the CLI login command interactively or configure API keys in `--env-file`. |
 | `provider_login_expired` | The provider token has expired or was revoked. | Re-run login or push a renewed sealed login from Switch Console. |
 | `provider_version_unsupported` | Installed CLI version does not meet minimum protocol standards. | Update the provider CLI to the latest version. |
 | `controller_revoked` | The machine was revoked or removed in Switch Gateway. | Re-enroll the host: remove old state in data directory and run `switch-agent-controller enroll` with a new code. |
 | `invalid_credential` | The controller's stored access token was rejected by Switch. | Verify the Switch server URL; re-enroll the machine if the credential was rotated. |
-| `crash_loop` | The agent process crashed 4 times in 10 minutes. | Check agent crash logs in `<data-dir>/agents/<id>/` or `journalctl`; verify workspace permissions. |
+| `crash_loop` | The agent process crashed 4 times in 10 minutes. | Check agent crash logs in `data-dir/agents/{agentId}/` or `journalctl`; verify workspace permissions. |
 | `capacity_exceeded` | All sandbox user slots are currently claimed (`--separate-users`). | The user pool defaults to 16 (max 99). To expand capacity, reinstall with a larger pool: `sudo switch-agent-controller install-service --separate-users --agent-users 32`. |
 | `definition_invalid` | Agent configuration has invalid parameters or references invalid paths. | Check the agent definition in Switch Console / Gateway. |
 | `protocol_unsupported` | The controller is too old for the Switch server protocol. | Update the controller binary: `switch-agent-controller update`. |
