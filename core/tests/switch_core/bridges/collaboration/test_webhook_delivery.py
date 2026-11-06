@@ -8,6 +8,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from switch_core.bridges.collaboration.webhook.adapter import (
     WebhookAdapter,
@@ -65,9 +66,19 @@ async def bridge(session_factory):
     return bridge_id, tenant_id
 
 
+@pytest.fixture
+async def single_connection_factory(postgres_url):
+    engine = create_async_engine(postgres_url, pool_size=1, max_overflow=0)
+    try:
+        yield async_sessionmaker(engine, expire_on_commit=False)
+    finally:
+        await engine.dispose()
+
+
 async def test_concurrent_deliveries_to_two_pods_are_dispatched_once(
-    session_factory, bridge
+    single_connection_factory, bridge
 ):
+    session_factory = single_connection_factory
     bridge_id, tenant_id = bridge
     entered, release = asyncio.Event(), asyncio.Event()
     heard = []
@@ -88,9 +99,21 @@ async def test_concurrent_deliveries_to_two_pods_are_dispatched_once(
         second = asyncio.create_task(
             b.post(webhook_path(bridge_id), json=event(), headers=headers)
         )
+        response = await asyncio.wait_for(second, 3)
+        assert response.status_code == 503
+        assert not first.done()
+        async with session_factory() as db:
+            receipt = await db.scalar(
+                select(MessagingEventReceipt).where(
+                    MessagingEventReceipt.platform == "webhook"
+                )
+            )
+            assert receipt is not None and receipt.handled_at is None
         release.set()
-        responses = await asyncio.gather(first, second)
-        assert [r.status_code for r in responses] == [200, 200]
+        assert (await asyncio.wait_for(first, 3)).status_code == 200
+        assert (
+            await b.post(webhook_path(bridge_id), json=event(), headers=headers)
+        ).status_code == 200
         assert len(heard) == 1
         async with session_factory() as db:
             receipts = list(
@@ -121,6 +144,15 @@ async def test_a_failed_callback_is_retryable_on_a_restarted_pod(
     assert (
         await a.post(webhook_path(bridge_id), json=event(), headers=headers)
     ).status_code == 503
+    async with session_factory() as db:
+        assert (
+            await db.scalar(
+                select(MessagingEventReceipt).where(
+                    MessagingEventReceipt.platform == "webhook"
+                )
+            )
+            is None
+        )
     await a.aclose()
     await aa.stop()
     heard = AsyncMock()

@@ -164,20 +164,41 @@ class BridgeWebhookService:
     ) -> None:
         if event.external_event_id is None:
             raise WebhookPayloadError("Confirmed delivery requires an event id")
+        external_event_id = f"{target.bridge_id}:{event.external_event_id}"
         async with tenant_session(self._session_factory, target.tenant_id) as session:
             receipt = await self._receipts.claim(
                 session,
                 platform=target.bridge_type,
-                external_event_id=f"{target.bridge_id}:{event.external_event_id}",
+                external_event_id=external_event_id,
             )
             if receipt is None:
+                if not await self._receipts.is_handled(
+                    session,
+                    platform=target.bridge_type,
+                    external_event_id=external_event_id,
+                ):
+                    raise WebhookBridgeStopped(
+                        "The event is still being delivered; retry"
+                    )
                 return
-            # Concurrent deliveries wait on the unique receipt. Failure rolls it
-            # back, and derived room-write ids make retry after a crash safe.
-            await self._dispatch(target, event)
-            await self._receipts.mark_handled(session, receipt_id=receipt.id)
-            await self._receipts.prune(session)
+            receipt_id = receipt.id
             await session.commit()
+
+        try:
+            await self._dispatch(target, event)
+            async with tenant_session(
+                self._session_factory, target.tenant_id
+            ) as session:
+                await self._receipts.mark_handled(session, receipt_id=receipt_id)
+                await self._receipts.prune(session)
+                await session.commit()
+        except BaseException:
+            async with tenant_session(
+                self._session_factory, target.tenant_id
+            ) as session:
+                await self._receipts.release(session, receipt_id=receipt_id)
+                await session.commit()
+            raise
 
     async def _dispatch(
         self, target: BridgeWebhookTarget, event: InboundWebhook

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +69,27 @@ class MessagingEventReceiptStore:
             update(MessagingEventReceipt)
             .where(MessagingEventReceipt.id == receipt_id)
             .values(handled_at=datetime.now(UTC))
+        )
+
+    async def is_handled(
+        self, session: AsyncSession, *, platform: str, external_event_id: str
+    ) -> bool:
+        return bool(
+            await session.scalar(
+                select(MessagingEventReceipt.handled_at.is_not(None)).where(
+                    MessagingEventReceipt.platform == platform,
+                    MessagingEventReceipt.external_event_id == external_event_id,
+                )
+            )
+        )
+
+    async def release(self, session: AsyncSession, *, receipt_id: str) -> None:
+        """Let another delivery retry work that failed after its claim committed."""
+        await session.execute(
+            delete(MessagingEventReceipt).where(
+                MessagingEventReceipt.id == receipt_id,
+                MessagingEventReceipt.handled_at.is_(None),
+            )
         )
 
     async def prune(self, session: AsyncSession) -> int:

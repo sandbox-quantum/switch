@@ -77,13 +77,16 @@ event announces an existing chat without a message. A `command` event accepts
 `!command arguments` in `text`; ordinary messages can also contain `!commands`.
 Do not deliver the same post as both a message and a command.
 
-Switch returns `200` after the callbacks complete and the receipt commits, not
-before dispatch. Keep a durable outbox in your application and retry the exact
+Switch returns `200` after the callbacks complete and the receipt is marked
+handled. The receipt claim commits before dispatch, releasing the pooled
+connection and unique-index lock. A concurrent retry gets `503` while the event
+is unfinished, and `200` once it is handled. A failed dispatch releases its claim
+in a separate transaction before returning `503`. Keep a durable outbox in your application and retry the exact
 event on network failures, `408`, `429`, or `5xx`, with bounded backoff. Do not
 retry `400` (schema), `401` (credentials), `404` (connection removed), or `413`
-(size) without correcting the problem. A crash before the receipt commits
-leaves the event retryable. Concurrent deliveries serialize on the database's
-unique receipt; derived room-write IDs protect replay after partial dispatch.
+(size) without correcting the problem. A process killed after claiming can leave
+an unhandled receipt requiring operator recovery; retries receive `503` rather
+than a false success. Derived room-write IDs protect replay after partial dispatch.
 Receipts are retained for seven days, so do not intentionally replay old events.
 
 ### Switch → app
