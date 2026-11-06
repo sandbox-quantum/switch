@@ -382,7 +382,7 @@ function teamsResultFailureText(result: Exclude<TeamsTeamsResult, { kind: 'liste
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Managing teams requires an owner or admin of this workspace.';
+      return 'Managing teams requires an admin of this workspace.';
     case 'error':
       return result.message;
   }
@@ -395,7 +395,7 @@ function addTeamFailureText(result: Exclude<AddTeamsTeamResult, { kind: 'added' 
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Managing teams requires an owner or admin of this workspace.';
+      return 'Managing teams requires an admin of this workspace.';
     case 'error':
       return result.message;
   }
@@ -408,7 +408,7 @@ function removeTeamFailureText(
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Managing teams requires an owner or admin of this workspace.';
+      return 'Managing teams requires an admin of this workspace.';
     case 'error':
       return result.message;
   }
@@ -419,7 +419,7 @@ function setDefaultFailureText(result: Exclude<UpdateBridgeResult, { kind: 'upda
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Managing teams requires an owner or admin of this workspace.';
+      return 'Managing teams requires an admin of this workspace.';
     case 'invalid':
       return result.message;
     case 'error':

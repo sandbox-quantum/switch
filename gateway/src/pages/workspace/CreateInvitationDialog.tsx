@@ -24,7 +24,6 @@ const MAX_INVITATION_USES = 100;
 interface Props {
   open: boolean;
   tenantId: string;
-  isOwner: boolean;
   emailEnabled: boolean;
   onClose: () => void;
   onCreated: () => void;
@@ -36,7 +35,6 @@ interface Props {
 export default function CreateInvitationDialog({
   open,
   tenantId,
-  isOwner,
   emailEnabled,
   onClose,
   onCreated,
@@ -90,7 +88,7 @@ export default function CreateInvitationDialog({
   }, [link]);
 
   const addressed = email.trim() !== "";
-  const roles: TenantRole[] = isOwner ? ["member", "admin", "owner"] : ["member", "admin"];
+  const roles: TenantRole[] = ["member", "admin"];
   const valid =
     Number.isInteger(Number(hours)) && Number(hours) > 0 && Number(hours) <= 8760 &&
     Number.isInteger(Number(uses)) && Number(uses) > 0 && Number(uses) <= MAX_INVITATION_USES;

@@ -12,14 +12,16 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
-import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { cn } from '@renderer/utils/utils';
 import { RoomConfigurationPanel } from './room-configuration-panel';
 import { roomEmbedSlotStore } from './room-embed-slot';
 import { openRoomChannel } from './room-links';
+import { RoomResourcesPanel } from './room-resources-panel';
+import { RoomSidePanel } from './room-side-panel';
 import { embeddedRoomTab, type RoomTab, roomTabStore } from './room-tab-store';
 
 /**
@@ -66,12 +68,14 @@ export const OpenInMessagingApp = observer(function OpenInMessagingApp({
 
 const TABS = [
   { value: 'chat', label: 'Chat' },
+  { value: 'resources', label: 'Resources' },
   { value: 'configuration', label: 'Configuration' },
 ] as const satisfies readonly { value: RoomTab; label: string }[];
 
 /**
- * The two sides of a room — its conversation and its settings — to pick
- * between; `fallback` is the side showing until one is picked.
+ * A room's tabs — its conversation, what its agents are given, and its
+ * settings — to pick between; `fallback` is the tab showing until one is
+ * picked.
  */
 export const RoomTabs = observer(function RoomTabs({
   roomId,
@@ -95,39 +99,59 @@ export const RoomTabs = observer(function RoomTabs({
  * agent in it, and picking one of those to stand in front of it would be a
  * claim about how you got here rather than about where you are.
  *
- * The two sides of a room sit next to its name rather than in a sidebar or a
- * menu: there are only two, and which one you are on is the first thing you
- * need to know about the page under it.
+ * Beside the name: where the room lives (its messaging app, or a group chat
+ * here) and what it is for; on the right, its tabs.
  */
 const RoomTitlebar = observer(function RoomTitlebar() {
   const { params } = useParams('room');
-  const name =
-    switchRoomsStore.roomNameById(params.roomId) ?? chatsStore.chat(params.roomId)?.name ?? null;
-  const bridgeType = switchRoomsStore.roomBridgeTypeById(params.roomId);
+  const roomId = params.roomId;
+  const summary = switchRoomsStore.roomSummaryById(roomId);
+  const name = switchRoomsStore.roomNameById(roomId) ?? chatsStore.chat(roomId)?.name ?? null;
+  const bridgeType = switchRoomsStore.roomBridgeTypeById(roomId);
+  const where = summary?.bridgeDisplayName ?? (opensAsConsoleChat(roomId) ? 'Group chat' : null);
+  const description = summary?.description.trim() || null;
 
   return (
     <Titlebar
+      // The same frame as a room opened on an agent's page: inset from the
+      // edge, a rule under it, the tabs at the right so they stay put.
+      // A description is a second line, so the bar grows to keep the same
+      // space above and below as a one-line bar has.
+      className={cn('border-b border-border pr-[7px] pl-4', description && 'h-[60px]')}
+      leftClassName="min-w-0 flex-1"
       leftSlot={
-        <div className="flex min-w-0 items-center gap-3">
-          <TitlebarBreadcrumb
-            crumbs={[
-              {
-                key: 'room',
-                icon: hasBridgeIcon(bridgeType) ? (
-                  <BridgeIcon bridgeType={bridgeType} size={14} className="shrink-0" />
-                ) : (
-                  <DoorOpen className="size-3.5 shrink-0" />
-                ),
-                label: name ?? 'Room',
-              },
-            ]}
-          />
-          <RoomTabs roomId={params.roomId} fallback="chat" />
+        // The description goes under the name, never beside it, so however
+        // long it is it cannot push the tabs off the bar.
+        <div className="flex min-w-0 flex-col justify-center">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
+              {hasBridgeIcon(bridgeType) ? (
+                <BridgeIcon bridgeType={bridgeType} size={16} />
+              ) : (
+                <DoorOpen className="size-4 shrink-0" />
+              )}
+              <span className="truncate">{name ?? 'Room'}</span>
+            </span>
+            {where && (
+              <span className="shrink-0 rounded-full bg-background-tertiary px-2 py-0.5 text-[11px] text-foreground-muted">
+                {where}
+              </span>
+            )}
+          </div>
+          {description && (
+            <span
+              className="min-w-0 truncate text-xs leading-4 text-foreground-muted"
+              title={description}
+            >
+              {description}
+            </span>
+          )}
         </div>
       }
       rightSlot={
-        <div className="mr-2 flex items-center gap-1">
-          <OpenInMessagingApp roomId={params.roomId} />
+        <div className="flex shrink-0 items-center gap-1.5">
+          <RoomTabs roomId={roomId} fallback="chat" />
+          <OpenInMessagingApp roomId={roomId} />
         </div>
       }
     />
@@ -141,26 +165,60 @@ const ConsoleChat = observer(function ConsoleChat({ roomId }: { roomId: string }
   return <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />;
 });
 
-/** Settings when the room is showing them; otherwise a Console chat's
- * conversation, or nothing, and the conversation drawn by `RoomEmbedLayer`
- * above shows through. */
+/**
+ * The room's page: who is in it down the side, the same on every platform,
+ * and beside that the tab picked in the title bar — its conversation, its
+ * resources or its settings.
+ */
 const RoomMainPanel = observer(function RoomMainPanel(): React.JSX.Element {
   const { params } = useParams('room');
+  const roomId = params.roomId;
+  const tab = roomTabStore.tabFor(roomId, 'chat');
   return (
     <>
-      <ConsoleChatRedirect roomId={params.roomId} />
-      {roomTabStore.tabFor(params.roomId, 'chat') === 'configuration' ? (
-        <RoomConfigurationPanel roomId={params.roomId} />
-      ) : (
-        <ConsoleChat roomId={params.roomId} />
-      )}
+      <ConsoleChatRedirect roomId={roomId} />
+      <div className="flex h-full min-h-0">
+        <RoomSidePanel roomId={roomId} />
+        {tab === 'chat' ? (
+          <RoomConversation roomId={roomId} />
+        ) : (
+          <div className="min-w-0 flex-1">
+            {tab === 'resources' ? (
+              <RoomResourcesPanel roomId={roomId} />
+            ) : (
+              <RoomConfigurationPanel roomId={roomId} />
+            )}
+          </div>
+        )}
+      </div>
     </>
+  );
+});
+
+/**
+ * The room's conversation beside its side panel: a Console chat drawn here, or
+ * a box that `RoomEmbedLayer` lays the messaging app's conversation over —
+ * the app itself where it can be drawn inline, otherwise its way out to it.
+ */
+const RoomConversation = observer(function RoomConversation({ roomId }: { roomId: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const consoleChat = opensAsConsoleChat(roomId);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element || consoleChat) return;
+    roomEmbedSlotStore.claim({ roomId, element, fallback: 'chat' });
+    return () => roomEmbedSlotStore.release(element);
+  }, [roomId, consoleChat]);
+  return (
+    <div ref={ref} data-testid="room-conversation" className="flex min-w-0 flex-1 flex-col">
+      {consoleChat && <ConsoleChat roomId={roomId} />}
+    </div>
   );
 });
 
 /** The side a room shown inside another page opens on, until one is picked. */
 export function embeddedRoomFallbackTab(roomId: string): RoomTab {
-  return embeddedRoomTab(switchRoomsStore.roomBridgeTypeById(roomId));
+  return embeddedRoomTab(switchRoomsStore.roomBridgeTypeById(roomId), opensAsConsoleChat(roomId));
 }
 
 /**
@@ -181,14 +239,16 @@ export const EmbeddedRoom = observer(function EmbeddedRoom({ roomId }: { roomId:
   }, [roomId]);
   return (
     <div ref={ref} data-testid="embedded-room" className="min-h-0 flex-1">
-      {roomTabStore.tabFor(roomId, embeddedRoomFallbackTab(roomId)) === 'configuration' ? (
-        <RoomConfigurationPanel roomId={roomId} />
-      ) : (
-        <ConsoleChat roomId={roomId} />
-      )}
+      {embeddedTabContent(roomId, roomTabStore.tabFor(roomId, embeddedRoomFallbackTab(roomId)))}
     </div>
   );
 });
+
+function embeddedTabContent(roomId: string, tab: RoomTab): React.ReactNode {
+  if (tab === 'resources') return <RoomResourcesPanel roomId={roomId} />;
+  if (tab === 'configuration') return <RoomConfigurationPanel roomId={roomId} />;
+  return <ConsoleChat roomId={roomId} />;
+}
 
 export const roomView = {
   WrapView: ({ children }: { children: React.ReactNode; roomId: string }) => <>{children}</>,

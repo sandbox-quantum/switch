@@ -4,6 +4,7 @@ import {
   foldTurnEndNotices,
   groupTurns,
   isThinking,
+  placeRequests,
   placeTurns,
   toolState,
   type TurnActivity,
@@ -87,6 +88,50 @@ function turnOf(items: ChatActivityItem[], status: TurnActivity['status']): Turn
     requests: [],
   };
 }
+
+describe('placeRequests', () => {
+  const at = (minute: number) => `2026-01-01T00:0${minute}:00Z`;
+  const said = (messageId: string, agentId: string | null, minute: number): ChatMessage =>
+    ({
+      messageId,
+      body: messageId,
+      sentAt: at(minute),
+      sender: { kind: agentId ? 'agent' : 'human', agentId, clientId: agentId ?? 'me' },
+    }) as unknown as ChatMessage;
+  const withRequests = (requests: ChatApproval[]): TurnActivity => ({
+    ...turnOf([], 'running'),
+    requests,
+  });
+  const ids = (placed: Map<string, ChatApproval[]>) =>
+    Object.fromEntries([...placed].map(([key, list]) => [key, list.map((r) => r.requestId)]));
+
+  it('shows an open request after the text its turn has posted so far', () => {
+    const turn = withRequests([approval('t1')]);
+    const messages = [said('q1', null, 0), said('r1', 'helper', 1), said('r2', 'helper', 2)];
+    expect(ids(placeRequests(messages, 'helper', new Map([['q1', turn]]), 'q1', turn))).toEqual({
+      r2: ['req-t1'],
+    });
+  });
+
+  it('keeps an answered request above the text posted after the answer', () => {
+    const turn = withRequests([approval('t1', { state: 'answered', answeredAt: at(2) })]);
+    const messages = [said('q1', null, 0), said('r1', 'helper', 1), said('r2', 'helper', 3)];
+    expect(ids(placeRequests(messages, 'helper', new Map([['q1', turn]]), 'q1', turn))).toEqual({
+      r1: ['req-t1'],
+    });
+  });
+
+  it('stops at the message that starts the agent’s next turn', () => {
+    const turn = withRequests([approval('t1')]);
+    const next = { ...withRequests([]), turnId: 't2' };
+    const messages = [said('q1', null, 0), said('q2', null, 1), said('r2', 'helper', 2)];
+    const bound = new Map([
+      ['q1', turn],
+      ['q2', next],
+    ]);
+    expect(ids(placeRequests(messages, 'helper', bound, 'q1', turn))).toEqual({ q1: ['req-t1'] });
+  });
+});
 
 describe('placeTurns', () => {
   const said = (messageId: string, agentId: string | null): ChatMessage =>
