@@ -31,7 +31,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "agents connected now",
+              "title": "agent connections now",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
@@ -77,7 +77,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "connected agents",
+              "title": "agent connections (an agent on two transports counts twice)",
               "title_size": "13",
               "show_legend": false,
               "legend_layout": "horizontal",
@@ -253,7 +253,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "API p95, last hour",
+              "title": "API p95, over the time shown",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
@@ -393,7 +393,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "requests per second",
+              "title": "requests per second, average over the time shown",
               "title_size": "13",
               "autoscale": true,
               "precision": 1,
@@ -501,7 +501,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "server errors, last hour",
+              "title": "server errors, over the time shown",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
@@ -656,7 +656,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "database connections in use, per pod (pool size 30)",
+              "title": "database pool in use, per pod, % of its size",
               "title_size": "13",
               "show_legend": false,
               "legend_layout": "horizontal",
@@ -669,15 +669,20 @@
                 {
                   "formulas": [
                     {
-                      "formula": "q",
-                      "alias": "in use"
+                      "formula": "100 * a / b",
+                      "alias": "pool used %"
                     }
                   ],
                   "queries": [
                     {
                       "data_source": "metrics",
-                      "name": "q",
+                      "name": "a",
                       "query": "max:switch.db.pool.in_use{service:switch-core} by {pod_name}"
+                    },
+                    {
+                      "data_source": "metrics",
+                      "name": "b",
+                      "query": "max:switch.db.pool.size{service:switch-core} by {pod_name}"
                     }
                   ],
                   "response_format": "timeseries",
@@ -691,7 +696,7 @@
               ],
               "markers": [
                 {
-                  "value": "y = 30",
+                  "value": "y = 100",
                   "display_type": "error dashed",
                   "label": "pool size"
                 }

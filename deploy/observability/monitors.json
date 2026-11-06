@@ -18,7 +18,7 @@
       "thresholds": {
         "critical": 0
       },
-      "no_data_timeframe": 30
+      "no_data_timeframe": 15
     },
     "priority": 2
   },
@@ -36,7 +36,7 @@
       "notify_no_data": false,
       "renotify_interval": 0,
       "notify_audit": false,
-      "require_full_window": false,
+      "require_full_window": true,
       "include_tags": true,
       "thresholds": {
         "critical": 1
@@ -67,10 +67,10 @@
     "priority": 2
   },
   {
-    "name": "[Switch] the database pool has been full for 10 minutes",
+    "name": "[Switch] the database pool keeps hitting its limit",
     "type": "query alert",
     "query": "min(last_10m):max:switch.db.pool.in_use{service:switch-core} by {pod_name} / max:switch.db.pool.size{service:switch-core} by {pod_name} >= 1",
-    "message": "{{#is_alert}}Pod {{pod_name.name}} has had every pooled database connection in use for 10 minutes and is running on overflow. Requests slow down next, then start timing out.\n\n**Check:** what holds connections: a slow query, a transaction left open, or a burst of work. Raise the pool size only once you know.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: the database pool has been full for 10 minutes.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "message": "{{#is_alert}}On pod {{pod_name.name}}, every reporting interval for the last 10 minutes peaked with the whole database pool in use, so it keeps running into overflow. Requests slow down next, then start timing out.\n\n**Check:** what holds connections: a slow query, a transaction left open, or a burst of work. Raise the pool size only once you know.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: the database pool keeps hitting its limit.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
       "team:switch",
@@ -80,7 +80,7 @@
       "notify_no_data": false,
       "renotify_interval": 0,
       "notify_audit": false,
-      "require_full_window": false,
+      "require_full_window": true,
       "include_tags": true,
       "thresholds": {
         "critical": 1
@@ -102,7 +102,7 @@
       "notify_no_data": false,
       "renotify_interval": 0,
       "notify_audit": false,
-      "require_full_window": false,
+      "require_full_window": true,
       "include_tags": true,
       "thresholds": {
         "critical": 1
@@ -168,7 +168,7 @@
       "notify_no_data": false,
       "renotify_interval": 0,
       "notify_audit": false,
-      "require_full_window": false,
+      "require_full_window": true,
       "include_tags": true,
       "thresholds": {
         "critical": 1
@@ -212,7 +212,7 @@
       "notify_no_data": false,
       "renotify_interval": 0,
       "notify_audit": false,
-      "require_full_window": false,
+      "require_full_window": true,
       "include_tags": true,
       "thresholds": {
         "critical": 2000
@@ -234,7 +234,7 @@
       "notify_no_data": false,
       "renotify_interval": 0,
       "notify_audit": false,
-      "require_full_window": false,
+      "require_full_window": true,
       "include_tags": true,
       "thresholds": {
         "critical": 10000
@@ -256,7 +256,7 @@
       "notify_no_data": false,
       "renotify_interval": 0,
       "notify_audit": false,
-      "require_full_window": false,
+      "require_full_window": true,
       "include_tags": true,
       "thresholds": {
         "critical": 1000
@@ -265,10 +265,10 @@
     "priority": 2
   },
   {
-    "name": "[Switch] agents are disconnecting en masse",
+    "name": "[Switch] agent connections are dropping en masse",
     "type": "query alert",
     "query": "pct_change(avg(last_10m),last_30m):sum:switch.agents.connected{service:switch-core} < -50",
-    "message": "{{#is_alert}}More than half of the connected agents dropped off in 10 minutes. Agents stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agents are disconnecting en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "message": "{{#is_alert}}Agent connections fell by more than half in 10 minutes. Agents that lost theirs stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
       "team:switch",

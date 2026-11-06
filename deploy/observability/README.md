@@ -60,7 +60,7 @@ would page on noise.
 `daily_report.py` posts once a day into a Switch room, as an agent in that room:
 a first line that says "all good" or how many things to look at, one line per
 signal for the last 24 hours, and three graphs (the pool per pod, API and
-delivery p95, agents connected). It covers what can wait for the morning, the
+delivery p95, agent connections). It covers what can wait for the morning, the
 things the monitors deliberately don't post: a pool that came close to full,
 latency creeping up, agents still on the old connection, events dropped for
 agents that were away.

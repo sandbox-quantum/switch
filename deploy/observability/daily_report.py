@@ -74,7 +74,7 @@ def lines_for(m: dict[str, float | None]) -> list[Line]:
     lines = [
         Line(
             BAD if not m["agents_now"] else GOOD,
-            f"Agents connected now: {_n(m['agents_now'])}",
+            f"Agent connections now: {_n(m['agents_now'])}",
         ),
         Line(
             GOOD if m["bridges_min"] == 1 else BAD,
@@ -230,8 +230,14 @@ def graphs(service: str) -> list[tuple[str, str]]:
 
     return [
         (
-            "Database connections in use, per pod (pool size 30)",
-            graph([f"max:switch.db.pool.in_use{{{s}}} by {{pod_name}}"], "30"),
+            "Database pool in use, per pod, % of its size",
+            graph(
+                [
+                    f"100 * max:switch.db.pool.in_use{{{s}}} by {{pod_name}}"
+                    f" / max:switch.db.pool.size{{{s}}} by {{pod_name}}"
+                ],
+                "100",
+            ),
         ),
         (
             "p95 ms: API requests and message delivery",
@@ -243,7 +249,7 @@ def graphs(service: str) -> list[tuple[str, str]]:
                 "2000",
             ),
         ),
-        ("Agents connected", graph([f"sum:switch.agents.connected{{{s}}}"], None)),
+        ("Agent connections", graph([f"sum:switch.agents.connected{{{s}}}"], None)),
     ]
 
 
