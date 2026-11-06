@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -262,21 +263,31 @@ class TestChangingRoles:
 
         assert response.status_code == 403
 
-    async def test_an_org_admin_cannot_change_their_own_role(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_org_admin_steps_down_while_another_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
-        """Another organization admin steps them down, so the last one can't
-        leave the organization without one: only an organization admin may
-        change a role, and never their own."""
-        ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
+        """Their own role is theirs to change; the last one of all stays, as
+        nobody else could grant the role again."""
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                bob: ("member", "org_admin" if another_admin else "member"),
+            },
+        )
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
             response = await client.patch(
                 f"/organizations/current/members/{ada}", json={"role": "member"}
             )
 
-        assert response.status_code == 403, response.text
+        assert response.status_code == (200 if another_admin else 409), response.text
+        if another_admin:
+            assert response.json()["role"] == "member"
+            # Still in the workspace by her own membership, so still bound to it.
+            assert "set-cookie" not in response.headers
 
     async def test_an_unknown_role_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -403,16 +414,42 @@ class TestRemoving:
             await _events(session_factory, tenant_id, AuditAction.MEMBER_REMOVED) == []
         )
 
-    async def test_an_org_admin_cannot_remove_themselves(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_org_admin_leaves_while_another_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
-        ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
+        """As with their own role. Having stood in the workspace only as an
+        organization admin, the session no longer names it once she leaves."""
+        ada, bob, cy = _name("ada"), _name("bob"), _name("cy")
+        tenant_id = await _workspace(session_factory, {cy: ("admin", "member")})
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert organization_id is not None
+        async with session_factory() as session:
+            for name, role in (
+                (ada, "org_admin"),
+                (bob, "org_admin" if another_admin else "member"),
+            ):
+                session.add(
+                    User(
+                        id=name, name=name, email=f"{name}@example.invalid", role="user"
+                    )
+                )
+                await session.flush()
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id, user_id=name, role=role
+                    )
+                )
+            await session.commit()
 
         async with _client(_app(session_factory), ada, tenant_id) as client:
             response = await client.delete(f"/organizations/current/members/{ada}")
 
-        assert response.status_code == 403, response.text
+        assert response.status_code == (200 if another_admin else 409), response.text
+        async with session_factory() as session:
+            left = await session.get(OrganizationMember, (organization_id, ada)) is None
+        assert left is another_admin
+        assert ("set-cookie" in response.headers) is another_admin
 
 
 class TestTheWorkspaceRoster:
@@ -574,8 +611,7 @@ class TestThePlatformOperator:
     async def test_an_operator_in_the_organization_may_restore_themselves(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Making themselves its `org_admin` is no stepping down, so the
-        rule that an admin's own row is changed by another doesn't stop it."""
+        """They may make themselves its `org_admin`, as anyone else."""
         op = _name("op")
         tenant_id = await _workspace(session_factory, {op: ("member", "member")})
         async with session_factory() as session:
@@ -593,11 +629,11 @@ class TestThePlatformOperator:
         assert (row["can_change_role"], row["can_remove"]) == (True, False)
         assert restored.status_code == 200, restored.text
         assert restored.json()["role"] == "org_admin"
-        # Now their own row as an `org_admin`, which another one changes.
+        # Now an `org_admin`, they may change and remove their own row.
         assert (
             restored.json()["can_change_role"],
             restored.json()["can_remove"],
-        ) == (False, False)
+        ) == (True, True)
 
     async def test_once_the_operator_restores_someone_else_their_way_in_closes(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1375,37 +1411,42 @@ async def _organization_of(
 
 
 class TestTheLastOrgAdminUnderARace:
-    """An admin's own row is changed by another admin, so the last `org_admin`
-    is only ever reached by two of them acting at once. These make the other
-    one's change land while the first is ending the target's access, the
-    window the re-count under the lock covers, so the refusal is seen every
-    time rather than when the timing allows."""
+    """Two org admins demoting or removing each other at once. The first holds
+    the admins' lock from before it takes anything away until its change
+    commits, so the second waits, counts after it, and is refused with
+    nothing of the other's taken away. The first is held while it ends the
+    other's access, and the second sent then, so the wait is seen every time
+    rather than when the timing allows."""
 
     @staticmethod
-    def _demoted_meanwhile(
+    async def _race(
         monkeypatch: pytest.MonkeyPatch,
-        session_factory: async_sessionmaker[AsyncSession],
-        organization_id: str,
-        caller: str,
-    ) -> None:
+        first: Callable[[], Awaitable[httpx.Response]],
+        second: Callable[[], Awaitable[httpx.Response]],
+    ) -> tuple[httpx.Response, httpx.Response, list[str]]:
+        ended: list[str] = []
+        entered, release = asyncio.Event(), asyncio.Event()
         end_access = organizations._end_access_through_organization
 
-        async def and_the_caller_is_demoted(*args: Any, **kwargs: Any) -> str | None:
-            warning = await end_access(*args, **kwargs)
-            async with session_factory() as session:
-                member = await session.get(
-                    OrganizationMember, (organization_id, caller)
-                )
-                assert member is not None
-                member.role = "member"
-                await session.commit()
-            return warning
+        async def held_once(*args: Any, **kwargs: Any) -> str | None:
+            ended.append(kwargs["user_id"])
+            if len(ended) == 1:
+                entered.set()
+                await release.wait()
+            return await end_access(*args, **kwargs)
 
         monkeypatch.setattr(
-            organizations, "_end_access_through_organization", and_the_caller_is_demoted
+            organizations, "_end_access_through_organization", held_once
         )
+        first_task = asyncio.create_task(first())
+        await entered.wait()
+        second_task = asyncio.create_task(second())
+        await asyncio.sleep(0.5)
+        assert not second_task.done(), "the second did not wait for the first"
+        release.set()
+        return await first_task, await second_task, ended
 
-    async def test_demoting_the_other_admin_is_refused_once_it_would_be_the_last(
+    async def test_of_two_admins_demoting_each_other_the_second_takes_nothing(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
@@ -1416,21 +1457,30 @@ class TestTheLastOrgAdminUnderARace:
         )
         organization_id = await _organization_id(session_factory, tenant_id)
         assert organization_id is not None
-        self._demoted_meanwhile(monkeypatch, session_factory, organization_id, ada)
+        app = _app(session_factory)
 
-        async with _client(_app(session_factory), ada, tenant_id) as client:
-            response = await client.patch(
-                f"/organizations/current/members/{bob}", json={"role": "member"}
+        async with (
+            _client(app, ada, tenant_id) as as_ada,
+            _client(app, bob, tenant_id) as as_bob,
+        ):
+            first, second, ended = await self._race(
+                monkeypatch,
+                lambda: as_ada.patch(
+                    f"/organizations/current/members/{bob}", json={"role": "member"}
+                ),
+                lambda: as_bob.patch(
+                    f"/organizations/current/members/{ada}", json={"role": "member"}
+                ),
             )
 
-        assert response.status_code == 409, response.text
-        assert "last organization admin" in response.json()["detail"]
-        # Said, since the refusal does not give back what was ended first.
-        assert "has already been taken away" in response.json()["detail"]
+        assert first.status_code == 200, first.text
+        assert second.status_code == 409, second.text
+        assert "last organization admin" in second.json()["detail"]
+        assert ended == [bob]
         async with session_factory() as session:
             assert await OrganizationStore().count_admins(session, organization_id) == 1
 
-    async def test_removing_the_other_admin_is_refused_once_it_would_be_the_last(
+    async def test_of_two_admins_removing_each_other_the_second_takes_nothing(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
@@ -1453,15 +1503,22 @@ class TestTheLastOrgAdminUnderARace:
                     )
                 )
             await session.commit()
-        self._demoted_meanwhile(monkeypatch, session_factory, organization_id, ada)
+        app = _app(session_factory)
 
-        async with _client(_app(session_factory), ada, tenant_id) as client:
-            response = await client.delete(f"/organizations/current/members/{bob}")
+        async with (
+            _client(app, ada, tenant_id) as as_ada,
+            _client(app, bob, tenant_id) as as_bob,
+        ):
+            first, second, ended = await self._race(
+                monkeypatch,
+                lambda: as_ada.delete(f"/organizations/current/members/{bob}"),
+                lambda: as_bob.delete(f"/organizations/current/members/{ada}"),
+            )
 
-        assert response.status_code == 409, response.text
-        assert "last organization admin" in response.json()["detail"]
-        # Said, since the refusal does not give back what was ended first.
-        assert "has already been taken away" in response.json()["detail"]
+        assert first.status_code == 200, first.text
+        assert second.status_code == 409, second.text
+        assert "last organization admin" in second.json()["detail"]
+        assert ended == [bob]
         async with session_factory() as session:
             assert await OrganizationStore().count_admins(session, organization_id) == 1
 
@@ -1683,8 +1740,8 @@ class TestWhatTheCallerMayDo:
             )
             for row in response.json()
         } == {
-            # Never on their own row: another organization admin steps them down.
-            ada: (False, False, False),
+            # Their own row too: they step down or leave while another remains.
+            ada: (True, True, True),
             bob: (True, True, True),
             cy: (True, True, True),
         }

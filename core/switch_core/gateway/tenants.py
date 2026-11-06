@@ -80,8 +80,8 @@ from switch_core.gateway.auth import (
     initial_tenant_claim,
     list_tenant_memberships,
     may_bind_tenant,
+    rebind_if_left,
     record_operator_entry,
-    refuse_acting_on_yourself,
     require_tenant_admin,
     set_session_cookie,
     tenant_of_invitation_token,
@@ -212,8 +212,6 @@ def _member_detail(
     administers: bool,
 ) -> MemberDetail:
     may_change = can_change_workspace_member(
-        caller_id,
-        user.id,
         administers=administers,
         member_is_organization_admin=organization_role == ORGANIZATION_ADMIN_ROLE,
     )
@@ -1445,17 +1443,13 @@ async def update_member_role(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     admin: Annotated[User, Depends(require_tenant_admin)],
 ) -> MemberDetail:
-    """Change a member's role. Admins only.
+    """Change a member's role. Admins only, their own included, so an admin
+    steps down while another remains.
 
     Refuses to demote the last admin: a workspace with none has nobody who
     can manage it, and getting one back takes the server's operator.
     """
     _require_bound_tenant(tenant_id)
-    refuse_acting_on_yourself(
-        admin.id,
-        user_id,
-        "You can't change your own role. Another admin of this workspace can.",
-    )
     role = _member_role(req.role)
 
     membership = await session.get(TenantMember, (tenant_id, user_id))
@@ -1494,9 +1488,13 @@ async def update_member_role(
 @router.delete("/tenants/{tenant_id}/members/{user_id}", response_model=None)
 async def remove_member(
     request: Request,
+    response: Response,
     tenant_id: str,
     user_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
@@ -1505,7 +1503,9 @@ async def remove_member(
     config: Annotated[SwitchConfig, Depends(get_config)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict | JSONResponse:
-    """Remove a member from the bound tenant. Admins only.
+    """Remove a member from the bound tenant. Admins only, their own
+    membership included, so an admin leaves while another remains; the
+    session then moves off the workspace (`rebind_if_left`).
 
     Refuses to remove the last admin, as demoting one does.
 
@@ -1539,11 +1539,6 @@ async def remove_member(
     owner's own connections or machine).
     """
     _require_bound_tenant(tenant_id)
-    refuse_acting_on_yourself(
-        admin.id,
-        user_id,
-        "You can't remove yourself. Another admin of this workspace can.",
-    )
     # Locked until the removal commits, as handing the member something locks
     # it (`accounts/transfer.py`), so no agent reaches them after the check
     # below finds none.
@@ -1593,4 +1588,6 @@ async def remove_member(
     await session.commit()
 
     warning = await revocation.finish(session, user_id, revoked)
+    if user_id == admin.id:
+        await rebind_if_left(response, session_factory, user_store, admin, config)
     return {"ok": True, "warning": warning}

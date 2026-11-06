@@ -1455,32 +1455,33 @@ class TestMemberRoutes:
         flags = {row["name"]: row["service_account"] for row in response.json()}
         assert flags == {"Agent Bootstrap": False, "robot": True}
 
-    async def test_an_admin_cannot_change_their_own_role(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_admin_steps_down_while_another_admin_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
-        """Stepping down is done by another admin, so nobody locks themselves
-        out by mistake. The last admin of all is
-        `test_an_org_admin_manages_members_as_a_workspace_admin_does`."""
+        """Their own row is theirs to change; the last admin of all stays."""
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="sole-admin", tenant_id=TENANT_A, role="admin"
+            session_factory, name="stepping-down", tenant_id=TENANT_A, role="admin"
         )
         await _make_member(
-            session_factory, name="other-admin", tenant_id=TENANT_A, role="admin"
+            session_factory,
+            name="other",
+            tenant_id=TENANT_A,
+            role="admin" if another_admin else "member",
         )
-        token = _token(admin_id, "sole-admin@example.invalid", TENANT_A)
+        token = _token(admin_id, "stepping-down@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             response = await client.patch(
                 f"/tenants/{TENANT_A}/members/{admin_id}", json={"role": "member"}
             )
 
-        assert response.status_code == 403, response.text
-
+        assert response.status_code == (200 if another_admin else 409), response.text
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, admin_id))
             assert membership is not None
-            assert membership.role == "admin"
+            assert membership.role == ("member" if another_admin else "admin")
 
     async def test_an_admin_can_be_demoted_when_another_admin_remains(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1503,27 +1504,32 @@ class TestMemberRoutes:
         assert response.status_code == 200, response.text
         assert response.json()["role"] == "member"
 
-    async def test_an_admin_cannot_remove_themselves(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_admin_leaves_while_another_admin_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
-        """As with their own role. The last admin of all is
-        `test_an_org_admin_cannot_remove_the_workspaces_last_admin`."""
+        """As with their own role. Having left, the session no longer names
+        the workspace: it is re-minted onto none, their only one gone."""
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="undeletable-admin", tenant_id=TENANT_A, role="admin"
+            session_factory, name="leaving", tenant_id=TENANT_A, role="admin"
         )
         await _make_member(
-            session_factory, name="other-admin", tenant_id=TENANT_A, role="admin"
+            session_factory,
+            name="other",
+            tenant_id=TENANT_A,
+            role="admin" if another_admin else "member",
         )
-        token = _token(admin_id, "undeletable-admin@example.invalid", TENANT_A)
+        token = _token(admin_id, "leaving@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{admin_id}")
 
-        assert response.status_code == 403, response.text
-
+        assert response.status_code == (200 if another_admin else 409), response.text
         async with session_factory() as session:
-            assert await session.get(TenantMember, (TENANT_A, admin_id)) is not None
+            left = await session.get(TenantMember, (TENANT_A, admin_id)) is None
+        assert left is another_admin
+        assert ("set-cookie" in response.headers) is another_admin
 
     async def test_removing_a_member_deletes_their_membership(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -2044,7 +2050,7 @@ class TestOrganizationAdmins:
     async def test_each_member_row_says_what_the_caller_may_do_with_it(
         self, session_factory: async_sessionmaker[AsyncSession], caller: str
     ) -> None:
-        """An admin may change and remove anyone but themselves and an
+        """An admin may change and remove anyone, themselves included, but an
         organization admin, whose standing comes from the organization; a
         transfer may go to anyone with a membership here but the caller."""
         org_admin_id = await _make_unaffiliated_user(
@@ -2097,8 +2103,10 @@ class TestOrganizationAdmins:
             "org-admin": (False, False, False),
             "org-admin-member": (False, False, True),
         }
-        # Nobody acts on their own row, nor hands themselves anything.
-        expected[caller] = (False, False, False)
+        # An admin's own row is theirs to change too; nobody hands themselves
+        # anything.
+        change, remove, _ = expected[caller]
+        expected[caller] = (change, remove, False)
         assert rows == expected
 
 

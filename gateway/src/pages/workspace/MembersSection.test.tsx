@@ -1,8 +1,9 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import MembersSection from "./MembersSection";
 
-vi.mock("../../data/AuthContext", () => ({ useAuth: () => ({ refresh: vi.fn() }) }));
+const refresh = vi.hoisted(() => vi.fn());
+vi.mock("../../data/AuthContext", () => ({ useAuth: () => ({ refresh }) }));
 
 vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
 
@@ -49,9 +50,39 @@ describe("MembersSection", () => {
 
     expect(await screen.findByLabelText("Role for bob@example.com")).toBeTruthy();
     expect(screen.getByLabelText("Remove bob@example.com")).toBeTruthy();
-    // Your own row: another admin changes or removes it.
+    // Your own row, where the server says no: as the last admin, say.
     expect(screen.queryByLabelText("Role for me@example.com")).toBeNull();
-    expect(screen.queryByLabelText("Remove me@example.com")).toBeNull();
+    expect(screen.queryByLabelText("Leave this workspace")).toBeNull();
+  });
+
+  it("lets an admin leave from their own row, then follows the session", async () => {
+    refresh.mockReset();
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === "DELETE"
+        ? new Response(JSON.stringify({ ok: true, warning: null }))
+        : new Response(
+            JSON.stringify([
+              member({
+                user_id: "u1",
+                name: "Me",
+                email: "me@example.com",
+                role: "admin",
+                can_change_role: true,
+                can_remove: true,
+              }),
+            ]),
+          ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MembersSection tenantId="t1" selfId="u1" />);
+    expect(await screen.findByLabelText("Role for me@example.com")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Leave this workspace"));
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    const reads = fetchMock.mock.calls.filter(([, init]) => init?.method !== "DELETE");
+    // Read once, and not again for a workspace the session has moved off.
+    expect(reads).toHaveLength(1);
   });
 
   it("shows organization admins read-only, and the rest manageable", async () => {

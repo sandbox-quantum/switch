@@ -8,7 +8,6 @@ from switch_core.authz import (
     Principal,
     administers_tenant,
     can,
-    can_change_organization_member,
     can_change_workspace_member,
     can_delete_api_key,
     can_delete_room_document,
@@ -259,47 +258,19 @@ class TestOwns:
 
 
 class TestCanChangeWorkspaceMember:
-    def test_an_admin_may_change_another_member(self) -> None:
+    def test_an_admin_may_change_a_member_themselves_included(self) -> None:
         assert can_change_workspace_member(
-            "u-admin", "u-bob", administers=True, member_is_organization_admin=False
+            administers=True, member_is_organization_admin=False
         )
 
     def test_a_member_may_not(self) -> None:
         assert not can_change_workspace_member(
-            "u-alice", "u-bob", administers=False, member_is_organization_admin=False
-        )
-
-    def test_nobody_may_change_their_own_row(self) -> None:
-        assert not can_change_workspace_member(
-            "u-admin", "u-admin", administers=True, member_is_organization_admin=False
+            administers=False, member_is_organization_admin=False
         )
 
     def test_nobody_may_change_an_organization_admins_row_here(self) -> None:
         assert not can_change_workspace_member(
-            "u-admin", "u-bob", administers=True, member_is_organization_admin=True
-        )
-
-
-class TestCanChangeOrganizationMember:
-    @pytest.mark.parametrize("restoring", [False, True])
-    def test_whoever_passes_the_gate_may_change_someone_else(
-        self, restoring: bool
-    ) -> None:
-        assert can_change_organization_member(
-            "u-ada", "u-bob", permitted=True, restoring=restoring
-        )
-        assert not can_change_organization_member(
-            "u-ada", "u-bob", permitted=False, restoring=restoring
-        )
-
-    def test_nobody_may_change_their_own_row(self) -> None:
-        assert not can_change_organization_member(
-            "u-ada", "u-ada", permitted=True, restoring=False
-        )
-
-    def test_the_operator_restoring_an_org_admin_may_name_themselves(self) -> None:
-        assert can_change_organization_member(
-            "u-op", "u-op", permitted=True, restoring=True
+            administers=True, member_is_organization_admin=True
         )
 
 

@@ -1401,7 +1401,7 @@ class MemberDetail(BaseModel):
     organization_role: str | None
     via_organization: bool
     # What the caller may do with this member (`authz.can_change_workspace_member`):
-    # an admin of the workspace, never on their own row and never on an
+    # an admin of the workspace, their own row included, never on an
     # organization admin's. That the last admin stays and that someone still
     # owning agents can't be removed is checked when it is asked.
     can_change_role: bool
@@ -1439,9 +1439,9 @@ class OrganizationMemberDetail(BaseModel):
     # What could not be revoked at a vendor when a demotion took away what
     # they held in workspaces they were in only as `org_admin`.
     warning: str | None
-    # What the caller may do with them (`authz.can_change_organization_member`):
-    # never on their own row. `can_change_role` for whoever passes the role
-    # route's gate, the operator restoring an `org_admin` included;
+    # What the caller may do with them, their own row included:
+    # `can_change_role` for whoever passes the role route's gate, the
+    # operator restoring an `org_admin` included;
     # `can_grant_org_admin` too, unless the organization's members come from
     # a directory Switch cannot change; `can_remove` for its `org_admin` only.
     # The last `org_admin`, someone still in a workspace, and a directory that

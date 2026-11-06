@@ -46,11 +46,17 @@ export default function MembersSection({ tenantId, selfId }: Props) {
   const { refresh } = useAuth();
 
   const act = useCallback(
-    async (userId: string, action: () => Promise<unknown>) => {
+    async (userId: string, action: () => Promise<unknown>, leaving = false) => {
       setBusy(userId);
       setActionError(null);
       try {
         await action();
+        if (leaving) {
+          // The session is on another workspace now, or none, and the page
+          // follows it rather than reading this one's members again.
+          await refresh();
+          return;
+        }
         await refetch();
         // Your own role decides what this page offers you.
         if (userId === selfId) await refresh();
@@ -138,13 +144,19 @@ export default function MembersSection({ tenantId, selfId }: Props) {
         sortable: false,
         renderCell: ({ row }) =>
           row.can_remove ? (
-            <Tooltip title="Remove from workspace">
+            <Tooltip title={row.user_id === selfId ? "Leave workspace" : "Remove from workspace"}>
               <span>
                 <IconButton
                   size="small"
                   disabled={busy !== null}
-                  onClick={() => act(row.user_id, () => removeMember(tenantId, row.user_id))}
-                  aria-label={`Remove ${row.email}`}
+                  onClick={() =>
+                    act(
+                      row.user_id,
+                      () => removeMember(tenantId, row.user_id),
+                      row.user_id === selfId,
+                    )
+                  }
+                  aria-label={row.user_id === selfId ? "Leave this workspace" : `Remove ${row.email}`}
                 >
                   <DeleteOutline fontSize="small" />
                 </IconButton>

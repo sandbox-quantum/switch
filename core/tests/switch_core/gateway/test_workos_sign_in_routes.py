@@ -296,7 +296,7 @@ class TestChangingMembers:
         for who in (cy, eli, fay):
             assert await _role(session_factory, organization_id, who) == "member"
 
-    async def test_stepping_down_yourself_is_refused_before_any_sign_in(
+    async def test_demoting_the_last_org_admin_is_refused_before_any_sign_in(
         self, session_factory
     ) -> None:
         ada = _name("ada")
@@ -310,8 +310,8 @@ class TestChangingMembers:
                 f"/organizations/current/members/{ada}", json={"role": "member"}
             )
 
-        assert refused.status_code == 403
-        assert "your own organization role" in refused.json()["detail"]
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == "Cannot demote the last organization admin"
         assert await _role(session_factory, organization_id, ada) == "org_admin"
 
     async def test_a_removal_refused_for_its_workspaces_asks_for_no_sign_in(

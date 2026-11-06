@@ -389,12 +389,12 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
-- **Nobody changes their own membership.** An admin changing their own role
-  or removing themselves from a workspace, or an organization admin doing so
-  in the organization, is refused with a 403: another admin steps them down,
-  so nobody locks themselves out by mistake. The server operator restoring an
-  organization's admin may still make themselves it. The members pages no
-  longer offer it.
+- **Admins step down and leave from their own row.** The workspace and
+  organization members pages offer changing your own role and leaving, while
+  another admin remains; the last one is refused, as before. Leaving the
+  workspace your session is on moves the session to your other workspace, or
+  to none, as deleting a workspace does, rather than leaving it on one you
+  left.
 - **A room's own document is changed in its room.** `PATCH` and
   `DELETE /documents/{id}` refuse one with a 409, and its library flags say no.
 - **Revoking an invitation that has already ended is refused** with a 409,
@@ -736,6 +736,11 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **Two organization admins demoting or removing each other at once** could
+  leave the refused one without their keys and connections in the workspaces
+  they reached as an organization admin: those were taken away before the
+  last-admin check that refused the change. The check is now made, under a
+  lock held until the change is saved, before anything is taken away.
 - **Deleting an API key an agent still signs in with** failed with a 500. It
   is refused with a 409 that says to delete the agent; once the agent is gone,
   its leftover key can be deleted.

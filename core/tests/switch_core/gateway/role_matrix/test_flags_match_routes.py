@@ -311,12 +311,34 @@ CHECKS: dict[str, Check] = {
                     {"role": "member"},
                 ),
                 match=("user_id", "self_id"),
+                later=frozenset({409}),  # The last admin stays.
             ),
             Check(
                 "can_remove",
                 MEMBERS,
                 _act("DELETE", f"{G}/tenants/{{tenant}}/members/{{self_id}}"),
                 match=("user_id", "self_id"),
+                later=frozenset({409}),  # The last admin, or still owning agents.
+            ),
+        ],
+        "your own organization membership": [
+            Check(
+                "can_change_role",
+                ORG_MEMBERS,
+                _act(
+                    "PATCH",
+                    f"{G}/organizations/current/members/{{self_id}}",
+                    {"role": "member"},
+                ),
+                match=("user_id", "self_id"),
+                later=frozenset({409}),  # The last organization admin stays.
+            ),
+            Check(
+                "can_remove",
+                ORG_MEMBERS,
+                _act("DELETE", f"{G}/organizations/current/members/{{self_id}}"),
+                match=("user_id", "self_id"),
+                later=frozenset({409}),  # The last one, or still in a workspace.
             ),
         ],
         "the workspace": [

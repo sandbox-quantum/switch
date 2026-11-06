@@ -126,9 +126,14 @@ export default function OrganizationMembersSection({
         const { warning } = await make(change);
         setActionWarning(warning);
         onChanged();
+        if (change.userId === selfId) {
+          // Your own role decides what this page offers you. Stepping down or
+          // leaving takes away reading these members at all, and may move the
+          // session to another workspace; the page follows it.
+          await refresh();
+          if ("remove" in change || change.role !== "org_admin") return;
+        }
         await refetch();
-        // Your own role decides what this page offers you.
-        if (change.userId === selfId) await refresh();
       } catch (err) {
         // Once only: a change made again after the sign-in that still asks
         // for one is shown as the failure it is, not sent round again. The
@@ -216,13 +221,19 @@ export default function OrganizationMembersSection({
         sortable: false,
         renderCell: ({ row }) =>
           row.can_remove ? (
-            <Tooltip title="Remove from organization">
+            <Tooltip
+              title={row.user_id === selfId ? "Leave organization" : "Remove from organization"}
+            >
               <span>
                 <IconButton
                   size="small"
                   disabled={busy !== null}
                   onClick={() => act({ userId: row.user_id, remove: true })}
-                  aria-label={`Remove ${row.email} from the organization`}
+                  aria-label={
+                    row.user_id === selfId
+                      ? "Leave this organization"
+                      : `Remove ${row.email} from the organization`
+                  }
                 >
                   <DeleteOutline fontSize="small" />
                 </IconButton>

@@ -229,44 +229,17 @@ def can_delete_room_document(
     )
 
 
-def names_themselves(caller_id: str, member_id: str) -> bool:
-    """Whether a change to a member's role or membership is the caller's own.
-
-    An admin's own row is changed by another admin: stepping down or leaving
-    is not done by mistake, so nobody locks themselves out that way."""
-    return member_id == caller_id
-
-
 def can_change_workspace_member(
-    caller_id: str,
-    member_id: str,
-    *,
-    administers: bool,
-    member_is_organization_admin: bool,
+    *, administers: bool, member_is_organization_admin: bool
 ) -> bool:
     """Whether the caller may change a workspace member's role or remove them.
 
-    A workspace admin may, but never on their own row (`names_themselves`),
-    nor on an organization admin's, whose standing in the workspace comes
+    A workspace admin may, their own row included, so an admin steps down or
+    leaves while another admin remains; the last one is refused when asked.
+    Never an organization admin's row, whose standing in the workspace comes
     from the organization and is changed in its members.
     """
-    return (
-        administers
-        and not names_themselves(caller_id, member_id)
-        and not member_is_organization_admin
-    )
-
-
-def can_change_organization_member(
-    caller_id: str, member_id: str, *, permitted: bool, restoring: bool
-) -> bool:
-    """Whether the caller may change an organization member's role or remove
-    them: `permitted` is whether they pass that route's organization-admin
-    gate, which differs between the two. Never on their own row
-    (`names_themselves`), unless `restoring`: the operator, let in while the
-    organization has no `org_admin`, may make themselves one, which is no
-    stepping down."""
-    return permitted and (restoring or not names_themselves(caller_id, member_id))
+    return administers and not member_is_organization_admin
 
 
 def deletes_workspace_by_role(tenant_role: str | None) -> bool:

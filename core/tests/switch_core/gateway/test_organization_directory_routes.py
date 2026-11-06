@@ -417,7 +417,7 @@ class TestChangingRoles:
         assert first == 200 and second in (403, 409)
         assert [call[0] for call in directory.asked] == ["set_role"]
 
-    async def test_stepping_down_yourself_is_refused_before_asking(
+    async def test_demoting_the_last_org_admin_is_refused_before_asking(
         self, session_factory, directory: _Directory
     ) -> None:
         ada = _name("ada")
@@ -428,7 +428,7 @@ class TestChangingRoles:
                 f"/organizations/current/members/{ada}", json={"role": "member"}
             )
 
-        assert response.status_code == 403
+        assert response.status_code == 409
         assert directory.asked == []
 
 
