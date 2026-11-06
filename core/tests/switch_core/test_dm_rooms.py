@@ -80,6 +80,9 @@ class _FakeAgentStore:
             owner_id=None,
         )
 
+    async def get_many(self, session: Any, agent_ids: list[str]) -> list[Any]:
+        return [await self.get(session, agent_id) for agent_id in agent_ids]
+
 
 class _FakeBridge:
     def __init__(self, known: dict[str, str]) -> None:
