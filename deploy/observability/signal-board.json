@@ -23,6 +23,28 @@
     },
     {
       "definition": {
+        "type": "manage_status",
+        "title": "Alerts: is anything firing right now?",
+        "title_align": "left",
+        "summary_type": "monitors",
+        "query": "tag:\"service:switch-core\" tag:\"tier:now\"",
+        "sort": "status,asc",
+        "display_format": "countsAndList",
+        "color_preference": "text",
+        "hide_zero_counts": false,
+        "show_status": true,
+        "show_last_triggered": true,
+        "show_priority": false
+      },
+      "layout": {
+        "x": 0,
+        "y": 1,
+        "width": 12,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
         "type": "group",
         "title": "Are agents connected?",
         "show_title": true,
@@ -127,7 +149,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 1,
+        "y": 4,
         "width": 4,
         "height": 6
       }
@@ -238,7 +260,7 @@
       },
       "layout": {
         "x": 4,
-        "y": 1,
+        "y": 4,
         "width": 4,
         "height": 6
       }
@@ -378,7 +400,7 @@
       },
       "layout": {
         "x": 8,
-        "y": 1,
+        "y": 4,
         "width": 4,
         "height": 6
       }
@@ -486,7 +508,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 7,
+        "y": 10,
         "width": 4,
         "height": 6
       }
@@ -641,7 +663,7 @@
       },
       "layout": {
         "x": 4,
-        "y": 7,
+        "y": 10,
         "width": 4,
         "height": 6
       }
@@ -772,7 +794,7 @@
       },
       "layout": {
         "x": 8,
-        "y": 7,
+        "y": 10,
         "width": 4,
         "height": 6
       }
