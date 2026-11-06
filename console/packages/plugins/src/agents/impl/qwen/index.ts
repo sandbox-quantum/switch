@@ -1,15 +1,46 @@
 import { definePlugin, registerPluginBehavior } from '@switch-console/core/agents/plugins';
-import { npmDependency } from '@switch-console/core/agents/plugins/helpers';
+import { homebrewOption, npmDependency } from '@switch-console/core/agents/plugins/helpers';
 import { icon } from './icon';
+
+const QWEN_PACKAGE = '@qwen-code/qwen-code';
+
+/**
+ * Qwen Code from npm or Homebrew, as its README offers. On Linux npm installs
+ * into the user prefix: the default global prefix there needs root, and
+ * `$HOME/.local/bin` is already on the PATH Switch Console captures for a
+ * remote host (see OpenCode's plugin).
+ */
+const QWEN_HOST_DEPENDENCY = (() => {
+  const brew = homebrewOption({ formula: 'qwen-code' });
+  const base = npmDependency({
+    id: 'qwen',
+    package: QWEN_PACKAGE,
+    extraOptions: { macos: [brew], linux: [brew] },
+  });
+  return {
+    ...base,
+    installCommands: {
+      ...base.installCommands,
+      linux: [
+        {
+          method: 'npm' as const,
+          command: `npm install -g --prefix "$HOME/.local" ${QWEN_PACKAGE}`,
+          uninstallCommand: `npm uninstall -g --prefix "$HOME/.local" ${QWEN_PACKAGE}`,
+          recommended: true,
+        },
+        brew,
+      ],
+    },
+  };
+})();
 
 export const plugin = definePlugin(
   {
     id: 'qwen',
     name: 'Qwen Code',
     description:
-      'Qwen Code CLI agent with native ACP support, built on the Qwen large language model family.',
-    websiteUrl: 'https://github.com/QwenLM/qwen-code',
-    cliLabel: 'Qwen Code',
+      "Alibaba's open-source coding agent over ACP, with approvals, questions and persistent conversations.",
+    websiteUrl: 'https://qwenlm.github.io/qwen-code-docs/',
   },
   {
     autoApprove: {
@@ -18,11 +49,7 @@ export const plugin = definePlugin(
     effort: {
       kind: 'none',
     },
-    hostDependency: npmDependency({
-      id: 'qwen',
-      package: '@qwen-code/qwen-code',
-      binaryNames: ['qwen'],
-    }),
+    hostDependency: QWEN_HOST_DEPENDENCY,
     mcp: {
       kind: 'none',
     },

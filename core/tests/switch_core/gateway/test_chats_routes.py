@@ -47,6 +47,7 @@ from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
 )
+from switch_core.providers.registry import agent_providers
 from switch_core.session_activity.listener import Change
 from tests.switch_core.gateway.conftest import _Harness, _Process
 
@@ -241,6 +242,19 @@ async def test_a_registered_agent_reports_its_provider(chats: _Harness) -> None:
     second = await chats.create_chat(chats.alice, other, "c2")
     assert first.json()["chat"]["agents"][0]["provider"] == "claude"
     assert second.json()["chat"]["agents"][0]["provider"] is None
+
+
+async def test_every_registered_provider_is_reported(chats: _Harness) -> None:
+    for provider in agent_providers():
+        agent = await chats.agent(f"{provider.id}-helper", owner=chats.alice)
+        async with chats.factory() as session:
+            row = await session.get(Agent, agent.id)
+            assert row is not None
+            row.metadata_ = {"known_agent_type": provider.known_agent_type}
+            await session.commit()
+
+        created = await chats.create_chat(chats.alice, agent, f"{provider.id}-chat")
+        assert created.json()["chat"]["agents"][0]["provider"] == provider.id
 
 
 async def test_an_owner_only_agent_refuses_a_chat_from_anyone_else(
