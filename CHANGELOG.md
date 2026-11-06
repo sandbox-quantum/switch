@@ -85,6 +85,12 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
+  through Meta's Cloud API and people can talk to agents in one-to-one chats,
+  with files, quoted replies as threads and read receipts. Each connection
+  needs its own Meta app, and Switch checks the token's app and permissions
+  when you save it. Replies more than 24 hours after the person's last message
+  are refused by WhatsApp; Switch doesn't send template messages.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with

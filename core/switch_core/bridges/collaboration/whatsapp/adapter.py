@@ -311,6 +311,13 @@ class WhatsAppAdapter(PlatformAdapter):
                         "the App ID and app secret of the app the token "
                         "belongs to."
                     )
+                if "whatsapp_business_messaging" not in (token.get("scopes") or []):
+                    raise BridgeCredentialError(
+                        "The access token lacks the whatsapp_business_messaging "
+                        "permission, so Switch could not send messages. Generate "
+                        "a new system user token with whatsapp_business_messaging "
+                        "and whatsapp_business_management."
+                    )
                 await client.phone_number()
             except WhatsAppGraphError as exc:
                 raise BridgeCredentialError(
@@ -481,7 +488,7 @@ class WhatsAppAdapter(PlatformAdapter):
                 "WhatsApp message %s is %s", status.get("id"), status.get("status")
             )
             return
-        recipient = status.get("recipient_user_id") or status.get("recipient_id")
+        recipient = status.get("recipient_id") or status.get("recipient_user_id")
         for error in status.get("errors") or [{}]:
             if error.get("code") == REENGAGEMENT_REQUIRED:
                 logger.error(
@@ -504,7 +511,7 @@ class WhatsAppAdapter(PlatformAdapter):
         contacts: list[dict[str, Any]],
         business_number: str,
     ) -> None:
-        sender = message.get("from_user_id") or message.get("from")
+        sender = message.get("from") or message.get("from_user_id")
         wamid = message.get("id")
         if not sender or not wamid:
             logger.warning(
