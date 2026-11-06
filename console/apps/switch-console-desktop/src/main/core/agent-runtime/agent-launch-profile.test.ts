@@ -36,6 +36,9 @@ function memoryFs(): PluginFs & { files: Map<string, string> } {
     async delete(p) {
       files.delete(p);
     },
+    async protectSecret(p) {
+      return files.has(p);
+    },
     async exists(p) {
       return files.has(p);
     },

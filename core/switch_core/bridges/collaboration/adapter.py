@@ -223,6 +223,11 @@ class RequestCard:
     # nobody is not the same as a redraw of one already asked, and only the
     # first is worth saying out loud.
     notify_unreachable: bool = False
+    # The request's turn was asked at the channel root, so a card threaded
+    # under that message is somewhere the channel does not look. Set on the
+    # first post only; an adapter that can also show a thread reply in the
+    # channel (Slack's `reply_broadcast`) does.
+    asked_at_root: bool = False
 
 
 RichContent = TurnActivity | RequestCard
@@ -870,6 +875,54 @@ class PlatformAdapter(ABC):
         that are safe to change; an edit to any other is refused.
         """
         return None
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        """How to post a link code from a chat account here, in Markdown
+        (CHOO-3881).
+
+        Per-platform because Switch does not hear every message everywhere:
+        some platforms deliver a channel message only when it mentions the
+        bot, or deliver no message text at all, and the instruction must name
+        a way that actually reaches Switch. A class method because Console asks
+        while showing the code, with or without a running adapter.
+        """
+        return f"Post `!link-account {code}` from that account in any channel Switch is in."
+
+    @classmethod
+    def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
+        """Why this account cannot be linked to anyone, or None if it can.
+
+        For the platform's stand-in accounts, which several real people post
+        as. Linking one would recognise all of them as the same Switch user.
+        """
+        return None
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        """Why this account cannot be linked to anyone, asking the platform
+        where the id alone cannot tell, or None if it can be.
+
+        A bot or an integration's account is one whoever runs it posts as, so
+        linking it would recognise all of them as one Switch user. Some
+        platforms say so in the id (`unlinkable_account_reason`); others only
+        when asked. Raise `LookupError` when the platform has no such account,
+        and `RuntimeError` when it cannot be asked.
+        """
+        return self.unlinkable_account_reason(external_user_id)
+
+    async def account_id_for_session(self, token: str) -> str:
+        """The platform id of the account a session token belongs to.
+
+        Proves control of an account without posting from it, for the bundled
+        deployment's setup, which provisions both the account and its Switch
+        user before any channel has an agent to hear a code. Raise
+        `NotImplementedError` where the platform has no such check.
+        """
+        raise NotImplementedError(
+            f"{self.display_name} cannot confirm an account from a session token"
+        )
 
     @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:

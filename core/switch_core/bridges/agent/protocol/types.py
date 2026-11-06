@@ -236,7 +236,7 @@ class MessagePayload(BaseModel):
     # it said; None everywhere else.
     opening_message: str | None = None
     # The sending person's role in the room's workspace when the message
-    # arrived: "owner", "admin" or "member". None for an agent, the platform,
+    # arrived: "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
     # What Switch has to tell the agent before this message, such as that

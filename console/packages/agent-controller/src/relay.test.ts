@@ -30,6 +30,7 @@ import { silentLogger } from './log';
 import { LocalRelay } from './relay';
 import { UpstreamForwarder } from './relay-forward';
 import type { AgentAssignment } from './schemas';
+import { SocketCalls } from './socket-calls';
 import { FakeCore } from './testing/fake-core';
 
 const AGENT = 'agent-1';
@@ -89,8 +90,10 @@ async function waitFor(condition: () => boolean, what: string, timeoutMs = 15_00
 let core: FakeCore;
 let hub: AgentHub;
 let relay: LocalRelay;
+let calls: SocketCalls;
 let token: string;
 let revokedCalls: number;
+let startsNoticed: { agentId: string; sessionId: string; startSource: string }[];
 let cursorsSaved: [string, number][];
 const stops: (() => void)[] = [];
 
@@ -115,6 +118,8 @@ function newRelay(): LocalRelay {
         revoked: () => revokedCalls++,
       },
       log: silentLogger,
+      calls,
+      sessionStarted: (started) => startsNoticed.push(started),
     }),
   });
 }
@@ -124,7 +129,9 @@ beforeEach(async () => {
   await core.start();
   core.setAssignment({ revision: 1, agents: [assigned(AGENT), assigned('agent-2')] });
   revokedCalls = 0;
+  startsNoticed = [];
   cursorsSaved = [];
+  calls = new SocketCalls();
   hub = new AgentHub({
     log: silentLogger,
     bufferLimit: 100,
@@ -612,6 +619,92 @@ describe('forwarding to Switch', () => {
     await core.stop();
     const unreachable = await post(`/agents/${AGENT}/ops/post_message`, {});
     expect(unreachable.status).toBe(502);
+  });
+
+  it('sends an operation as a call on a socket that takes them, and passes its answer back', async () => {
+    const sent: Record<string, unknown>[] = [];
+    calls.open((text) => {
+      const frame = JSON.parse(text) as Record<string, unknown>;
+      sent.push(frame);
+      setImmediate(() =>
+        calls.answer({ id: frame.id as number, status: 403, body: { detail: 'not a member' } })
+      );
+    }, 4);
+    const response = await fetch(`${relay.endpoint}/agents/${AGENT}/ops/post_message`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'X-Request-Id': 'request-9',
+      },
+      body: JSON.stringify({ body: 'hi' }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ detail: 'not a member' });
+    expect(sent).toEqual([
+      {
+        type: 'call',
+        id: 1,
+        agent_id: AGENT,
+        operation: 'post_message',
+        arguments: { body: 'hi' },
+        room_id: null,
+        request_id: 'request-9',
+      },
+    ]);
+    expect(core.requests.filter((r) => r.path.includes('/ops/'))).toEqual([]);
+  });
+
+  it('sends an operation over HTTP when the socket takes no calls, or no more of them', async () => {
+    await post(`/agents/${AGENT}/ops/post_message`, { body: 'no socket' });
+    calls.open((text) => {
+      const frame = JSON.parse(text) as Record<string, unknown>;
+      setImmediate(() =>
+        calls.answer({
+          id: frame.id as number,
+          status: 429,
+          body: { error: { code: 'capacity_exceeded', message: 'busy', retryable: true } },
+        })
+      );
+    }, 4);
+    const response = await post(`/agents/${AGENT}/ops/post_message`, { body: 'over capacity' });
+
+    expect(response.status).toBe(200);
+    expect(
+      core.requests.filter((r) => r.path === `/agents/${AGENT}/ops/post_message`)
+    ).toHaveLength(2);
+  });
+
+  it('sends what is not an operation over HTTP, socket or not', async () => {
+    const sent: unknown[] = [];
+    calls.open((text) => void sent.push(text), 4);
+    const response = await post('/agent-sessions/session-1/activity', { row: 1 });
+    expect(response.status).toBe(200);
+    expect(sent).toEqual([]);
+  });
+
+  it('passes on a session start once Switch has taken it, and nothing else', async () => {
+    await post('/agent-sessions/session-1/started', { start_source: 'room' });
+    await post('/agent-sessions/session-2/activity', { start_source: 'room' });
+    await post('/agent-sessions/session-3/started', { start_source: 'made-up' });
+    core.scripted.push({
+      method: 'POST',
+      path: '/agent-sessions/session-4/started',
+      status: 503,
+      body: { detail: 'not now' },
+    });
+    await post('/agent-sessions/session-4/started', { start_source: 'user' });
+    expect(startsNoticed).toEqual([
+      { agentId: AGENT, sessionId: 'session-1', startSource: 'room' },
+    ]);
+  });
+
+  it('answers 502 when the socket closes before Switch answers the call', async () => {
+    calls.open(() => setImmediate(() => calls.close('The controller socket closed.')), 4);
+    const response = await post(`/agents/${AGENT}/ops/post_message`, { body: 'lost' });
+    expect(response.status).toBe(502);
+    expect(((await response.json()) as { detail: string }).detail).toMatch(/may have run/);
   });
 
   it('streams an upload through without holding it', async () => {

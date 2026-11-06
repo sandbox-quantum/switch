@@ -22,6 +22,7 @@ function memoryFs(files: Record<string, string> = {}): PluginFs {
     read: async (p) => store.get(p) ?? null,
     write: async (p, c) => void store.set(p, c),
     delete: async (p) => void store.delete(p),
+    protectSecret: async (p) => store.has(p),
     exists: async (p) => store.has(p),
     list: async () => [...store.keys()],
   };

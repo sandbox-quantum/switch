@@ -390,6 +390,62 @@ class TestListForRoom:
         assert [m.transport_event_id for m in following] == ["$a1"]
 
 
+class TestRoomsPast:
+    async def test_names_only_the_rooms_with_a_row_after_their_cursor(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        async with session_factory() as session:
+            moved = await _make_room(session, "moved")
+            still = await _make_room(session, "still")
+            for room in (moved, still):
+                await store.create(session, _message(room.id, f"$a-{room.id}"), [])
+            await store.create(session, _message(moved.id, "$b"), [])
+            await session.commit()
+
+            past = await store.rooms_past(session, {moved.id: 1, still.id: 1})
+
+        assert past == {moved.id}
+
+    async def test_with_types_only_a_row_of_those_types_counts(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        command = "com.switch.command"
+        async with session_factory() as session:
+            room = await _make_room(session, "chatty")
+            await store.create(session, _message(room.id, "$chat"), [])
+            await session.commit()
+
+            chat_only = await store.rooms_past(session, {room.id: 0}, types=[command])
+            await store.create(
+                session, _message(room.id, "$cmd", event_type=command), []
+            )
+            await session.commit()
+            with_command = await store.rooms_past(
+                session, {room.id: 0}, types=[command]
+            )
+
+        assert chat_only == set()
+        assert with_command == {room.id}
+
+    async def test_asks_about_more_rooms_than_a_statement_has_parameters(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A reader in every room of a workspace can watch tens of thousands."""
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "one-of-many")
+            await store.create(session, _message(room.id, "$x"), [])
+            await session.commit()
+            cursors = {str(uuid.uuid4()): 0 for _ in range(40_000)}
+            cursors[room.id] = 0
+
+            past = await store.rooms_past(session, cursors)
+
+        assert past == {room.id}
+
+
 class TestConversationHistory:
     """The two reads following the conversation decides from."""
 
@@ -442,6 +498,38 @@ class TestConversationHistory:
             rows = await store.list_top_level_newest_first(session, room.id, limit=2)
 
         assert [r.transport_event_id for r in rows] == ["$c", "$b"]
+
+    async def test_both_read_only_what_came_before_a_row_when_asked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "alpha")
+            await store.create(session, _message(room.id, "$root"), [])
+            await store.create(
+                session, _message(room.id, "$r1", thread_root_event_id="$root"), []
+            )
+            await store.create(session, _message(room.id, "$top"), [])
+            await store.create(
+                session, _message(room.id, "$r2", thread_root_event_id="$root"), []
+            )
+            await store.create(session, _message(room.id, "$later"), [])
+            await session.commit()
+            [top] = await store.list_by_transport_event_ids(session, room.id, ["$top"])
+
+            thread = await store.list_thread_newest_first(
+                session,
+                room.id,
+                thread_root_event_id="$root",
+                limit=10,
+                before_seq=top.seq,
+            )
+            channel = await store.list_top_level_newest_first(
+                session, room.id, limit=10, before_seq=top.seq
+            )
+
+        assert [r.transport_event_id for r in thread] == ["$r1", "$root"]
+        assert [r.transport_event_id for r in channel] == ["$root"]
 
 
 class TestForeignKeyBehaviour:

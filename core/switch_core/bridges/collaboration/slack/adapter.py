@@ -462,6 +462,12 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     return "platform_error"
 
 
+# The ids Slack gives an app's bot, under which an app's posts with no user are
+# bridged. A person's id starts with U or W, but so does a bot user's.
+_SLACK_BOT_ID = re.compile(r"^B[A-Z0-9]+$")
+_SLACK_BOT_ACCOUNT = "This is a Slack app's or bot's account, which isn't one person's."
+
+
 class SlackAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Slack"
     # Slack apps cannot delete a channel outside Enterprise Grid's admin API.
@@ -777,6 +783,8 @@ class SlackAdapter(PlatformAdapter):
         text: str,
         blocks: list[dict[str, Any]],
         thread_root_id: str | None,
+        *,
+        reply_broadcast: bool,
     ) -> str | None:
         """Post a Block Kit message, for what plain text cannot carry.
 
@@ -806,6 +814,8 @@ class SlackAdapter(PlatformAdapter):
             unfurl_media=False,
             **_publication_metadata(blocks),
         )
+        if reply_broadcast and thread_ts:
+            arguments["reply_broadcast"] = True
         try:
             try:
                 result = await self._web_client.chat_postMessage(**arguments)
@@ -983,7 +993,15 @@ class SlackAdapter(PlatformAdapter):
                 return ref
         message = self._render_rich(content)
         ref = await self.post_blocks(
-            channel_id, agent_name, message.text, message.blocks, thread_root_id
+            channel_id,
+            agent_name,
+            message.text,
+            message.blocks,
+            thread_root_id,
+            # A question threaded under a channel-root message would otherwise
+            # be seen only by whoever opens the thread: show it in the channel
+            # too. Same message, so its buttons and later edits still work.
+            reply_broadcast=isinstance(content, RequestCard) and content.asked_at_root,
         )
         if ref is None:
             raise RichContentFailed(
@@ -1817,6 +1835,39 @@ class SlackAdapter(PlatformAdapter):
         # invocation reads exactly like the `!` form.
         return "`/invite-agent @agent-name` — the Slack slash command"
 
+    @classmethod
+    def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
+        # An app's or a bot's posts are bridged under its `bot_id` (`B…`), and
+        # whoever can post through the app (a webhook, a workflow) posts as it.
+        if external_user_id == "USLACKBOT" or _SLACK_BOT_ID.match(external_user_id):
+            return _SLACK_BOT_ACCOUNT
+        return None
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        # An app posting with its bot token is bridged under its bot user's
+        # `U…` id, which looks like a person's; only Slack can say otherwise.
+        reason = self.unlinkable_account_reason(external_user_id)
+        if reason is not None:
+            return reason
+        if self._web_client is None:
+            raise RuntimeError("The Slack bridge is not started, so it cannot be asked")
+        try:
+            result = await self._web_client.users_info(user=external_user_id)
+        except SlackApiError as e:
+            if e.response.get("error") == "user_not_found":
+                raise LookupError(
+                    f"No Slack account {external_user_id} exists on this workspace"
+                ) from e
+            raise RuntimeError(
+                f"Could not ask Slack about account {external_user_id}: {e}"
+            ) from e
+        except (aiohttp.ClientError, TimeoutError) as e:
+            raise RuntimeError(
+                f"Could not reach Slack to ask about account {external_user_id}: {e}"
+            ) from e
+        user = result["user"]
+        return _SLACK_BOT_ACCOUNT if user.get("is_bot") else None
+
     async def admin_message(
         self,
         channel_id: str,
@@ -1849,7 +1900,7 @@ class SlackAdapter(PlatformAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=self._admin_body(content, drawn),
+                text=self._admin_body(self.translate_outbound(content), drawn),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -2345,8 +2396,8 @@ class SlackAdapter(PlatformAdapter):
         if not self._web_client:
             raise RuntimeError("Slack client not connected")
 
-        raw_name = f"dm-{user_name}-{agent_name}"
-        channel_name = re.sub(r"[^a-z0-9_-]", "-", raw_name.lower()).strip("-")[:80]
+        raw_name = f"{agent_name}-{user_name}"
+        channel_name = re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80]
         try:
             result = await self._web_client.conversations_create(
                 name=channel_name, is_private=True

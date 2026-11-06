@@ -9,7 +9,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -350,6 +350,11 @@ def _close_loop(loop: asyncio.AbstractEventLoop) -> None:
     loop.run_until_complete(loop.shutdown_asyncgens())
     loop.close()
     asyncio.set_event_loop(None)
+
+
+# The id a webhook's posts are filed under: the integration, never the person
+# who created it, whose user id Mattermost puts on the post. See `_ws_handler`.
+_WEBHOOK_STAND_IN_PREFIX = "webhook:"
 
 
 class MattermostAdapter(PlatformAdapter):
@@ -1748,7 +1753,10 @@ class MattermostAdapter(PlatformAdapter):
         notifies nobody and reads as noise, and the message it decorates is
         worth sending without it.
         """
-        if not external_user_id:
+        if not external_user_id or external_user_id.startswith(
+            _WEBHOOK_STAND_IN_PREFIX
+        ):
+            # A webhook's stand-in is nobody Mattermost can notify.
             return None
         username = await self._username_for(external_user_id)
         return f"@{username}" if username else None
@@ -2796,14 +2804,36 @@ class MattermostAdapter(PlatformAdapter):
             raise RuntimeError("Cannot handle posted event: adapter not started")
 
         ws_loop = asyncio.get_event_loop()
+        user_is_bot = False
         try:
             user = await ws_loop.run_in_executor(
                 None, self._admin_driver.users.get_user, user_id
             )
             username: str = user.get("username", user_id)
+            user_is_bot = bool(user.get("is_bot", False))
         except Exception:
             logger.exception("Failed to resolve Mattermost user %s", user_id)
             username = user_id
+        props = post.get("props") or {}
+        from_webhook = str(props.get("from_webhook", "")).lower() == "true"
+        # An integration rather than a person: an incoming webhook, or a bot
+        # account other than the bridge's own (those never reach here).
+        sender_is_app = (
+            from_webhook
+            or user_is_bot
+            or str(props.get("from_bot", "")).lower() == "true"
+        )
+        if from_webhook:
+            # An incoming webhook's post (or a custom slash command's reply)
+            # carries the user id of whoever set the integration up, though
+            # anyone holding its URL may have sent it. It is the integration
+            # talking, not that person, so it goes under a stand-in of its own
+            # that no link and no owner rule can match (CHOO-3881). One per
+            # person, named after them, since every webhook they set up posts
+            # under their id and the name a post gives itself is the sender's
+            # to choose.
+            user_id = f"{_WEBHOOK_STAND_IN_PREFIX}{user_id}"
+            username = f"{username}'s webhook"
 
         channel_type = self._to_channel_type(mm_channel_type)
         stripped = message.strip()
@@ -2853,6 +2883,7 @@ class MattermostAdapter(PlatformAdapter):
                 channel_name=channel_name,
                 attachments=attachments,
                 attachment_failures=attachment_failures,
+                sender_is_app=sender_is_app,
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]
@@ -2985,6 +3016,66 @@ class MattermostAdapter(PlatformAdapter):
             )
         )
         self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Switch hears Mattermost through its agents' bots, so a channel with no
+        # agent in it is one where nothing reaches Switch, and someone linking
+        # while they set up a server may have no agent anywhere yet.
+        return (
+            f"Post `!link-account {code}` from that account in a Mattermost "
+            "channel that has a Switch agent in it. No agent yet? Add one first, "
+            "then get a new code here."
+        )
+
+    @classmethod
+    def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
+        if external_user_id.startswith(_WEBHOOK_STAND_IN_PREFIX):
+            return (
+                "This stands for a Mattermost webhook, which anyone holding "
+                "its URL can post through."
+            )
+        return None
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        reason = self.unlinkable_account_reason(external_user_id)
+        if reason is not None:
+            return reason
+        driver = self._admin_driver
+        if driver is None:
+            raise RuntimeError(
+                "The Mattermost bridge is not started, so it cannot be asked"
+            )
+        try:
+            user = await asyncio.to_thread(driver.users.get_user, external_user_id)
+        except ResourceNotFound as e:
+            raise LookupError(
+                f"No Mattermost account {external_user_id} exists on this server"
+            ) from e
+        except sync_requests.RequestException as e:
+            raise RuntimeError(
+                f"Could not ask Mattermost about account {external_user_id}: {e}"
+            ) from e
+        if user.get("is_bot"):
+            return "This is a Mattermost bot's account, which whoever runs it posts as."
+        return None
+
+    async def account_id_for_session(self, token: str) -> str:
+        driver = self._create_driver(token=token)
+        try:
+            me = await asyncio.to_thread(driver.login)
+        except NoAccessTokenProvided as e:
+            raise PermissionError("Mattermost did not accept that session token") from e
+        except sync_requests.RequestException as e:
+            raise RuntimeError(
+                f"Could not ask Mattermost whose session token that is: {e}"
+            ) from e
+        user_id = me.get("id") if isinstance(me, dict) else None
+        if not user_id:
+            raise RuntimeError("Mattermost did not say whose session token that is")
+        return str(user_id)
 
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Find team members via Mattermost's own user search.
