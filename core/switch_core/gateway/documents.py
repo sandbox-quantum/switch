@@ -5,7 +5,6 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.accounts.transfer import kind_refusal
 from switch_core.authz import (
     Principal,
     can,
@@ -119,7 +118,7 @@ def _capabilities(reader: Principal, doc: Document) -> dict[str, Any]:
     return {
         "can_edit": library and can(reader, "write", doc),
         "can_manage": manage,
-        "can_transfer": manage and kind_refusal(doc) is None,
+        "can_transfer": manage,
     }
 
 

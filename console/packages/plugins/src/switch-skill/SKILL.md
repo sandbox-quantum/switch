@@ -569,8 +569,9 @@ carrying a display name addresses no one.
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
   the bot asks for the one it needs and runs when you reply with it. In a
-  direct or group conversation it is refused, as `add_users_to_room` is: its
-  platform fixes who is in it, so the people there use the command instead.
+  direct or group conversation it is refused, as `add_users_to_room` and
+  `remove_agent_from_room` are: its platform fixes who is in it, so the people
+  there use the commands instead.
 - **`remove_agent_from_room`** — take an agent out of a room by name, the
   opposite of `invite_agent_to_room`; any session it had there is
   disconnected. You need not be in the room. Allowed when you may address

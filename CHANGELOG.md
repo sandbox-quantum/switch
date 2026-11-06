@@ -79,10 +79,11 @@ version of their own to them without also giving them a release of their own.
   outside it, though its platform fixes its members; a DM the bridge adopted
   is writable by every member, so anyone could put their own agent in someone
   else's DM and have it receive their messages. The room routes now refuse
-  adding or removing with a 409, and `invite_agent_to_room` and
-  `add_users_to_room` refuse adding. The people in the conversation still
-  invite agents with `!invite-agent`, and a Switch Console chat still changes
-  its own through its chat routes.
+  adding or removing with a 409, as do `invite_agent_to_room`,
+  `add_users_to_room` and `remove_agent_from_room`. The people in the
+  conversation still invite and remove agents with `!invite-agent` and
+  `!remove-agent`, and a Switch Console chat still changes its own through
+  its chat routes.
 - **Adding to a package takes being able to read what is added.** Only the
   package owner's reading was checked, and a package lists what it holds to
   everyone who may read it, so someone who could edit a publicly writable

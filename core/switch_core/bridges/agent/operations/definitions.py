@@ -1467,8 +1467,10 @@ async def remove_agent_from_room(room_id: str, agent_name: str) -> dict[str, boo
     connected there is disconnected from it. You need not be in the room.
 
     Allowed when you may address that agent (its addressing policy admits
-    you), or when you can manage agents and it belongs to your owner. Anything
-    else is refused with the reason — relay it rather than retrying.
+    you), or when you can manage agents and it belongs to your owner. A direct
+    or group conversation is refused: its platform fixes who is in it, and the
+    people in it use `!remove-agent` there. Anything else is refused with the
+    reason — relay it rather than retrying.
 
     Args:
         room_id: The Switch room id (UUID string).

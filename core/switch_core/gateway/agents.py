@@ -126,23 +126,35 @@ def _with_capabilities(
     )
 
 
+def _agent_gone(agent_id: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+
+
 async def _summaries_for_caller(
     session: AsyncSession, summaries: list[AgentSummary], user: User, is_admin: bool
 ) -> list[GatewayAgentSummary]:
     """`summaries` with what `user` may do with each agent filled in, reading
-    what that depends on for every agent at once."""
+    what that depends on for every agent at once. That is a read of its own,
+    so an agent deleted since `summaries` were read has no facts, and is left
+    out: it is gone."""
     principal = Principal(user.id, is_admin)
     facts = await agent_transfer_facts(
         session, require_tenant_id(), [summary.id for summary in summaries]
     )
-    return [_with_capabilities(summary, principal, facts) for summary in summaries]
+    return [
+        _with_capabilities(summary, principal, facts)
+        for summary in summaries
+        if summary.id in facts
+    ]
 
 
 async def _summary_for_caller(
     session: AsyncSession, summary: AgentSummary, user: User, is_admin: bool
 ) -> GatewayAgentSummary:
-    [result] = await _summaries_for_caller(session, [summary], user, is_admin)
-    return result
+    found = await _summaries_for_caller(session, [summary], user, is_admin)
+    if not found:
+        raise _agent_gone(summary.id)
+    return found[0]
 
 
 async def _detail_for_caller(
@@ -153,13 +165,16 @@ async def _detail_for_caller(
     config: SwitchConfig,
 ) -> GatewayAgentDetail:
     """`detail` with what `user` may do with the agent, and with each of its
-    children, filled in."""
+    children, filled in; as `_summaries_for_caller`, without whatever has been
+    deleted since `detail` was read."""
     principal = Principal(user.id, is_admin)
     facts = await agent_transfer_facts(
         session,
         require_tenant_id(),
         [detail.id, *(child.id for child in detail.children)],
     )
+    if detail.id not in facts:
+        raise _agent_gone(detail.id)
     owner = owns(principal, detail.owner_id)
     return GatewayAgentDetail(
         **detail.model_dump(exclude={"children"}),
@@ -169,7 +184,9 @@ async def _detail_for_caller(
         and config.service_connections_enabled
         and _has_known_spec(detail),
         children=[
-            _with_capabilities(child, principal, facts) for child in detail.children
+            _with_capabilities(child, principal, facts)
+            for child in detail.children
+            if child.id in facts
         ],
     )
 

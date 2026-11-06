@@ -3335,7 +3335,8 @@ class AgentCore:
         Allowed when the caller may address the target in that room, or when
         the caller can manage agents and the target belongs to the caller's
         owner. Membership of the room is not required: an owner's assistant
-        tidies rooms it was never in.
+        tidies rooms it was never in. Never in a direct or group conversation
+        (`require_membership_changeable_from_outside`).
         """
         async with self.session_factory() as session:
             caller = await self.agent_store.get(session, agent_id)
@@ -3344,6 +3345,7 @@ class AgentCore:
             room = await self.room_store.get(session, room_id)
             if room is None:
                 raise ValueError(f"Room not found: {room_id}")
+            require_membership_changeable_from_outside(room)
             target = await self.agent_store.get_by_name(session, agent_name)
             if target is None:
                 raise ValueError(f"Failed to remove agent: unknown agent {agent_name}")

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
@@ -24,6 +26,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway import agents as gateway_agents
 from switch_core.gateway.agents import get_agent_detail, list_agents
 from switch_core.gateway.documents import get_document
 from switch_core.gateway.packages import get_package, list_room_packages
@@ -150,6 +153,74 @@ class TestAgentPermissions:
             assert await manageable(owner, False) == (True, [True])
             assert await manageable(member, False) == (False, [False])
             assert await manageable(member, True) == (True, [True])
+
+    @staticmethod
+    def _deleted_meanwhile(monkeypatch: pytest.MonkeyPatch, agent_id: str) -> None:
+        """`agent_id` is deleted between the agents being read and what the
+        caller may do with them being read: it has no facts."""
+        read_facts = gateway_agents.agent_transfer_facts
+
+        async def without_it(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            facts = await read_facts(*args, **kwargs)
+            facts.pop(agent_id, None)
+            return facts
+
+        monkeypatch.setattr(gateway_agents, "agent_transfer_facts", without_it)
+
+    async def test_an_agent_deleted_while_listing_is_left_out(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            await add_agent(session, name="stays", owner_id=owner.id)
+            gone = await add_agent(session, name="gone", owner_id=owner.id)
+            self._deleted_meanwhile(monkeypatch, gone.id)
+
+            summaries = await list_agents(
+                session, AgentStore(), UserStore(), owner, False
+            )
+
+            assert [s.name for s in summaries] == ["stays"]
+
+    @pytest.mark.parametrize("deleted", ["child", "parent"])
+    async def test_an_agent_deleted_while_its_detail_is_built(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        deleted: str,
+    ) -> None:
+        """A child that has gone is left out; the agent itself gone is 404."""
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            parent = await add_agent(session, name="parent", owner_id=owner.id)
+            child = await add_agent(session, name="parent-child", owner_id=owner.id)
+            child.parent_agent_id = parent.id
+            await session.flush()
+            self._deleted_meanwhile(
+                monkeypatch, child.id if deleted == "child" else parent.id
+            )
+
+            async def detail() -> GatewayAgentDetail:
+                return await get_agent_detail(
+                    parent.id,
+                    session,
+                    AgentStore(),
+                    _ROOM_STORE,
+                    UserStore(),
+                    _detail_protocol(),  # type: ignore[arg-type]
+                    owner,
+                    False,
+                    SERVICES_ON,  # type: ignore[arg-type]
+                )
+
+            if deleted == "child":
+                assert (await detail()).children == []
+            else:
+                with pytest.raises(HTTPException) as gone:
+                    await detail()
+                assert gone.value.status_code == 404
 
     async def test_an_agent_never_reads_what_the_gateways_caller_may_do(
         self, session_factory: async_sessionmaker[AsyncSession]
