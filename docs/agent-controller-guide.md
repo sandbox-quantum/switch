@@ -2,9 +2,7 @@
 
 _Install the headless controller on a machine of your own, enroll it, and keep it healthy_
 
-Published at <https://docs.switchagents.ai/flintai/switch/deploy/agent-controller> — link readers there, not to this file.
-
-The agent controller is a headless program that runs the Switch agents you place on a machine, and reports their status back to Switch. Run one per machine. Where [Switch Console](connect-agents/switch-console.md) runs agents on the computer in front of you, the controller runs them on a server with nobody signed in — it is installed as a service that starts again on its own, and it keeps running after you close your laptop.
+The agent controller is a headless program that runs the Switch agents you place on a machine, and reports their status back to Switch. Run one per machine. Where [Switch Console](official/deploy/connect-agents/switch-console.md) runs agents on the computer in front of you, the controller runs them on a server with nobody signed in — it is installed as a service that starts again on its own, and it keeps running after you close your laptop.
 
 You place agents on the machine from the Gateway's **Machines** page. The controller pulls that assignment, starts each agent, and keeps Switch told what each one is doing.
 
@@ -20,7 +18,7 @@ Machines and managed agents are behind a feature flag. The server has to be star
 
 - **Operating system:** macOS, Linux, or Windows 10/11. The one-line installer below runs on Linux and macOS only. On Windows the controller is meant to run under Switch Console, which starts and stops it — `install-service` refuses there.
 - **Node 22.13 or later.** The controller keeps its state in Node's built-in SQLite, which older versions don't have.
-- **The provider CLI of every agent you plan to run**, installed on `PATH` and signed in as the user the controller runs as: `claude`, `codex`, `opencode`, `agent` or `cursor-agent` for Cursor, and `antigravity-acp`. An API key in the controller's environment file counts instead of a sign-in — see [Sign the providers in on the machine](#sign-the-providers-in-on-the-machine). Antigravity has no Windows build and is reported as not installed there.
+- **The provider CLI of every agent you plan to run**, installed on `PATH` and signed in as the user the controller runs as: `claude`, `codex`, `opencode`, `agent` or `cursor-agent` for Cursor, and `agy` for Antigravity (an older `antigravity-acp` is still used where it is the only one installed). An API key in the controller's environment file counts instead of a sign-in — see [Sign the providers in on the machine](#sign-the-providers-in-on-the-machine).
 - **A Switch server with agent management on**, as above. If Switch sits behind a proxy or an ingress, `/v1` has to reach switch-core.
 
 The server address you enroll against must be `https`. Plain `http` is accepted only for a loopback server, and the URL must carry no credentials, query or fragment.
@@ -169,7 +167,7 @@ On Linux, a controller can be set up to run every agent as a Linux user of its o
 
 An agent can only run if its provider CLI is both installed and signed in **as the user the controller runs as**. There are three ways to get there.
 
-**Sign in on the machine.** Log in as that user and run the provider's own login command: `claude auth login`, `codex login`, `opencode auth login`, `agent login` for Cursor, or `antigravity-acp --login`. This is the machine's own login, and it is what the controller prefers.
+**Sign in on the machine.** Log in as that user and run the provider's own login command: `claude auth login`, `codex login`, `opencode auth login`, `agent login` for Cursor, or the Antigravity CLI's own sign-in for `agy` (see [Google's install guide](https://antigravity.google/docs/install?tab=cli)). This is the machine's own login, and it is what the controller prefers.
 
 **Put an API key in the environment file.** `run`, `install-service` and `doctor` take `--env-file <path>`, read as systemd reads `EnvironmentFile=`: one `NAME=value` per line, blank lines and `#` comments skipped, an optional `export ` prefix, and values in single or double quotes taken literally. Anything else is refused, naming the line.
 
@@ -243,8 +241,8 @@ A shared agent's host that fails is started again on its own after 2, 4 and 8 se
 
 ## Next steps
 
-- [Connect your agents with Switch Console](connect-agents/switch-console.md) — The other way to run an agent, and what Console keeps doing for it
+- [Connect your agents with Switch Console](official/deploy/connect-agents/switch-console.md) — The other way to run an agent, and what Console keeps doing for it
 
-- [Onboard a remote host](host-remotely.md) — Give Switch Console a machine to run agents and servers on over SSH
+- [Onboard a remote host](official/deploy/host-remotely.md) — Give Switch Console a machine to run agents and servers on over SSH
 
-- [Set up agent providers](../getting-started/set-up-agent-providers.md) — Install and sign in to the provider CLIs an agent needs
+- [Set up agent providers](official/getting-started/set-up-agent-providers.md) — Install and sign in to the provider CLIs an agent needs
