@@ -1,10 +1,13 @@
 """A rolling hourly limit on the segments sent to each phone number.
 
 Stops an agent stuck in a loop, which a limit per reply cannot: two hundred
-short replies are each within it. Held in memory, so each server counts its own
-and a restart forgets. That is safe to lose, since it only ever sends less than
-Twilio would, and the docs page tells the operator to set a Twilio usage trigger
-as the hard limit.
+short replies are each within it.
+
+shortcut: held in memory, so each server counts its own and a restart forgets,
+which lets more through than the limit (a full hour again after a restart, the
+limit once per replica). Move it to the database if one hour's limit has to
+hold across restarts and replicas; until then the docs page tells the operator
+to set a Twilio usage trigger as the hard limit.
 """
 
 from __future__ import annotations
