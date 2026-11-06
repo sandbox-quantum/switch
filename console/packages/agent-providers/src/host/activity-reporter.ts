@@ -22,6 +22,7 @@ export type ActivityRow = {
   turn_id: string;
   item_id: string;
   kind: 'turn' | 'user-message' | 'assistant-message' | 'tool-activity' | 'notice';
+  subagent?: boolean;
   revision: number;
   status: string;
   title: string;
@@ -160,6 +161,7 @@ export class ActivityReporter {
               turn_id: item.turnId,
               item_id: item.itemId,
               kind: item.kind,
+              ...(item.subagent ? { subagent: true } : {}),
               revision: item.revision,
               status: item.status,
               title: truncate(item.title, MAX_TITLE),

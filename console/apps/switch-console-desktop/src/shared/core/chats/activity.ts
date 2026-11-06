@@ -53,6 +53,7 @@ export const chatActivityItemSchema = z.object({
   turnId: z.string(),
   itemId: z.string(),
   kind: z.enum(['turn', 'user-message', 'assistant-message', 'tool-activity', 'notice']),
+  subagent: z.boolean().optional(),
   revision: z.number().int(),
   status: z.string(),
   title: z.string(),
