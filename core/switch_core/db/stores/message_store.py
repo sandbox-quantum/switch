@@ -255,6 +255,12 @@ class MessageStore:
 
         Each room's `seq_floor` is raised to the highest live position deleted
         from it, in the same transaction, so `_next_seq` never reissues one.
+        This takes no room advisory lock and needs none: `_ROOM_HEAD` reads
+        the newest row and the floor in one statement, so a sender sees the
+        deletion whole or not at all, and the floor's UPDATE takes a row lock
+        that a sender's foreign-key check does not wait on. The rooms are
+        updated in id order, so two deletions at once (each replica runs
+        retention) lock them in the same order and cannot deadlock.
         The bytes behind the attachments are not touched: a blob may be quoted
         by a message that is kept. The result names them, and
         `RetentionStore.delete_unreferenced_media` finds the ones nothing
@@ -294,7 +300,7 @@ class MessageStore:
         floors: dict[str, int] = {}
         for row in rows:
             floors[row.room_id] = max(floors.get(row.room_id, 0), row.seq)
-        for room_id, seq in floors.items():
+        for room_id, seq in sorted(floors.items()):
             if seq > 0:
                 await session.execute(
                     update(Room)

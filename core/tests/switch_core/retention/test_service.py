@@ -13,7 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
@@ -342,6 +342,69 @@ class TestNumbering:
             assert refreshed is not None
             assert refreshed.seq_floor == 0
             assert await store.head_seq(session, room.id) == 0
+
+    async def test_a_sender_does_not_wait_on_a_deletion_and_numbers_above_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A deletion of the room's newest row, uncommitted, holds the room's
+        row lock; a send to the room goes ahead meanwhile, and neither
+        reissues a position."""
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _room(session, "busy")
+            await _message(session, room, "$newest", age_days=0)
+            await session.commit()
+            room_id = room.id
+
+        async with (
+            tenant_session(session_factory, TENANT_ZERO_ID) as deleting,
+            session_factory() as sending,
+        ):
+            await store.delete_sent_by(
+                deleting, transport_user_id="@sender:test", limit=10
+            )
+            async with asyncio.timeout(5):
+                sent = await _message(sending, room, "$during", age_days=0)
+                await sending.commit()
+            await deleting.commit()
+
+        async with session_factory() as session:
+            after = await _message(session, room, "$after", age_days=0)
+            await session.commit()
+            seqs = (
+                await session.execute(
+                    select(Message.seq).where(Message.room_id == room_id)
+                )
+            ).scalars()
+        assert sent.seq == 2
+        assert after.seq == 3
+        assert sorted(seqs) == [2, 3]
+
+    async def test_rooms_are_locked_in_id_order_whatever_order_the_messages_came(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            first, second = await _room(session, "one"), await _room(session, "two")
+            later, earlier = sorted([first, second], key=lambda r: r.id, reverse=True)
+            await _message(session, later, "$older", age_days=90)
+            await _message(session, earlier, "$newer", age_days=60)
+            await session.commit()
+        updated: list[str] = []
+
+        def record(conn, cursor, statement, parameters, context, executemany):  # type: ignore[no-untyped-def]
+            if statement.lstrip().upper().startswith("UPDATE ROOMS"):
+                updated.extend(p for p in parameters if p in {first.id, second.id})
+
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            engine = session.bind.sync_engine  # type: ignore[union-attr]
+            event.listen(engine, "before_cursor_execute", record)
+            try:
+                await MessageStore().delete_sent_before(session, NOW, limit=10)
+            finally:
+                event.remove(engine, "before_cursor_execute", record)
+            await session.rollback()
+
+        assert updated == [earlier.id, later.id]
 
 
 class TestMedia:
