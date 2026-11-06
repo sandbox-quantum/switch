@@ -201,11 +201,9 @@
               "type": "timeseries",
               "title": "bridges running, by platform",
               "title_size": "13",
-              "show_legend": false,
+              "show_legend": true,
               "legend_layout": "horizontal",
               "legend_columns": [
-                "avg",
-                "max",
                 "value"
               ],
               "requests": [
@@ -264,7 +262,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "API p95 ms, last hour",
+              "title": "API p95, ms",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
@@ -313,7 +311,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "delivery p95 ms, last hour",
+              "title": "delivery p95, ms",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
