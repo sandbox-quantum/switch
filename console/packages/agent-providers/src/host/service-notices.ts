@@ -69,6 +69,7 @@ export const CONNECTOR_APPROVAL_NOTICE =
 export function serviceName(service: string): string {
   const names: Record<string, string> = {
     atlassian: 'Atlassian',
+    box: 'Box',
     datadog: 'Datadog',
     github: 'GitHub',
     'google-workspace': 'Google Workspace',
