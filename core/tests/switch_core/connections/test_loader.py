@@ -234,19 +234,20 @@ def test_monday_candidate_stays_disabled_pending_live_verification():
     assert definition.enabled is False
     oauth = definition.auth.oauth
     assert oauth is not None
-    # monday's MCP server advertises dynamic registration, PKCE S256 and a
-    # revocation endpoint; an account admin approves the client and its
-    # redirect URIs, so the loopback ports are a fixed list.
+    # An account admin approves the dynamic client and its redirect URIs, so
+    # the loopback ports are a fixed list. Live revocation remains unverified.
     assert (definition.adapter, oauth.registration, oauth.redirect) == (
         "oauth",
         "dynamic",
         ["loopback"],
     )
     assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
-    assert oauth.revocation_discovered is True
+    assert oauth.revocation_discovered is False
     assert oauth.authorization_url is None and oauth.revocation_url is None
-    assert definition.token is not None
-    assert definition.token.kind == "pass_through"
+    assert oauth.remove_access == "Remove Switch in monday.com's connected apps settings."
+    # Token lifetime is intentionally unspecified until vendor behavior is
+    # measured; the candidate must not encode a guessed policy.
+    assert definition.token is None
     assert definition.mcp is not None
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("monday", "https://mcp.monday.com/mcp")

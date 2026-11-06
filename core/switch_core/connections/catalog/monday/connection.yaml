@@ -1,15 +1,13 @@
 slug: monday
 name: monday.com
 category: Project management
-description: Read and update monday.com boards and items, as you.
+description: Candidate for reading and updating monday.com boards and items.
 # DCR permissions and identity compatibility need live verification before use.
 enabled: false
 adapter: oauth
 auth:
   type: oauth
-  # TODO(measure): whether a refresh returns a new refresh token. Treated as
-  # rotating until a live sign-in shows otherwise; rotating is the safe guess.
-  refresh: rotating
+
   oauth:
     # monday offers dynamic registration for its MCP server, but a client it
     # has not pre-approved connects only after the account admin approves it
@@ -18,14 +16,13 @@ auth:
     registration: dynamic
     redirect: [loopback]
     loopback_ports: [39231, 39232, 39233, 39234, 39235]
-    revocation_discovered: true
+    # Revocation metadata and account removal still need live verification.
+    remove_access: Remove Switch in monday.com's connected apps settings.
   identity:
     # Candidate only: GraphQL GET and MCP-token compatibility are unverified.
     url: https://api.monday.com/v2?query=%7Bme%7Bid%20email%7D%7D
     account_id: data.me.id
     label: data.me.email
-# TODO(measure): the MCP access token's lifetime. An hour until measured.
-token: { kind: pass_through, max_lifetime: 3600 }
 mcp:
   servers:
     - { name: monday, url: "https://mcp.monday.com/mcp" }
