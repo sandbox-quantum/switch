@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.collaboration.google_chat.cards import (
     render_settled_approval_card,
@@ -29,6 +29,11 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
 )
+from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +82,17 @@ class InboundConsumer:
         self._extender_task: asyncio.Task[None] | None = None
         self._inflight_ack_ids: set[str] = set()
 
-        # Deduplication cache: key -> timestamp
+        # Deduplication cache: key -> timestamp (used as fallback when no session_factory)
         self._seen_events: dict[str, float] = {}
         # Single-winner / resolved interaction tokens
         self._resolved_tokens: set[str] = set()
         self._lock = asyncio.Lock()
+
+        # Database event receipt store for horizontal multi-pod deduplication
+        self.receipt_store = MessagingEventReceiptStore()
+        self.session_factory: async_sessionmaker[AsyncSession] | None = None
+        self.tenant_id: str | None = None
+        self.bridge_id: str | None = None
 
     def set_callbacks(
         self,
@@ -151,6 +162,53 @@ class InboundConsumer:
 
         self._seen_events[dedupe_key] = now
         return False
+
+    async def _claim_event(self, dedupe_key: str) -> tuple[bool, str | None]:
+        """Claim an event for processing via MessagingEventReceiptStore or in-memory fallback.
+
+        Returns (claimed, receipt_id). If claimed is False, another pod/worker has already taken
+        the event, and the caller should ack and drop it immediately.
+        """
+        if self.session_factory and self.tenant_id:
+            try:
+                async with tenant_session(
+                    self.session_factory, self.tenant_id
+                ) as session:
+                    receipt = await self.receipt_store.claim(
+                        session,
+                        platform="google_chat",
+                        external_event_id=dedupe_key,
+                    )
+                    if receipt is None:
+                        return False, None
+                    receipt_id = receipt.id
+                    # Commit immediately to release the unique index lock
+                    await session.commit()
+                    return True, receipt_id
+            except Exception as exc:
+                logger.warning(
+                    "Error claiming event %s via receipt store: %s",
+                    dedupe_key,
+                    exc,
+                )
+                return not self._is_duplicate_and_mark(dedupe_key), None
+
+        return not self._is_duplicate_and_mark(dedupe_key), None
+
+    async def _mark_handled(self, receipt_id: str | None) -> None:
+        """Mark claimed event handled in the database and prune expired receipts."""
+        if receipt_id and self.session_factory and self.tenant_id:
+            try:
+                async with tenant_session(
+                    self.session_factory, self.tenant_id
+                ) as session:
+                    await self.receipt_store.mark_handled(
+                        session, receipt_id=receipt_id
+                    )
+                    await self.receipt_store.prune(session)
+                    await session.commit()
+            except Exception as exc:
+                logger.warning("Failed to mark receipt %s handled: %s", receipt_id, exc)
 
     async def _ack_extender_loop(self) -> None:
         """Periodically extend ack deadline for in-flight slow turn messages."""
@@ -338,8 +396,9 @@ class InboundConsumer:
             logger.warning("CARD_CLICKED event missing action_id or token: %r", params)
             return True
 
-        # Replay protection / single-winner semantics
-        if token in self._resolved_tokens:
+        # Replay protection / single-winner semantics across pods
+        claimed, receipt_id = await self._claim_event(f"card:{token}")
+        if not claimed or token in self._resolved_tokens:
             logger.info(
                 "Card action for token %s already resolved; ignoring duplicate click.",
                 token,
@@ -379,6 +438,7 @@ class InboundConsumer:
                     "Could not patch settled card on %s: %s", message_name, exc
                 )
 
+        await self._mark_handled(receipt_id)
         return True
 
     async def _handle_slash_command(
@@ -426,14 +486,16 @@ class InboundConsumer:
             return True
 
         # Deduplicate across @mention interaction events and Workspace message.v1.created CloudEvents
-        dedupe_key = f"msg:{message_name}"
-        if self._is_duplicate_and_mark(dedupe_key):
+        # Claim Pub/Sub messages through MessagingEventReceiptStore, keyed by message name.
+        claimed, receipt_id = await self._claim_event(message_name)
+        if not claimed:
             logger.debug("Duplicate message event %s dropped.", message_name)
             return True
 
         sender = message.get("sender", {})
         if sender.get("type") == "BOT" or "app" in sender.get("name", ""):
             # Ignore messages posted by our bot
+            await self._mark_handled(receipt_id)
             return True
 
         raw_text = message.get("text", "")
@@ -473,6 +535,7 @@ class InboundConsumer:
                         channel_name=space_display_name,
                     )
                 )
+            await self._mark_handled(receipt_id)
             return True
 
         # Handle attachments
@@ -535,6 +598,7 @@ class InboundConsumer:
                 )
             )
 
+        await self._mark_handled(receipt_id)
         return True
 
     # ── Google Workspace Events (CloudEvents) ────────────────────────────────────
@@ -548,10 +612,13 @@ class InboundConsumer:
         ce_type = attributes.get("ce-type") or payload.get("type", "")
         ce_id = attributes.get("ce-id") or payload.get("id") or event_id
 
-        # Deduplicate on CloudEvent ID
-        if ce_id and self._is_duplicate_and_mark(f"ce:{ce_id}"):
-            logger.debug("Duplicate CloudEvent %s dropped.", ce_id)
-            return True
+        # Deduplicate non-message CloudEvents on CloudEvent ID
+        ce_receipt_id: str | None = None
+        if ce_type != "google.workspace.chat.message.v1.created" and ce_id:
+            claimed, ce_receipt_id = await self._claim_event(f"ce:{ce_id}")
+            if not claimed:
+                logger.debug("Duplicate CloudEvent %s dropped.", ce_id)
+                return True
 
         data = payload.get("data", {})
         if not data and "message" in payload:
@@ -569,12 +636,16 @@ class InboundConsumer:
                 "Inbound edit/delete CloudEvent (%s) ignored: core #804 not landed.",
                 ce_type,
             )
+            await self._mark_handled(ce_receipt_id)
             return True
 
         if ce_type == "google.workspace.chat.membership.v1.created":
-            return await self._handle_workspace_membership_created(data)
+            res = await self._handle_workspace_membership_created(data)
+            await self._mark_handled(ce_receipt_id)
+            return res
 
         logger.debug("Unhandled Workspace CloudEvent: %s", ce_type)
+        await self._mark_handled(ce_receipt_id)
         return True
 
     async def _handle_workspace_message_created(
@@ -599,8 +670,9 @@ class InboundConsumer:
             return True
 
         # Check deduplication on message resource name
-        dedupe_key = f"msg:{message_name}"
-        if self._is_duplicate_and_mark(dedupe_key):
+        # Claim Pub/Sub messages through MessagingEventReceiptStore, keyed by message name.
+        claimed, receipt_id = await self._claim_event(message_name)
+        if not claimed:
             logger.debug("Duplicate message resource %s dropped.", message_name)
             return True
 
@@ -612,10 +684,12 @@ class InboundConsumer:
             space_name = "/".join(message_name.split("/")[:2])
 
         if not space_name:
+            await self._mark_handled(receipt_id)
             return True
 
         sender = message.get("sender", {})
         if sender.get("type") == "BOT" or "app" in sender.get("name", ""):
+            await self._mark_handled(receipt_id)
             return True
 
         raw_text = message.get("text", "")
@@ -635,6 +709,7 @@ class InboundConsumer:
                 )
             )
 
+        await self._mark_handled(receipt_id)
         return True
 
     async def _handle_workspace_membership_created(self, data: dict[str, Any]) -> bool:

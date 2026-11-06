@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import httpx
 from pydantic import Field, field_validator
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
@@ -166,6 +169,33 @@ class GoogleChatAdapter(PlatformAdapter):
             slash_command_map=config.slash_command_map,
             max_attachment_bytes=self._max_attachment_bytes,
         )
+        self._session_factory: async_sessionmaker[AsyncSession] | None = None
+        self._tenant_id: str | None = None
+        self._bridge_id: str | None = None
+
+    def set_session_factory(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        self._session_factory = session_factory
+        self.consumer.session_factory = session_factory
+
+    def set_tenant_id(self, tenant_id: str) -> None:
+        self._tenant_id = tenant_id
+        self.consumer.tenant_id = tenant_id
+
+    def set_bridge_id(self, bridge_id: str) -> None:
+        self._bridge_id = bridge_id
+        self.consumer.bridge_id = bridge_id
+
+    async def ensure_channel_subscriptions(
+        self, channels: list[tuple[str, str]]
+    ) -> None:
+        """(Re)establish Workspace Events subscriptions for the given channels on startup."""
+        if not self._listening:
+            return
+        for channel_id, _channel_type in channels:
+            space_name = self.client._normalize_space_name(channel_id)
+            await self.workspace_events_mgr.ensure_space_subscription(space_name)
 
     @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:

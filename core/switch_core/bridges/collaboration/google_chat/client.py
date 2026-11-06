@@ -407,6 +407,33 @@ class GoogleChatClient:
             )
         return cast(dict[str, Any], resp.json())
 
+    async def list_workspace_events_subscriptions(
+        self,
+        *,
+        event_types: list[str] | None = None,
+        target_resource: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List Google Workspace Events subscriptions with optional filtering."""
+        url = f"{self.workspace_events_api_base}/subscriptions"
+        filters: list[str] = []
+        if event_types:
+            et_filter = " OR ".join(f'event_types:"{et}"' for et in event_types)
+            filters.append(f"({et_filter})" if len(event_types) > 1 else et_filter)
+        else:
+            filters.append('event_types:"google.workspace.chat.message.v1.created"')
+
+        if target_resource:
+            filters.append(f'target_resource="{target_resource}"')
+
+        params = {"filter": " AND ".join(filters)}
+        resp = await self._request("GET", url, use_user_oauth=True, params=params)
+        if resp.status_code != 200:
+            err = _format_google_error(resp)
+            logger.debug("Failed to list Workspace Events subscriptions: %s", err)
+            return []
+        data = cast(dict[str, Any], resp.json())
+        return cast(list[dict[str, Any]], data.get("subscriptions", []))
+
     async def delete_workspace_events_subscription(
         self, subscription_name: str
     ) -> None:
