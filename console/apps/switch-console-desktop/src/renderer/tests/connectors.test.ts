@@ -1081,6 +1081,28 @@ describe('the disconnect dialog', () => {
     expect(disconnectCopy(entry({ auth_type: 'api_key' }), ['M1']).lines).toContain(note);
     expect(disconnectCopy(entry({ auth_type: 'oauth' }), ['M1']).lines).not.toContain(note);
   });
+
+  it('describes a pasted credential as pasted rather than a sign-in', () => {
+    for (const auth_type of ['oauth', 'api_key'] as const) {
+      for (const method of ['token', 'keys'] as const) {
+        const lines = disconnectCopy(entry({ auth_type, method }), ['M1']).lines;
+        expect(lines).toContain('Switch removes what you pasted for Example.');
+        expect(lines).not.toContain('Switch removes the sign-in it keeps for Example.');
+      }
+    }
+  });
+
+  it('keeps the vendor-revocation warning for pasted API-key credentials', () => {
+    for (const method of ['token', 'keys']) {
+      const lines = disconnectCopy(entry({ auth_type: 'api_key', method }), ['M1']).lines;
+      expect(lines).toContain("Switch can't revoke this key at Example; delete it there.");
+    }
+  });
+
+  it('describes a browser OAuth credential as a sign-in', () => {
+    const lines = disconnectCopy(entry({ auth_type: 'oauth', method: 'oauth' }), ['M1']).lines;
+    expect(lines).toContain('Switch removes the sign-in it keeps for Example.');
+  });
 });
 
 describe('an admin switching a service off', () => {
