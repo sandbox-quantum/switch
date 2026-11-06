@@ -13,6 +13,7 @@ import {
   TableRow,
   TextField,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
 import { useMemo, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router";
@@ -138,9 +139,24 @@ function Shown({ revealed, onAsk }: { revealed: Revealed | undefined; onAsk: () 
  *  overview the shell holds, and asks for a fresh one every 30 seconds and
  *  after every action. A name from Show name is kept in this component's
  *  state only: it's gone on reload or when you leave the tab. */
+/** Below this width the Workspace column goes (it's on the box page), so the
+ *  table fits an ordinary laptop screen (1440 px). */
+export const NARROW = "(max-width:1599.95px)";
+
+/** The actions column stays pinned at the right edge while the table scrolls
+ *  sideways, so Resume, Pause and Restart are always in reach. */
+const PINNED_SX = {
+  position: "sticky",
+  right: 0,
+  zIndex: 1,
+  bgcolor: "background.paper",
+  boxShadow: "inset 1px 0 0 rgba(0, 0, 0, 0.12)",
+} as const;
+
 export default function BoxesTab() {
   const { overview: raw, overviewStale, refresh } = useHosted();
   useOverviewRefresh();
+  const narrow = useMediaQuery(NARROW);
   const overview = useMemo(() => parseOverview(raw), [raw]);
   const [asking, setAsking] = useState<{ kind: "user" | "workspace"; id: string } | null>(null);
   // Keyed by kind and id. A user has one box, so their name shows in one row;
@@ -221,13 +237,14 @@ export default function BoxesTab() {
         />
       </Stack>
       {/* The table scrolls sideways rather than squeezing its cells onto two
-          lines (designer). */}
-      <Box sx={{ overflowX: "auto" }}>
-      <Table size="small" aria-label="Boxes" sx={{ "& td, & th": { whiteSpace: "nowrap" } }}>
+          lines (designer), with the actions pinned at the right. Headings may
+          wrap ("Restarts today"); cells don't. */}
+      <Box sx={{ overflowX: "auto", maxWidth: "100%" }} data-testid="boxes-frame">
+      <Table size="small" aria-label="Boxes" sx={{ "& td": { whiteSpace: "nowrap" } }}>
         <TableHead>
           <TableRow>
             <TableCell>Box</TableCell>
-            <TableCell>Workspace</TableCell>
+            {!narrow && <TableCell>Workspace</TableCell>}
             <TableCell>Person</TableCell>
             <TableCell>State</TableCell>
             <TableCell>Machine</TableCell>
@@ -235,13 +252,13 @@ export default function BoxesTab() {
             <TableCell>Memory</TableCell>
             <TableCell>Disk</TableCell>
             <TableCell align="right">Restarts today</TableCell>
-            <TableCell aria-label="Actions" />
+            <TableCell aria-label="Actions" data-pinned sx={PINNED_SX} />
           </TableRow>
         </TableHead>
         <TableBody>
           {shown.length === 0 && (
             <TableRow>
-              <TableCell colSpan={10}>
+              <TableCell colSpan={narrow ? 9 : 10}>
                 <Typography variant="body2" color="text.secondary">
                   {overview.boxes.length === 0 ? EMPTY : NO_MATCH}
                 </Typography>
@@ -275,17 +292,19 @@ export default function BoxesTab() {
                     </Link>
                   </Stack>
                 </TableCell>
-                <TableCell>
-                  {b.workspaces.map((w) => (
-                    <Stack key={w} spacing={0.25} alignItems="flex-start" sx={{ mb: 0.5 }}>
-                      <IdCell id={w} label="workspace" />
-                      <Shown
-                        revealed={nameOf("workspace", w)}
-                        onAsk={() => setAsking({ kind: "workspace", id: w })}
-                      />
-                    </Stack>
-                  ))}
-                </TableCell>
+                {!narrow && (
+                  <TableCell>
+                    {b.workspaces.map((w) => (
+                      <Stack key={w} spacing={0.25} alignItems="flex-start" sx={{ mb: 0.5 }}>
+                        <IdCell id={w} label="workspace" />
+                        <Shown
+                          revealed={nameOf("workspace", w)}
+                          onAsk={() => setAsking({ kind: "workspace", id: w })}
+                        />
+                      </Stack>
+                    ))}
+                  </TableCell>
+                )}
                 <TableCell>
                   <Stack spacing={0.25} alignItems="flex-start">
                     <IdCell id={b.user} label="person" />
@@ -328,7 +347,7 @@ export default function BoxesTab() {
                   <CapacityCell name="disk" text={diskText(b)} share={share.disk} />
                 </TableCell>
                 <TableCell align="right">{b.restartsToday === null ? "—" : b.restartsToday}</TableCell>
-                <TableCell align="right">
+                <TableCell align="right" data-pinned sx={PINNED_SX}>
                   {current && (
                     <BoxActions
                       userKeyedId={b.user}

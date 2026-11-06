@@ -439,3 +439,53 @@ describe("thin capacity bars on Boxes", () => {
     expect(cell?.querySelector('[role="progressbar"]')).toBeNull();
   });
 });
+
+describe("Boxes on a laptop screen (1440 px)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  /** A browser window `width` wide, as far as CSS media queries go. */
+  function windowOf(width: number) {
+    vi.stubGlobal("matchMedia", (query: string) => {
+      const max = /max-width:\s*([\d.]+)px/.exec(query);
+      return {
+        matches: max ? width <= Number(max[1]) : false,
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      };
+    });
+  }
+
+  it("drops the Workspace column and keeps the actions pinned at the right", () => {
+    windowOf(1440);
+    renderTab(BoxesTab, { overview: fixture() });
+    const table = screen.getByRole("table", { name: "Boxes" });
+    expect(within(table).queryByRole("columnheader", { name: "Workspace" })).toBeNull();
+    const headers = within(table).getAllByRole("columnheader");
+    const actions = headers[headers.length - 1];
+    expect(actions.getAttribute("aria-label")).toBe("Actions");
+    expect(getComputedStyle(actions).position).toBe("sticky");
+    // Every current box's buttons sit in the pinned last cell.
+    const live = rows().find((r) => within(r).queryByRole("button", { name: "Restart box" }));
+    const cells = live!.querySelectorAll("td");
+    const last = cells[cells.length - 1];
+    expect(last.hasAttribute("data-pinned")).toBe(true);
+    expect(getComputedStyle(last).position).toBe("sticky");
+    expect(within(last as HTMLElement).getByRole("button", { name: "Restart box" })).toBeTruthy();
+    expect(cells.length).toBe(headers.length);
+  });
+
+  it("keeps the Workspace column on a wide screen", () => {
+    windowOf(1920);
+    renderTab(BoxesTab, { overview: fixture() });
+    const table = screen.getByRole("table", { name: "Boxes" });
+    expect(within(table).getByRole("columnheader", { name: "Workspace" })).toBeTruthy();
+  });
+});
