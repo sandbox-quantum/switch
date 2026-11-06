@@ -53,8 +53,6 @@ export default function CloudLoginsSection({
   controllerId,
   machine,
   onCloudChanged,
-  askFor,
-  onAsked,
 }: {
   /** The box's controller, from hosted-machines' `controller_id`. */
   controllerId: string;
@@ -62,9 +60,6 @@ export default function CloudLoginsSection({
   machine: CloudMachine;
   /** Read the box again, after the dialog wakes it. */
   onCloudChanged: () => void;
-  /** A provider to ask a login for straight away (a cloud agent just made), or null. */
-  askFor: string | null;
-  onAsked: () => void;
 }) {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [statuses, setStatuses] = useState<Map<string, LoginStatus> | null>(null);
@@ -105,15 +100,6 @@ export default function CloudLoginsSection({
       live = false;
     };
   }, [load]);
-
-  useEffect(() => {
-    if (!askFor) return;
-    const provider = providers.find((p) => p.id === askFor);
-    if (provider) {
-      setGiving(provider);
-      onAsked();
-    }
-  }, [askFor, providers, onAsked]);
 
   const withdraw = async () => {
     if (!withdrawing) return;

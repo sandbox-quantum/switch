@@ -33,8 +33,6 @@ function section() {
       controllerId="box-ctl"
       machine={MACHINE}
       onCloudChanged={() => {}}
-      askFor={null}
-      onAsked={() => {}}
     />,
   );
 }
@@ -103,15 +101,6 @@ describe("AI logins on your cloud", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(vi.mocked(logins.waitForOperation).mock.calls[0]![2]!.signal!.aborted).toBe(true);
     await waitFor(() => expect(vi.mocked(logins.listCloudLogins).mock.calls.length).toBeGreaterThan(reads));
-  });
-
-  it("asks for a new cloud agent's login straight away", async () => {
-    const onAsked = vi.fn();
-    render(
-      <CloudLoginsSection controllerId="box-ctl" machine={MACHINE} onCloudChanged={() => {}} askFor="codex" onAsked={onAsked} />,
-    );
-    expect((await screen.findByTestId("login-dialog")).textContent).toBe("codex");
-    expect(onAsked).toHaveBeenCalled();
   });
 });
 

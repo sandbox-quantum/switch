@@ -61,9 +61,6 @@ export default function AgentsPage() {
   // Add agent on Switch cloud: where this workspace may have a box, from the
   // same read as the panel (`available`).
   const [cloudOpen, setCloudOpen] = useState(false);
-  // A cloud agent just made: its provider's login is asked for straight away.
-  const [askLoginFor, setAskLoginFor] = useState<string | null>(null);
-  const loginAsked = useCallback(() => setAskLoginFor(null), []);
   const cloudAgents = hostedV2 && cloud.available;
   const [ownerFilter, setOwnerFilter] = useState<string>("");
   const [search, setSearch] = useState<string>("");
@@ -340,8 +337,6 @@ export default function AgentsPage() {
           controllerId={cloud.machine.controller_id}
           machine={cloud.machine}
           onCloudChanged={cloud.refresh}
-          askFor={askLoginFor}
-          onAsked={loginAsked}
         />
       )}
 
@@ -490,10 +485,9 @@ export default function AgentsPage() {
         <CloudAgentDialog
           open={cloudOpen}
           onClose={() => setCloudOpen(false)}
-          onCreated={(created) => {
+          onCreated={() => {
             refetch();
             cloud.refresh();
-            setAskLoginFor(created.definition.provider);
           }}
         />
       )}
