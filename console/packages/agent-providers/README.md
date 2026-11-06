@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These six adapters are the only Console session runtime.
 
 ## Shape
 
@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `kimi-code` | `kimi acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume through `session/load`, model selection through a `model` config option, MCP registration, approvals and questions. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -68,13 +69,14 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| kimi-code (ACP) | 2.5.0 | 10/10 (2026-11-05) | Run on Mistral Medium 3.5 (`mistral-medium-latest`) through Mistral's OpenAI-compatible API, given with `KIMI_MODEL_PROVIDER_TYPE=openai`, `KIMI_MODEL_BASE_URL`, `KIMI_MODEL_NAME` and `KIMI_MODEL_API_KEY` in the shell; the test passes those, and `KIMI_CODE_HOME`, through. Kimi has no steering, so in `steer-mid-turn` the second message runs as its own turn once the first ends. A SIGTERM ends Kimi before it saves the last turn of a conversation, so a session is stopped by closing its input. A failed turn ends as a finished one with no reply. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
-covers the protocol and chooses behaviour from what the agent advertises in
-`initialize` and `session/new`:
+Cursor, Antigravity and Kimi Code run on one adapter, `src/acp/acp-adapter.ts`,
+which covers the protocol and chooses behaviour from what the agent advertises
+in `initialize` and `session/new`:
 
 - resume uses `session/load` when the agent advertises `loadSession`, else
   `session/resume` when it advertises `sessionCapabilities.resume`, else asks
@@ -86,7 +88,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/kimi-code/kimi-code-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -129,3 +132,27 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**Kimi Code** offers its `login` method in the handshake whether or not it is
+signed in, so its sign-in check reads what `kimi provider list --json` prints:
+a provider or model with an API key, with the variable its `api_key_env` names
+set, with a `*_API_KEY` entry in its `env` table, or with the token file
+`kimi login` writes. That command writes an empty `config.toml` in Kimi's home
+when there is none; when it fails, the check reports what Kimi printed. A
+provider with a key but no `default_model` reads as signed in, though Kimi
+starts no session without one. Questions arrive as ACP form elicitations,
+which the adapter announces it can answer: all of a call's questions at once,
+several choices where a question takes them, each asked by its own text (from
+the form's message, a line each) with the short header the model gave it
+beside it. Kimi's form has no field for a typed answer. Where a form fails,
+Kimi asks the first question alone as a permission request whose option ids
+start with `q0_`, and that is asked as a question too. Its permission
+requests are titled with the tool's name, such as `Bash`, and say what it
+asks to do in their text. In its
+`default` mode, which `approval-required` uses, Kimi itself lets writes and
+edits inside a git work tree run without asking; in `yolo`, which auto mode
+uses, it runs every MCP tool, a connector's included, without asking. A turn
+that fails for any reason but its sign-in ends as a finished one: Kimi logs
+the error and sends nothing, so it reads as a turn without a reply. Sessions
+and checks run with `KIMI_CODE_NO_AUTO_UPDATE` set, so a native install swaps
+in an update it has staged only when it is run outside Switch.
