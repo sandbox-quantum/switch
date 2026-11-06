@@ -1,0 +1,19 @@
+import type { AgentIconAsset } from '@switch-console/core/agents/plugins';
+
+// Kimi Code's own mark, from MoonshotAI/kimi-code (MIT): apps/vscode/resources/kimi-icon.svg.
+export const icon: AgentIconAsset = {
+  kind: 'svg',
+  alt: 'Kimi Code',
+  invertInDark: true,
+  variants: [
+    {
+      minSize: 0,
+      light: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<rect x="3" y="4.5" width="18" height="13" rx="2.2" fill="none" stroke="#000" stroke-width="1.6"/>
+<rect x="9.6" y="8" width="1.4" height="2.6" rx="0.45" fill="#000"/>
+<rect x="15.6" y="8" width="1.4" height="2.6" rx="0.45" fill="#000"/>
+</svg>
+`,
+    },
+  ],
+};
