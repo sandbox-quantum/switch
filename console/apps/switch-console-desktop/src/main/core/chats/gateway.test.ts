@@ -150,6 +150,55 @@ describe('createChat', () => {
     });
   });
 
+  it('sends the room’s own settings when set, access as its two visibilities', async () => {
+    const server = { id: 'server-1' } as SwitchServer;
+    vi.mocked(gatewayFetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ chat: row('room-new', 'group') }), { status: 200 })
+    );
+    await createChat(server, {
+      agentIds: ['agent-1'],
+      name: 'Planning',
+      requestId: 'req-1',
+      greeting: null,
+      kind: 'group',
+      description: 'Where we plan',
+      instructions: 'Be brief.',
+      groupId: 'g1',
+      access: 'read_only',
+    });
+    expect(vi.mocked(gatewayFetch).mock.calls.at(-1)?.[2]?.body).toEqual({
+      requestId: 'req-1',
+      agentId: 'agent-1',
+      name: 'Planning',
+      kind: 'group',
+      description: 'Where we plan',
+      instructions: 'Be brief.',
+      groupId: 'g1',
+      readVisibility: 'public',
+      writeVisibility: 'private',
+    });
+  });
+
+  it('leaves out settings that are not set, so a chat stays private', async () => {
+    const server = { id: 'server-1' } as SwitchServer;
+    vi.mocked(gatewayFetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ chat: row('room-new', 'group') }), { status: 200 })
+    );
+    await createChat(server, {
+      agentIds: ['agent-1'],
+      name: null,
+      requestId: 'req-1',
+      greeting: null,
+      description: '',
+      groupId: null,
+      access: null,
+    });
+    expect(vi.mocked(gatewayFetch).mock.calls.at(-1)?.[2]?.body).toEqual({
+      requestId: 'req-1',
+      agentId: 'agent-1',
+    });
+  });
+
   it('sends resumeOnly only when true', async () => {
     const server = { id: 'server-1' } as SwitchServer;
     for (const resumeOnly of [true, false]) {

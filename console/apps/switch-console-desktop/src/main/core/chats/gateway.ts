@@ -34,7 +34,11 @@ import {
   workspaceMemberSchema,
   agentCandidatesSchema,
 } from '@shared/core/chats/chats';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import {
+  type RoomAccess,
+  type SwitchServer,
+  visibilityForAccess,
+} from '@shared/core/switch-servers/switch-servers';
 
 /**
  * The gateway's `/chats` routes, called as the signed-in person. Every answer
@@ -134,6 +138,12 @@ export async function createChat(
     kind?: 'group';
     /** Only finish the create already made under `requestId`; none is a `NO_SUCH_OPERATION` 404. */
     resumeOnly?: boolean;
+    /** The room's own settings, each sent only when set; a server before them ignores them. */
+    description?: string;
+    instructions?: string;
+    groupId?: string | null;
+    /** Null or absent leaves the chat private. */
+    access?: RoomAccess | null;
   }
 ): Promise<ChatSummary> {
   const agentIds = input.agentIds ?? [];
@@ -148,6 +158,10 @@ export async function createChat(
   if (input.bridgeId) body.bridgeId = input.bridgeId;
   if (input.kind) body.kind = input.kind;
   if (input.resumeOnly) body.resumeOnly = true;
+  if (input.description) body.description = input.description;
+  if (input.instructions) body.instructions = input.instructions;
+  if (input.groupId) body.groupId = input.groupId;
+  if (input.access) Object.assign(body, visibilityForAccess(input.access));
   return (await json(server, '/chats', chatCreatedSchema, { method: 'POST', body })).chat;
 }
 
