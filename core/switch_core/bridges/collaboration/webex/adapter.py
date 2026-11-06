@@ -134,6 +134,8 @@ _PARENT_DELETED = "Parent activity has been deleted"
 _REPLY_TO_REPLY = "Cannot reply to a reply"
 
 _ADAPTIVE_CARD = "application/vnd.microsoft.card.adaptive"
+_CARD_NOTICE = "this is waiting for your answer."
+_THREAD_READ_LIMIT = 100
 
 # The keys a card's button carries back in its press. Webex hands back exactly
 # what was put in `Action.Submit.data`, so they are read as strictly as written.
@@ -1099,7 +1101,7 @@ class WebexAdapter(PlatformAdapter):
         try:
             await self._post_text(
                 channel_id,
-                _join(heading, f"{mention} this is waiting for your answer."),
+                _join(heading, f"{mention} {_CARD_NOTICE}"),
                 thread_root_id,
             )
         except httpx.TransportError as exc:
@@ -1156,6 +1158,43 @@ class WebexAdapter(PlatformAdapter):
                 raise
             raise failure from exc
         self._edits.charge(message_ref)
+        if not attachments and not isinstance(content, TurnActivity):
+            await self._withdraw_card_notice(channel_id, message_ref, thread_root_id)
+
+    async def _withdraw_card_notice(
+        self, channel_id: str, card_ref: str, thread_root_id: str | None
+    ) -> None:
+        """Take down the notice under a card nobody is waiting on any more.
+
+        Read back from the thread rather than remembered, so whichever pod
+        holds the bridge when the card settles can do it. A card's notice is
+        the first one after it, which keeps two cards in a thread apart. A
+        notice left behind is untidy and nothing worse, so failing here fails
+        nothing."""
+        client = self._require_client()
+        root = thread_root_id or card_ref
+        try:
+            replies = await client.thread_replies(
+                channel_id, root, limit=_THREAD_READ_LIMIT
+            )
+            past_card = root == card_ref
+            for reply in reversed(replies):
+                if reply.get("id") == card_ref:
+                    past_card = True
+                elif (
+                    past_card
+                    and reply.get("personId") == self._bot_id
+                    and _CARD_NOTICE in str(reply.get("text") or "")
+                ):
+                    await client.delete_message(str(reply["id"]))
+                    return
+        except (WebexAPIError, httpx.TransportError) as exc:
+            logger.warning(
+                "The notice under card %s in Webex space %s stays: %s",
+                card_ref,
+                channel_id,
+                exc,
+            )
 
     async def _draw(self, content: RichContent) -> tuple[str, list[dict[str, Any]]]:
         """The text of a publication, and the attachments that go with it:

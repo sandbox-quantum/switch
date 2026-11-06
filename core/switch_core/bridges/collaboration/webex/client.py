@@ -194,6 +194,14 @@ class WebexClient:
             params["mentionedPeople"] = "me"
         return await self._items("/messages", params)
 
+    async def thread_replies(
+        self, room_id: str, parent_id: str, *, limit: int
+    ) -> list[dict[str, Any]]:
+        """The replies under a message, newest first."""
+        return await self._items(
+            "/messages", {"roomId": room_id, "parentId": parent_id, "max": limit}
+        )
+
     async def post_message(self, body: dict[str, Any]) -> dict[str, Any]:
         return await self._json("POST", "/messages", json=body)
 

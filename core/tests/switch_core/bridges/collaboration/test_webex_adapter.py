@@ -55,6 +55,7 @@ from switch_core.sessions.contract import TurnUpsert
 from .session_fixtures import open_request
 
 BOT_ID = "bot-person-id"
+_NOTICE = webex_module._CARD_NOTICE
 SECRET = "connection-secret"
 HOOK_URL = "https://switch.example.test/messaging/bridges/b1/events"
 
@@ -956,6 +957,14 @@ class TestThreads:
         assert waited == [3]
 
 
+def _settled_card() -> RequestCard:
+    return RequestCard(
+        open_request(),
+        RequestReference(token="tok-1", handle="R7"),
+        unavailable_reason="Answered in Console.",
+    )
+
+
 class TestCards:
     async def test_an_open_request_gets_a_button_per_option(
         self, webex: FakeWebex
@@ -1057,6 +1066,60 @@ class TestCards:
         body = json.loads(webex.sent("PUT", "/v1/messages/card-1")[0].content)
         assert body["attachments"]
         assert "<@" not in body["markdown"]
+
+    async def test_an_answered_cards_notice_is_taken_down_by_any_pod(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex, listening=False)
+        webex.route("PUT", "/v1/messages/card-2", lambda r: _ok({"id": "card-2"}))
+        webex.route("DELETE", "/v1/messages/notice-2", lambda r: httpx.Response(204))
+        notice = f"@Ada {_NOTICE}"
+        webex.route(
+            "GET",
+            "/v1/messages",
+            lambda r: _ok(
+                {
+                    "items": [
+                        {"id": "notice-2", "personId": BOT_ID, "text": notice},
+                        {"id": "card-2", "personId": BOT_ID, "text": "card"},
+                        {"id": "notice-1", "personId": BOT_ID, "text": notice},
+                        {"id": "card-1", "personId": BOT_ID, "text": "card"},
+                    ]
+                }
+            ),
+        )
+        card = _settled_card()
+        await adapter.update_rich("room-1", "claude", "card-2", card, "root-1")
+
+        [listed] = webex.sent("GET", "/v1/messages")
+        assert listed.url.params["parentId"] == "root-1"
+        assert len(webex.sent("DELETE", "/v1/messages/notice-2")) == 1
+        assert webex.sent("DELETE", "/v1/messages/notice-1") == []
+
+    async def test_a_person_quoting_the_notice_is_left_alone(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("PUT", "/v1/messages/card-1", lambda r: _ok({"id": "card-1"}))
+        webex.route(
+            "GET",
+            "/v1/messages",
+            lambda r: _ok(
+                {"items": [{"id": "said", "personId": "person-1", "text": _NOTICE}]}
+            ),
+        )
+        card = _settled_card()
+        await adapter.update_rich("room-1", "claude", "card-1", card, None)
+        assert [c for c in webex.calls if c.method == "DELETE"] == []
+
+    async def test_a_notice_that_cannot_be_found_fails_nothing(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("PUT", "/v1/messages/card-1", lambda r: _ok({"id": "card-1"}))
+        card = _settled_card()
+        await adapter.update_rich("room-1", "claude", "card-1", card, None)
+        assert len(webex.sent("PUT", "/v1/messages/card-1")) == 1
 
     async def test_a_lost_notice_does_not_fail_a_card_that_is_up(
         self, webex: FakeWebex
