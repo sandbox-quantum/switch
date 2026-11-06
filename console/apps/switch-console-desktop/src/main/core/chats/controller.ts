@@ -26,6 +26,7 @@ import type {
   ChatUploadInput,
   WorkspaceMember,
 } from '@shared/core/chats/chats';
+import type { RoomAccess } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type ActivityDeps, resolveChatActivity } from './activity';
 import {
@@ -172,6 +173,11 @@ export const chatsController = createRPCController({
     bridgeId?: string | null;
     kind?: 'group';
     resumeOnly?: boolean;
+    /** The room's own settings, as the New room dialog offers them. */
+    description?: string;
+    instructions?: string;
+    groupId?: string | null;
+    access?: RoomAccess | null;
   }): Promise<ChatSummary> => {
     const chat = await onServer(params.serverId, (server) => createChat(server, params));
     const agentIds = params.agentIds ?? [];

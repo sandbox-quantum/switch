@@ -34,8 +34,27 @@ describe('roomCreateRequest', () => {
         requestId: 'req',
         greeting: null,
         kind: 'group',
+        description: 'Reviews',
+        instructions: undefined,
+        groupId: null,
+        access: null,
       },
     });
+  });
+
+  it('gives a Switch Console chat its group and access, but no channel', () => {
+    const request = roomCreateRequest({
+      ...form,
+      bridgeId: null,
+      options: {
+        channel: { kind: 'new', private: true },
+        groupId: 'g1',
+        access: 'read_only',
+      },
+    });
+    expect(request.kind).toBe('chat');
+    expect(request.params).toMatchObject({ groupId: 'g1', access: 'read_only' });
+    expect(request.params).not.toHaveProperty('channel');
   });
 
   it('never sends an id twice', () => {
@@ -131,6 +150,15 @@ describe('CreateRequestIds', () => {
     expect(ids.for({ ...chatForm, name: 'Ship reviews', memberUserIds: ['u2'] })).toBe('id-3');
     ids.succeeded();
     expect(ids.for({ ...chatForm, name: 'Ship reviews', memberUserIds: ['u2'] })).toBe('id-4');
+  });
+
+  it('takes a new id when the room’s settings change, as the server refuses them under the old one', () => {
+    let n = 0;
+    const ids = new CreateRequestIds(() => `id-${++n}`);
+    const chatForm = { bridgeId: null, name: 'r', agentIds: [], memberUserIds: [] };
+    const first = ids.for({ ...chatForm, settings: ['A'] });
+    expect(ids.for({ ...chatForm, settings: ['A'] })).toBe(first);
+    expect(ids.for({ ...chatForm, settings: ['B'] })).toBe('id-2');
   });
 });
 

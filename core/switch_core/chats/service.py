@@ -46,7 +46,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
-from switch_core.authz import ORGANIZATION_ADMIN_ROLE, administers_tenant
+from switch_core.authz import (
+    ORGANIZATION_ADMIN_ROLE,
+    administers_tenant,
+    validate_visibility_pair,
+)
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.chats import MEMBER_CLIENT_TYPE
@@ -72,6 +76,7 @@ from switch_core.db.models import (
     Message,
     MessageAttachment,
     Room,
+    RoomGroup,
     TenantMember,
     UsageMetric,
     User,
@@ -1384,6 +1389,11 @@ class ChatService:
         kind: Literal["group"] | None,
         bridge_id: str | None,
         resume_only: bool,
+        description: str | None = None,
+        instructions: str | None = None,
+        group_id: str | None = None,
+        read_visibility: str | None = None,
+        write_visibility: str | None = None,
     ) -> Room:
         """A private room with the agents and members, owned by and joined by
         the user.
@@ -1407,8 +1417,28 @@ class ChatService:
 
         `resume_only` only finishes a create this request id already started;
         when it started none, nothing is made and the chat is 404.
+
+        `description` and `instructions` are the room's own, as a room made
+        on a messaging app takes them; none leaves the description naming who
+        is in the chat. `group_id` files the room in a room group, which only
+        a workspace admin may do, and the agents are checked as addressed in
+        that group. `read_visibility` and `write_visibility`, given together,
+        say who may see and change the room; none leaves it private.
         """
         member_user_ids = sorted(set(member_user_ids) - {user.id})
+        description = (description or "").strip() or None
+        instructions = (instructions or "").strip() or None
+        if (read_visibility is None) != (write_visibility is None):
+            raise ChatError(
+                422,
+                "ACCESS_INCOMPLETE",
+                "Give readVisibility and writeVisibility together.",
+            )
+        if read_visibility is not None and write_visibility is not None:
+            try:
+                validate_visibility_pair(read_visibility, write_visibility)
+            except ValueError as exc:
+                raise ChatError(422, "BAD_ACCESS", str(exc)) from exc
         direct = kind != "group" and len(agent_ids) == 1 and not member_user_ids
         if bridge_id is not None and not self.buddy_slack_handoff_enabled:
             raise ChatError(
@@ -1456,6 +1486,16 @@ class ChatService:
             # still match the request it repeats.
             request.pop("greeting", None)
             request["bridgeId"] = bridge_id
+        # The room's own settings, each only when given, for the same reason.
+        for key, value in (
+            ("description", description),
+            ("instructions", instructions),
+            ("groupId", group_id),
+            ("readVisibility", read_visibility),
+            ("writeVisibility", write_visibility),
+        ):
+            if value is not None:
+                request[key] = value
         payload_hash = _hash(request)
         async with self._lock("create", tenant_id, user.id):
             async with tenant_session(self.session_factory, tenant_id) as session:
@@ -1473,9 +1513,25 @@ class ChatService:
                             session, tenant_id, user, operation.room_id
                         )
                         return room
+                is_admin = await self.administers(session, tenant_id, user)
+                if group_id is not None:
+                    # Before the agents, so a refusal does not say which groups exist.
+                    if not is_admin:
+                        raise ChatError(
+                            403,
+                            "GROUP_FILING_NOT_ALLOWED",
+                            "Only a workspace admin can put a room in a room group.",
+                        )
+                    if await session.get(RoomGroup, group_id) is None:
+                        raise ChatError(404, "GROUP_NOT_FOUND", "No such room group.")
                 agents = [
                     await self._require_may_use_agent(
-                        session, tenant_id, user, agent_id, room_id="", group_id=None
+                        session,
+                        tenant_id,
+                        user,
+                        agent_id,
+                        room_id="",
+                        group_id=group_id,
                     )
                     for agent_id in agent_ids
                 ]
@@ -1535,11 +1591,15 @@ class ChatService:
                         created = await self._room_service.create_room(
                             RoomCreateConfig(
                                 name=name or "New Chat",
-                                description=(
+                                description=description
+                                or (
                                     f"Switch Console chat with {names}"
                                     if names
                                     else "Switch Console chat"
                                 ),
+                                instructions=instructions,
+                                group_id=group_id,
+                                acting_is_admin=is_admin,
                                 agent_ids=[agent.id for agent in agents],
                                 channel_type="direct" if direct else "channel_private",
                                 internal_only=bridge_id is None,
@@ -1548,8 +1608,8 @@ class ChatService:
                                 user_external_id=linked[1] if linked else None,
                                 created_by=user.id,
                                 owner_id=user.id,
-                                read_visibility="private",
-                                write_visibility="private",
+                                read_visibility=read_visibility or "private",
+                                write_visibility=write_visibility or "private",
                                 acting_user_id=user.id,
                                 created_by_kind="user",
                                 chat_operation_id=operation_id,
