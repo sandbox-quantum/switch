@@ -137,7 +137,9 @@ version of their own to them without also giving them a release of their own.
   reconnecting Google Workspace is the exception: Switch revokes the sign-in
   at Google, which ends every token on it, so once that succeeds the warning
   leaves Google Workspace out. A catalog entry says so with
-  `revocation_ends_tokens`.
+  `revocation_ends_tokens`. Reconnecting the same Google account through the
+  same client does not revoke the old sign-in, so the warning names Google
+  Workspace then.
 - **A template's room params name only rooms its runner can see.** A room
   param checked its value against every room on the server, and `$first` or
   a list of candidates could settle on someone else's private room. That told
