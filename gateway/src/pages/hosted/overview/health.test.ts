@@ -51,6 +51,24 @@ describe("Needs attention, to the lead's rule (operators item 2)", () => {
     ).toEqual([[B2, "Restarted 4 times today", "open", "amber"]]);
   });
 
+  it("lists from exactly 3 restarts today (QA's boundary: 2 and 3)", () => {
+    expect(
+      rows(withBoxes(box(B1, "running", { restarts_today: 2 }), box(B2, "running", { restarts_today: 3 }))),
+    ).toEqual([[B2, "Restarted 3 times today", "open", "amber"]]);
+  });
+
+  it("lists no report only past 10 minutes (QA's boundary: 9, 10 and 11 min)", () => {
+    expect(
+      rows(
+        withBoxes(
+          box(B1, "running", { heartbeat_at: ago(9 * MIN) }),
+          box(B2, "running", { heartbeat_at: ago(10 * MIN) }),
+          box(B3, "running", { heartbeat_at: ago(11 * MIN) }),
+        ),
+      ),
+    ).toEqual([[B3, "No report for 11 min", "restart", "amber"]]);
+  });
+
   it("lists an awake box with no report for over 10 minutes, saying how long, and only an awake one", () => {
     expect(
       rows(
