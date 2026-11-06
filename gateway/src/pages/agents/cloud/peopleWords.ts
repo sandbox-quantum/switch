@@ -68,14 +68,16 @@ export function setupChecklist(
 
 /**
  * The provider each agent type runs, from Core's provider list
- * (`providers/registry.py`): an agent's `known_agent_type`, which the agents
- * list already carries. Only Claude Code's type differs from its provider id.
+ * (`providers/registry.py`, all five providers): an agent's
+ * `known_agent_type`, which the agents list already carries. Only Claude
+ * Code's type differs from its provider id.
  */
 const PROVIDER_OF_TYPE: Readonly<Record<string, string>> = {
   "claude-code": "claude",
   codex: "codex",
   opencode: "opencode",
   antigravity: "antigravity",
+  cursor: "cursor",
 };
 
 /** The provider an agent runs, or null for a type Switch web doesn't know. */

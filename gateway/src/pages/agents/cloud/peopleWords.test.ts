@@ -92,8 +92,9 @@ describe("setupChecklist", () => {
 });
 
 describe("agentProvider", () => {
-  it("maps each agent type to its provider, as Core's provider list does", () => {
+  it("maps each of Core's five agent types to its provider", () => {
     expect(agentProvider("claude-code")).toBe("claude");
+    expect(agentProvider("cursor")).toBe("cursor");
     expect(agentProvider("codex")).toBe("codex");
     expect(agentProvider("opencode")).toBe("opencode");
     expect(agentProvider("antigravity")).toBe("antigravity");
@@ -125,6 +126,13 @@ describe("loginTick", () => {
     // The first agent's missing provider, in the list's order.
     expect(loginTick(["claude", "codex"], new Set(), takes)).toEqual({ set: false, missing: "claude" });
     expect(loginTick(["claude", "codex"], new Set(["claude"]), takes)).toEqual({ set: false, missing: "codex" });
+  });
+
+  it("counts a Cursor agent once the box takes a Cursor login", () => {
+    expect(loginTick([agentProvider("cursor")], new Set(["claude"]), new Set(["claude", "cursor"]))).toEqual({
+      set: false,
+      missing: "cursor",
+    });
   });
 
   it("leaves out an agent on an unknown provider, or one the box takes no login for", () => {

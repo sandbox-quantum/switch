@@ -290,6 +290,20 @@ describe("AgentsPage with hosted agents v2", () => {
     expect(document.activeElement).toBe(logins);
   });
 
+  it("shows no checklist while the agents list is still loading, then shows it", async () => {
+    box = { ...resting, state: "ready", sleeping: false, agents: [] };
+    const loadingAgents = { data: null, loading: true, error: null, refetch: vi.fn() };
+    vi.mocked(hooks.useAgents).mockReturnValue(loadingAgents as never);
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    const { rerender } = render(<AgentsPage />);
+    await screen.findByRole("region", { name: "AI logins on your cloud" });
+    fireEvent.click(screen.getByRole("button", { name: "report Claude missing" }));
+    expect(screen.queryByRole("list", { name: "Setting up your cloud" })).toBeNull();
+    vi.mocked(hooks.useAgents).mockReturnValue({ data: others, loading: false, error: null, refetch: vi.fn() });
+    rerender(<AgentsPage />);
+    expect(await screen.findByRole("list", { name: "Setting up your cloud" })).toBeTruthy();
+  });
+
   it("while the flag is still loading, shows and asks nothing", async () => {
     vi.mocked(hooks.useHostedV2).mockReturnValue(null);
     render(<AgentsPage />);

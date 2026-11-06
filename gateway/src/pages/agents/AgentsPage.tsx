@@ -66,9 +66,15 @@ export default function AgentsPage() {
   const [cloudOpen, setCloudOpen] = useState(false);
   const cloudAgents = hostedV2 && cloud.available;
   // "AI login set", from the logins section (`loginTick`); a box with no
-  // controller yet can't have a login.
+  // controller yet can't have a login. While the agents list is still
+  // loading it waits rather than tick on "any login" (as Console does); if
+  // the list can't be read, any ready login counts.
   const [loginRead, setLoginRead] = useState<LoginTick | null>(null);
-  const loginSet = cloud.machine?.controller_id ? (loginRead?.set ?? null) : false;
+  const loginSet = !cloud.machine?.controller_id
+    ? false
+    : loading && !agents
+      ? null
+      : (loginRead?.set ?? null);
   // The provider each of the box's agents runs, from the agents list already read.
   const agentProviders = useMemo(() => {
     const byId = new Map((agents ?? []).map((agent) => [agent.id, agent]));
