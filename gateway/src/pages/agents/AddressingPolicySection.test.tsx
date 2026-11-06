@@ -46,6 +46,11 @@ describe("AddressingPolicySection", () => {
     expect(screen.queryByText(/can never let anyone in/)).toBeNull();
   });
 
+  it("does not take a field the server spells out for a change", () => {
+    show({ rules: [{ ...OWNER_ONLY_POLICY.rules[0]!, platform: false }] });
+    expect(screen.getByRole("button", { name: "Save policy" })).toHaveProperty("disabled", true);
+  });
+
   it("names why a rule can never let anyone in, as the server would, and holds Save", () => {
     show(OWNER_ONLY_POLICY);
     fireEvent.click(screen.getByRole("checkbox", { name: "Its owner" }));

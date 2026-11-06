@@ -168,12 +168,13 @@ describe("ServiceAccessSection", () => {
     );
   });
 
-  it("shows nothing to someone who does not own the agent", async () => {
-    mockServer(null);
+  it("shows nothing to someone who does not own the agent, and reads none of their own connections", async () => {
+    const calls = mockServer(null);
     const { container } = render(
       <ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />,
     );
     await waitFor(() => expect(container.textContent).toBe(""));
+    expect(calls.map((c) => c.path)).toEqual(["/gateway/agents/a1/service-grants"]);
   });
 
   const onOff = (

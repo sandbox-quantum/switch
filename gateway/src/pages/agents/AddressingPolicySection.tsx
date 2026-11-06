@@ -251,9 +251,14 @@ export default function AddressingPolicySection({
   const desired: AddressingPolicy | null = restricted
     ? { rules: rules.map(fromRuleState) }
     : null;
-  const dirty =
-    JSON.stringify(desired) !==
-    JSON.stringify(agent.addressing_policy ?? null);
+  // Against the saved policy as this editor would write it back, so a field
+  // the server spells out (`platform: false`) is not taken for a change. A
+  // policy saved with no rules stays a change: saving records it as Open.
+  const saved: AddressingPolicy | null =
+    agent.addressing_policy === null
+      ? null
+      : { rules: initialRules.map(fromRuleState) };
+  const dirty = JSON.stringify(desired) !== JSON.stringify(saved);
   const hasDeadRule = restricted && rules.some((rule) => deadRuleReason(rule) !== null);
   const savedEmpty = agent.addressing_policy !== null && savedRules.length === 0;
 

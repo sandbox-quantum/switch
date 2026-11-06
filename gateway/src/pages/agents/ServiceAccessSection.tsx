@@ -94,13 +94,16 @@ export default function ServiceAccessSection({
   const [busy, setBusy] = useState(false);
   const { isOperator } = useAuth();
 
-  const load = useCallback(async () => {
+  // Whether the grants could be read: they cannot for someone else's agent,
+  // whose grants are its owner's business, and the section then hides.
+  const load = useCallback(async (): Promise<boolean> => {
     try {
       setGrants(await fetchServiceGrants(agent.id));
+      return true;
     } catch (err) {
-      // Someone else's agent: its grants are its owner's business.
       if (err instanceof ApiError && err.status === 404) setHidden(true);
       else setError(errorText(err));
+      return false;
     }
   }, [agent.id]);
 
@@ -112,10 +115,14 @@ export default function ServiceAccessSection({
     }
   }, []);
 
+  // The viewer's own connections are read only once the grants show this is
+  // their agent.
   useEffect(() => {
-    void load();
-    void loadServices();
-    fetchGitHubConnection().then(setGitHub, (err: unknown) => setGitHubError(errorText(err)));
+    void load().then((own) => {
+      if (!own) return;
+      void loadServices();
+      fetchGitHubConnection().then(setGitHub, (err: unknown) => setGitHubError(errorText(err)));
+    });
   }, [load, loadServices]);
 
   if (hidden) return null;
