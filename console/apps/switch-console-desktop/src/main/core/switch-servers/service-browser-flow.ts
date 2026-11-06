@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { log } from '@main/lib/logger';
+import type { AccessLevel } from '@shared/core/switch-servers/connection-catalog';
 import { SERVICE_CALLBACK_PATH } from '@shared/core/switch-servers/service-connection';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
@@ -27,13 +28,21 @@ const key = (server: SwitchServer, service: string, id: string) =>
 export async function startServiceBrowserFlow(
   server: SwitchServer,
   service: string,
-  open: (url: string) => Promise<void>
+  open: (url: string) => Promise<void>,
+  access: AccessLevel | null
 ): Promise<string> {
   const state = randomBytes(32).toString('base64url');
   const secret = randomBytes(32).toString('base64url');
   const catalogEntry = (await getConnectionCatalog(server)).find(
     (candidate) => candidate.slug === service
   );
+  // A service that lets the person choose is never connected without their
+  // choice, and one that does not is never sent one: its server refuses it.
+  const levels = catalogEntry?.access_levels ?? null;
+  if (levels !== null && (access === null || !levels.includes(access)))
+    throw new Error(`Choose what ${catalogEntry?.name ?? service} may do before connecting.`);
+  if (levels === null && access !== null)
+    throw new Error(`${catalogEntry?.name ?? service} has no choice of access to make.`);
   const listener = await listenForSignIn({
     name: catalogEntry?.name ?? service,
     path: SERVICE_CALLBACK_PATH,
@@ -63,6 +72,7 @@ export async function startServiceBrowserFlow(
       port: listener.port,
       state,
       completion_secret: secret,
+      ...(access === null ? {} : { access }),
     });
     started = true;
     try {

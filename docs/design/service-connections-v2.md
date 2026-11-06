@@ -568,7 +568,22 @@ Entry: `core/switch_core/connections/catalog/dropbox/`.
 - Levels are scopes. Read: `account_info.read`, `files.metadata.read`,
   `files.content.read`. Write adds `files.content.write`. Dropbox honours a
   narrower `scope` at authorization, so a read sign-in holds exactly the read
-  scopes (seen).
+  scopes (seen). The entry sets `access.choose: true`: the person picks read or
+  read and write when they connect, the start request carries it as `access`
+  (required for this entry, refused for any other), and the sign-in asks for
+  that level's scopes only. The other OAuth entries keep asking for their write
+  level whenever they have one. Refreshing sends no `scope`, so it cannot widen
+  what was granted, and a sign-in granted write after asking for read is not
+  kept.
+  The level lives on the person's connection; a grant is on or off and issues
+  at the connection's level each time (`ServiceBroker.decide`). Changing the
+  level means connecting again, and lowering it is not a revocation: Dropbox's
+  earlier write sign-in stays alive until removed under Connected apps (the
+  entry has `remove_access`, so Switch says so), an access token already handed
+  to an agent works until it expires (at most the entry's `max_lifetime`), and
+  connecting again does not move a grant's revision, so an agent host may keep
+  handing out its cached token for up to `USE_WITHIN` (an hour). Tokens issued
+  after the reconnect are at the new level.
 - Dropbox's MCP server (`https://mcp.dropbox.com/mcp`, answering as `text/event-stream`) lists
   its write tools to a read sign-in. Dropbox refuses them: `create_folder`
   answered "insufficient scope: need [files.content.write]" and made no

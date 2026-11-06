@@ -527,6 +527,15 @@ class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     read: LevelAccess
     write: LevelAccess | None = None
+    # The person picks read or read-and-write when they connect, instead of
+    # being asked for the write level whenever the service has one.
+    choose: bool = False
+
+    @model_validator(mode="after")
+    def _a_choice_has_two_levels(self) -> "ConnectionAccess":
+        if self.choose and self.write is None:
+            raise ValueError("choose offers read or write, so it needs a write level")
+        return self
 
 
 class ConnectionTools(BaseModel):
@@ -588,6 +597,8 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
+        if self.access is not None and self.access.choose and self.adapter != "oauth":
+            raise ValueError("only an oauth entry lets the person choose the level")
         if self.adapter == "github":
             self._check_github()
         elif self.adapter == "oauth":

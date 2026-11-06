@@ -297,6 +297,7 @@ function onOff(
     pass_through: true,
     token_lifetime: 3600,
     loopback_ports: null,
+    access_levels: null,
     key: null,
     external_identity: null,
     consent: null,

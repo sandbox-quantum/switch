@@ -30,6 +30,7 @@ function service(
     pass_through: true,
     token_lifetime: null,
     loopback_ports: null,
+    access_levels: null,
     key: null,
     external_identity: null,
     workspace_enabled: null,

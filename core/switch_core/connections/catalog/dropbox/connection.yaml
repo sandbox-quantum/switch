@@ -53,6 +53,9 @@ mcp:
   servers:
     - { name: dropbox, url: "https://mcp.dropbox.com/mcp" }
 access:
+  # The person picks when connecting: a pass-through grant hands an agent the
+  # sign-in's own token, so what the sign-in was given is all it can reach.
+  choose: true
   # Dropbox enforces scopes, not its MCP server: the server lists the same
   # tools to every connection, and one that needs a scope the sign-in lacks
   # is refused with "insufficient scope: need [files.content.write]"

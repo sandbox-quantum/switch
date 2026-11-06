@@ -148,6 +148,11 @@ class TestConnections:
             28800,
         )
         assert atlassian["loopback_ports"] == [39231, 39232, 39233, 39234, 39235]
+        # Only an entry whose catalog lets the person choose advertises levels.
+        assert entries["dropbox"]["access_levels"] == ["read", "write"]
+        assert {slug for slug, entry in entries.items() if entry["access_levels"]} == {
+            "dropbox"
+        }
 
     async def test_disconnecting_deletes_grants_and_revokes_the_sign_in(
         self, harness: Harness, vendor: FakeVendor

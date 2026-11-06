@@ -196,7 +196,9 @@ version of their own to them without also giving them a release of their own.
 - **The Dropbox connection.** A person connects Dropbox from Switch Console and
   a granted agent finds, reads and, if the person allowed writing, creates,
   copies, moves and deletes files and folders in it, as that person, through
-  Dropbox's MCP server. Reading holds `account_info.read`,
+  Dropbox's MCP server. The person chooses read only or read and write when
+  they connect, and Switch asks Dropbox for that level's permissions alone;
+  to change it they disconnect and connect again. Reading holds `account_info.read`,
   `files.metadata.read` and `files.content.read`; writing adds
   `files.content.write`. Sharing links and file requests are not asked for.
   The server's operator registers a Dropbox app and saves it under Connector

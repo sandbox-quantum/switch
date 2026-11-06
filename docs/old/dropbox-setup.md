@@ -90,11 +90,20 @@ switch-core does not start, and says why.
 
 ## What people do
 
-1. In Switch Console: Settings, Connections, Dropbox, Connect. The browser
-   opens Dropbox's consent page and comes back to Switch Console.
-2. On an agent's page, the agent's owner turns Dropbox on, choosing whether it
-   may only read or may also write. The agent acts as its owner: anything it
-   creates, moves or deletes shows in Dropbox as done by them.
+1. In Switch Console: Settings, Connections, Dropbox. The person chooses
+   **Read only** or **Read and write**, then Connect. Nothing is chosen for
+   them, and Connect stays off until they pick. The browser opens Dropbox's
+   consent page, which lists only the permissions of that choice, and comes
+   back to Switch Console.
+2. On an agent's page, the agent's owner turns Dropbox on or off. The grant
+   has no level of its own: the agent holds the owner's sign-in, so it can do
+   what that sign-in was given and no more. The agent acts as its owner:
+   anything it creates, moves or deletes shows in Dropbox as done by them.
+
+To change the choice, disconnect and connect again. Switch Console shows the
+choice made next to the connection. The sign-in the person leaves behind
+still works at Dropbox until they remove Switch under Connected apps (below),
+so a person who goes from read and write to read only should remove it there.
 
 A sign-in made for reading holds only the three read permissions. Dropbox
 enforces permissions, not Switch and not the Dropbox MCP server: the server

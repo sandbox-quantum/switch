@@ -908,7 +908,11 @@ describe('selecting the workspace’s tenant before the call', () => {
     const srv = expect.objectContaining({ id: 'srv' });
     const flow = { workspaceId: 'ws', service: 'example', flowId: 'flow-1' };
 
-    await workspacesController.startServiceConnection({ workspaceId: 'ws', service: 'example' });
+    await workspacesController.startServiceConnection({
+      workspaceId: 'ws',
+      service: 'example',
+      access: 'read',
+    });
     await workspacesController.getServiceFlow(flow);
     await workspacesController.cancelServiceConnection(flow);
     await workspacesController.connectServiceWithKey({
@@ -922,7 +926,8 @@ describe('selecting the workspace’s tenant before the call', () => {
     expect(serviceBrowserFlow.startServiceBrowserFlow).toHaveBeenCalledWith(
       srv,
       'example',
-      expect.any(Function)
+      expect.any(Function),
+      'read'
     );
     expect(serviceBrowserFlow.getServiceBrowserFlow).toHaveBeenCalledWith(srv, 'example', 'flow-1');
     expect(serviceBrowserFlow.cancelServiceBrowserFlow).toHaveBeenCalledWith(

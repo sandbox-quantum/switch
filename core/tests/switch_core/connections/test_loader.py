@@ -450,6 +450,52 @@ def test_rejects_write_without_read(catalog_copy):
         load_catalog(catalog_copy)
 
 
+def test_an_oauth_entry_may_let_the_person_choose_the_level(catalog_copy):
+    _write_example(
+        catalog_copy, OAUTH_ENTRY.replace("access:\n", "access:\n  choose: true\n")
+    )
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.choose is True
+
+
+def test_the_level_is_not_chosen_unless_the_entry_says_so(catalog_copy):
+    _write_example(catalog_copy)
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.choose is False
+
+
+def test_a_choice_needs_a_write_level_to_choose(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("access:\n", "access:\n  choose: true\n").replace(
+            '  write: { scopes: ["read:items", "write:items"] }\n', ""
+        ),
+    )
+    with pytest.raises(CatalogError, match="needs a write level"):
+        load_catalog(catalog_copy)
+
+
+def test_only_an_oauth_entry_lets_the_person_choose(catalog_copy):
+    path = catalog_copy / "github" / "connection.yaml"
+    text = path.read_text()
+    assert "\naccess:\n" in text
+    path.write_text(text.replace("\naccess:\n", "\naccess:\n  choose: true\n", 1))
+    with pytest.raises(CatalogError, match="only an oauth entry lets the person"):
+        load_catalog(catalog_copy)
+
+
+def test_dropbox_lets_the_person_choose_between_its_two_levels():
+    access = load_catalog(CATALOG_ROOT)["dropbox"].definition.access
+    assert access is not None and access.choose is True
+    assert access.read.scopes == [
+        "account_info.read",
+        "files.metadata.read",
+        "files.content.read",
+    ]
+    assert access.write is not None
+    assert access.write.scopes == [*access.read.scopes, "files.content.write"]
+
+
 def test_a_placeholder_may_describe_its_levels(catalog_copy):
     path = catalog_copy / "asana" / "connection.yaml"
     path.write_text(
