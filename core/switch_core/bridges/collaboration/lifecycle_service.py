@@ -611,6 +611,27 @@ class CollaborationBridgeLifecycleService:
             return None
         return adapter_cls.editable_config_keys(connection_config)
 
+    def supports_private_channels(self, bridge_type: str) -> bool:
+        """Whether this platform can make a private channel for a new room.
+
+        Read from the adapter class, like `supports_channel_creation`. An
+        unknown type is reported as capable, for the same reason."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return True
+        return (
+            adapter_cls.supports_channel_creation
+            and adapter_cls.supports_private_channels
+        )
+
+    def private_channel_needs_owner(self, bridge_type: str) -> bool:
+        """Whether a private channel on this platform needs the person asking
+        to have a linked account there, which Switch names as its owner."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return False
+        return adapter_cls.private_channel_needs_owner
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Whether this platform has a user directory Switch can search.
 

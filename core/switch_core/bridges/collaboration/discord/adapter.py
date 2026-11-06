@@ -53,6 +53,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    ChannelNotUsable,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -2415,6 +2416,7 @@ class DiscordAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
     ) -> str:
         if channel_type in ("group", "direct"):
             raise ValueError(
@@ -2602,6 +2604,37 @@ class DiscordAdapter(PlatformAdapter):
             raise ChannelNotBindable(
                 f"Discord channel {channel_id} is a direct message, which this "
                 "connection does not carry."
+            )
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists and the bot can see it."""
+        try:
+            numeric_id = int(channel_id)
+        except ValueError as error:
+            raise ChannelNotUsable(
+                f"{channel_id!r} is not a Discord channel id: those are numbers."
+            ) from error
+        try:
+            channel = await self._get_channel(numeric_id)
+        except discord.NotFound as error:
+            raise ChannelNotUsable(
+                f"Discord cannot find channel {channel_id}: {error.text or error}"
+            ) from error
+        except discord.Forbidden as error:
+            raise ChannelNotUsable(
+                f"Discord will not let the Switch bot see channel {channel_id} "
+                f"({error.text or error}). Give it access to the channel, then "
+                "try again."
+            ) from error
+        guild = getattr(channel, "guild", None)
+        me = getattr(guild, "me", None) if guild is not None else None
+        if me is None:
+            return
+        permissions = channel.permissions_for(me)
+        if not permissions.view_channel or not permissions.send_messages:
+            raise ChannelNotUsable(
+                f"The Switch bot cannot read and post in Discord channel "
+                f"{channel_id}. Give it access to the channel, then try again."
             )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:

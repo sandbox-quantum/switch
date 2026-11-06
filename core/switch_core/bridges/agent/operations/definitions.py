@@ -1417,7 +1417,8 @@ async def list_bridges() -> list[dict[str, Any]]:
 
     Returns:
         List of `{id, type, display_name, status, is_default,
-        can_create_channels}` dicts. Only `status` == "active" bridges are
+        can_create_channels, can_create_private_channels,
+        private_channel_needs_linked_account}` dicts. Only `status` == "active" bridges are
         usable for new rooms; others are shown for context. `is_default`
         marks the bridge that `create_room` uses when no `bridge_id` is given
         (at most one).
@@ -1427,6 +1428,13 @@ async def list_bridges() -> list[dict[str, Any]]:
         operator has withheld it. Creating a room on one of those fails, so
         offer an existing channel instead: the chat is made on the platform,
         the Switch app is added to it, and the room is adopted from that.
+
+        `can_create_private_channels` says whether `channel_type`
+        "channel_private" can be asked for there. Where
+        `private_channel_needs_linked_account` is true (Teams), the room's
+        owner, your owner when you create it, must have linked and confirmed
+        their account on that platform: Switch names them the channel's
+        owner, and refuses the room when they have not.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()

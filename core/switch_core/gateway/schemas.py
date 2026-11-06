@@ -666,6 +666,12 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Whether a new room here can have a private channel, and whether that
+    # channel needs the person asking to have linked their account on the
+    # platform, which Switch names as its owner (Teams). Lets a room form offer
+    # "New private channel" from the server rather than a list of its own.
+    private_channels_supported: bool = True
+    private_channel_needs_linked_account: bool = False
     # Why no existing channel can be bound to a room by id on this connection,
     # or None when one can. Set for a connection whose chats arrive only one
     # way, so the room form can say so instead of offering the choice.

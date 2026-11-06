@@ -561,6 +561,20 @@ class PlatformAdapter(ABC):
     #: exists and while one is stopped.
     supports_directory_search: ClassVar[bool] = True
 
+    #: Whether this platform can make a private channel from Switch.
+    #:
+    #: Reported per connection so a room form offers "New private channel"
+    #: only where it can work, rather than each client keeping its own list.
+    #: Meaningless where `supports_channel_creation` is False.
+    supports_private_channels: ClassVar[bool] = True
+
+    #: Whether a private channel here has to be created with a person as its
+    #: owner. True on Teams, where Microsoft refuses a private channel an app
+    #: creates unless the request names a user to own it. Switch names the
+    #: person asking for the room, through the account they linked on this
+    #: platform, and refuses before asking the platform when they have none.
+    private_channel_needs_owner: ClassVar[bool] = False
+
     #: Whether this platform renders a link whose scheme is not http(s).
     #:
     #: False for platforms that linkify only the web schemes. It matters
@@ -1553,8 +1567,13 @@ class PlatformAdapter(ABC):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
     ) -> str:
         """Provision a channel on the platform and return its external id.
+
+        ``owner_external_id`` is the platform account of the person the room is
+        for, passed only for a private channel on a platform that
+        `private_channel_needs_owner`; other platforms ignore it.
 
         When the platform *refuses* — a permission not consented, a name it
         will not take — raise :class:`BridgeOperationError` carrying what the
@@ -1698,6 +1717,24 @@ class PlatformAdapter(ABC):
         say here which are its own. Raises `ChannelNotBindable`.
         """
         return None
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """Refuse an existing channel a room cannot use, before it is bound.
+
+        Asked whenever a room is bound to a channel named by id. Raise
+        `ChannelNotUsable` with the platform's reason when the channel does not
+        exist or the Switch app is not in it, so the person who typed the id
+        learns what to fix instead of a server error. Nothing to check by
+        default.
+        """
+        return None
+
+    def can_own_channel(self, external_user_id: str) -> bool:
+        """Whether this platform account can be named a private channel's
+        owner. Asked only where `private_channel_needs_owner`; a platform
+        that knows some of its ids cannot be used (Teams, where only a
+        directory id can) says so here."""
+        return True
 
     def channel_ids_refused(self) -> str | None:
         """Why this bridge binds no existing channel by id at all, or None.

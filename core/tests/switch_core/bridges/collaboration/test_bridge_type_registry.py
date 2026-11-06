@@ -159,6 +159,22 @@ def test_capability_is_answerable_without_a_running_bridge() -> None:
     assert service.supports_channel_creation("slack") is True
 
 
+def test_private_channels_are_reported_per_platform() -> None:
+    # Teams can make one now that Switch names an owner; it needs the person
+    # asking to have linked their Teams account. Telegram makes no chats at all.
+    service = _service()
+    service.register_adapter("telegram", TelegramAdapter, TelegramConnectionConfig)
+    service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
+    service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
+
+    assert service.supports_private_channels("telegram") is False
+    assert service.supports_private_channels("slack") is True
+    assert service.supports_private_channels("teams") is True
+    assert service.private_channel_needs_owner("teams") is True
+    assert service.private_channel_needs_owner("slack") is False
+    assert service.private_channel_needs_owner("telegram") is False
+
+
 def test_an_unregistered_type_is_not_reported_as_incapable() -> None:
     # Registration rejects an unknown type by name, which is a better error than
     # a capability claim about a platform Switch does not have.

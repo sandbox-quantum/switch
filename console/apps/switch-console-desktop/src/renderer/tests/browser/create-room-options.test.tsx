@@ -36,6 +36,8 @@ const BRIDGE = {
   type: 'slack',
   displayName: 'Acme Slack',
   channelIdsRefused: null,
+  privateChannels: null,
+  privateChannelNeedsLinkedAccount: false,
 } as RemoteBridge;
 
 let container: HTMLDivElement | null = null;

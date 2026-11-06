@@ -581,6 +581,7 @@ class TelegramAdapter(PlatformAdapter):
 
     supports_channel_creation: ClassVar[bool] = False
     supports_directory_search: ClassVar[bool] = False
+    supports_private_channels: ClassVar[bool] = False
     renders_custom_url_schemes: ClassVar[bool] = False
 
     draws_session_activity: ClassVar[bool] = True
@@ -2208,6 +2209,7 @@ class TelegramAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
     ) -> str:
         raise ChannelCreationUnsupported(
             "Telegram bots cannot create chats — the Bot API has no such call. "

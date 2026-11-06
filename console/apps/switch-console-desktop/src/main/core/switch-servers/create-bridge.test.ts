@@ -100,6 +100,8 @@ describe('createBridgeOnServer', () => {
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
+        privateChannels: null,
+        privateChannelNeedsLinkedAccount: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },

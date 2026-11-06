@@ -260,6 +260,12 @@ async def _detail(
             bridge.type
         ),
         channel_creation_enabled=bridge.channel_creation_enabled,
+        private_channels_supported=collab_lifecycle.supports_private_channels(
+            bridge.type
+        ),
+        private_channel_needs_linked_account=(
+            collab_lifecycle.private_channel_needs_owner(bridge.type)
+        ),
         channel_ids_refused=_channel_ids_refused(bridge.id, collab_lifecycle),
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type

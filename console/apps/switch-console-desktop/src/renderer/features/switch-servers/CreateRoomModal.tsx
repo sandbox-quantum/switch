@@ -179,7 +179,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     if (dropsStartingAgent(startChip, next)) setStartDropped(true);
     setPicked(next);
   };
-  // A choice the chosen app does not offer (a private channel on Teams, say)
+  // A choice the chosen app does not offer (a private channel on Telegram, say)
   // falls back to a new public channel rather than being sent and refused.
   const administers = workspaceId !== null && administersWorkspaceById(workspaceId);
   // Only an admin files a room in a group; for anyone else it is made with none.
