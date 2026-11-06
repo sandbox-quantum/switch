@@ -368,8 +368,9 @@ class IrcAdapter(PlatformAdapter):
                 client = self.client
                 uncertain = "delivery is uncertain" in str(error).lower()
                 if client is None or not client.connected or uncertain:
-                    # Keep transient transport failures in the holder's queue.
-                    # The next reconnect can finish the same request in order.
+                    # Keep transient transport failures in this holder's queue.
+                    # A later reconnect can finish the same request in order
+                    # while this holder process remains alive.
                     if client is not None and client.connected:
                         client.force_reconnect()
                     await self._relay_queue.put(dict(request))

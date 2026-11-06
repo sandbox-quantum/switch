@@ -420,6 +420,23 @@ async def test_cancelled_queued_send_is_not_written_later():
         await asyncio.gather(sender, return_exceptions=True)
 
 
+async def test_full_outbound_queue_fails_the_command_without_tearing_down_client():
+    client = IrcClient(
+        IrcConnectionConfig(server="irc.example.org", nick="switch"),
+        AsyncMock(),
+        AsyncMock(),
+    )
+    client._outbox = asyncio.PriorityQueue(maxsize=1)
+    first = client._enqueue("PING", "one")
+    second = client._enqueue("PING", "two")
+    try:
+        with pytest.raises(BridgeOperationError, match="outbound queue is full"):
+            await second
+        assert not first.done()
+    finally:
+        first.cancel()
+
+
 async def test_text_approval_cards_keep_numbered_answers_and_publish_one_outcome():
     adapter = IrcAdapter(
         config=IrcConnectionConfig(server="irc.example.org", nick="switch")

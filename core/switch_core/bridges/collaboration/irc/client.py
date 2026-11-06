@@ -385,14 +385,18 @@ class IrcClient:
         # Some control sends have no waiter. Consume their failure after it is logged.
         future.add_done_callback(_observe_failure)
         self._sequence += 1
-        self._outbox.put_nowait(
-            (
-                1 if command == "PRIVMSG" else 0,
-                self._sequence,
-                build(command, *params, label=label),
-                future,
+        try:
+            self._outbox.put_nowait(
+                (
+                    1 if command == "PRIVMSG" else 0,
+                    self._sequence,
+                    build(command, *params, label=label),
+                    future,
+                )
             )
-        )
+        except asyncio.QueueFull:
+            future.set_exception(BridgeOperationError("IRC outbound queue is full"))
+            logger.warning("IRC outbound queue is full; dropping %s", command)
         return future
 
     async def _send_queued(self) -> None:
