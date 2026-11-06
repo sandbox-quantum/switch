@@ -62,6 +62,8 @@ export interface OverviewBox {
 
 export interface OverviewMachine {
   name: string;
+  /** The node's keyed id, for its detail page; null from an older Core. */
+  machine: string | null;
   zone: string;
   memoryUsedPct: number | null;
   memoryBookedPct: number | null;
@@ -220,6 +222,7 @@ function machine(raw: unknown): OverviewMachine | null {
   if (gate !== "passed" && gate !== "held" && gate !== "failed") return null;
   return {
     name,
+    machine: stringOrNull(raw.machine),
     zone,
     memoryUsedPct: figure(raw.memory_used_pct),
     memoryBookedPct: figure(raw.memory_booked_pct),

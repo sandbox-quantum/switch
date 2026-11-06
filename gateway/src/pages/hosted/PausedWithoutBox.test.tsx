@@ -49,7 +49,11 @@ describe("paused people with no box (W6)", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ticket 12" } });
     fireEvent.click(screen.getByRole("button", { name: "Resume user" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
-    const [path, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    // The dialog first reads why they were paused; the action is the POST.
+    const post = fetchMock.mock.calls.find(
+      (call) => (call as unknown as [string, RequestInit?])[1]?.method === "POST",
+    );
+    const [path, init] = post as unknown as [string, RequestInit];
     expect(path).toBe(`/gateway/shared-cloud/users/${NO_BOX}/resume`);
     expect(init.method).toBe("POST");
   });

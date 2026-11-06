@@ -1,6 +1,8 @@
+import SearchIcon from "@mui/icons-material/Search";
 import {
   Box,
   Chip,
+  InputAdornment,
   Link,
   Stack,
   Table,
@@ -8,27 +10,39 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  TextField,
   Typography,
 } from "@mui/material";
 import { useMemo, useState } from "react";
+import { Link as RouterLink, useSearchParams } from "react-router";
 import BoxActions from "../BoxActions";
 import { useHosted } from "../HostedContext";
 import PausedWithoutBox from "../PausedWithoutBox";
-import { groupedId } from "../hostedActions";
 import {
   type BoxState,
   LOAD_ERROR,
+  type OverviewBox,
   STALE,
   gb,
   parseOverview,
   useOverviewRefresh,
 } from "../overview/overview";
+import IdCell from "../w5shared/IdCell";
+import {
+  BOX_FILTERS,
+  type BoxFilter,
+  filterBoxes,
+  filterCounts,
+  isCurrent,
+  keptUntil,
+} from "../w5shared/boxFilter";
 import ShowNameDialog, { type Revealed } from "./ShowNameDialog";
 
-// Copy doc 2bcf4fb6, "Box state badges on Boxes (operators)". Retired boxes
-// are hidden. No "Restarting" badge: Restarts today covers it.
+// Copy doc 2bcf4fb6, "Box state badges on Boxes (operators)". A put-away
+// (retired) box has its own greyed label. No "Restarting" badge: Restarts
+// today covers it.
 export const BADGES: Record<
-  Exclude<BoxState, "retired">,
+  BoxState,
   { label: string; color: "success" | "default" | "error" | "warning" }
 > = {
   running: { label: "Running", color: "success" },
@@ -38,10 +52,24 @@ export const BADGES: Record<
   stopping: { label: "Stopping", color: "warning" },
   stopped: { label: "Stopped", color: "default" },
   error: { label: "Can't start", color: "error" },
+  retired: { label: "Put away", color: "default" },
 };
 export const EMPTY = "No boxes yet.";
+export const NO_MATCH = "No boxes match these filters.";
+const FILTER_VALUES = new Set<string>(BOX_FILTERS.map((f) => f.value));
 
-const MONO = { fontFamily: "monospace" };
+/** Awake agents as the panel words it: "3 of 12 awake". */
+export function awakeText(box: OverviewBox): string {
+  return box.awake === null ? "—" : `${box.awake.running} of ${box.awake.max} awake`;
+}
+
+/** Memory in use, and out of the box's memory when Core sends it. */
+export function memoryText(box: OverviewBox): string {
+  if (box.memoryUsedBytes === null) return "—";
+  return box.memoryTotalBytes === null
+    ? gb(box.memoryUsedBytes)
+    : `${gb(box.memoryUsedBytes)} of ${gb(box.memoryTotalBytes)}`;
+}
 
 /** A revealed name (never the email), or the Show name link. */
 function Shown({ revealed, onAsk }: { revealed: Revealed | undefined; onAsk: () => void }) {
@@ -72,6 +100,21 @@ export default function BoxesTab() {
   // a workspace's shows beside it wherever it appears.
   const [names, setNames] = useState<Record<string, Revealed>>({});
   const nameOf = (kind: "user" | "workspace", id: string) => names[`${kind}:${id}`];
+  // The filters live in the address, so a filtered view can be shared or reloaded.
+  const [params, setParams] = useSearchParams();
+  const stateParam = params.get("state") ?? "current";
+  const filter: BoxFilter = FILTER_VALUES.has(stateParam) ? (stateParam as BoxFilter) : "current";
+  const query = params.get("q") ?? "";
+  const setFilter = (next: { state?: BoxFilter; q?: string }) => {
+    const updated = new URLSearchParams(params);
+    const state = next.state ?? filter;
+    const q = next.q ?? query;
+    if (state === "current") updated.delete("state");
+    else updated.set("state", state);
+    if (q) updated.set("q", q);
+    else updated.delete("q");
+    setParams(updated, { replace: true });
+  };
 
   if (overview === null) {
     return (
@@ -81,9 +124,10 @@ export default function BoxesTab() {
     );
   }
 
-  const zoneOf = new Map(overview.machines.map((m) => [m.name, m.zone]));
+  const machineOf = new Map(overview.machines.map((m) => [m.name, m]));
   const pausedOf = new Map(overview.people.map((p) => [p.userId, p.paused]));
-  const shown = overview.boxes.filter((b) => b.state !== "retired");
+  const counts = filterCounts(overview.boxes);
+  const shown = filterBoxes(overview.boxes, filter, query);
   const onDone = () => void refresh();
 
   return (
@@ -93,6 +137,42 @@ export default function BoxesTab() {
           {STALE}
         </Typography>
       )}
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        spacing={1.5}
+        alignItems={{ md: "center" }}
+        justifyContent="space-between"
+      >
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap role="group" aria-label="Box state">
+          {BOX_FILTERS.map((f) => (
+            <Chip
+              key={f.value}
+              label={`${f.label} ${counts[f.value]}`}
+              color={filter === f.value ? "primary" : "default"}
+              variant={filter === f.value ? "filled" : "outlined"}
+              onClick={() => setFilter({ state: f.value })}
+              aria-pressed={filter === f.value}
+            />
+          ))}
+        </Stack>
+        <TextField
+          size="small"
+          placeholder="Search ids or machine"
+          value={query}
+          onChange={(e) => setFilter({ q: e.target.value })}
+          inputProps={{ "aria-label": "Search boxes" }}
+          sx={{ minWidth: 260 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+      </Stack>
       {/* The table scrolls sideways rather than squeezing its cells onto two
           lines (designer). */}
       <Box sx={{ overflowX: "auto" }}>
@@ -101,38 +181,55 @@ export default function BoxesTab() {
           <TableRow>
             <TableCell>Box</TableCell>
             <TableCell>Workspace</TableCell>
-            <TableCell>User</TableCell>
+            <TableCell>Person</TableCell>
             <TableCell>State</TableCell>
             <TableCell>Machine</TableCell>
+            <TableCell>Agents</TableCell>
             <TableCell>Memory</TableCell>
-            <TableCell>Restarts today</TableCell>
+            <TableCell align="right">Restarts today</TableCell>
             <TableCell aria-label="Actions" />
           </TableRow>
         </TableHead>
         <TableBody>
           {shown.length === 0 && (
             <TableRow>
-              <TableCell colSpan={8}>
+              <TableCell colSpan={9}>
                 <Typography variant="body2" color="text.secondary">
-                  {EMPTY}
+                  {overview.boxes.length === 0 ? EMPTY : NO_MATCH}
                 </Typography>
               </TableCell>
             </TableRow>
           )}
           {shown.map((b) => {
-            const badge = BADGES[b.state as Exclude<BoxState, "retired">];
-            const zone = b.node === null ? undefined : zoneOf.get(b.node);
+            const badge = BADGES[b.state];
+            const machine = b.node === null ? undefined : machineOf.get(b.node);
             const revealed = nameOf("user", b.user);
             const paused = pausedOf.get(b.user) ?? b.state === "paused";
+            const current = isCurrent(b);
+            const kept = current ? null : keptUntil(b.retainUntil);
             return (
-              <TableRow key={b.box} data-testid="box-row">
-                <TableCell sx={MONO}>{groupedId(b.box)}</TableCell>
+              <TableRow
+                key={b.box}
+                data-testid="box-row"
+                // Put-away boxes are greyed, so they never read as live ones.
+                sx={current ? undefined : { opacity: 0.6, bgcolor: "action.hover" }}
+              >
+                <TableCell>
+                  <Stack direction="row" alignItems="center" spacing={0.5}>
+                    <IdCell id={b.box} label="box" />
+                    <Link
+                      component={RouterLink}
+                      to={`/hosted/boxes/${encodeURIComponent(b.box)}`}
+                      variant="body2"
+                    >
+                      Open
+                    </Link>
+                  </Stack>
+                </TableCell>
                 <TableCell>
                   {b.workspaces.map((w) => (
                     <Stack key={w} spacing={0.25} alignItems="flex-start" sx={{ mb: 0.5 }}>
-                      <Typography component="span" sx={MONO}>
-                        {groupedId(w)}
-                      </Typography>
+                      <IdCell id={w} label="workspace" />
                       <Shown
                         revealed={nameOf("workspace", w)}
                         onAsk={() => setAsking({ kind: "workspace", id: w })}
@@ -142,28 +239,49 @@ export default function BoxesTab() {
                 </TableCell>
                 <TableCell>
                   <Stack spacing={0.25} alignItems="flex-start">
-                    <Typography component="span" sx={MONO}>
-                      {groupedId(b.user)}
-                    </Typography>
+                    <IdCell id={b.user} label="person" />
                     <Shown revealed={revealed} onAsk={() => setAsking({ kind: "user", id: b.user })} />
                   </Stack>
                 </TableCell>
                 <TableCell>
-                  <Chip size="small" label={badge.label} color={badge.color} variant="outlined" />
+                  <Stack spacing={0.25} alignItems="flex-start">
+                    <Chip size="small" label={badge.label} color={badge.color} variant="outlined" />
+                    {kept && (
+                      <Typography variant="caption" color="text.secondary">
+                        {kept}
+                      </Typography>
+                    )}
+                  </Stack>
                 </TableCell>
                 <TableCell>
-                  {b.node === null ? "—" : zone ? `${b.node} · ${zone}` : b.node}
+                  {b.node === null ? (
+                    "—"
+                  ) : machine?.machine ? (
+                    <Link
+                      component={RouterLink}
+                      to={`/hosted/machines/${encodeURIComponent(machine.machine)}`}
+                    >
+                      {machine.zone ? `${b.node} · ${machine.zone}` : b.node}
+                    </Link>
+                  ) : machine?.zone ? (
+                    `${b.node} · ${machine.zone}`
+                  ) : (
+                    b.node
+                  )}
                 </TableCell>
-                <TableCell>{b.memoryUsedBytes === null ? "—" : gb(b.memoryUsedBytes)}</TableCell>
-                <TableCell>{b.restartsToday === null ? "—" : b.restartsToday}</TableCell>
+                <TableCell>{awakeText(b)}</TableCell>
+                <TableCell>{memoryText(b)}</TableCell>
+                <TableCell align="right">{b.restartsToday === null ? "—" : b.restartsToday}</TableCell>
                 <TableCell align="right">
-                  <BoxActions
-                    userKeyedId={b.user}
-                    boxKeyedId={b.box}
-                    paused={paused}
-                    running={b.state === "running"}
-                    onDone={onDone}
-                  />
+                  {current && (
+                    <BoxActions
+                      userKeyedId={b.user}
+                      boxKeyedId={b.box}
+                      paused={paused}
+                      running={b.state === "running"}
+                      onDone={onDone}
+                    />
+                  )}
                 </TableCell>
               </TableRow>
             );

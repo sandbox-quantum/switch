@@ -1,9 +1,11 @@
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { REFRESH_MS, STALE } from "../overview/overview";
-import { U1, U3, U4, W2, boxRow, fixture } from "../overview/testing";
+import { B1, U1, U3, U4, W2, boxRow, fixture, machineId } from "../overview/testing";
+import { HostedContext } from "../HostedContext";
 import { MARKER, answer, answers, renderTab } from "../w5shared/testing";
-import BoxesTab, { BADGES, EMPTY } from "./BoxesTab";
+import BoxesTab, { BADGES, EMPTY, NO_MATCH } from "./BoxesTab";
 import { BODY, PLACEHOLDER } from "./ShowNameDialog";
 
 vi.mock("../../../data/AuthContext", () => ({
@@ -14,8 +16,16 @@ function rows() {
   return screen.getAllByTestId("box-row");
 }
 
+/** A row by any text in it, or by an id's full grouped form (the id cell
+ *  shows a short id, with the full one in its label). */
 function rowOf(text: string) {
-  const row = rows().find((r) => r.textContent?.includes(text));
+  const row = rows().find(
+    (r) =>
+      r.textContent?.includes(text) ||
+      Array.from(r.querySelectorAll("[aria-label]")).some((el) =>
+        el.getAttribute("aria-label")?.includes(text),
+      ),
+  );
   if (!row) throw new Error(`no row with ${text}`);
   return within(row);
 }
@@ -33,8 +43,8 @@ describe("the Boxes tab (W4, p10)", () => {
     renderTab(BoxesTab, { overview: fixture() });
     expect(rows()).toHaveLength(4);
     const first = rowOf("k1-4f2a 91aa 0b1c");
-    expect(first.getByText("k1-7c10 ab12 cd34")).toBeTruthy();
-    expect(first.getByText("k1-a83e 91f0 c2d4")).toBeTruthy();
+    expect(first.getByLabelText("workspace k1-7c10 ab12 cd34")).toBeTruthy();
+    expect(first.getByLabelText("person k1-a83e 91f0 c2d4")).toBeTruthy();
     expect(first.getByText("Running")).toBeTruthy();
     expect(first.getByText("shared-1 · eu-west-3a")).toBeTruthy();
     expect(first.getByText("1.9 GB")).toBeTruthy();
@@ -42,13 +52,13 @@ describe("the Boxes tab (W4, p10)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("shows a dash for no machine or memory, every workspace, and the restarts", () => {
+  it("shows a dash for no machine, agents or memory, every workspace, and the restarts", () => {
     renderTab(BoxesTab, { overview: fixture() });
     const paused = rowOf("k1-0e77 b5aa 0b1c");
-    expect(paused.getAllByText("—")).toHaveLength(2);
+    expect(paused.getAllByText("—")).toHaveLength(3);
     const two = rowOf("k1-c4d8 12aa 0b1c");
-    expect(two.getByText("k1-2a44 ab12 cd34")).toBeTruthy();
-    expect(two.getByText("k1-7c10 ab12 cd34")).toBeTruthy();
+    expect(two.getByLabelText("workspace k1-2a44 ab12 cd34")).toBeTruthy();
+    expect(two.getByLabelText("workspace k1-7c10 ab12 cd34")).toBeTruthy();
     expect(two.getByText("3")).toBeTruthy();
   });
 
@@ -58,6 +68,8 @@ describe("the Boxes tab (W4, p10)", () => {
       boxRow(`k1-${String(i).padStart(16, "0")}`, U1, [], state, null, null, 0),
     );
     renderTab(BoxesTab, { overview: raw });
+    // "All" shows every state, put away included.
+    fireEvent.click(screen.getByRole("button", { name: /^All / }));
     for (const { label } of Object.values(BADGES)) expect(screen.getByText(label)).toBeTruthy();
     expect(screen.getByText("Can't start")).toBeTruthy();
     expect(screen.queryByText("Restarting")).toBeNull();
@@ -246,8 +258,8 @@ describe("Show name (W4, p15)", () => {
     renderTab(BoxesTab, { overview: fixture() });
     const table = screen.getByRole("table", { name: "Boxes" });
     expect(getComputedStyle(table.parentElement as HTMLElement).overflowX).toBe("auto");
-    const cell = rowOf("k1-4f2a 91aa 0b1c").getByText("shared-1 · eu-west-3a");
-    expect(getComputedStyle(cell).whiteSpace).toBe("nowrap");
+    const cell = rowOf("k1-4f2a 91aa 0b1c").getByText("shared-1 · eu-west-3a").closest("td");
+    expect(getComputedStyle(cell as HTMLElement).whiteSpace).toBe("nowrap");
   });
 
   it("clears the reason on Cancel", () => {
@@ -257,5 +269,99 @@ describe("Show name (W4, p15)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     open();
     expect((screen.getByPlaceholderText(PLACEHOLDER) as HTMLTextAreaElement).value).toBe("");
+  });
+});
+
+describe("the Boxes filter bar and rows (UX, operators 3 and 5)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  function withRows(): Record<string, unknown> {
+    const raw = fixture();
+    const boxes = raw.boxes as Record<string, unknown>[];
+    boxes[0] = {
+      ...boxes[0],
+      awake: { running: 3, max: 12 },
+      memory_total_bytes: 4 * 1024 ** 3,
+    };
+    boxes[4] = { ...boxes[4], retain_until: "2026-11-20T00:00:00+00:00" };
+    return raw;
+  }
+
+  function chip(name: RegExp) {
+    return screen.getByRole("button", { name });
+  }
+
+  it("defaults to Current, with a count on every chip", () => {
+    renderTab(BoxesTab, { overview: withRows() });
+    expect(rows()).toHaveLength(4);
+    expect(chip(/^Current 4$/).getAttribute("aria-pressed")).toBe("true");
+    expect(chip(/^Put away 1$/)).toBeTruthy();
+    expect(chip(/^All 5$/)).toBeTruthy();
+  });
+
+  it("shows put-away boxes only under Put away and All, greyed, with when they go", () => {
+    renderTab(BoxesTab, { overview: withRows() });
+    fireEvent.click(chip(/^Put away/));
+    expect(rows()).toHaveLength(1);
+    const put = rowOf("k1-7aa0 31aa 0b1c");
+    expect(put.getByText("Put away")).toBeTruthy();
+    expect(put.getByText("Kept until 20 Nov")).toBeTruthy();
+    // No actions on a put-away box.
+    expect(put.queryByRole("button", { name: "Pause user" })).toBeNull();
+    expect(getComputedStyle(rows()[0]).opacity).toBe("0.6");
+    fireEvent.click(chip(/^All/));
+    expect(rows()).toHaveLength(5);
+  });
+
+  it("searches ids and machines, and says when nothing matches", () => {
+    renderTab(BoxesTab, { overview: withRows() });
+    fireEvent.change(screen.getByRole("textbox", { name: "Search boxes" }), {
+      target: { value: "k1-0e77 b5aa" },
+    });
+    expect(rows()).toHaveLength(1);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search boxes" }), {
+      target: { value: "nothing like this" },
+    });
+    expect(screen.queryAllByTestId("box-row")).toHaveLength(0);
+    expect(screen.getByText(NO_MATCH)).toBeTruthy();
+  });
+
+  it("reads its filters from the address, so a view can be shared", () => {
+    render(
+      <MemoryRouter initialEntries={["/hosted/boxes?state=resting&q=k1-91c0"]}>
+        <HostedContext.Provider
+          value={{
+            operator: { id: "op-me", name: "Jo" } as never,
+            overview: withRows(),
+            overviewStale: false,
+            refreshKey: 0,
+            refresh: async () => undefined,
+          }}
+        >
+          <BoxesTab />
+        </HostedContext.Provider>
+      </MemoryRouter>,
+    );
+    expect(rows()).toHaveLength(1);
+    expect(chip(/^Resting/).getAttribute("aria-pressed")).toBe("true");
+    expect((screen.getByRole("textbox", { name: "Search boxes" }) as HTMLInputElement).value).toBe(
+      "k1-91c0",
+    );
+  });
+
+  it("shows awake agents and memory as the panel words them, and links to the detail pages", () => {
+    renderTab(BoxesTab, { overview: withRows() });
+    const first = rowOf("k1-4f2a 91aa 0b1c");
+    expect(first.getByText("3 of 12 awake")).toBeTruthy();
+    expect(first.getByText("1.9 GB of 4.0 GB")).toBeTruthy();
+    expect(first.getByRole("link", { name: "Open" }).getAttribute("href")).toBe(
+      `/hosted/boxes/${encodeURIComponent(B1)}`,
+    );
+    expect(first.getByRole("link", { name: "shared-1 · eu-west-3a" }).getAttribute("href")).toBe(
+      `/hosted/machines/${machineId("shared-1")}`,
+    );
   });
 });

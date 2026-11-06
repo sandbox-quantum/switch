@@ -1,8 +1,9 @@
 import { Button, Stack } from "@mui/material";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { pauseHostedUser, restartHostedBox, resumeHostedUser } from "../../data/api";
 import OperatorActionDialog from "./OperatorActionDialog";
 import { refusal, type HostedAction } from "./hostedActions";
+import { type PauseReason, readPauseReason } from "./w5shared/pauseReason";
 
 interface Props {
   userKeyedId: string;
@@ -34,6 +35,20 @@ export default function BoxActions({ userKeyedId, boxKeyedId, paused, running, o
   const [action, setAction] = useState<HostedAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pausedBecause, setPausedBecause] = useState<PauseReason>({ kind: "loading" });
+
+  // Resume's confirm says why they were paused: read only when it opens.
+  useEffect(() => {
+    if (action !== "resume") return;
+    const controller = new AbortController();
+    setPausedBecause({ kind: "loading" });
+    readPauseReason(userKeyedId, controller.signal)
+      .then(setPausedBecause)
+      .catch(() => {
+        if (!controller.signal.aborted) setPausedBecause({ kind: "error" });
+      });
+    return () => controller.abort();
+  }, [action, userKeyedId]);
 
   const open = (next: HostedAction) => {
     setError(null);
@@ -82,6 +97,7 @@ export default function BoxActions({ userKeyedId, boxKeyedId, paused, running, o
           error={error}
           onCancel={() => setAction(null)}
           onConfirm={(reason) => void confirm(reason)}
+          pausedBecause={action === "resume" ? pausedBecause : undefined}
         />
       )}
     </>

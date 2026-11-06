@@ -62,7 +62,12 @@ describe("a Boxes row's operator actions (W6)", () => {
       const onDone = renderRow(paused, true);
       await confirmWith(button, confirm, `Ticket ${MARKER}`);
       await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
-      const [sent, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      // Resume reads the audit log first (why they were paused): skip reads.
+      const posts = fetchMock.mock.calls.filter(
+        (call) => (call as unknown as [string, RequestInit?])[1]?.method === "POST",
+      );
+      expect(posts).toHaveLength(1);
+      const [sent, init] = posts[0] as unknown as [string, RequestInit];
       expect(sent).toBe(url);
       expect(sent).not.toContain(MARKER);
       expect(init.method).toBe("POST");
@@ -111,5 +116,67 @@ describe("a Boxes row's operator actions (W6)", () => {
     );
     expect(screen.getByRole("button", { name: "Pause user" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Restart box" })).toBeNull();
+  });
+});
+
+describe("Resume says why they were paused", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const pause = (reason: string) => ({
+    id: "ev-9",
+    occurred_at: "2026-11-05T10:00:00+00:00",
+    actor_user_id: "op-1",
+    actor_name: null,
+    action: "hosted.user_paused",
+    target_type: "user",
+    target_id: USER,
+    details: { phase: "requested", reason },
+    title: null,
+  });
+
+  it("reads the newest pause for this person and shows its reason as text", async () => {
+    const fetchMock = answer(200, [pause(`<img src=x onerror=alert(1)>Abuse report ${MARKER}`)]);
+    vi.stubGlobal("fetch", fetchMock);
+    renderRow(true, true);
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    const line = await screen.findByTestId("paused-because");
+    await waitFor(() => expect(line.textContent).toContain("Abuse report"));
+    expect(document.querySelector("img")).toBeNull();
+    const [path] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(path).toContain("/gateway/shared-cloud/audit-events?");
+    expect(path).toContain("action=hosted.user_paused");
+    expect(path).toContain(`target_id=${USER}`);
+  });
+
+  it("says when no reason is recorded, or the log can't be read", async () => {
+    vi.stubGlobal("fetch", answer(200, []));
+    renderRow(true, true);
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("paused-because").textContent).toBe(
+        "No reason is recorded. Switch may have paused them itself.",
+      ),
+    );
+    cleanup();
+    vi.stubGlobal("fetch", answer(500, {}));
+    renderRow(true, true);
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("paused-because").textContent).toBe(
+        "Couldn't read the audit log. Check it before resuming.",
+      ),
+    );
+  });
+
+  it("asks nothing for Pause or Restart", async () => {
+    const fetchMock = answer(200, []);
+    vi.stubGlobal("fetch", fetchMock);
+    renderRow(false, true);
+    fireEvent.click(screen.getByRole("button", { name: "Pause user" }));
+    expect(screen.queryByTestId("paused-because")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -98,6 +98,12 @@ export function fixture(): Record<string, unknown> {
   };
 }
 
+/** A made-up keyed id for a node, from its name. */
+export function machineId(name: string): string {
+  const hex = Array.from(name, (c) => c.charCodeAt(0).toString(16)).join("");
+  return `k1-${hex.padEnd(16, "0").slice(0, 16)}`;
+}
+
 export function machineRow(
   name: string,
   zone: string,
@@ -110,7 +116,8 @@ export function machineRow(
 ) {
   return {
     name,
-    machine: MARKER,
+    // The node's keyed id: the Boxes and Machines lists link to its page.
+    machine: machineId(name),
     instance_type: MARKER,
     kind: "shared",
     zone,
