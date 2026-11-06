@@ -24,6 +24,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelType,
     RetireOutcome,
 )
+from switch_core.chats import is_console_chat
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -184,6 +185,10 @@ async def _build_room_detail(
         connected_names = sorted(
             ext_client_to_name[cid] for cid in client_ids if cid in ext_client_to_name
         )
+    if is_console_chat(room):
+        # A Console chat's people are its members, not accounts on an app.
+        members = await room_store.member_users_by_room(session, [room.id])
+        connected_names = [name for _, name in members.get(room.id, [])]
 
     name = room.name
     if bridge_display_name and name.startswith(f"{bridge_display_name}: "):
@@ -348,17 +353,24 @@ async def list_rooms(
     agent_ids_by_room = await room_store.agent_ids_by_room(session, room_ids)
     client_ids_by_room = await room_store.client_ids_by_room(session, room_ids)
     involved = await room_store.involved_room_ids(session, user.id, room_ids)
+    chat_members = await room_store.member_users_by_room(
+        session, [room.id for room in rooms if is_console_chat(room)]
+    )
     # Not held across the deeplinks, which can ask the platform on a cache miss.
     await session.commit()
 
     principal = Principal(user.id, is_admin)
     summaries = []
     for room in rooms:
-        connected_names = sorted(
-            ext_client_to_name[cid]
-            for cid in client_ids_by_room.get(room.id, [])
-            if cid in ext_client_to_name
-        )
+        if is_console_chat(room):
+            # A Console chat's people are its members, not accounts on an app.
+            connected_names = [name for _, name in chat_members.get(room.id, [])]
+        else:
+            connected_names = sorted(
+                ext_client_to_name[cid]
+                for cid in client_ids_by_room.get(room.id, [])
+                if cid in ext_client_to_name
+            )
         bridge = bridges.get(room.bridge_id) if room.bridge_id else None
         bridge_display_name = bridge.display_name if bridge else None
         name = room.name
@@ -387,7 +399,7 @@ async def list_rooms(
                 created_at=str(room.created_at),
                 archived=room.archived_at is not None,
                 viewer_is_member=room.id in involved,
-                is_console_chat="chat_operation_id" in (room.metadata_ or {}),
+                is_console_chat=is_console_chat(room),
                 can_write=can(principal, "write", room),
                 can_manage=can(principal, "delete", room),
                 can_unlink=can_unlink_from_room(

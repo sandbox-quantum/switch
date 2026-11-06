@@ -107,12 +107,13 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
 
   const toCard = (room: RemoteRoomSummary): RoomCardData => {
     const card = roomCard(room, { id: viewerId, listedIds });
-    // A chat's people are its members, which the chat list knows.
-    const chat = room.isConsoleChat
-      ? (chatsStore.chats.get(room.id) ?? chatsStore.archived.get(room.id))
-      : undefined;
-    // An older server reports no members as 0, which is not known rather than none.
-    return chat ? { ...card, peopleCount: chat.memberCount > 0 ? chat.memberCount : null } : card;
+    // A server from before room lists counted a chat's members leaves it
+    // unknown; the chat list knows them.
+    const chat =
+      room.isConsoleChat && card.peopleCount === null
+        ? (chatsStore.chats.get(room.id) ?? chatsStore.archived.get(room.id))
+        : undefined;
+    return chat && chat.memberCount > 0 ? { ...card, peopleCount: chat.memberCount } : card;
   };
   const activeCards = all.map(toCard);
   const archivedCards = [
