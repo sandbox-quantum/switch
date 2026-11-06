@@ -36,9 +36,11 @@ from switch_core.connections.adapters import (
 )
 from switch_core.connections.loader import (
     TEMPLATE_FIELD_RE,
+    URL_COMPONENT_PATTERN,
     AccessLevel,
     ApiKeySignIn,
     ConnectionDefinition,
+    matches_pattern,
 )
 
 # A key may carry any printable character but a space, which keeps it a
@@ -112,6 +114,13 @@ class ApiKeyAdapter:
                     raise InvalidKeyError(
                         f"{field.label} must be one of {', '.join(field.choices)}."
                     )
+            elif field.pattern is not None:
+                if not re.fullmatch(
+                    URL_COMPONENT_PATTERN, value
+                ) or not matches_pattern(field.pattern, value):
+                    raise InvalidKeyError(
+                        f"{field.label} does not match its required identifier format."
+                    )
             elif not FIELD_VALUE_RE.fullmatch(value):
                 raise InvalidKeyError(
                     f"{field.label} must be one line of printable characters, "
@@ -126,6 +135,7 @@ class ApiKeyAdapter:
         The answer is read only for the account's id and label; a refusal is
         the person's to fix, so it says which fields to check.
         """
+        values = self.checked_fields(values)
         identity = self._sign_in.identity
         request = self._http.build_request(
             identity.method,

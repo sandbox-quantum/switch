@@ -1099,7 +1099,7 @@ def test_loads_an_api_key_entry_whose_tool_is_a_cli(catalog_copy):
         (
             "        secret: false\n",
             "        secret: true\n",
-            "one of the two",
+            "exactly one",
         ),
         ("  refresh: none\n", "  refresh: rotating\n", "refresh is none"),
         (

@@ -101,12 +101,22 @@ afterEach(async () => {
 async function render(
   status: ConnectionCatalogEntry['status'] = 'not_connected',
   replacing = false,
-  onBack: () => void = () => {}
+  onBack: () => void = () => {},
+  patterned = false
 ): Promise<HTMLElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   const connection = keyed(status);
+  if (patterned)
+    connection.key!.fields.push({
+      name: 'account',
+      label: 'Account',
+      secret: false,
+      choices: null,
+      help: null,
+      pattern: '^[a-z][a-z0-9-]{0,62}$',
+    });
   await act(async () =>
     root!.render(
       <Dialog open>
@@ -293,4 +303,33 @@ it('opened to replace a key, opens on the form and ends on Done', async () => {
   expect(button(/^replace key$/i, dialog())).toBeUndefined();
   await act(async () => button(/^done$/i, dialog())!.click());
   expect(onBack).toHaveBeenCalledOnce();
+});
+
+it('refuses unsafe identifier syntax before sending or clearing keys, then accepts a correction', async () => {
+  switchServers.connectServiceWithKey.mockResolvedValue({
+    warning: null,
+    external_identity: 'Synthetic identity',
+  });
+  const step = await render('not_connected', false, () => {}, true);
+  const account = input(step, 'Account');
+  expect(account.type).toBe('text');
+  expect(account.hasAttribute('pattern')).toBe(false);
+  expect(account.maxLength).toBe(63);
+  await fillKey(step);
+  await type(account, 'other.example.test');
+  await act(async () => button(/^connect datadog$/i, step)!.click());
+  expect(switchServers.connectServiceWithKey).not.toHaveBeenCalled();
+  expect(input(step, 'API key').value).toBe(API_KEY);
+  expect(input(step, 'Application key').value).toBe(APP_KEY);
+  expect(step.textContent).toContain('not a URL or domain');
+  await type(account, 'example-1');
+  await act(async () => button(/^connect datadog$/i, step)!.click());
+  expect(switchServers.connectServiceWithKey).toHaveBeenCalledWith('server', 'datadog', {
+    api_key: API_KEY,
+    application_key: APP_KEY,
+    site: 'datadoghq.eu',
+    account: 'example-1',
+  });
+  await vi.waitFor(() => expect(dialog().textContent).toContain('Datadog connected'));
+  expect(dialog().innerHTML).not.toContain(API_KEY);
 });

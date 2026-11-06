@@ -28,11 +28,21 @@ the skill file sessions are then given.
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
+from pydantic_core import SchemaError
 
 CATALOG_ROOT = Path(__file__).parent / "catalog"
 MAX_SKILL_BYTES = 32 * 1024
@@ -212,12 +222,80 @@ def template_fields(template: str) -> list[str]:
     return names
 
 
+# Pattern fields are identifiers, not arbitrary URL fragments. This independent
+# bound is deliberately enforced even when a catalog pattern is permissive.
+URL_COMPONENT_PATTERN = r"^[A-Za-z0-9_-]{1,63}$"
+
+
+@lru_cache(maxsize=64)
+def _pattern_adapter(pattern: str) -> TypeAdapter[str]:
+    if not pattern.startswith("^") or not pattern.endswith("$"):
+        raise ValueError("a field pattern must be anchored with ^ and $")
+    # Pydantic uses Rust's linear-time regex engine, rejecting backreferences
+    # and look-around instead of evaluating arbitrary backtracking expressions.
+    try:
+        # Validate the source before wrapping it: unmatched delimiters must not
+        # become valid by closing a delimiter that belongs to our wrapper.
+        TypeAdapter(Annotated[str, Field(pattern=pattern)])
+        return TypeAdapter(Annotated[str, Field(pattern=rf"\A(?:{pattern})\z")])
+    except SchemaError:
+        raise ValueError(
+            "a field pattern must be a valid linear-time regular expression"
+        ) from None
+
+
+def matches_pattern(pattern: str, value: str) -> bool:
+    try:
+        _pattern_adapter(pattern).validate_python(value, strict=True)
+    except ValidationError:
+        return False
+    return True
+
+
+def _check_pattern_url(url: str, names: set[str]) -> None:
+    """Pattern identifiers occupy complete components under a fixed domain."""
+    parts = urlsplit(url)
+    try:
+        invalid_authority = (
+            parts.username is not None
+            or parts.password is not None
+            or parts.port is not None
+        )
+    except ValueError:
+        invalid_authority = True
+    host = parts.hostname or ""
+    labels = host.split(".")
+    fixed_label = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    if (
+        parts.scheme != "https"
+        or invalid_authority
+        or len(labels) < 2
+        or not all(re.fullmatch(fixed_label, label) for label in labels[-2:])
+    ):
+        raise ValueError(
+            "a pattern field's URL needs a fixed HTTPS domain without userinfo or a port"
+        )
+    for name in names:
+        marker = "{" + name + "}"
+        if marker not in url:
+            continue
+        if marker in parts.query or marker in parts.fragment:
+            raise ValueError(
+                "a pattern field may not appear in a URL query or fragment"
+            )
+        complete = labels.count(marker) + parts.path.split("/").count(marker)
+        if url.count(marker) != complete:
+            raise ValueError(
+                "a pattern field must occupy a whole host label or path segment"
+            )
+
+
 class ApiKeyField(BaseModel):
     """One value a person pastes, or picks, to connect.
 
     A `secret` field is the key itself, typed freely and never shown again.
-    Any other field is a choice among `choices` (a site, a region), which
-    templates may put in a URL: never free text.
+    Other fields are choices or bounded pattern-validated identifiers. A
+    pattern identifier may occupy only a whole URL label or path segment.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -231,17 +309,26 @@ class ApiKeyField(BaseModel):
         default=None, min_length=1, max_length=20
     )
 
+    pattern: str | None = Field(default=None, min_length=3, max_length=256)
+
     @model_validator(mode="after")
     def _secret_or_choice(self) -> "ApiKeyField":
         if self.name == TOKEN_PLACEHOLDER:
             raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
-        if self.secret == (self.choices is not None):
+        kinds = (
+            int(self.secret)
+            + int(self.choices is not None)
+            + int(self.pattern is not None)
+        )
+        if kinds != 1:
             raise ValueError(
                 f"field {self.name} is a secret typed freely, or a choice among "
-                "choices: one of the two"
+                "choices, or a non-secret pattern: exactly one"
             )
         if self.choices is not None and len(set(self.choices)) != len(self.choices):
             raise ValueError(f"field {self.name} lists a choice twice")
+        if self.pattern is not None:
+            _pattern_adapter(self.pattern)
         return self
 
 
@@ -303,10 +390,13 @@ class ApiKeySignIn(BaseModel):
 def check_templates(
     sign_in: "ApiKeySignIn", *, urls: list[str], values: list[str], where: str
 ) -> None:
-    """Templates name only the sign-in's fields, and a URL only its choices."""
+    """URL fields are public choices or bounded identifiers, never secrets."""
     known = sign_in.field_names()
     choices = sign_in.choice_names()
+    patterned = {field.name for field in sign_in.fields if field.pattern is not None}
     for url in urls:
+        if any(name in patterned for name in template_fields(url)):
+            _check_pattern_url(url, patterned)
         for name in template_fields(url):
             if name not in choices:
                 raise ValueError(

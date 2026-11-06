@@ -212,6 +212,7 @@ def _key_form(definition: ConnectionDefinition) -> dict[str, Any] | None:
                 "secret": field.secret,
                 "help": field.help,
                 "choices": field.choices,
+                **({"pattern": field.pattern} if field.pattern is not None else {}),
             }
             for field in sign_in.fields
         ],

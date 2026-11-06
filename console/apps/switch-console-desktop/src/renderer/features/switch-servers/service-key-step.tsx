@@ -71,6 +71,18 @@ export function ServiceKeyStep({
       )
     );
   const submit = async () => {
+    // Catalog patterns use Rust regexes, not HTML's JavaScript v expressions.
+    // Check the portable URL-identifier invariant here; Core checks the exact
+    // catalog pattern before any vendor request. Do not clear keys for a typo.
+    const invalid = form.fields.find(
+      (field) => field.pattern && !/^[A-Za-z0-9_-]{1,63}$/.test((values[field.name] ?? '').trim())
+    );
+    if (invalid) {
+      setError(
+        `${invalid.label} must be 1–63 letters, digits, hyphens or underscores, not a URL or domain.`
+      );
+      return;
+    }
     setBusy(true);
     setError(null);
     setWarning(null);
@@ -164,6 +176,7 @@ export function ServiceKeyStep({
                     <Input
                       id={id}
                       type={field.secret ? 'password' : 'text'}
+                      maxLength={field.pattern ? 63 : undefined}
                       autoComplete="off"
                       spellCheck={false}
                       disabled={busy}
