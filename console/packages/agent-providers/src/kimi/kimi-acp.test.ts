@@ -123,7 +123,7 @@ it('reports the sign-in unknown when config.toml does not parse', async () => {
 it.each([
   ['approval-required', 'default'],
   ['auto-accept-edits', 'default'],
-  ['auto', 'auto'],
+  ['auto', 'yolo'],
   ['full-access', 'yolo'],
 ] as const)('puts a %s session in Kimi mode %s', (runtimeMode, mode) => {
   const modes = {
@@ -195,10 +195,22 @@ it('asks a question as a question, even in full access, and answers with the cho
   });
 });
 
-it("types Kimi's Agent tool as a subagent", () => {
-  expect(kimiAcp.itemType?.({ toolCallId: '0:Agent_0', title: 'Agent' })).toBe('subagent');
-  expect(kimiAcp.itemType?.({ toolCallId: '1', title: 'Bash' })).toBeUndefined();
+it.each([
+  'Agent',
+  'AgentSwarm',
+  'Launching coder agent: fix the tests',
+  'Launching background explore agent: map the repo',
+  'Launching agent swarm: review each file',
+])("types Kimi's subagent tool titled %j as a subagent", (title) => {
+  expect(kimiAcp.itemType?.({ toolCallId: '0:Agent_0', title })).toBe('subagent');
 });
+
+it.each(['Bash', 'mcp__switch__agent_status', 'Launching the build'])(
+  'leaves the tool titled %j as it is',
+  (title) => {
+    expect(kimiAcp.itemType?.({ toolCallId: '1', title })).toBeUndefined();
+  }
+);
 
 it('passes through what Kimi reads to find its home or sign in with a key', () => {
   expect(kimiAcp.inheritEnv).toEqual([

@@ -9,13 +9,21 @@ import { loginWontHelp, readiness, signInWith, type ProviderReadiness } from '..
 
 const KIMI_LOGIN = 'kimi login';
 
-/** Kimi's `auto` approves what it judges safe and asks about the rest, as Switch's auto mode means. */
+/**
+ * Kimi's `yolo` ("Ask When Needed") runs routine work and still asks for risky commands,
+ * sensitive files and questions, as Switch's auto mode means. Its `auto` ("Never Ask") is not
+ * used: it refuses every question and skips the dangerous-command check, whatever its ACP label says.
+ */
 const KIMI_MODES: Record<RuntimeMode, string> = {
   'approval-required': 'default',
   'auto-accept-edits': 'default',
-  auto: 'auto',
+  auto: 'yolo',
   'full-access': 'yolo',
 };
+
+/** Kimi's subagent tools, by name or by the description it titles them with. */
+const SUBAGENT_TITLE =
+  /^(Agent|AgentSwarm)$|^Launching (background )?.+ agent: |^Launching agent swarm: /;
 
 async function hasRefreshToken(path: string): Promise<boolean> {
   const text = await optionalText(path);
@@ -94,7 +102,7 @@ export const kimiAcp: AcpProviderHooks = {
     return modes?.availableModes.some((offered) => offered.id === mode) ? mode : undefined;
   },
   mcpServerOf: (toolCall) => /^mcp__(.+?)__/.exec(toolCall.title ?? '')?.[1],
-  itemType: (toolCall) => (toolCall.title === 'Agent' ? 'subagent' : undefined),
+  itemType: (toolCall) => (SUBAGENT_TITLE.test(toolCall.title ?? '') ? 'subagent' : undefined),
   // Kimi asks its questions as permission requests, one option per choice.
   // shortcut: only one question per request (`q0_…`) has been seen; map `q1_…` when Kimi sends it.
   permission: (context, { toolCall, options }) => {
