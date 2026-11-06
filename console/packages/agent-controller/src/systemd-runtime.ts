@@ -4,9 +4,9 @@ import { chmod, lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
-  AGENT_ENV_VARS,
   CONTROL_FILE,
   clearTakenOver,
+  PROVIDER_ENV_VARS,
   type ProviderReadiness,
   type SharedHostConfig,
   sharedConfigSchema,
@@ -84,6 +84,7 @@ const PATH_VARIABLES = new Set([
   'CLOUDSDK_CONFIG',
   'GOOGLE_APPLICATION_CREDENTIALS',
   'AWS_PROFILE',
+  'KIMI_CODE_HOME',
 ]);
 
 type UnitState = { activeState: string; result: string; mainPid: number };
@@ -459,7 +460,7 @@ export class SystemdRuntime implements AgentRuntime {
    */
   private agentEnvironment(): Record<string, string> {
     const env: Record<string, string> = {};
-    for (const name of AGENT_ENV_VARS) {
+    for (const name of PROVIDER_ENV_VARS) {
       const value = this.deps.env[name];
       if (value === undefined || PATH_VARIABLES.has(name)) continue;
       env[name] = value;
