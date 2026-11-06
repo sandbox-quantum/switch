@@ -45,6 +45,10 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     roomWorkspaceId: () => 'ws-1',
     roomServerId: () => 'server-1',
     canDeleteRoom: () => false,
+    // As the real store: the server's answer for the room, and nothing
+    // without one (these rooms always carry it).
+    roomPermissions: (_workspaceId: string, room: { serverPermissions?: unknown }) =>
+      room.serverPermissions ?? { canWrite: false, canManage: false, canUnlink: false },
   },
 }));
 
@@ -71,7 +75,7 @@ function room(autoRoute: RoomAutoRoute | undefined, access: Access) {
   return {
     id: 'room-1',
     ownerId: 'user-owner',
-    ...access,
+    serverPermissions: { ...access, canUnlink: access.canWrite },
     name: 'ops',
     description: '',
     instructions: null,
@@ -80,6 +84,20 @@ function room(autoRoute: RoomAutoRoute | undefined, access: Access) {
     externalChannelUrl: null,
     agentIds: ['agent-deploy', 'agent-triage'],
     connectedUserNames: [],
+    readVisibility: 'public',
+    writeVisibility: 'private',
+    groupId: null,
+    groupName: null,
+    ownerName: 'Ada',
+    bridgeId: null,
+    agentStatuses: {},
+    roles: [],
+    joinEventListeners: [],
+    externalChannelId: null,
+    transportRoomId: null,
+    archived: false,
+    archivedAt: null,
+    createdAt: '2026-10-01T09:00:00+00:00',
     ...(autoRoute ? { autoRoute } : {}),
   };
 }
@@ -315,6 +333,10 @@ it('offers both to the room’s owner or a workspace admin', async () => {
 
   expect(disabled(el)).toBe(false);
   expect(pickerHeld(el)).toBe(false);
-  expect(el.textContent).not.toContain('Only the room’s owner');
+  // The access section above says its own "Only the room’s owner and
+  // workspace admins" to managers; the triage picker's refusal is absent.
+  expect(el.textContent).not.toContain(
+    'Only the room’s owner or a workspace admin can change this.'
+  );
   expect(el.textContent).not.toContain('needs write access');
 });
