@@ -24,6 +24,10 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.bridges.collaboration.sms.adapter import (
+    SmsAdapter,
+    SmsConnectionConfig,
+)
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -53,6 +57,7 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("teams", TeamsAdapter, TeamsConnectionConfig),
     PlatformRegistration("discord", DiscordAdapter, DiscordConnectionConfig),
     PlatformRegistration("telegram", TelegramAdapter, TelegramConnectionConfig),
+    PlatformRegistration("sms", SmsAdapter, SmsConnectionConfig),
 )
 
 

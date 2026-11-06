@@ -47,6 +47,8 @@ def test_every_platform_declares_what_deleting_a_room_does() -> None:
         "discord": "deleted",
         "telegram": "left",
         "teams": "kept",
+        # A phone conversation has nothing to archive or leave.
+        "sms": "kept",
     }
 
 
