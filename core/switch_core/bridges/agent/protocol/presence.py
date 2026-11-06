@@ -33,7 +33,7 @@ def agents_present_in(
             controllers.live_in_room(agent_id, room_id)
             if controllers.is_bound(agent_id)
             else (
-                connections.session_in_room(agent_id, room_id) is not None
+                connections.live_session_in_room(agent_id, room_id) is not None
                 or connections.claimant_of(agent_id, room_id) is not None
             )
         )
