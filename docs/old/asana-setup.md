@@ -1,9 +1,10 @@
 # Asana on a self-hosted server
 
-> **Verification pending:** The connector identifies the account through an
-> MCP tool. The tool's current read-only annotation and full schema have not
-> been verified, and agent grants may persist when the same person changes
-> Asana workspaces. See the limits below.
+> **Identity and workspace:** On 2026-11-06, Asana V2's `get_user` tool
+> advertised `readOnlyHint: true` and no required arguments. A live call with
+> `{}` returned nonempty strings at `data.gid` and `data.email`. This is a
+> point-in-time observation. Agent grants may persist when the same person
+> changes Asana workspaces; see the limits below.
 
 Agents can read and update tasks and projects in the Asana workspace their
 owner selects when authorizing the connection, within that owner's Asana
@@ -155,8 +156,8 @@ agents' next token requests:
   metadata. The server's protected-resource metadata identifies
   `https://mcp.asana.com/v2/mcp` as its resource, while Asana's integration
   guide gives `https://mcp.asana.com/v2` as an optional resource example.
-  Acceptance of this resource value by this PR has not been
-  verified with a real app and may prevent authorization.
+  A real V2 app accepted the advertised resource during a successful
+  connection on 2026-11-06, using commit `8d80e4ea`.
 
 ## An organization's own Asana app
 

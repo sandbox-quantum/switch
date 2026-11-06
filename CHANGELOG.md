@@ -286,9 +286,10 @@ version of their own to them without also giving them a release of their own.
   Asana sends people back to the server's own callback. Asana offers no
   read-only sign-in: the connection omits OAuth scope and can write within
   the person's own Asana permissions. Identity is read using Asana's MCP
-  `get_user` tool. Disconnecting revokes the sign-in at Asana. The live V2
-  tool schema and connection flow still need verification; see
-  `docs/old/asana-setup.md` for the remaining limits.
+  `get_user` tool. Disconnecting revokes the sign-in at Asana. On
+  2026-11-06, a V2 connection succeeded and `get_user` advertised a read-only
+  tool with no required arguments; `get_user({})` returned nonempty `data.gid`
+  and `data.email` strings. See `docs/old/asana-setup.md` for remaining limits.
 - **The Airtable connection.** A person connects Airtable from Switch Console,
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that

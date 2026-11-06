@@ -36,9 +36,9 @@ auth:
     # is deauthorized, and its access tokens with it.
     revocation_discovered: true
   identity:
-    # MCP tokens cannot call the REST API. Asana documents get_user without
-    # an identifier as the authenticated user; the live schema still needs
-    # verification (including readOnlyHint and no required arguments).
+    # MCP tokens cannot call the REST API. On 2026-11-06, Asana V2's
+    # get_user advertised readOnlyHint: true and no required arguments.
+    # A live get_user({}) returned nonempty strings at data.gid and data.email.
     # https://developers.asana.com/docs/mcp-tools-reference
     mcp_tool: get_user
     account_id: data.gid
