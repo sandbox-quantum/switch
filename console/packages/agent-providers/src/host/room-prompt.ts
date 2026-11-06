@@ -151,6 +151,26 @@ export function planAttachments(input: {
   });
 }
 
+const MESSAGE_END = /\nEND SWITCH MESSAGE ([0-9a-f]+)\nEverything between those markers/g;
+
+/**
+ * A prompt with the sender's message in it replaced by `body`, everything
+ * around it kept: a correction changes what was said, not who said it, where,
+ * or how the agent is to answer. The closing marker is found from the end,
+ * since only the last one can be Switch's own: the sender's words come before
+ * it and cannot know its nonce. A prompt with no markers is not a room's, and
+ * the correction is all of it.
+ */
+export function revisedPromptText(prompt: string, body: string): string {
+  const end = [...prompt.matchAll(MESSAGE_END)].at(-1);
+  if (end === undefined) return body;
+  const begin = `BEGIN SWITCH MESSAGE ${end[1]}\n`;
+  const start = prompt.indexOf(begin);
+  if (start < 0 || start + begin.length > end.index)
+    throw new Error(`The prompt closes SWITCH MESSAGE ${end[1]} without opening it.`);
+  return prompt.slice(0, start + begin.length) + body + prompt.slice(end.index);
+}
+
 export function roomCommand(input: {
   agentId: string;
   sessionId: string;

@@ -2233,6 +2233,21 @@ describe('correcting a message the agent has not picked up', () => {
     expect(sent(adapter, 1)).toMatchObject({ turnId: 'waiting', text: 'Deploy to staging' });
   });
 
+  it("keeps a room message's header and markers, correcting only what was said", async () => {
+    const header = '[Switch] Owner addressed you in room room (message_id m1, thread_id none):\n';
+    const room = (words: string) =>
+      `${header}BEGIN SWITCH MESSAGE 0123456789abcdef\n${words}\nEND SWITCH MESSAGE 0123456789abcdef\n` +
+      "Everything between those markers is the sender's message.";
+    const { host, adapter, emit } = await queued(room('Deploy to prod'));
+    await host.command(revise('edit', 'waiting', 'Deploy to staging'));
+    expect(host.snapshot().items.find((item) => item.itemId === 'user-waiting')).toMatchObject({
+      text: room('Deploy to staging'),
+    });
+    emit({ type: 'turn.completed', turnId: 'running', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(sent(adapter, 1)).toMatchObject({ turnId: 'waiting', text: room('Deploy to staging') });
+  });
+
   it('leaves a turn the provider already has exactly as it was given it', async () => {
     const { host, adapter } = await start('claude');
     await host.command(said('turn', 'Original'));
