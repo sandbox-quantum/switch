@@ -6,7 +6,7 @@ the panel reading it land in the same review.
 
 Nothing here contains an account, an API key, a team handle or a URL. The
 monitors carry `@REPLACE-WITH-NOTIFICATION-HANDLE` where a destination belongs;
-fill it in when importing, not here.
+`apply.sh` fills it in from `NOTIFY` when importing.
 
 **Do not skip that.** Datadog does not validate notification handles: a monitor
 carrying the placeholder imports cleanly, shows as healthy in the UI, triggers
@@ -25,22 +25,49 @@ Every metric this server can emit is declared in
 `core/switch_core/observability/catalogue.py`, with the attributes each may
 carry. That file is the reference; this directory is one view of it.
 
+## The Signal board
+
+`signal-board.json` is the one screen to open first: the four golden signals
+(latency, traffic, errors, saturation) plus two questions only Switch has, "are
+agents connected?" and "are the messaging apps up?". Everything is grey while it
+is normal. A value turns red, and a dashed red line marks the limit an alert
+watches, so the exception is the only thing in colour. The other dashboards are
+where you go next, for causes.
+
+Keep it that way when you edit it: one question per tile, at most five series
+per chart, a limit drawn on any chart an alert reads, and colour only for state.
+
+## Alerts
+
+Every monitor in `monitors.json` is something a user would notice and someone
+should act on now: no data, the database unreachable or refusing connections,
+the pool full for 10 minutes, messages not delivered, failing or late, a
+messaging app bridge down, server errors, a slow API, a stalled server, or
+agents dropping off together. Each says what users see and what to check, posts
+once per incident (`renotify_interval: 0`) and posts again when it recovers.
+
+What isn't urgent stays out of them on purpose. Causes (slow queries, CPU,
+garbage collection) belong on the dashboards, and a monitor that fires without
+anyone needing to act teaches people to skim the channel. If one fires and the
+answer is "that's fine", tune it or delete it that week.
+
+Error alerts count failures rather than taking a percentage. At low traffic one
+failure among a handful of requests reads as a high error rate, so a percentage
+would page on noise.
+
 ## Importing
 
-```bash
-# Dashboard
-curl -X POST "https://api.<your-datadog-site>/api/v1/dashboard" \
-  -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
-  -H "Content-Type: application/json" \
-  --data @dashboard.json
+`apply.sh` creates or updates the monitors and the Signal board, matching by
+name and title so a second run updates in place:
 
-# Monitors, one at a time — the API takes a single monitor per call
-jq -c '.[]' monitors.json | while read -r monitor; do
-  curl -X POST "https://api.<your-datadog-site>/api/v1/monitor" \
-    -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" \
-    -H "Content-Type: application/json" --data "$monitor"
-done
+```bash
+DD_API_KEY=... DD_APP_KEY=... NOTIFY=@slack-<workspace>-<channel> ./apply.sh
+DRY_RUN=1 ...   # print what would change
 ```
+
+The application key needs monitor and dashboard write access. `dashboard.json`
+and `multi-pod-dashboard.json` are not touched by it; import those by hand with
+`POST /api/v1/dashboard` if a deployment doesn't have them yet.
 
 ## Check these before you trust the dashboard
 
@@ -93,9 +120,11 @@ quiet night and a heartbeat that can legitimately be absent is not a heartbeat.
 
 ## What is deliberately not alerted on
 
-**Latency.** Switch holds long-poll connections open on purpose, so a slow
-request is its normal mode and a duration threshold would page on healthy
-traffic. The dashboard shows it; nothing wakes anyone for it.
+**Latency, below a level users feel.** The two latency monitors fire only when
+it is plainly bad (API p95 over 2 s, delivery p95 over 10 s, sustained). On
+pilot in early November the API p95 stayed under 1 s even while the database
+pool was full, so 2 s is a symptom, not noise. Anything slower than usual but
+not yet that bad is for the dashboard.
 
 **Bridge event volume.** It follows whatever the humans in the channels are
 doing. A quiet Sunday is not an incident, and an alert that fires every
