@@ -394,3 +394,48 @@ describe("the Boxes disk column", () => {
     expect(row.queryByText(/7\.0 GB/)).toBeNull();
   });
 });
+
+describe("thin capacity bars on Boxes", () => {
+  afterEach(() => cleanup());
+
+  function withCapacity(awake: number, usedGb: number, diskUsedGb: number): Record<string, unknown> {
+    const raw = fixture();
+    const boxes = raw.boxes as Record<string, unknown>[];
+    boxes[0] = {
+      ...boxes[0],
+      awake: { running: awake, max: 12 },
+      memory_used_bytes: usedGb * 1024 ** 3,
+      memory_total_bytes: 5 * 1024 ** 3,
+      disk: {
+        total_bytes: 15 * 1024 ** 3,
+        available_bytes: (15 - diskUsedGb) * 1024 ** 3,
+        scope: "workspace",
+      },
+    };
+    return raw;
+  }
+
+  function stepOf(name: string): string | null {
+    const row = rows().find((r) => r.textContent?.includes("awake"));
+    return row?.querySelector(`[data-capacity="${name}"]`)?.getAttribute("data-step") ?? null;
+  }
+
+  it("colours each bar by the same steps as Your cloud", () => {
+    // 6 of 12 awake (50%), 4.1 of 5 GB memory (82%), 14.5 of 15 GB disk (97%).
+    renderTab(BoxesTab, { overview: withCapacity(6, 4.1, 14.5) });
+    expect(stepOf("awake")).toBe("ok");
+    expect(stepOf("memory")).toBe("nearly_full");
+    expect(stepOf("disk")).toBe("full");
+  });
+
+  it("draws no bar where there's no share, but still says so in words", () => {
+    renderTab(BoxesTab, { overview: fixture() });
+    const paused = rowOf("k1-0e77 b5aa 0b1c");
+    expect(paused.getByText(DISK_NOT_AVAILABLE)).toBeTruthy();
+    const cell = rows()
+      .find((r) => r.textContent?.includes(DISK_NOT_AVAILABLE))
+      ?.querySelector('[data-capacity="disk"]');
+    expect(cell?.getAttribute("data-step")).toBe("none");
+    expect(cell?.querySelector('[role="progressbar"]')).toBeNull();
+  });
+});

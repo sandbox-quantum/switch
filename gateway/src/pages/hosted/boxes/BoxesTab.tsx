@@ -3,6 +3,7 @@ import {
   Box,
   Chip,
   InputAdornment,
+  LinearProgress,
   Link,
   Stack,
   Table,
@@ -15,6 +16,7 @@ import {
 } from "@mui/material";
 import { useMemo, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router";
+import { capacityStep } from "../../agents/cloud/capacity";
 import BoxActions from "../BoxActions";
 import { useHosted } from "../HostedContext";
 import PausedWithoutBox from "../PausedWithoutBox";
@@ -70,6 +72,42 @@ export function diskText(box: OverviewBox): string {
   const disk = box.workspaceDisk;
   if (!disk) return DISK_NOT_AVAILABLE;
   return `${gb(disk.totalBytes - disk.availableBytes)} of ${gb(disk.totalBytes)}`;
+}
+
+const BAR_COLOUR = { ok: "primary", nearly_full: "warning", full: "error" } as const;
+
+/** A figure with a thin bar under it, coloured by the same steps as Your
+ *  cloud (amber at 80%, red at 95%). No bar when there's no share to show;
+ *  the figure is always in the text, so nothing depends on colour. */
+export function CapacityCell({ text, share, name }: { text: string; share: number | null; name: string }) {
+  const step = share === null ? null : capacityStep(share);
+  return (
+    <Box data-capacity={name} data-step={step ?? "none"} sx={{ minWidth: 96 }}>
+      {text}
+      {step !== null && share !== null && (
+        <LinearProgress
+          variant="determinate"
+          value={Math.min(100, share * 100)}
+          color={BAR_COLOUR[step]}
+          aria-hidden
+          sx={{ mt: 0.5, height: 4, borderRadius: 2, maxWidth: 120 }}
+        />
+      )}
+    </Box>
+  );
+}
+
+/** Each figure's share of its limit, or null when either side is missing. */
+export function shares(box: OverviewBox): { awake: number | null; memory: number | null; disk: number | null } {
+  const disk = box.workspaceDisk;
+  return {
+    awake: box.awake === null ? null : box.awake.running / box.awake.max,
+    memory:
+      box.memoryUsedBytes === null || box.memoryTotalBytes === null
+        ? null
+        : box.memoryUsedBytes / box.memoryTotalBytes,
+    disk: disk ? (disk.totalBytes - disk.availableBytes) / disk.totalBytes : null,
+  };
 }
 
 /** Memory in use, and out of the box's memory when Core sends it. */
@@ -217,6 +255,7 @@ export default function BoxesTab() {
             const paused = pausedOf.get(b.user) ?? b.state === "paused";
             const current = isCurrent(b);
             const kept = current ? null : keptUntil(b.retainUntil);
+            const share = shares(b);
             return (
               <TableRow
                 key={b.box}
@@ -279,10 +318,14 @@ export default function BoxesTab() {
                     b.node
                   )}
                 </TableCell>
-                <TableCell>{awakeText(b)}</TableCell>
-                <TableCell>{memoryText(b)}</TableCell>
+                <TableCell>
+                  <CapacityCell name="awake" text={awakeText(b)} share={share.awake} />
+                </TableCell>
+                <TableCell>
+                  <CapacityCell name="memory" text={memoryText(b)} share={share.memory} />
+                </TableCell>
                 <TableCell sx={b.workspaceDisk ? undefined : { color: "text.secondary" }}>
-                  {diskText(b)}
+                  <CapacityCell name="disk" text={diskText(b)} share={share.disk} />
                 </TableCell>
                 <TableCell align="right">{b.restartsToday === null ? "—" : b.restartsToday}</TableCell>
                 <TableCell align="right">
