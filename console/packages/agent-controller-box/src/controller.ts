@@ -26,6 +26,9 @@ import {
 } from './api';
 import { valveLimits } from './controller-reserve';
 import { ConfigurationError } from './errors';
+import { topLevelLabels } from './file-labels';
+import type { FilesReply } from './files-frames';
+import { FilesRelay } from './files-relay';
 import {
   type GatewayDeps,
   gatewayEnvironment,
@@ -100,7 +103,7 @@ import {
   statusFingerprint,
 } from './status';
 import type { ControllerStore } from './store';
-import { type ControllerFrame, runControllerStream } from './stream';
+import { type ControllerFrame, type FilesChannel, runControllerStream } from './stream';
 
 export type ControllerTiming = {
   /** The full resync safety net. */
@@ -1515,9 +1518,46 @@ export async function runController(
       void rest?.check(assignment).catch((error: unknown) => failed('Resting agents', error));
   }, timing.statusPollMs);
 
+  // The file explorer (split boxes only): Core's file requests go to the launcher,
+  // which reads as the agents' user; the controller never opens a file itself.
+  let filesUp: ((reply: FilesReply) => void) | null = null;
+  const filesRelay = split
+    ? new FilesRelay({
+        link: split.link,
+        send: (reply) => filesUp?.(reply),
+        labels: () =>
+          topLevelLabels(
+            workspaces,
+            (assignment?.agents ?? []).map((entry) => ({
+              name: entry.definition.name,
+              displayName: entry.definition.display_name ?? null,
+              directory: entry.definition.directory,
+            }))
+          ),
+        log: (event, fields) => log.info(event, fields),
+      })
+    : null;
+  const files: FilesChannel | undefined = filesRelay
+    ? {
+        attach: (send) => {
+          filesUp = send;
+        },
+        detach: () => {
+          filesUp = null;
+          filesRelay.cancelAll();
+        },
+        frame: (frame) => {
+          if (frame.type === 'files.request') filesRelay.request(frame.data);
+          else if (frame.type === 'files.more') filesRelay.more(frame.data.id);
+          else filesRelay.cancel(frame.data.id);
+        },
+      }
+    : undefined;
+
   let ending: ControllerExit = 'stopped';
   try {
     ending = await runControllerStream({
+      ...(files ? { files } : {}),
       client,
       cursors: () => {
         const cursors: Record<string, AgentCursor> = {};

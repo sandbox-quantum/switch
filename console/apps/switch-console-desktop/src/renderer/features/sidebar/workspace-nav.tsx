@@ -1,5 +1,15 @@
-import { Bot, DoorOpen, FileText, House, type LucideIcon, Plug, ShieldCheck } from 'lucide-react';
+import {
+  Bot,
+  DoorOpen,
+  FileText,
+  FolderOpen,
+  House,
+  type LucideIcon,
+  Plug,
+  ShieldCheck,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { useCloudFilesVisible } from '@renderer/features/cloud-files/use-cloud-files';
 import { useSharedCloudOverview } from '@renderer/features/shared-cloud/use-shared-cloud';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
 import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
@@ -31,7 +41,10 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: templatesParams } = useParams('templates');
   const { params: adminParams } = useParams('admin');
   const { params: managedServerParams } = useParams('managedServer');
+  const { params: cloudFilesParams } = useParams('cloudFiles');
   const active = switchServersStore.activeServer;
+  // Your cloud files: shown only from a good flags read, with a hosted agent (`useCloudFilesVisible`).
+  const cloudFilesShown = useCloudFilesVisible(active?.id ?? null);
   const health = useRoomHealth(active?.id ?? null);
   const serviceConnections = useFeatureFlags(active?.id ?? null).service_connections;
   const sharedCloud = useSharedCloudOverview(active?.id ?? null).data?.viewer === 'operator';
@@ -56,6 +69,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     serverAgents: { icon: Bot, label: 'Your Agents', params: agentsParams },
     serverRooms: { icon: DoorOpen, label: 'Your Rooms', params: roomsParams },
     connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
+    cloudFiles: { icon: FolderOpen, label: 'Your cloud files', params: cloudFilesParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },
   };
@@ -64,6 +78,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     serviceConnections,
     administers,
     sharedCloud,
+    cloudFiles: cloudFilesShown,
   });
 
   return (

@@ -8,6 +8,7 @@ import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
 import PowerOutlined from "@mui/icons-material/PowerOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
+import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
@@ -35,6 +36,7 @@ import type { ComponentType, MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
 import { useCurrentTenant, useHostedV2 } from "../data/hooks";
 import { fetchManagementAvailable } from "../data/management";
+import { useCloudFilesShown } from "../pages/files/useCloudFiles";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import ThemeModeToggle from "./ThemeModeToggle";
@@ -53,6 +55,13 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Apps", path: "/collaborations", icon: ChatBubbleOutlineOutlined },
   { label: "API Keys", path: "/registration-keys", icon: VpnKeyOutlined },
   { label: "Workspace", path: "/workspace", icon: WorkspacesOutlined },
+];
+
+// Your cloud files: shown only with hosted agents v2 and `hosted_cloud_files`
+// on, to someone with an agent in their cloud. The operator Hosted area never
+// shows files.
+const CLOUD_FILES_ITEMS: NavItem[] = [
+  { label: "Your cloud files", path: "/files", icon: FolderOpenOutlined },
 ];
 
 // Shown when the current workspace belongs to an organization.
@@ -160,6 +169,7 @@ export default memo(function NavRail() {
   const { data: tenant } = useCurrentTenant();
   // The Hosted menu item is hosted agents v2's: shown only when Core says v2 is on.
   const hostedV2 = useHostedV2() === true;
+  const cloudFiles = useCloudFilesShown() === true;
   const [managementAvailable, setManagementAvailable] = useState(false);
 
   useEffect(() => {
@@ -178,6 +188,7 @@ export default memo(function NavRail() {
 
   const items = [
     ...NAV_ITEMS,
+    ...(cloudFiles ? CLOUD_FILES_ITEMS : []),
     ...(session?.tenant?.organization_id ? ORGANIZATION_ITEMS : []),
     ...(managementAvailable ? MANAGEMENT_ITEMS : []),
     ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),

@@ -9,6 +9,15 @@ import {
   isUpgradeRequired,
   type OpenedSocket,
 } from './api';
+import {
+  errorReply,
+  filesCancelSchema,
+  filesMoreSchema,
+  isFilesRequestId,
+  type FilesReply,
+  type FilesRequest,
+  filesRequestSchema,
+} from './files-frames';
 import { errorMessage, type Logger } from './log';
 import {
   type AgentApprovalOutcomeFrame,
@@ -71,6 +80,27 @@ export type ControllerFrame =
   | { type: 'operation.pending'; data: OperationPending }
   | { type: 'credential.revoked'; data: Record<string, never> };
 
+/** The file explorer's down-frames, handled as they arrive rather than queued behind agent events. */
+export type FilesFrame =
+  | { type: 'files.request'; data: FilesRequest }
+  | { type: 'files.more'; data: { id: string } }
+  | { type: 'files.cancel'; data: { id: string } };
+
+/** Where the stream hands the file explorer's frames, and how it lets replies go up its socket. */
+export type FilesChannel = {
+  /** A socket attached: replies go up through `send` until `detach`. */
+  attach: (send: (reply: FilesReply) => void) => void;
+  /** The socket is gone: every open file request ends, and nothing more is sent. */
+  detach: () => void;
+  frame: (frame: FilesFrame) => void;
+};
+
+const FILES_SCHEMAS = {
+  'files.request': filesRequestSchema,
+  'files.more': filesMoreSchema,
+  'files.cancel': filesCancelSchema,
+} as const;
+
 /** Why the stream stopped for good. */
 export type StreamEnding =
   | 'stopped'
@@ -103,6 +133,8 @@ export type ControllerStreamOptions = {
   maxBackoffMs: number;
   /** Jitter source in [0, 1); injectable for tests. */
   random: () => number;
+  /** The file explorer (hosted boxes); absent, `files.*` frames are ignored like any unknown frame. */
+  files?: FilesChannel;
 };
 
 /**
@@ -318,6 +350,22 @@ class ControllerStream {
         refused = refusalOf(parsed.data);
         return;
       }
+      if (this.options.files && typeof parsed.event === 'string' && parsed.event in FILES_SCHEMAS) {
+        const event = parsed.event as keyof typeof FILES_SCHEMAS;
+        const result = FILES_SCHEMAS[event].safeParse(parsed.data);
+        if (result.success) {
+          this.options.files.frame({ type: event, data: result.data } as FilesFrame);
+          return;
+        }
+        // Never the frame's contents in the log: a path is the user's.
+        this.options.log.warn('Dropped a file frame that does not match', { event });
+        // A request with an id Core could have sent is answered at once, so Core
+        // fails fast rather than waiting out its own deadline.
+        const id = (parsed.data as { id?: unknown } | null | undefined)?.id;
+        if (event === 'files.request' && isFilesRequestId(id) && socket.readyState === 1)
+          socket.send(JSON.stringify(errorReply(id, 0, 'bad_request')));
+        return;
+      }
       if (typeof parsed.event !== 'string') return;
       pending.push({ event: parsed.event, data: parsed.data });
       notify();
@@ -332,6 +380,11 @@ class ControllerStream {
     socket.addEventListener('close', onClose);
     socket.addEventListener('error', notify);
     abort.signal.addEventListener('abort', onAbort, { once: true });
+    // File replies go up this socket only while it's the one attached. Sends are
+    // whole messages (one `send` each), so a reply never interleaves with a pong.
+    this.options.files?.attach((reply) => {
+      if (socket.readyState === 1) socket.send(JSON.stringify(reply));
+    });
     try {
       touch();
       for (;;) {
@@ -369,6 +422,7 @@ class ControllerStream {
       if (!this.options.signal.aborted)
         this.options.log.warn('The controller socket closed; reconnecting.', { code: closedWith });
     } finally {
+      this.options.files?.detach();
       if (idle) clearTimeout(idle);
       socket.removeEventListener('message', onMessage);
       socket.removeEventListener('close', onClose);

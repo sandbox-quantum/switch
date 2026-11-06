@@ -8,7 +8,7 @@ import {
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
-import type { ServerFeatureFlags } from '@shared/core/feature-flags/feature-flags';
+import type { FeatureFlags, ServerFeatureFlags } from '@shared/core/feature-flags/feature-flags';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import { featureFlagsChangedChannel } from '@shared/events/featureFlagEvents';
 import {
@@ -195,11 +195,14 @@ export function useAnsweredFlags(serverId: string | null): {
   answered: boolean;
   readOk: boolean;
   hostedV2: boolean | null;
+  /** Every flag, from that same answer; null until answered. */
+  flags: FeatureFlags | null;
 } {
   const [answer, setAnswer] = useState<{
     answered: boolean;
     readOk: boolean;
     hostedV2: boolean | null;
+    flags: FeatureFlags | null;
   }>(NO_ANSWER);
   useEffect(() => {
     setAnswer(NO_ANSWER);
@@ -211,6 +214,7 @@ export function useAnsweredFlags(serverId: string | null): {
             answered: true,
             readOk: state.fetchedAt !== null && state.error === null,
             hostedV2: state.flags.hosted_v2 === true,
+            flags: state.flags,
           }
         : NO_ANSWER;
     const off = events.on(featureFlagsChangedChannel, (state) => {
@@ -231,4 +235,4 @@ export function useAnsweredFlags(serverId: string | null): {
   return answer;
 }
 
-const NO_ANSWER = { answered: false, readOk: false, hostedV2: null } as const;
+const NO_ANSWER = { answered: false, readOk: false, hostedV2: null, flags: null } as const;

@@ -55,6 +55,7 @@ PAGE_PATHS: tuple[str, ...] = (
     "/resources/templates/{id}",
     "/agents",
     "/agents/{agent_id}",
+    "/files",
     "/machines",
     "/collaborations",
     "/registration-keys",

@@ -16,6 +16,9 @@ export const CONSOLE_FEATURE_FLAGS = [
   // Hosted agents v2 (shared-cloud boxes): Core's single answer, `hosted_v2`. Off, or
   // absent from an older server, means Console shows v1 hosted exactly as upstream.
   'hosted_v2',
+  // Your cloud files (read-only file explorer for the person's own box). Core lists it
+  // only with hosted_v2 on, and its routes answer 404 while it's off.
+  'hosted_cloud_files',
   'agent_management',
   'service_connections',
   'agent_chats',

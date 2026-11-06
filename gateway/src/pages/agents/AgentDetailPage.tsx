@@ -1,5 +1,6 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import EditOutlined from "@mui/icons-material/EditOutlined";
+import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
 import {
   Alert,
   Box,
@@ -37,6 +38,7 @@ import {
   formatDateTime,
   titleCase,
 } from "../../theme/hootFormat";
+import { useCloudFilesBox } from "../files/useCloudFiles";
 import AddressingPolicySection from "./AddressingPolicySection";
 import AgentManagementSection from "./AgentManagementSection";
 import { CloudAgentSection, CloudRenameDialog } from "./cloud/CloudAgentControls";
@@ -138,6 +140,7 @@ export default function AgentDetailPage() {
           </Tooltip>
         )}
         <Box sx={{ flexGrow: 1 }} />
+        <ViewFilesButton agentId={agent.id} agentName={agent.name} />
         <Chip label={agent.connector_type} size="small" variant="outlined" />
         {agent.connection_model && (
           <Chip
@@ -789,5 +792,26 @@ function SubagentsSection({ children }: { children: AgentSummary[] }) {
         ))}
       </Stack>
     </Stack>
+  );
+}
+
+/**
+ * View files: opens Your cloud files at this agent's own folder, for an agent
+ * on the person's v2 box and only where Your cloud files shows. The folder is
+ * found by the agent's name, never its label.
+ */
+function ViewFilesButton({ agentId, agentName }: { agentId: string; agentName: string }) {
+  const navigate = useNavigate();
+  const box = useCloudFilesBox();
+  if (!box?.shown || !box.agentIds.includes(agentId)) return null;
+  return (
+    <Button
+      size="small"
+      variant="outlined"
+      startIcon={<FolderOpenOutlined />}
+      onClick={() => navigate(`/files?${new URLSearchParams({ agent: agentName }).toString()}`)}
+    >
+      View files
+    </Button>
   );
 }
