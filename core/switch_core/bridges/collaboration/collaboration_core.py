@@ -23,6 +23,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
     PlatformAdapter,
+    PrivateNoticeRefused,
     SupportsSharedConnection,
     agent_identity,
 )
@@ -94,11 +95,14 @@ from switch_core.transport import (
     TransportError,
     writes_derived_from,
 )
+from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
 from switch_core.trust.client import (
     NullTrustClient,
+    TrustCheckResult,
     TrustClient,
     check_message,
     trust_annotation,
+    trust_is_active,
     trust_redaction_notice,
 )
 
@@ -1267,6 +1271,73 @@ class CollaborationCore:
             )
             return
 
+        # A message with files is checked as a whole before anything is
+        # uploaded: the typed text exactly as above, and each file through the
+        # text it carries (`trust/attachments.py`), so a refusal of either
+        # leaves nothing of the message in the room.
+        caption_check: TrustCheckResult | None = None
+        files_check = AttachmentsVerdict()
+        if await trust_is_active(self._trust_client):
+            files = [(a.data, a.filename, a.mimetype) for a in msg.attachments]
+            files_check_task = check_attachments(
+                self._trust_client, role="user", files=files, room_id=room_id
+            )
+            if content.strip():
+                caption_check, files_check = await asyncio.gather(
+                    check_message(
+                        self._trust_client,
+                        role="user",
+                        content=content,
+                        room_id=room_id,
+                    ),
+                    files_check_task,
+                )
+            else:
+                files_check = await files_check_task
+        caption_refused = caption_check is not None and (
+            caption_check.blocked
+            or (
+                caption_check.outcome == "redacted"
+                and caption_check.redacted_content is None
+            )
+        )
+        if caption_refused or files_check.blocked:
+            logger.warning(
+                "[BRIDGE-IN] message with %d attachment(s) from %s not relayed: "
+                "Switch Trust text outcome=%s, files: %s, room %s",
+                len(msg.attachments),
+                msg.sender_name,
+                caption_check.outcome if caption_check is not None else "unchecked",
+                "; ".join(files_check.block_reasons) or "not blocked",
+                transport_room_id,
+            )
+            if files_check.blocked:
+                notice = (
+                    "🚫 Your message was blocked by Switch Trust and was not "
+                    f"delivered to the room: {'; '.join(files_check.block_reasons)}. "
+                    "You can still see it, but agents can't access it."
+                )
+            else:
+                notice = (
+                    "🚫 Your message was blocked by Switch Trust and was not "
+                    "delivered to the room. You can still see it, but agents "
+                    "can't access it."
+                )
+            await self._post_trust_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
+            return
+        if caption_check is not None and caption_check.redacted_content is not None:
+            content = caption_check.redacted_content
+        caption_annotation = (
+            trust_annotation(caption_check) if caption_check is not None else None
+        )
+        trust_notes = [
+            *([caption_annotation] if caption_annotation is not None else []),
+            *files_check.notes,
+        ]
+        if trust_notes:
+            notes_text = "\n".join(trust_notes)
+            content = f"{content}\n\n{notes_text}" if content.strip() else notes_text
+
         # Caption convention: the text rides as the caption on the first
         # attachment so "text + one image" reaches the agent as a single event;
         # remaining attachments are sent as bare media events. The first media
@@ -1322,6 +1393,25 @@ class CollaborationCore:
                 first_event_id = event_id
 
         if first_event_id is not None:
+            # As for a text-only message, the sender hears what Switch Trust
+            # did only once the message is confirmed in the room.
+            if caption_check is not None and caption_check.redacted_content is not None:
+                redaction_notice = trust_redaction_notice(caption_check)
+                if redaction_notice is not None:
+                    await self._post_trust_notice(
+                        msg, redaction_notice, AdminMessageType.TRUST_REDACTED
+                    )
+            if trust_notes:
+                flagged = files_check.flagged or (
+                    caption_check is not None and caption_check.outcome == "alerted"
+                )
+                await self._post_trust_notice(
+                    msg,
+                    "\n".join(trust_notes),
+                    AdminMessageType.TRUST_ALERTED
+                    if flagged
+                    else AdminMessageType.TRUST_ERRORED,
+                )
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
                 transport_event_id=first_event_id,
@@ -1331,10 +1421,79 @@ class CollaborationCore:
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
     ) -> None:
-        """Tell the sender's platform what Switch Trust did with their message
-        — blocked, redacted, alerted, or errored. Never lets a failed notice
-        take the inbound message down with it — mirrors
+        """Tell the sender, and only the sender, what Switch Trust did with
+        their message: blocked, redacted, flagged, or not fully checked.
+
+        Each of these is about what one person wrote, so it goes to them the
+        way the platform allows (`private_notice_delivery`). Where it has no
+        private route, or the private one fails, the notice is posted in the
+        channel and a warning says everyone there saw it: a sender left not
+        knowing their message was blocked is worse than a notice others can
+        read. In a direct conversation the channel is already private. An
+        app's post, or one from an account many people share (Telegram's
+        stand-in for anonymous admins), has no one person to reach, so its
+        notice goes straight to the channel. Never lets a failed notice take
+        the inbound message down with it, which mirrors
         `AgentCore._post_trust_blocked_notice`."""
+        delivery = self._adapter.private_notice_delivery
+        no_one_to_reach = (
+            msg.sender_is_app
+            or self._adapter.unlinkable_account_reason(msg.sender_id) is not None
+        )
+        if msg.channel_type != "direct":
+            if no_one_to_reach:
+                logger.info(
+                    "The Switch Trust %s notice for %s goes in channel %s: an "
+                    "app or a shared account has no one person to tell",
+                    message_type.value,
+                    msg.sender_name,
+                    msg.channel_id,
+                )
+            elif delivery == "in_channel":
+                logger.warning(
+                    "%s has no way to reach one person privately: posting the "
+                    "Switch Trust %s notice for %s in channel %s, where "
+                    "everyone in it sees it",
+                    self._adapter.platform_name,
+                    message_type.value,
+                    msg.sender_name,
+                    msg.channel_id,
+                )
+            else:
+                try:
+                    await self._adapter.notify_privately(
+                        channel_id=msg.channel_id,
+                        channel_name=msg.channel_name,
+                        user_id=msg.sender_id,
+                        content=body,
+                        # Where the sender is looking: their thread, or the
+                        # channel itself for a top-level message, since a
+                        # private notice opens no thread anyone would see.
+                        thread_root_id=msg.root_id,
+                    )
+                    return
+                except PrivateNoticeRefused as refused:
+                    logger.warning(
+                        "%s would not let the bot reach %s privately (%s): "
+                        "posting the Switch Trust %s notice in channel %s "
+                        "instead, where everyone in it sees it",
+                        self._adapter.platform_name,
+                        msg.sender_name,
+                        refused,
+                        message_type.value,
+                        msg.channel_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not send the Switch Trust %s notice to %s by %s: "
+                        "posting it in channel %s instead, where everyone in it "
+                        "sees it",
+                        message_type.value,
+                        msg.sender_name,
+                        delivery,
+                        msg.channel_id,
+                        exc_info=True,
+                    )
         try:
             await self._adapter.admin_message(
                 msg.channel_id,
