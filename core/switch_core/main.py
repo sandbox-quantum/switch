@@ -1801,11 +1801,11 @@ async def _seed_admin_user(
                 logger.warning(
                     "Admin user %s had no tenant membership and could not have "
                     "signed in; joined it to tenant %s.",
-                    config.gateway_admin_email,
+                    existing.id,
                     TENANT_ZERO_ID,
                 )
             else:
-                logger.info("Admin user already exists: %s", config.gateway_admin_email)
+                logger.info("Admin user already exists: %s", existing.id)
             return
 
         admin = User(
@@ -1816,7 +1816,7 @@ async def _seed_admin_user(
         )
         await user_store.create(session, admin)
         await session.commit()
-        logger.info("Seeded admin user: %s", config.gateway_admin_email)
+        logger.info("Seeded admin user: %s", admin.id)
 
 
 async def _seed_agent_registration_bootstrap_key(
@@ -1865,8 +1865,8 @@ async def _seed_agent_registration_bootstrap_key(
         admin = await user_store.get_by_email(session, config.gateway_admin_email)
         if admin is None:
             raise RuntimeError(
-                "Cannot seed agent-registration bootstrap key: admin user "
-                f"{config.gateway_admin_email} not found"
+                "Cannot seed agent-registration bootstrap key: no user has "
+                "the GATEWAY_ADMIN_EMAIL address"
             )
         admin_id = admin.id
         bootstrap_owner = await ensure_bootstrap_owner(session, user_store)
@@ -1893,13 +1893,13 @@ async def _seed_agent_registration_bootstrap_key(
             )
     if admin_owned_agents:
         logger.warning(
-            "%d agent(s) are owned by the admin user (%s) and carry "
+            "%d agent(s) are owned by the admin user (id %s) and carry "
             "admin-equivalent authority over every room and resource in "
             "this deployment, not just their own: %s. If any were "
             "registered through AGENT_REGISTRATION_TOKEN, reassign or "
             "re-register them under a non-admin owner.",
             len(admin_owned_agents),
-            config.gateway_admin_email,
+            admin_id,
             ", ".join(admin_owned_agents),
         )
 
