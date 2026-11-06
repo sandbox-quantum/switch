@@ -166,7 +166,11 @@ export const qwenAcp: AcpProviderHooks = {
     approvals: true,
     userInput: true,
   },
-  launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['--acp'], env }),
+  launch: ({ binaryPath, env }) => ({
+    command: binaryPath,
+    args: env.OPENAI_API_KEY ? ['--acp', '--auth-type=openai'] : ['--acp'],
+    env,
+  }),
   loginCommand: QWEN_LOGIN,
   // Qwen reads its provider settings from QWEN_HOME (default ~/.qwen), and
   // its built-in providers each read their own key. The OpenAI, Anthropic,
