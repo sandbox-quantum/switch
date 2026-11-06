@@ -1,31 +1,36 @@
 # Contributor Quickstart
 
-_From a fresh git clone to your first running change in 15 minutes._
+_A fast path from a fresh clone to your first running change and agent interaction._
 
-Welcome! This guide is designed for new contributors and hackathon participants. It walks you through setting up a complete local development environment, running Switch Core, launching Switch Console, talking to an agent in a room, making a code change, and submitting a pull request.
+Welcome! This guide is designed for new contributors and hackathon participants. It walks you through setting up a complete local development environment, running Switch Core, launching the Gateway and Console interfaces, talking to an agent in a room, making your first verified code change, and submitting a pull request.
+
+> **Note on Setup Time:** Downloading container images and installing npm/python dependencies depends on your internet connection speed. Once dependencies are cached, subsequent runs start in seconds.
 
 ---
 
 ## 1. Prerequisites
 
-Make sure the following tools are installed on your workstation:
+Before starting, ensure the following core tools are installed on your workstation:
 
-| Tool | Minimum Version | Installation / Verification |
-|---|---|---|
-| **Git** | 2.30+ | `git --version` |
-| **Python** | 3.12+ (3.14 supported) | Managed automatically via `uv` |
-| **uv** | 0.4+ | `curl -LsSf https://astral.sh/uv/install.sh \| sh` or `brew install uv` |
-| **Docker** | Engine 24+ & Compose v2 | [Get Docker](https://docs.docker.com/get-docker/) |
-| **Node.js & pnpm** | Node 22.13+, pnpm 10+ | `node -v` and `npm install -g pnpm` |
-| **just** | 1.14+ | `brew install just`, `cargo install just`, or `winget install Casey.Just` |
+| Tool | Minimum Version | Installation / Verification | Purpose |
+|---|---|---|---|
+| **Git** | 2.30+ | `git --version` | Version control |
+| **Python** | 3.12+ (3.14 supported) | Managed automatically via `uv` | Backend runtime |
+| **uv** | 0.4+ | `curl -LsSf https://astral.sh/uv/install.sh \| sh` or `brew install uv` | Fast Python package management |
+| **OpenSSL** | 1.1.1+ or 3.0+ | `openssl version` | Required by `just init-env` for secret generation |
+| **Docker** | Engine 24+ & Compose v2 | [Get Docker](https://docs.docker.com/get-docker/) | PostgreSQL and Mattermost containers |
+| **Node.js & pnpm** | Node 22.13+, pnpm 10+ | `node -v` and `npm install -g pnpm` | Console and Gateway frontends |
+| **just** | 1.14+ | `brew install just`, `cargo install just`, or `winget install Casey.Just` | Command runner for development recipes |
 
-> [!TIP]
-> **Windows Note on Line Endings (CRLF):**
-> Switch requires LF line endings for frontmatter and test fixtures. Before or immediately after cloning, configure:
-> ```bash
-> git config core.autocrlf false
-> git add --renormalize .
-> ```
+> [!IMPORTANT]
+> **Windows Environment Notes:**
+> - **Shell:** Always use **Git Bash** (or WSL 2) to run `just` commands, as recipes execute POSIX shell scripts (`set -euo pipefail`).
+> - **Docker Engine:** Ensure Docker Desktop is running with the **WSL 2 backend** enabled.
+> - **Line Endings (LF):** Switch requires LF line endings for test fixtures and schema files. Before cloning, configure git to keep LF line endings:
+>   ```bash
+>   git config --global core.autocrlf false
+>   ```
+>   *(If you already cloned with CRLF and experience formatting check failures across files, re-checkout files with LF: `git config core.autocrlf false && git checkout-index --force --all`).*
 
 ---
 
@@ -40,30 +45,38 @@ cd switch
 
 ### Step 2: Initialize Configuration with `just init-env`
 
-Generate your local `.env` configuration with fresh, cryptographically secure secrets:
+Generate your local `.env` configuration with fresh, cryptographically random secrets:
 
 ```bash
 just init-env
 ```
 
 > [!IMPORTANT]
-> Always use `just init-env` instead of manually copying `.env.example`. This recipe initializes unique encryption keys, session secrets, and local tenant identities required by switch-core and the database.
+> **Do not manually copy `.env.example`.** The example file intentionally leaves secret keys blank for security. `just init-env` invokes OpenSSL to generate random session secrets, database passwords, and tenant credentials. It prints your local Gateway administrator login credentials upon completion.
 
 ### Step 3: Install Core Dependencies
 
-Install Python dependencies in `core/` using `uv`:
+Install backend Python dependencies in `core/` using `uv`:
 
 ```bash
 uv sync
 ```
 
+### Step 4: Install Gateway Dependencies
+
+Install npm dependencies for the Gateway web UI:
+
+```bash
+just gateway-install
+```
+
 ---
 
-## 3. Start Supporting Services and Switch Core
+## 3. Start Infrastructure, Migrations, and Switch Core
 
-Switch development uses a hybrid architecture: infrastructure (PostgreSQL and Mattermost) runs in Docker containers, while you run `switch-core` directly on your host for instant hot-reload and fast debugging.
+Switch uses a hybrid development setup: infrastructure services (PostgreSQL and Mattermost) run inside Docker containers, while you run `switch-core` directly on your host machine for fast iteration, interactive debugging, and instant auto-reload.
 
-### Step 1: Start Docker Infrastructure
+### Step 1: Start Supporting Services
 
 ```bash
 just up
@@ -73,21 +86,43 @@ This starts:
 - **PostgreSQL** on port `5432` (database: `switch`, user: `switch`)
 - **Mattermost** on port `8065` (local collaboration bridge)
 
-### Step 2: Run Switch Core
+### Step 2: Apply Database Migrations
 
-In your first terminal, launch the backend service:
+Run Alembic migrations to bring the PostgreSQL schema up to head:
+
+```bash
+just migrate
+```
+
+*(Note: `switch-core` also checks and validates pending migrations at startup).*
+
+### Step 3: Run Switch Core
+
+In your **first terminal**, launch the backend server:
 
 ```bash
 just run
 ```
 
-`switch-core` automatically applies database migrations and starts listening on **`http://localhost:8000`**. Check `http://localhost:8000/health` in your browser to confirm it is live.
+`switch-core` starts listening on **`http://localhost:8000`**. Verify it is live by opening `http://localhost:8000/health` in your browser or running `curl http://localhost:8000/health`. You should receive `{"status":"ok"}`.
 
 ---
 
-## 4. Run Switch Console and Talk to an Agent
+## 4. Run Gateway UI and Switch Console
 
-In a **second terminal**, start the Switch Console client:
+### Step 1: Run the Gateway Web UI
+
+In a **second terminal**, start the Gateway operator dashboard:
+
+```bash
+just gateway-dev
+```
+
+The Gateway web interface runs on `http://localhost:5173`. Open it in your browser and sign in using the administrator email and password generated by `just init-env`. The Gateway allows you to inspect rooms, review active agents, manage users, and monitor broker routing.
+
+### Step 2: Launch Switch Console & Talk to an Agent
+
+In a **third terminal**, build and launch the Switch Console desktop application:
 
 ```bash
 cd console
@@ -106,22 +141,53 @@ pnpm --filter @switch-console/desktop run dev
 
 ---
 
-## 5. Where Things Live
+## 5. Make Your First Code Change
 
-| Directory | Language / Stack | Purpose |
-|---|---|---|
-| `core/switch_core/` | Python | Main service logic: addressing policies, rooms, MCP broker, connectors, and bridges. |
-| `core/tests/` | Python / pytest | Backend unit, integration, and database test suites. |
-| `console/packages/` | TypeScript / Node | Shared protocol packages (`shared`), agent providers (`agent-providers`), plugins, and headless controller (`agent-controller`). |
-| `console/apps/` | TypeScript / Electron | Switch Console desktop application. |
-| `gateway/` | TypeScript / Vite / React | Operator web dashboard for user management and room operations. |
-| `deploy/` | Docker Compose / Helm | Deployment assets for local containers and production Kubernetes clusters. |
+Here is a quick walkthrough to verify your complete code-to-test workflow:
+
+1. **Locate a file:** Open `core/switch_core/main.py` in your editor.
+2. **Make a small change:** Find the health check endpoint (around line 1280) and add a test attribute:
+   ```python
+   @agent_bridge_app.get("/health")
+   async def health_check() -> JSONResponse:
+       return JSONResponse({"status": "ok", "environment": "dev"})
+   ```
+3. **Verify hot-reload:** With `just run` running in your terminal, the server reloads automatically. Query the endpoint to see your change:
+   ```bash
+   curl http://localhost:8000/health
+   # Output: {"status":"ok","environment":"dev"}
+   ```
+4. **Run the linter and tests:**
+   ```bash
+   # Run the linter
+   just check
+
+   # Run a targeted unit test
+   just test -k test_ingress_agent_api_paths
+   ```
+5. **Revert your test edit:**
+   ```bash
+   git checkout core/switch_core/main.py
+   ```
 
 ---
 
-## 6. How to Test Your Changes
+## 6. Where Things Live
 
-Before committing changes, run the automated test and lint suites:
+| Directory | Language / Stack | Purpose |
+|---|---|---|
+| `core/switch_core/` | Python | Main backend logic: addressing policies, rooms, MCP broker, connectors, and bridges. |
+| `core/tests/` | Python / pytest | Backend unit, integration, and database test suites. |
+| `gateway/` | TypeScript / Vite / React | Operator web dashboard for room operations, agent oversight, and user administration. |
+| `console/packages/` | TypeScript / Node | Shared protocol packages (`shared`), agent providers (`agent-providers`), plugins, and headless controller (`agent-controller`). |
+| `console/apps/` | TypeScript / Electron | Switch Console desktop application. |
+| `deploy/` | Docker Compose / Helm | Deployment assets for local development containers and production Kubernetes clusters. |
+
+---
+
+## 7. How to Test Your Changes
+
+Always verify test suites and linters before committing:
 
 ### Backend Python Checks (`core/`)
 
@@ -138,7 +204,7 @@ just check
 # Automatically fix linting and formatting issues
 just format
 
-# Type check
+# Type check with mypy
 just typecheck
 ```
 
@@ -159,7 +225,7 @@ pnpm -r run lint
 
 ---
 
-## 7. Pull Request Checklist
+## 8. Pull Request Checklist
 
 Before opening your pull request on GitHub:
 
