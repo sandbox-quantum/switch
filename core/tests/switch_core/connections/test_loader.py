@@ -26,17 +26,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_its_live_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "bigquery",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "bigquery",
         "datadog",
         "github",
         "google-workspace",
@@ -46,6 +48,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["bigquery"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +179,55 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_bigquery_entry_signs_in_as_google_was_measured_to():
+    definition = CATALOG["bigquery"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Its own Google client, apart from Google Workspace's.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "BIGQUERY",
+    )
+    assert (
+        oauth.client_settings
+        != CATALOG["google-workspace"].definition.auth.oauth.client_settings
+    )  # type: ignore[union-attr]
+    # Back to Switch Console, on the fixed ports the Web client registers.
+    assert oauth.redirect == ["loopback"]
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    # Google ends the whole grant on a revocation, and hands out a refresh
+    # token only for offline access, asked with consent.
+    assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
+    assert oauth.revocation_ends_grant is True
+    assert oauth.authorization_params == {"access_type": "offline"}
+    assert oauth.prompt == "consent select_account"
+    assert definition.auth.refresh == "reusable"
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url
+        == "https://openidconnect.googleapis.com/v1/userinfo"
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("bigquery", "https://bigquery.googleapis.com/mcp")
+    ]
+    # One scope, so one level, read and write: both name the same scopes, and
+    # the description says it can change data.
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == definition.access.write.scopes
+    assert f"{GOOGLE}bigquery" in (definition.access.write.scopes or [])
+    assert "changes data" in definition.description
+    skill = CATALOG["bigquery"].skill_files["SKILL.md"]
+    assert "This connection can write." in skill
+    assert "execute_sql_readonly" in skill
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
