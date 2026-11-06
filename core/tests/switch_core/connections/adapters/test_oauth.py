@@ -220,6 +220,38 @@ class TestSignIn:
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("1001", "1001")
 
+    async def test_asks_with_a_get_and_no_body_by_default(self, vendor) -> None:
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        assert vendor.identity_requests == [("GET", None, b"")]
+
+    async def test_a_post_without_a_body_sends_nothing_but_the_token(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(
+            vendor, STATIC.replace("    method: GET\n", "    method: POST\n")
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        assert vendor.identity_requests == [("POST", None, b"")]
+
+    async def test_a_post_with_a_body_sends_it_as_json(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    method: GET\n",
+                "    method: POST\n    body: { include: [email] }\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        [(method, content_type, body)] = vendor.identity_requests
+        assert (method, content_type) == ("POST", "application/json")
+        assert json.loads(body) == {"include": ["email"]}
+        assert (secret.access_token or "") not in body.decode()
+
     async def test_an_account_without_an_id_is_refused(self, vendor) -> None:
         vendor.account = {"email": "ada@example.test"}
         adapter, _ = _adapter(vendor)

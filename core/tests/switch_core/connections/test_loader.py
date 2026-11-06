@@ -547,6 +547,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -589,6 +590,56 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.level_tools("write") == []
 
 
+@pytest.mark.parametrize(
+    ("identity", "method", "body"),
+    [
+        ("    method: POST\n", "POST", None),
+        (
+            "    method: POST\n    body: { include: [email] }\n",
+            "POST",
+            {"include": ["email"]},
+        ),
+    ],
+    ids=["post-without-body", "post-with-body"],
+)
+def test_reads_an_identity_with_a_post(catalog_copy, identity, method, body):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("    method: GET\n", identity),
+    )
+    read = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert read is not None
+    assert (read.method, read.body) == (method, body)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("    method: GET\n", "", "method"),
+        ("    method: GET\n", "    method: PUT\n", "method"),
+        (
+            "    method: GET\n",
+            "    method: GET\n    body: { include: [email] }\n",
+            "only a POST identity call sends a body",
+        ),
+    ],
+    ids=["no-method", "unknown-method", "get-with-body"],
+)
+def test_rejects_an_identity_call_that_is_not_get_or_post(
+    catalog_copy, old, new, message
+):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+def test_every_shipped_oauth_entry_names_its_identity_method():
+    for entry in CATALOG.values():
+        identity = entry.definition.auth.identity
+        if identity is not None:
+            assert identity.method in ("GET", "POST")
+
+
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     _write_example(
         catalog_copy,
@@ -629,7 +680,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
