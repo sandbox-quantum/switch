@@ -344,6 +344,19 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **Tool input and output in chat, per room.** A room owner or workspace
+  admin can turn on "Show tool input and output in chat" in the room's
+  settings in the gateway. While it is on, a finished tool call carries its
+  input and output, redacted and cut down by the agent's host, and the chat
+  shows them on demand: in the step's card in Slack's collapsed plan, and in
+  the activity view on Mattermost and Discord. Teams and Telegram show none.
+  It is off by default, and switch-core checks it every time detail is stored
+  or read, so a host that has not heard of a switch-off cannot publish into
+  the room. Switching off only drops the setting: stored detail is kept and
+  hidden from every read while the switch is off, and messages already posted
+  are not edited. A room's read and update (`GET` and
+  `PATCH /gateway/rooms/{id}`) carry `show_tool_io`, and a tool-activity row
+  takes an optional `tool_io` (#803).
 
 #### Changed
 - **Removing a member hands what they own to an admin.** Their rooms,
@@ -2616,7 +2629,25 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Security
+- **The desktop log masks more secrets.** Its secret patterns moved to
+  `@switch-console/shared`, where the tool detail below uses them too, and
+  were fixed on the way: Basic credentials in an `Authorization` header,
+  quoted values, values inside escaped JSON, and patterns that took quadratic
+  time on hostile input, which now take linear time.
+
 #### Added
+- **Agent hosts send a tool call's input and output to rooms that show
+  them.** When a tool call finishes, the host attaches a redacted copy of its
+  input and output to the step: at most 2,000 characters in all and 500 for
+  the input, with a note at each cut, and for a long output the whole lines
+  kept at its start and end. It masks the log's secret patterns, credentials in
+  URLs, the session's redaction list, and the secrets the host hands the
+  agent and its MCP servers (secret-named environment values and MCP
+  `Authorization` headers). The session itself never carries it, and
+  switch-core shows it only in a room that has "Show tool input and output in
+  chat" turned on. A server too old to take it answers 422, and the host
+  sends the step again without it (#803).
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
