@@ -2,6 +2,7 @@ from collections.abc import Collection
 from datetime import datetime
 
 from sqlalchemy import (
+    ColumnElement,
     bindparam,
     func,
     or_,
@@ -328,8 +329,10 @@ class MessageStore:
         *,
         thread_root_event_id: str,
         limit: int,
+        before_seq: int | None = None,
     ) -> list[Message]:
-        """A thread's newest messages, its root included, newest first."""
+        """A thread's newest messages, its root included, newest first; only
+        those written before `before_seq` when it is given."""
         result = await session.execute(
             select(Message)
             .where(
@@ -338,6 +341,7 @@ class MessageStore:
                     Message.thread_root_event_id == thread_root_event_id,
                     Message.transport_event_id == thread_root_event_id,
                 ),
+                *_before(before_seq),
             )
             .order_by(Message.seq.desc())
             .limit(limit)
@@ -345,15 +349,22 @@ class MessageStore:
         return list(result.scalars().all())
 
     async def list_top_level_newest_first(
-        self, session: AsyncSession, room_id: str, *, limit: int
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        limit: int,
+        before_seq: int | None = None,
     ) -> list[Message]:
-        """The room's newest top-level messages, newest first. Replies inside
-        threads are left out."""
+        """The room's newest top-level messages, newest first; only those
+        written before `before_seq` when it is given. Replies inside threads
+        are left out."""
         result = await session.execute(
             select(Message)
             .where(
                 Message.room_id == room_id,
                 Message.thread_root_event_id.is_(None),
+                *_before(before_seq),
             )
             .order_by(Message.seq.desc())
             .limit(limit)
@@ -434,3 +445,8 @@ _ROOM_HEAD = RawStatement(
         Message.room_id == bindparam("room_id")
     )
 )
+
+
+def _before(seq: int | None) -> list[ColumnElement[bool]]:
+    """The condition keeping rows written before `seq`; none when not given."""
+    return [] if seq is None else [Message.seq < seq]

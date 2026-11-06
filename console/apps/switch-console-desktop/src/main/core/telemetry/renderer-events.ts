@@ -5,6 +5,7 @@ import { ALL_COMMAND_DEFS, type CommandId } from '@shared/commands';
 import { ONBOARDING_STEP_IDS } from '@shared/core/onboarding/checklist';
 import { ADD_SERVER_CHOICES, ADD_SERVER_STEPS } from '@shared/core/switch-servers/add-server-steps';
 import { VIEW_IDS } from '@shared/core/views/view-ids';
+import { noteBuddyStep } from './activation';
 import type { TelemetryEventMap, TelemetryEventName } from './events';
 import { telemetryService, trackEvent } from './telemetry-service';
 
@@ -246,6 +247,8 @@ export function trackFromRenderer(request: RendererTelemetryRequest): void {
   }
 
   const properties = parsed.data as TelemetryEventMap[RendererTelemetryEvent];
+  if (request.name === 'buddy_step')
+    noteBuddyStep((properties as TelemetryEventMap['buddy_step']).action);
   if (!ONCE_PER_INSTALL.has(request.name)) {
     trackEvent(request.name, properties);
     return;

@@ -217,7 +217,11 @@ const RoomStateDisclosure = observer(function RoomStateDisclosure() {
   if (failed.length === 0 && unknownMemberships === 0) return null;
 
   const reasons: string[] = [];
-  if (failed.length > 0) reasons.push(`couldn’t reach ${failed.map((s) => s.name).join(', ')}`);
+  if (failed.length > 0) {
+    reasons.push(
+      `couldn’t get them from your Switch server (${failed.length === 1 ? 'workspace' : 'workspaces'} ${failed.map((s) => `“${s.name}”`).join(', ')})`
+    );
+  }
   if (unknownMemberships > 0) {
     reasons.push(
       `${unknownMemberships} ${unknownMemberships === 1 ? 'agent’s' : 'agents’'} rooms didn’t load`

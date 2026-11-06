@@ -1224,7 +1224,9 @@ class ManagementService:
         if check_placement:
             # Placing an agent on a sleeping Switch cloud machine wakes it.
             machine = (
-                await wake_controller_machine(session, controller.id, self.now())
+                await wake_controller_machine(
+                    session, controller.id, self.now(), "agent_placed"
+                )
                 if controller.kind == "ec2"
                 else None
             )

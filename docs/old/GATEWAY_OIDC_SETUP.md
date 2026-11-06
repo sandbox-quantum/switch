@@ -211,7 +211,7 @@ An invitation addressed to an e-mail can be accepted only by someone signed in
 with that address. Each workspace may send at most
 `GATEWAY_INVITE_EMAILS_PER_DAY` addressed invitations in 24 hours; past that
 the dashboard asks the admin to try tomorrow or share a link. This matters
-with `open` sign-up, where anyone can own a workspace and would otherwise be
+with `open` sign-up, where anyone can create a workspace and would otherwise be
 able to use your relay to mail any address. Operators are exempt, and link
 invitations are not counted.
 
