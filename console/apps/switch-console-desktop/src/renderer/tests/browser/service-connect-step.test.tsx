@@ -199,9 +199,12 @@ it('counts a cancel of a sign-in the server already dropped as cancelled', async
 
 const CHOOSING: ConnectionCatalogEntry = { ...EXAMPLE, access_levels: ['read', 'write'] };
 
-function level(label: RegExp): HTMLButtonElement {
-  const option = [...document.querySelectorAll<HTMLButtonElement>('button[role="radio"]')].find(
-    (b) => label.test(b.closest('label')?.textContent ?? '')
+const RADIOS = '[role="radio"]';
+
+/** The radio whose accessible name (its aria-labelledby label) matches. */
+function level(label: RegExp): HTMLElement {
+  const option = [...document.querySelectorAll<HTMLElement>(RADIOS)].find((r) =>
+    label.test(document.getElementById(r.getAttribute('aria-labelledby') ?? '')?.textContent ?? '')
   );
   if (!option) throw new Error(`no access option matching ${label}`);
   return option;
@@ -219,7 +222,7 @@ function chooser() {
 
 it('offers no choice of access for a service that has none', async () => {
   await render(connectStep());
-  expect(document.querySelectorAll('button[role="radio"]')).toHaveLength(0);
+  expect(document.querySelectorAll(RADIOS)).toHaveLength(0);
 });
 
 it('chooses nothing for the person, and will not connect until they have', async () => {
