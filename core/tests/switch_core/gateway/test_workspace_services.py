@@ -255,6 +255,7 @@ class TestResults:
             "google-workspace",
             "linear",
             "notion",
+            "pagerduty",
             "sentry",
         }
         assert services["datadog"] == {
