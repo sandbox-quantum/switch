@@ -329,11 +329,20 @@ class TestTheConnectForm:
 # ── Credentials and failures ──────────────────────────────────────────────────
 
 
-def token_described(app_id: str = APP_ID, *, is_valid: bool = True) -> Handler:
+def token_described(
+    app_id: str = APP_ID,
+    *,
+    is_valid: bool = True,
+    scopes: tuple[str, ...] = (
+        "whatsapp_business_messaging",
+        "whatsapp_business_management",
+    ),
+) -> Handler:
     data: dict[str, Any] = {
         "app_id": app_id,
         "type": "SYSTEM_USER",
         "is_valid": is_valid,
+        "scopes": list(scopes),
     }
     if not is_valid:
         data["error"] = {"code": 190, "message": "Session has expired"}
@@ -376,6 +385,21 @@ class TestCredentialsAreCheckedBeforeSaving:
             await WhatsAppAdapter.verify_credentials(dict(CONFIG))
 
         assert f"issued for Meta app 999, not app {APP_ID}" in str(caught.value)
+
+    async def test_a_token_that_cannot_send_messages_is_refused(
+        self, graph: FakeGraph
+    ) -> None:
+        graph.on(
+            "GET",
+            f"{API}/debug_token",
+            token_described(scopes=("whatsapp_business_management",)),
+        )
+        graph.on("GET", f"{API}/{PHONE_NUMBER_ID}", phone_number_read)
+
+        with pytest.raises(BridgeCredentialError) as caught:
+            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+
+        assert "whatsapp_business_messaging" in str(caught.value)
 
     async def test_an_expired_token_fails_with_metas_explanation(
         self, graph: FakeGraph
@@ -860,6 +884,29 @@ class TestInboundMessages:
         (sent,) = graph.sends()
         assert sent["recipient"] == "US.13491208655302741918"
         assert "to" not in sent
+
+    async def test_a_chat_keyed_by_phone_number_keeps_it_once_a_scoped_id_arrives(
+        self, adapter: WhatsAppAdapter, heard: Heard
+    ) -> None:
+        payload = envelope(
+            {
+                "contacts": [{"wa_id": PERSON, "profile": {"name": "Ada"}}],
+                "messages": [
+                    {
+                        "from": PERSON,
+                        "from_user_id": "US.13491208655302741918",
+                        "id": "wamid.in10",
+                        "timestamp": "1761700000",
+                        "type": "text",
+                        "text": {"body": "hello"},
+                    }
+                ],
+            }
+        )
+
+        await deliver(adapter, payload)
+
+        assert heard.messages[0].channel_id == PERSON
 
     async def test_a_status_callback_dispatches_nothing(
         self, adapter: WhatsAppAdapter, heard: Heard, graph: FakeGraph
