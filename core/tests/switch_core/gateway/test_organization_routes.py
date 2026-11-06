@@ -1425,6 +1425,8 @@ class TestTheLastOrgAdminUnderARace:
 
         assert response.status_code == 409, response.text
         assert "last organization admin" in response.json()["detail"]
+        # Said, since the refusal does not give back what was ended first.
+        assert "has already been taken away" in response.json()["detail"]
         async with session_factory() as session:
             assert await OrganizationStore().count_admins(session, organization_id) == 1
 
@@ -1458,6 +1460,8 @@ class TestTheLastOrgAdminUnderARace:
 
         assert response.status_code == 409, response.text
         assert "last organization admin" in response.json()["detail"]
+        # Said, since the refusal does not give back what was ended first.
+        assert "has already been taken away" in response.json()["detail"]
         async with session_factory() as session:
             assert await OrganizationStore().count_admins(session, organization_id) == 1
 

@@ -360,6 +360,26 @@ class World:
 
         return str(await self._once("readable_room", make))
 
+    async def direct_room(self) -> str:
+        """A DM the bridge adopted: anyone may read it, and its owner and
+        admins write to it, but nobody changes who is in it from outside."""
+
+        async def make(session: AsyncSession) -> str:
+            room = Room(
+                transport_room_id=f"!{self.name('direct-room')}:test",
+                name=self.name("direct-room"),
+                description="",
+                owner_id=self.owner_id,
+                read_visibility="public",
+                write_visibility="private",
+                channel_type="direct",
+            )
+            session.add(room)
+            await session.flush()
+            return room.id
+
+        return str(await self._once("direct_room", make))
+
     async def room_document_itself(self) -> str:
         """A document of the room's own, as an agent writes one there."""
         room_id = await self.room()

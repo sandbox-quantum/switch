@@ -79,6 +79,7 @@ from switch_core.gateway.schemas import (
 )
 from switch_core.gateway.templates import readable_template
 from switch_core.room_service import (
+    FIXED_MEMBERSHIP,
     MembershipFixed,
     RoleSpec,
     RoomCreateConfig,
@@ -264,7 +265,15 @@ async def _build_room_detail(
         can_manage=can(principal, "delete", room),
         can_unlink=can_unlink_from_room(principal, takes_part=takes_part),
         can_transfer=_can_transfer(principal, room),
+        can_change_members=_can_change_members(principal, room),
     )
+
+
+def _can_change_members(principal: Principal, room: Room) -> bool:
+    """Whether `principal` may add and remove the room's agents and people
+    through these routes: write access, unless it is a direct or group
+    conversation (`_refuse_fixed_membership`)."""
+    return can(principal, "write", room) and room.channel_type not in FIXED_MEMBERSHIP
 
 
 def _can_transfer(principal: Principal, room: Room) -> bool:
@@ -418,6 +427,7 @@ async def list_rooms(
                     principal, takes_part=room.id in involved
                 ),
                 can_transfer=_can_transfer(principal, room),
+                can_change_members=_can_change_members(principal, room),
             )
         )
 

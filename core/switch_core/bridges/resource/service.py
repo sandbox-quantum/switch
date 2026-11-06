@@ -990,12 +990,13 @@ class ResourceService:
         doc = await self._documents.get(session, document_id)
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
+        # First, so whoever may not read it is not told what it is.
+        require(Principal(user_id, is_admin), "read", doc)
         if doc.room_id is not None:
             raise ValueError(
                 f"Document {document_id} is room-scoped and cannot be attached "
                 "to another room"
             )
-        require(Principal(user_id, is_admin), "read", doc)
         if await self._documents.attach_to_room(session, room_id, document_id):
             emit_safely(self._telemetry, "document_attached_to_room", {})
 
@@ -1514,12 +1515,13 @@ class ResourceService:
         doc = await self._documents.get(session, document_id)
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
+        # As for a reference: adding it shows it to every reader of the package.
+        # First, so whoever may not read it is not told what it is.
+        require(Principal(user_id, is_admin), "read", doc)
         if doc.room_id is not None:
             raise ValueError(
                 f"Document {document_id} is room-scoped and cannot be added to a package"
             )
-        # As for a reference: adding it shows it to every reader of the package.
-        require(Principal(user_id, is_admin), "read", doc)
         if not can(Principal(pkg.owner_id, False), "read", doc):
             raise PermissionError(
                 f"Package owner cannot include private document {document_id}"

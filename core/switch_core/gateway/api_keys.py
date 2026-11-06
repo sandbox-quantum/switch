@@ -46,6 +46,19 @@ def _key_type(value: str) -> str:
 router = APIRouter()
 
 
+async def _signed_in_with(session: AsyncSession, keys: list[ApiKey]) -> set[str]:
+    """Which of `keys` an agent still signs in with: its own key, which goes
+    with it (`authz.can_delete_api_key`)."""
+    agent_keys = [k.id for k in keys if k.type == "agent"]
+    if not agent_keys:
+        return set()
+    return set(
+        await session.scalars(
+            select(Agent.api_key_id).where(Agent.api_key_id.in_(agent_keys))
+        )
+    )
+
+
 @router.get("")
 async def list_api_keys(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -59,16 +72,7 @@ async def list_api_keys(
         for k in await api_key_store.get_by_user(session, user.id)
         if k.type not in HASH_ONLY_KEY_TYPES
     ]
-    agent_keys = [k.id for k in keys if k.type == "agent"]
-    signed_in_with = (
-        set(
-            await session.scalars(
-                select(Agent.api_key_id).where(Agent.api_key_id.in_(agent_keys))
-            )
-        )
-        if agent_keys
-        else set()
-    )
+    signed_in_with = await _signed_in_with(session, keys)
     # The caller's own keys, whatever their role: administering the workspace
     # gives no reach over anyone's keys here.
     principal = Principal(user.id, False)
@@ -168,10 +172,13 @@ async def delete_api_key(
     key = await api_key_store.get(session, key_id)
     if key is None or key.type in HASH_ONLY_KEY_TYPES:
         raise HTTPException(status_code=404, detail="API key not found")
-    if key.user_id != user.id:
+    principal = Principal(user.id, False)
+    if not owns(principal, key.user_id):
         raise HTTPException(status_code=403, detail="Not authorized to delete this key")
-    if key.type == "agent" and await session.scalar(
-        select(Agent.id).where(Agent.api_key_id == key.id)
+    if not can_delete_api_key(
+        principal,
+        key.user_id,
+        an_agent_signs_in_with_it=key.id in await _signed_in_with(session, [key]),
     ):
         # The agent row refers to it, so deleting it would fail anyway.
         raise HTTPException(

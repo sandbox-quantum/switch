@@ -80,10 +80,12 @@ version of their own to them without also giving them a release of their own.
   is writable by every member, so anyone could put their own agent in someone
   else's DM and have it receive their messages. The room routes now refuse
   adding or removing with a 409, as do `invite_agent_to_room`,
-  `add_users_to_room` and `remove_agent_from_room`. The people in the
-  conversation still invite and remove agents with `!invite-agent` and
-  `!remove-agent`, and a Switch Console chat still changes its own through
-  its chat routes.
+  `add_users_to_room` and `remove_agent_from_room`, and a template whose new
+  agent joins one is refused before anything is made. Rooms carry
+  `can_change_members`, false for one, and Switch Console no longer offers
+  it. The people in the conversation still invite and remove agents with
+  `!invite-agent` and `!remove-agent`, and a Switch Console chat still
+  changes its own through its chat routes.
 - **Adding to a package takes being able to read what is added.** Only the
   package owner's reading was checked, and a package lists what it holds to
   everyone who may read it, so someone who could edit a publicly writable
@@ -194,7 +196,8 @@ version of their own to them without also giving them a release of their own.
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
   - references, reference types, documents and packages carry `can_edit` and
-    `can_manage`, and documents and rooms `can_transfer`;
+    `can_manage`, documents and rooms `can_transfer`, and rooms
+    `can_change_members`;
   - agents carry `can_edit_options`, `can_rename`, `can_transfer` with
     `transfer_blocked_reason`, and, on their detail, `can_change_manage_agents`
     and `can_grant_services`; an agent's sub-agents carry them too;
@@ -2760,6 +2763,10 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Direct and group conversations no longer offer adding or removing
+  agents**, in a room's side column, the sidebar or an agent's "Add to rooms",
+  where the server refuses it now that their platform decides who is in them.
+  People in the conversation still use `!invite-agent` and `!remove-agent`.
 - **Antigravity runs Google's own `agy` CLI, on Windows too.** Switch Console
   finds `agy` (including `%LOCALAPPDATA%\agy\bin` on Windows), installs it with
   Google's installers, runs sessions with `agy acp`, and checks the sign-in you

@@ -568,10 +568,9 @@ carrying a display name addresses no one.
   on bridged Slack, Discord and Telegram channels; Telegram registers it as
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
-  the bot asks for the one it needs and runs when you reply with it. In a
-  direct or group conversation it is refused, as `add_users_to_room` and
-  `remove_agent_from_room` are: its platform fixes who is in it, so the people
-  there use the commands instead.
+  the bot asks for the one it needs and runs when you reply with it. The tool
+  is refused in a direct or group conversation, whose platform fixes who is in
+  it; the command still works there, and is how the people in it add an agent.
 - **`remove_agent_from_room`** — take an agent out of a room by name, the
   opposite of `invite_agent_to_room`; any session it had there is
   disconnected. You need not be in the room. Allowed when you may address
@@ -580,7 +579,8 @@ carrying a display name addresses no one.
   Confirm with the person asking before removing anything. People do the same
   in a room with `!remove-agent @agent-name` (a slash command where
   `/invite-agent` is one, `/remove_agent` on Telegram), which a workspace admin
-  may use on any agent.
+  may use on any agent. As with inviting, the tool is refused in a direct or
+  group conversation, where the command still works.
 - **`add_users_to_room`** — add human users to an existing room, the
   counterpart to `invite_agent_to_room`. Name each person by their username on
   the room's messaging app, or the e-mail address of their account there (not
@@ -588,7 +588,8 @@ carrying a display name addresses no one.
   `get_my_context`; for anyone else, ask. Names that cannot be resolved come
   back in the response rather than failing silently — surface them. The same
   goes for `create_room`'s `user_names`, whose misses come back in
-  `failed_attachments`.
+  `failed_attachments`. Refused in a direct or group conversation, as
+  inviting an agent is.
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.

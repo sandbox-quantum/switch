@@ -413,15 +413,10 @@ async def disconnect_install(
     await session.commit()
     logger.info("User %s disconnected messaging install %s", user.id, install_id)
     # Ended, so it has let go of whatever it was called, and a chat has let go
-    # of its room, which may leave it an admin's.
+    # of its room (`chat_rooms`), which may leave it an admin's.
     return _installed(
         ended,
         None,
-        can_disconnect=_disconnect_refusal(
-            installs,
-            ended.platform,
-            (await installs.chat_rooms(session)).get(install_id),
-            principal,
-        )
+        can_disconnect=_disconnect_refusal(installs, ended.platform, None, principal)
         is None,
     )

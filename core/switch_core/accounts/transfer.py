@@ -446,9 +446,7 @@ async def hand_over_everything(
             )
         )
         for row in rows:
-            if isinstance(row, Room) and "chat_operation_id" in (row.metadata_ or {}):
-                continue
-            if isinstance(row, Document) and row.room_id is not None:
+            if isinstance(row, (Room, Document)) and kind_refusal(row) is not None:
                 continue
             if isinstance(row, Template):
                 if not await _template_passes(session, row, heir_id):

@@ -171,6 +171,35 @@ CHECKS: dict[str, Check] = {
                 _get(f"{G}/rooms/{{readable_room}}"),
                 _transfer("room", "{readable_room}"),
             ),
+            Check(
+                "can_change_members",
+                _get(f"{G}/rooms/{{readable_room}}"),
+                _act(
+                    "POST",
+                    f"{G}/rooms/{{readable_room}}/agents",
+                    {"agent_ids": ["{agent}"]},
+                ),
+            ),
+        ],
+        "a direct conversation": [
+            Check(
+                "can_change_members",
+                _get(f"{G}/rooms/{{direct_room}}"),
+                act,
+                refused=REFUSED | {409},
+            )
+            for act in (
+                _act(
+                    "POST",
+                    f"{G}/rooms/{{direct_room}}/agents",
+                    {"agent_ids": ["{agent}"]},
+                ),
+                _act(
+                    "POST",
+                    f"{G}/rooms/{{direct_room}}/users",
+                    {"user_names": ["someone"]},
+                ),
+            )
         ],
         "a chat": [
             Check(

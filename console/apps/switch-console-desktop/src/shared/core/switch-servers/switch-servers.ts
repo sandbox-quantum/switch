@@ -367,7 +367,12 @@ export type RemoteRoomSummary = {
    * by the rules its routes enforce. Absent from a server that does not say,
    * where Console works it out the same way (`roomPermissionsFor`).
    */
-  serverPermissions?: { canWrite: boolean; canManage: boolean; canUnlink: boolean };
+  serverPermissions?: {
+    canWrite: boolean;
+    canChangeMembers: boolean;
+    canManage: boolean;
+    canUnlink: boolean;
+  };
   /** The messaging app connection it is on, when the server says (the list does). Unlike
    * the display name, it tells two connections to the same platform apart. */
   bridgeId?: string | null;

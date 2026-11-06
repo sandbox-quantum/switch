@@ -93,12 +93,16 @@ class RoomSummary(BaseModel):
     is_console_chat: bool = False
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. `can_write` covers its settings, roles,
-    # participants, links and attaching resources; `can_manage` (owner or
-    # tenant admin) covers its access, deleting it and taking the platform
-    # channel's name; `can_unlink` (taking part in it, or tenant admin) covers
-    # unlinking a reference, document or package from it; `can_transfer` is
-    # `can_manage` for anything but a chat, which stays with its people.
+    # links and attaching resources; `can_change_members` covers adding and
+    # removing its agents and people, which is `can_write` unless it is a
+    # direct or group conversation, whose platform fixes who is in it;
+    # `can_manage` (owner or tenant admin) covers its access, deleting it and
+    # taking the platform channel's name; `can_unlink` (taking part in it, or
+    # tenant admin) covers unlinking a reference, document or package from it;
+    # `can_transfer` is `can_manage` for anything but a chat, which stays with
+    # its people.
     can_write: bool
+    can_change_members: bool
     can_manage: bool
     can_unlink: bool
     can_transfer: bool

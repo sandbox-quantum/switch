@@ -1396,12 +1396,12 @@ async def list_members(
     organization_roles: dict[str, str] = {}
     organization_admins: list[tuple[User, OrganizationMember]] = []
     if tenant is not None and tenant.organization_id is not None:
-        for user, member in await organization_store.list_members(
+        for person, member in await organization_store.list_members(
             session, tenant.organization_id
         ):
-            organization_roles[user.id] = member.role
+            organization_roles[person.id] = member.role
             if member.role == ORGANIZATION_ADMIN_ROLE:
-                organization_admins.append((user, member))
+                organization_admins.append((person, member))
     members = await user_store.list_tenant_members(session)
     roster = [
         _member_detail(

@@ -796,7 +796,12 @@ async def update_organization_member_role(
         except ServiceError as error:
             return service_refusal(error)
         if await organization_store.lock_admins(session, organization_id) <= 1:
-            raise last_admin
+            # Another admin stepped down meanwhile, after this one's access was
+            # ended, which the refusal does not give back.
+            raise HTTPException(
+                status_code=409,
+                detail=f"{last_admin.detail}. {_ACCESS_ALREADY_ENDED}",
+            )
         member = await session.get(
             OrganizationMember, (organization_id, user_id), populate_existing=True
         )
@@ -952,6 +957,12 @@ async def remove_organization_member(
     if member is None:
         raise HTTPException(status_code=404, detail="Not a member of this organization")
     if member.role == ORGANIZATION_ADMIN_ROLE and admins <= 1:
+        if was_admin:
+            # As for a demotion: their access was ended on the way.
+            raise HTTPException(
+                status_code=409,
+                detail=f"{last_admin.detail}. {_ACCESS_ALREADY_ENDED}",
+            )
         raise last_admin
     await _ask_directory(
         organization_directory.remove,
