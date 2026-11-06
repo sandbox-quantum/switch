@@ -13,6 +13,7 @@ import {
   DeleteLibraryItemModal,
   NewLibraryItemModal,
 } from '@renderer/features/library/library-modals';
+import { ReferenceTypeModal } from '@renderer/features/library/reference-types';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
@@ -90,6 +91,10 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   deleteLibraryItemModal: createModal(DeleteLibraryItemModal, { size: 'sm' }),
+  referenceTypeModal: createModal(ReferenceTypeModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),
   renameAgentModal: createModal(RenameAgentModal, { size: 'sm', dismissOnOutsideClick: false }),
   removeAgentConfigModal: createModal(RemoveAgentConfigModal, { size: 'sm' }),

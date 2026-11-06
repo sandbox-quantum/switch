@@ -115,6 +115,10 @@ import {
   addPackageMember,
   fetchPackageMembers,
   removePackageMember,
+  createReferenceType,
+  deleteReferenceType,
+  fetchManagedReferenceTypes,
+  updateReferenceType,
 } from '@main/core/switch-servers/library-client';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
@@ -153,7 +157,10 @@ import type {
   LibraryItemRoom,
   LibraryKind,
   PackageMemberKind,
+  ManagedReferenceType,
   PackageMemberRemoval,
+  ReferenceTypeChanges,
+  ReferenceTypeInput,
   ReferenceTypeOption,
 } from '@shared/core/switch-servers/library';
 import type {
@@ -1194,6 +1201,33 @@ export const workspacesController = createRPCController({
   /** The types a new reference may be given. */
   listReferenceTypes: (params: { workspaceId: string }): Promise<ReferenceTypeOption[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchReferenceTypes(server)),
+
+  /** The reference types the signed-in person may change. */
+  listManagedReferenceTypes: (params: { workspaceId: string }): Promise<ManagedReferenceType[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchManagedReferenceTypes(server)),
+
+  /** Add, change or delete a reference type. Refusals propagate in the gateway's words. */
+  createReferenceType: (params: {
+    workspaceId: string;
+    input: ReferenceTypeInput;
+  }): Promise<ManagedReferenceType> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createReferenceType(server, params.input)
+    ),
+
+  updateReferenceType: (params: {
+    workspaceId: string;
+    type: string;
+    changes: ReferenceTypeChanges;
+  }): Promise<ManagedReferenceType> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateReferenceType(server, params.type, params.changes)
+    ),
+
+  deleteReferenceType: (params: { workspaceId: string; type: string }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteReferenceType(server, params.type)
+    ),
 
   /** The rooms a room points at. */
   listLinkedRooms: (params: { workspaceId: string; roomId: string }): Promise<LinkedRoom[]> =>

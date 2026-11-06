@@ -26,6 +26,10 @@ const {
   addPackageMember,
   fetchPackageMembers,
   removePackageMember,
+  createReferenceType,
+  deleteReferenceType,
+  fetchManagedReferenceTypes,
+  updateReferenceType,
 } = await import('./library-client');
 
 const SERVER = {
@@ -204,9 +208,11 @@ describe('reading the library', () => {
     expect(types[2]).toEqual({
       type: 'wiki',
       displayName: 'Wiki',
+      instructions: '',
       valueHint: 'Pages',
       isBuiltin: false,
       ownerName: 'Bo',
+      ownerId: null,
     });
   });
 });
@@ -364,5 +370,74 @@ describe('packages', () => {
       affectedRoomNames: [],
       hiddenAffectedRoomsCount: 0,
     });
+  });
+});
+
+describe('reference types', () => {
+  const OWNED = {
+    type: 'linear',
+    display_name: 'Linear',
+    instructions: 'Use the Linear connector.',
+    value_schema: {},
+    value_hint: 'Issue links',
+    is_builtin: false,
+    owner_id: 'u1',
+    owner_name: 'Ada',
+    read_visibility: 'public',
+    write_visibility: 'private',
+    shadowed_by_builtin: false,
+    created_at: '2026-11-05T09:00:00+00:00',
+  };
+
+  it('reads the types the viewer may change, with their access', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse([OWNED]));
+    const [type] = await fetchManagedReferenceTypes(SERVER);
+    expect(lastCall().url).toMatch(/\/gateway\/references\/reference-types\/owned$/);
+    expect(type).toMatchObject({
+      type: 'linear',
+      displayName: 'Linear',
+      instructions: 'Use the Linear connector.',
+      ownerId: 'u1',
+      readVisibility: 'public',
+      writeVisibility: 'private',
+      shadowedByBuiltin: false,
+    });
+  });
+
+  it('creates one with its slug, and changes only what is given', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse(OWNED));
+    await createReferenceType(SERVER, {
+      type: 'linear',
+      displayName: 'Linear',
+      instructions: 'Use the Linear connector.',
+      valueHint: 'Issue links',
+      readVisibility: 'public',
+      writeVisibility: 'private',
+    });
+    expect(lastCall()).toEqual({
+      url: expect.stringMatching(/\/gateway\/references\/reference-types$/),
+      method: 'POST',
+      body: {
+        type: 'linear',
+        display_name: 'Linear',
+        instructions: 'Use the Linear connector.',
+        value_hint: 'Issue links',
+        read_visibility: 'public',
+        write_visibility: 'private',
+      },
+    });
+    await updateReferenceType(SERVER, 'linear', { valueHint: 'Links to issues' });
+    expect(lastCall()).toEqual({
+      url: expect.stringMatching(/\/reference-types\/linear$/),
+      method: 'PATCH',
+      body: { value_hint: 'Links to issues' },
+    });
+  });
+
+  it('deletes one by its slug', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ deleted_type: 'linear' }));
+    await deleteReferenceType(SERVER, 'linear');
+    expect(lastCall()).toMatchObject({ method: 'DELETE' });
+    expect(lastCall().url).toMatch(/\/reference-types\/linear$/);
   });
 });
