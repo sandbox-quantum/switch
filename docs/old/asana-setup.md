@@ -156,8 +156,8 @@ agents' next token requests:
   metadata. The server's protected-resource metadata identifies
   `https://mcp.asana.com/v2/mcp` as its resource, while Asana's integration
   guide gives `https://mcp.asana.com/v2` as an optional resource example.
-  A real V2 app accepted the advertised resource during a successful
-  connection on 2026-11-06, using commit `8d80e4ea`.
+  A V2 app connected successfully on 2026-11-06 at `8d80e4ea`; the
+  resource value sent in that exchange was not captured.
 
 ## An organization's own Asana app
 
