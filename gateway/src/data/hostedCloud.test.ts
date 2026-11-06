@@ -100,6 +100,23 @@ describe("the owner routes", () => {
     );
   });
 
+  it("never shows a deleted box, as Console doesn't", async () => {
+    vi.stubGlobal(
+      "fetch",
+      answer({ available: true, machines: [{ ...summary, state: "deleted", desired_state: "deleted" }] }),
+    );
+    expect(await fetchCloudMachine()).toBeNull();
+    // A newer box after a deleted one is the one shown.
+    vi.stubGlobal(
+      "fetch",
+      answer({
+        available: true,
+        machines: [{ ...summary, machine_id: "old", state: "deleted" }, { ...summary, machine_id: "new" }],
+      }),
+    );
+    expect((await fetchCloudMachine())?.machine_id).toBe("new");
+  });
+
   it("has no box when there is none", async () => {
     vi.stubGlobal("fetch", answer({ available: false, machines: [] }));
     expect(await fetchCloudMachine()).toBeNull();

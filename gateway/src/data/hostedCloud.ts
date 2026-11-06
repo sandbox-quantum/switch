@@ -206,8 +206,12 @@ export async function fetchCloudPlace(): Promise<{ available: boolean; machine: 
   const machines = Array.isArray(answer.machines) ? answer.machines : [];
   let machine: CloudMachine | null = null;
   for (const raw of machines) {
-    machine = readBox(raw);
-    if (machine) break;
+    const box = readBox(raw);
+    // A deleted box is gone: no panel, as Console hides it too.
+    if (box && box.state !== "deleted") {
+      machine = box;
+      break;
+    }
   }
   return { available: answer.available === true, machine };
 }
