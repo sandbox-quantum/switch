@@ -1,6 +1,6 @@
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 
-/** Room steps (designer): above 80% "A little left", from 95% "Full right now". */
+/** Room steps (designer): from 80% "A little left" (the same point the capacity bars warn), from 95% "Full right now". */
 export const NEARLY_FULL = 0.8;
 export const FULL = 0.95;
 
@@ -52,7 +52,7 @@ export type YourCloudView =
 
 function roomStep(share: number): RoomStep {
   if (share >= FULL) return 'full';
-  if (share > NEARLY_FULL) return 'little';
+  if (share >= NEARLY_FULL) return 'little';
   return 'plenty';
 }
 
@@ -112,7 +112,8 @@ export function yourCloudView(
           // resting page; a message to an agent still wakes it by itself.
           resting: true,
           heading: 'Resting',
-          line: 'Starts when you message an agent.',
+          // The PM's resting explanation, the same in Switch web.
+          line: 'Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.',
           start: 'ensure',
           startLabel: 'Wake',
         };
@@ -156,7 +157,7 @@ export function yourCloudView(
 /**
  * Whether the agents on the box should read Stopped: Your cloud says Stopped
  * (put away, stopped by its owner, or not running), so a message won't start
- * it, and "Back when messaged" would be wrong (PM review).
+ * it, and "Wakes when you message it" would be wrong (PM review).
  */
 export function boxShowsStopped(machine: Parameters<typeof yourCloudView>[0]): boolean {
   return yourCloudView(machine, () => '').heading === 'Stopped';

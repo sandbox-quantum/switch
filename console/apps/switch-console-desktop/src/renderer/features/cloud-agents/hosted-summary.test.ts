@@ -58,14 +58,14 @@ describe('hostedSummary', () => {
         machine({ disk: { total_bytes: 100, available_bytes: 100 - used, scope: 'workspace' } })
       ).disk?.advice;
     expect(awake(79)).toBeNull();
-    expect(awake(80)).toBe('Nearly full. Stop agents you’re not using to free places.');
+    expect(awake(80)).toBe("Nearly full. Stop agents you're not using to free places.");
     expect(awake(95)).toBe('Full right now. New work waits until a place frees up.');
     expect(memory(80)).toBe('Nearly full. Agents may slow down.');
-    expect(memory(95)).toBe('Full right now. Stop an agent you don’t need.');
+    expect(memory(95)).toBe("Full right now. Stop an agent you don't need.");
     expect(disk(80)).toBe(
-      'Nearly full. Ask your agents to delete files and build output you don’t need.'
+      "Nearly full. Ask your agents to delete files and build output you don't need."
     );
-    expect(disk(95)).toBe('Full right now. Agents can’t save more until space is freed.');
+    expect(disk(95)).toBe("Full right now. Agents can't save more until space is freed.");
     expect(Object.keys(CAPACITY_ADVICE)).toEqual(['awake', 'memory', 'disk']);
   });
 

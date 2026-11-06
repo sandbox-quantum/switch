@@ -35,7 +35,7 @@ describe('an agent on the shared cloud, as a person reads it', () => {
       now
     );
     expect(shown.label).toBe('Resting');
-    expect(shown.detail).toBe('Back when messaged');
+    expect(shown.detail).toBe('Wakes when you message it');
     expect(shown.when).toBe('last reply 4 min ago');
   });
 

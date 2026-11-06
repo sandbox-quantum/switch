@@ -133,7 +133,9 @@ it('a resting box with agents offers Wake, which calls ensure', async () => {
   const el = await render(
     box({ state: 'stopped', desired_state: 'stopped', sleeping: true, agents: ['a1'] })
   );
-  expect(el.textContent).toContain('Starts when you message an agent.');
+  expect(el.textContent).toContain(
+    'Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.'
+  );
   const wake = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Wake');
   await act(async () => wake!.click());
   expect(switchServers.ensureCloudMachine).toHaveBeenCalledWith('server');

@@ -62,7 +62,7 @@ export function sharedCloudPresentation(
         return { label: 'Stopped', detail: 'Start your cloud to use it', tone: 'resting', when };
       return {
         label: 'Resting',
-        detail: agent.box_stopped ? 'Starts when messaged' : 'Back when messaged',
+        detail: agent.box_stopped ? 'Starts when messaged' : 'Wakes when you message it',
         tone: 'resting',
         when,
       };
@@ -99,7 +99,9 @@ export function sharedCloudPresentation(
           // V3b: after a repair, until a Console has acted on the re-seal (the designer's copy).
           detail: agent.repair_finishing
             ? "Finishing your cloud's repair. Open Switch Console on your computer."
-            : 'Set up your AI provider again',
+            : // One reason covers a missing login and one the box couldn't sign in with,
+              // so the words fit both (the PM's table; splitting them is on the later list).
+              'Check your AI login',
           tone: 'problem',
           when,
         };

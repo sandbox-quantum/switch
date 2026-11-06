@@ -123,7 +123,9 @@ describe('YourCloudSummary', () => {
     ];
     const view = await show();
     expect(view.host.textContent).toContain('Resting · 2 hosted agents');
-    expect(view.host.textContent).toContain('Starts when you message an agent.');
+    expect(view.host.textContent).toContain(
+      'Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.'
+    );
     expect(view.host.querySelector('[data-capacity]')).toBeNull();
     view.done();
   });

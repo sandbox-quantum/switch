@@ -9,16 +9,16 @@ type CapacityKind = 'awake' | 'memory' | 'disk';
 /** What to do when a bar is nearly full (from 80%) or full (from 95%): the PM's words, the same in Switch web. */
 export const CAPACITY_ADVICE: Record<CapacityKind, Record<Exclude<CapacityStep, 'ok'>, string>> = {
   awake: {
-    nearly_full: 'Nearly full. Stop agents you’re not using to free places.',
+    nearly_full: "Nearly full. Stop agents you're not using to free places.",
     full: 'Full right now. New work waits until a place frees up.',
   },
   memory: {
     nearly_full: 'Nearly full. Agents may slow down.',
-    full: 'Full right now. Stop an agent you don’t need.',
+    full: "Full right now. Stop an agent you don't need.",
   },
   disk: {
-    nearly_full: 'Nearly full. Ask your agents to delete files and build output you don’t need.',
-    full: 'Full right now. Agents can’t save more until space is freed.',
+    nearly_full: "Nearly full. Ask your agents to delete files and build output you don't need.",
+    full: "Full right now. Agents can't save more until space is freed.",
   },
 };
 

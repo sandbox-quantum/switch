@@ -149,7 +149,7 @@ describe('the card, with the server’s reason (visibility V2)', () => {
       sharedCloudPresentation(sharedCloudFromSession(agent(code), true)!, now).detail;
     expect(detail('daily_cap_reached')).toBe("Today's AI limit reached");
     expect(detail('cant_reach')).toBe("Can't reach your cloud");
-    expect(detail('login_needed')).toBe('Set up your AI provider again');
+    expect(detail('login_needed')).toBe('Check your AI login');
     expect(detail('memory_guard')).toBe('Stopped: used too much memory');
     expect(detail('budget_reached')).toMatch(/^Budget reached, resets 1[12] Nov$/);
   });
@@ -200,8 +200,8 @@ describe('the card while a repair waits on the re-seal (V3b)', () => {
     );
   });
 
-  it('goes back to "Set up your AI provider again" once this Console has asked, or with no note', () => {
-    expect(detail(['codex'], true)).toBe('Set up your AI provider again');
-    expect(detail([], false)).toBe('Set up your AI provider again');
+  it('goes back to "Check your AI login" once this Console has asked, or with no note', () => {
+    expect(detail(['codex'], true)).toBe('Check your AI login');
+    expect(detail([], false)).toBe('Check your AI login');
   });
 });
