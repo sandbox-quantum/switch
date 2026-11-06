@@ -49,6 +49,8 @@ auth:
     # mcp_tool: whoami        # instead of a GET: call this tool on url,
     #                         #   one of the entry's own MCP servers
 token: { kind: pass_through, max_lifetime: 28800 }
+# token.note: shown in Switch Console beside how long agent access lasts, for
+#   a vendor that limits it further (Sentry)
 mcp:
   servers:
     - { name: atlassian, url: "https://mcp.atlassian.com/v2/mcp" }
@@ -626,7 +628,10 @@ Built from sign-ins against sentry.io with a test organization:
   That outlives the entry's `max_lifetime`, and a pass-through token may be
   capped at 7 days at most, so the broker withholds it (503, retryable) until
   it is within an hour of expiring. Agents have Sentry for the hour after each
-  sign-in, until Switch can hand out such a token.
+  sign-in. The cap stays: raised for one vendor, a grant turned off would
+  leave an agent's copy valid for weeks. The entry's `token.note` says so,
+  and Switch Console shows it on Sentry's page and before connecting, so
+  nobody expects more.
 - Sentry's consent screen asks which skills to allow: Inspect Issues & Events
   (read-only tools), Seer, Triage Issues, and Manage Projects & Teams. The
   token's scopes are the same four (`org:read`, `project:write`,

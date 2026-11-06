@@ -148,6 +148,8 @@ class TestConnections:
             28800,
         )
         assert atlassian["loopback_ports"] == [39231, 39232, 39233, 39234, 39235]
+        assert atlassian["agent_access_note"] is None
+        assert "hour after each sign-in" in entries["sentry"]["agent_access_note"]
 
     async def test_disconnecting_deletes_grants_and_revokes_the_sign_in(
         self, harness: Harness, vendor: FakeVendor

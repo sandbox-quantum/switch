@@ -70,6 +70,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     unavailable_code: null,
     pass_through: true,
     token_lifetime: 3600,
+    agent_access_note: null,
     loopback_ports: null,
     key: null,
     external_identity: null,

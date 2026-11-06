@@ -13,6 +13,14 @@ Your owner granted this agent their Sentry connection. Its tools are on the
 - **You act as your owner.** You see the organizations and projects they can
   see in Sentry, and anything you change shows there as done by them.
 - **Sentry.io only.** A self-hosted Sentry is not part of this connection.
+- **You have Sentry for the hour after your owner signs in.** Sentry renews
+  a sign-in with a token that lasts as long as their 30-day Sentry sign-in
+  has left (its server's `tokenExchangeCallback` re-issues with the
+  remaining time), longer than Switch lets an agent hold one, so a renewed
+  one is not handed to you. When Switch says Sentry is unavailable because
+  its token lasts too long, tell the user that your owner gets another hour
+  by disconnecting Sentry in Switch Console and connecting it again. Do not
+  look for another way in.
 - **Which tools you have was your owner's choice, made when they connected.**
   Sentry's consent screen offers Inspect (read-only: issues, events, traces,
   logs, replays, releases, monitors, docs), Seer (Sentry's AI debugger),

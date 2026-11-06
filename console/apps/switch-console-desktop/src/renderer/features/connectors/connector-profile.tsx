@@ -184,6 +184,9 @@ export function ConnectorProfile({
           <Fact label="Sign-in">{signInLabel(connection)}</Fact>
           <Fact label="Agent access lasts">{tokenLifetimeLabel(connection)}</Fact>
         </div>
+        {connection.agent_access_note && (
+          <p className="text-sm text-foreground-muted">{connection.agent_access_note}</p>
+        )}
       </section>
 
       {connection.slug === 'github' && state.kind === 'connected' && (
