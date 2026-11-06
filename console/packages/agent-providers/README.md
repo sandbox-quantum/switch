@@ -139,14 +139,16 @@ validated. Readiness uses Goose 1.43.0's read-only
 creates a session or sends a prompt. Older versions without that endpoint
 cannot report readiness through this hook.
 
-Goose's internal planning-note approvals are automatically allowed once only when
-that permission request includes `extensionName: todo` and `toolName: todo__todo_write`
-in its Goose metadata. Developer permissions are classified only when their own
-metadata identifies the `developer` extension and the `shell`, `write` or `edit` tool.
-Goose 1.43.0's captured requests omit that metadata, even though an earlier tool
-update includes it. The current hooks cannot correlate that earlier identity within
-a session, so these requests stay manual in `approval-required` and
-`auto-accept-edits`, including todo. Display titles never grant permission.
+Goose 1.43.0 sends a permission request with a bare title (`shell`, `write`) and no
+metadata; the `tool_call` update just before it carries the tool's identity
+(`extensionName`, `toolName`). The Goose hooks record that identity per session and
+tool call id, and read it back for the permission request. A `shell`, `write` or
+`edit` tool of the `developer` extension is classified as a command or a file
+change, so `auto-accept-edits` allows Goose's own writes and edits once; Goose's
+`todo__todo_write` planning notes (extension `todo`) are allowed once in every mode.
+The same names from any other extension, or from a registered connector with that
+name, stay manual, as does a request whose tool call was never announced. Display
+titles never grant permission.
 
 The session host sets `GOOSE_DISABLE_KEYRING=1` to avoid keyring prompts or
 hangs on headless machines. Supply model credentials through the host's

@@ -390,7 +390,8 @@ const observedWritePermission: AcpToolCall = {
 async function openGoosePermission(
   runtimeMode: RuntimeMode,
   toolCall: Record<string, unknown>,
-  preceding?: Record<string, unknown>
+  preceding?: Record<string, unknown>,
+  connectors: Record<string, unknown> = {}
 ) {
   const adapter = createGooseAdapter();
   const events: ProviderRuntimeEvent[] = [];
@@ -400,8 +401,8 @@ async function openGoosePermission(
     cwd: process.cwd(),
     env: {},
     runtimeMode,
-    mcpServers: {},
-    connectorMcpServers: [],
+    mcpServers: connectors as never,
+    connectorMcpServers: Object.keys(connectors),
   });
   await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'Run the requested tool.' });
   const server = servers.at(-1)!;
@@ -428,42 +429,158 @@ async function openGoosePermission(
   return { adapter, events, server };
 }
 
-// Only shell/write/todo identities and shapes are captured; edit and external
-// extension payloads below are synthetic adversarial cases with the same shape.
+type Expected =
+  | 'auto-allow'
+  | 'command_execution_approval'
+  | 'file_change_approval'
+  | 'tool_approval';
+
+function expectOutcome(
+  { events, server }: { events: ProviderRuntimeEvent[]; server: FakeAppServer },
+  expected: Expected,
+  title: string
+) {
+  if (expected === 'auto-allow') {
+    expect(events.filter((event) => event.type === 'request.opened')).toEqual([]);
+    expect(server.received.find((message) => message.id === 99)?.result).toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow_once' },
+    });
+  } else {
+    expect(events.find((event) => event.type === 'request.opened')).toMatchObject({
+      requestType: expected,
+      title,
+    });
+    expect(server.received.find((message) => message.id === 99)).toBeUndefined();
+  }
+}
+
+function permissionFor(title: string) {
+  return {
+    ...(title === 'shell' ? observedShellPermission : observedWritePermission),
+    title,
+  };
+}
+
+// The observed Goose 1.43.0 sequence: a tool_call carrying the identity, then a
+// permission request with only a bare title. Shell, write and todo identities are
+// captured payloads; edit and the external extension are synthetic, same shape.
 it.each(['approval-required', 'auto-accept-edits'] as const)(
-  'keeps metadata-less requests manual in %s despite earlier tool metadata',
+  'takes the identity from the earlier tool_call in %s',
   async (runtimeMode) => {
-    for (const [title, toolName, extensionName] of [
-      ['shell', 'shell', 'developer'],
-      ['write', 'write', 'developer'],
-      ['edit', 'edit', 'developer'],
-      ['todo: todo write', 'todo__todo_write', 'todo'],
-      ['write', 'write', 'external'],
-      ['edit', 'edit', 'external'],
-      ['todo: todo write', 'todo__todo_write', 'external'],
-    ]) {
-      const permission = {
-        ...(toolName === 'shell' ? observedShellPermission : observedWritePermission),
-        title,
-        _meta: null,
-      };
-      const { adapter, events, server } = await openGoosePermission(runtimeMode, permission, {
+    const editsAuto = runtimeMode === 'auto-accept-edits';
+    for (const [title, toolName, extensionName, expected] of [
+      ['shell', 'shell', 'developer', 'command_execution_approval'],
+      ['write', 'write', 'developer', editsAuto ? 'auto-allow' : 'file_change_approval'],
+      ['edit', 'edit', 'developer', editsAuto ? 'auto-allow' : 'file_change_approval'],
+      ['todo: todo write', 'todo__todo_write', 'todo', 'auto-allow'],
+      ['write', 'write', 'external', 'tool_approval'],
+      ['edit', 'edit', 'external', 'tool_approval'],
+      ['todo: todo write', 'todo__todo_write', 'external', 'tool_approval'],
+      ['shell', 'shell', 'external', 'tool_approval'],
+    ] as const) {
+      const permission = permissionFor(title);
+      const run = await openGoosePermission(runtimeMode, permission, {
         toolCallId: permission.toolCallId,
-        title,
+        title: title === 'todo: todo write' ? title : `${title} · created.txt`,
         _meta: { goose: { toolCall: { toolName, extensionName } } },
       });
       try {
-        expect(events.find((event) => event.type === 'request.opened')).toMatchObject({
-          requestType: 'tool_approval',
-          title,
-        });
-        expect(server.received.find((message) => message.id === 99)).toBeUndefined();
+        expectOutcome(run, expected, title);
       } finally {
-        await adapter.stopAll();
+        await run.adapter.stopAll();
       }
     }
   }
 );
+
+it.each(['approval-required', 'auto-accept-edits'] as const)(
+  'never classifies or auto-allows on a bare title alone in %s',
+  async (runtimeMode) => {
+    for (const title of ['shell', 'write', 'edit', 'todo: todo write']) {
+      const run = await openGoosePermission(runtimeMode, permissionFor(title));
+      try {
+        expectOutcome(run, 'tool_approval', title);
+      } finally {
+        await run.adapter.stopAll();
+      }
+    }
+  }
+);
+
+it('ignores an identity recorded for another tool call', async () => {
+  const run = await openGoosePermission('auto-accept-edits', permissionFor('write'), {
+    toolCallId: 'some-other-call',
+    title: 'write · created.txt',
+    _meta: { goose: { toolCall: { toolName: 'write', extensionName: 'developer' } } },
+  });
+  try {
+    expectOutcome(run, 'tool_approval', 'write');
+  } finally {
+    await run.adapter.stopAll();
+  }
+});
+
+it('does not trust a builtin extension name that a registered connector also uses', async () => {
+  const stdio = { transport: 'stdio', command: 'node', args: ['server.js'] };
+  for (const [title, toolName, extensionName] of [
+    ['write', 'write', 'developer'],
+    ['todo: todo write', 'todo__todo_write', 'todo'],
+  ] as const) {
+    const permission = permissionFor(title);
+    const run = await openGoosePermission(
+      'auto-accept-edits',
+      permission,
+      {
+        toolCallId: permission.toolCallId,
+        title,
+        _meta: { goose: { toolCall: { toolName, extensionName } } },
+      },
+      { [extensionName]: stdio }
+    );
+    try {
+      expect(run.server.received.find((message) => message.id === 99)).toBeUndefined();
+      expect(run.events.find((event) => event.type === 'request.opened')).toMatchObject({
+        requestType: 'mcp_tool_approval',
+        title,
+      });
+    } finally {
+      await run.adapter.stopAll();
+    }
+  }
+});
+
+it('forgets a tool call identity once the call has finished', async () => {
+  const run = await openGoosePermission('auto-accept-edits', permissionFor('write'));
+  try {
+    const id = observedWritePermission.toolCallId;
+    const update = (payload: Record<string, unknown>) =>
+      run.server.notify('session/update', {
+        sessionId: 'native',
+        update: { toolCallId: id, ...payload },
+      });
+    update({
+      sessionUpdate: 'tool_call',
+      _meta: { goose: { toolCall: { toolName: 'write', extensionName: 'developer' } } },
+    });
+    update({ sessionUpdate: 'tool_call_update', status: 'completed' });
+    run.server.send({
+      id: 100,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { ...observedWritePermission },
+        options: [
+          { optionId: 'allow_once', kind: 'allow_once', name: 'allow_once' },
+          { optionId: 'reject_once', kind: 'reject_once', name: 'reject_once' },
+        ],
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(run.server.received.find((message) => message.id === 100)).toBeUndefined();
+  } finally {
+    await run.adapter.stopAll();
+  }
+});
 
 it.each(['approval-required', 'auto-accept-edits'] as const)(
   'checks extension and tool identity on the request in %s',

@@ -1,15 +1,30 @@
 import { acpInitialize, createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
-import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
-import type { AcpToolCall } from '../acp/protocol';
+import type { AcpAdapterOptions, AcpProviderHooks, AcpSessionContext } from '../acp/hooks';
+import type { AcpSessionUpdate } from '../acp/protocol';
 import { readiness } from '../readiness';
 import { noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 
-function toolIdentity(toolCall: AcpToolCall) {
-  return (
-    toolCall._meta as
-      | { goose?: { toolCall?: { extensionName?: unknown; toolName?: unknown } } }
-      | undefined
-  )?.goose?.toolCall;
+interface GooseToolIdentity {
+  extensionName?: unknown;
+  toolName?: unknown;
+}
+
+function toolIdentity(toolCall: { _meta?: Record<string, unknown> }) {
+  return (toolCall._meta as { goose?: { toolCall?: GooseToolIdentity } } | undefined)?.goose
+    ?.toolCall;
+}
+
+// Goose 1.43.0 sends a permission request without `_meta`; the identity is on the
+// tool_call update before it. Keyed by the session's context, which the adapter
+// hands to both `extensions` and `permission`.
+const identitiesBySession = new WeakMap<AcpSessionContext, Map<string, GooseToolIdentity>>();
+
+function isBuiltin(
+  context: AcpSessionContext,
+  identity: GooseToolIdentity | undefined,
+  extension: string
+) {
+  return identity?.extensionName === extension && !context.mcpServerNames.has(extension);
 }
 
 export const gooseAcp: AcpProviderHooks = {
@@ -81,18 +96,33 @@ export const gooseAcp: AcpProviderHooks = {
         return 'approve';
     }
   },
-  permission: (_context, request) => {
+  extensions: (context, on) => {
+    const identities = new Map<string, GooseToolIdentity>();
+    identitiesBySession.set(context, identities);
+    on.notification('session/update', (params) => {
+      const update = (params as { update?: AcpSessionUpdate }).update;
+      if (update?.sessionUpdate !== 'tool_call' && update?.sessionUpdate !== 'tool_call_update')
+        return;
+      if (!update.toolCallId) return;
+      const identity = toolIdentity(update);
+      if (identity) identities.set(update.toolCallId, identity);
+      if (update.status === 'completed' || update.status === 'failed')
+        identities.delete(update.toolCallId);
+    });
+  },
+  permission: (context, request) => {
     request.options = request.options.filter(
       (option) => option.kind === 'allow_once' || option.kind === 'reject_once'
     );
     const { toolCall, options } = request;
-    const identity = toolIdentity(toolCall);
-    if (toolCall.kind === 'other' && identity?.extensionName === 'developer') {
-      if (identity.toolName === 'shell') toolCall.kind = 'execute';
-      if (identity.toolName === 'write' || identity.toolName === 'edit') toolCall.kind = 'edit';
+    // Titles are display text, never identity.
+    const identity =
+      toolIdentity(toolCall) ?? identitiesBySession.get(context)?.get(toolCall.toolCallId);
+    if (toolCall.kind === 'other' && isBuiltin(context, identity, 'developer')) {
+      if (identity?.toolName === 'shell') toolCall.kind = 'execute';
+      if (identity?.toolName === 'write' || identity?.toolName === 'edit') toolCall.kind = 'edit';
     }
-    // The permission hook cannot look up earlier tool metadata; titles are not identity.
-    if (identity?.extensionName !== 'todo' || identity.toolName !== 'todo__todo_write')
+    if (!isBuiltin(context, identity, 'todo') || identity?.toolName !== 'todo__todo_write')
       return undefined;
     const once = options.find((option) => option.kind === 'allow_once');
     if (!once) return undefined;
