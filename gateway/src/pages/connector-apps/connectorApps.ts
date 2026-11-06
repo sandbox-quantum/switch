@@ -54,6 +54,7 @@ export interface SecretField {
 
 const GOOGLE = "google-workspace";
 const AIRTABLE = "airtable";
+const PAGERDUTY = "pagerduty";
 
 export function vendorName(app: Pick<ConnectorApp, "slug" | "kind" | "name">): string {
   if (app.kind === "github_app") return "GitHub";
@@ -271,6 +272,16 @@ function scopeRows(scopes: string[]): string[] {
   return [...rows.values()].map((row) => row.join(", "));
 }
 
+/** PagerDuty's scopes one row per resource, `incidents.read, incidents.write`. */
+function dottedScopeRows(scopes: string[]): string[] {
+  const rows = new Map<string, string[]>();
+  for (const scope of scopes) {
+    const resource = scope.slice(0, scope.lastIndexOf("."));
+    rows.set(resource, [...(rows.get(resource) ?? []), scope]);
+  }
+  return [...rows.values()].map((row) => row.join(", "));
+}
+
 function present(value: string | null): string[] {
   return value === null ? [] : [value];
 }
@@ -350,6 +361,46 @@ export function setupInstructions(
       },
       {
         text: "Fill in its support email, privacy policy URL and terms of service URL. Until all three are set, Airtable lets only the owner connect.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
+  if (app.slug === PAGERDUTY)
+    return [
+      {
+        text: "In PagerDuty, open Integrations, Developer Tools, App Registration, and create a new app. It takes a Manager, Global Admin or Account Owner role. Use an account your organization owns: an app can't be moved to another account.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: "Name it as people should see it when PagerDuty asks them to authorize it, for example Switch.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: "Add OAuth 2.0 functionality, and choose Scoped OAuth, not Classic User OAuth.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep("Add this redirect URL:", app.redirect_uris),
+      {
+        text: "Give it exactly these scopes. PagerDuty doesn't refuse a sign-in that asks for one the app lacks: it hands out a token that reads nothing.",
+        copy: [],
+        link: null,
+        items: dottedScopeRows(app.scopes),
+      },
+      {
+        text: "Save, and copy the app's Client ID and Client Secret.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: "The app works at once for people on this PagerDuty account. For people on other accounts, PagerDuty must publish it and an admin of each account install it.",
         copy: [],
         link: null,
         items: [],

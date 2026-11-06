@@ -343,7 +343,7 @@ what each person can do about it (`UnavailableCode` in
 ## Keys
 
 For a vendor whose people connect with a key rather than a sign-in (Datadog,
-New Relic, PagerDuty, Snowflake and the like), an entry names
+New Relic, Snowflake and the like), an entry names
 `adapter: api_key`:
 
 ```yaml
@@ -663,6 +663,64 @@ is in [`docs/old/airtable-setup.md`](../old/airtable-setup.md).
 To connect: Settings, Connections in Switch Console, then Airtable. To roll
 back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
+`enabled: false`.
+
+## PagerDuty
+
+Built from PagerDuty's documentation and REST API reference, not yet from a
+sign-in run; the operator's setup is in
+[`docs/old/pagerduty-setup.md`](../old/pagerduty-setup.md).
+
+- **Why OAuth, not a key.** PagerDuty's remote MCP server
+  (`https://mcp.pagerduty.com/mcp`) takes a user API key or an OAuth token.
+  A key never expires, so Switch would neither connect nor grant it (see
+  Keys); an OAuth token expires, and can be narrowed per resource. PagerDuty
+  offers no dynamic registration, so each server's operator registers a
+  **Scoped OAuth** app and saves it under Connector apps, or names it in
+  `PAGERDUTY_CLIENT_CONFIG_PATH` (`registration: static`). Classic User OAuth
+  is not used: it has only blanket `read` or `write`, and its access tokens
+  live 30 days, past the week an entry may name.
+- The endpoints are PagerDuty's documented ones,
+  `https://identity.pagerduty.com/oauth/authorize` and `/oauth/token`, named in
+  the entry rather than discovered, so the secret goes in the form body as
+  PagerDuty's docs send it. Scoped OAuth apps are confidential clients and
+  must use PKCE with S256, which every sign-in sends. The browser comes back
+  to Core's own callback, so the server needs `GATEWAY_PUBLIC_URL`.
+- Access tokens live a day and refresh tokens 30 days, for at most a year
+  of refreshes. Each refresh returns a new refresh token; PagerDuty does not
+  say whether the old one survives, so the entry treats them as rotating.
+- The MCP server takes the token as `Bearer`. The identity call is
+  `GET https://api.pagerduty.com/users/me`, which answers only for a user's
+  token, never an account-level one; the connection is named by the user's
+  email and keyed by their user id.
+- **Scopes** are per resource, taken from the REST API reference for the
+  endpoints each `browse_` tool calls. Read: `users.read` (needed to connect
+  at all), `incidents.read`, `services.read`, `schedules.read`,
+  `oncalls.read`, `escalation_policies.read`, `teams.read` and
+  `change_events.read`. Write adds `incidents.write` alone: creating,
+  acknowledging, resolving and reassigning incidents, and adding notes and
+  responders. Not asked for: event orchestrations, status pages and incident
+  workflows, and writing to services, schedules, teams and alert grouping, so
+  those tools are listed but refused. A token reaches the intersection of its
+  scopes and the person's own PagerDuty role.
+- A scope the app was not registered with is not refused: PagerDuty grants a
+  token holding only `openid`, and the identity call then fails. The app's
+  scopes must match the entry's, which the check under Connector apps cannot
+  see; it is the entry's `unchecked`.
+- A Scoped OAuth app works at once on the account that registered it. People
+  on other PagerDuty accounts can authorize it only once PagerDuty publishes it
+  and an admin of their account installs it.
+- PagerDuty has no endpoint that revokes one sign-in. A person revokes their
+  own token on the app's page under Integrations, OAuth Apps, which the
+  disconnect says; an admin can revoke every token the app holds. Until then a
+  token works until it expires, within a day.
+- The US service region only. EU accounts are served at
+  `mcp.eu.pagerduty.com` and `api.eu.pagerduty.com`, which an entry cannot
+  choose per connection today.
+
+To connect: Settings, Connections in Switch Console, then PagerDuty. To roll
+back, add `pagerduty` to `DISABLED_SERVICES`, remove its client under
+Connector apps or unset `PAGERDUTY_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
 ## Google Workspace

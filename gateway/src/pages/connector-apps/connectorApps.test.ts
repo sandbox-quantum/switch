@@ -333,6 +333,42 @@ const LOOPBACK = app({
   needs_public_url: false,
 });
 
+const PAGERDUTY_CALLBACK = `${PUBLIC_URL}/gateway/service-connections/pagerduty/flows/callback`;
+
+const PAGERDUTY = app({
+  ...AIRTABLE,
+  slug: "pagerduty",
+  name: "PagerDuty",
+  configuration_variables: ["PAGERDUTY_CLIENT_CONFIG_PATH"],
+  redirect_uri: PAGERDUTY_CALLBACK,
+  redirect_uris: [PAGERDUTY_CALLBACK],
+  scopes: ["users.read", "incidents.read", "incidents.write", "services.read"],
+});
+
+describe("PagerDuty", () => {
+  it("walks App Registration to a Scoped OAuth app, with its redirect to paste and the scopes to choose", () => {
+    const steps = setupInstructions(PAGERDUTY, "internal", null);
+    const texts = steps.map((s) => s.text);
+    expect(texts[0]).toMatch(/^In PagerDuty, open Integrations, Developer Tools, App Registration/);
+    expect(texts).toContain("Add OAuth 2.0 functionality, and choose Scoped OAuth, not Classic User OAuth.");
+    expect(steps.flatMap((s) => s.copy)).toEqual([PAGERDUTY_CALLBACK]);
+    expect(steps.find((s) => s.text.startsWith("Give it exactly these scopes."))?.items).toEqual([
+      "users.read",
+      "incidents.read, incidents.write",
+      "services.read",
+    ]);
+    expect(new Set(texts).size).toBe(steps.length);
+    expect(texts.at(-1)).toMatch(/PagerDuty must publish it and an admin of each account install it/);
+    expect(steps.every((s) => s.link === null)).toBe(true);
+  });
+
+  it("is not walked through Google's or Airtable's steps", () => {
+    const texts = setupInstructions(PAGERDUTY, "internal", null).map((s) => s.text).join(" ");
+    expect(texts).not.toMatch(/Google|Airtable|Builder Hub/);
+    expect(confirmBeforeCheck(PAGERDUTY)).toBeNull();
+  });
+});
+
 describe("Airtable, and an app that sends people back to Switch Console", () => {
   it("walks Airtable's Builder Hub, with its redirect to paste and the scopes to tick", () => {
     const steps = setupInstructions(AIRTABLE, "internal", null);

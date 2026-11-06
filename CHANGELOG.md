@@ -159,6 +159,13 @@ version of their own to them without also giving them a release of their own.
 - **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
   per crashed collaboration bridge, tagged with its platform and display name,
   and 0 once it runs again, so the bridge alert can name it.
+- **PagerDuty connector.** People can connect their PagerDuty account from
+  Switch Console and let their agents read incidents, services, schedules and
+  who is on call, and, with write access, acknowledge, resolve or annotate
+  incidents, as them. It signs in with a Scoped OAuth app the server's
+  operator registers (PagerDuty has no dynamic registration), saved under
+  Connector apps or named in `PAGERDUTY_CLIENT_CONFIG_PATH`; see
+  `docs/old/pagerduty-setup.md`. US service region only.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
