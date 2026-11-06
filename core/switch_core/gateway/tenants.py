@@ -17,10 +17,10 @@ from switch_core.accounts.workspace_deletion import (
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
+    admin_by_own_membership,
     administers_tenant,
     can_change_workspace_member,
     can_delete_workspace,
-    deletes_workspace_by_role,
     effective_tenant_role,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -366,6 +366,7 @@ async def current_tenant(
         can_delete=can_delete_workspace(
             tenant_role=tenant_role, is_default=tenant.id == TENANT_ZERO_ID
         ),
+        can_manage_data_protection=admin_by_own_membership(tenant_role),
     )
 
 
@@ -437,7 +438,7 @@ async def delete_tenant(
     is exactly one.
     """
     _require_bound_tenant(tenant_id)
-    if not deletes_workspace_by_role(
+    if not admin_by_own_membership(
         await user_store.tenant_role(session, tenant_id, user.id)
     ):
         raise HTTPException(
@@ -984,7 +985,9 @@ async def _require_admin_membership(
     deleted, takes, like deleting the workspace, the caller's own admin
     membership: not the deployment operator's bypass, and not an organization
     admin acting as one. `action` completes "Only a workspace admin may"."""
-    if await user_store.tenant_role(session, tenant_id, user.id) != "admin":
+    if not admin_by_own_membership(
+        await user_store.tenant_role(session, tenant_id, user.id)
+    ):
         raise HTTPException(
             status_code=403, detail=f"Only a workspace admin may {action}"
         )

@@ -1135,10 +1135,15 @@ class CurrentTenantResponse(TenantMembershipResponse):
     caller may manage it — an `admin` membership, `org_admin` of its
     organization, or the operator bit, which no membership role shows.
     `can_delete` is whether they may delete it (`authz.can_delete_workspace`):
-    by their own admin membership, never the server's default workspace."""
+    by their own admin membership, never the server's default workspace.
+    `can_manage_data_protection` is whether they may set its messages to be
+    deleted, list the people seen in it and erase them: by their own admin
+    membership too (`authz.admin_by_own_membership`); reading and clearing
+    its retention window takes `administers` only."""
 
     administers: bool
     can_delete: bool
+    can_manage_data_protection: bool
 
 
 class TenantCreateRequest(BaseModel):

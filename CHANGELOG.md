@@ -231,7 +231,9 @@ version of their own to them without also giving them a release of their own.
   - workspace and organization members carry `can_change_role` and
     `can_remove`, workspace members `can_receive_transfer`, and organization
     members `can_grant_org_admin`;
-  - `GET /tenants/current` carries `can_delete`, and
+  - `GET /tenants/current` carries `can_delete` and
+    `can_manage_data_protection` (setting messages to be deleted, listing
+    and erasing people: its admins by their own membership), and
     `GET /organizations/current` `administers` and `can_manage_members`;
   - API keys carry `can_reveal` and `can_delete`, machines `can_edit` and
     `can_remove`, managed agents `can_edit` and `can_delete`;

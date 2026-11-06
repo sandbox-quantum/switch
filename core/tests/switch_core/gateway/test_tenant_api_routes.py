@@ -1844,6 +1844,7 @@ class TestCurrentTenantRoute:
             "organization_id": None,
             "administers": False,
             "can_delete": False,
+            "can_manage_data_protection": False,
         }
 
     @pytest.mark.parametrize(
@@ -1932,9 +1933,11 @@ class TestOrganizationAdmins:
             "organization_role": "org_admin",
             "organization_id": organization_id,
             "administers": True,
-            # An organization admin administers it, but deletes it only by an
-            # admin membership of their own.
+            # An organization admin administers it, but deletes it, erases
+            # people and sets messages to be deleted only by an admin
+            # membership of their own.
             "can_delete": False,
+            "can_manage_data_protection": False,
         }
 
     async def test_an_org_admin_is_offered_and_may_switch_to_every_workspace_of_it(

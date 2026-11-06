@@ -348,6 +348,30 @@ CHECKS: dict[str, Check] = {
                 _act("DELETE", f"{G}/tenants/{{tenant}}", {"name": "{tenant}"}),
                 later=frozenset({409}),  # Still has other members in it.
             ),
+            Check(
+                "can_manage_data_protection",
+                _get(f"{G}/tenants/current"),
+                _act(
+                    "PUT",
+                    f"{G}/tenants/{{tenant}}/retention",
+                    {"message_retention_days": 30},
+                ),
+            ),
+            Check(
+                "can_manage_data_protection",
+                _get(f"{G}/tenants/current"),
+                _get(f"{G}/tenants/{{tenant}}/people"),
+            ),
+            Check(
+                "can_manage_data_protection",
+                _get(f"{G}/tenants/current"),
+                _act(
+                    "POST",
+                    f"{G}/tenants/{{tenant}}/erasures",
+                    {"external_user_ids": ["{tag}-nobody"]},
+                ),
+                later=frozenset({404}),  # Nobody has that id.
+            ),
         ],
         "the organization": [
             Check(

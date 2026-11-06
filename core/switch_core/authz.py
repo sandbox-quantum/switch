@@ -242,21 +242,22 @@ def can_change_workspace_member(
     return administers and not member_is_organization_admin
 
 
-def deletes_workspace_by_role(tenant_role: str | None) -> bool:
-    """Whether `tenant_role` is one a workspace may be deleted with: its admins'
-    own admin membership, not the operator's bypass and not an organization
-    admin acting as one, since deleting a workspace is the one act nobody can
-    undo."""
+def admin_by_own_membership(tenant_role: str | None) -> bool:
+    """Whether `tenant_role` is an admin's own membership of the workspace:
+    not the operator's bypass and not an organization admin acting as one.
+
+    What nobody can undo takes it: deleting the workspace, erasing a person,
+    and setting its messages to be deleted."""
     return tenant_role in TENANT_ADMIN_ROLES
 
 
 def can_delete_workspace(*, tenant_role: str | None, is_default: bool) -> bool:
     """Whether the caller may delete the workspace they hold `tenant_role` in:
-    `deletes_workspace_by_role`, and never the server's default workspace,
+    `admin_by_own_membership`, and never the server's default workspace,
     where new accounts start. That it must first be emptied is checked when
     it is deleted.
     """
-    return deletes_workspace_by_role(tenant_role) and not is_default
+    return admin_by_own_membership(tenant_role) and not is_default
 
 
 def can_delete_api_key(

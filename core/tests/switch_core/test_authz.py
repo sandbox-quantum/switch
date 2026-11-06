@@ -6,6 +6,7 @@ import pytest
 
 from switch_core.authz import (
     Principal,
+    admin_by_own_membership,
     administers_tenant,
     can,
     can_change_workspace_member,
@@ -14,7 +15,6 @@ from switch_core.authz import (
     can_delete_workspace,
     can_manage,
     can_unlink_from_room,
-    deletes_workspace_by_role,
     owns,
     require,
     require_manage,
@@ -274,11 +274,11 @@ class TestCanChangeWorkspaceMember:
         )
 
 
-class TestDeletesWorkspaceByRole:
-    def test_only_an_admin_membership_does(self) -> None:
-        assert deletes_workspace_by_role("admin")
-        assert not deletes_workspace_by_role("member")
-        assert not deletes_workspace_by_role(None)
+class TestAdminByOwnMembership:
+    def test_only_an_admin_membership_is(self) -> None:
+        assert admin_by_own_membership("admin")
+        assert not admin_by_own_membership("member")
+        assert not admin_by_own_membership(None)
 
 
 class TestCanDeleteWorkspace:

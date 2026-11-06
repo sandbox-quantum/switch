@@ -21,6 +21,7 @@ import json
 import tempfile
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -436,7 +437,15 @@ class People:
     def headers(self, persona: Persona) -> dict[str, str]:
         """A signed-in session in the workspace, as the browser sends it."""
         user_id = self.ids[persona]
-        token = create_jwt(user_id, email_of(persona), "user", config().keyring, TENANT)
+        token = create_jwt(
+            user_id,
+            email_of(persona),
+            "user",
+            config().keyring,
+            TENANT,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
         return {"cookie": f"switch_auth={token}"}
 
 

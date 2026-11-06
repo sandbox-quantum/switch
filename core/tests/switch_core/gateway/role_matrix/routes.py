@@ -211,6 +211,34 @@ ROUTES: dict[str, Case] = {
             "or the operator; let through, then refused while it isn't empty."
         ),
     ),
+    "GET /gateway/tenants/{tenant_id}/retention": get(f"{W}/retention", admins()),
+    "GET /gateway/tenants/{tenant_id}/retention/preview": get(
+        f"{W}/retention/preview", admins(), days="30"
+    ),
+    "PUT /gateway/tenants/{tenant_id}/retention": put(
+        f"{W}/retention",
+        admin_by_membership(),
+        json={"message_retention_days": 30},
+        why="Deleting messages can't be undone: its admins by their own membership.",
+    ),
+    "DELETE /gateway/tenants/{tenant_id}/retention": delete(f"{W}/retention", admins()),
+    "GET /gateway/tenants/{tenant_id}/people": get(
+        f"{W}/people",
+        admin_by_membership(),
+        why="The list a person is erased from: its admins by their own membership.",
+    ),
+    "GET /gateway/tenants/{tenant_id}/erasures": get(
+        f"{W}/erasures", admin_by_membership()
+    ),
+    "POST /gateway/tenants/{tenant_id}/erasures": post(
+        f"{W}/erasures",
+        admin_by_membership(ok=404),
+        json={"external_user_ids": ["{tag}-nobody"]},
+        why=(
+            "Erasing a person can't be undone: its admins by their own "
+            "membership; let through, then told nobody has that id."
+        ),
+    ),
     "GET /gateway/operator/workspaces": get(f"{G}/operator/workspaces", operator()),
     "GET /gateway/tenants/{tenant_id}/members": get(f"{W}/members", anyone()),
     "PATCH /gateway/tenants/{tenant_id}/members/{user_id}": patch(
@@ -379,6 +407,14 @@ ROUTES: dict[str, Case] = {
         },
     ),
     "DELETE /gateway/users/{user_id}": delete(f"{G}/users/{{user_target}}", operator()),
+    "POST /gateway/users/{user_id}/sessions/revoke": post(
+        f"{G}/users/{{user_target}}/sessions/revoke", operator()
+    ),
+    "POST /gateway/auth/sessions/revoke": post(
+        f"{G}/auth/sessions/revoke",
+        SELF,
+        why="Signing yourself out of every device.",
+    ),
     "GET /gateway/trust-settings": get(f"{G}/trust-settings", operator()),
     "PUT /gateway/trust-settings": put(
         f"{G}/trust-settings",
