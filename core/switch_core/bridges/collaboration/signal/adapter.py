@@ -128,6 +128,10 @@ class SignalAdapter(PlatformAdapter):
     # v1 cannot create a chat from Switch; one is opened on the phone and the
     # bot is added there.
     supports_channel_creation: ClassVar[bool] = False
+    # Turns and approval / question cards are posted as text with the answer
+    # typed back: Signal has no buttons, and the shared answer path keys a
+    # typed answer on the handle the card text names.
+    draws_session_activity: ClassVar[bool] = True
 
     def __init__(self, *, config: SignalConnectionConfig) -> None:
         super().__init__()

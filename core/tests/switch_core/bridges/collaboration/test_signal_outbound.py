@@ -15,16 +15,21 @@ from typing import Any, cast
 import httpx
 import pytest
 
+from switch_core.bridges.collaboration.adapter import RequestCard
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.signal.adapter import (
     MAX_ATTACHMENT_BYTES,
     SignalAdapter,
     SignalConnectionConfig,
 )
+from switch_core.bridges.collaboration.signal.render import CHUNK_MAX
 from switch_core.bridges.collaboration.signal.rpc import SignalRpcClient
+
+from .session_fixtures import open_request
 
 _ACCOUNT = "+15555550100"
 _PEER_UUID = "00000000-0000-4000-8000-000000000002"
@@ -230,3 +235,47 @@ async def test_channel_creation_is_declared_unsupported() -> None:
     adapter, _ = _adapter()
     with pytest.raises(ChannelCreationUnsupported):
         await adapter.create_channel("room", "topic")
+
+
+# ── session activity: what the phone shows and how it is answered ───────────
+
+
+async def test_a_request_card_posts_as_text_and_names_its_handle() -> None:
+    """Signal has no buttons, so the card is posted through the base text
+    fallback and answered by typing the handle the card names — not by a
+    control press or a bare yes the platform cannot confirm."""
+    adapter, transport = _adapter()
+    card = RequestCard(
+        open_request(),
+        RequestReference(token="tok-signal", handle="R42"),
+    )
+    ref = await adapter.post_rich(f"d:{_PEER_UUID}", "Ops", card)
+
+    assert ref == f"{_ACCOUNT}:{_TS}"
+    assert transport.count() == 1
+    params = transport.params()
+    # The handle and the typed-answer instruction ride in the text itself.
+    assert "R42" in params["message"]
+    assert "Reply with" in params["message"]
+
+
+async def test_a_chunked_send_returns_the_first_chunk_ref_and_edits_it() -> None:
+    """A long body splits into sequential posts; the ref is the head's, so a
+    later edit or delete targets that one chunk, not the tail."""
+    adapter, transport = _adapter()
+    body = "word\n" * (CHUNK_MAX * 2)
+    ref = await adapter.send_message(f"d:{_PEER_UUID}", "Ops", body)
+
+    chunks = transport.count()
+    assert chunks >= 2
+    assert ref == f"{_ACCOUNT}:{_TS}"
+    assert "quoteTimestamp" not in transport.params(0)
+
+    await adapter.update_message(f"d:{_PEER_UUID}", ref, "edited")
+    assert transport.method() == "send"
+    assert transport.params()["editTimestamp"] == _TS
+    assert transport.count() == chunks + 1
+    # The edit is one call, so the tail chunks keep their text.
+    await adapter.delete_message(f"d:{_PEER_UUID}", ref)
+    assert transport.method() == "remoteDelete"
+    assert transport.params()["targetTimestamp"] == _TS
