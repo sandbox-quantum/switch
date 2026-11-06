@@ -27,6 +27,21 @@ vi.mock('@renderer/lib/ipc', () => ({
     switchServers,
     managedAgents,
     userChanges: { watch: async () => false, unwatch: async () => {} },
+    // The card's Your cloud files button asks for the server's flags (the file
+    // explorer, merged in). Every flag off keeps that button hidden, as these
+    // tests expect.
+    featureFlags: {
+      get: async (serverId: string) => ({
+        success: true,
+        data: {
+          serverId,
+          flags: (await import('@shared/core/feature-flags/feature-flags')).allFeatureFlagsOff(),
+          fetchedAt: 1,
+          error: null,
+        },
+      }),
+      refresh: async () => ({ success: true, data: undefined }),
+    },
   },
 }));
 
@@ -96,7 +111,7 @@ it('a retained box reads Stopped, never Ready or room figures, and Start calls e
   expect(el.textContent).toContain('Stopped');
   expect(el.textContent).not.toContain('Ready');
   expect(el.textContent).not.toContain('awake');
-  expect(el.querySelector('[aria-label="Room to work"]')).toBeNull();
+  expect(el.querySelector('[data-capacity]')).toBeNull();
   await act(async () => startButton(el)!.click());
   expect(switchServers.ensureCloudMachine).toHaveBeenCalledWith('server');
   expect(switchServers.cloudMachineLifecycle).not.toHaveBeenCalled();

@@ -9,6 +9,8 @@ import { Button } from '@renderer/lib/ui/button';
 import { Progress } from '@renderer/lib/ui/progress';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import { type MachineAction, machinePresentation } from './cloud-machine-state';
+import { hostedSummary } from './hosted-summary';
+import { HostedCapacityRows } from './hosted-summary-view';
 import { RepairCloud } from './repair-cloud';
 import { CLOUD_MACHINES_KEY } from './use-cloud-agents';
 import { yourCloudView } from './your-cloud';
@@ -100,7 +102,9 @@ export function CloudMachineCard({
         {!box && shown.label}
         {!box && machine.instance_type && ` · ${machine.instance_type}`}
         {!box && ' · '}
-        {agentCount} {agentCount === 1 ? 'agent' : 'agents'}
+        {box
+          ? hostedSummary(machine).agents
+          : `${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}`}
       </div>
       {!box && shown.retainUntil && (
         <p className="mt-2 text-xs">
@@ -108,7 +112,9 @@ export function CloudMachineCard({
           agent before then to keep it.
         </p>
       )}
-      {shown.disk && (
+      {/* A v1 machine's disk. A box's disk is in Your cloud's rows below, and only once
+          it's the workspace disk, never the controller's own small volume. */}
+      {!box && shown.disk && (
         <div className="mt-2 max-w-[360px]">
           <Progress value={shown.disk.usedPercent} aria-label="Disk used" />
           <p className="mt-1 text-xs text-foreground-muted">
@@ -144,25 +150,17 @@ export function CloudMachineCard({
           )}
         </div>
       ) : (
-        (cloud.room || cloud.awake || cloud.aiCalls) && (
-          <div className="mt-2 max-w-[360px] space-y-1">
-            <p className="text-xs font-medium">{cloud.heading}</p>
-            {cloud.room && (
-              <>
-                <Progress value={cloud.room.usedPercent} aria-label="Room to work" />
-                <p className="text-xs text-foreground-muted">Room to work: {cloud.room.label}</p>
-              </>
-            )}
-            {cloud.awake && <p className="text-xs text-foreground-muted">{cloud.awake.label}</p>}
-            {cloud.aiCalls && (
-              <p
-                className={`text-xs ${cloud.aiCalls.capped ? 'text-foreground-warning' : 'text-foreground-muted'}`}
-              >
-                {cloud.aiCalls.label}
-              </p>
-            )}
-          </div>
-        )
+        <div className="mt-2 max-w-[360px] space-y-2">
+          <p className="text-xs font-medium">{cloud.heading}</p>
+          <HostedCapacityRows machine={machine} />
+          {cloud.aiCalls && (
+            <p
+              className={`text-xs ${cloud.aiCalls.capped ? 'text-foreground-warning' : 'text-foreground-muted'}`}
+            >
+              {cloud.aiCalls.label}
+            </p>
+          )}
+        </div>
       )}
       {box && filesShown && (
         <div className="mt-2">

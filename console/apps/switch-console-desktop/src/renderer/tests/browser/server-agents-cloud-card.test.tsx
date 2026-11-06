@@ -202,8 +202,14 @@ it("shows a shared-cloud user's own box as Your cloud, with Repair and no machin
   expect(switchServers.sharedCloudAgents).toHaveBeenCalled();
   expect(el.textContent).toMatch(/Your cloud/);
   expect(el.textContent).not.toMatch(/Cloud machine/);
-  expect(el.textContent).toMatch(/Room to work: Plenty of room/);
-  expect(el.textContent).toMatch(/1 of 4 awake/);
+  // Your cloud's rows: memory from `room`, awake out of the limit, and the disk only
+  // once the box marks it as the workspace disk (this one doesn't).
+  expect(el.textContent).toMatch(/1 hosted agent/);
+  expect(el.textContent).toMatch(/Memory: 2\.0 GB of 8\.0 GB/);
+  expect(el.textContent).toMatch(/Agents awake: 1 of 4/);
+  expect(el.textContent).toMatch(/Disk: not available/);
+  expect(el.textContent).not.toMatch(/free of/);
+  expect(el.textContent).not.toMatch(/Room to work/);
   expect(button(el, /Repair my cloud/)).toBeDefined();
   expect(button(el, /start machine/i)).toBeUndefined();
   expect(button(el, /stop machine/i)).toBeUndefined();
