@@ -568,6 +568,12 @@ version of their own to them without also giving them a release of their own.
   making someone Org Admin is done in WorkOS, and taking it away in Switch
   lasts only while WorkOS agrees. Adding someone new is done in WorkOS either
   way. Setup and limits: `docs/old/workos-directory.md`.
+- **SMS through Twilio.** An operator can connect their own Twilio number, and
+  people on its allowed list text agents and get replies by SMS. Each reply
+  opens with the agent's name, request cards are answered by texting their
+  handle, and files people send reach the room. Costs are bounded by a limit
+  per reply and an hourly limit per number; Twilio's own `STOP` handling is
+  left to Twilio. Setup is in `docs/messaging-platforms/sms.md`.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)

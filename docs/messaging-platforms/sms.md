@@ -78,7 +78,10 @@ In the Twilio Console:
 1. Open **Phone Numbers → Active Numbers** and choose the number.
 2. Under **Messaging Configuration → A message comes in**, choose **Webhook**,
    paste the address exactly as Console showed it, and choose **HTTP POST**.
-3. Save.
+3. Under **Primary handler fails**, paste the same address again. Twilio doesn't
+   retry a text whose webhook answered with an error, which Switch does while
+   the connection restarts; the fallback gets one more try.
+4. Save.
 
 Switch doesn't set this for you, because the number may already serve another
 application and changing it would silently cut that application off. Removing
@@ -140,10 +143,10 @@ Four things limit the cost:
    a note pointing to Switch Console. The whole reply stays in the room.
 3. **Segments per number, per hour.** This stops an agent stuck in a loop. Past
    the limit, Switch texts one notice and sends nothing more to that number until
-   the hour frees up. That includes texts saying an agent ran into a problem.
-   Request cards are still sent, because an agent is waiting on the answer; each
-   is at most 600 characters. **This count is kept in memory**:
-   each Switch instance counts separately, and a restart resets it.
+   the hour frees up. That includes texts saying an agent ran into a problem, and
+   request cards, which stay answerable in the room. **This count is kept in
+   memory**: each Switch instance counts separately, and a restart resets it, so
+   more can get through than the limit.
 4. **A Twilio usage trigger.** Because of that, also set a hard limit in Twilio:
    **Monitor → Usage Triggers**, or a low balance with auto-recharge off.
 
@@ -152,8 +155,10 @@ Four things limit the cost:
 Twilio handles `STOP` and its other opt-out words itself: it replies to the person
 and refuses further texts to them (error `21610`) until they text `START`. Switch
 doesn't pass these words to agents: `stop`, `stopall`, `unsubscribe`, `cancel`,
-`end`, `quit`, `start`, `unstop`, `help` and `info`, when sent as the whole text.
-A text to someone who has opted out is logged and not retried. Make sure
+`end`, `quit`, `revoke`, `optout`, `start`, `unstop`, `help` and `info`, when
+sent as the whole text. A text to someone who has opted out is not sent and not
+retried. It stays in the room, but nothing there says it didn't reach the phone:
+only the server log does, as an error. Make sure
 everyone on your allowed list has agreed to receive texts.
 
 ## Files

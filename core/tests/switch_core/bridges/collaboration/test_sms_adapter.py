@@ -191,6 +191,13 @@ class TestCredentials:
         with pytest.raises(BridgeCredentialError, match="Authenticate"):
             await self._verify(twilio, monkeypatch)
 
+    async def test_a_twilio_outage_is_not_called_bad_credentials(
+        self, twilio: FakeTwilio, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        twilio.account = httpx.Response(503, json={"message": "Service Unavailable"})
+        with pytest.raises(BridgeOperationError, match="HTTP 503"):
+            await self._verify(twilio, monkeypatch)
+
     async def test_suspended_account_is_refused(
         self, twilio: FakeTwilio, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -217,6 +224,12 @@ def test_a_number_is_claimed_however_it_was_typed() -> None:
     assert SmsAdapter.claimed_workspace(
         {**CONFIG, "phone_number": "+1 (415) 555-0100"}
     ) == (f"Twilio number {NUMBER}")
+
+
+def test_link_code_instructions_say_to_text_the_number() -> None:
+    assert SmsAdapter.link_code_instructions("123456", CONFIG) == (
+        f"Text `!link-account 123456` from that phone to {NUMBER}."
+    )
 
 
 @pytest.mark.parametrize(
@@ -502,13 +515,24 @@ class TestOutbound:
         twilio: FakeTwilio,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        twilio.refusals.append(
-            httpx.Response(400, json={"code": 21610, "message": "opted out"})
-        )
+        for _ in range(2):
+            twilio.refusals.append(
+                httpx.Response(400, json={"code": 21610, "message": "opted out"})
+            )
         with caplog.at_level(logging.WARNING):
             ref = await adapter.send_message(PERSON, "helper", "hi")
+            await adapter.send_message(PERSON, "helper", "hi again")
         assert ref is not None
-        assert "opted out" in caplog.text
+        opted = [r.levelno for r in caplog.records if "opted out" in r.getMessage()]
+        assert opted == [logging.ERROR, logging.WARNING]
+
+    async def test_a_refused_send_still_counts_against_the_hour(
+        self, adapter: SmsAdapter, twilio: FakeTwilio
+    ) -> None:
+        twilio.refusals.append(httpx.Response(500, json={"message": "boom"}))
+        with pytest.raises(TwilioError):
+            await adapter.send_message(PERSON, "helper", "hi")
+        assert adapter._budget.remaining(PERSON) == 5
 
     async def test_refused_send_raises_so_it_can_be_retried(
         self, adapter: SmsAdapter, twilio: FakeTwilio
@@ -645,18 +669,19 @@ class TestSessionActivity:
         assert "Agent went offline" in bodies(twilio)[0]
         assert "Working" not in bodies(twilio)[0]
 
-    async def test_a_card_goes_through_past_the_hourly_limit(
+    async def test_a_card_stops_at_the_hourly_limit(
         self, adapter: SmsAdapter, twilio: FakeTwilio
     ) -> None:
         for _ in range(7):
             await adapter.send_message(PERSON, "helper", "again")
         twilio.sent.clear()
-        await adapter.post_rich(
+        ref = await adapter.post_rich(
             PERSON,
             "helper",
             RequestCard(open_request(), RequestReference("token", "R42")),
         )
-        assert "R42" in bodies(twilio)[0]
+        assert ref is not None
+        assert twilio.sent == []
 
     async def test_a_problem_stops_at_the_hourly_limit(
         self, adapter: SmsAdapter, twilio: FakeTwilio

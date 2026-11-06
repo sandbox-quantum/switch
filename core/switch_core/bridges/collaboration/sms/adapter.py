@@ -4,7 +4,7 @@ import logging
 import mimetypes
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, ClassVar
 
 import httpx
@@ -78,6 +78,8 @@ _TWILIO_KEYWORDS = frozenset(
         "cancel",
         "end",
         "quit",
+        "revoke",
+        "optout",
         "start",
         "unstop",
         "help",
@@ -178,6 +180,7 @@ class SmsAdapter(PlatformAdapter):
         )
         self._budget = HourlyBudget(config.max_segments_per_hour)
         self._told_budget_spent: set[str] = set()
+        self._told_opted_out: set[str] = set()
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
 
@@ -210,9 +213,13 @@ class SmsAdapter(PlatformAdapter):
                     )
                 number = await client.incoming_number(config.phone_number)
             except TwilioError as exc:
-                raise BridgeCredentialError(
-                    f"Twilio refused these credentials: {exc.message}. Check the Account "
-                    "SID and the primary Auth Token in the Twilio Console."
+                if exc.status in (401, 403):
+                    raise BridgeCredentialError(
+                        f"Twilio refused these credentials: {exc.message}. Check the "
+                        "Account SID and the primary Auth Token in the Twilio Console."
+                    ) from exc
+                raise BridgeOperationError(
+                    f"Twilio could not check the credentials: {exc}. Try again."
                 ) from exc
             except httpx.RequestError as exc:
                 raise BridgeCredentialError(
@@ -229,6 +236,13 @@ class SmsAdapter(PlatformAdapter):
                 f"{config.phone_number} can't send or receive SMS. Twilio lists "
                 "each number's capabilities under Phone Numbers → Active Numbers."
             )
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        number = normalize_number(str(connection_config["phone_number"]))
+        return f"Text `!link-account {code}` from that phone to {number}."
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -348,6 +362,11 @@ class SmsAdapter(PlatformAdapter):
             )
             return
         text = str(fields.get("Body", ""))
+        if fields.get("OptOutType") == "START" or text.strip().lower() in {
+            "start",
+            "unstop",
+        }:
+            self._told_opted_out.discard(sender)
         if fields.get("OptOutType") or text.strip().lower() in _TWILIO_KEYWORDS:
             logger.info(
                 "Not relaying SMS %s from %s: Twilio handles this keyword itself.",
@@ -500,6 +519,8 @@ class SmsAdapter(PlatformAdapter):
         assert self.webhook_url is not None  # `start` refuses to run without it
         first: str | None = None
         for piece in pieces:
+            # Counted before the send, so concurrent replies can't overrun the hour.
+            self._budget.spend(number, count_segments(piece))
             try:
                 sid = await self._client.send_message(
                     from_number=self._config.phone_number,
@@ -509,11 +530,18 @@ class SmsAdapter(PlatformAdapter):
                 )
             except TwilioError as exc:
                 if exc.code == OPTED_OUT:
-                    logger.warning(
+                    log = (
+                        logger.warning
+                        if number in self._told_opted_out
+                        else logger.error
+                    )
+                    log(
                         "Not texting %s: they opted out by texting STOP, and "
-                        "Twilio won't message them until they text START.",
+                        "Twilio won't message them until they text START. The "
+                        "message is still in the room.",
                         _tail(number),
                     )
+                    self._told_opted_out.add(number)
                     return first or _not_sent()
                 if first is None:
                     raise
@@ -534,7 +562,6 @@ class SmsAdapter(PlatformAdapter):
                     type(exc).__name__,
                 )
                 return first
-            self._budget.spend(number, count_segments(piece))
             first = first or sid
         assert first is not None
         return first
@@ -624,9 +651,10 @@ class SmsAdapter(PlatformAdapter):
 
         A turn's message would be redrawn as it moves, and it would repeat the
         reply, each at a cost. The reference returned for one names the turn,
-        never a text. A card is sent whole and past the hourly limit, because
-        an agent waits on the answer; `_CARD_LIMIT` is what bounds it. Nothing
-        waits on an attention message, so the hourly limit holds for it.
+        never a text. A card is sent whole, and the hourly limit holds for cards
+        and attention messages too, since an agent stuck asking would otherwise
+        spend without bound. Past it the person gets the one paused notice and
+        the card stays answerable in the room.
         """
         if isinstance(content, TurnActivity) and not content.status_only:
             return f"{_TURN_REF_PREFIX}{content.turn.turn_id}"
@@ -634,10 +662,7 @@ class SmsAdapter(PlatformAdapter):
             return _not_sent()
         text = self.rich_fallback_text(content)
         try:
-            if (
-                isinstance(content, TurnActivity)
-                and self._budget.remaining(channel_id) <= 0
-            ):
+            if self._budget.remaining(channel_id) <= 0:
                 return await self._tell_budget_spent(channel_id)
             agent = await self.agent_rendering(agent_name)
             body = to_gsm_friendly(f"{agent.body_label}: {text}")

@@ -12,7 +12,7 @@ import base64
 import hashlib
 import hmac
 from collections.abc import Sequence
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 from switch_core.bridges.collaboration.install import WebhookAuthenticityError
 
@@ -62,8 +62,31 @@ def verify_signature(auth_token: str, url: str, body: bytes, given: str) -> None
         raise WebhookAuthenticityError(
             "The request body is not a form Twilio could have signed"
         ) from exc
-    expected = compute_signature(auth_token, url, fields)
-    if not hmac.compare_digest(given.encode(), expected.encode()):
+    matches = [
+        hmac.compare_digest(
+            given.encode(), compute_signature(auth_token, signed, fields).encode()
+        )
+        for signed in (url, _with_port_toggled(url))
+    ]
+    if not any(matches):
         raise WebhookAuthenticityError(
             "The signature does not match this connection's Auth Token and address"
         )
+
+
+def _with_port_toggled(url: str) -> str:
+    """The same address with its default port written out, or without it if it
+    was: Twilio signs whichever form it called, as its own validator allows."""
+    parts = urlsplit(url)
+    default = {"https": 443, "http": 80}.get(parts.scheme)
+    if default is None or parts.hostname is None:
+        return url
+    host = parts.netloc.rsplit("@", 1)[-1]
+    userinfo = parts.netloc[: len(parts.netloc) - len(host)]
+    if parts.port is None:
+        host = f"{host}:{default}"
+    elif parts.port == default:
+        host = host.rsplit(":", 1)[0]
+    else:
+        return url
+    return parts._replace(netloc=userinfo + host).geturl()

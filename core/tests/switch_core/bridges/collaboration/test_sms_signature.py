@@ -60,6 +60,22 @@ def test_correct_signature_is_accepted() -> None:
     verify_signature(TOKEN, URL, BODY, compute_signature(TOKEN, URL, FIELDS))
 
 
+PORTED = "https://messaging.example.com:443/messaging/bridges/b1/events"
+
+
+@pytest.mark.parametrize(("ours", "twilios"), [(URL, PORTED), (PORTED, URL)])
+def test_a_signature_with_or_without_the_default_port_is_accepted(
+    ours: str, twilios: str
+) -> None:
+    verify_signature(TOKEN, ours, BODY, compute_signature(TOKEN, twilios, FIELDS))
+
+
+def test_another_port_is_not_the_same_address() -> None:
+    other = "https://messaging.example.com:8443/messaging/bridges/b1/events"
+    with pytest.raises(WebhookAuthenticityError):
+        verify_signature(TOKEN, URL, BODY, compute_signature(TOKEN, other, FIELDS))
+
+
 @pytest.mark.parametrize(
     ("token", "url", "body"),
     [
