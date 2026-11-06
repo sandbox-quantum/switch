@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlencode
 
 import httpx
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.adapter import (
     ChannelNotBindable,
@@ -28,14 +29,17 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.send_ledger import SendLedger, StoredSendLedger
 from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.sms.adapter import SmsAdapter
 from switch_core.bridges.collaboration.sms.client import TwilioClient, TwilioError
 from switch_core.bridges.collaboration.sms.config import SmsConnectionConfig
 from switch_core.bridges.collaboration.sms.segments import CUT_NOTICE, count_segments
 from switch_core.bridges.collaboration.sms.signature import compute_signature
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.sessions.contract import TurnUpsert
 
+from ...db.stores.test_bridge_send_store import make_bridge
 from .session_fixtures import open_request
 
 SID = "AC" + "0" * 32
@@ -89,6 +93,30 @@ class FakeTwilio:
 
 
 @dataclass
+class FakeLedger:
+    """One bridge's `bridge_hourly_sends`, within one hour."""
+
+    spends: dict[str, int] = field(default_factory=dict)
+    told: set[str] = field(default_factory=set)
+
+    async def spent(self, recipient: str) -> int:
+        return self.spends.get(recipient, 0)
+
+    async def spend(self, recipient: str, units: int) -> int:
+        self.spends[recipient] = self.spends.get(recipient, 0) + units
+        return self.spends[recipient]
+
+    async def claim_limit_notice(self, recipient: str) -> bool:
+        if recipient not in self.spends or recipient in self.told:
+            return False
+        self.told.add(recipient)
+        return True
+
+    async def release_limit_notice(self, recipient: str) -> None:
+        self.told.discard(recipient)
+
+
+@dataclass
 class Heard:
     messages: list[InboundMessage] = field(default_factory=list)
     commands: list[InboundCommand] = field(default_factory=list)
@@ -110,18 +138,24 @@ def heard() -> Heard:
     return Heard()
 
 
-@pytest.fixture
-async def adapter(twilio: FakeTwilio, heard: Heard) -> AsyncIterator[SmsAdapter]:
+async def started(twilio: FakeTwilio, heard: Heard, ledger: SendLedger) -> SmsAdapter:
     built = SmsAdapter(config=SmsConnectionConfig.model_validate(CONFIG))
     await built._http.aclose()
     built._http = httpx.AsyncClient(transport=httpx.MockTransport(twilio))
     built._client = TwilioClient(http=built._http, account_sid=SID, auth_token=TOKEN)
     built.set_webhook_url(URL)
+    built.set_send_ledger(ledger)
 
     async def ignore(_: Any) -> None:
         return None
 
     await built.start(heard.message, heard.command, ignore, ignore, ignore)
+    return built
+
+
+@pytest.fixture
+async def adapter(twilio: FakeTwilio, heard: Heard) -> AsyncIterator[SmsAdapter]:
+    built = await started(twilio, heard, FakeLedger())
     yield built
     await built.stop()
 
@@ -532,7 +566,15 @@ class TestOutbound:
         twilio.refusals.append(httpx.Response(500, json={"message": "boom"}))
         with pytest.raises(TwilioError):
             await adapter.send_message(PERSON, "helper", "hi")
-        assert adapter._budget.remaining(PERSON) == 5
+        assert await adapter.send_ledger.spent(PERSON) == 1
+
+    async def test_a_reply_stops_where_another_text_spent_the_hour(
+        self, adapter: SmsAdapter, twilio: FakeTwilio
+    ) -> None:
+        await adapter.send_ledger.spend(PERSON, 5)
+        ref = await adapter._send_pieces(PERSON, ["one", "two"], capped=True)
+        assert ref == "SM1"
+        assert bodies(twilio) == ["one"]
 
     async def test_refused_send_raises_so_it_can_be_retried(
         self, adapter: SmsAdapter, twilio: FakeTwilio
@@ -557,7 +599,7 @@ class TestOutbound:
     async def test_refusal_after_the_first_part_keeps_the_first(
         self, adapter: SmsAdapter, twilio: FakeTwilio
     ) -> None:
-        await adapter._send_pieces(PERSON, ["one"])
+        await adapter._send_pieces(PERSON, ["one"], capped=True)
         calls = {"n": 0}
         original = twilio.__call__
 
@@ -571,7 +613,7 @@ class TestOutbound:
         adapter._client = TwilioClient(
             http=adapter._http, account_sid=SID, auth_token=TOKEN
         )
-        ref = await adapter._send_pieces(PERSON, ["two", "three"])
+        ref = await adapter._send_pieces(PERSON, ["two", "three"], capped=True)
         assert ref == "SM2"
 
     async def test_lifecycle_notice_is_not_texted(
@@ -713,3 +755,38 @@ class TestSessionActivity:
                 "helper",
                 TurnActivity([], turn, status_only=True, error_summary="x"),
             )
+
+
+class TestSeveralProcesses:
+    """Two copies of the bridge, as two switch-core processes run it, sharing
+    the hour's count in the database."""
+
+    async def test_the_hourly_limit_and_its_notice_hold_across_processes(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        twilio: FakeTwilio,
+        heard: Heard,
+    ) -> None:
+        bridge_id = await make_bridge(session_factory)
+        copies = [
+            await started(
+                twilio,
+                heard,
+                StoredSendLedger(
+                    session_factory=session_factory,
+                    tenant_id=TENANT_ZERO_ID,
+                    bridge_id=bridge_id,
+                ),
+            )
+            for _ in range(2)
+        ]
+        try:
+            for _ in range(10):
+                for copy in copies:
+                    await copy.send_message(PERSON, "helper", "again")
+        finally:
+            for copy in copies:
+                await copy.stop()
+        texts = bodies(twilio)
+        assert len([t for t in texts if t.endswith("again")]) == 6
+        assert len([t for t in texts if "paused texts" in t]) == 1

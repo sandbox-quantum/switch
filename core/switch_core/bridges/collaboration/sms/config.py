@@ -84,9 +84,10 @@ class SmsConnectionConfig(BridgeConnectionConfig):
         ge=1,
         title="Most SMS segments per number, per hour",
         description=(
-            "Stops an agent stuck in a loop. Counted on each server separately "
-            "and reset by a restart, so set a Twilio usage trigger as a hard "
-            f"limit too. Defaults to {DEFAULT_MAX_SEGMENTS_PER_HOUR}."
+            "Stops an agent stuck in a loop. Counted per clock hour across "
+            "every server, so up to twice this can go out across the turn of "
+            "an hour; set a Twilio usage trigger as a hard limit too. Defaults "
+            f"to {DEFAULT_MAX_SEGMENTS_PER_HOUR}."
         ),
     )
 

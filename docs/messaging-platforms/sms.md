@@ -122,7 +122,8 @@ Phone reach the webhook and don't need carrier registration.
   the room.
 - **Duplicates and restarts.** Each text is recognised by its Twilio `MessageSid`,
   so a retry is handled once, on whichever Switch instance receives it. Switch
-  keeps nothing a second instance needs, except the hourly count below.
+  keeps nothing a second instance needs: the hourly count below is in the
+  database, shared by every instance.
 
 ## Keeping costs bounded
 
@@ -144,10 +145,11 @@ Four things limit the cost:
 3. **Segments per number, per hour.** This stops an agent stuck in a loop. Past
    the limit, Switch texts one notice and sends nothing more to that number until
    the hour frees up. That includes texts saying an agent ran into a problem, and
-   request cards, which stay answerable in the room. **This count is kept in
-   memory**: each Switch instance counts separately, and a restart resets it, so
-   more can get through than the limit.
-4. **A Twilio usage trigger.** Because of that, also set a hard limit in Twilio:
+   request cards, which stay answerable in the room. The count is kept in the
+   database, so it holds however many Switch instances send and across restarts.
+   It counts clock hours, so up to twice the limit can go out across the turn of
+   an hour.
+4. **A Twilio usage trigger.** As a backstop, also set a hard limit in Twilio:
    **Monitor → Usage Triggers**, or a low balance with auto-recharge off.
 
 ## Opting out

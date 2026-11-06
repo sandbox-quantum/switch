@@ -40,7 +40,6 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.session.renderers import Markup
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_status
-from switch_core.bridges.collaboration.sms.budget import HourlyBudget
 from switch_core.bridges.collaboration.sms.client import (
     DELIVERY_ERRORS,
     OPTED_OUT,
@@ -178,8 +177,6 @@ class SmsAdapter(PlatformAdapter):
             account_sid=config.account_sid,
             auth_token=config.auth_token,
         )
-        self._budget = HourlyBudget(config.max_segments_per_hour)
-        self._told_budget_spent: set[str] = set()
         self._told_opted_out: set[str] = set()
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
@@ -478,14 +475,19 @@ class SmsAdapter(PlatformAdapter):
             return _not_sent()
         agent = await self.agent_rendering(sender_name)
         body = to_gsm_friendly(f"{agent.body_label}: {content}")
-        remaining = self._budget.remaining(channel_id)
+        remaining = await self._remaining(channel_id)
         if remaining <= 0:
             return await self._tell_budget_spent(channel_id)
-        self._told_budget_spent.discard(channel_id)
         return await self._send_pieces(
             channel_id,
             fit_reply(body, min(self._config.max_segments_per_reply, remaining)),
+            capped=True,
         )
+
+    async def _remaining(self, number: str) -> int:
+        """Segments left this hour, counted across every process."""
+        spent = await self.send_ledger.spent(number)
+        return self._config.max_segments_per_hour - spent
 
     def _may_text(self, number: str) -> bool:
         if number in self._config.allowed_numbers:
@@ -503,24 +505,40 @@ class SmsAdapter(PlatformAdapter):
             _tail(number),
             self._config.max_segments_per_hour,
         )
-        if number in self._told_budget_spent:
+        if not await self.send_ledger.claim_limit_notice(number):
             return _not_sent()
-        ref = await self._send_pieces(number, [_BUDGET_SPENT])
-        self._told_budget_spent.add(number)
-        return ref
+        try:
+            return await self._send_pieces(number, [_BUDGET_SPENT], capped=False)
+        except Exception:
+            await self.send_ledger.release_limit_notice(number)
+            raise
 
-    async def _send_pieces(self, number: str, pieces: list[str]) -> str:
+    async def _send_pieces(
+        self, number: str, pieces: list[str], *, capped: bool
+    ) -> str:
         """Send each piece in order and return the first one's SID.
 
         Twilio refusing the first piece raises, so the message can be tried
         again. Refusing a later one is logged instead, since trying again would
-        repeat what the person already has.
+        repeat what the person already has. With `capped`, a piece that would
+        go past the hourly limit is not sent: another reply, perhaps from
+        another process, spent the hour first.
         """
         assert self.webhook_url is not None  # `start` refuses to run without it
         first: str | None = None
         for piece in pieces:
             # Counted before the send, so concurrent replies can't overrun the hour.
-            self._budget.spend(number, count_segments(piece))
+            spent = await self.send_ledger.spend(number, count_segments(piece))
+            if capped and spent > self._config.max_segments_per_hour:
+                if first is None:
+                    return await self._tell_budget_spent(number)
+                logger.error(
+                    "Not texting the rest of a reply to %s: other texts reached "
+                    "the hourly limit while it was going out. It is still in "
+                    "the room.",
+                    _tail(number),
+                )
+                return first
             try:
                 sid = await self._client.send_message(
                     from_number=self._config.phone_number,
@@ -662,11 +680,11 @@ class SmsAdapter(PlatformAdapter):
             return _not_sent()
         text = self.rich_fallback_text(content)
         try:
-            if self._budget.remaining(channel_id) <= 0:
+            if await self._remaining(channel_id) <= 0:
                 return await self._tell_budget_spent(channel_id)
             agent = await self.agent_rendering(agent_name)
             body = to_gsm_friendly(f"{agent.body_label}: {text}")
-            return await self._send_pieces(channel_id, [body])
+            return await self._send_pieces(channel_id, [body], capped=True)
         except (TwilioError, httpx.HTTPError) as error:
             raise RichContentFailed(
                 f"Twilio could not send the text to {_tail(channel_id)}: {error}",
