@@ -52,7 +52,7 @@ describe.skipIf(!!probe.error || probe.status !== 0)('Goose CLI without inferenc
       onExit: () => {},
     });
     try {
-      const initialized = await acpInitialize(client);
+      const initialized = await acpInitialize(client, gooseAcp);
       expect(initialized.agentInfo?.name).toBe('goose');
       const session = await client.request<AcpSessionResult>('session/new', {
         cwd: launchInput.cwd,
@@ -65,7 +65,7 @@ describe.skipIf(!!probe.error || probe.status !== 0)('Goose CLI without inferenc
         'auto',
         'full-access',
       ] as const) {
-        const modeId = gooseAcp.sessionMode!(mode);
+        const modeId = gooseAcp.sessionMode!(mode, undefined);
         expect(session.modes?.availableModes.some((available) => available.id === modeId)).toBe(
           true
         );

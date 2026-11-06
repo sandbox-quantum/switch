@@ -51,7 +51,7 @@ export const gooseAcp: AcpProviderHooks = {
       onExit: () => {},
     });
     try {
-      await acpInitialize(client);
+      await acpInitialize(client, gooseAcp);
       // Goose 1.43.0 resolves env, structured and legacy config without a model call.
       const defaults = await client.request<{
         providerId?: string | null;
@@ -82,7 +82,15 @@ export const gooseAcp: AcpProviderHooks = {
         return 'approve';
     }
   },
-  permission: (_context, { toolCall, options }) => {
+  permission: (_context, request) => {
+    request.options = request.options.filter(
+      (option) => option.kind === 'allow_once' || option.kind === 'reject_once'
+    );
+    const { toolCall, options } = request;
+    if (toolCall.kind === 'other' && toolCall._meta == null) {
+      const prefix = /^(shell|write|edit) · /.exec(toolCall.title ?? '')?.[1];
+      if (prefix) toolCall.kind = prefix === 'shell' ? 'execute' : 'edit';
+    }
     const name = toolIdentity(toolCall)?.toolName;
     const todo =
       name === 'todo__todo_write' || (name === undefined && toolCall.title === 'todo: todo write');

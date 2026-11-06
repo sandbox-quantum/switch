@@ -87,6 +87,7 @@ it.each([
       cwd: process.cwd(),
       env: {},
       handshake,
+      request: vi.fn(),
     });
     expect(result.status).toBe(status);
     if (status === 'unconfigured') expect(result.message).toContain('goose configure');
@@ -107,6 +108,7 @@ it('surfaces an unsupported readiness request and closes the process', async () 
       cwd: process.cwd(),
       env: {},
       handshake: vi.fn(),
+      request: vi.fn(),
     })
   ).rejects.toThrow('Method not found');
   expect(servers[0]!.stdin.writableEnded).toBe(true);
@@ -226,6 +228,13 @@ it.each([
         expect(response?.result).toEqual({ outcome: { outcome: 'selected', optionId: 'single' } });
       } else {
         expect(requests).toHaveLength(1);
+        expect(requests[0]).toMatchObject({
+          options: [
+            ...(hasOnce ? [{ decision: 'accept', label: 'Allow once' }] : []),
+            { decision: 'decline', label: 'Reject' },
+            { decision: 'cancel', label: 'Cancel' },
+          ],
+        });
         expect(response).toBeUndefined();
         await adapter.respondToRequest('s', requests[0]!.requestId, 'decline');
         await new Promise((resolve) => setImmediate(resolve));
@@ -342,6 +351,47 @@ it.each([
       expect(events.find((event) => event.type === 'item.completed')).toMatchObject({
         turnId: 't',
         item: { id: 'observed-tool', type, title, status: 'completed', text: result },
+      });
+    } finally {
+      await adapter.stopAll();
+    }
+  }
+);
+
+it.each([
+  ['shell · cmd', 'command_execution_approval'],
+  ['write · path', 'file_change_approval'],
+  ['edit · path', 'file_change_approval'],
+] as const)(
+  'classifies permission with null metadata and kind other for %s',
+  async (title, requestType) => {
+    const adapter = createGooseAdapter();
+    const events: ProviderRuntimeEvent[] = [];
+    adapter.subscribe((event) => events.push(event));
+    try {
+      await adapter.startSession({
+        sessionId: 's',
+        cwd: process.cwd(),
+        env: {},
+        runtimeMode: 'approval-required',
+        mcpServers: {},
+        connectorMcpServers: [],
+      });
+      await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'Run the requested tool.' });
+      servers[0]!.send({
+        id: 99,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'native',
+          toolCall: { toolCallId: 'tool', kind: 'other', title, _meta: null },
+          options: [
+            { optionId: 'allow', kind: 'allow_once', name: 'Allow once' },
+            { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+          ],
+        },
+      });
+      expect(events.find((event) => event.type === 'request.opened')).toMatchObject({
+        requestType,
       });
     } finally {
       await adapter.stopAll();
