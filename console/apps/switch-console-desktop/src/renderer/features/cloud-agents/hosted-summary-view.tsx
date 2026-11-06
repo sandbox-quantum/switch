@@ -12,12 +12,23 @@ import { yourCloudView } from './your-cloud';
 
 const localTime = (at: Date) => at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+/** The bar's colour by step, as on Switch web: amber when nearly full, red when full. */
+const BAR_TONE: Record<CapacityLine['step'], string> = {
+  ok: '',
+  nearly_full: '[&_[data-slot=progress-indicator]]:bg-foreground-warning',
+  full: '[&_[data-slot=progress-indicator]]:bg-destructive',
+};
+
 /** One capacity line with its bar, and the advice line under it once it's nearly full or full. */
 function CapacityRow({ line, name }: { line: CapacityLine; name: string }) {
   return (
     <div data-capacity={name} data-step={line.step}>
       <p className="text-xs text-foreground">{line.label}</p>
-      <Progress value={line.usedPercent} aria-label={line.label} className="mt-1" />
+      <Progress
+        value={line.usedPercent}
+        aria-label={line.label}
+        className={cn('mt-1', BAR_TONE[line.step])}
+      />
       {line.advice && (
         <p
           className={cn(
