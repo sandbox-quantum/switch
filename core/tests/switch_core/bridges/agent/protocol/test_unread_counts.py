@@ -26,6 +26,7 @@ from switch_core.bridges.agent.protocol.event_buffer import (
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
+    MessageEditPayload,
     MessagePayload,
 )
 from switch_core.db.models import TENANT_ZERO_ID
@@ -519,19 +520,46 @@ async def test_only_unaddressed_messages_are_counted(
 async def test_an_edit_is_not_a_message_of_its_own(
     db_buffer: EventBuffer, session_factory: SessionFactory
 ) -> None:
-    """An edit changes a message already counted, or one the agent was woken
-    for; it is nothing more to catch up on."""
+    """An edit goes to the agents that received the message as their own event
+    for that row, so it is nothing more to catch up on."""
     buffer = db_buffer
     await buffer.ensure_counting(TENANT_ZERO_ID, AGENT, READER, ROOM_A)
-    chatter = await say(session_factory, ROOM_A, "lunch at noon?")
-    await say(
+    original = await say(session_factory, ROOM_A, "@agent lunch at noon?")
+    await buffer.enqueue(
+        TENANT_ZERO_ID,
+        AGENT,
+        ROOM_A,
+        _asked(ROOM_A, original.transport_event_id),
+        room_seq=original.seq,
+        message_key=original.transport_event_id,
+    )
+    edit = await say(
         session_factory,
         ROOM_A,
-        edit_fallback("lunch at one?"),
-        content=edit_content(chatter.transport_event_id, "lunch at one?"),
+        edit_fallback("@agent lunch at one?"),
+        content=edit_content(original.transport_event_id, "@agent lunch at one?"),
+    )
+    await buffer.enqueue(
+        TENANT_ZERO_ID,
+        AGENT,
+        ROOM_A,
+        AgentEvent(
+            type="message_edit",
+            room_id=ROOM_A,
+            payload=MessageEditPayload(
+                message_id=original.transport_event_id,
+                edit_id=edit.transport_event_id,
+                body="@agent lunch at one?",
+                sender="@u:s",
+                sender_name="u",
+                timestamp=0,
+            ),
+        ),
+        room_seq=edit.seq,
+        message_key=edit.transport_event_id,
     )
 
-    assert (await _unread(buffer, ROOM_A)).count == 1
+    assert (await _unread(buffer, ROOM_A)).count == 0
 
 
 async def test_several_files_posted_as_one_message_count_once(
