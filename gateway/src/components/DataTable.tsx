@@ -136,6 +136,13 @@ const HOOT_GRID_SX: SxProps<Theme> = {
   },
 };
 
+/** A table that filters its own rows keeps each header's menu button in view,
+ *  faintly, since that menu is where its columns are filtered. */
+const OWN_FILTERING_SX: SxProps<Theme> = {
+  "& .MuiDataGrid-menuIcon": { visibility: "visible", width: "auto", opacity: 0.5 },
+  "& .MuiDataGrid-columnHeader:hover .MuiDataGrid-menuIcon": { opacity: 1 },
+};
+
 const PINNED = "hoot-pinned-right";
 
 /** The free grid has no column pinning, so a pinned column is a sticky one:
@@ -368,7 +375,13 @@ export default function DataTable<T extends { id: string | number }>({
             slotProps: { noRowsOverlay: { tableEmpty: empty } },
           }
         : { slots: { columnMenu: TableColumnMenu } })}
-      sx={[HOOT_GRID_SX, ...pinnedSx, { height: fillHeight ? "100%" : height }, ...extraSx]}
+      sx={[
+        HOOT_GRID_SX,
+        ...(ownFiltering ? [OWN_FILTERING_SX] : []),
+        ...pinnedSx,
+        { height: fillHeight ? "100%" : height },
+        ...extraSx,
+      ]}
     />
   );
 
@@ -412,7 +425,7 @@ export default function DataTable<T extends { id: string | number }>({
                     ),
                   },
                 }}
-                sx={{ width: 224, ml: "auto" }}
+                sx={{ width: 224 }}
               />
             )}
           </Stack>
