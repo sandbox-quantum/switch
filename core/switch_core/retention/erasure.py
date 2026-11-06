@@ -299,7 +299,7 @@ class ErasureService:
             db, transport_user_id=transport_user_id, limit=MESSAGE_BATCH
         )
         await self._retention.delete_bridge_mappings(db, deleted.event_ids)
-        await self._erasures.delete_agent_copies(db, deleted.event_ids)
+        await self._retention.delete_agent_copies(db, deleted.message_keys)
         await self._erasures.add_progress(
             db, erasure_id, messages=len(deleted.event_ids), files=0, identities=0
         )

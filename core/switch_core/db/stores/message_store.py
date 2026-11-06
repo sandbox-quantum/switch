@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.db.id_lists import any_of
 from switch_core.db.models import Message, MessageAttachment, Room, require_tenant_id
 from switch_core.db.notify_ddl import SET_WRITER_ANNOUNCES
@@ -23,6 +24,9 @@ from switch_core.db.raw import RawStatement
 @dataclass(frozen=True)
 class DeletedMessages:
     event_ids: list[str]
+    #: The keys agents' copies of them are stored under (`agent_events.message_key`):
+    #: the attachment group id for a file sent as part of several, else the event id.
+    message_keys: set[str]
     #: The files the deleted messages carried. Others may still quote them.
     uris: set[str]
     #: The rooms they were deleted from.
@@ -220,16 +224,13 @@ class MessageStore:
 
     async def delete_sent_before(
         self, session: AsyncSession, cutoff: datetime, *, limit: int
-    ) -> list[str]:
+    ) -> DeletedMessages:
         """Delete up to `limit` of the bound tenant's oldest messages sent before
-        `cutoff`, with their attachments. Returns their transport event ids.
+        `cutoff`, with their attachments.
 
         See `_delete_where` for what else changes and what does not.
         """
-        deleted = await self._delete_where(
-            session, Message.sent_at < cutoff, limit=limit
-        )
-        return deleted.event_ids
+        return await self._delete_where(session, Message.sent_at < cutoff, limit=limit)
 
     async def delete_sent_by(
         self, session: AsyncSession, *, transport_user_id: str, limit: int
@@ -262,7 +263,14 @@ class MessageStore:
         rows = (
             await session.execute(
                 select(
-                    Message.id, Message.room_id, Message.seq, Message.transport_event_id
+                    Message.id,
+                    Message.room_id,
+                    Message.seq,
+                    Message.transport_event_id,
+                    func.coalesce(
+                        Message.content[ATTACHMENT_GROUP_KEY]["id"].astext,
+                        Message.transport_event_id,
+                    ).label("message_key"),
                 )
                 .where(Message.tenant_id == require_tenant_id(), condition)
                 .order_by(Message.sent_at)
@@ -270,7 +278,9 @@ class MessageStore:
             )
         ).all()
         if not rows:
-            return DeletedMessages(event_ids=[], uris=set(), room_ids=set())
+            return DeletedMessages(
+                event_ids=[], message_keys=set(), uris=set(), room_ids=set()
+            )
         message_ids = [r.id for r in rows]
         uris = set(
             (
@@ -294,6 +304,7 @@ class MessageStore:
         await session.execute(delete(Message).where(Message.id.in_(message_ids)))
         return DeletedMessages(
             event_ids=[row.transport_event_id for row in rows],
+            message_keys={row.message_key for row in rows},
             uris=uris,
             room_ids=set(floors),
         )

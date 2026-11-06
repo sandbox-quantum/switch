@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.db.models import (
     Agent,
     AgentEventRow,
@@ -549,6 +550,62 @@ class TestErasing:
         assert dm_after.description == "Acme Slack DM — erased person / helper"
         assert channel_after.name == "Acme Slack: ana-fans"
         assert copies == 0
+
+    async def test_agent_copies_of_files_sent_together_go(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            person = await _person(session, await _bridge(session), "ana")
+            client = await _client_of(session, person)
+            room = await _room(session, "files")
+            for event_id in ("$part-1", "$part-2"):
+                part = await MessageStore().create(
+                    session,
+                    Message(
+                        room_id=room.id,
+                        transport_event_id=event_id,
+                        sender_id=client.transport_user_id,
+                        sender_client_id=client.id,
+                        event_type="m.room.message",
+                        msgtype="m.file",
+                        body=event_id,
+                        content={
+                            "msgtype": "m.file",
+                            "body": event_id,
+                            ATTACHMENT_GROUP_KEY: {"id": "group-ana", "count": 2},
+                        },
+                    ),
+                    [],
+                )
+            other = await _person(session, await _bridge(session), "bo")
+            kept = await _say(session, room, await _client_of(session, other), "$bo")
+            agent = await _agent(session)
+            for seq, key in enumerate(("group-ana", kept.transport_event_id), start=1):
+                session.add(
+                    AgentEventRow(
+                        agent_id=agent.id,
+                        seq=seq,
+                        room_id=room.id,
+                        room_seq=part.seq,
+                        message_key=key,
+                        type="message",
+                        payload={"body": key},
+                        notifiable=True,
+                    )
+                )
+            await session.commit()
+            person_id = person.id
+        await _queue(session_factory, [person_id])
+
+        await ErasureService(session_factory, _Clients(), _Bridges()).work_once(
+            datetime.now(UTC)
+        )
+
+        async with session_factory() as session:
+            copies = set(
+                (await session.execute(select(AgentEventRow.message_key))).scalars()
+            )
+        assert copies == {"$bo"}
 
 
 class TestQueue:

@@ -16,9 +16,11 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
+    AgentEventRow,
     ApiKey,
     ApprovalRequest,
     BridgeMessageMap,
@@ -211,6 +213,57 @@ class TestMessages:
             )
         assert attachments == 0
         assert mapped == {"$unrelated"}
+
+    async def test_agents_copies_go_with_their_message_files_sent_together_too(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session, "copies")
+            for event_id in ("$part-1", "$part-2"):
+                await MessageStore().create(
+                    session,
+                    Message(
+                        room_id=room.id,
+                        transport_event_id=event_id,
+                        sender_id="@sender:test",
+                        event_type="m.room.message",
+                        msgtype="m.file",
+                        body=event_id,
+                        content={
+                            "msgtype": "m.file",
+                            "body": event_id,
+                            ATTACHMENT_GROUP_KEY: {"id": "group-1", "count": 2},
+                        },
+                        sent_at=NOW - timedelta(days=60),
+                    ),
+                    [],
+                )
+            await _message(session, room, "$old-single", age_days=60)
+            recent = await _message(session, room, "$recent", age_days=1)
+            agent = await _agent(session)
+            for seq, key in enumerate(("group-1", "$old-single", "$recent"), start=1):
+                session.add(
+                    AgentEventRow(
+                        agent_id=agent.id,
+                        seq=seq,
+                        room_id=room.id,
+                        room_seq=recent.seq,
+                        message_key=key,
+                        type="message",
+                        payload={"body": key},
+                        notifiable=True,
+                    )
+                )
+            await session.commit()
+        await _set_policy(session_factory, 30, TENANT_ZERO_ID)
+
+        await RetentionService(session_factory).apply(NOW, BUDGET)
+
+        async with session_factory() as session:
+            kept = set(
+                (await session.execute(select(AgentEventRow.message_key))).scalars()
+            )
+        assert kept == {"$recent"}
 
     async def test_another_workspaces_window_does_not_reach_this_one(
         self, session_factory: async_sessionmaker[AsyncSession]

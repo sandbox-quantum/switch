@@ -154,12 +154,13 @@ class RetentionService:
         deleted = 0
         while True:
             async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                event_ids = await self._messages.delete_sent_before(
+                batch = await self._messages.delete_sent_before(
                     db, cutoff, limit=MESSAGE_BATCH
                 )
-                await self._retention.delete_bridge_mappings(db, event_ids)
-            deleted += len(event_ids)
-            if len(event_ids) < MESSAGE_BATCH:
+                await self._retention.delete_bridge_mappings(db, batch.event_ids)
+                await self._retention.delete_agent_copies(db, batch.message_keys)
+            deleted += len(batch.event_ids)
+            if len(batch.event_ids) < MESSAGE_BATCH:
                 return deleted, False
             if time.monotonic() >= deadline:
                 return deleted, True

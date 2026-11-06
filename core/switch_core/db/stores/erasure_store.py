@@ -38,7 +38,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.db.models import (
-    AgentEventRow,
     ApprovalRequest,
     Client,
     ClientRoom,
@@ -495,21 +494,6 @@ class ErasureStore:
             execution_options={"populate_existing": True},
         )
         return result.scalar_one()
-
-    async def delete_agent_copies(
-        self, session: AsyncSession, transport_event_ids: Collection[str]
-    ) -> None:
-        """Delete the copies of these (deleted) messages stored as events for
-        agents (`agent_events`), which would otherwise outlive them until the
-        event retention sweep."""
-        if not transport_event_ids:
-            return
-        await session.execute(
-            delete(AgentEventRow).where(
-                AgentEventRow.tenant_id == require_tenant_id(),
-                AgentEventRow.message_key.in_(list(transport_event_ids)),
-            )
-        )
 
     async def scrub_approval_answers(
         self, session: AsyncSession, transport_user_id: str

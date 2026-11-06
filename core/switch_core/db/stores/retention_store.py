@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
+    AgentEventRow,
     ApprovalRequest,
     BridgeMessageMap,
     Invitation,
@@ -118,6 +119,21 @@ class RetentionStore:
             )
         )
         return _rowcount(result)
+
+    async def delete_agent_copies(
+        self, session: AsyncSession, message_keys: Collection[str]
+    ) -> None:
+        """Delete the copies of these (deleted) messages stored as events for
+        agents (`agent_events`), keyed as `DeletedMessages.message_keys`, which
+        would otherwise outlive them until the event retention sweep."""
+        if not message_keys:
+            return
+        await session.execute(
+            delete(AgentEventRow).where(
+                AgentEventRow.tenant_id == require_tenant_id(),
+                AgentEventRow.message_key.in_(list(message_keys)),
+            )
+        )
 
     async def delete_unreferenced_media(
         self, session: AsyncSession, *, created_before: datetime, limit: int
