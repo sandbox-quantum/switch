@@ -48,6 +48,16 @@ export interface OverviewBox {
   node: string | null;
   memoryUsedBytes: number | null;
   restartsToday: number | null;
+  /** The box's memory; null from an older Core or before it has reported. */
+  memoryTotalBytes: number | null;
+  /** Sessions awake out of the box's limit; null when not reported. */
+  awake: { running: number; max: number } | null;
+  /** When it last did work, last reported, and was last seen come up (ISO). */
+  activeAt: string | null;
+  heartbeatAt: string | null;
+  runningObservedAt: string | null;
+  /** For a put-away box: when it goes for good (ISO); null when not set. */
+  retainUntil: string | null;
 }
 
 export interface OverviewMachine {
@@ -162,6 +172,18 @@ function person(raw: unknown): OverviewPerson | null {
   return { userId, agents, paused: raw.paused === true };
 }
 
+/** A time Core sent, kept only when it reads as a real date. */
+function moment(value: unknown): string | null {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : null;
+}
+
+function awakeOf(value: unknown): OverviewBox["awake"] {
+  if (!isRecord(value)) return null;
+  const running = count(value.running);
+  const max = count(value.max);
+  return running === null || max === null || max === 0 ? null : { running, max };
+}
+
 function box(raw: unknown): OverviewBox | null {
   if (!isRecord(raw)) return null;
   const id = stringOrNull(raw.box);
@@ -179,6 +201,12 @@ function box(raw: unknown): OverviewBox | null {
     node: raw.node as string | null,
     memoryUsedBytes: figure(raw.memory_used_bytes),
     restartsToday: count(raw.restarts_today),
+    memoryTotalBytes: figure(raw.memory_total_bytes) || null,
+    awake: awakeOf(raw.awake),
+    activeAt: moment(raw.active_at),
+    heartbeatAt: moment(raw.heartbeat_at),
+    runningObservedAt: moment(raw.running_observed_at),
+    retainUntil: moment(raw.retain_until),
   };
 }
 
