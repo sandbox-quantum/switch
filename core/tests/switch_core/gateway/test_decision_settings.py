@@ -223,7 +223,7 @@ async def test_no_server_default_offers_no_haiku_and_says_why(
 async def test_a_haiku_key_round_trips_as_its_last_four(
     session_factory: async_sessionmaker[AsyncSession], service: _Service
 ) -> None:
-    admin = await _person(session_factory, "ada", role="owner")
+    admin = await _person(session_factory, "ada", role="admin")
     async with _as(_app(session_factory, service), admin) as client:
         saved = await client.put(
             "/decision-settings",
