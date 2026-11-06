@@ -1,0 +1,21 @@
+{
+  "sse_id": "285-9",
+  "event": "receive",
+  "data": {
+    "envelope": {
+      "source": "+15555550200",
+      "sourceNumber": "+15555550200",
+      "sourceUuid": "00000000-0000-4000-8000-000000000002",
+      "sourceName": "Alex",
+      "sourceDevice": 1,
+      "timestamp": 1010749,
+      "serverReceivedTimestamp": 1010867,
+      "serverDeliveredTimestamp": 1010887,
+      "typingMessage": {
+        "action": "STARTED",
+        "timestamp": 1010749
+      }
+    },
+    "account": "+15555550100"
+  }
+}

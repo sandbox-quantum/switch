@@ -1,0 +1,17 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "listAccounts"
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "number": "+15555550100",
+        "aci": "00000000-0000-4000-8000-000000000001"
+      }
+    ],
+    "id": 2
+  }
+}

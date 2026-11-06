@@ -1,0 +1,40 @@
+{
+  "sse_id": "285-15",
+  "event": "receive",
+  "data": {
+    "envelope": {
+      "source": "+15555550200",
+      "sourceNumber": "+15555550200",
+      "sourceUuid": "00000000-0000-4000-8000-000000000002",
+      "sourceName": "Alex",
+      "sourceDevice": 1,
+      "timestamp": 1053070,
+      "serverReceivedTimestamp": 1056634,
+      "serverDeliveredTimestamp": 1056669,
+      "dataMessage": {
+        "timestamp": 1053070,
+        "message": null,
+        "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
+        "viewOnce": false,
+        "isEndSession": false,
+        "isProfileKeyUpdate": false,
+        "hasProfileKey": true,
+        "attachments": [
+          {
+            "contentType": "image/jpeg",
+            "filename": "probe-attachment.jpeg",
+            "id": "cHJvYmUtYXR0YWNobWVudC0xLmpwZWc=",
+            "size": 223709,
+            "width": 900,
+            "height": 1600,
+            "caption": null,
+            "uploadTimestamp": 1053408,
+            "isVoiceNote": false
+          }
+        ]
+      }
+    },
+    "account": "+15555550100"
+  }
+}

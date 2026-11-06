@@ -1,0 +1,14 @@
+{
+  "request": {
+    "jsonrpc": "2.0"
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32600,
+      "message": "method field must be set",
+      "data": null
+    },
+    "id": null
+  }
+}

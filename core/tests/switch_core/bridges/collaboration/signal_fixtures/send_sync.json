@@ -1,0 +1,32 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 21,
+    "method": "send",
+    "params": {
+      "account": "+15555550100",
+      "recipient": [
+        "+15555550200"
+      ],
+      "message": "synccheck"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "results": [
+        {
+          "recipientAddress": {
+            "uuid": "00000000-0000-4000-8000-000000000002",
+            "number": "+15555550200",
+            "username": null
+          },
+          "type": "SUCCESS"
+        }
+      ],
+      "timestamp": 1356973
+    },
+    "id": 21
+  },
+  "note": "the bot's own outbound sends do NOT appear on the SSE stream: no syncMessage events were recorded while sse_sync_check.raw ran"
+}

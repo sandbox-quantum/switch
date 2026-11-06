@@ -1,0 +1,20 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "method": "getAttachment",
+    "params": {
+      "account": "+15555550100",
+      "id": "cHJvYmUtYXR0YWNobWVudC0xLmpwZWc=",
+      "recipient": "+15555550200"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "data": "/9j/4AAQSkZJRg\u2026 (trimmed 223709-byte JPEG; shape is result.data = base64)"
+    },
+    "id": 12
+  },
+  "note": "result.data is the base64 of the attachment; payload trimmed to keep the fixture small."
+}

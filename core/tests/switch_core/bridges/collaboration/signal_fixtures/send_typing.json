@@ -1,0 +1,30 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "sendTyping",
+    "params": {
+      "account": "+15555550100",
+      "recipient": [
+        "+15555550200"
+      ]
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "results": [
+        {
+          "recipientAddress": {
+            "uuid": "00000000-0000-4000-8000-000000000002",
+            "number": "+15555550200",
+            "username": null
+          },
+          "type": "SUCCESS"
+        }
+      ],
+      "timestamp": 995599
+    },
+    "id": 10
+  }
+}

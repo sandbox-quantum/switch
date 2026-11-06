@@ -1,0 +1,14 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "version"
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "version": "0.14.9"
+    },
+    "id": 1
+  }
+}

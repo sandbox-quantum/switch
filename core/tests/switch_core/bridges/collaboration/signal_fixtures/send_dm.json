@@ -1,0 +1,31 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "send",
+    "params": {
+      "account": "+15555550100",
+      "recipient": [
+        "+15555550200"
+      ],
+      "message": "probe dm plain"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "results": [
+        {
+          "recipientAddress": {
+            "uuid": "00000000-0000-4000-8000-000000000002",
+            "number": "+15555550200",
+            "username": null
+          },
+          "type": "SUCCESS"
+        }
+      ],
+      "timestamp": 989509
+    },
+    "id": 4
+  }
+}

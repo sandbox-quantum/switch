@@ -1,0 +1,20 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 25,
+    "method": "send",
+    "params": {
+      "account": "+15555550100",
+      "message": "x"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -1,
+      "message": "No recipients given",
+      "data": null
+    },
+    "id": 25
+  }
+}
