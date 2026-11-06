@@ -18,6 +18,7 @@ workspace admin's reach, and one it set unlocked is the workspace's default.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -65,9 +66,14 @@ async def list_workspace_services(
     _: Annotated[User, Depends(require_tenant_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
     organizations: Annotated[bool, Depends(organization_apps_on)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict[str, Any]:
-    """Every catalog service that can be connected, whether the workspace has
-    it on, and who it reaches: what an admin weighs before switching it off."""
+    """Every service the catalog enables, whether the workspace has it on,
+    and who it reaches: what an admin weighs before switching it off. One this
+    server cannot connect (its app not set up, or switched off here) is
+    listed too. A member counts as connected while their connection works, by
+    the status their own Connectors page shows, not one that needs
+    reconnecting."""
     settings = await STORE.list_settings(session)
     above = await STORE.organization_settings(session) if organizations else {}
     switches = await STORE.switches(
@@ -84,7 +90,23 @@ async def list_workspace_services(
         user.id: user.name
         for user in await session.scalars(select(User).where(User.id.in_(authors)))
     }
-    connected = await _counts(session, ServiceConnection.user_id, ServiceConnection)
+    connections = list(
+        await session.scalars(
+            select(ServiceConnection).where(
+                ServiceConnection.tenant_id == require_tenant_id()
+            )
+        )
+    )
+    standings = {
+        service: await broker.standing(session, service)
+        for service in {connection.service for connection in connections}
+    }
+    connected = Counter(
+        connection.service
+        for connection in connections
+        if broker.connection_status(standings[connection.service], connection)
+        == "active"
+    )
     granted = await _counts(session, ServiceGrant.agent_id, ServiceGrant)
     services = []
     for entry in CATALOG.values():

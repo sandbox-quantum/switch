@@ -110,8 +110,45 @@ describe("ConnectorAppsPage", () => {
     expect(screen.getByText(/People are sent back to https:\/\/switch\.example\.test\./)).toBeTruthy();
   });
 
-  it("holds GitHub's set-up when the public URL is not https, saying why", async () => {
-    const blocked = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people back to Switch.";
+  it("says a GitHub App short of write lets agents read only, and reads it again after a check", async () => {
+    const readOnly = { ...GITHUB, read_only: true, lacks_write: ["Contents", "Pull requests"] };
+    let listed = readOnly;
+    const calls = serve(listOf(readOnly), {
+      "GET /gateway/connector-apps": () => [200, listOf(listed)],
+      "POST /gateway/connector-apps/github/check": () => {
+        listed = GITHUB;
+        return [
+          200,
+          {
+            ok: true,
+            checks: [
+              {
+                name: "permissions",
+                ok: true,
+                message: "The App has the repository permissions agents are granted.",
+                field: null,
+                note: null,
+              },
+            ],
+          },
+        ];
+      },
+    });
+    render(<ConnectorAppsPage />);
+    await screen.findByTestId("connector-app-github");
+    const line =
+      "Agents can read only: the App lacks Contents and Pull requests write. Write grants are refused.";
+    expect(card("github").getByText(line)).toBeTruthy();
+    // A choice the operator made, not a fault: the card is still ready.
+    expect(card("github").getByText("Ready")).toBeTruthy();
+
+    fireEvent.click(card("github").getByRole("button", { name: "Check it works" }));
+    await waitFor(() => expect(card("github").queryByText(line)).toBeNull());
+    expect(calls.filter((c) => c.path === "/gateway/connector-apps").length).toBe(2);
+  });
+
+  it("holds GitHub's set-up when the public URL is neither https nor loopback, saying why", async () => {
+    const blocked = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, or a loopback http one (localhost, 127.0.0.1 or ::1), to send people back to Switch.";
     serve({
       ...listOf(
         {

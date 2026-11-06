@@ -144,6 +144,7 @@ class _Server:
             keyring=TEST_KEYRING,
             public_url=public_url,
             server_name="switch.local",
+            redirects={},
         )
         self.apps = ConnectorApps(
             catalog=catalog,
@@ -187,6 +188,7 @@ class _Server:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=PUBLIC_URL,
+            allow_non_expiring_keys=False,
         )
 
 
@@ -194,7 +196,7 @@ async def _client_in(broker: ServiceBroker, tenant_id: str) -> str | None:
     """The OAuth client `tenant_id` signs in to Google Workspace through."""
     async with tenant_session(broker._session_factory, tenant_id) as session:
         _, adapter = await broker.sign_in(session, GOOGLE)
-    return adapter.current_client_id()
+    return adapter.current_client_id({})
 
 
 async def _eventually(check: Callable[[], Awaitable[bool]]) -> None:
@@ -336,7 +338,7 @@ class TestTheAccessProfile:
         async with tenant_session(rls_harness.restricted, tenant_id) as session:
             definition, adapter = await broker.sign_in(session, GOOGLE)
 
-        assert adapter.current_client_id() == "organization-client-id"
+        assert adapter.current_client_id({}) == "organization-client-id"
         profile = CATALOG[GOOGLE].definition.access_profiles["drive-file"]
         assert definition.access == profile.access
         assert adapter._definition.access == profile.access
@@ -359,16 +361,16 @@ class TestRevoking:
 
         async with tenant_session(rls_harness.restricted, tenant_id) as session:
             # Made through the server's app, before the organization saved its own.
-            before = await broker._revoker(session, GOOGLE, SERVER_CLIENT)
-            since = await broker._revoker(session, GOOGLE, "organization-client-id")
+            before = await broker._revoker(session, GOOGLE, SERVER_CLIENT, {})
+            since = await broker._revoker(session, GOOGLE, "organization-client-id", {})
             # From before clients were recorded, and so before organizations'
             # apps: the server's.
-            legacy = await broker._revoker(session, GOOGLE, None)
+            legacy = await broker._revoker(session, GOOGLE, None, {})
             with pytest.raises(ServiceUnavailableError) as gone:
-                await broker._revoker(session, GOOGLE, "replaced-client-id")
-        assert before.current_client_id() == SERVER_CLIENT
-        assert legacy.current_client_id() == SERVER_CLIENT
-        assert since.current_client_id() == "organization-client-id"
+                await broker._revoker(session, GOOGLE, "replaced-client-id", {})
+        assert before.current_client_id({}) == SERVER_CLIENT
+        assert legacy.current_client_id({}) == SERVER_CLIENT
+        assert since.current_client_id({}) == "organization-client-id"
         assert "no longer uses the Google Workspace app" in str(gone.value)
 
     async def test_an_issued_token_is_revoked_where_the_organizations_app_is_unusable(
@@ -467,7 +469,7 @@ class TestKept:
         await _save(rls_harness.owner, organization_id, "second-client")
         changed = await server.lookup(tenant_id, GOOGLE)
         assert changed is not None and changed.adapter is not None
-        assert changed.adapter.current_client_id() == "second-client"
+        assert changed.adapter.current_client_id({}) == "second-client"
 
     async def test_a_change_during_a_read_is_not_overwritten_by_it(
         self,

@@ -186,6 +186,7 @@ class OrganizationApps:
         try:
             loaded = load_saved_app(
                 spec,
+                definition=self._apps.definition(spec.service),
                 client_id=row.client_id,
                 settings=row.settings,
                 secrets=lambda: self._store.secrets(row),

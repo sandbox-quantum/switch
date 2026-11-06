@@ -2,6 +2,9 @@ import { rpc } from '@renderer/lib/ipc';
 import type {
   ServiceFlow,
   ServiceKeyConnected,
+  ServicePaste,
+  ServicePasteConnected,
+  ServiceSignInStarted,
 } from '@shared/core/switch-servers/service-connection';
 
 /**
@@ -10,33 +13,42 @@ import type {
  * shows, so a page for one workspace never connects or disconnects in another.
  */
 export type ServiceCalls = {
-  startSignIn: (service: string) => Promise<string>;
+  /** `choices`: what the person picked before signing in (a vendor's site), or none. */
+  startSignIn: (service: string, choices: Record<string, string>) => Promise<ServiceSignInStarted>;
   getSignIn: (service: string, flowId: string) => Promise<ServiceFlow>;
   cancelSignIn: (service: string, flowId: string) => Promise<void>;
   connectWithKey: (service: string, fields: Record<string, string>) => Promise<ServiceKeyConnected>;
+  /** Connect a service people sign in to with a token or keys pasted in place of the sign-in. */
+  connectWithPaste: (service: string, paste: ServicePaste) => Promise<ServicePasteConnected>;
   disconnect: (service: string) => Promise<{ warning: string | null }>;
 };
 
 export function serverServiceCalls(serverId: string): ServiceCalls {
   return {
-    startSignIn: (service) => rpc.switchServers.startServiceConnection(serverId, service),
+    startSignIn: (service, choices) =>
+      rpc.switchServers.startServiceConnection(serverId, service, choices),
     getSignIn: (service, flowId) => rpc.switchServers.getServiceFlow(serverId, service, flowId),
     cancelSignIn: (service, flowId) =>
       rpc.switchServers.cancelServiceConnection(serverId, service, flowId),
     connectWithKey: (service, fields) =>
       rpc.switchServers.connectServiceWithKey(serverId, service, fields),
+    connectWithPaste: (service, paste) =>
+      rpc.switchServers.connectServiceWithPaste(serverId, service, paste),
     disconnect: (service) => rpc.switchServers.disconnectService(serverId, service),
   };
 }
 
 export function workspaceServiceCalls(workspaceId: string): ServiceCalls {
   return {
-    startSignIn: (service) => rpc.workspaces.startServiceConnection({ workspaceId, service }),
+    startSignIn: (service, choices) =>
+      rpc.workspaces.startServiceConnection({ workspaceId, service, choices }),
     getSignIn: (service, flowId) => rpc.workspaces.getServiceFlow({ workspaceId, service, flowId }),
     cancelSignIn: (service, flowId) =>
       rpc.workspaces.cancelServiceConnection({ workspaceId, service, flowId }),
     connectWithKey: (service, fields) =>
       rpc.workspaces.connectServiceWithKey({ workspaceId, service, fields }),
+    connectWithPaste: (service, paste) =>
+      rpc.workspaces.connectServiceWithPaste({ workspaceId, service, ...paste }),
     disconnect: (service) => rpc.workspaces.disconnectService({ workspaceId, service }),
   };
 }

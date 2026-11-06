@@ -11,15 +11,18 @@ loads at boot and serves GitHub's own sign-in.
 Where an app comes from, and why configuration wins over a saved one, is
 `connections/app_credentials.py`. A save is checked with the vendor first
 (`connections/app_checks.py`) and stored only if the vendor accepts it; it
-takes effect at once, in every process (`connections/app_signals.py`). No
-response carries a secret: a client secret shows its last four characters,
-a private key its fingerprint.
+takes effect at once, in every process (`connections/app_signals.py`). A
+check of a saved app stores again what the vendor says of it that Switch
+keeps (a GitHub App's slug and permissions) where that changed, so an App
+whose write permissions were taken away or added is read-only, or no longer
+is, from then on. No response carries a secret: a client secret shows its
+last four characters, a private key its fingerprint.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, cast
@@ -30,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.connections.adapters.github import permission_name
 from switch_core.connections.app_checks import (
     CheckResult,
     VendorUnreachableError,
@@ -44,15 +48,13 @@ from switch_core.connections.app_credentials import (
     github_needs_https,
 )
 from switch_core.connections.broker import ServiceBroker, get_service_broker
-from switch_core.connections.loader import CATALOG
-from switch_core.connections.oauth_clients import redirect_uris
+from switch_core.connections.oauth_clients import preferred_mode, redirect_uris
 from switch_core.connections.registry import every_scope
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
     OrganizationAppCredential,
     ServiceAppCredential,
     ServiceConnection,
-    ServiceOAuthClient,
     Tenant,
     User,
 )
@@ -95,28 +97,26 @@ class SaveApp(BaseModel):
 class Usage:
     """The connections a service has across every workspace."""
 
-    # (tenant, status, recorded client) for each connection.
-    rows: list[tuple[str, str, str | None]]
+    # (tenant, person, status, recorded client) for each connection.
+    rows: list[tuple[str, str, str, str | None]]
 
     def through(self, client_id: str | None) -> tuple[int, int]:
         """People and workspaces whose live connection goes through
         `client_id`; one recorded before clients were is taken to."""
-        affected = [
-            tenant
-            for tenant, status, recorded in self.rows
+        return _people_and_workspaces(
+            (tenant, person)
+            for tenant, person, status, recorded in self.rows
             if status == "active" and (recorded is None or recorded == client_id)
-        ]
-        return len(affected), len(set(affected))
+        )
 
     def not_through(self, proposed: str, current: str | None) -> tuple[int, int]:
         """People and workspaces who must reconnect if `proposed` replaces
         `current`."""
-        affected = [
-            tenant
-            for tenant, status, recorded in self.rows
+        return _people_and_workspaces(
+            (tenant, person)
+            for tenant, person, status, recorded in self.rows
             if status == "active" and (recorded or current) != proposed
-        ]
-        return len(affected), len(set(affected))
+        )
 
     def stale(self, current: str | None) -> int:
         """Connections made through an app this server no longer uses."""
@@ -124,16 +124,23 @@ class Usage:
             return 0
         return sum(
             1
-            for _, _, recorded in self.rows
+            for _, _, _, recorded in self.rows
             if recorded is not None and recorded != current
         )
+
+
+def _people_and_workspaces(affected: Iterable[tuple[str, str]]) -> tuple[int, int]:
+    """How many people, and in how many workspaces: a person connected in two
+    workspaces is one person."""
+    pairs = list(affected)
+    return len({person for _, person in pairs}), len({tenant for tenant, _ in pairs})
 
 
 @dataclass(frozen=True)
 class Usages:
     """Every service's connections across some workspaces."""
 
-    rows: dict[str, list[tuple[str, str, str | None]]]
+    rows: dict[str, list[tuple[str, str, str, str | None]]]
 
     def of(self, service: str) -> Usage:
         return Usage(self.rows.get(service, []))
@@ -149,7 +156,7 @@ async def usages_in(
     time, each bound before it is touched. With `leave_out_organization_apps`,
     a workspace's connections to a service its organization saved its own app
     for are left out: they never went through the server's."""
-    rows: dict[str, list[tuple[str, str, str | None]]] = {}
+    rows: dict[str, list[tuple[str, str, str, str | None]]] = {}
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             own: set[str] = set()
@@ -168,13 +175,16 @@ async def usages_in(
             result = await session.execute(
                 select(
                     ServiceConnection.service,
+                    ServiceConnection.user_id,
                     ServiceConnection.status,
                     ServiceConnection.oauth_client_id,
                 ).where(ServiceConnection.tenant_id == tenant_id)
             )
-            for service, status, client in result:
+            for service, person, status, client in result:
                 if service not in own:
-                    rows.setdefault(service, []).append((tenant_id, status, client))
+                    rows.setdefault(service, []).append(
+                        (tenant_id, person, status, client)
+                    )
     return Usages(rows)
 
 
@@ -205,8 +215,8 @@ def app_spec(apps: ConnectorApps, service: str) -> AppSpec:
 
 def setup_blocked(spec: AppSpec, public_url: str | None) -> str | None:
     """Why the operator can't set this app up here, known before any vendor
-    is asked. An unset GATEWAY_PUBLIC_URL is the page's own banner; Google
-    accepts an http redirect for local development, GitHub does not."""
+    is asked. An unset GATEWAY_PUBLIC_URL is the page's own banner; GitHub
+    sends people back only to https, or to plain http on this computer."""
     if github_needs_https(spec.kind, public_url):
         return GITHUB_NEEDS_HTTPS
     return None
@@ -242,15 +252,23 @@ def saved_app_redirects(apps: ConnectorApps, spec: AppSpec) -> list[str]:
         )
     oauth = apps.definition(spec.service).auth.oauth
     assert oauth is not None
-    return redirect_uris(spec.service, oauth.redirect, public_url, oauth.loopback_ports)
+    return redirect_uris(
+        spec.service,
+        oauth.redirect,
+        apps.named_redirect(spec.service),
+        public_url,
+        oauth.loopback_ports,
+    )
 
 
 def needs_public_url(apps: ConnectorApps, spec: AppSpec) -> bool:
+    """Whether people are sent back to the server rather than to Switch
+    Console, which takes its public URL."""
     if spec.kind == "github_app":
         return True
     oauth = apps.definition(spec.service).auth.oauth
     assert oauth is not None
-    return "core" in oauth.redirect
+    return preferred_mode(oauth.redirect, apps.named_redirect(spec.service)) == "core"
 
 
 def app_scopes(apps: ConnectorApps, spec: AppSpec) -> list[str]:
@@ -331,10 +349,13 @@ def entry_body(
     load_error: str | None,
     redirects: list[str],
     usage: Usage,
+    lacks_write: tuple[str, ...],
 ) -> dict[str, Any]:
     """One service's app as a connector-apps page shows it, the server's or
     an organization's: one shape, read by one set of cards. `current` is the
-    client in use, if any; `shown` the values whose secrets are described."""
+    client in use, if any; `shown` the values whose secrets are described;
+    `lacks_write` the write level's permissions a GitHub App in use is short
+    of."""
     people, workspaces = usage.through(current) if current is not None else (0, 0)
     settings = (
         shown.settings
@@ -368,6 +389,11 @@ def entry_body(
         "needs_public_url": needs_public_url(apps, spec),
         "scopes": app_scopes(apps, spec),
         "setup_blocked": setup_blocked(spec, apps.public_url),
+        # A GitHub App short of the write level's permissions: agents can
+        # read only through it, and a write grant is refused.
+        "read_only": bool(lacks_write),
+        # Those it lacks, as the App's settings page names them.
+        "lacks_write": [permission_name(name) for name in lacks_write],
         "install_url": (
             f"https://github.com/apps/{slug}/installations/new"
             if spec.kind == "github_app" and slug
@@ -433,6 +459,9 @@ def _entry(
         load_error=effective.load_error,
         redirects=_redirects(apps, spec, effective),
         usage=usage,
+        lacks_write=(
+            () if effective.github_app is None else effective.github_app.lacks_write
+        ),
     )
 
 
@@ -449,34 +478,6 @@ async def _one_entry(
     await session.commit()
     usages = await _usages(session_factory, organization_apps)
     return _entry(apps, spec, read, usages.of(spec.service))
-
-
-async def _registered(session: AsyncSession) -> list[dict[str, Any]]:
-    """Services whose client Core registers for itself: nothing to set up."""
-    rows = {
-        row.service: row for row in await session.scalars(select(ServiceOAuthClient))
-    }
-    entries = []
-    for slug, entry in CATALOG.items():
-        oauth = entry.definition.auth.oauth
-        if (
-            not entry.definition.enabled
-            or entry.definition.adapter != "oauth"
-            or oauth is None
-            or oauth.registration != "dynamic"
-        ):
-            continue
-        row = rows.get(slug)
-        entries.append(
-            {
-                "slug": slug,
-                "name": entry.definition.name,
-                "kind": "registered",
-                "client_id": None if row is None else row.oauth_client_id,
-                "registered_at": None if row is None else row.created_at.isoformat(),
-            }
-        )
-    return entries
 
 
 def _refuse_while_configured(effective: EffectiveCredentials) -> None:
@@ -529,7 +530,7 @@ async def check_values(
 def fields_changed(
     previous: AppValues | None,
     client_id: str,
-    settings: dict[str, str],
+    settings: dict[str, Any],
     given: dict[str, str],
 ) -> list[str]:
     if previous is None:
@@ -669,7 +670,6 @@ async def list_connector_apps(
     _admin: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
     reads = [(spec, await _read(session, apps, spec)) for spec in apps.specs.values()]
-    registered = await _registered(session)
     # The request's connection goes back before the scan opens one per workspace.
     await session.commit()
     usages = await _usages(session_factory, organization_apps)
@@ -678,7 +678,6 @@ async def list_connector_apps(
         "apps": [
             _entry(apps, spec, read, usages.of(spec.service)) for spec, read in reads
         ],
-        "registered": registered,
     }
 
 
@@ -813,10 +812,15 @@ async def import_connector_app(
 @router.post("/{service}/check")
 async def check_connector_app(
     service: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
-    _admin: Annotated[User, Depends(require_admin)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    admin: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
-    """Ask the vendor about the app in use; nothing is stored."""
+    """Ask the vendor about the app in use. What it says of a saved app that
+    passes the check is stored again where it changed, and in use at once.
+    Nothing of an app from configuration is stored."""
     spec = app_spec(apps, service)
     effective = apps.effective(service)
     # A configured GitHub App is called back at its own origin, not this URL.
@@ -828,9 +832,32 @@ async def check_connector_app(
         raise HTTPException(
             409, "HOSTED_GITHUB_CONFIG_PATH names no private key to check."
         )
-    result = await check_values(
-        apps, spec, effective.values, _redirects(apps, spec, effective)
-    )
+    values = effective.values
+    result = await check_values(apps, spec, values, _redirects(apps, spec, effective))
+    if (
+        effective.source == "saved"
+        and result.ok
+        and result.settings
+        and result.settings != values.settings
+    ):
+        recorded = await apps.store.record_settings(
+            session,
+            service=service,
+            client_id=values.client_id,
+            settings=result.settings,
+            updated_by=admin.id,
+        )
+        await session.commit()
+        if recorded is not None:
+            await apps.apply(service, broker=broker, state=request.app.state)
+            apps.announce(service)
+            logger.warning(
+                "Checking %s's app stored what the vendor now says of it: user=%s "
+                "fields=%s",
+                spec.name,
+                admin.id,
+                fields_changed(values, values.client_id, result.settings, {}),
+            )
     return {"ok": result.ok, "checks": checks_body(result)}
 
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,10 +36,11 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import (
-    TEMPLATE_FIELD_RE,
     AccessLevel,
+    ApiKeyField,
     ApiKeySignIn,
     ConnectionDefinition,
+    render,
 )
 
 # A key may carry any printable character but a space, which keeps it a
@@ -57,18 +59,57 @@ class KeyIdentity:
     label: str
 
 
-def render(template: str, values: dict[str, str]) -> str:
-    """`template` with each `{field}` replaced by its value."""
-    return TEMPLATE_FIELD_RE.sub(lambda match: values[match.group(1)], template)
+def credential_token(secret: Mapping[str, str], public: Mapping[str, str]) -> str:
+    """A pasted credential as a session host is handed it: compact JSON of
+    its secret fields and its public ones (a site)."""
+    return json.dumps(
+        {"secret": dict(secret), "public": dict(public)},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def key_token(sign_in: ApiKeySignIn, values: dict[str, str]) -> str:
     """The token a session host is handed: the fields, split by secrecy."""
-    secret = {f.name: values[f.name] for f in sign_in.fields if f.secret}
-    public = {f.name: values[f.name] for f in sign_in.fields if not f.secret}
-    return json.dumps(
-        {"secret": secret, "public": public}, separators=(",", ":"), sort_keys=True
+    return credential_token(
+        {f.name: values[f.name] for f in sign_in.fields if f.secret},
+        {f.name: values[f.name] for f in sign_in.fields if not f.secret},
     )
+
+
+def checked_fields(
+    name: str, fields: list[ApiKeyField], submitted: Mapping[str, str]
+) -> dict[str, str]:
+    """The submitted fields, each as `fields` allows, and nothing else: a
+    choice among its choices, a secret one line of printable characters.
+    `name` is the service's, for the refusal."""
+    expected = {field.name: field for field in fields}
+    unknown = sorted(set(submitted) - set(expected))
+    if unknown:
+        raise InvalidKeyError(f"{name} takes no field named {', '.join(unknown)}.")
+    values: dict[str, str] = {}
+    for field_name, field in expected.items():
+        value = submitted.get(field_name, "").strip()
+        if not value:
+            raise InvalidKeyError(f"{field.label} is required.")
+        if field.choices is not None:
+            if value not in field.choices:
+                raise InvalidKeyError(
+                    f"{field.label} must be one of {', '.join(field.choices)}."
+                )
+        elif not FIELD_VALUE_RE.fullmatch(value):
+            raise InvalidKeyError(
+                f"{field.label} must be one line of printable characters, "
+                "without spaces."
+            )
+        values[field_name] = value
+    return values
+
+
+def secret_digest(values: list[str]) -> str:
+    """A pasted credential's SHA-256, which stands for its account where the
+    vendor will not say whose it is."""
+    return hashlib.sha256("\0".join(values).encode()).hexdigest()
 
 
 def _path_value(document: Any, path: str) -> Any:
@@ -82,6 +123,7 @@ def _path_value(document: Any, path: str) -> Any:
 
 class ApiKeyAdapter:
     can_issue = False
+    read_only = False
 
     def __init__(self, definition: ConnectionDefinition, http: httpx.AsyncClient):
         sign_in = definition.auth.api_key
@@ -91,34 +133,12 @@ class ApiKeyAdapter:
         self._sign_in = sign_in
         self._http = http
 
-    def current_client_id(self) -> str | None:
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return None
 
     def checked_fields(self, submitted: dict[str, str]) -> dict[str, str]:
         """The submitted fields, each as the entry allows, and nothing else."""
-        expected = {field.name: field for field in self._sign_in.fields}
-        unknown = sorted(set(submitted) - set(expected))
-        if unknown:
-            raise InvalidKeyError(
-                f"{self._name} takes no field named {', '.join(unknown)}."
-            )
-        values: dict[str, str] = {}
-        for name, field in expected.items():
-            value = submitted.get(name, "").strip()
-            if not value:
-                raise InvalidKeyError(f"{field.label} is required.")
-            if field.choices is not None:
-                if value not in field.choices:
-                    raise InvalidKeyError(
-                        f"{field.label} must be one of {', '.join(field.choices)}."
-                    )
-            elif not FIELD_VALUE_RE.fullmatch(value):
-                raise InvalidKeyError(
-                    f"{field.label} must be one line of printable characters, "
-                    "without spaces."
-                )
-            values[name] = value
-        return values
+        return checked_fields(self._name, self._sign_in.fields, submitted)
 
     async def identify(self, values: dict[str, str]) -> KeyIdentity:
         """Check the key with the vendor and say whose it is.
@@ -178,8 +198,9 @@ class ApiKeyAdapter:
                     f"{self._name}'s answer is not JSON, so whose key it is is unknown."
                 ) from None
         if identity.account_id is None:
-            secrets = [values[f.name] for f in self._sign_in.fields if f.secret]
-            account_id = hashlib.sha256("\0".join(secrets).encode()).hexdigest()
+            account_id = secret_digest(
+                [values[f.name] for f in self._sign_in.fields if f.secret]
+            )
         else:
             found = _path_value(body, identity.account_id)
             if type(found) is int:
@@ -198,6 +219,10 @@ class ApiKeyAdapter:
     def secret(self, values: dict[str, str]) -> ConnectionSecret:
         """What the connection stores: the token a session host is handed."""
         return ConnectionSecret({"access_token": key_token(self._sign_in, values)})
+
+    def choices(self, values: dict[str, str]) -> dict[str, str]:
+        """The fields picked from a list (a site), which are not secret."""
+        return {f.name: values[f.name] for f in self._sign_in.fields if not f.secret}
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
@@ -224,7 +249,7 @@ class ApiKeyAdapter:
             f"A {self._name} key is the owner's own and cannot be revoked alone."
         )
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None:
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> bool:
         raise ConnectionNotRevocable(
             f"Switch has forgotten the {self._name} key but cannot revoke it. "
             f"Revoke it in {self._name} if it should stop working."

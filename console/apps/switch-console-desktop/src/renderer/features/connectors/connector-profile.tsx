@@ -9,6 +9,7 @@ import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import { pastedConnection } from './connect-flow';
 import { ConnectorAgentsSection } from './connector-agents-section';
 import {
   type ConnectorViewer,
@@ -32,6 +33,7 @@ import { useConnectService } from './use-connect-service';
 const ACTION_LABEL = {
   connect: 'Connect to Switch',
   reconnect: 'Reconnect',
+  paste_again: 'Paste a new one',
   replace: 'Replace key',
 } as const;
 
@@ -78,6 +80,7 @@ export function ConnectorProfile({
   // Whatever the server or workspace says, a connection the person has can be disconnected.
   const hasConnection = isYours(connection);
   const connectedAs = connectedAsLine(connection);
+  const pasted = pastedConnection(connection);
   const action = profileConnectAction(connection);
 
   const enable = async () => {
@@ -119,6 +122,11 @@ export function ConnectorProfile({
             </div>
             <p className="text-sm text-foreground-muted">{connection.description}</p>
             {connectedAs && <p className="text-sm">{connectedAs}</p>}
+            {connectedAs && pasted && connection.status === 'connected' && (
+              <p className="text-sm text-foreground-muted">
+                {pasted.reach} {pasted.lasts}.
+              </p>
+            )}
             {/* The workspace's own notice below says it, with the switch for whoever may. */}
             {state.detail && state.kind !== 'workspace_off' && (
               <p className="text-sm text-foreground-muted">{state.detail}</p>
@@ -139,7 +147,7 @@ export function ConnectorProfile({
                 variant={action === 'replace' ? 'outline' : 'default'}
                 disabled={!connection.connectable}
                 onClick={() =>
-                  connect(connection, action === 'replace' ? 'replace' : 'connect', afterConnected)
+                  connect(connection, action === 'reconnect' ? 'connect' : action, afterConnected)
                 }
               >
                 {ACTION_LABEL[action]}
