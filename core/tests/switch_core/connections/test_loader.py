@@ -16,7 +16,6 @@ PLACEHOLDERS = {
     "gitlab",
     "bitbucket",
     "microsoft-365",
-    "new-relic",
     "notion",
     "linear",
     "salesforce",
@@ -33,6 +32,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "new-relic",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "new-relic",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["new-relic"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1033,6 +1035,44 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     }
     assert sign_in.identity.headers == {"DD-API-KEY": "{api_key}"}
     # A key never expires, so it is never handed to an agent.
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_new_relic_entry_authenticates_and_maps_mcp():
+    definition = CATALOG["new-relic"].definition
+    assert definition.adapter == "api_key"
+    assert definition.category == "Observability"
+    assert definition.access is None
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("api_key", True),
+        ("region", False),
+    ]
+    assert sign_in.choice_names() == {"region"}
+    region_field = next(f for f in sign_in.fields if f.name == "region")
+    assert region_field.choices == [
+        "newrelic.com",
+        "eu.newrelic.com",
+        "jp.newrelic.com",
+    ]
+    assert sign_in.identity.method == "POST"
+    assert sign_in.identity.url == "https://api.{region}/graphql"
+    assert sign_in.identity.headers == {
+        "API-Key": "{api_key}",
+        "Content-Type": "application/json",
+    }
+    assert sign_in.identity.body == {"query": "{ actor { user { id email } } }"}
+    assert sign_in.identity.account_id == "data.actor.user.id"
+    assert sign_in.identity.label == "data.actor.user.email"
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.name == "new-relic"
+    assert server.url == "https://mcp.{region}/mcp"
+    assert server.headers == {"api-key": "{api_key}"}
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False
