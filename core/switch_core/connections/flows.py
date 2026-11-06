@@ -262,6 +262,7 @@ class ServiceFlows:
                 code_challenge=s256(flow.stored.verifier),
                 # Domain-separate the flow-bound OIDC nonce from the PKCE challenge
                 # without exposing the verifier needed to redeem the code.
+                # All OAuth flows compute it; only OIDC identity uses it.
                 oidc_nonce=s256("oidc:" + flow.stored.verifier),
                 scopes=list(flow.stored.details["scopes"]),
             )
