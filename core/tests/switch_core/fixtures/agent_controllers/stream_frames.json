@@ -89,7 +89,8 @@
         "body": {
           "type": "session.reset"
         },
-        "requesterName": "Ada"
+        "requesterName": "Ada",
+        "direct": false
       }
     }
   },

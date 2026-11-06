@@ -38,7 +38,7 @@ from switch_core.delivery.addressing import (
 
 MESSAGE_EVENT_TYPE = "m.room.message"
 COMMAND_EVENT_TYPE = "com.switch.command"
-# A room command (`!reset @agent`) is shown so its threaded acknowledgement has a visible root.
+# A room command (`!reset @agent`) is shown, as a system line, so its threaded acknowledgement has a visible root.
 SHOWN_EVENT_TYPES = (MESSAGE_EVENT_TYPE, COMMAND_EVENT_TYPE)
 PREVIEW_CHARS = 140
 
@@ -336,12 +336,25 @@ async def chat_summaries(
     return summaries
 
 
+_COMMAND_LINES = {
+    "reset": "Context reset requested for {agent}",
+    "compact": "Compaction requested for {agent}",
+    "interrupt": "Stop requested for {agent}",
+    "retry": "Retry requested for {agent}",
+}
+
+
 def _command_text(message: Message) -> str:
     if message.event_type != COMMAND_EVENT_TYPE:
         return ""
     command = message.content.get("command")
     args = message.content.get("args")
-    return f"!{command} {args}".strip() if args else f"!{command}"
+    target = args.split()[0] if isinstance(args, str) and args.split() else ""
+    line = _COMMAND_LINES.get(command) if isinstance(command, str) else None
+    if line is None or not target.startswith("@"):
+        return f"!{command} {args}".strip() if args else f"!{command}"
+    text = line.format(agent=target[1:])
+    return f"{text} by {message.sender_name}" if message.sender_name else text
 
 
 async def chat_messages(
@@ -394,7 +407,9 @@ async def chat_messages(
     for message in shown:
         client = clients.get(message.sender_client_id or "")
         agent = agents.get(message.sender_client_id or "")
-        if agent is not None:
+        if message.event_type == COMMAND_EVENT_TYPE:
+            kind, source = "system", "switch"
+        elif agent is not None:
             kind, source = "agent", "switch"
         elif client is not None and client.type == MEMBER_CLIENT_TYPE:
             kind, source = "human", "console"
