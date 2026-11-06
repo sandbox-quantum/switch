@@ -50,6 +50,7 @@ function keyed(status: ConnectionCatalogEntry['status']): ConnectionCatalogEntry
     unavailable_code: null,
     pass_through: true,
     token_lifetime: 3600,
+    agent_access_note: null,
     loopback_ports: null,
     external_identity: status === 'connected' ? 'Datadog key · datadoghq.eu' : null,
     consent: null,

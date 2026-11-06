@@ -352,6 +352,16 @@ class FakeOAuthServer:
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
         self.mcp_calls: list[dict[str, Any]] = []
+        # The session id initialize hands out, if any; sessions closed (DELETE).
+        self.mcp_session: str | None = None
+        self.mcp_closed: list[str] = []
+        # Answer requests as an event stream rather than as JSON.
+        self.mcp_stream = False
+        # What the `whoami` tool answers, as a tool result.
+        self.whoami: dict[str, Any] = {
+            "content": [{"type": "text", "text": "You are Ada."}],
+            "structuredContent": {"user": {"id": 7, "email": "ada@example.test"}},
+        }
         self.paths: list[str] = []
         self.fail: dict[str, tuple[int, Any]] = {}
         self.metadata: dict[str, Any] = {
@@ -549,6 +559,9 @@ class FakeOAuthServer:
                     else "Bearer"
                 },
             )
+        if request.method == "DELETE":
+            self.mcp_closed.append(request.headers.get("mcp-session-id", ""))
+            return httpx.Response(200)
         message = json.loads(request.content)
         self.mcp_calls.append(message)
         method = message.get("method")
@@ -560,6 +573,8 @@ class FakeOAuthServer:
             }
         elif method == "tools/list":
             result = {"tools": MCP_TOOLS}
+        elif method == "tools/call" and message["params"]["name"] == "whoami":
+            result = self.whoami
         elif method == "tools/call":
             result = {"content": [{"type": "text", "text": "2 items found"}]}
         elif "id" not in message:
@@ -573,4 +588,16 @@ class FakeOAuthServer:
                     "error": {"code": -32601, "message": "Method not found"},
                 },
             )
-        return _json(200, {"jsonrpc": "2.0", "id": message["id"], "result": result})
+        answer = {"jsonrpc": "2.0", "id": message["id"], "result": result}
+        headers = (
+            {"Mcp-Session-Id": self.mcp_session}
+            if method == "initialize" and self.mcp_session
+            else {}
+        )
+        if self.mcp_stream:
+            return httpx.Response(
+                200,
+                headers={**headers, "Content-Type": "text/event-stream"},
+                text=f"event: message\ndata: {json.dumps(answer)}\n\n",
+            )
+        return _json(200, answer, headers)

@@ -181,12 +181,20 @@ class OAuthClient(BaseModel):
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
     token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    people recognise (an email, a login).
+
+    With `mcp_tool`, `url` is one of the entry's MCP servers and the answer is
+    that tool's result, for a vendor whose tokens work with its MCP server
+    alone (Sentry's are refused by its REST API, and its token answer names
+    nobody)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+    mcp_tool: str | None = Field(
+        default=None, pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$"
+    )
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -341,11 +349,18 @@ class TokenPolicy(BaseModel):
     null for a credential that never expires (a pasted key): Switch could
     neither take such a credential back nor wait for it to lapse, so it is
     never handed to an agent.
+
+    `note` is shown to people beside how long agent access lasts, for a
+    vendor that limits it further (Sentry's renewed tokens outlive the cap,
+    so agents have Sentry only for the hour after each sign-in).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     kind: Literal["minted", "pass_through"]
     max_lifetime: Annotated[int, Field(ge=300, le=7 * 24 * 3600)] | None
+    note: str | None = Field(
+        default=None, min_length=1, max_length=400, pattern=r"^[^\n]+$"
+    )
 
     @property
     def issued_to_agents(self) -> bool:
@@ -737,6 +752,14 @@ class ConnectionDefinition(BaseModel):
                 raise ValueError(
                     "an entry without MCP servers names its authorization_url and "
                     "token_url, and its revocation_url where it has one"
+                )
+        identity = self.auth.identity
+        if identity is not None and identity.mcp_tool is not None:
+            servers = [] if self.mcp is None else [s.url for s in self.mcp.servers]
+            if identity.url not in servers:
+                raise ValueError(
+                    "an identity read from an MCP tool names one of the entry's "
+                    "own MCP servers as its url"
                 )
         if self.auth.refresh not in (None, "rotating", "reusable"):
             raise ValueError("an oauth sign-in is refreshed: rotating or reusable")
