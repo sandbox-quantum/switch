@@ -40,18 +40,34 @@ connector**:
 3. Create the connector. On its details page, copy the **Client ID** and the
    **Client secret**; HubSpot shows the secret once.
 
-HubSpot does not let the operator define the connector's scopes: they follow
-the server's tools and the permissions each person grants at install. Switch
-does not send a scope parameter for this unscoped connector. It is write-capable,
-not a read-only connection. Account identity comes from `get_user_details`.
+HubSpot does not let the operator define the connector's scopes when creating
+the app. The consent page offers granular optional permissions based on the
+server's tools and the person's account. For a contact-read demo, select None
+under Optional, then only "View properties and other details about contacts",
+leaving required account metadata selected. Do not select All, writes,
+publishing or an upgrade for this demo. Check availability in the actual
+account; a paid feature's disabled permission is not proof that core contact
+read is unavailable.
+
+Switch does not send a scope parameter for this unscoped connector. The entry
+is conservatively write-capable, not a Switch-enforced read-only level. The
+person's actual vendor consent still limits access. Account identity comes
+from the root integer user and account fields returned by `get_user_details`;
+the adapter accepts explicit case/snake spellings and rejects missing or
+ambiguous IDs, without falling back to a configured account.
 
 ## Give Switch the client
 
 In Switch Console, open **Admin > Connector apps > HubSpot > Set up**. Enter
 the connector's Client ID and Client secret directly into Switch's own form.
 Keep the secret out of terminals, chat messages, recordings and version control.
-Check and save, then inspect the result. A successful client check is not proof
-of a completed sign-in, effective permissions or a working MCP identity route.
+Check and save, then inspect the result. HubSpot's measured setup response
+`invalid_request` with status `BAD_AUTH_CODE` cannot verify credentials, even
+when the secret is wrong. The catalog opts into that exact inconclusive shape:
+Switch can save it as unverified, never ready or successfully checked. Definite
+client or redirect refusals still fail. Complete a normal sign-in to validate
+the unchanged saved client through the real token, identity and broker flow.
+A saved configuration is not proof of a completed sign-in or permissions.
 
 Self-hosted operators can also use the documented `HUBSPOT_CLIENT_CONFIG_PATH`
 configuration route. That is not a shell-environment workaround for Console's
@@ -91,3 +107,15 @@ A connection lasts until the person disconnects it or the connector's
 owner deletes or revokes it. Disconnecting in Switch stops Switch using the
 sign-in at once; HubSpot keeps it authorized until the person uninstalls
 Switch under Settings, Integrations, Connected Apps.
+
+## A minimal read check
+
+Inspect `get_user_details`' current schema and request only
+`include: ["TOOL_INFORMATION"]` where supported. The default request can also
+ask for `USER_INFORMATION`, which was refused with the minimal contact-read
+consent during live testing. Tool information alone reported contact READ
+available, and a CONTACT search returned one record in the user's room report;
+inspect actual tool activity before treating that report as independently
+verified proof. Do not add user-profile scopes to fix an unneeded section.
+Use `search_crm_objects`' actual schema, limit the read, and keep record values,
+account IDs and emails out of a public demo.

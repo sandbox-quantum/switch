@@ -27,8 +27,15 @@ up or renew.
 
 ## Finding the tools
 
-The server lists its tools; run its `get_user_details` tool first to see
-whose account you act as and which objects and tools this account allows.
+The server lists its tools. Inspect the current `get_user_details` input
+schema first. If you only need object and tool availability, request
+`include: ["TOOL_INFORMATION"]` where supported. Do not request
+`USER_INFORMATION` or teams just to search contacts: those sections can need
+additional permissions even when the account is connected and contact read
+works. Never broaden consent or reconnect automatically to satisfy an
+unneeded section. Check that the target object's read or write access is
+available before using it. Use the current tool schema rather than assuming
+argument names.
 
 - Prefer the specific tool for a known target (a contact, a company, a deal)
   over broad searches, and search before creating so nothing is duplicated.
