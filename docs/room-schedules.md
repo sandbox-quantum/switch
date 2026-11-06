@@ -32,6 +32,11 @@ closed. The message is posted by Switch on behalf of the person who last edited
 or resumed the schedule. Each target agent still applies its addressing policy
 to that person. A schedule cannot bypass an agent's owner-only policy.
 
+Only the selected agents are considered for scheduled delivery. Mentions of
+other agents, aliases or roles in the task text do not expand that selection.
+The post remains in shared room history; selecting targets does not make it
+private to those agents.
+
 An agent's execution host must be available to answer. Posting a scheduled
 message does not itself bring an offline computer or agent host online.
 

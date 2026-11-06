@@ -17,7 +17,9 @@ from switch_core.db.models import (
     AgentEventRow,
     Client,
     Message,
+    RoleLease,
     Room,
+    RoomRole,
     RoomSchedule,
     RoomScheduleRun,
     RoomScheduleTarget,
@@ -28,7 +30,14 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.scheduling.runner import RoomScheduler
 from tests.conftest import RLSHarness
-from tests.routing import add_member, make_agent, make_room, process_on
+from tests.routing import (
+    add_member,
+    make_agent,
+    make_person,
+    make_room,
+    own_events,
+    process_on,
+)
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -70,6 +79,54 @@ def scheduler(factory: SessionFactory) -> RoomScheduler:
         raise AssertionError("A one-off must not evaluate cron")
 
     return RoomScheduler(factory, process_on(factory).router, no_cron)
+
+
+@pytest.mark.parametrize("address", ["unselected", "other-alias", "reviewer"])
+@pytest.mark.parametrize("late_join", [False, True])
+async def test_body_mentions_cannot_expand_schedule_targets(
+    session_factory: SessionFactory, address: str, late_join: bool, monkeypatch
+) -> None:
+    schedule_id = await setup_schedule(session_factory)
+    other, client = await make_agent(session_factory, "unselected")
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        row = await session.get(RoomSchedule, schedule_id)
+        room = await session.get(Room, row.room_id)
+        selected = await session.scalar(
+            select(RoomScheduleTarget.agent_id).where(
+                RoomScheduleTarget.schedule_id == schedule_id
+            )
+        )
+        row.body = f"Ask @{address} about this task"
+        role = RoomRole(room_id=room.id, name="reviewer", instructions="Review")
+        session.add(role)
+        await session.flush()
+        session.add(RoleLease(role_id=role.id, room_id=room.id, agent_id=other.id))
+        await session.commit()
+    process = process_on(session_factory)
+    worker = RoomScheduler(session_factory, process.router)
+    if late_join:
+        original_create = process.router._messages.create
+
+        async def join_before_write(*args, **kwargs):
+            await add_member(
+                session_factory, room, client, agent=other, alias="other-alias"
+            )
+            return await original_create(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(process.router._messages, "create", join_before_write)
+            assert await worker.fire_one(TENANT_ZERO_ID)
+    else:
+        await add_member(
+            session_factory, room, client, agent=other, alias="other-alias"
+        )
+        assert await worker.fire_one(TENANT_ZERO_ID)
+    assert len(await own_events(session_factory, selected)) == 1
+    assert await own_events(session_factory, other.id) == []
+    person = await make_person(session_factory, "reviewer")
+    await add_member(session_factory, room, person)
+    await process.say(room, f"@{address} ordinary message", sender=person)
+    assert len(await own_events(session_factory, other.id)) == 1
 
 
 async def counts(factory: SessionFactory) -> tuple[int, int, int]:

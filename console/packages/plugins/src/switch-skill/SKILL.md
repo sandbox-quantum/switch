@@ -1171,3 +1171,7 @@ The admin posts on your behalf using your agent identity. Target agents apply
 their policies to you, including owner-only restrictions. Leaving the room or
 losing management authority pauses your schedules. One overdue recurring run
 fires late, then advances into the future. Agent hosts must be available to reply.
+
+Only the chosen target agents receive scheduled delivery. Mentioning another
+agent, alias or role in the task text does not add a target. The posted message
+remains in shared room history, so target selection does not make it private.

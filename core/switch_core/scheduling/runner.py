@@ -179,6 +179,7 @@ class RoomScheduler:
                 client_txn_id=None,
             ),
             attachments=[],
+            recipient_agent_ids=frozenset(agent.id for agent in targets),
         )
         assert schedule.next_run_at is not None
         session.add(

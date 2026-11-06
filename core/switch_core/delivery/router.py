@@ -843,6 +843,7 @@ class MessageRouter:
         transport_room_id: str,
         message: Message,
         attachments: list[MessageAttachment],
+        recipient_agent_ids: frozenset[str] | None = None,
         unless_stored: Literal[False] = False,
     ) -> Routed: ...
 
@@ -856,6 +857,7 @@ class MessageRouter:
         transport_room_id: str,
         message: Message,
         attachments: list[MessageAttachment],
+        recipient_agent_ids: frozenset[str] | None = None,
         unless_stored: bool,
     ) -> Routed | None: ...
 
@@ -868,12 +870,17 @@ class MessageRouter:
         transport_room_id: str,
         message: Message,
         attachments: list[MessageAttachment],
+        recipient_agent_ids: frozenset[str] | None = None,
         unless_stored: bool = False,
     ) -> Routed | None:
         """Decide `message` for every agent in its room, write it, and store
         the own events decided for it, all in the caller's transaction.
 
         The caller commits, then calls `Routed.committed()`.
+
+        `recipient_agent_ids` bounds the agents considered for own events;
+        their membership, addressing and budget checks still apply. None
+        considers every room agent. The stored room message remains shared.
 
         With `unless_stored`, a message whose `transport_event_id` is already
         stored is neither written nor routed again, and None comes back: the
@@ -897,7 +904,11 @@ class MessageRouter:
                 transport_room_id=transport_room_id,
             )
             plan = await self._decide(
-                session, reads, unwritten, sender_client_id=message.sender_client_id
+                session,
+                reads,
+                unwritten,
+                sender_client_id=message.sender_client_id,
+                recipient_agent_ids=recipient_agent_ids,
             )
         # With an announcer, the row and its own events are announced once the
         # caller has committed (`Routed.committed`), in a batch, rather than by
@@ -937,6 +948,7 @@ class MessageRouter:
                     reads,
                     unwritten,
                     sender_client_id=message.sender_client_id,
+                    recipient_agent_ids=recipient_agent_ids,
                 )
         row = to_inbound(message, attachments, transport_room_id=transport_room_id)
         deadline_in: float | None = None
@@ -1113,12 +1125,14 @@ class MessageRouter:
         event: InboundEvent,
         *,
         sender_client_id: str | None,
+        recipient_agent_ids: frozenset[str] | None,
     ) -> _Plan:
         # Nobody's own event is the row they wrote themselves.
         recipients = [
             self._recipient(reads, member)
             for member in reads.members
             if member.client_id != sender_client_id
+            and (recipient_agent_ids is None or member.agent.id in recipient_agent_ids)
         ]
         if isinstance(event, InboundMembership):
             return await self._decide_arrival(
