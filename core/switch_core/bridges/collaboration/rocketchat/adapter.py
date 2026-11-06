@@ -130,7 +130,7 @@ class RocketChatConnectionConfig(BridgeConnectionConfig):
     )
     user_id: str = Field(
         title="Bot user ID",
-        description="Shown with the token when you create it under My Account → Personal Access Tokens.",
+        description="Shown with the token when you create it under Account → Personal Access Tokens.",
     )
     access_token: str = Field(
         title="Personal access token",
