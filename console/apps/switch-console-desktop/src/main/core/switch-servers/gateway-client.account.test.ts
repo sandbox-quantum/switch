@@ -128,28 +128,63 @@ describe('API keys', () => {
           type: 'registration',
           key_prefix: 'abc',
           created_at: 'd1',
+          expires_at: 'e1',
         },
         { id: 'k2', label: 'release-bot', type: 'agent', key_prefix: 'def', created_at: 'd2' },
       ])
     );
     await expect(fetchMyApiKeys(SERVER)).resolves.toEqual([
-      { id: 'k1', label: 'My scripts', type: 'registration', keyPrefix: 'abc', createdAt: 'd1' },
-      { id: 'k2', label: 'release-bot', type: 'agent', keyPrefix: 'def', createdAt: 'd2' },
+      {
+        id: 'k1',
+        label: 'My scripts',
+        type: 'registration',
+        keyPrefix: 'abc',
+        createdAt: 'd1',
+        expiresAt: 'e1',
+      },
+      {
+        id: 'k2',
+        label: 'release-bot',
+        type: 'agent',
+        keyPrefix: 'def',
+        createdAt: 'd2',
+        expiresAt: null,
+      },
     ]);
     expect(lastCall().url).toMatch(/\/api-keys$/);
   });
 
   it('creates a registration key and returns its value once', async () => {
     fetchMock.mockImplementation(async () =>
-      response(200, { id: 'k3', label: 'CI', key: 'secret-value', created_at: 'd3' })
+      response(200, {
+        id: 'k3',
+        label: 'CI',
+        key: 'secret-value',
+        created_at: 'd3',
+        expires_at: 'e3',
+      })
     );
-    await expect(createRegistrationKey(SERVER, 'CI')).resolves.toEqual({
+    await expect(createRegistrationKey(SERVER, 'CI', 90)).resolves.toEqual({
       id: 'k3',
       label: 'CI',
       key: 'secret-value',
       createdAt: 'd3',
+      expiresAt: 'e3',
     });
-    expect(lastCall()).toMatchObject({ method: 'POST', body: { label: 'CI' } });
+    expect(lastCall()).toMatchObject({
+      method: 'POST',
+      body: { label: 'CI', expires_in_days: 90 },
+    });
+  });
+
+  it('asks for a key that never expires', async () => {
+    fetchMock.mockImplementation(async () =>
+      response(200, { id: 'k4', label: 'CI', key: 'v', created_at: 'd4', expires_at: null })
+    );
+    await expect(createRegistrationKey(SERVER, 'CI', 'never')).resolves.toMatchObject({
+      expiresAt: null,
+    });
+    expect(lastCall()).toMatchObject({ body: { label: 'CI', expires_in_days: 'never' } });
   });
 
   it('reveals and deletes a key by id', async () => {
