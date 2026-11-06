@@ -15,6 +15,14 @@ vi.mock("../../data/hooks", () => ({
   useAgent: vi.fn(),
   useKnownAgentTypes: vi.fn(),
   useHostedV2: vi.fn(),
+  // View files (from the explorer merge) reads the flags; with Your cloud
+  // files off it shows nothing and asks nothing, so these tests stay as they were.
+  useFeatureFlags: vi.fn(() => ({
+    data: { hosted_v2: false, hosted_cloud_files: false },
+    loading: false,
+    error: null,
+    refetch: () => {},
+  })),
 }));
 vi.mock("../../data/hostedCloud", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../data/hostedCloud")>();
