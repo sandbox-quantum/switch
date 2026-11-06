@@ -2390,9 +2390,9 @@ export async function searchBridgeDirectory(
  * with that status.
  *
  * A current server answers with the link still pending and a code to post from
- * the account (`link_request`); see {@link issueIdentityLinkCode}. It refuses a
- * claim that does not say it can show that code (`expects_confirmation`), since
- * a client that cannot would leave the link pending with no way to finish it.
+ * the account (`link_request`); see {@link issueIdentityLinkCode}. A claim that
+ * does not say it can show that code (`expects_confirmation`) gets it as the
+ * text of a 409 instead, which is all a Console from before then shows.
  */
 export async function claimBridgeIdentity(
   server: SwitchServer,
@@ -3303,6 +3303,7 @@ type RoomSummaryJson = {
   description: string;
   channel_type: string | null;
   agent_count: number;
+  bridge_id?: string | null;
   bridge_display_name: string | null;
   bridge_type?: string | null;
   external_channel_url?: string | null;
@@ -3314,8 +3315,14 @@ type RoomSummaryJson = {
   write_visibility?: string;
   /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
   can_write?: boolean;
+  can_change_members?: boolean;
   can_manage?: boolean;
   can_unlink?: boolean;
+  group_id?: string | null;
+  group_name?: string | null;
+  owner_name?: string | null;
+  read_visibility?: string;
+  connected_user_count?: number;
 };
 
 function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
@@ -3335,10 +3342,17 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     createdAt: r.created_at,
     // The same reading as a room's detail, so the list and the room page offer the same changes.
     writeVisibility: visibilityOf(r.write_visibility),
+    ...(r.read_visibility !== undefined ? { readVisibility: visibilityOf(r.read_visibility) } : {}),
+    ...(r.bridge_id !== undefined ? { bridgeId: r.bridge_id } : {}),
+    ...(r.group_id !== undefined ? { groupId: r.group_id, groupName: r.group_name ?? null } : {}),
+    ...(r.owner_name !== undefined ? { ownerName: r.owner_name } : {}),
+    ...(r.connected_user_count !== undefined ? { connectedUserCount: r.connected_user_count } : {}),
     ...(r.can_write !== undefined && r.can_manage !== undefined
       ? {
           serverPermissions: {
             canWrite: r.can_write,
+            // Who is in a room took write access until the server said otherwise.
+            canChangeMembers: r.can_change_members ?? r.can_write,
             canManage: r.can_manage,
             // Detaching took write access until the server said otherwise.
             canUnlink: r.can_unlink ?? r.can_write,
@@ -5220,6 +5234,9 @@ type ResourceJson = {
   created_by_agent_name?: string | null;
   can_remove?: boolean;
   content?: string;
+  owner_id?: string | null;
+  read_visibility?: string;
+  can_read?: boolean;
 };
 
 function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
@@ -5238,6 +5255,9 @@ function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
     packageIds: r.packages ?? [],
     ...(r.can_remove !== undefined ? { canRemove: r.can_remove } : {}),
     ...(kind === 'documents' && typeof r.content === 'string' ? { content: r.content } : {}),
+    ownerId: r.owner_id ?? null,
+    readVisibility: r.read_visibility === 'public' ? 'public' : 'private',
+    ...(r.can_read !== undefined ? { canRead: r.can_read } : {}),
   };
 }
 

@@ -76,6 +76,7 @@ const ChatConfiguration = observer(function ChatConfiguration({
               room={detail.data}
               permissions={{
                 canWrite: chat.canManage,
+                canChangeMembers: chat.canManage,
                 canManage: chat.canManage,
                 canUnlink: chat.canManage,
               }}

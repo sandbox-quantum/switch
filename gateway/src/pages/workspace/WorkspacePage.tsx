@@ -3,6 +3,8 @@ import { useAuth } from "../../data/AuthContext";
 import DeleteWorkspaceSection from "./DeleteWorkspaceSection";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
+import PeopleSection from "./PeopleSection";
+import RetentionSection from "./RetentionSection";
 
 export default function WorkspacePage() {
   const { session, canAdminTenant } = useAuth();
@@ -18,11 +20,7 @@ export default function WorkspacePage() {
         </Typography>
       </Stack>
       <Stack spacing={4}>
-        <MembersSection
-          tenantId={tenant.id}
-          selfId={session.user.id}
-          canAdmin={canAdminTenant}
-        />
+        <MembersSection tenantId={tenant.id} selfId={session.user.id} />
         {canAdminTenant ? (
           <InvitationsSection
             tenantId={tenant.id}
@@ -34,6 +32,8 @@ export default function WorkspacePage() {
             Ask a workspace admin to invite someone.
           </Alert>
         )}
+        {canAdminTenant && <RetentionSection tenantId={tenant.id} />}
+        {tenant.role === "admin" && <PeopleSection tenantId={tenant.id} />}
         {/* An admin membership, not the operator's bypass: the server checks the same. */}
         {tenant.role === "admin" && (
           <DeleteWorkspaceSection tenantId={tenant.id} tenantName={tenant.name} />
