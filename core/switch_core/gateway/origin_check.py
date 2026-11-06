@@ -71,7 +71,7 @@ _LOOPBACK_NAMES = frozenset({"localhost"})
 CONTENT_SECURITY_POLICY = (
     "frame-ancestors 'none'; script-src 'self'; object-src 'none'; "
     "base-uri 'none'; form-action 'self'; connect-src 'self'; "
-    "img-src 'self' blob: data:"
+    "img-src 'self' blob: data:; media-src 'self' blob:"
 )
 
 
