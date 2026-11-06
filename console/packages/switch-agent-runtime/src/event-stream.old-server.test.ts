@@ -2064,6 +2064,25 @@ describe('choosing the transport', () => {
     abort.abort();
   });
 
+  it('says the stream it asks for after a socket that never opened is a fallback, and opening it straight away is not', async () => {
+    vi.useFakeTimers();
+    // A server from before the socket: the first open falls back, the next
+    // goes to the stream straight away.
+    const fetchMock = serving(() => announcingThenClose(6));
+    const { abort } = makeStream(fetchMock, { rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(1500);
+
+    const [fellBack, direct] = urlsFor(fetchMock, '/events').map(
+      (url) => new URL(url).searchParams
+    );
+    expect(fellBack!.get('fallback')).toBe('socket_never_opened');
+    expect(fellBack!.get('fallback_close_code')).toBe('1006');
+    expect(direct!.has('fallback')).toBe(false);
+    expect(direct!.has('fallback_close_code')).toBe(false);
+    abort.abort();
+  });
+
   it('keeps trying the socket first when neither answers, and says it could not connect', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async () => {

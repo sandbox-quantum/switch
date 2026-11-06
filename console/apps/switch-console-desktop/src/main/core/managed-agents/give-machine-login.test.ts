@@ -109,6 +109,27 @@ describe('giving a machine a provider login', () => {
     ).rejects.toThrow(/cannot be given/);
   });
 
+  it('says a Codex login in the OS keyring cannot be given', async () => {
+    mocks.fetchManagementControllers.mockResolvedValue([
+      machine({ key: keys.publicKey, keyId: sealingKeyId(keys.publicKey) }),
+    ]);
+    mocks.readLocalProviderSignIn.mockResolvedValue(null);
+    const give = (provider: 'codex' | 'opencode') =>
+      managedAgentsController.giveMachineLogin({
+        serverId: 'server-1',
+        machineId: 'controller-1',
+        provider,
+        login: { source: 'this-computer' },
+      });
+    await expect(give('codex')).rejects.toThrow(
+      /OS keyring, which cannot be given.*cli_auth_credentials_store = "file"/
+    );
+    await expect(give('opencode')).rejects.toThrow(
+      'This computer is not signed in to opencode. Sign in here first.'
+    );
+    expect(mocks.giveMachineLogin).not.toHaveBeenCalled();
+  });
+
   describe('through Vertex AI', () => {
     let gcloud: string;
     const previous = process.env.CLOUDSDK_CONFIG;
@@ -128,7 +149,7 @@ describe('giving a machine a provider login', () => {
     const give = (
       credentials: { from: 'key'; json: string } | { from: 'this-computer' },
       provider: 'claude' | 'codex' = 'claude',
-      project = 'cg-vertexai'
+      project = 'acme-ai'
     ) =>
       managedAgentsController.giveMachineLogin({
         serverId: 'server-1',
@@ -149,7 +170,7 @@ describe('giving a machine a provider login', () => {
       expect(JSON.stringify(mocks.giveMachineLogin.mock.calls[0]![3])).not.toContain('PRIVATE KEY');
       expect(given()).toEqual({
         v: 1,
-        project: 'cg-vertexai',
+        project: 'acme-ai',
         region: 'global',
         credentials: SERVICE_ACCOUNT_KEY_FIXTURE,
       });

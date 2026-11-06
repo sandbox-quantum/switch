@@ -69,9 +69,7 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     queryFn: () => rpc.managedAgents.machines(serverId),
     // Quick while this computer has not reported yet, then at an easy pace.
     refetchInterval: (query) =>
-      query.state.data?.some((m) => m.local?.kind === 'this-computer' && m.providers.length > 0)
-        ? 10_000
-        : 2_000,
+      (thisComputerIn(query.state.data)?.providers.length ?? 0) > 0 ? 10_000 : 2_000,
   });
 
   /**
@@ -88,7 +86,7 @@ export function useThisComputer(serverId: string, workspaceId: string) {
       : 'Checked just now: nothing new is signed in yet. Finish signing in, then check again.';
   }, [serverId, machines]);
 
-  const machine = machines.data?.find((m) => m.local?.kind === 'this-computer') ?? null;
+  const machine = thisComputerIn(machines.data);
   const reported = machine !== null && machine.providers.length > 0;
 
   // Console's own check of the providers, made as onboarding opened: what
@@ -99,22 +97,40 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     enabled: !reported,
     refetchInterval: 1_000,
   });
-  const state: ThisComputer = setupError
-    ? { kind: 'failed', error: setupError }
-    : machines.data === null
-      ? {
-          kind: 'failed',
-          error: 'This server does not run managed agents, so switch-buddy cannot be set up here.',
-        }
-      : machine && machine.providers.length > 0
-        ? { kind: 'ready', machine }
-        : { kind: 'starting' };
+  const state = thisComputerState(setupError, machines.data);
   const earlyProviders = !reported && early.data && early.data.length > 0 ? early.data : null;
   return { state, recheck, earlyProviders };
 }
 
+/**
+ * Where this computer stands, from why setting it up failed (null when it
+ * did not) and the workspace's machines as last read: null when the server
+ * runs no managed agents, undefined before the first read. Ready once this
+ * computer is among them and has reported its providers.
+ */
+export function thisComputerState(
+  setupError: string | null,
+  machines: OwnedMachine[] | null | undefined
+): ThisComputer {
+  if (setupError) return { kind: 'failed', error: setupError };
+  if (machines === null)
+    return {
+      kind: 'failed',
+      error: 'This server does not run managed agents, so switch-buddy cannot be set up here.',
+    };
+  const machine = thisComputerIn(machines);
+  return machine && machine.providers.length > 0
+    ? { kind: 'ready', machine }
+    : { kind: 'starting' };
+}
+
 /** How many providers this computer last reported ready. */
 function readyOn(machines: OwnedMachine[] | null | undefined): number {
-  const machine = machines?.find((m) => m.local?.kind === 'this-computer');
+  const machine = thisComputerIn(machines);
   return machine?.providers.filter((provider) => provider.ready).length ?? 0;
+}
+
+/** This computer among the workspace's machines, once it is one. */
+export function thisComputerIn(machines: OwnedMachine[] | null | undefined): OwnedMachine | null {
+  return machines?.find((m) => m.local?.kind === 'this-computer') ?? null;
 }

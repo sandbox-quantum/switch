@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { providerReadinessSchema } from '@switch-console/agent-providers';
 import type { LaunchProfileModel } from '@switch-console/core/agents/plugins';
@@ -67,7 +68,8 @@ export async function getAgentModelCatalogue(params: {
 
   let ctx: IExecutionContext | null = null;
   try {
-    const host = await resolveHost(params.sshHost, params.dir);
+    const dir = params.sshHost || (await isDirectory(params.dir)) ? params.dir : homedir();
+    const host = await resolveHost(params.sshHost, dir);
     ctx = host.ctx;
 
     const cli = await resolveAgentExecutable({
@@ -144,6 +146,9 @@ export async function getProviderReadiness(
   models: boolean
 ) {
   params = { ...params, dir: params.dir.trim() || (params.sshHost ? '.' : homedir()) };
+  // The CLI and its sign-in do not depend on the directory, and one not made yet
+  // (a managed agent's workspace before its first session) read as the CLI missing.
+  if (!params.sshHost && !(await isDirectory(params.dir))) params = { ...params, dir: homedir() };
   let installed: boolean | null = null;
   let ctx: IExecutionContext | undefined;
   if (!params.sshHost) ensureUserBinDirsInPath();
@@ -194,5 +199,13 @@ export async function getProviderReadiness(
     };
   } finally {
     ctx?.dispose();
+  }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
   }
 }

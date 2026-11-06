@@ -39,7 +39,9 @@ from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.adapter import (
     RichContentFailed,
+    RichContentFailedAfterPost,
     RichContentThrottled,
+    RichContentThrottledAfterPost,
     RichContentWedged,
     TurnActivity,
 )
@@ -204,7 +206,7 @@ async def test_only_the_sections_that_moved_are_appended() -> None:
     assert [c["type"] for c in _chunks(client)[0]] == ["blocks"]
     later = _chunks(client)[1]
     assert [c["type"] for c in later] == ["blocks"]
-    assert later[0]["blocks"][0]["title"] == "Working… 9s · Running: Grep"
+    assert later[0]["blocks"][0]["title"] == "Working… · Running: Grep"
     assert [(t["title"], t["status"]) for t in later[0]["blocks"][0]["tasks"][1:]] == [
         ("Read", "complete"),
         ("Grep", "in_progress"),
@@ -243,7 +245,7 @@ async def test_a_section_that_did_not_move_is_not_sent_again() -> None:
 
     later = [c for c in _chunks(client)[1] if c["type"] == "blocks"]
     assert len(later) == 1
-    assert later[0]["blocks"][0]["title"] == "Working… 9s · Last: Tool 50"
+    assert later[0]["blocks"][0]["title"] == "Working… · Last: Tool 50"
 
 
 async def test_a_publish_that_changed_nothing_appends_nothing() -> None:
@@ -271,16 +273,16 @@ async def test_the_clock_moves_the_live_section_and_nothing_above_it() -> None:
     many = [_tool(f"t{n}", f"Tool {n}", status="completed") for n in range(50)]
 
     ref = await adapter.post_rich(
-        CHANNEL, "Agent", TurnActivity(many, _turn(), 5.0), THREAD
+        CHANNEL, "Agent", TurnActivity(many, _turn(), 65.0), THREAD
     )
     await adapter.update_rich(
-        CHANNEL, "Agent", ref, TurnActivity(many, _turn(), 10.0), THREAD
+        CHANNEL, "Agent", ref, TurnActivity(many, _turn(), 125.0), THREAD
     )
 
     assert [c["blocks"][0]["block_id"] for c in _chunks(client)[1]] == [
         "switch-interrupt"
     ]
-    assert _chunks(client)[1][0]["blocks"][0]["title"] == "Working… 10s · Last: Tool 49"
+    assert _chunks(client)[1][0]["blocks"][0]["title"] == "Working… 2m · Last: Tool 49"
 
 
 async def test_a_detail_is_rich_text_because_that_is_what_a_card_takes() -> None:
@@ -396,7 +398,7 @@ async def test_a_turn_of_any_length_draws_the_same_three_step_blocks() -> None:
     assert gone["elements"][0]["text"] == "_Activity 1–147 no longer shown_"
     assert older["title"] == "Activity 148–196"
     assert [task["title"] for task in older["tasks"][1:]][:1] == ["Tool 147"]
-    assert newer["title"] == "Working… 4m 0s · Last: Tool 239"
+    assert newer["title"] == "Working… 4m · Last: Tool 239"
     assert [task["title"] for task in newer["tasks"][1:]][-1:] == ["Tool 239"]
 
 
@@ -425,7 +427,7 @@ async def test_what_is_no_longer_shown_is_one_line_above_the_sections() -> None:
 
     assert [block["title"] for block in before] == [
         "Activity 1–49",
-        "Working… 1s · Last: Tool 97",
+        "Working… · Last: Tool 97",
     ]
     after = list(_drawn(client).values())
     assert [block["type"] for block in after] == ["context", "plan", "plan"]
@@ -433,7 +435,7 @@ async def test_what_is_no_longer_shown_is_one_line_above_the_sections() -> None:
     assert after[0]["elements"][0]["text"] == "_Activity 1–49 no longer shown_"
     assert [block["title"] for block in after[1:]] == [
         "Activity 50–98",
-        "Working… 9s · Last: Tool 98",
+        "Working… · Last: Tool 98",
     ]
 
 
@@ -455,7 +457,7 @@ async def test_a_step_never_moves_between_sections_once_it_has_landed() -> None:
 
     moved = [c for c in _chunks(client)[1] if c["type"] == "blocks"]
     assert [chunk["blocks"][0]["title"] for chunk in moved] == [
-        "Working… 9s · Last: Tool 50"
+        "Working… · Last: Tool 50"
     ]
     older, newer = _pages(client)
     assert [task["title"] for task in older["tasks"][1:]][:1] == ["Tool 0"]
@@ -485,7 +487,7 @@ async def test_the_live_step_is_named_on_its_own_section_and_not_in_the_header()
 
     assert [page["title"] for page in _pages(client)] == [
         "Activity 1–49 · Running: Grep",
-        "Working… 40s",
+        "Working…",
     ]
 
 
@@ -512,12 +514,12 @@ async def test_the_label_leaves_a_settled_section_when_the_live_step_moves_past_
 
     first = [c for c in _chunks(client)[0] if c["type"] == "blocks"]
     assert [chunk["blocks"][0]["title"] for chunk in first] == [
-        "Working… 1s · Last: Tool 48"
+        "Working… · Last: Tool 48"
     ]
     later = [c for c in _chunks(client)[1] if c["type"] == "blocks"]
     assert [chunk["blocks"][0]["title"] for chunk in later] == [
         "Activity 1–49",
-        "Working… 9s · Last: Tool 49",
+        "Working… · Last: Tool 49",
     ]
 
 
@@ -534,7 +536,7 @@ async def test_a_step_title_is_not_escaped_because_nothing_in_it_is_parsed() -> 
     )
 
     assert _steps(client)[0]["title"] == shell
-    assert _pages(client)[0]["title"] == f"Working… 1s · Running: {shell}"
+    assert _pages(client)[0]["title"] == f"Working… · Running: {shell}"
 
 
 # ── Ending ───────────────────────────────────────────────────────────────────
@@ -858,7 +860,7 @@ async def test_an_attention_post_is_never_streamed() -> None:
 # ── When an append is refused ────────────────────────────────────────────────
 
 
-async def test_a_closed_stream_is_forgotten_so_later_updates_are_edits(
+async def test_a_closed_stream_is_forgotten_and_the_turn_edited_at_once(
     caplog: Any,
 ) -> None:
     """A stopped stream, or one this app no longer owns, is gone rather than
@@ -872,18 +874,41 @@ async def test_a_closed_stream_is_forgotten_so_later_updates_are_edits(
     )
 
     client.append_error = "stopped_by_user"
-    with pytest.raises(RichContentFailed), caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING):
         await adapter.update_rich(
-            CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 9.0), THREAD
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 61.0), THREAD
         )
-    client.append_error = None
     await adapter.update_rich(
-        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 14.0), THREAD
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 121.0), THREAD
     )
 
     assert "stopped_by_user" in caplog.text
     assert adapter._streams == {}
-    assert [call["ts"] for call in client.updated] == ["1.0"]
+    assert [call["ts"] for call in client.updated] == ["1.0", "1.0"]
+    assert len(client.appended) == 1
+
+
+async def test_a_stream_slack_timed_out_has_its_turn_redrawn_in_the_same_call() -> None:
+    """Slack closes every stream ten minutes after it opens, appended to or
+    not, and marks whatever was still running as failed. Left for the turn's
+    next change, a long tool call would sit there marked failed until it
+    finished."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Run the tests")
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+
+    client.append_error = "message_not_in_streaming_state"
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 600.0), THREAD
+    )
+
+    assert ref not in adapter._streams
+    [edit] = client.updated
+    assert edit["ts"] == "1.0"
+    assert "Working… 10m" in edit["text"]
 
 
 async def test_a_turn_of_two_sections_is_left_as_the_stream_drew_it(
@@ -937,11 +962,6 @@ async def test_a_turn_whose_last_append_was_refused_is_still_drawn_by_an_edit() 
         CHANNEL, "Agent", TurnActivity(many, _turn(), 1.0), THREAD
     )
     client.append_error = "stopped_by_user"
-    with pytest.raises(RichContentFailed):
-        await adapter.update_rich(
-            CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 9.0), THREAD
-        )
-    client.append_error = None
     await adapter.update_rich(
         CHANNEL, "Agent", ref, TurnActivity(many, _turn("completed"), 9.0), THREAD
     )
@@ -1047,14 +1067,113 @@ async def test_a_throttled_append_asks_the_caller_to_wait_and_keeps_the_stream(
     monkeypatch.setattr(client, "chat_appendStream", refuse)
     with pytest.raises(RichContentThrottled) as refused:
         await adapter.update_rich(
-            CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 9.0), THREAD
+            CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 61.0), THREAD
         )
 
     assert refused.value.retry_after == 7.0
     assert ref in adapter._streams
     assert [block["title"] for block in adapter._streams[ref].blocks.values()] == [
-        "Working… 1s · Running: Read"
+        "Working… · Running: Read"
     ]
+
+
+async def test_a_stream_opened_but_throttled_before_its_first_append_is_kept() -> None:
+    """The message exists once the stream opens. Reported as never posted, the
+    retry would open a second one under it and leave this one empty."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+
+    client.append_error = FakeResponse(
+        {"error": "ratelimited"}, headers={"Retry-After": "3"}
+    )
+    with pytest.raises(RichContentThrottledAfterPost) as throttled:
+        await adapter.post_rich(
+            CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+        )
+    assert throttled.value.retry_after == 3.0
+    ref = throttled.value.ref
+    assert ref == f"{CHANNEL}:1.0"
+
+    client.append_error = None
+    adapter._rich_update_cooldown._until = 0.0
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 2.0), THREAD
+    )
+
+    assert len(client.started) == 1
+    assert [call["ts"] for call in client.appended] == ["1.0"]
+    assert _steps(client)[0]["title"] == "Read"
+
+
+async def test_a_stream_whose_first_append_fails_is_kept_rather_than_posted_again() -> (
+    None
+):
+    """Any failure once the stream has made the message, not only a rate
+    limit. One Slack may still take an append on stays a stream."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+
+    client.append_error = "internal_error"
+    with pytest.raises(RichContentFailedAfterPost) as failed:
+        await adapter.post_rich(
+            CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+        )
+    assert not isinstance(failed.value, RichContentThrottled)
+    ref = failed.value.ref
+    assert ref in adapter._streams
+
+    client.append_error = None
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 2.0), THREAD
+    )
+    assert len(client.started) == 1
+    assert [call["ts"] for call in client.appended] == ["1.0"]
+
+
+async def test_a_stream_closed_before_its_first_append_is_kept_and_edited() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+
+    client.append_error = "message_not_owned_by_app"
+    with pytest.raises(RichContentFailedAfterPost) as failed:
+        await adapter.post_rich(
+            CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+        )
+    ref = failed.value.ref
+    assert ref not in adapter._streams
+
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 2.0), THREAD
+    )
+    assert len(client.started) == 1
+    assert [call["ts"] for call in client.updated] == ["1.0"]
+
+
+async def test_only_a_stream_is_said_to_close_on_its_own() -> None:
+    """Slack closes a stream ten minutes after opening it. An ordinary post it
+    never closes, and a redraw scheduled for one would be an edit wasted."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    streamed = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    posted = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), None
+    )
+
+    closes = adapter.activity_closes_in(streamed)
+    assert closes is not None and 590.0 < closes <= 600.0
+    assert adapter.activity_closes_in(posted) is None
+
+    client.append_error = "message_not_in_streaming_state"
+    await adapter.update_rich(
+        CHANNEL, "Agent", streamed, TurnActivity([tool], _turn(), 61.0), THREAD
+    )
+    assert adapter.activity_closes_in(streamed) is None
 
 
 # ── When a restart strands a stream ──────────────────────────────
@@ -1335,7 +1454,7 @@ async def test_a_stranded_turn_still_running_carries_on_streaming() -> None:
     assert ref in adapter._streams
 
     await adapter.update_rich(
-        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 14.0), THREAD
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 74.0), THREAD
     )
     assert len(client.update_attempts) == 1
     assert len(client.appended) == 3

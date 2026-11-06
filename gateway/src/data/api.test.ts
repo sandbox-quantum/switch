@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   addBridgeToTeam,
+  createUser,
   errorText,
   fetchSession,
   fetchTeamPlacements,
@@ -12,9 +13,7 @@ import {
 
 describe("errorText", () => {
   it("returns a string detail as is", () => {
-    expect(errorText("Only a workspace owner may grant ownership", "x")).toBe(
-      "Only a workspace owner may grant ownership",
-    );
+    expect(errorText("Cannot demote the last admin", "x")).toBe("Cannot demote the last admin");
   });
 
   it("joins validation messages", () => {
@@ -58,6 +57,27 @@ describe("fetchSession", () => {
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(500);
     expect((err as ApiError).message).toBe("boom");
+  });
+});
+
+describe("createUser", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("words a rejected password, not [object Object]", async () => {
+    respond(422, {
+      detail: [
+        {
+          type: "string_too_short",
+          loc: ["body", "password"],
+          msg: "String should have at least 8 characters",
+        },
+      ],
+    });
+    const err = await createUser("Ada", "ada@example.com", "hello", "user").catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).message).toBe("String should have at least 8 characters");
   });
 });
 

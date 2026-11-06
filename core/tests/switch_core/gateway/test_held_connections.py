@@ -87,6 +87,11 @@ class _Provisioning:
     def __init__(self, calls: _Calls) -> None:
         self._calls = calls
 
+    async def record_join(
+        self, session: object, room_id: str, user_id: str
+    ) -> Callable[[], None]:
+        raise NotImplementedError
+
     async def invite_to_room(self, transport_room_id: str, user_id: str) -> None:
         self._calls.record("matrix invite")
 
@@ -118,6 +123,10 @@ class _Adapter:
 
     def __init__(self, calls: _Calls) -> None:
         self._calls = calls
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        self._calls.record("platform account check")
+        return None
 
     async def search_directory_users(self, query: str) -> list[Any]:
         self._calls.record("platform directory search")
@@ -173,6 +182,11 @@ class _CollabLifecycle:
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
+
+    def unlinkable_account_reason(
+        self, bridge_type: str, external_user_id: str
+    ) -> str | None:
+        return None
 
     def receives_webhooks(self, bridge_type: str) -> bool:
         return False
@@ -295,19 +309,19 @@ def _client(app: Any, user: User) -> httpx.AsyncClient:
 
 
 async def _admin(session_factory: async_sessionmaker[AsyncSession]) -> User:
-    """A workspace owner: a plain user whose admin bit comes from membership,
+    """A workspace admin: a plain user whose admin bit comes from membership,
     so `get_tenant_is_admin` has to read it."""
     async with session_factory() as session:
         user = User(
-            name="owner",
-            email="owner@example.com",
+            name="ws-admin",
+            email="ws-admin@example.com",
             role="user",
             password_hash=hash_password(_PASSWORD),
         )
         session.add(user)
         await session.flush()
         session.add(
-            TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="owner")
+            TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="admin")
         )
         await session.commit()
         return user
@@ -564,7 +578,11 @@ class TestBridgeRoutes:
             )
             claimed = await client.post(
                 f"/bridges/{bridge.id}/identities",
-                json={"external_user_id": "U1", "username": "ada"},
+                json={
+                    "external_user_id": "U1",
+                    "username": "ada",
+                    "expects_confirmation": True,
+                },
             )
             deleted = await client.delete(f"/bridges/{bridge.id}")
 
@@ -580,6 +598,7 @@ class TestBridgeRoutes:
             "platform edit check",
             "bridge restart",
             "platform directory search",
+            "platform account check",
             "platform directory search",
             "provision external user",
             "bridge remove",

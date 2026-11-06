@@ -179,6 +179,80 @@ async def test_with_the_sse_accept_header_it_opens_the_event_stream(
     assert conn.stream_transport == "sse"
 
 
+async def _open_sse(protocol: _Protocol, **kw: Any) -> StreamingResponse:
+    resp = await poll_events(
+        agent_id=AGENT_ID,
+        agent=_agent(),
+        protocol=protocol,  # type: ignore[arg-type]
+        config=None,  # type: ignore[arg-type]
+        accept="text/event-stream",
+        connection_id="c1",
+        client="agent-runtime",
+        client_version="0.8.0",
+        **kw,
+    )
+    assert isinstance(resp, StreamingResponse)
+    return resp
+
+
+def _opened_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "[CONN] opened" in r.getMessage()]
+
+
+async def test_a_runtime_that_fell_back_from_the_socket_says_so_in_the_log(
+    db_buffer: EventBuffer, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A new runtime whose socket never opened asks for the event stream too,
+    and must not read in the log as a client built before the socket."""
+    caplog.set_level("INFO")
+    await _open_sse(
+        _Protocol(db_buffer),
+        fallback="socket_never_opened",
+        fallback_close_code="1006",
+    )
+
+    (line,) = _opened_lines(caplog)
+    assert line.endswith("transport=sse fallback=socket_never_opened:1006")
+
+
+async def test_a_client_that_did_not_fall_back_logs_the_line_as_before(
+    db_buffer: EventBuffer, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO")
+    await _open_sse(_Protocol(db_buffer))
+
+    (line,) = _opened_lines(caplog)
+    assert line.endswith("transport=sse")
+    assert "fallback" not in line
+
+
+@pytest.mark.parametrize(
+    ("reason", "close_code", "logged"),
+    [
+        ("socket_never_opened", None, "socket_never_opened"),
+        ("x" * 5000, "1006", "other:1006"),
+        ("socket_never_opened", "1006 rm -rf", "socket_never_opened"),
+        ("socket_never_opened", "123456", "socket_never_opened"),
+    ],
+)
+async def test_what_the_client_says_about_its_fallback_is_clamped(
+    reason: str,
+    close_code: str | None,
+    logged: str,
+    db_buffer: EventBuffer,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Both values are the client's own, so only known reasons and short
+    numeric close codes reach the log."""
+    caplog.set_level("INFO")
+    await _open_sse(
+        _Protocol(db_buffer), fallback=reason, fallback_close_code=close_code
+    )
+
+    (line,) = _opened_lines(caplog)
+    assert line.endswith(f" fallback={logged}")
+
+
 async def test_opening_registers_the_connection(db_buffer: EventBuffer) -> None:
     protocol = _Protocol(db_buffer)
     conn = await _call(
@@ -610,6 +684,7 @@ class TestOpeningAStreamReportsASession:
             version="1.0.0",
             telemetry_environment="prod",
             telemetry_internal=False,
+            deployment_kind="self_hosted",
         )
         protocol = _Protocol(db_buffer)
         protocol.sessions = SessionReporter(service, protocol.connections)
@@ -624,7 +699,10 @@ class TestOpeningAStreamReportsASession:
         await _call(protocol, accept="text/event-stream", connection_id="c1")
         await service.aclose()
 
-        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+        assert [r.name for r in sink.sent] == [
+            "switch_core.agent_session_started",
+            "switch_core.agent_connected",
+        ]
 
     async def test_a_reattach_to_the_same_connection_is_not_another_start(
         self, db_buffer: EventBuffer
@@ -635,7 +713,10 @@ class TestOpeningAStreamReportsASession:
         await _call(protocol, accept="text/event-stream", connection_id="c1")
         await service.aclose()
 
-        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+        assert [r.name for r in sink.sent] == [
+            "switch_core.agent_session_started",
+            "switch_core.agent_connected",
+        ]
 
     async def test_a_refused_open_then_a_retry_is_one_start(
         self, db_buffer: EventBuffer
@@ -660,7 +741,10 @@ class TestOpeningAStreamReportsASession:
         )
         await service.aclose()
 
-        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+        assert [r.name for r in sink.sent] == [
+            "switch_core.agent_session_started",
+            "switch_core.agent_connected",
+        ]
 
     async def test_an_open_that_failed_after_registering_is_counted_on_retry(
         self, db_buffer: EventBuffer
@@ -687,7 +771,10 @@ class TestOpeningAStreamReportsASession:
         )
         await service.aclose()
 
-        assert [r.name for r in sink.sent] == ["switch_core.agent_session_started"]
+        assert [r.name for r in sink.sent] == [
+            "switch_core.agent_session_started",
+            "switch_core.agent_connected",
+        ]
 
     async def test_closing_the_only_connection_ends_the_session(
         self, monkeypatch: pytest.MonkeyPatch, db_buffer: EventBuffer
@@ -704,5 +791,7 @@ class TestOpeningAStreamReportsASession:
 
         assert [r.name for r in sink.sent] == [
             "switch_core.agent_session_started",
+            "switch_core.agent_connected",
             "switch_core.agent_session_ended",
+            "switch_core.agent_disconnected",
         ]

@@ -22,7 +22,7 @@ from .health import check_health
 from .lock import ControllerAlreadyRunning, ControllerLock
 from .model import DesiredState, Machine
 from .reconciler import Reconciler
-from .store import MachineStore, StoreError
+from .store import MachineStore, StoreError, rebind_superseded_fingerprint
 
 
 def parser() -> argparse.ArgumentParser:
@@ -46,7 +46,9 @@ def parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--delete-volume", action="store_true")
 
     upgrade = subparsers.add_parser(
-        "upgrade", help="use the configured image after the old instance is stopped and terminated"
+        "upgrade",
+        help="use the configured image, and the cloud gateway's instance type with"
+        " --gateway-config, after the old instance is stopped and terminated",
     )
     upgrade.add_argument("machine_id")
     upgrade.add_argument("--confirm-instance-id", required=True)
@@ -75,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
-    store = MachineStore(config.state_db_path, config.fingerprint())
+    store = _open_store(config)
     try:
         if args.command == "create":
             if args.instance_type not in config.allowed_instance_types:
@@ -87,11 +89,13 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 image_id=config.image_id,
                 max_machines=config.max_machines,
             )
-            _print_machine(machine)
+            _print_machine(machine, config)
             return 0
         if args.command == "list":
             print(
-                json.dumps([_machine_output(machine) for machine in store.list()], sort_keys=True)
+                json.dumps(
+                    [_machine_output(machine, config) for machine in store.list()], sort_keys=True
+                )
             )
             return 0
         try:
@@ -100,19 +104,23 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
             raise ConfigError("machine_id must be a machine's UUID") from None
         machine = store.get(machine_id)
         if args.command == "status":
-            _print_machine(machine)
+            _print_machine(machine, config)
             return 0
         if args.command == "start":
-            _print_machine(store.set_desired(machine.machine_id, DesiredState.RUNNING, None))
+            _print_machine(
+                store.set_desired(machine.machine_id, DesiredState.RUNNING, None), config
+            )
             return 0
         if args.command == "stop":
-            _print_machine(store.set_desired(machine.machine_id, DesiredState.STOPPED, None))
+            _print_machine(
+                store.set_desired(machine.machine_id, DesiredState.STOPPED, None), config
+            )
             return 0
         if args.command == "delete":
             if args.confirm_machine_id != machine.machine_id:
                 raise StoreError("--confirm-machine-id must exactly match machine_id")
             desired = DesiredState.DELETED if args.delete_volume else DesiredState.RETAINED
-            _print_machine(store.set_desired(machine.machine_id, desired, None))
+            _print_machine(store.set_desired(machine.machine_id, desired, None), config)
             return 0
         if args.command == "upgrade":
             if (
@@ -136,24 +144,41 @@ def _state_command(config: ControllerConfig, args: argparse.Namespace) -> int:
                 raise StoreError(
                     "the old instance must be confirmed terminated and its retained disk detached"
                 )
+            instance_type = (
+                GatewayConfig.load(args.gateway_config).instance_type
+                if args.gateway_config
+                else machine.instance_type
+            )
+            if instance_type not in config.allowed_instance_types:
+                raise ConfigError("instance type is not in allowed_instance_types")
             cloud.validate_image(replace(machine, image_id=config.image_id))
             claim = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
-            _print_machine(store.upgrade_terminated(claim, config.image_id))
+            _print_machine(store.upgrade_terminated(claim, config.image_id, instance_type), config)
             return 0
         raise AssertionError(f"unhandled command {args.command}")
     finally:
         store.close()
 
 
+def _open_store(config: ControllerConfig) -> MachineStore:
+    rebind_superseded_fingerprint(
+        config.state_db_path, config.superseded_fingerprint(), config.fingerprint()
+    )
+    return MachineStore(config.state_db_path, config.fingerprint())
+
+
 def _reconcile_command(config: ControllerConfig, command: str, gateway_path: Path | None) -> int:
     with ControllerLock(config.lock_path):
-        store = MachineStore(config.state_db_path, config.fingerprint())
+        store = _open_store(config)
         try:
             ec2 = boto3.client("ec2", region_name=config.region)
-            reconciler = Reconciler(store, Ec2Cloud(ec2, config))
-            gateway = (
-                Gateway(GatewayConfig.load(gateway_path), config, store) if gateway_path else None
+            settings = GatewayConfig.load(gateway_path) if gateway_path else None
+            reconciler = Reconciler(
+                store,
+                Ec2Cloud(ec2, config),
+                instance_type=settings.instance_type if settings else None,
             )
+            gateway = Gateway(settings, config, store) if settings else None
             _touch_health()
             if command == "reconcile-once":
                 try:
@@ -210,14 +235,17 @@ def _health(max_age: float) -> int:
         raise ConfigError(str(error)) from error
 
 
-def _print_machine(machine: Machine) -> None:
-    print(json.dumps(_machine_output(machine), sort_keys=True))
+def _print_machine(machine: Machine, config: ControllerConfig) -> None:
+    print(json.dumps(_machine_output(machine, config), sort_keys=True))
 
 
-def _machine_output(machine: Machine) -> dict[str, Any]:
+def _machine_output(machine: Machine, config: ControllerConfig) -> dict[str, Any]:
     return {
         "machine_id": machine.machine_id,
         "instance_type": machine.instance_type,
+        # False while the machine still runs a type dropped from the list: its
+        # instance keeps it through stops and starts until it is replaced.
+        "instance_type_allowed": machine.instance_type in config.allowed_instance_types,
         "desired_state": machine.desired_state.value,
         "desired_revision": machine.desired_revision,
         "observed_state": machine.observed_state.value,

@@ -138,19 +138,33 @@ class ControllerConfig:
         )
 
     def fingerprint(self) -> str:
-        immutable = {
+        """What the state database is bound to: where machines and their disks are.
+        The allowed instance types are not part of it; IAM enforces them on launch,
+        and a machine moves onto the configured type when it next launches."""
+        return _fingerprint_of(self._placement())
+
+    def superseded_fingerprint(self) -> str:
+        """The fingerprint before it left out the allowed instance types."""
+        return _fingerprint_of(
+            {**self._placement(), "allowed_instance_types": sorted(self.allowed_instance_types)}
+        )
+
+    def _placement(self) -> dict[str, Any]:
+        return {
             "installation_id": self.installation_id,
             "region": self.region,
             "availability_zone": self.availability_zone,
             "subnet_id": self.subnet_id,
             "security_group_ids": sorted(self.security_group_ids),
             "root_device_name": self.root_device_name,
-            "allowed_instance_types": sorted(self.allowed_instance_types),
             "root_volume_gib": self.root_volume_gib,
             "data_volume_gib": self.data_volume_gib,
         }
-        payload = json.dumps(immutable, separators=(",", ":"), sort_keys=True)
-        return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _fingerprint_of(immutable: dict[str, Any]) -> str:
+    payload = json.dumps(immutable, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _validated_string(raw: dict[str, Any], key: str, pattern: re.Pattern[str]) -> str:

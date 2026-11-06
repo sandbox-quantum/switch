@@ -137,8 +137,10 @@ async def list_machines() -> list[dict[str, Any]]:
         now), "offline" (was connected, and is not now: stopped, asleep, off
         or disconnected) or "unknown" (has never connected).
         `providers` lists the agent CLIs the machine last reported, each
-        {provider, installed, version, auth}, `auth` being "ok", "missing",
-        "expired" or "unknown". `agents_running` counts the managed agents
+        {provider, installed, version, auth, problem}, `auth` being "ok",
+        "missing", "expired" or "unknown", and `problem` why its login does
+        not work, in the machine's words, or null when it said nothing.
+        `agents_running` counts the managed agents
         whose process the machine last reported as running, null before it
         has reported. Pass a machine's `id` or exact `name` to `create_agent`.
     """

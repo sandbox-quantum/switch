@@ -27,9 +27,8 @@ const waitForHealthMock = vi.hoisted(() =>
   vi.fn((_url: string, _opts?: unknown) => Promise.resolve(true))
 );
 const readDeployedVersionMock = vi.hoisted(() =>
-  vi.fn(
-    (): Promise<{ kind: string; version?: string; source?: string }> =>
-      Promise.resolve({ kind: 'deployed', version: '0.11.0', source: 'env-file' })
+  vi.fn((): Promise<{ kind: string; version?: string; source?: string }> =>
+    Promise.resolve({ kind: 'deployed', version: '0.11.0', source: 'env-file' })
   )
 );
 const buildEnvFileMock = vi.hoisted(() => vi.fn((_params: unknown) => 'BUILT_ENV\n'));
@@ -325,6 +324,7 @@ describe('starting a shared stack', () => {
     expect(await startStack(startOptions(host))).toEqual({
       kind: 'error',
       message: 'The server did not become healthy in time.',
+      failure: 'health_timeout',
     });
     expect(ensureManagedServerMock).not.toHaveBeenCalled();
   });
@@ -476,6 +476,7 @@ describe('starting a shared stack', () => {
     expect(await startStack(startOptions(host))).toEqual({
       kind: 'error',
       message: 'unshared vm-1 /home/alice/.switchdash/switch-server',
+      failure: 'start_refused',
     });
     expect(writeFile).not.toHaveBeenCalled();
     expect(publishEnvMock).not.toHaveBeenCalled();

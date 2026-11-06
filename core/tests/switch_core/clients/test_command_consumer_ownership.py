@@ -4,9 +4,9 @@ Against real PostgreSQL, two "processes" on one database, each wired the way
 `main` wires one: its own message listener, client factory, lifecycle,
 process lease, ownership and cursor writer. Both run the tenant's admin actor,
 so either can write as Switch, but only the one that owns the admin client
-runs its `CommandConsumer`. A message tagging an agent that is not in the room
-is answered with one warning, not one per process, and one said while no
-process read for the admin is answered by the next owner, once.
+runs its `CommandConsumer`. A `!help` is answered once, not once per process,
+and one typed while no process read for the admin is answered by the next
+owner, once.
 """
 
 from __future__ import annotations
@@ -58,7 +58,6 @@ from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from tests.ownership import process_lease_on
 from tests.routing import router_on
-from tests.switch_core.test_room_wide_mention_wakes_no_agent import _make_agent
 
 TIMEOUT = 10.0
 
@@ -202,7 +201,6 @@ async def room(session_factory: async_sessionmaker[AsyncSession]) -> _Room:
         await session.flush()
         await RoomStore().add_client(session, admin.id, room.id)
         await RoomStore().add_client(session, speaker.id, room.id)
-        await _make_agent(session, "absentee")
         await session.commit()
         return _Room(
             room_id=room.id,
@@ -232,9 +230,10 @@ async def two(
             await process.stop()
 
 
-async def _say(
-    session_factory: async_sessionmaker[AsyncSession], room: _Room, body: str
+async def _type_help(
+    session_factory: async_sessionmaker[AsyncSession], room: _Room
 ) -> None:
+    """`!help` typed in the room, as the command row a bridge writes."""
     async with session_factory() as session:
         await MessageStore().create(
             session,
@@ -244,18 +243,23 @@ async def _say(
                 sender_id=room.speaker,
                 sender_client_id=room.speaker_id,
                 sender_name="person",
-                event_type="m.room.message",
-                msgtype="m.text",
-                body=body,
+                event_type="com.switch.command",
+                msgtype=None,
+                body=None,
                 formatted_body=None,
-                content={"body": body, "sender_name": "person"},
+                content={
+                    "command": "help",
+                    "args": "",
+                    "user_id": room.speaker,
+                    "user_name": "person",
+                },
             ),
             [],
         )
         await session.commit()
 
 
-async def _warnings(
+async def _answers(
     session_factory: async_sessionmaker[AsyncSession], room: _Room
 ) -> list[Message]:
     async with session_factory() as session:
@@ -270,19 +274,19 @@ async def _warnings(
         row
         for row in rows
         if (row.content or {}).get(ADMIN_MARKER, {}).get("type")
-        == AdminMessageType.ABSENT_AGENT.value
+        == AdminMessageType.COMMAND_RESULT.value
     ]
 
 
-async def _eventually_warned(
+async def _eventually_answered(
     session_factory: async_sessionmaker[AsyncSession], room: _Room, count: int
 ) -> list[Message]:
     async with asyncio.timeout(TIMEOUT):
-        while len(await _warnings(session_factory, room)) < count:
+        while len(await _answers(session_factory, room)) < count:
             await asyncio.sleep(0.05)
     # Long enough for a second reader, had there been one, to have answered.
     await asyncio.sleep(0.5)
-    return await _warnings(session_factory, room)
+    return await _answers(session_factory, room)
 
 
 class TestOneAdminConsumer:
@@ -307,11 +311,11 @@ class TestOneAdminConsumer:
         two: tuple[_Process, _Process],
         room: _Room,
     ) -> None:
-        await _say(session_factory, room, "@absentee are you there?")
+        await _type_help(session_factory, room)
 
-        warnings = await _eventually_warned(session_factory, room, 1)
+        answers = await _eventually_answered(session_factory, room, 1)
 
-        assert len(warnings) == 1
+        assert len(answers) == 1
 
     async def test_the_next_owner_answers_what_was_said_while_nobody_read(
         self,
@@ -321,14 +325,14 @@ class TestOneAdminConsumer:
     ) -> None:
         a, b = two
         owner, other = (a, b) if a.lifecycle.owns(room.admin_id) else (b, a)
-        await _say(session_factory, room, "@absentee first")
-        await _eventually_warned(session_factory, room, 1)
+        await _type_help(session_factory, room)
+        await _eventually_answered(session_factory, room, 1)
 
         await owner.stop()
-        await _say(session_factory, room, "@absentee said with nobody reading")
+        await _type_help(session_factory, room)
         await other.ownership.balance()
 
-        warnings = await _eventually_warned(session_factory, room, 2)
+        answers = await _eventually_answered(session_factory, room, 2)
 
         assert other.lifecycle.owns(room.admin_id)
-        assert len(warnings) == 2
+        assert len(answers) == 2

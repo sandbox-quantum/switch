@@ -348,24 +348,62 @@ async def _event_stream(
                 await buffer.ensure_counting(tenant, agent_id, conn.id, room_id)
                 counted.add(room_id)
 
-            conversation_rooms: set[str] = set()
-            if conn.reads_conversation:
-                conversation_rooms = await _place_in_conversation(
-                    conn, registry, buffer, tenant
-                )
-            # Before the read, so a row written while it runs wakes the wait
-            # below rather than being left for the keepalive.
-            rooms.watch(conversation_rooms)
-
+            # The reads of a pass share one session, so they cost one pool
+            # checkout and one transaction rather than one of each per read
+            # (`EventBuffer.one_session`). Nothing is yielded inside it: a gap
+            # goes out after the block has given its connection back.
             try:
-                pending, looked = await buffer.read(
-                    tenant,
-                    agent_id,
-                    conn.position,
-                    conversation_rooms=conversation_rooms,
-                    notifiable_only=not conn.reads_conversation,
-                    limit=CATCH_UP_BATCH,
-                )
+                async with buffer.one_session(tenant):
+                    conversation_rooms: set[str] = set()
+                    if conn.reads_conversation:
+                        conversation_rooms = await _place_in_conversation(
+                            conn, registry, buffer, tenant
+                        )
+                    # Before the read, so a row written while it runs wakes the
+                    # wait below rather than being left for the keepalive.
+                    rooms.watch(conversation_rooms)
+
+                    pending, looked = await buffer.read(
+                        tenant,
+                        agent_id,
+                        conn.position,
+                        conversation_rooms=conversation_rooms,
+                        notifiable_only=not conn.reads_conversation,
+                        limit=CATCH_UP_BATCH,
+                    )
+
+                    # Room coverage is evaluated per event rather than up
+                    # front: a sibling claiming a room must take effect
+                    # immediately, without tearing the stream down. An event
+                    # for a room this connection does not cover is not sent,
+                    # but the position still moves past it, in order: only once
+                    # every event before it has gone out, so the position never
+                    # says the client was sent an event that is still to come.
+                    # `covered` is the plan when the batch is read, which the
+                    # tickets are minted for: room messages are in it because
+                    # `_conversation_rooms` only returned rooms this connection
+                    # covers. Each event is checked again just before it is
+                    # sent, because the loop suspends at every yield and a
+                    # sibling can claim the room while it does. The check reads
+                    # the registry in memory, so it costs no query.
+                    covered = [
+                        item.source != OWN_EVENTS or registry.covers(conn, item.room_id)
+                        for item in pending
+                    ]
+                    tickets = await _tickets_for(conn, buffer, tenant, pending, covered)
+                    # The unread counts sent with the events below, counted for
+                    # the whole batch at once, so that catching up on a few
+                    # hundred events costs a few statements per room rather
+                    # than several per event.
+                    missed = await buffer.unread_batch(
+                        tenant,
+                        agent_id,
+                        [
+                            (item.room_id, item.room_seq)
+                            for item, send in zip(pending, covered, strict=True)
+                            if send and item.notifiable
+                        ],
+                    )
             except CursorExpiredError as exc:
                 conn.position[OWN_EVENTS] = exc.resume_after
                 yield _frame(
@@ -382,36 +420,6 @@ async def _event_stream(
                 )
                 continue
 
-            # Room coverage is evaluated per event rather than up front: a
-            # sibling claiming a room must take effect immediately, without
-            # tearing the stream down. An event for a room this connection does
-            # not cover is not sent, but the position still moves past it, in
-            # order: only once every event before it has gone out, so the
-            # position never says the client was sent an event that is still
-            # to come. `covered` is the plan when the batch is read, which the
-            # tickets are minted for: room messages are in it because
-            # `_conversation_rooms` only returned rooms this connection covers.
-            # Each event is checked again just before it is sent, because the
-            # loop suspends at every yield and a sibling can claim the room
-            # while it does. The check reads the registry in memory, so it
-            # costs no query.
-            covered = [
-                item.source != OWN_EVENTS or registry.covers(conn, item.room_id)
-                for item in pending
-            ]
-            tickets = await _tickets_for(conn, buffer, tenant, pending, covered)
-            # The unread counts sent with the events below, counted for the
-            # whole batch at once, so that catching up on a few hundred events
-            # costs a few statements per room rather than several per event.
-            missed = await buffer.unread_batch(
-                tenant,
-                agent_id,
-                [
-                    (item.room_id, item.room_seq)
-                    for item, send in zip(pending, covered, strict=True)
-                    if send and item.notifiable
-                ],
-            )
             delivered = False
             index = -1
             for item, send in zip(pending, covered, strict=True):
