@@ -25,7 +25,7 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_keeps_monday_disabled_alongside_enabled_connections():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
