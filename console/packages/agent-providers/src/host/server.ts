@@ -83,6 +83,11 @@ export function adapterFor(
     logger: undefined,
     skill,
     serviceSkills,
+    mcpBridge: {
+      transport: 'stdio',
+      command: process.execPath,
+      args: [process.argv[1]!, '--openhands-mcp'],
+    },
   });
 }
 

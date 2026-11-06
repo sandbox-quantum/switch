@@ -1,6 +1,6 @@
 import { checkAcpSignIn, createAcpAdapter } from '../acp/acp-adapter';
 import type { AcpProviderHooks } from '../acp/hooks';
-import type { ProviderAdapter } from '../adapter';
+import type { ProviderAdapter, StdioMcpServerSpec } from '../adapter';
 import { antigravityAcp } from '../antigravity/antigravity-adapter';
 import { createClaudeAdapter } from '../claude/claude-adapter';
 import { checkClaudeSignIn, CLAUDE_LOGIN } from '../claude/sign-in';
@@ -9,10 +9,13 @@ import { checkCodexSignIn, CODEX_LOGIN } from '../codex/sign-in';
 import { cursorAcp } from '../cursor/cursor-adapter';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
 import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
+import { createOpenhandsAdapter, openhandsAcp } from '../openhands/openhands-acp';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 
 export interface ProviderRuntimeOptions {
+  /** Execution-host helper for OpenHands' MCP transport compatibility. */
+  mcpBridge?: StdioMcpServerSpec;
   /** The provider's executable; the provider's default when undefined. */
   binaryPath: string | undefined;
   logger: ProviderLogger | undefined;
@@ -51,6 +54,8 @@ export interface ProviderRuntime {
   createAdapter(options: ProviderRuntimeOptions): ProviderAdapter;
   /** Whether the CLI is signed in, answered without signing it in. */
   checkSignIn(input: SignInCheckInput): Promise<ProviderReadiness>;
+  /** Read a model catalogue without creating a conversation, when the CLI stores one. */
+  modelCatalogue?(input: SignInCheckInput): Promise<ProviderReadiness>;
 }
 
 /** An ACP-speaking CLI's runtime, made entirely from its hooks. */
@@ -106,6 +111,16 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   },
   acpProviderRuntime(antigravityAcp),
   acpProviderRuntime(cursorAcp),
+  {
+    id: openhandsAcp.provider,
+    loginCommand: openhandsAcp.loginCommand,
+    inheritEnv: openhandsAcp.inheritEnv ?? [],
+    unsupportedPlatforms: openhandsAcp.unsupportedPlatforms ?? {},
+    createAdapter: ({ binaryPath, logger, mcpBridge }) =>
+      createOpenhandsAdapter({ binaryPath, logger, mcpBridge }),
+    checkSignIn: (input) => checkAcpSignIn(openhandsAcp, input),
+    modelCatalogue: (input) => checkAcpSignIn(openhandsAcp, input),
+  },
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));

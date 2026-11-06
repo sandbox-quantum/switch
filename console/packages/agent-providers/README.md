@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `openhands` | `openhands acp` through the generic ACP adapter, with provider-owned model and MCP compatibility | Offers the model saved in the execution machine's OpenHands settings, reattaches MCP servers on resume, and maps runtime modes to OpenHands confirmation policies. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -70,9 +71,45 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
+### OpenHands CLI
+
+Install OpenHands on the execution machine with `uv tool install openhands --python 3.12`,
+then run `openhands` to configure its model and credentials, or `openhands login`
+for OpenHands Cloud. Native Windows execution is unsupported; use a Linux/WSL or macOS host.
+Console does not transfer an OpenHands login to another machine.
+
+Readiness reads `agent_settings.json` under `OPENHANDS_PERSISTENCE_DIR` (default
+`~/.openhands`) without launching a login. As in OpenHands' own local ACP check,
+configured settings establish readiness; they do not prove API access. Switch
+offers that saved model as its only model choice. A stale selection or unsupported
+model options fail before launch, because OpenHands 1.16.0 accepts model-switch
+requests without changing the model.
+
+OpenHands-specific MCP conversion runs in a stdio helper: HTTP authorization stays
+in its environment, and a top-level tool argument named `kind` is exposed under a
+non-conflicting name and mapped back on calls. The generic ACP adapter supports
+launch-time resume, bounded input lines, and interruption of pending approvals.
+OpenHands uses `--resume` plus `session/new` to retain current MCP registrations.
+`OPENHANDS_CONVERSATIONS_DIR` overrides the saved-conversation directory.
+
+The CLI reads input lines up to 64 KiB. Longer text is sent in labelled parts;
+intermediate acknowledgements are hidden, and each part costs a model call.
+An attachment that cannot fit is rejected before sending any part. OpenHands'
+step-level approvals do not name their MCP server, so registered Switch tools
+cannot be exempted from those approvals. `auto-accept-edits` therefore asks for
+every step; `auto` uses the CLI's risk analyzer, and `full-access` approves steps.
+There is no ACP question tool.
+
+Validation on 2026-11-06 used CLI 1.16.0 / SDK 1.21.0. The real CLI startup and
+fresh-process resume smoke test passed, including the persisted model and working
+directory. The configured model's `simple-turn` scenario failed with
+`LLMServiceUnavailableError`, also reproduced through native ACP without Switch.
+The remaining model-backed scenarios and Console video still need a reachable
+model backend; this is not a passing conformance claim.
+
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and OpenHands run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 

@@ -34,6 +34,8 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /** Native conversation to restore through a launch flag, when applicable. */
+  resumeSessionId?: string;
 }
 
 /**
@@ -155,6 +157,12 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
+  /** Launch restores the conversation; session/new reattaches its current MCP servers. */
+  resumeWithLaunch?: boolean;
+  /** Maximum UTF-8 JSON-RPC line the provider accepts, including its newline. */
+  inputByteLimit?: number;
+  /** Some agents continue after a cancelled permission; an error pauses them instead. */
+  interruptPermissionAsError?: boolean;
   /** The MCP server a tool call belongs to, when the agent says so. */
   mcpServerOf?(toolCall: AcpToolCall): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */

@@ -15,7 +15,7 @@ export const PERMISSION_COPY = {
     description: 'Safe actions run on their own; risky ones ask you first.',
     overridden: 'Bypass permissions is on and overrides it.',
     infoLabel: 'More info about auto mode',
-    info: "The agent's provider reviews each action before it runs: Claude, Codex, OpenCode and Cursor use their own automatic review, and Antigravity approves edits and asks before commands. Applies to every session, including ones started automatically.",
+    info: "The agent's provider reviews each action before it runs: Claude, Codex, OpenCode, Cursor and OpenHands use their own automatic review, and Antigravity approves edits and asks before commands. Applies to every session, including ones started automatically.",
   },
   autoApprove: {
     title: 'Bypass permissions',

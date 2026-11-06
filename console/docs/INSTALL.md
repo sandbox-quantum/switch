@@ -145,6 +145,9 @@ new agent on **This computer** runs on the PC as a managed agent: Console's
 built-in agents controller runs it, once **Run managed agents on this computer**
 is on. Antigravity has no Windows build, so it can't run there.
 
+OpenHands CLI requires Linux (including WSL) or macOS. Configure it on that
+execution machine; the native Windows controller does not run it through WSL automatically.
+
 On a server without agent management, Console runs the agent itself, and those
 sessions need a POSIX execution host, so Windows Console asks you to pick an SSH
 host instead: a Linux or macOS machine you can reach over SSH, set up from

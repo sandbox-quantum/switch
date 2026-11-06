@@ -51,7 +51,9 @@ export function MachineProviderPicker({
   );
   // Installed there but not signed in: a login can be given to the machine.
   const givable = machine.acceptsLogins
-    ? options.filter((option) => !option.ready && option.problem !== 'not installed')
+    ? options.filter(
+        (option) => option.id !== 'openhands' && !option.ready && option.problem !== 'not installed'
+      )
     : [];
   const [giving, setGiving] = useState<AgentProviderId | null>(null);
 

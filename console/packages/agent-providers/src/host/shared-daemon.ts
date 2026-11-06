@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { runOpenHandsMcpBridge } from '../openhands/mcp-bridge';
+import { providerRuntime } from '../providers/registry';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import {
@@ -44,6 +46,23 @@ async function main(): Promise<void> {
     throw new Error('Shared SDK host requires a state directory and configuration file.');
   if (root === '--models') {
     const provider = sharedConfigSchema.shape.start.shape.provider.parse(configPath);
+    const runtime = providerRuntime(provider);
+    if (runtime.modelCatalogue) {
+      console.log(
+        JSON.stringify(
+          await runtime.modelCatalogue({
+            binaryPath: process.argv[5] ?? provider,
+            cwd: mode,
+            env: Object.fromEntries(
+              Object.entries(process.env).filter(
+                (entry): entry is [string, string] => entry[1] !== undefined
+              )
+            ),
+          })
+        )
+      );
+      return;
+    }
     const adapter = adapterFor(provider, process.argv[5], '', []);
     const sessionId = randomUUID();
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -315,7 +334,8 @@ function isCliConversationMode(value: string): value is CliConversationMode {
   return (CLI_CONVERSATION_MODES as readonly string[]).includes(value);
 }
 
-if (root === '--git-credential' || root === '--github-cli') await helper();
+if (root === '--openhands-mcp') await runOpenHandsMcpBridge();
+else if (root === '--git-credential' || root === '--github-cli') await helper();
 else
   try {
     await main();

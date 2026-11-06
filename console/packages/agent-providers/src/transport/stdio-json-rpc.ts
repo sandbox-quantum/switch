@@ -25,6 +25,7 @@ export interface StdioJsonRpcClientOptions {
   /** Called once when the process goes away, whether or not it was asked to. */
   onExit: (reason: string) => void;
   rejectOutputLine?: (line: string) => string | undefined;
+  inputByteLimit?: number;
 }
 
 export class JsonRpcError extends Error {
@@ -74,8 +75,10 @@ export class StdioJsonRpcClient {
   private nextId = 0;
   private exited = false;
   private processExited = false;
+  private readonly inputByteLimit: number | undefined;
 
   constructor(options: StdioJsonRpcClientOptions) {
+    this.inputByteLimit = options.inputByteLimit;
     this.logger = options.logger;
     this.onExit = options.onExit;
     this.child = spawnProvider(options.command, options.args, {
@@ -223,7 +226,10 @@ export class StdioJsonRpcClient {
     const stdin = this.child.stdin;
     if (!stdin || !stdin.writable)
       throw new Error('Provider input is closed; command was not written.');
-    stdin.write(`${JSON.stringify(message)}\n`);
+    const line = `${JSON.stringify(message)}\n`;
+    if (this.inputByteLimit !== undefined && Buffer.byteLength(line) > this.inputByteLimit)
+      throw new Error(`Provider input exceeds its ${this.inputByteLimit}-byte line limit.`);
+    stdin.write(line);
   }
 
   private handleLine(line: string): void {

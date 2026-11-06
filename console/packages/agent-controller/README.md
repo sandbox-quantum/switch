@@ -183,6 +183,7 @@ data), whose access list it sets to the current user and the system alone.
 - Provider CLIs are found on `PATH` with `PATHEXT`, so `claude.exe` and an npm
   install's `codex.cmd` both count.
 - Antigravity has no Windows build, so it is reported as not installed.
+- OpenHands CLI requires a Linux/WSL or macOS execution machine; it is not run by the native Windows controller.
 - `--agent-runtime separate-user` is Linux only.
 - An agent's shell setup is refused: it is a POSIX shell snippet.
 - Stopping an agent host asks it over its IPC channel or a stop file in its
