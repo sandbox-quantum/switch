@@ -1,25 +1,28 @@
 ---
 name: grafana
-description: How to work with dashboards, metrics, logs, traces, alerts and incidents through the Grafana connection your owner granted this agent. Load before reading, searching, creating or changing anything in Grafana Cloud.
+description: How to work with dashboards, metrics, logs, traces, alerts and incidents through the Grafana connection your owner granted this agent. Load before reading or searching Grafana Cloud.
 ---
 
 # Grafana
 
-Your owner granted this agent their Grafana connection, for one Grafana
-Cloud stack. Its tools are on the `grafana` MCP server; there is nothing to
-set up or renew.
+This skill describes a Grafana Cloud connection for one stack. Use it only
+when Switch supplies a current grant to this agent. Its tools are on the
+`grafana` MCP server; Switch handles sign-in and renewal.
 
 ## What the grant reaches
 
 - **You act as your owner.** Everything you read is what they can see in
-  their Grafana stack, and everything you create, change or delete shows
-  there as done by them. Grafana's own permissions still apply to every call.
+  their Grafana stack. This connector does not support changes. Grafana's
+  own permissions still apply to every call.
 - **One stack.** The connection signs in to a single Grafana Cloud stack. If
   the user asks about another stack, they have to connect that one too.
-- **Read-only.** This connector requests only `grafana:read`. It does not
-  request raw SQL Query or Write access. Resource changes and raw SQL are
-  unavailable, even if a tool name appears in the server's list. Grafana
-  enforces the token scopes; Switch does not filter the tool list.
+- **Read-only consent.** This connector requests only `grafana:read`. At
+  Grafana's consent page, clear Query and Write access and leave Read
+  selected. Query may be selected by default even for a read request and
+  can change SQL data. Never approve it for this connector. With only Read
+  granted, Grafana excludes resource changes and raw SQL, even if a tool
+  name appears in its list. Grafana enforces the token scopes; Switch does
+  not filter the tool list.
 - When a tool is refused, tell the user what you could not do. If Switch says
   the grant was removed or the connection must be reconnected, your owner has
   to do that.
@@ -29,7 +32,8 @@ set up or renew.
 
 The server lists its tools: search and inspect dashboards, data sources,
 alerts and incidents, and query metrics, logs, traces and profiles from the
-stack's data sources.
+stack's data sources. Only the tool areas selected at vendor consent are
+available; missing areas are not a reason to request broader access.
 
 - Prefer the specific tool for a known target (a dashboard, an alert rule, a
   log query) over a broad natural-language one.
@@ -47,6 +51,6 @@ queries: this connector does not request Grafana's Query scope. If asked for
 such work, explain that this connection supports reading only, without
 trying another credential or tool to get around the restriction.
 
-Do not call `ask_assistant` or `create_investigation` unless the user asks for
-that specific Assistant workflow and its usage has been approved. For a
-connection check, use dashboard search or list data sources instead.
+Do not call `ask_assistant` or `create_investigation`: they require Write
+access and are outside this connector's scope. For a connection check, use
+dashboard search or list data sources, if the chosen tool areas include them.
