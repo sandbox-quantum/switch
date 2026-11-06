@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from sqlalchemy import select
 
+from switch_core import messaging_platforms
 from switch_core.agent_display_name import (
     agent_label,
     agent_label_with_identifier,
@@ -301,20 +302,25 @@ async def _check_cancel_usage(
     to, a role is no target, and the turn ID is checked too: a full ID or
     the start of one, as the card shows it, passes. When this
     answers, no agent is addressed or the agent stays silent
-    (`_decide_cancel`), so a misused `!cancel` gets one reply.
+    (`_decide_cancel`), so a misused `!cancel` gets one reply. Where a typed
+    command never reaches Switch (`_receives_typed_commands`), the reply names
+    the slash command and its options instead.
     """
     tokens = _mention_tokens(event.args)
     if not tokens:
-        await _reply(host, room, event, _CANCEL_USAGE)
+        typed = await _receives_typed_commands(host, meta.bridge_id)
+        await _reply(host, room, event, _cancel_usage(typed=typed))
         return
     target = tokens[0]
     agents, roles = await _room_targets(host, meta)
     if target.lower() not in agents:
-        text = _cancel_target_text(target, role=target.lower() in roles)
+        typed = await _receives_typed_commands(host, meta.bridge_id)
+        text = _cancel_target_text(target, role=target.lower() in roles, typed=typed)
         await _reply(host, room, event, text)
         return
     if parse_cancel_args(event.args) is None:
-        await _reply(host, room, event, _CANCEL_USAGE)
+        typed = await _receives_typed_commands(host, meta.bridge_id)
+        await _reply(host, room, event, _cancel_usage(typed=typed))
 
 
 _CANCEL_USAGE = (
@@ -324,13 +330,59 @@ _CANCEL_USAGE = (
 )
 
 
-def _cancel_target_text(target: str, *, role: bool) -> str:
+def _cancel_usage(*, typed: bool) -> str:
+    if typed:
+        return _CANCEL_USAGE
+    target, turn_id = (arg.name for arg in COMMANDS_BY_NAME["cancel"].args_spec)
+    return (
+        "`/cancel` needs the agent and one turn ID. Run `/cancel` with the "
+        f"agent's name in `{target}` and the turn ID from the agent's activity "
+        f"card in `{turn_id}`. Its first 8 characters are enough."
+    )
+
+
+def _cancel_target_text(target: str, *, role: bool, typed: bool) -> str:
     # Without the `@`: Teams turns a known name into a mention even in code.
     what = "a role" if role else "not an agent in this room"
+    if typed:
+        return (
+            f"`{target}` is {what}. `!cancel` names the agent the message is "
+            "queued with, by its name or alias. Run `!list-agents` to see the "
+            "agents here."
+        )
+    option = COMMANDS_BY_NAME["cancel"].args_spec[0].name
     return (
-        f"`{target}` is {what}. `!cancel` names the agent the message is queued "
-        "with, by its name or alias. Run `!list-agents` to see the agents here."
+        f"`{target}` is {what}. `/cancel` takes the agent the message is queued "
+        f"with in `{option}`, by its name or alias. Run `/list-agents` to see "
+        "the agents here."
     )
+
+
+async def _receives_typed_commands(
+    host: AgentRecipient | CommandConsumer, bridge_id: str | None
+) -> bool:
+    """Whether a `!` command typed in the room reaches Switch.
+
+    The platform decides, from the settings of the connection the room is
+    bridged over (`PlatformAdapter.receives_typed_commands`). A room bridged
+    to nothing, or to a platform this process does not know, is taken to
+    hear what is typed in it. So is a room whose bridge cannot be found, and
+    that fallback, like an unknown platform, is logged as a warning.
+    """
+    if bridge_id is None:
+        return True
+    async with host.session_factory() as session:
+        bridge = await session.get(CollaborationBridge, bridge_id)
+    platform = messaging_platforms.lookup(bridge.type) if bridge is not None else None
+    if bridge is None or platform is None:
+        logger.warning(
+            "Cannot tell whether typed commands reach Switch through bridge %s "
+            "(type %s); assuming they do",
+            bridge_id,
+            bridge.type if bridge is not None else None,
+        )
+        return True
+    return platform.receives_typed_commands(bridge.connection_config or {})
 
 
 @dataclass(frozen=True)
@@ -734,7 +786,7 @@ async def _decide_control_command(
                 return say(refusal)
         if isinstance(turn_id, TurnIdPrefix):
             resolved = await _resolve_turn_id_prefix(
-                client, agent.id, meta.room_id, turn_id
+                client, agent.id, meta.room_id, turn_id, bridge_id=meta.bridge_id
             )
             if not isinstance(resolved, _Resolved):
                 return say(resolved)
@@ -1015,6 +1067,13 @@ _NO_QUEUED_TURN = (
     "you gave. If I've already started on it, use `!interrupt` with my mention "
     "to stop my current turn."
 )
+# `_NO_QUEUED_TURN` where a typed command never reaches Switch. `target` is
+# the name of `interrupt`'s option, written out so that this stays one literal.
+_SLASH_NO_QUEUED_TURN = (
+    "No message waiting for me in this room has an ID that starts with the one "
+    "you gave. If I've already started on it, run `/interrupt` with my name in "
+    "`target` to stop my current turn."
+)
 _SEVERAL_QUEUED_TURNS = (
     "More than one message waiting for me in this room has an ID that starts "
     "with the one you gave, so I can't tell which to cancel."
@@ -1022,7 +1081,12 @@ _SEVERAL_QUEUED_TURNS = (
 
 
 async def _resolve_turn_id_prefix(
-    client: AgentRecipient, agent_id: str, room_id: str, prefix: TurnIdPrefix
+    client: AgentRecipient,
+    agent_id: str,
+    room_id: str,
+    prefix: TurnIdPrefix,
+    *,
+    bridge_id: str | None,
 ) -> _Resolved | str:
     """The one queued turn `prefix` names, or why it names none.
 
@@ -1040,7 +1104,9 @@ async def _resolve_turn_id_prefix(
         {row.turn_id.lower() for row in rows if TURN_ID_PATTERN.fullmatch(row.turn_id)}
     )
     if not matches:
-        return _NO_QUEUED_TURN
+        if await _receives_typed_commands(client, bridge_id):
+            return _NO_QUEUED_TURN
+        return _SLASH_NO_QUEUED_TURN
     if len(matches) > 1:
         return _SEVERAL_QUEUED_TURNS
     return _Resolved(matches[0])

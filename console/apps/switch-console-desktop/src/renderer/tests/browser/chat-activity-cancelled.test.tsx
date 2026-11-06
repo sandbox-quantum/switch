@@ -101,6 +101,11 @@ async function render(status: ChatActivityItem['status']): Promise<HTMLDivElemen
 const retryButton = (el: HTMLElement) =>
   [...el.querySelectorAll('button')].find((b) => /^Retr/.test(b.textContent ?? ''));
 
+const cancelButton = (el: HTMLElement) =>
+  [...el.querySelectorAll('button')].find((b) =>
+    /cancel/i.test(`${b.textContent ?? ''} ${b.getAttribute('aria-label') ?? ''}`)
+  );
+
 function statusOf(el: HTMLElement): HTMLElement {
   const status = el.querySelector<HTMLElement>('[role="status"]');
   expect(status).not.toBeNull();
@@ -117,6 +122,14 @@ describe('ChatActivityBlock', () => {
     expect(el.textContent).not.toContain('t1');
     // Withdrawn by its sender: there is nothing to run again.
     expect(retryButton(el)).toBeUndefined();
+    expect(cancelButton(el)).toBeUndefined();
+  });
+
+  it('offers no way to cancel a queued turn from its card', async () => {
+    const el = await render('queued');
+
+    expect(el.textContent).toContain('Queued…');
+    expect(cancelButton(el)).toBeUndefined();
   });
 
   it('keeps the failure mark, and Retry, for a turn that ended with an error', async () => {

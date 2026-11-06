@@ -277,6 +277,7 @@ def turn_status(
     error_summary: str | None = None,
     tool_detail: bool,
     agent_name: str | None,
+    slash_options: tuple[str, str] | None = None,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
 
@@ -298,7 +299,8 @@ def turn_status(
     (`withdraw_hint`). A queued turn has done nothing yet, so in practice it
     stands where the other two would. `agent_name` is the agent the turn is
     queued with, as `!cancel` names it, or None where the drawing has no agent
-    to name.
+    to name. `slash_options` asks for the slash form of the command instead,
+    as `withdraw_hint` takes it.
 
     `tool_detail` says whether this platform reports tool activity at all, and
     a platform can decline it. Where the status shares the conversation with
@@ -328,7 +330,9 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
-    hint = _withdraw_line(turn, agent_name=agent_name, code=markup.code)
+    hint = _withdraw_line(
+        turn, agent_name=agent_name, code=markup.code, slash_options=slash_options
+    )
     if hint is not None and spent + len(hint) + 1 <= budget:
         lines.append(hint)
         spent += len(hint) + 1
@@ -344,7 +348,11 @@ def turn_status(
 
 
 def _withdraw_line(
-    turn: TurnUpsert, *, agent_name: str | None, code: Callable[[str], str]
+    turn: TurnUpsert,
+    *,
+    agent_name: str | None,
+    code: Callable[[str], str],
+    slash_options: tuple[str, str] | None = None,
 ) -> str | None:
     """The line under a queued turn's state saying how to withdraw it, or None.
 
@@ -352,7 +360,7 @@ def _withdraw_line(
     `withdraw_hint` marks literal holds no markup, and the `@` in it has to
     reach the reader as an `@` for the copied command to name the agent.
     """
-    pieces = withdraw_hint(turn, agent_name=agent_name)
+    pieces = withdraw_hint(turn, agent_name=agent_name, slash_options=slash_options)
     if pieces is None:
         return None
     return "".join(code(text) if literal else text for text, literal in pieces)

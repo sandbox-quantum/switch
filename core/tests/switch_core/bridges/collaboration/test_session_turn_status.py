@@ -155,6 +155,7 @@ def _drawn(
     limit: int = 10_000,
     agent_name: str | None = "cc",
     escape: Callable[[str], str] = _identity,
+    slash_options: tuple[str, str] | None = None,
 ) -> list[str]:
     return turn_status(
         items or [],
@@ -165,6 +166,7 @@ def _drawn(
         elapsed_seconds=elapsed_seconds,
         tool_detail=True,
         agent_name=agent_name,
+        slash_options=slash_options,
     ).splitlines()
 
 
@@ -329,3 +331,68 @@ def test_the_hint_is_left_out_rather_than_cut_when_there_is_no_room() -> None:
     lines = _drawn(_turn_with_id("queued", QUEUED_ID), MARKDOWN, limit=len(head) + 10)
 
     assert lines == [head]
+
+
+# ── Where a typed `!cancel` never arrives, the slash command ─────────────────
+
+_SLASH = ("target", "turn_id")
+
+
+def test_with_slash_options_the_card_offers_the_slash_command() -> None:
+    """One literal, the options named as the platform registered them."""
+    lines = _drawn(
+        _turn_with_id("queued", QUEUED_ID),
+        MARKDOWN,
+        slash_options=_SLASH,
+    )
+
+    assert lines == [
+        "**Queued. Waiting for the agent to start…**",
+        "`/cancel target:cc turn_id:3f2b8c1e` — the sender can run this to "
+        "withdraw it.",
+    ]
+    assert "!cancel" not in "\n".join(lines)
+
+
+def test_the_slash_command_takes_the_option_names_it_is_given() -> None:
+    lines = _drawn(
+        _turn_with_id("queued", QUEUED_ID),
+        MARKDOWN,
+        slash_options=("agent", "id"),
+    )
+
+    assert lines[1].startswith("`/cancel agent:cc id:3f2b8c1e`")
+
+
+@pytest.mark.parametrize(
+    "agent_name",
+    [None, "all", "two words"],
+    ids=["no-agent", "reserved-name", "not-one-mention"],
+)
+def test_with_slash_options_and_no_name_the_card_asks_for_the_name(
+    agent_name: str | None,
+) -> None:
+    """The same cases that name the pieces without the options; the option
+    takes the agent's name, so that is what the card asks for."""
+    lines = _drawn(
+        _turn_with_id("queued", QUEUED_ID),
+        MARKDOWN,
+        agent_name=agent_name,
+        slash_options=_SLASH,
+    )
+
+    assert lines == [
+        "**Queued. Waiting for the agent to start…**",
+        "Turn ID: `3f2b8c1e` — the sender can withdraw it with `/cancel`, "
+        "the agent's name and this ID.",
+    ]
+
+
+def test_with_slash_options_a_follow_up_still_offers_nothing() -> None:
+    lines = _drawn(
+        _turn_with_id("queued", f"{QUEUED_ID}:followup"),
+        MARKDOWN,
+        slash_options=_SLASH,
+    )
+
+    assert lines == ["**Queued. Waiting for the agent to start…**"]

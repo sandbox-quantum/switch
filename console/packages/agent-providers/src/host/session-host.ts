@@ -1276,13 +1276,16 @@ export class HostedSession {
     if (index !== -1 && status === 'queued') {
       this.queue.splice(index, 1);
       this.settledTurns.set(turnId, 'cancelled');
-      await this.publish({
-        type: 'turn.upsert',
-        turnId,
-        commandId: target.commandId,
-        status: 'cancelled',
-      });
-      this.config.releaseAttachments?.(target.body.attachments);
+      try {
+        await this.publish({
+          type: 'turn.upsert',
+          turnId,
+          commandId: target.commandId,
+          status: 'cancelled',
+        });
+      } finally {
+        this.config.releaseAttachments?.(target.body.attachments);
+      }
       return;
     }
     // A turn that just ended reads ended a moment before it stops being the active one.

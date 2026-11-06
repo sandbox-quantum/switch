@@ -419,6 +419,15 @@ map. No Node/npx and no credentials in the CLI's environment.
   (`rich_fallback_text`, which a failed publication carries on Discord and
   Telegram) or the name would not read back as one mention,
   and on Teams for a name with `_` in it, the card names the pieces instead.
+  On Discord through the shared connection, where typed commands do not
+  reach Switch by default (`receives_typed_commands`), the card gives the
+  slash command `/cancel` instead, with the agent and the turn ID in its
+  options. The help for a misused cancel names `/cancel` (and `/list-agents`
+  for an unknown agent), and a start of a turn ID that matches no queued
+  turn points to `/interrupt` (`_SLASH_NO_QUEUED_TURN`). A full ID goes to
+  the host, whose replies are unchanged, including `!interrupt` for a turn
+  that has already started (`roomCancelReply`): the host is not told which
+  connection the room is on.
 - Stop: a press (`INTERRUPT_ACTION`) resolves its turn from
   `turn_status_posts`, is refused if that turn is no longer running, is
   judged by the agent's addressing policy in the room (as `!interrupt` is),

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,6 +22,7 @@ from switch_core.bridges.agent.commands import (
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.controller_presence import Binding
 from switch_core.bridges.agent.protocol.types import AgentStatus
+from switch_core.db.models import CollaborationBridge
 from switch_core.events import CommandEvent
 
 
@@ -44,6 +47,22 @@ class _Reply:
         self.bodies.append(body)
 
 
+class _Db:
+    """A session holding at most the room's bridge row, read by its id."""
+
+    def __init__(self, bridge: SimpleNamespace | None = None) -> None:
+        self.bridge = bridge
+
+    async def get(self, model: Any, ident: str) -> SimpleNamespace | None:
+        if model is CollaborationBridge and self.bridge is not None:
+            return self.bridge if ident == self.bridge.id else None
+        return None
+
+
+def _bridge(platform: str, **connection_config: str) -> SimpleNamespace:
+    return SimpleNamespace(id="b1", type=platform, connection_config=connection_config)
+
+
 def _client(
     reply: _Reply,
     *,
@@ -51,6 +70,7 @@ def _client(
     enqueue: list[Any],
     placed: str | None = None,
     relayed: list[Any] | None = None,
+    bridge: SimpleNamespace | None = None,
 ) -> SimpleNamespace:
     """Minimal AgentRecipient stand-in for _dispatch_control_command."""
 
@@ -77,13 +97,13 @@ def _client(
         return SimpleNamespace(
             room_id="room-1",
             name="Room",
-            bridge_id="b1",
+            bridge_id=bridge.id if bridge is not None else None,
             channel_type="channel_private",
         )
 
     @asynccontextmanager
     async def _session_factory() -> Any:
-        yield SimpleNamespace()
+        yield _Db(bridge)
 
     async def _agent_room_role(
         _s: Any, _r: str, _a: str, _live_conns: Any = ()
@@ -212,16 +232,20 @@ async def test_live_capable_session_acks_and_enqueues(
 # ── Admin-side usage feedback (_check_control_target) ─────────────────────────
 
 
-def _meta() -> SimpleNamespace:
-    return SimpleNamespace(room_id="room-1")
+def _meta(bridge_id: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(room_id="room-1", bridge_id=bridge_id)
 
 
 def _admin_host(
-    *, agent_names: list[str], aliases: dict[str, str], role_names: list[str]
+    *,
+    agent_names: list[str],
+    aliases: dict[str, str],
+    role_names: list[str],
+    bridge: SimpleNamespace | None = None,
 ) -> SimpleNamespace:
     @asynccontextmanager
     async def _session_factory() -> Any:
-        yield SimpleNamespace()
+        yield _Db(bridge)
 
     ids = [f"id-{n}" for n in agent_names]
 
@@ -725,6 +749,7 @@ async def _cancel_with(
     *,
     placed: str | None = "session-1",
     controller_backed: bool = False,
+    bridge: SimpleNamespace | None = None,
 ) -> tuple[_Reply, list[Any], _Turns]:
     reply = _Reply()
     relayed: list[Any] = []
@@ -738,6 +763,7 @@ async def _cancel_with(
         enqueue=[],
         placed=placed,
         relayed=relayed,
+        bridge=bridge,
     )
     client._connections.controllers.is_bound = lambda _agent: controller_backed
 
@@ -1106,6 +1132,190 @@ async def test_cancel_admin_check_valid_usage_stays_silent(
         )
 
     assert reply.bodies == []
+
+
+# ── !cancel replies where a typed command does not reach Switch ─────────────
+
+SHARED_DISCORD = _bridge("discord", event_delivery="shared")
+# Rooms where a typed `!cancel` arrives, so the replies stay as they were:
+# none bridged, Discord on a connection of its own, other platforms (Teams too
+# says `shared`, for a connection that is given message text).
+TYPED_ROOMS = [
+    None,
+    _bridge("discord", event_delivery="own_connection"),
+    _bridge("slack", event_delivery="webhook"),
+    _bridge("teams", event_delivery="shared"),
+]
+SLASH_USAGE = (
+    "`/cancel` needs the agent and one turn ID. Run `/cancel` with the agent's "
+    "name in `target` and the turn ID from the agent's activity card in "
+    "`turn_id`. Its first 8 characters are enough."
+)
+SLASH_NOT_AN_AGENT = (
+    "`hames` is not an agent in this room. `/cancel` takes the agent the "
+    "message is queued with in `target`, by its name or alias. Run "
+    "`/list-agents` to see the agents here."
+)
+SLASH_NO_MATCH = (
+    "No message waiting for me in this room has an ID that starts with the one "
+    "you gave. If I've already started on it, run `/interrupt` with my name in "
+    "`target` to stop my current turn."
+)
+
+
+async def _admin_replies(
+    monkeypatch: pytest.MonkeyPatch, bridge: SimpleNamespace | None, args: str
+) -> list[str]:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+    await _check_cancel_usage(
+        _admin_host(agent_names=["cc"], aliases={}, role_names=[], bridge=bridge),
+        SimpleNamespace(room_id="!m"),
+        _cancel_event(args),
+        _meta(bridge.id if bridge is not None else None),
+    )
+    return reply.bodies
+
+
+@pytest.mark.parametrize("args", ["", "@cc", "@cc current"])
+@pytest.mark.asyncio
+async def test_on_discords_shared_connection_cancel_usage_names_the_slash_command(
+    monkeypatch: pytest.MonkeyPatch, args: str
+) -> None:
+    bodies = await _admin_replies(monkeypatch, SHARED_DISCORD, args)
+
+    assert bodies == [SLASH_USAGE]
+    assert "!" not in bodies[0]
+    assert "@" not in bodies[0]
+
+
+@pytest.mark.asyncio
+async def test_on_discords_shared_connection_an_unknown_target_names_slash_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bodies = await _admin_replies(monkeypatch, SHARED_DISCORD, "@hames current")
+
+    assert bodies == [SLASH_NOT_AN_AGENT]
+    # Discord registers `list-agents` as a slash command.
+    listed = commands.COMMANDS_BY_NAME["list-agents"]
+    assert not listed.hidden
+    assert listed.handler is not None
+
+
+@pytest.mark.asyncio
+async def test_on_discords_shared_connection_the_replies_name_the_registered_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancel = commands.COMMANDS_BY_NAME["cancel"]
+    target, turn_id = cancel.args_spec
+    renamed = (replace(target, name="agent"), replace(turn_id, name="id"))
+    monkeypatch.setitem(
+        commands.COMMANDS_BY_NAME, "cancel", replace(cancel, args_spec=renamed)
+    )
+
+    assert await _admin_replies(monkeypatch, SHARED_DISCORD, "@cc") == [
+        SLASH_USAGE.replace("`target`", "`agent`").replace("`turn_id`", "`id`")
+    ]
+    assert await _admin_replies(monkeypatch, SHARED_DISCORD, "@hames current") == [
+        SLASH_NOT_AN_AGENT.replace("`target`", "`agent`")
+    ]
+
+
+def _fallback_warnings(caplog: pytest.LogCaptureFixture) -> list[tuple[Any, ...]]:
+    return [
+        tuple(record.args or ())
+        for record in caplog.records
+        if record.name == "switch_core.bridges.agent.commands"
+        and record.levelno == logging.WARNING
+        and record.getMessage().startswith(
+            "Cannot tell whether typed commands reach Switch through bridge"
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("bridge", "logged_type"),
+    [(None, None), (_bridge("nope", event_delivery="shared"), "nope")],
+)
+@pytest.mark.asyncio
+async def test_a_bridge_that_cannot_be_read_is_taken_to_hear_typed_commands_and_logged(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    bridge: SimpleNamespace | None,
+    logged_type: str | None,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="switch_core.bridges.agent.commands")
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    await _check_cancel_usage(
+        _admin_host(agent_names=["cc"], aliases={}, role_names=[], bridge=bridge),
+        SimpleNamespace(room_id="!m"),
+        _cancel_event("@cc"),
+        _meta("b1"),
+    )
+
+    assert reply.bodies == [commands._CANCEL_USAGE]
+    assert _fallback_warnings(caplog) == [("b1", logged_type)]
+
+
+@pytest.mark.parametrize(
+    ("bridge", "bridge_id"),
+    [
+        (SimpleNamespace(id="b1", type="discord", connection_config=None), "b1"),
+        (None, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_room_with_no_bridge_or_no_settings_hears_typed_commands_unlogged(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    bridge: SimpleNamespace | None,
+    bridge_id: str | None,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="switch_core.bridges.agent.commands")
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    await _check_cancel_usage(
+        _admin_host(agent_names=["cc"], aliases={}, role_names=[], bridge=bridge),
+        SimpleNamespace(room_id="!m"),
+        _cancel_event("@cc"),
+        _meta(bridge_id),
+    )
+
+    assert reply.bodies == [commands._CANCEL_USAGE]
+    assert _fallback_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_on_discords_shared_connection_no_queued_turn_points_to_slash_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply, relayed, _ = await _cancel_with(
+        monkeypatch, f"@cc {TURN[:8]}", [], bridge=SHARED_DISCORD
+    )
+
+    assert reply.bodies == [SLASH_NO_MATCH]
+    assert relayed == []
+    # The option the text names is the one `interrupt` registers.
+    target = commands.COMMANDS_BY_NAME["interrupt"].args_spec[0].name
+    assert f"with my name in `{target}`" in reply.bodies[0]
+
+
+@pytest.mark.parametrize("bridge", TYPED_ROOMS)
+@pytest.mark.asyncio
+async def test_where_a_typed_command_arrives_the_cancel_replies_are_unchanged(
+    monkeypatch: pytest.MonkeyPatch, bridge: SimpleNamespace | None
+) -> None:
+    assert await _admin_replies(monkeypatch, bridge, "@cc") == [commands._CANCEL_USAGE]
+    assert await _admin_replies(monkeypatch, bridge, "@hames current") == [
+        "`hames` is not an agent in this room. `!cancel` names the agent the "
+        "message is queued with, by its name or alias. Run `!list-agents` to "
+        "see the agents here."
+    ]
+    reply, _, _ = await _cancel_with(monkeypatch, f"@cc {TURN[:8]}", [], bridge=bridge)
+    assert reply.bodies == [NO_MATCH]
 
 
 @asynccontextmanager

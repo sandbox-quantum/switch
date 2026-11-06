@@ -2344,6 +2344,52 @@ it('tells its owner which attachments a cancelled message will never stage', asy
   expect(stageAttachments).not.toHaveBeenCalled();
 });
 
+it('lets go of a cancelled message’s attachments even when the cancel cannot be recorded', async () => {
+  // Events are written in batches through `appendAll`; a refused record refuses its whole batch.
+  const original = Journal.prototype.appendAll;
+  const appendAll = vi.spyOn(Journal.prototype, 'appendAll').mockImplementation(async function (
+    this: Journal<unknown>,
+    values: unknown[]
+  ) {
+    const cancelled = values.some((value) => {
+      const body = (value as { body?: { type?: string; status?: string } }).body;
+      return body?.type === 'turn.upsert' && body.status === 'cancelled';
+    });
+    if (cancelled) throw new Error('Disk full');
+    return original.call(this, values);
+  });
+  try {
+    const { adapter, config } = setup('codex');
+    const root = await mkdtemp(join(tmpdir(), 'sdk-cancel-release-failed-'));
+    roots.push(root);
+    const stageAttachments = vi.fn(async () => []);
+    const releaseAttachments = vi.fn();
+    const host = await startHost(
+      root,
+      { ...config, stageAttachments, releaseAttachments },
+      adapter
+    );
+    hosts.push(host);
+    await until(() =>
+      expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
+    );
+    await host.command(roomMessage('a', null));
+    const command = roomMessage('with-file', null);
+    if (command.body.type !== 'message.send') throw new Error('Expected message');
+    command.body.attachments = [
+      { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+    ];
+    await host.command(command);
+    expect(await host.command(cancel('cancel', 'with-file'))).toMatchObject({
+      status: 'unknown',
+      code: 'OUTCOME_UNKNOWN',
+    });
+    expect(releaseAttachments).toHaveBeenCalledExactlyOnceWith(command.body.attachments);
+  } finally {
+    appendAll.mockRestore();
+  }
+});
+
 it.each(['cancel first', 'completion first', 'together'] as const)(
   'either sends or cancels a message raced with the turn before it ending: %s',
   async (order) => {

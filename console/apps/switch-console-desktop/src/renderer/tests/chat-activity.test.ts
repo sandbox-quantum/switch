@@ -367,6 +367,23 @@ describe('placeTurns', () => {
     }
   });
 
+  it('does not move the next turn under the refusal that names the slash command', () => {
+    const refusal =
+      "No message waiting for me in this room has an ID that starts with the one you gave. If I've already started on it, run `/interrupt` with my name in `target` to stop my current turn.";
+    const messages = [
+      said('q1', null),
+      said('q2', null),
+      said('cancel', null),
+      { ...said('refused', 'helper'), body: refusal, threadRootId: 'cancel' } as ChatMessage,
+      said('r1', 'helper'),
+    ];
+    const bound = new Map([
+      ['q1', turn('t1')],
+      ['q2', turn('t2', 'running')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], r1: ['t2'] });
+  });
+
   it('matches the text posted for a !cancel', () => {
     const host = readFileSync(
       join(__dirname, '../../../../../packages/agent-providers/src/host/room-cancel-reply.ts'),
@@ -387,6 +404,7 @@ describe('placeTurns', () => {
         .join('');
     const cantCancel = constant('_CANT_CANCEL');
     const noQueuedTurn = constant('_NO_QUEUED_TURN');
+    const slashNoQueuedTurn = constant('_SLASH_NO_QUEUED_TURN');
     const severalQueuedTurns = constant('_SEVERAL_QUEUED_TURNS');
     const notSent = [...core.matchAll(/f"Could not send \{command\}: ([^"]*)"/g)].map(
       (each) => `Could not send cancel: ${each[1]}`
@@ -394,10 +412,20 @@ describe('placeTurns', () => {
     expect(ack).toBeDefined();
     expect(cantCancel).toBeDefined();
     expect(noQueuedTurn).toBeDefined();
+    expect(slashNoQueuedTurn).toBeDefined();
+    expect(slashNoQueuedTurn).not.toEqual(noQueuedTurn);
     expect(severalQueuedTurns).toBeDefined();
     expect(notSent.length).toBe(2);
     expect(
-      new Set([ack, cantCancel, noQueuedTurn, severalQueuedTurns, ...notSent, ...answers])
+      new Set([
+        ack,
+        cantCancel,
+        noQueuedTurn,
+        slashNoQueuedTurn,
+        severalQueuedTurns,
+        ...notSent,
+        ...answers,
+      ])
     ).toEqual(CANCEL_REPLIES);
   });
 });

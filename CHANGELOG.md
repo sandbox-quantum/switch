@@ -306,7 +306,14 @@ version of their own to them without also giving them a release of their own.
   which `!cancel` takes as well as the full ID, looking them up among that
   agent's queued turns in the room and refusing a start that matches none or
   several. On Teams, for an agent name with `_` in it, the card shows the ID
-  and how to cancel it, without a command to copy. A cancelled turn's card
+  and how to cancel it, without a command to copy. On Discord through the
+  shared connection, where typed commands do not reach Switch by default,
+  the card gives the slash command `/cancel` instead, with the agent and the
+  turn ID in its options. Switch's help for a misused cancel names `/cancel`
+  (and `/list-agents` for an unknown agent), and a start of a turn ID that
+  matches no waiting message points to `/interrupt`. The session host's
+  replies are unchanged, including `!interrupt` for a turn that has already
+  started. A cancelled turn's card
   reads "Cancelled before the agent started.", and
   `POST /agent-sessions/{session_id}/activity` takes `cancelled` as a turn
   status. A session host without `turn.cancel` does not read the command, so

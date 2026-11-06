@@ -1146,6 +1146,12 @@ class DiscordAdapter(PlatformAdapter):
             f"or post `!link-account {code}` there."
         )
 
+    @classmethod
+    def receives_typed_commands(cls, connection_config: Mapping[str, object]) -> bool:
+        # By default the shared connection is not given message text, so only a
+        # slash command is sure to reach Switch through it.
+        return connection_config.get("event_delivery") != "shared"
+
     async def admin_message(
         self,
         channel_id: str,
@@ -1319,6 +1325,10 @@ class DiscordAdapter(PlatformAdapter):
             if content.notify_unreachable:
                 lines.append(self.unnotified_notice())
             tail = "".join(f"\n{line}" for line in lines)
+            slash_options: tuple[str, str] | None = None
+            if not self.receives_typed_commands(self._config.model_dump()):
+                spec = COMMANDS_BY_NAME["cancel"].args_spec
+                slash_options = (spec[0].name, spec[1].name)
             body = (
                 turn_status(
                     content.items,
@@ -1331,6 +1341,7 @@ class DiscordAdapter(PlatformAdapter):
                     error_summary=content.error_summary,
                     tool_detail=True,
                     agent_name=agent_name,
+                    slash_options=slash_options,
                 )
                 + tail
             )

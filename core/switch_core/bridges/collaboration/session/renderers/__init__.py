@@ -131,13 +131,17 @@ def _format_duration(elapsed_seconds: float) -> str:
 # a backtick in the wording would reach Telegram and Teams as a backtick. "The
 # sender", because everyone in the room reads it and only they can withdraw it.
 CANCEL_COMMAND = "!cancel"
+SLASH_CANCEL_COMMAND = "/cancel"
 
 # An agent name `!cancel` reads back as one whole mention.
 _MENTIONABLE = re.compile(rf"{NAME_CHAR}+")
 
 
 def withdraw_hint(
-    turn: TurnUpsert, *, agent_name: str | None
+    turn: TurnUpsert,
+    *,
+    agent_name: str | None,
+    slash_options: tuple[str, str] | None = None,
 ) -> list[tuple[str, bool]] | None:
     """How to withdraw a queued turn, as (text, is_literal) pieces, or None.
 
@@ -158,15 +162,39 @@ def withdraw_hint(
     holds nothing a platform reads as markup. That is why renderers mark it
     without escaping it: the escape puts a zero-width space after every `@`,
     and the parser does not find a mention broken that way.
+
+    `slash_options` is for a platform where a typed `!cancel` never reaches
+    Switch and the slash command does: the names of the command's agent and
+    turn ID options, in that order. With them the card offers
+    `/cancel <target>:<agent> <turn_id>:<id>`, and without a name it asks for
+    the agent's name, which is what that option takes, rather than a mention.
     """
     if turn.status != "queued" or not TURN_ID_PATTERN.fullmatch(turn.turn_id):
         return None
     short = turn.turn_id[:8]
-    if (
+    named = (
         agent_name is not None
-        and _MENTIONABLE.fullmatch(agent_name)
+        and _MENTIONABLE.fullmatch(agent_name) is not None
         and not is_reserved_mention_name(agent_name)
-    ):
+    )
+    if slash_options is not None:
+        target, turn_id = slash_options
+        if named:
+            return [
+                (
+                    f"{SLASH_CANCEL_COMMAND} {target}:{agent_name} {turn_id}:{short}",
+                    True,
+                ),
+                (" — the sender can run this to withdraw it.", False),
+            ]
+        return [
+            ("Turn ID: ", False),
+            (short, True),
+            (" — the sender can withdraw it with ", False),
+            (SLASH_CANCEL_COMMAND, True),
+            (", the agent's name and this ID.", False),
+        ]
+    if named:
         return [
             (f"{CANCEL_COMMAND} @{agent_name} {short}", True),
             (" — the sender can send this to withdraw it.", False),

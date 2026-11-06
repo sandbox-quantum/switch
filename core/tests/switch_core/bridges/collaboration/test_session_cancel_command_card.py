@@ -5,22 +5,47 @@ for each spelling of a literal. These cover the other half: that the agent the
 publisher names when it posts is the agent the command names, on every
 platform that draws the line, and that a drawing with no agent behind it — the
 text a failed publication carries — falls back to naming the pieces.
+Discord's shared connection is not given message text, so there the card
+offers the slash command, and the slash command reads the card back.
 """
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from typing import Any
 
+import pytest
+
+from switch_core.bridges.agent.commands import (
+    COMMANDS_BY_NAME,
+    TurnIdPrefix,
+    parse_cancel_args,
+)
 from switch_core.bridges.collaboration.adapter import TurnActivity
-from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
+from switch_core.bridges.collaboration.discord.adapter import (
+    DiscordAdapter,
+    DiscordConnectionConfig,
+)
+from switch_core.bridges.collaboration.discord.slash import reassemble_args
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
+from switch_core.clients.mentions import mention_tokens
 from switch_core.sessions.contract import TurnUpsert
 
 from .test_discord_interrupt_control import CHANNEL_ID as DISCORD_CHANNEL
 from .test_discord_interrupt_control import THREAD_REF as DISCORD_THREAD
 from .test_discord_interrupt_control import _stopper as _discord
+from .test_discord_sdk_only import GUILD_ID as DISCORD_GUILD
+from .test_discord_sdk_only import _guild_setup as _discord_guild
+from .test_discord_slash_commands import _adapter as _discord_slash
+from .test_discord_slash_commands import (
+    _capture_commands,
+    _FakeChannel,
+    _FakeInteraction,
+    _invoke,
+)
 from .test_mattermost_interrupt_control import _stopper as _mattermost
 from .test_mattermost_press import CHANNEL as MATTERMOST_CHANNEL
 from .test_mattermost_sdk_only import _posts
@@ -135,3 +160,90 @@ async def test_a_failed_publication_names_the_pieces_on_every_platform() -> None
         in texts["telegram"].splitlines()
     )
     assert not any("!cancel @" in text for text in texts.values())
+
+
+# ── Discord's shared connection: the slash command ──────────────────────────
+
+_RUN = " — the sender can run this to withdraw it."
+
+
+def _shared_discord() -> tuple[DiscordAdapter, Any]:
+    """A bridge on the shared connection, attached to one that can post, and
+    the publication webhook it posts through."""
+    own, _channel, _thread, webhook = _discord_guild()
+    assert own._connection is not None
+    shared = DiscordAdapter(
+        config=DiscordConnectionConfig(
+            guild_id=str(DISCORD_GUILD), event_delivery="shared"
+        )
+    )
+    shared.attach_shared_connection(own._connection)
+    return shared, webhook
+
+
+def _slash_literal(lines: list[str]) -> str:
+    """The one literal on the card's withdraw line, without its backticks."""
+    (line,) = [line for line in lines if line.endswith(_RUN)]
+    return line.removesuffix(_RUN).strip("`")
+
+
+async def test_discord_shared_offers_the_slash_command() -> None:
+    adapter, webhook = _shared_discord()
+
+    await adapter.post_rich(str(DISCORD_CHANNEL), "my-agent", _queued(), DISCORD_THREAD)
+
+    lines = _discord_text(webhook)
+    assert f"`/cancel target:my-agent turn_id:3f2b8c1e`{_RUN}" in lines
+    assert not any("!cancel" in line for line in lines)
+
+
+def test_discord_shared_failed_publication_asks_for_the_name() -> None:
+    adapter, _ = _shared_discord()
+
+    lines = adapter.rich_fallback_text(_queued()).splitlines()
+
+    assert (
+        "Turn ID: `3f2b8c1e` — the sender can withdraw it with `/cancel`, "
+        "the agent's name and this ID."
+    ) in lines
+    assert not any("!cancel" in line for line in lines)
+
+
+async def test_discord_shared_names_the_options_the_command_registers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The option names come from the command's own spec, so a renamed option
+    renames the card's."""
+    cancel = COMMANDS_BY_NAME["cancel"]
+    target, turn_id = cancel.args_spec
+    renamed = (replace(target, name="agent"), replace(turn_id, name="id"))
+    monkeypatch.setitem(COMMANDS_BY_NAME, "cancel", replace(cancel, args_spec=renamed))
+    adapter, webhook = _shared_discord()
+
+    await adapter.post_rich(str(DISCORD_CHANNEL), "my-agent", _queued(), DISCORD_THREAD)
+
+    assert f"`/cancel agent:my-agent id:3f2b8c1e`{_RUN}" in _discord_text(webhook)
+
+
+def test_the_shared_card_reads_back_through_the_slash_command() -> None:
+    """Typed into Discord as the card shows it, the slash command reaches
+    `!cancel`'s parser with the agent the card was drawn for and the turn's
+    first eight characters."""
+    adapter, webhook = _shared_discord()
+    asyncio.run(
+        adapter.post_rich(str(DISCORD_CHANNEL), "my-agent", _queued(), DISCORD_THREAD)
+    )
+    command, *options = _slash_literal(_discord_text(webhook)).split()
+    values = dict(option.split(":", 1) for option in options)
+
+    assert command == "/cancel"
+    args = reassemble_args(COMMANDS_BY_NAME["cancel"].args_spec, values)
+    assert parse_cancel_args(args) == TurnIdPrefix("3f2b8c1e")
+
+    slash = _discord_slash()
+    commands = _capture_commands(slash)
+    _invoke(slash, _FakeInteraction(_FakeChannel()), "cancel", **values)
+
+    assert commands[0].command == "cancel"
+    assert parse_cancel_args(commands[0].args) == TurnIdPrefix("3f2b8c1e")
+    assert mention_tokens(commands[0].args)[0] == "my-agent"

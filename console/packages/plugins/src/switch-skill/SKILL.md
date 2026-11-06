@@ -1096,12 +1096,18 @@ name or alias, not a role. The activity card of the turn waiting in the queue
 shows the command its sender can copy and send: `!cancel`, your mention and
 the first 8 characters of its turn ID. Those 8 characters are enough, and so
 is the full ID. On Teams, if your name has `_` in it, the card shows the ID
-and how to cancel it, without a command to copy. When a cancel is
+and how to cancel it, without a command to copy. On Discord through the
+shared connection, where typed commands do not reach Switch by default, the
+sender uses the slash command `/cancel` instead, with your name and the turn
+ID in its options; the card shows it, and the help for a misused cancel names
+the slash form too. When a cancel is
 refused, the room is told why: you have already started on that message, it
 is no longer waiting, it was already cancelled, the person is not its sender,
 no message with that ID is waiting for you in that room, or the start of an
 ID given matches more than one of them. A turn that has
-started is stopped with `!interrupt` instead. A cancelled message stays in the
+started is stopped with `!interrupt` instead, or `/interrupt` on Discord
+through the shared connection, even where a reply there names `!interrupt`.
+A cancelled message stays in the
 room history, and its activity card reads "Cancelled before the agent
 started." It never reaches you as a turn, so there is no answer to post. If
 you see it in `read_context`, treat it as withdrawn: do not answer it or
