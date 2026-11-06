@@ -1450,11 +1450,18 @@ class MessageRouter:
                 reads.room_id,
             )
             return _Plan()
+        if not recipients:
+            return _Plan()
         group = parse_attachment_group(original.content)
         rows = (
             await session.execute(
                 select(AgentEventRow.agent_id, AgentEventRow.payload)
                 .where(
+                    # Leads with the agents so `uq_agent_events_source` serves
+                    # this, rather than a scan of the workspace's events.
+                    AgentEventRow.agent_id.in_(
+                        [recipient.agent.id for recipient in recipients]
+                    ),
                     AgentEventRow.room_id == reads.room_id,
                     AgentEventRow.message_key
                     == (group[0] if group else original.transport_event_id),

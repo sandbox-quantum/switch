@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import event as sa_event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -125,6 +126,32 @@ class TestRecipients:
         assert edit["new_body"] == "@other Decline"
         assert edit["revision"] == 1
         assert await own_events(session_factory, other) == []
+
+    async def test_the_lookup_names_the_agents_so_the_index_serves_it(
+        self, session_factory: SessionFactory
+    ) -> None:
+        """Without the agents, `uq_agent_events_source` cannot serve the read,
+        and every edit scans the workspace's events."""
+        process, room, alice, named, _ = await _setup(session_factory)
+        original = await process.say(room, "@named Approve", sender=alice)
+        engine = session_factory.kw["bind"].sync_engine
+        lookups: list[str] = []
+
+        def capture(_c: object, _k: object, sql: str, *_rest: object) -> None:
+            if "agent_events.payload" in sql and "message_key =" in sql:
+                lookups.append(sql)
+
+        sa_event.listen(engine, "before_cursor_execute", capture)
+        try:
+            await _edit(process, room, original, "@named Decline", sender=alice)
+            await process.idle()
+        finally:
+            sa_event.remove(engine, "before_cursor_execute", capture)
+
+        assert lookups
+        assert all("agent_events.agent_id IN" in sql for sql in lookups)
+        events = await own_events(session_factory, named)
+        assert [event.type for event in events] == ["message", "message_edit"]
 
     async def test_no_new_invocation_and_the_original_row_is_untouched(
         self, session_factory: SessionFactory
