@@ -1,0 +1,51 @@
+slug: cloudflare
+name: Cloudflare
+category: Infrastructure
+description: Manage Cloudflare Workers, DNS records, zones and inspect logs.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Cloudflare supports dynamic client registration for MCP clients connecting
+    # to its official remote server at https://mcp.cloudflare.com/mcp.
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.cloudflare.com/client/v4/user
+    account_id: result.id
+    label: result.email
+# Cloudflare OAuth access tokens live 1 hour (3600s), and rotating refresh tokens
+# ensure renewing without user intervention.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: cloudflare, url: "https://mcp.cloudflare.com/mcp" }
+access:
+  # Minimal scopes requested: read-only access allows inspecting user/account,
+  # zones, DNS records, and worker scripts. Write access allows modifying
+  # DNS and worker scripts.
+  read:
+    scopes:
+      - offline_access
+      - user:read
+      - account:read
+      - zone:read
+      - dns:read
+      - workers:read
+  write:
+    scopes:
+      - offline_access
+      - user:read
+      - account:read
+      - zone:read
+      - dns:read
+      - workers:read
+      - zone:edit
+      - dns:edit
+      - workers:edit
+tools: { mode: pass_through }
