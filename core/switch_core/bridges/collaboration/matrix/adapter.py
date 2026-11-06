@@ -55,6 +55,7 @@ _MATRIX_USER_BARE = re.compile(r"@([A-Za-z0-9._=/+-]+):([A-Za-z0-9.-]+(?::\d+)?)
 _INBOUND_MENTION = re.compile(rf"{_MATRIX_USER_BARE.pattern}|@room\b", re.IGNORECASE)
 _MENTION = re.compile(r"(?<![\w@/])@([A-Za-z0-9][A-Za-z0-9._-]*)(?![\w:])")
 _SEEN_LIMIT = 5000
+_SYNC_STATE_PERSIST_INTERVAL_SECONDS = 5.0
 
 
 class _InvalidEncryptedMedia(ValueError):
@@ -135,8 +136,9 @@ class MatrixAdapter(PlatformAdapter):
         self._member_names: dict[str, dict[str, str]] = {}
         self._mention_targets: dict[str, str] = {}
         self._mention_targets_lower: dict[str, str] = {}
-        self._reactions: dict[tuple[str, str], dict[str, str]] = {}
+        self._reactions: dict[tuple[str, str], dict[ActivityMark, list[str]]] = {}
         self._seen: OrderedDict[str, None] = OrderedDict()
+        self._last_sync_state_persisted_at: float | None = None
 
     def load_adapter_state(self, state: Mapping[str, object]) -> None:
         token = state.get("sync_token")
@@ -218,12 +220,21 @@ class MatrixAdapter(PlatformAdapter):
                 await self._handle_sync(body)
                 next_batch = body.get("next_batch")
                 if isinstance(next_batch, str) and next_batch:
-                    await self.persist_adapter_state(
-                        {
-                            "sync_token": next_batch,
-                            "room_event_cursors": dict(self._room_event_cursors),
-                        }
-                    )
+                    now = asyncio.get_running_loop().time()
+                    if (
+                        self._last_sync_state_persisted_at is None
+                        or now - self._last_sync_state_persisted_at
+                        >= _SYNC_STATE_PERSIST_INTERVAL_SECONDS
+                    ):
+                        await self.persist_adapter_state(
+                            {
+                                "sync_token": next_batch,
+                                "room_event_cursors": dict(self._room_event_cursors),
+                            }
+                        )
+                        self._last_sync_state_persisted_at = (
+                            asyncio.get_running_loop().time()
+                        )
                     self._sync_token = next_batch
             except asyncio.CancelledError:
                 raise
@@ -892,9 +903,12 @@ class MatrixAdapter(PlatformAdapter):
         force: bool = False,
     ) -> None:
         key = "👀" if mark == "working" else "⏳"
-        marks = self._reactions.setdefault((channel_id, message_ref), {})
+        reaction_key = (channel_id, message_ref)
+        if force:
+            await self._refresh_activity_reactions(channel_id, message_ref)
+        marks = self._reactions.setdefault(reaction_key, {})
         if on:
-            if mark in marks:
+            if marks.get(mark):
                 return
             try:
                 ref = await self._client.send_event(
@@ -915,22 +929,65 @@ class MatrixAdapter(PlatformAdapter):
                         f"{exc.message}"
                     ) from exc
                 raise
-            marks[mark] = ref
+            marks[mark] = [ref]
             return
-        if mark not in marks:
+        refs = marks.pop(mark, [])
+        if not marks:
+            self._reactions.pop(reaction_key, None)
+        if not refs:
             return
-        ref = marks.pop(mark)
-        try:
-            await self._client.redact(
-                channel_id, ref, "Switch finished with this message"
+        for ref in refs:
+            try:
+                await self._client.redact(
+                    channel_id, ref, "Switch finished with this message"
+                )
+            except MatrixApiError as exc:
+                logger.warning(
+                    "Could not remove the %s reaction from Matrix message %s: %s",
+                    mark,
+                    message_ref,
+                    exc.message,
+                )
+
+    async def _refresh_activity_reactions(
+        self, channel_id: str, message_ref: str
+    ) -> None:
+        if self._user_id is None:
+            return
+        events = await self._client.relations(
+            channel_id, message_ref, "m.annotation", limit=100
+        )
+        marks: dict[ActivityMark, list[str]] = {}
+        for event in events:
+            if (
+                event.get("type") != "m.reaction"
+                or event.get("sender") != self._user_id
+            ):
+                continue
+            event_id = event.get("event_id")
+            content = event.get("content")
+            relates_to = (
+                content.get("m.relates_to") if isinstance(content, dict) else None
             )
-        except MatrixApiError as exc:
-            logger.warning(
-                "Could not remove the %s reaction from Matrix message %s: %s",
-                mark,
-                message_ref,
-                exc.message,
-            )
+            if not isinstance(event_id, str) or not isinstance(relates_to, dict):
+                continue
+            if (
+                relates_to.get("rel_type") != "m.annotation"
+                or relates_to.get("event_id") != message_ref
+            ):
+                continue
+            key = relates_to.get("key")
+            if key == "👀":
+                mark: ActivityMark = "working"
+            elif key == "⏳":
+                mark = "queued"
+            else:
+                continue
+            marks.setdefault(mark, []).append(event_id)
+        if marks:
+            self._reactions[(channel_id, message_ref)] = marks
+        else:
+            self._reactions.pop((channel_id, message_ref), None)
 
     async def create_channel(
         self,

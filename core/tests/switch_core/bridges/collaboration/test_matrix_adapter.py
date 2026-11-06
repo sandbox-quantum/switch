@@ -813,6 +813,81 @@ async def test_a_working_mark_is_added_and_removed() -> None:
     assert client.redacted == [(ROOM, "$event1")]
 
 
+async def test_a_forced_mark_reuses_the_bot_reaction_from_matrix() -> None:
+    adapter = _adapter()
+    client = _client(adapter)
+    client.relations_events = [
+        {
+            "event_id": "$old",
+            "type": "m.reaction",
+            "sender": BOT,
+            "content": {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$m1",
+                    "key": "👀",
+                }
+            },
+        }
+    ]
+
+    await adapter.mark_activity(
+        ROOM, "$m1", agent_name="alice", mark="working", on=True, force=True
+    )
+
+    assert client.sent == []
+    assert adapter._reactions[(ROOM, "$m1")] == {"working": ["$old"]}
+
+
+async def test_a_forced_removal_redacts_only_the_bots_reactions() -> None:
+    adapter = _adapter()
+    client = _client(adapter)
+    client.relations_events = [
+        {
+            "event_id": "$old1",
+            "type": "m.reaction",
+            "sender": BOT,
+            "content": {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$m1",
+                    "key": "👀",
+                }
+            },
+        },
+        {
+            "event_id": "$old2",
+            "type": "m.reaction",
+            "sender": BOT,
+            "content": {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$m1",
+                    "key": "👀",
+                }
+            },
+        },
+        {
+            "event_id": "$alice",
+            "type": "m.reaction",
+            "sender": "@alice:example.org",
+            "content": {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$m1",
+                    "key": "👀",
+                }
+            },
+        },
+    ]
+
+    await adapter.mark_activity(
+        ROOM, "$m1", agent_name="alice", mark="working", on=False, force=True
+    )
+
+    assert client.redacted == [(ROOM, "$old1"), (ROOM, "$old2")]
+
+
 async def test_a_reaction_refusal_is_not_retried() -> None:
     adapter = _adapter()
     client = _client(adapter)
@@ -904,6 +979,32 @@ async def test_sync_resumes_from_and_persists_the_durable_checkpoint() -> None:
     ]
     assert adapter._sync_token == "next-token"
     assert [message.content for message in received] == ["checkpointed"]
+
+
+async def test_sync_cursor_writes_are_throttled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _adapter()
+    checkpoints: list[dict[str, object]] = []
+    adapter.set_adapter_state_persister(
+        lambda state: _collect(checkpoints, dict(state))
+    )
+    client = _client(adapter)
+    requested: list[str | None] = []
+    monkeypatch.setattr(matrix_adapter, "_SYNC_STATE_PERSIST_INTERVAL_SECONDS", 60.0)
+
+    async def sync(since: str | None) -> dict[str, Any]:
+        requested.append(since)
+        if len(requested) == 3:
+            adapter._stopping = True
+        return {"next_batch": f"token-{len(requested)}", "rooms": {}}
+
+    client.sync = sync  # type: ignore[attr-defined,method-assign]
+    await adapter._sync_forever()
+
+    assert requested == [None, "token-1", "token-2"]
+    assert checkpoints == [{"sync_token": "token-1", "room_event_cursors": {}}]
+    assert adapter._sync_token == "token-3"
 
 
 async def test_limited_matrix_timeline_is_backfilled_to_the_durable_room_cursor() -> (

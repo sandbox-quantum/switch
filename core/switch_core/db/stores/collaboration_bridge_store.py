@@ -1,9 +1,31 @@
 from collections.abc import Collection
 
-from sqlalchemy import select
+from sqlalchemy import bindparam, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import CollaborationBridge, require_tenant_id
+
+_MERGE_ADAPTER_STATE_WHILE_OWNED = text(
+    """
+    WITH held AS (
+        SELECT bridge.id
+        FROM collaboration_bridges AS bridge
+        JOIN ownership_leases AS lease
+          ON lease.kind = :kind
+         AND lease.key = :key
+         AND lease.process_id = :process_id
+         AND lease.token = :token
+        WHERE bridge.id = :bridge_id
+        FOR SHARE OF lease
+    )
+    UPDATE collaboration_bridges AS bridge
+    SET adapter_state = bridge.adapter_state || :changes
+    FROM held
+    WHERE bridge.id = held.id
+    RETURNING bridge.id
+    """
+).bindparams(bindparam("changes", type_=JSONB))
 
 
 class CollaborationBridgeStore:
@@ -151,6 +173,31 @@ class CollaborationBridgeStore:
         bridge.adapter_state = {**(bridge.adapter_state or {}), **changes}
         await session.flush()
         return bridge
+
+    async def merge_adapter_state_while_owned(
+        self,
+        session: AsyncSession,
+        bridge_id: str,
+        changes: dict[str, object],
+        *,
+        kind: str,
+        key: str,
+        process_id: str,
+        token: int,
+    ) -> bool:
+        """Merge adapter state only while the caller still holds this bridge."""
+        result = await session.execute(
+            _MERGE_ADAPTER_STATE_WHILE_OWNED,
+            {
+                "bridge_id": bridge_id,
+                "kind": kind,
+                "key": key,
+                "process_id": process_id,
+                "token": token,
+                "changes": changes,
+            },
+        )
+        return result.scalar_one_or_none() is not None
 
     async def _locked_for_config_update(
         self, session: AsyncSession, bridge_id: str
