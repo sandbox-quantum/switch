@@ -285,14 +285,70 @@ async def test_a_quiet_copy_hands_its_lines_to_the_holder() -> None:
     # Opens nothing: port 1 would refuse a connection.
     await _Started(adapter).start()
     await adapter.send_message("#switch", "helper", "hello")
-    assert relayed == [
-        {
+    assert len(relayed) == 1
+    assert relayed[0].pop("id")
+    assert relayed[0] == {
+        "action": "send",
+        "channel_id": "#switch",
+        "sender_name": "helper",
+        "content": "hello",
+    }
+
+
+async def test_a_long_message_is_relayed_in_parts_each_with_its_own_id() -> None:
+    adapter = IrcAdapter(config=IrcConnectionConfig(**_config(1)))
+    adapter.set_listening(False)
+    relayed: list[dict[str, str]] = []
+    adapter.set_holder_relay(relayed.append)
+    await _Started(adapter).start()
+    body = "\n".join(f"line {n} " + "x" * 400 for n in range(40))
+    await adapter.send_message("#switch", "helper", body)
+    assert len(relayed) > 1
+    assert all(len(r["content"].encode()) <= 6000 for r in relayed)
+    assert len({r["id"] for r in relayed}) == len(relayed)
+    assert "\n".join(r["content"] for r in relayed) == body
+    # Two identical messages are two requests, not one.
+    relayed.clear()
+    await adapter.send_message("#switch", "helper", "same")
+    await adapter.send_message("#switch", "helper", "same")
+    assert len({r["id"] for r in relayed}) == 2
+
+
+async def test_a_retried_relay_does_not_post_the_lines_it_already_sent() -> None:
+    async with FakeIrcServer() as server:
+        adapter = IrcAdapter(config=IrcConnectionConfig(**_config(server.port)))
+        await _Started(adapter).start()
+        await asyncio.wait_for(server.joined.wait(), 5)
+        request = {
             "action": "send",
+            "id": "r1",
             "channel_id": "#switch",
-            "sender_name": "helper",
-            "content": "hello",
+            "sender_name": "Switch",
+            "content": "one\ntwo\nthree",
         }
-    ]
+        real_write = adapter._write
+        calls = 0
+
+        async def flaky(command: str, *params: str) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("connection dropped")
+            await real_write(command, *params)
+
+        adapter._write = flaky  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError):
+            await adapter.receive_relayed(request)
+        await adapter.receive_relayed(request)  # the relay retries the request
+        await adapter.receive_relayed(request)  # and a redelivery changes nothing
+        await _until(lambda: "PRIVMSG #switch :[Switch] three" in server.received)
+        sent = [m for m in server.received if m.startswith("PRIVMSG #switch")]
+        assert sent == [
+            "PRIVMSG #switch :[Switch] one",
+            "PRIVMSG #switch :[Switch] two",
+            "PRIVMSG #switch :[Switch] three",
+        ]
+        await adapter.stop()
 
 
 async def test_the_holder_posts_what_a_quiet_copy_handed_it() -> None:
