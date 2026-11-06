@@ -3,6 +3,7 @@
 // (`GET /shared-cloud/agents`); this only words it. Change both together.
 
 import type { CloudAgent } from "../../../data/hostedCloud";
+import type { NextAction } from "./peopleWords";
 
 export type CloudTone = "working" | "idle" | "waking" | "resting" | "problem" | "off";
 
@@ -13,6 +14,8 @@ export interface CloudPresentation {
   tone: CloudTone;
   /** "last reply 4 min ago", or null when it has never replied or is replying now. */
   when: string | null;
+  /** The next step, shown as a link after the line (`NEXT_STEP` words it). */
+  next?: NextAction;
 }
 
 /** A resting agent on a box Your cloud shows as Stopped. */
@@ -61,7 +64,7 @@ export function cloudPresentation(agent: CloudAgent, now: Date): CloudPresentati
     case "resting":
       return {
         label: "Resting",
-        detail: agent.box_stopped ? "Starts when messaged" : "Back when messaged",
+        detail: agent.box_stopped ? "Starts when messaged" : "Wakes when you message it",
         tone: "resting",
         when,
       };
@@ -93,12 +96,12 @@ export function cloudPresentation(agent: CloudAgent, now: Date): CloudPresentati
           when,
         };
       if (agent.stop_reason === "login_needed")
-        // Console's repair wording needs sealing, which is a later slice.
         return {
           label: "Can't reply right now",
-          detail: "Set up your AI provider again",
+          detail: "Check your AI login",
           tone: "problem",
           when,
+          next: "give_login",
         };
       if (agent.stop_reason === "cant_reach")
         return {

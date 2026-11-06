@@ -56,7 +56,7 @@ describe("the admin's hosted agents switch (spec A2)", () => {
     ).toBeTruthy();
     expect(
       screen.getByText(
-        "Their usual states, or \u201cCan't reply right now · Set up your AI provider again\u201d until the login is given.",
+        "Their usual states, or \u201cCan't reply right now · Check your AI login\u201d until the login is given.",
       ),
     ).toBeTruthy();
     expect(screen.getByPlaceholderText("Why are you turning this on?")).toBeTruthy();

@@ -264,13 +264,25 @@ export function formatSize(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
-/** Folders first, then files, by name; at the top level, agent folders before Shared. */
-export function sortEntries(entries: readonly CloudFileEntry[], topLevel: boolean): CloudFileEntry[] {
+/** How the open folder's list is sorted: by name, or by when each entry changed, newest first. */
+export type EntryOrder = "name" | "changed";
+
+/**
+ * By name: folders first, then files; at the top level, agent folders before
+ * Shared. By changed: newest first across folders and files, using the times
+ * already in the listing (no extra reads), then by name.
+ */
+export function sortEntries(
+  entries: readonly CloudFileEntry[],
+  topLevel: boolean,
+  order: EntryOrder = "name",
+): CloudFileEntry[] {
+  const byName = (a: CloudFileEntry, b: CloudFileEntry) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true });
+  if (order === "changed") return [...entries].sort((a, b) => b.mtime - a.mtime || byName(a, b));
   const rank = (entry: CloudFileEntry) =>
     entry.kind === "file" ? 2 : topLevel && entry.agent === undefined ? 1 : 0;
-  return [...entries].sort(
-    (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { numeric: true }),
-  );
+  return [...entries].sort((a, b) => rank(a) - rank(b) || byName(a, b));
 }
 
 /** What the page calls an entry: its label at the top level, otherwise its name. */

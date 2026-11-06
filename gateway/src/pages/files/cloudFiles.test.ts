@@ -126,6 +126,24 @@ describe("sortEntries", () => {
     ];
     expect(sortEntries(entries, true).map((e) => e.name)).toEqual(["baker", "shared", "notes.txt"]);
   });
+
+  it("sorts by changed, newest first, folders and files together, then by name", () => {
+    const entries = [
+      { name: "old.txt", kind: "file", size: 1, mtime: 100 } as CloudFileEntry,
+      { ...folder("build"), mtime: 300 },
+      { name: "b.png", kind: "file", size: 1, mtime: 500 } as CloudFileEntry,
+      { name: "a.png", kind: "file", size: 1, mtime: 500 } as CloudFileEntry,
+    ];
+    expect(sortEntries(entries, false, "changed").map((e) => e.name)).toEqual([
+      "a.png",
+      "b.png",
+      "build",
+      "old.txt",
+    ]);
+    // By name stays the default, and the list given isn't changed.
+    expect(sortEntries(entries, false).map((e) => e.name)).toEqual(["build", "a.png", "b.png", "old.txt"]);
+    expect(entries[0]!.name).toBe("old.txt");
+  });
 });
 
 describe("hasHostedAgent", () => {

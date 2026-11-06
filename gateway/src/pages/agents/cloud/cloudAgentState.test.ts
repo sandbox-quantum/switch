@@ -23,7 +23,7 @@ describe("cloudPresentation", () => {
     [{ state: "waking", waiting_for_room: true }, "Back in a moment", "Waiting for room"],
     [{ state: "waking" }, "Back in a moment", "Starting up"],
     [{ state: "resting", box_stopped: true }, "Resting", "Starts when messaged"],
-    [{ state: "resting" }, "Resting", "Back when messaged"],
+    [{ state: "resting" }, "Resting", "Wakes when you message it"],
     [{ state: "unavailable", paused: true }, "Paused by Switch", "Contact your admin"],
     [
       { state: "unavailable", turned_off: true },
@@ -48,7 +48,7 @@ describe("cloudPresentation", () => {
     [
       { state: "unavailable", stop_reason: "login_needed" },
       "Can't reply right now",
-      "Set up your AI provider again",
+      "Check your AI login",
     ],
     [
       { state: "unavailable", stop_reason: "cant_reach" },
@@ -66,6 +66,24 @@ describe("cloudPresentation", () => {
   ])("%o reads %s · %s", (overrides, label, detail) => {
     const shown = cloudPresentation(agent(overrides), now);
     expect([shown.label, shown.detail]).toEqual([label, detail]);
+  });
+
+  it("gives a next step only where the person can act", () => {
+    expect(cloudPresentation(agent({ state: "unavailable", stop_reason: "login_needed" }), now).next).toBe(
+      "give_login",
+    );
+    expect(BOX_STOPPED.next).toBeUndefined();
+    for (const overrides of [
+      { state: "working" },
+      { state: "idle" },
+      { state: "waking" },
+      { state: "resting" },
+      { state: "unavailable", paused: true },
+      { state: "unavailable", turned_off: true },
+      { state: "unavailable", stop_reason: "cant_reach" },
+    ] as Partial<CloudAgent>[])
+      expect(cloudPresentation(agent(overrides), now).next).toBeUndefined();
+    expect(OWNER_STOPPED.next).toBeUndefined();
   });
 
   it("gives the last reply, except while working", () => {

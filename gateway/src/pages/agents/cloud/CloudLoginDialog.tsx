@@ -64,16 +64,19 @@ export default function CloudLoginDialog({
   onCloudChanged,
   onClose,
   onDone,
+  onHurry,
 }: {
   open: boolean;
   provider: string;
   providerLabel: string;
-  /** The person's box, from `useCloudView`, read again every few seconds. */
+  /** The person's box, from `useCloudView`, read again every 15 seconds while visible. */
   machine: CloudMachine;
   /** Read the box again, after Wake it or Start. */
   onCloudChanged: () => void;
   onClose: () => void;
   onDone: () => void;
+  /** Read the box faster while this dialog waits for it (`useCloudView`'s `hurry`). */
+  onHurry?: () => () => void;
 }) {
   const kinds = (BOX_LOGINS[provider] ?? []) as Kind[];
   const [kind, setKind] = useState<Kind>(kinds[0] ?? "api-key");
@@ -190,6 +193,9 @@ export default function CloudLoginDialog({
   const signedIn = outcome === OUTCOME_TEXT.succeeded;
   // Not up, and nothing being given or done: no key field, only the way to wake it.
   const asleep = cloud.resting && !busy && !signedIn;
+  // Waiting in front of a box that isn't up: read it at the waking rate, so
+  // the key field appears within seconds of the box waking.
+  useEffect(() => (open && asleep ? onHurry?.() : undefined), [open, asleep, onHurry]);
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>

@@ -137,4 +137,69 @@ describe("YourCloudPanel", () => {
     expect(alert.textContent).toContain('<img src=x onerror="alert(1)">');
     expect(alert.querySelector("img")).toBeNull();
   });
+
+  describe("setup checklist", () => {
+    it("shows each missing step with its button, and they do what they say", () => {
+      const onGiveLogin = vi.fn();
+      const onAddAgent = vi.fn();
+      render(
+        <YourCloudPanel
+          machine={box({ agents: [] })}
+          onChanged={vi.fn()}
+          loginSet={false}
+          onGiveLogin={onGiveLogin}
+          onAddAgent={onAddAgent}
+        />,
+      );
+      expect(screen.getByText("Add your first agent on Switch cloud")).toBeTruthy();
+      const list = screen.getByRole("list", { name: "Setting up your cloud" });
+      expect(list.textContent).toContain("Your cloud is ready, done");
+      fireEvent.click(screen.getByRole("button", { name: "Give login" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
+      expect(onGiveLogin).toHaveBeenCalledOnce();
+      expect(onAddAgent).toHaveBeenCalledOnce();
+    });
+
+    it("folds away once all three are ticked, and stays hidden until the login is known", () => {
+      render(<YourCloudPanel machine={box()} onChanged={vi.fn()} loginSet />);
+      expect(screen.queryByRole("list", { name: "Setting up your cloud" })).toBeNull();
+      cleanup();
+      render(<YourCloudPanel machine={box({ agents: [] })} onChanged={vi.fn()} loginSet={null} />);
+      expect(screen.queryByRole("list", { name: "Setting up your cloud" })).toBeNull();
+    });
+
+    it("its Start starts the box, in place of the panel's own Start", async () => {
+      const onChanged = vi.fn();
+      vi.mocked(hosted.ensureCloudMachine).mockResolvedValue(null);
+      render(<YourCloudPanel machine={box({ state: "retained" })} onChanged={onChanged} loginSet={false} />);
+      expect(screen.getAllByRole("button", { name: "Start" })).toHaveLength(1);
+      expect(screen.getByTestId("setup-cloud").textContent).toContain("Your cloud is stopped");
+      fireEvent.click(screen.getByRole("button", { name: "Start" }));
+      await waitFor(() => expect(onChanged).toHaveBeenCalled());
+      expect(hosted.ensureCloudMachine).toHaveBeenCalledOnce();
+    });
+
+    it("offers no Add agent where the workspace can't have one", () => {
+      render(<YourCloudPanel machine={box({ agents: [] })} onChanged={vi.fn()} loginSet />);
+      expect(screen.getByText("No agent yet")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Add agent" })).toBeNull();
+    });
+  });
+
+  it("explains a resting box with agents", () => {
+    render(<YourCloudPanel machine={box({ sleeping: true })} onChanged={vi.fn()} />);
+    expect(
+      screen.getByText(
+        "Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Wake" })).toBeTruthy();
+  });
+
+  it("fades the heading only when the state changes, and not on first show", () => {
+    const { rerender, container } = render(<YourCloudPanel machine={box()} onChanged={vi.fn()} />);
+    expect(container.querySelector("[data-state-fade]")).toBeNull();
+    rerender(<YourCloudPanel machine={box({ sleeping: true })} onChanged={vi.fn()} />);
+    expect(container.querySelector("[data-state-fade='on']")?.textContent).toContain("Resting");
+  });
 });

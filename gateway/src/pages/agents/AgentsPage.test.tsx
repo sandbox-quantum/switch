@@ -27,7 +27,11 @@ vi.mock("../../data/api", async (importOriginal) => {
 
 vi.mock("./RegisterAgentDialog", () => ({ default: () => null }));
 // The logins section has tests of its own; here it would add its own reads.
-vi.mock("./cloud/CloudLoginsSection", () => ({ default: () => null }));
+// It's drawn as an empty section, so a status line's link has somewhere to go.
+vi.mock("./cloud/CloudLoginsSection", () => ({
+  AI_LOGINS_ID: "cloud-ai-logins",
+  default: () => <section id="cloud-ai-logins" tabIndex={-1} aria-label="AI logins on your cloud" />,
+}));
 // The cloud delete has tests of its own; here it only shows which agent it opened for.
 vi.mock("./cloud/CloudDeleteDialog", () => ({
   default: ({ agent }: { agent: { name: string } | null }) =>
@@ -224,6 +228,25 @@ describe("AgentsPage with hosted agents v2", () => {
     );
     // An agent not on the box is left alone.
     expect(within(screen.getByTestId("row-<b>local</b>")).getByTestId("cloud").textContent).toBe("—");
+  });
+
+  it("an agent with no working login says so, and its Check your AI login goes to the AI logins", async () => {
+    box = { ...resting, state: "ready", sleeping: false };
+    fetch.mockImplementation(async (url: string) => {
+      const body = url.endsWith("/hosted-machines")
+        ? { available: true, machines: [box] }
+        : { agents: [{ agent_id: "a1", state: "unavailable", stop_reason: "login_needed" }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    const cell = await waitFor(() => {
+      const found = within(screen.getByTestId("row-notes-taker")).getByTestId("cloud");
+      expect(found.textContent).toBe("Can't reply right now · Check your AI login");
+      return found;
+    });
+    fireEvent.click(within(cell).getByRole("button", { name: "Check your AI login" }));
+    expect(document.activeElement).toBe(screen.getByRole("region", { name: "AI logins on your cloud" }));
   });
 
   it("while the flag is still loading, shows and asks nothing", async () => {

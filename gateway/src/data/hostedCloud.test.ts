@@ -1,11 +1,16 @@
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  REFRESH_MS,
+  WAKING_REFRESH_MS,
+  boxStarting,
   ensureCloudMachine,
   fetchCloudPlace,
   fetchCloudAgents,
   fetchCloudMachine,
   readMachine,
   startCloudMachine,
+  useCloudView,
 } from "./hostedCloud";
 
 const summary = {
@@ -126,5 +131,97 @@ describe("the owner routes", () => {
     expect(fetch.mock.calls[0][1].method).toBe("POST");
     expect(fetch.mock.calls[1][0]).toBe("/gateway/hosted-machines/m%2F1/lifecycle");
     expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ action: "start", revision: 2 });
+  });
+});
+
+describe("boxStarting", () => {
+  it("is what the panel shows as Starting…, never a resting, paused or put-away box", () => {
+    expect(boxStarting({ ...summary, state: "provisioning" } as never)).toBe(true);
+    expect(boxStarting({ ...summary, state: "queued" } as never)).toBe(true);
+    expect(boxStarting({ ...summary, state: "stopped" } as never)).toBe(true);
+    expect(boxStarting({ ...summary, state: "stopped", sleeping: true } as never)).toBe(false);
+    expect(boxStarting({ ...summary, state: "stopped", stop_reason: "paused" } as never)).toBe(false);
+    expect(boxStarting({ ...summary, state: "stopped", desired_state: "stopped" } as never)).toBe(false);
+    expect(boxStarting({ ...summary, state: "retained", desired_state: "retained" } as never)).toBe(false);
+    expect(boxStarting(summary as never)).toBe(false);
+    expect(boxStarting(null)).toBe(false);
+  });
+});
+
+describe("useCloudView's reading rate", () => {
+  afterEach(() => {
+    // Unmount each test's hook, so its timer and tab listener don't carry over.
+    cleanup();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function watch(machine: object) {
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      async (url: string) =>
+        new Response(
+          JSON.stringify(url.endsWith("/hosted-machines") ? { available: true, machines: [machine] } : { agents: [] }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const hook = renderHook(() => useCloudView(true));
+    const settle = () => act(() => vi.advanceTimersByTimeAsync(0));
+    const reads = () => fetch.mock.calls.filter(([url]) => String(url).endsWith("/hosted-machines")).length;
+    const wait = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+    await settle();
+    return { hook, reads, wait, settle };
+  }
+
+  it("reads every 15 s while the box is up", async () => {
+    expect(REFRESH_MS).toBe(15_000);
+    const { reads, wait } = await watch(summary);
+    const first = reads();
+    await wait(WAKING_REFRESH_MS);
+    expect(reads()).toBe(first);
+    await wait(REFRESH_MS - WAKING_REFRESH_MS);
+    expect(reads()).toBe(first + 1);
+  });
+
+  it("reads every 5 s while the box is starting", async () => {
+    expect(WAKING_REFRESH_MS).toBe(5_000);
+    const { reads, wait } = await watch({ ...summary, state: "provisioning" });
+    const first = reads();
+    await wait(WAKING_REFRESH_MS);
+    expect(reads()).toBe(first + 1);
+    await wait(WAKING_REFRESH_MS);
+    expect(reads()).toBe(first + 2);
+  });
+
+  it("reads every 5 s while something hurries it, and back to 15 s once let go", async () => {
+    const { hook, reads, wait, settle } = await watch(summary);
+    let release = () => {};
+    act(() => {
+      release = hook.result.current.hurry();
+    });
+    await settle();
+    const hurried = reads();
+    await wait(WAKING_REFRESH_MS);
+    expect(reads()).toBe(hurried + 1);
+    act(() => release());
+    // Letting go twice counts once.
+    act(() => release());
+    await settle();
+    const calm = reads();
+    await wait(WAKING_REFRESH_MS);
+    expect(reads()).toBe(calm);
+    await wait(REFRESH_MS - WAKING_REFRESH_MS);
+    expect(reads()).toBe(calm + 1);
+  });
+
+  it("reads once straight away when the tab comes back", async () => {
+    const { reads, settle } = await watch(summary);
+    const before = reads();
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await settle();
+    expect(reads()).toBe(before + 1);
   });
 });

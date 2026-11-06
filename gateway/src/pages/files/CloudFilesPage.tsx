@@ -22,14 +22,17 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  TableSortLabel,
   Typography,
 } from "@mui/material";
 import { Suspense, lazy, useEffect, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router";
 import { zipUrl } from "../../data/cloudFiles";
 import { EM_DASH, absoluteTitle, formatRelative } from "../../theme/hootFormat";
+import { EMPTY, RESTING_EXPLANATION } from "../agents/cloud/peopleWords";
 import {
   type CloudFileEntry,
+  type EntryOrder,
   agentFolder,
   childPath,
   entryTitle,
@@ -57,6 +60,8 @@ export default function CloudFilesPage() {
   const root = useFolder("", shown === true);
   const [folder, setFolder] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
+  // Kept across folders: someone looking for what changed keeps looking that way.
+  const [order, setOrder] = useState<EntryOrder>("name");
 
   useEffect(() => {
     if (folder !== null || root.state.kind !== "ready") return;
@@ -154,6 +159,8 @@ export default function CloudFilesPage() {
                   path={folder}
                   rootEntries={root.state.entries}
                   onOpenFolder={(path) => setFolder(path)}
+                  order={order}
+                  onOrder={setOrder}
                 />
               )}
             </Box>
@@ -189,7 +196,7 @@ function RootState({
         </Typography>
         <Typography variant="body2" color="text.secondary">
           {state.kind === "resting"
-            ? "It sleeps when no agent is working. Wake it to see your files; it counts as awake time."
+            ? RESTING_EXPLANATION
             : "This usually takes a minute or two. Your files show here as soon as it’s up."}
         </Typography>
         {state.kind === "resting" ? (
@@ -209,10 +216,14 @@ function FolderList({
   path,
   rootEntries,
   onOpenFolder,
+  order,
+  onOrder,
 }: {
   path: string;
   rootEntries: readonly CloudFileEntry[];
   onOpenFolder: (path: string) => void;
+  order: EntryOrder;
+  onOrder: (order: EntryOrder) => void;
 }) {
   const folder = useFolder(path, path !== "");
   const state: FolderState = path === "" ? { kind: "ready", entries: [...rootEntries], more: false } : folder.state;
@@ -220,7 +231,7 @@ function FolderList({
   const [caches, setCaches] = useState(false);
   // The file shown in the preview modal, over this list; the list stays as it is underneath.
   const [shown, setShown] = useState<CloudFileEntry | null>(null);
-  const sorted = state.kind === "ready" ? sortEntries(state.entries, path === "") : [];
+  const sorted = state.kind === "ready" ? sortEntries(state.entries, path === "", order) : [];
   return (
     <Stack sx={{ flex: 1, minHeight: 0 }}>
       <Stack
@@ -264,12 +275,27 @@ function FolderList({
           <Table size="small" stickyHeader>
             <TableHead>
               <TableRow>
-                <TableCell>Name</TableCell>
+                <TableCell sortDirection={order === "name" ? "asc" : false}>
+                  <TableSortLabel active={order === "name"} direction="asc" onClick={() => onOrder("name")}>
+                    Name
+                  </TableSortLabel>
+                </TableCell>
                 <TableCell align="right" sx={{ width: 100 }}>
                   Size
                 </TableCell>
-                <TableCell align="right" sx={{ width: 140, display: { xs: "none", sm: "table-cell" } }}>
-                  Changed
+                <TableCell
+                  align="right"
+                  sortDirection={order === "changed" ? "desc" : false}
+                  sx={{ width: 140, display: { xs: "none", sm: "table-cell" } }}
+                >
+                  <TableSortLabel
+                    active={order === "changed"}
+                    direction="desc"
+                    onClick={() => onOrder("changed")}
+                    aria-label="Changed, newest first"
+                  >
+                    Changed
+                  </TableSortLabel>
                 </TableCell>
               </TableRow>
             </TableHead>
@@ -331,7 +357,7 @@ function FolderList({
           </Table>
           {state.entries.length === 0 && (
             <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
-              This folder is empty.
+              {path === "" ? EMPTY.noFiles : "This folder is empty."}
             </Typography>
           )}
           {state.more && (

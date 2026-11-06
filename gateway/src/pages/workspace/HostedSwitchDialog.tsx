@@ -67,7 +67,7 @@ export default function HostedSwitchDialog({
           sx={{ bgcolor: "action.hover", borderRadius: 1, px: 1.5, py: 1, mb: 1.5 }}
         >
           {enabling
-            ? "Their usual states, or \u201cCan't reply right now · Set up your AI provider again\u201d until the login is given."
+            ? "Their usual states, or \u201cCan't reply right now · Check your AI login\u201d until the login is given."
             : "Turned off by your admin · Ask your admin to turn it on"}
         </Typography>
         <TextField

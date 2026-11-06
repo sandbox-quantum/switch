@@ -98,6 +98,33 @@ describe("Your cloud files (Switch web)", () => {
     expect(listedPaths()).toContain("web-frontend");
   });
 
+  it("Changed sorts the open folder newest first with no extra reads, and Name puts it back", async () => {
+    const at = (name: string, mtime: number) => ({ name, kind: "file", size: 4, mtime });
+    routes = [
+      boxWithAgent,
+      listing({ "": TOP, "web-frontend": [at("a-old.md", 1_000), at("b-new.md", 3_000), at("c-mid.md", 2_000)] }),
+    ];
+    open("?agent=web-frontend");
+    await screen.findByText("a-old.md");
+    const names = () => [...document.querySelectorAll("[data-cloud-file]")].map((node) => node.getAttribute("data-cloud-file"));
+    expect(names()).toEqual(["a-old.md", "b-new.md", "c-mid.md"]);
+    const reads = listedPaths().length;
+    fireEvent.click(screen.getByRole("button", { name: "Changed, newest first" }));
+    expect(names()).toEqual(["b-new.md", "c-mid.md", "a-old.md"]);
+    expect(screen.getByRole("button", { name: "Changed, newest first" }).closest("th")?.getAttribute("aria-sort")).toBe(
+      "descending",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    expect(names()).toEqual(["a-old.md", "b-new.md", "c-mid.md"]);
+    expect(listedPaths().length).toBe(reads);
+  });
+
+  it("an empty top level says files appear once agents make something", async () => {
+    routes = [boxWithAgent, listing({ "": [] })];
+    open();
+    expect(await screen.findByText("Your agents' files appear here once they make something")).toBeTruthy();
+  });
+
   it("an unknown agent from the address bar builds no request, and shows the top level with a note", async () => {
     routes = [boxWithAgent, listing({ "": TOP })];
     open("?agent=..%2Fsecrets");

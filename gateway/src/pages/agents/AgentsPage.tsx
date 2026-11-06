@@ -15,6 +15,7 @@ import {
   DialogTitle,
   IconButton,
   InputAdornment,
+  Link,
   MenuItem,
   Stack,
   TextField,
@@ -32,7 +33,9 @@ import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
 import { type CloudPresentation, cloudStatusFor } from "./cloud/cloudAgentState";
 import { boxShowsStopped } from "./cloud/yourCloud";
 import CloudDeleteDialog from "./cloud/CloudDeleteDialog";
-import CloudLoginsSection from "./cloud/CloudLoginsSection";
+import CloudLoginsSection, { AI_LOGINS_ID } from "./cloud/CloudLoginsSection";
+import type { NextAction } from "./cloud/peopleWords";
+import StateFade from "./cloud/StateFade";
 import YourCloudPanel from "./cloud/YourCloudPanel";
 import CloudAgentDialog from "./CloudAgentDialog";
 import RegisterAgentDialog from "./RegisterAgentDialog";
@@ -62,6 +65,10 @@ export default function AgentsPage() {
   // same read as the panel (`available`).
   const [cloudOpen, setCloudOpen] = useState(false);
   const cloudAgents = hostedV2 && cloud.available;
+  // Whether the box has confirmed an AI login, from the logins section; a box
+  // with no controller yet can't have one.
+  const [loginRead, setLoginRead] = useState<boolean | null>(null);
+  const loginSet = cloud.machine?.controller_id ? loginRead : false;
   const [ownerFilter, setOwnerFilter] = useState<string>("");
   const [search, setSearch] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("");
@@ -172,6 +179,14 @@ export default function AgentsPage() {
     refetch();
   }, [deleteTarget, refetch]);
 
+  // A next step's link: bring its section into view and move focus there, so
+  // keyboard and screen-reader users land on it too.
+  const goToStep = useCallback((step: NextAction) => {
+    const section = step === "give_login" ? document.getElementById(AI_LOGINS_ID) : null;
+    section?.scrollIntoView?.({ block: "center" });
+    section?.focus();
+  }, []);
+
   // Each agent's state on the person's cloud; worked out once per read.
   const cloudStatus = useMemo(() => {
     const onBox = new Set(cloud.machine?.agents ?? []);
@@ -221,12 +236,33 @@ export default function AgentsPage() {
                   );
                 return (
                   <Box component="span" title={shown.when ?? undefined}>
-                    {shown.label}
-                    {shown.detail && (
-                      <Box component="span" sx={{ color: "text.secondary" }}>
-                        {` · ${shown.detail}`}
-                      </Box>
-                    )}
+                    <StateFade state={`${shown.label}|${shown.detail ?? ""}`}>
+                      {shown.label}
+                      {shown.detail && shown.next ? (
+                        <>
+                          {" · "}
+                          {/* The second part is the next step: it goes there. */}
+                          <Link
+                            component="button"
+                            variant="body2"
+                            sx={{ verticalAlign: "baseline" }}
+                            onClick={(event) => {
+                              // The row opens the agent; this link only goes to the step.
+                              event.stopPropagation();
+                              goToStep(shown.next!);
+                            }}
+                          >
+                            {shown.detail}
+                          </Link>
+                        </>
+                      ) : (
+                        shown.detail && (
+                          <Box component="span" sx={{ color: "text.secondary" }}>
+                            {` · ${shown.detail}`}
+                          </Box>
+                        )
+                      )}
+                    </StateFade>
                   </Box>
                 );
               },
@@ -302,7 +338,7 @@ export default function AgentsPage() {
         },
       },
     ],
-    [isAdmin, user?.id, parentNameById, hostedV2, cloudStatus, cloud.machine],
+    [isAdmin, user?.id, parentNameById, hostedV2, cloudStatus, cloud.machine, goToStep],
   );
 
   return (
@@ -330,13 +366,21 @@ export default function AgentsPage() {
       </Stack>
 
       {hostedV2 && cloud.machine && (
-        <YourCloudPanel machine={cloud.machine} onChanged={cloud.refresh} />
+        <YourCloudPanel
+          machine={cloud.machine}
+          onChanged={cloud.refresh}
+          loginSet={loginSet}
+          onGiveLogin={() => goToStep("give_login")}
+          onAddAgent={cloudAgents ? () => setCloudOpen(true) : undefined}
+        />
       )}
       {hostedV2 && cloud.machine?.controller_id && (
         <CloudLoginsSection
           controllerId={cloud.machine.controller_id}
           machine={cloud.machine}
           onCloudChanged={cloud.refresh}
+          onLoginSet={setLoginRead}
+          onHurry={cloud.hurry}
         />
       )}
 

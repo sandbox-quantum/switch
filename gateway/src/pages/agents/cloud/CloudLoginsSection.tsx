@@ -26,6 +26,7 @@ import type { CloudMachine } from "../../../data/hostedCloud";
 import { fetchProviders, type ProviderInfo } from "../../../data/management";
 import { cloudProviders } from "../cloudAgent";
 import CloudLoginDialog from "./CloudLoginDialog";
+import { EMPTY } from "./peopleWords";
 
 /** Words for how a withdraw went: fixed here. */
 export const WITHDRAW_TEXT = {
@@ -49,10 +50,15 @@ export const STATUS_TEXT: Record<LoginStatus, string> = {
  * "Login set" shows only once the box confirms it; until then the line says
  * it's waiting, and reads again every few seconds.
  */
+/** The section's id: the setup checklist's and a status line's Give login bring it into view. */
+export const AI_LOGINS_ID = "cloud-ai-logins";
+
 export default function CloudLoginsSection({
   controllerId,
   machine,
   onCloudChanged,
+  onLoginSet,
+  onHurry,
 }: {
   /** The box's controller, from hosted-machines' `controller_id`. */
   controllerId: string;
@@ -60,6 +66,10 @@ export default function CloudLoginsSection({
   machine: CloudMachine;
   /** Read the box again, after the dialog wakes it. */
   onCloudChanged: () => void;
+  /** Whether any login is set (confirmed by the box), or null when it couldn't be read. */
+  onLoginSet?: (set: boolean | null) => void;
+  /** Passed to the login dialog: read the box faster while it waits. */
+  onHurry?: () => () => void;
 }) {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [statuses, setStatuses] = useState<Map<string, LoginStatus> | null>(null);
@@ -80,6 +90,9 @@ export default function CloudLoginsSection({
       setStatuses(null);
     }
   }, [controllerId]);
+
+  const loginSet = statuses === null ? null : [...statuses.values()].includes("set");
+  useEffect(() => onLoginSet?.(loginSet), [loginSet, onLoginSet]);
 
   // While a login waits for the box, read again until the box says how it went.
   const anyWaiting = statuses !== null && [...statuses.values()].includes("waiting");
@@ -139,10 +152,22 @@ export default function CloudLoginsSection({
 
   if (providers.length === 0) return null;
   return (
-    <Paper variant="outlined" sx={{ p: 2, mb: 2 }} component="section" aria-label="AI logins on your cloud">
+    <Paper
+      variant="outlined"
+      sx={{ p: 2, mb: 2, "&:focus-visible": { outline: 2, outlineColor: "primary.main" } }}
+      component="section"
+      aria-label="AI logins on your cloud"
+      id={AI_LOGINS_ID}
+      tabIndex={-1}
+    >
       <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
         AI logins on your cloud
       </Typography>
+      {statuses !== null && ![...statuses.values()].some((status) => status !== "none") && (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          {EMPTY.noLogin}
+        </Typography>
+      )}
       {notice && (
         <Alert severity={notice.severity} sx={{ mb: 1 }} onClose={() => setNotice(null)}>
           {notice.text}
@@ -186,6 +211,7 @@ export default function CloudLoginsSection({
         providerLabel={giving?.label ?? ""}
         machine={machine}
         onCloudChanged={onCloudChanged}
+        onHurry={onHurry}
         onClose={() => {
           setGiving(null);
           // Closed while it waited: the line shows where the login stands.
