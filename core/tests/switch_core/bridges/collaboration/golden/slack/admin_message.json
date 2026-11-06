@@ -2,7 +2,7 @@
   {
     "kwargs": {
       "channel": "C0GENERAL",
-      "text": "**Agents in this room:**\n* @scout — see [docs](https://example.com/docs)",
+      "text": "*Agents in this room:*\n• @scout — see <https://example.com/docs|docs>",
       "thread_ts": null,
       "unfurl_links": false,
       "unfurl_media": false

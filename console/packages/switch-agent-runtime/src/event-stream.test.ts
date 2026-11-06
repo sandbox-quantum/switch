@@ -510,6 +510,64 @@ describe('a server restart', () => {
   });
 });
 
+describe('a busy server', () => {
+  it('opens again when the server says, not on its own backoff', async () => {
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      if (index === 0) {
+        socket.refuse(503, { code: 'busy', message: 'opening at capacity', retry_after_s: 12 });
+        return;
+      }
+      attach(socket, 0);
+    });
+    const { abort } = makeStream({ rooms: [] });
+
+    // The backoff alone would have opened again after 1 s.
+    await vi.advanceTimersByTimeAsync(11_900);
+    expect(server.sockets).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(server.sockets).toHaveLength(2);
+    abort.abort();
+  });
+
+  it('stops at once when stopped while waiting its turn', async () => {
+    vi.useFakeTimers();
+    serve((socket) => {
+      socket.refuse(503, { code: 'busy', message: 'opening at capacity', retry_after_s: 300 });
+    });
+    const { abort } = makeStream({ rooms: [] });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(server.sockets).toHaveLength(1);
+
+    abort.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    // Nothing is left waiting out the 300 s, to keep the process alive.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('waits its turn even right after a restart', async () => {
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      if (index === 0) {
+        attach(socket, 0);
+        queueMicrotask(() => socket.drop(1012, 'service restart'));
+      } else if (index === 1) {
+        socket.refuse(503, { code: 'busy', message: 'opening at capacity', retry_after_s: 30 });
+      } else {
+        attach(socket, 0);
+      }
+    });
+    const { abort } = makeStream({ rooms: [] });
+
+    // A restart alone retries within a second; the queue's time wins.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(server.sockets).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(server.sockets).toHaveLength(3);
+    abort.abort();
+  });
+});
+
 describe('reopening while an open is still in flight', () => {
   /**
    * A server that keeps the incarnation the way the real one does: every open
@@ -1332,6 +1390,28 @@ describe('placements', () => {
       ]);
       refuse = true;
       await expect(stream.replacePlacements({ session: 'elsewhere' })).rejects.toThrow('HTTP 403');
+    } finally {
+      abort.abort();
+    }
+  });
+
+  it('names back the rooms Switch left out of the placements, and none from a server that does not say', async () => {
+    serve((socket) => {
+      socket.open();
+      socket.announce(4);
+    });
+    let body =
+      '{"ok":true,"refused":[{"session_id":"old","room_id":"room-deleted","reason":"gone"}]}';
+    const fetchMock = vi.fn(async (url: string) =>
+      url.includes('connection/placements') ? answer(200, body) : answer()
+    );
+    const { stream, abort } = makeStream({ rooms: [], scope: 'all' }, fetchMock);
+    try {
+      await expect(stream.replacePlacements({ old: 'room-deleted', s: 'room' })).resolves.toEqual({
+        refusedRooms: ['room-deleted'],
+      });
+      body = '{"ok":true}';
+      await expect(stream.replacePlacements({ s: 'room' })).resolves.toEqual({ refusedRooms: [] });
     } finally {
       abort.abort();
     }

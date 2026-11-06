@@ -8,7 +8,6 @@ import {
   MoreVertical,
   Trash2,
   Upload,
-  UserRound,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -18,6 +17,7 @@ import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -35,7 +35,6 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { Toggle } from '@renderer/lib/ui/toggle';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;
@@ -47,6 +46,11 @@ const TemplatesTitlebar = observer(function TemplatesTitlebar() {
 
 type Kind = 'agent' | 'room' | 'group';
 type KindFilter = 'all' | Kind;
+
+const SCOPE_OPTIONS = [
+  { value: 'all', label: 'All' },
+  { value: 'mine', label: 'Mine' },
+] as const;
 
 const KIND_OPTIONS = [
   { value: 'all', label: 'All' },
@@ -200,7 +204,9 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   const [kind, setKind] = useState<KindFilter>(initialKind ?? 'all');
   // Navigating here without the param, as the sidebar does, shows every kind.
   useEffect(() => setKind(initialKind ?? 'all'), [initialKind]);
-  const [onlyMine, setOnlyMine] = useState(false);
+  const [mineChosen, setOnlyMine] = useState(false);
+  // With nobody signed in there is no Mine to show, nor a control to leave it: All it is.
+  const onlyMine = mineChosen && meId !== null;
   const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
@@ -355,7 +361,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
   return (
     <ServerPage
-      width={1000}
+      width={LIST_PAGE_WIDTH}
       title="Templates"
       description="Templates create agents and rooms on this workspace. Pick one, fill in what it asks, and everything it describes is created in one go, or nothing is."
       action={
@@ -420,34 +426,38 @@ const TemplatesPanel = observer(function TemplatesPanel() {
               </Alert>
             )}
 
-            <div className="flex flex-wrap items-center gap-2">
-              <SearchInput
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search name and description…"
-                aria-label="Search templates by name and description"
-                containerClassName="min-w-[220px] flex-1"
-                className="h-8"
-              />
-              <SegmentedControl
-                value={kind}
-                onChange={setKind}
-                options={KIND_OPTIONS}
-                ariaLabel="Show templates of one kind"
-              />
-              <Toggle
-                variant="outline"
-                size="sm"
-                pressed={onlyMine}
-                onPressedChange={setOnlyMine}
-                aria-label="Only templates you own"
-                title={meId ? 'Only templates you saved' : 'Sign in to see which are yours'}
-                disabled={meId === null}
-              >
-                <UserRound />
-                Only mine
-              </Toggle>
-            </div>
+            <ListToolbar
+              // Whose templates first, as on Rooms and Connectors; only someone
+              // signed in has any to call theirs.
+              scope={
+                meId !== null && (
+                  <SegmentedControl
+                    value={onlyMine ? 'mine' : 'all'}
+                    onChange={(next) => setOnlyMine(next === 'mine')}
+                    options={SCOPE_OPTIONS}
+                    ariaLabel="Whose templates"
+                  />
+                )
+              }
+              search={
+                <SearchInput
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search name and description…"
+                  aria-label="Search templates by name and description"
+                  containerClassName="w-full"
+                  className="h-8"
+                />
+              }
+              filters={
+                <SegmentedControl
+                  value={kind}
+                  onChange={setKind}
+                  options={KIND_OPTIONS}
+                  ariaLabel="Show templates of one kind"
+                />
+              }
+            />
 
             {templatesShown.length > 0 ? (
               <div className={grid}>{templatesShown.map(card)}</div>

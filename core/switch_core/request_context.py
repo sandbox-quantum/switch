@@ -76,7 +76,12 @@ def _header(headers: dict[bytes, bytes], name: bytes) -> str:
 
 
 def _request_id(headers: dict[bytes, bytes]) -> str:
-    raw = _header(headers, _REQUEST_ID_HEADER)
+    return sanitised_request_id(_header(headers, _REQUEST_ID_HEADER))
+
+
+def sanitised_request_id(raw: str) -> str:
+    """A request id a caller sent, made safe to log, or a new one when nothing
+    is left of it."""
     sanitised = "".join(c for c in raw if c.isprintable() and c not in " \t")
     return sanitised[:_MAX_REQUEST_ID_LENGTH] or uuid4().hex
 

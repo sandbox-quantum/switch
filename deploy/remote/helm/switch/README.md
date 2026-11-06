@@ -240,6 +240,32 @@ while every gap in it, from a person's request to the agent's answer and from
 that answer to their next message, is within the window; after a break, people
 mention the agent again.
 
+## Service connections
+
+Two settings change the catalog services that people connect on this server.
+Both are empty by default, and the chart sets each variable only when you give
+it a value.
+
+```yaml
+switchCore:
+  # DISABLED_SERVICES: turn a service off, with the reason people see.
+  disabledServices:
+    datadog: "Not offered on this server."
+  # SERVICE_ACCESS_PROFILES: ask a service for less access.
+  serviceAccessProfiles:
+    google-workspace: drive-file
+```
+
+- `disabledServices`: people cannot connect, grant or issue a turned-off
+  service, but they can disconnect it.
+- `serviceAccessProfiles`: only `google-workspace` has a profile now.
+  `drive-file` asks for `drive.file` in place of Google's restricted `drive`
+  and `drive.readonly` scopes, so an External Google app needs no yearly
+  security assessment. Agents then cannot search Drive or read uploaded files.
+  If you change it, people must reconnect Google Workspace.
+
+An unknown service or profile stops switch-core at startup.
+
 ## Agent management
 
 Managed agents, and the agent controllers that run them on users' machines, are

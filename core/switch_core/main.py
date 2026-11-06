@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -36,7 +37,10 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventListener
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import (
+    EventBuffer,
+    session_slots_for,
+)
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
     BOOTSTRAP_KEY_TYPE,
@@ -46,6 +50,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     RETIRED_KEY_TYPE,
     ensure_bootstrap_owner,
 )
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -99,10 +104,11 @@ from switch_core.connections.app_credentials import ConnectorApps
 from switch_core.connections.app_signals import ConnectorAppSignals
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.github_move import move_github_connections
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, with_access_profiles
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
+from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
@@ -149,6 +155,10 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.organization_app_credential_store import (
+    OrganizationAppCredentialStore,
+)
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
@@ -177,6 +187,7 @@ from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
 from switch_core.management.template_updates import TemplateUpdates
 from switch_core.management.wiring import Management, create_management
+from switch_core.members_service import MembersService
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
     Observability,
@@ -190,16 +201,20 @@ from switch_core.observability.pool import (
     pool_stats,
 )
 from switch_core.observability.query import instrument_queries
+from switch_core.organization_access import AccessRevocation
+from switch_core.organization_directory import LocalDirectory, OrganizationDirectory
+from switch_core.organization_mirror import MirrorDependencies
 from switch_core.outbound import guarded_async_client
 from switch_core.ownership import Ownership
 from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
+from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
-    maintenance_loop as session_activity_maintenance_loop,
+    own_maintenance as own_session_activity_maintenance,
 )
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService
@@ -215,8 +230,12 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.setup import build_trust_client
+from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
+from switch_core.workos_directory import WorkOSDirectory
+from switch_core.workos_mirror import WorkOSMirror, own_workos_mirror
+from switch_core.workos_sign_in import WorkOSOrganizationSignIn
 
 logger = logging.getLogger(__name__)
 
@@ -507,6 +526,27 @@ async def _drain_telemetry(
             logger.warning("Telemetry HTTP client did not close.", exc_info=True)
 
 
+def _organization_directory(
+    config: SwitchConfig, http: httpx.AsyncClient
+) -> OrganizationDirectory:
+    """The directory `ORGANIZATION_DIRECTORY` names (`organization_directory.py`)."""
+    if config.organization_directory == "local":
+        return LocalDirectory()
+    # `_validate_organization_directory` has refused a missing key or
+    # sign-in already.
+    assert config.workos_api_key is not None
+    assert config.gateway_oidc_issuer_url is not None
+    return WorkOSDirectory(
+        http,
+        config.workos_api_key,
+        config.workos_api_url,
+        config.gateway_oidc_issuer_url,
+        MembersService(http, config.members_service_url)
+        if config.members_service_url
+        else None,
+    )
+
+
 async def _close_by(
     closing: Coroutine[object, object, None], deadline: float, what: str
 ) -> None:
@@ -665,12 +705,17 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     session_activity_listener = AgentSessionActivityListener(
         lambda: create_unpooled_engine(config)
     )
+    # Every `NOTIFY` this process sends from its own code, after the commits
+    # they announce, one transaction per batch (`announcer.py`): the router's
+    # messages and own events, and the signals below.
+    announcer = Announcer(session_factory)
     # Signals between switch-core processes (see `signals.py`): the same
     # arrangement again, carrying "who should look" rather than a room's rows.
     signal_bus = SignalBus(
         session_factory,
         lambda: create_unpooled_engine(config),
         process_id=process_id,
+        announcer=announcer,
     )
     # This process's row in `switch_core_processes`, claimed before anything
     # can record a connection against it and held until the process drains.
@@ -696,6 +741,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         store=OwnershipLeaseStore(),
         processes=SwitchCoreProcessStore(),
     )
+    own_session_activity_maintenance(ownership, session_factory)
     # Every owned consumer's progress, written in batches
     # (`transport/cursors.py`).
     cursor_writer = CursorWriter(
@@ -724,6 +770,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     api_key_store = ApiKeyStore()
     invitation_store = InvitationStore()
     join_domain_store = JoinDomainStore()
+    organization_store = OrganizationStore()
     tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
@@ -761,6 +808,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         sequence_base=event_boot << 32,
         rooms=message_listener,
         retention_seconds=config.agent_event_retention_seconds,
+        session_slots=session_slots_for(config.db_pool_size, config.db_max_overflow),
     )
     # Listens for the `NOTIFY` that each insert into `agent_events` sends, and
     # wakes this process's streams for that agent, whichever process wrote it.
@@ -779,6 +827,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
     trust_client, trust_http = build_trust_client(session_factory, config)
+    trust_signals = TrustSettingsSignals(client=trust_client, bus=signal_bus)
 
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
@@ -854,6 +903,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             connections=connections,
             frontend_base_url=config.dashboard_base_url,
             message_telemetry=message_telemetry,
+            announcer=announcer,
         ),
         message_store=message_store,
         client_store=client_store,
@@ -872,13 +922,14 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     signal_bus.on_recheck(lambda: _recheck_agent_rooms(session_factory, router))
 
     # ── Provisioning ─────────────────────────────────────────────────────────
-    provisioning: Provisioning = PostgresProvisioning(
+    postgres_provisioning = PostgresProvisioning(
         session_factory=session_factory,
         room_store=room_store,
         client_store=client_store,
         router=router,
         invites=invites,
     )
+    provisioning: Provisioning = postgres_provisioning
 
     # One shared read per room for every client in this process.
     room_cache = RoomDeliveryCache(
@@ -930,6 +981,18 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Clients registered or deleted in another process are started or stopped
     # here too (`clients/client_signals.py`).
     ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
+    # Every process runs each tenant's admin actor, so the process that wrote
+    # a message posts the heads-up it owes (`clients/mention_warnings.py`).
+    router.use_admin(
+        lambda tenant_id: next(
+            (
+                client
+                for client in client_lifecycle.get_by_type("admin", tenant_id)
+                if isinstance(client, SystemActor)
+            ),
+            None,
+        )
+    )
 
     # ── Collaboration bridge lifecycle ───────────────────────────────────────
     collab_lifecycle = CollaborationBridgeLifecycleService(
@@ -1010,6 +1073,13 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # sockets this process holds, reached from every process over the bus.
     user_changes = LocalUserChanges()
     user_change_publisher = SignalUserChanges(local=user_changes, bus=signal_bus)
+    room_changes = RoomChanges(
+        session_factory=session_factory,
+        publisher=user_change_publisher,
+        window_seconds=COALESCE_SECONDS,
+    )
+    room_service.on_room_changed(room_changes.room_changed)
+    postgres_provisioning.on_membership_changed(room_changes.room_changed)
     management = create_management(
         config,
         session_factory,
@@ -1020,6 +1090,12 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
+    # What every post checks first, kept until a signal says it changed.
+    room_access = RoomAccessCache(
+        ttl_seconds=config.agent_auth_cache_ttl_seconds,
+        max_entries=config.room_access_cache_max_entries,
+    )
+    room_access.follow(signal_bus)
     agent_bridge_app, protocol = create_agent_bridge_app(
         agent_store=agent_store,
         agent_session_store=agent_session_store,
@@ -1039,6 +1115,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         ),
         controller_auth=management.authenticator if management is not None else None,
         connections=connections,
+        room_access=room_access,
         telemetry=telemetry,
         trust_client=trust_client,
         gateway_ui=(
@@ -1052,6 +1129,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
+    connections.set_ended_elsewhere_listener(protocol.api_key_cache.invalidate_agent)
 
     # ── Messaging app installs ──────────────────────────────────────────────
     # Registration is the feature flag. An installer exists for a platform when
@@ -1153,7 +1231,10 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         id_server_name=config.id_server_name,
         media_max_bytes=config.agent_media_max_bytes,
         agent_chats_enabled=config.agent_chats_enabled,
+        group_chats_enabled=config.group_chats_enabled,
+        buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
+        trust_client=trust_client,
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
@@ -1161,6 +1242,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
+    protocol.set_member_adder(chat_service.add_member, chat_service.require_can_join)
+    chat_service.on_agent_room_changed(room_changes.rooms_changed)
+    room_service.on_room_changed(chat_service.room_changed)
 
     # ── Connector app credentials ─────────────────────────────────────────────
     # Each connector's app, from configuration or a row the operator saved,
@@ -1172,18 +1256,16 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         public_url=config.gateway_public_url,
         server_name=config.id_server_name,
     )
-    connector_apps = ConnectorApps(
-        catalog=CATALOG,
-        config=config,
-        environ=os.environ,
+    connector_apps = _connector_apps(
+        config,
         session_factory=session_factory,
-        store=ServiceAppCredentialStore(config.keyring),
         http=service_http,
         registration=service_registration,
     )
     await connector_apps.load()
 
     # ── Gateway app ───────────────────────────────────────────────────────────
+    organization_directory = _organization_directory(config, service_http)
     gateway_app = create_gateway_app(
         agent_store=agent_store,
         room_store=room_store,
@@ -1199,6 +1281,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         api_key_store=api_key_store,
         invitation_store=invitation_store,
         join_domain_store=join_domain_store,
+        organization_store=organization_store,
+        organization_directory=organization_directory,
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,
@@ -1214,6 +1298,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         chat_service=chat_service,
         connector_apps=connector_apps,
         config=config,
+        trust_settings_changed=trust_signals.changed,
     )
 
     register_platforms(collab_lifecycle)
@@ -1310,32 +1395,44 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Lifespan ──────────────────────────────────────────────────────────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
-    # A service is issued only where this server is set up for it, as its
-    # catalog entry's adapter says (`connections/registry.py`). Without any,
-    # the broker's upkeep still revokes and prunes whatever records exist.
-    service_broker = ServiceBroker(
+    # With `organization_connector_apps` on, a workspace whose organization
+    # saved its own app goes through that one (`connections/organization_apps.py`).
+    organization_apps = (
+        OrganizationApps(
+            apps=connector_apps,
+            store=OrganizationAppCredentialStore(config.keyring),
+        )
+        if config.organization_connector_apps_enabled
+        else None
+    )
+    service_broker = _service_broker(
+        config,
+        connector_apps,
+        organization_apps,
         session_factory=session_factory,
-        keyring=config.keyring,
-        catalog=CATALOG,
-        adapters=build_adapters(
-            CATALOG,
-            github_app=connector_apps.github_app(),
-            oauth_clients=connector_apps.oauth_clients(),
-            http=service_http,
-            registration=service_registration,
-        ),
-        disabled=config.disabled_services,
-        store=ServiceConnectionStore(),
-        token_retention=timedelta(days=config.service_token_retention_days),
-        workspace_services=WorkspaceServiceStore(),
-        workspace_gate=config.service_connections_enabled,
-        public_url=config.gateway_public_url,
+        http=service_http,
+        registration=service_registration,
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    gateway_app.state.organization_apps = organization_apps
+    if config.members_service_url:
+        # Checked set together, under the WorkOS directory
+        # (`_validate_organization_directory`).
+        assert config.workos_api_key is not None
+        assert config.workos_client_id is not None
+        assert config.workos_redirect_url is not None
+        gateway_app.state.workos_sign_in = WorkOSOrganizationSignIn(
+            service_http,
+            config.workos_api_key,
+            config.workos_api_url,
+            config.workos_client_id,
+            config.workos_redirect_url,
+        )
     # A connector app the operator saves or removes, put to work in every process.
     ConnectorAppSignals(
         apps=connector_apps,
+        organization_apps=organization_apps,
         broker=service_broker,
         state=gateway_app.state,
         bus=signal_bus,
@@ -1343,6 +1440,29 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
     protocol.install_service = install_service
+    if isinstance(organization_directory, WorkOSDirectory):
+        # Checked present with the directory (`_validate_organization_directory`).
+        assert config.gateway_oidc_issuer_url is not None
+        own_workos_mirror(
+            ownership,
+            WorkOSMirror(
+                session_factory,
+                organization_directory,
+                MirrorDependencies(
+                    revocation=AccessRevocation(
+                        agent_store=agent_store,
+                        api_key_store=api_key_store,
+                        broker=service_broker,
+                        protocol=protocol,
+                        sign_in_flows=gateway_app.state.sign_in_flows,
+                    ),
+                    organization_store=organization_store,
+                    user_store=user_store,
+                ),
+                OwnershipLeaseStore(),
+                config.gateway_oidc_issuer_url,
+            ),
+        )
 
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
@@ -1370,9 +1490,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             )
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
-            )
-            session_activity_task = asyncio.create_task(
-                session_activity_maintenance_loop(session_factory)
             )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
@@ -1411,6 +1528,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if telemetry.enabled
                 else None
             )
+            await announcer.start()
             await message_listener.start()
             await session_activity_listener.start()
             await agent_event_listener.start()
@@ -1422,7 +1540,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 retention_task.cancel()
                 attachment_group_task.cancel()
                 router.close()
-                session_activity_task.cancel()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
                 if snapshot_task is not None:
@@ -1446,6 +1563,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
                 await signal_bus.stop()
+                # Last of them: what the router and the bus handed it is sent,
+                # for a few seconds at most, before the pool closes.
+                await announcer.stop()
                 # Before the operational flush, and bounded: the whole
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.
@@ -1547,6 +1667,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         "Switch is running on http://%s:%d", config.server_host, config.server_port
     )
 
+    # Before the server takes a connection or a session report, either of
+    # which can report a milestone this settles.
+    await telemetry.settle_superseded_milestones()
     telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
     # The funnel's first step, and only for a deployment with an install date.
     await telemetry.emit_milestone("deployment_installed")
@@ -2081,6 +2204,64 @@ async def _bootstrap_key_tenant(
     return TENANT_ZERO_ID
 
 
+def _connector_apps(
+    config: SwitchConfig,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    http: httpx.AsyncClient,
+    registration: ClientRegistration,
+) -> ConnectorApps:
+    """Each connector's app, over the catalog as this server offers it: an
+    entry may reach less here (`SERVICE_ACCESS_PROFILES`). Not yet loaded."""
+    return ConnectorApps(
+        catalog=with_access_profiles(CATALOG, config.service_access_profiles),
+        config=config,
+        environ=os.environ,
+        session_factory=session_factory,
+        store=ServiceAppCredentialStore(config.keyring),
+        http=http,
+        registration=registration,
+    )
+
+
+def _service_broker(
+    config: SwitchConfig,
+    connector_apps: ConnectorApps,
+    organization_apps: OrganizationApps | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    http: httpx.AsyncClient,
+    registration: ClientRegistration,
+) -> ServiceBroker:
+    """The broker over the catalog `connector_apps` holds, so the server's
+    adapters and every organization's ask for the same scopes.
+
+    A service is issued only where this server is set up for it, as its
+    catalog entry's adapter says (`connections/registry.py`). Without any,
+    the broker's upkeep still revokes and prunes whatever records exist.
+    """
+    catalog = connector_apps.catalog
+    return ServiceBroker(
+        session_factory=session_factory,
+        keyring=config.keyring,
+        catalog=catalog,
+        adapters=build_adapters(
+            catalog,
+            github_app=connector_apps.github_app(),
+            oauth_clients=connector_apps.oauth_clients(),
+            http=http,
+            registration=registration,
+        ),
+        organization_apps=organization_apps,
+        disabled=config.disabled_services,
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=config.service_token_retention_days),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=config.service_connections_enabled,
+        public_url=config.gateway_public_url,
+    )
+
+
 def _distributed_teams_app(
     config: SwitchConfig,
     installers: MessagingInstallerRegistry,
@@ -2294,6 +2475,17 @@ def migrate() -> None:
     asyncio.run(_migrate_and_grant(config))
 
 
+def _event_loop_factory() -> Callable[[], asyncio.AbstractEventLoop] | None:
+    """uvloop's event loop where it is installed, which is every platform but
+    Windows, and None (asyncio's own) where it is not. uvloop does the loop's
+    scheduling and its socket reads and writes in C."""
+    try:
+        import uvloop
+    except ImportError:
+        return None
+    return uvloop.new_event_loop
+
+
 def main() -> None:
     config = SwitchConfig()
     running_version = switch_core_version()
@@ -2313,7 +2505,7 @@ def main() -> None:
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    asyncio.run(run(config, process_id))
+    asyncio.run(run(config, process_id), loop_factory=_event_loop_factory())
 
 
 if __name__ == "__main__":

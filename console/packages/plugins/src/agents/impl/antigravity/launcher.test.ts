@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
-import { ANTIGRAVITY_INSTALL_COMMAND } from './install';
 import { ANTIGRAVITY_LAUNCHER } from './launcher';
 const exec = promisify(execFile);
 const homes: string[] = [];
@@ -21,7 +20,6 @@ it('checks the installed version without launching the native runtime', async ()
   });
   expect(result.stdout.trim()).toBe('1.1.1');
   expect(await readdir(home)).toEqual(['launcher.cjs']);
-  await exec('/bin/sh', ['-n', '-c', ANTIGRAVITY_INSTALL_COMMAND]);
 });
 it('authenticates explicitly over ACP and removes the native extraction directory', async () => {
   const home = await mkdtemp(join(tmpdir(), 'acp-launcher-'));

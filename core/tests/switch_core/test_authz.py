@@ -8,10 +8,12 @@ from switch_core.authz import (
     Principal,
     administers_tenant,
     can,
+    can_delete_room_document,
     can_manage,
-    owns_tenant,
+    can_unlink_from_room,
     require,
     require_manage,
+    require_visibility_change,
     validate_visibility_pair,
 )
 
@@ -111,44 +113,88 @@ class TestCanManage:
 class TestAdministersTenant:
     """`administers_tenant` is the one function allowed to turn a role into
     the admin bit (`authz.py` module docstring) — the operator bypass and the
-    per-tenant `owner`/`admin` membership role, combined."""
+    per-tenant `admin` membership role, combined."""
 
     def test_operator_administers_regardless_of_tenant_role(self) -> None:
-        assert administers_tenant(is_operator=True, tenant_role=None)
-        assert administers_tenant(is_operator=True, tenant_role="member")
+        assert administers_tenant(
+            is_operator=True, tenant_role=None, organization_role=None
+        )
+        assert administers_tenant(
+            is_operator=True, tenant_role="member", organization_role=None
+        )
 
-    def test_owner_or_admin_membership_administers(self) -> None:
-        assert administers_tenant(is_operator=False, tenant_role="owner")
-        assert administers_tenant(is_operator=False, tenant_role="admin")
+    def test_admin_membership_administers(self) -> None:
+        assert administers_tenant(
+            is_operator=False, tenant_role="admin", organization_role=None
+        )
+
+    def test_owner_is_no_longer_an_admin_role(self) -> None:
+        """`owner` merged into `admin`; a stray `owner` string must not
+        grant anything."""
+        assert not administers_tenant(
+            is_operator=False, tenant_role="owner", organization_role=None
+        )
 
     def test_plain_member_does_not_administer(self) -> None:
-        assert not administers_tenant(is_operator=False, tenant_role="member")
+        assert not administers_tenant(
+            is_operator=False, tenant_role="member", organization_role=None
+        )
 
     def test_no_membership_does_not_administer(self) -> None:
-        assert not administers_tenant(is_operator=False, tenant_role=None)
+        assert not administers_tenant(
+            is_operator=False, tenant_role=None, organization_role=None
+        )
+
+    def test_organization_admin_administers_every_workspace_of_it(self) -> None:
+        for tenant_role in (None, "member", "admin"):
+            assert administers_tenant(
+                is_operator=False,
+                tenant_role=tenant_role,
+                organization_role="org_admin",
+            )
+
+    def test_organization_member_is_no_more_than_their_workspace_role(self) -> None:
+        assert not administers_tenant(
+            is_operator=False, tenant_role="member", organization_role="member"
+        )
+        assert administers_tenant(
+            is_operator=False, tenant_role="admin", organization_role="member"
+        )
 
 
-class TestOwnsTenant:
-    """`owns_tenant` is the narrower bit: who may move the ownership set,
-    which is not everyone who may administer the workspace."""
+class TestCanUnlinkFromRoom:
+    def test_those_taking_part_and_admins_may(self) -> None:
+        assert can_unlink_from_room(ALICE, takes_part=True)
+        assert can_unlink_from_room(ADMIN, takes_part=False)
 
-    def test_operator_owns_regardless_of_tenant_role(self) -> None:
-        assert owns_tenant(is_operator=True, tenant_role=None)
-        assert owns_tenant(is_operator=True, tenant_role="member")
+    def test_anyone_else_may_not(self) -> None:
+        assert not can_unlink_from_room(ALICE, takes_part=False)
+        assert not can_unlink_from_room(ANON, takes_part=False)
 
-    def test_owner_membership_owns(self) -> None:
-        assert owns_tenant(is_operator=False, tenant_role="owner")
 
-    def test_admin_membership_administers_but_does_not_own(self) -> None:
-        """The whole point of there being two functions: an admin who also
-        owned could take the workspace from its owner one safe-looking
-        request at a time."""
-        assert administers_tenant(is_operator=False, tenant_role="admin")
-        assert not owns_tenant(is_operator=False, tenant_role="admin")
+class TestCanDeleteRoomDocument:
+    def test_its_creator_the_room_owner_and_an_admin_may(self) -> None:
+        assert can_delete_room_document(
+            ALICE, room_owner_id="u-bob", document_owner_id="u-alice"
+        )
+        assert can_delete_room_document(
+            ALICE, room_owner_id="u-alice", document_owner_id="u-bob"
+        )
+        assert can_delete_room_document(
+            ADMIN, room_owner_id="u-bob", document_owner_id="u-carol"
+        )
 
-    def test_plain_member_and_no_membership_do_not_own(self) -> None:
-        assert not owns_tenant(is_operator=False, tenant_role="member")
-        assert not owns_tenant(is_operator=False, tenant_role=None)
+    def test_anyone_else_may_not(self) -> None:
+        assert not can_delete_room_document(
+            ALICE, room_owner_id="u-bob", document_owner_id="u-carol"
+        )
+
+    def test_a_missing_owner_matches_nobody(self) -> None:
+        # The None-guard is load-bearing, as in `can`: an unowned document
+        # in an unowned room is not "owned" by a principal with no id.
+        assert not can_delete_room_document(
+            ANON, room_owner_id=None, document_owner_id=None
+        )
 
 
 class TestValidateVisibilityPair:
@@ -170,3 +216,28 @@ class TestValidateVisibilityPair:
     def test_rejects_invalid_enum(self, read: str, write: str) -> None:
         with pytest.raises(ValueError, match="expected public|private"):
             validate_visibility_pair(read, write)
+
+
+class TestRequireVisibilityChange:
+    """Changing who may see or edit a resource is its owner's or an admin's,
+    like a room's; write access alone does not reach it."""
+
+    def _open(self) -> SimpleNamespace:
+        return _resource(
+            owner_id="u-owner", read_visibility="public", write_visibility="public"
+        )
+
+    def test_a_writer_may_not_change_visibility(self) -> None:
+        with pytest.raises(PermissionError, match="owner or a workspace admin"):
+            require_visibility_change(ALICE, self._open(), "private", None, "reference")
+        with pytest.raises(PermissionError):
+            require_visibility_change(ALICE, self._open(), None, "private", "package")
+
+    def test_a_writer_may_send_the_current_visibility_back(self) -> None:
+        require_visibility_change(ALICE, self._open(), "public", "public", "reference")
+        require_visibility_change(ALICE, self._open(), None, None, "reference")
+
+    def test_the_owner_and_an_admin_may_change_it(self) -> None:
+        owner = Principal("u-owner", False)
+        require_visibility_change(owner, self._open(), "private", "private", "package")
+        require_visibility_change(ADMIN, self._open(), "private", "private", "package")
