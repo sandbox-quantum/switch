@@ -1,7 +1,7 @@
 from sqlalchemy import and_, delete, func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Document, Room, room_documents
+from switch_core.db.models import Document, Room, package_documents, room_documents
 from switch_core.db.stores.room_store import AttachedRooms, readable_by
 
 
@@ -82,6 +82,16 @@ class DocumentStore:
         return doc
 
     async def delete(self, session: AsyncSession, document_id: str) -> list[str]:
+        """Delete a document, taking it out of every room and package it is
+        in. Returns the list of room_ids it was attached to.
+
+        Package membership has no cascade, so it is removed here: without it a
+        packaged document cannot be deleted at all."""
+        await session.execute(
+            delete(package_documents).where(
+                package_documents.c.document_id == document_id
+            )
+        )
         room_id_result = await session.execute(
             select(room_documents.c.room_id).where(
                 room_documents.c.document_id == document_id
