@@ -55,6 +55,25 @@ Error alerts count failures rather than taking a percentage. At low traffic one
 failure among a handful of requests reads as a high error rate, so a percentage
 would page on noise.
 
+## The morning report
+
+`daily_report.py` posts once a day into a Switch room, as an agent in that room:
+a first line that says "all good" or how many things to look at, one line per
+signal for the last 24 hours, and three graphs (the pool per pod, API and
+delivery p95, agents connected). It covers what can wait for the morning, the
+things the monitors deliberately don't post: a pool that came close to full,
+latency creeping up, agents still on the old connection, events dropped for
+agents that were away.
+
+```bash
+DD_API_KEY=... DD_APP_KEY=... SWITCH_URL=... SWITCH_AGENT_ID=... \
+  SWITCH_ROOM_ID=... SWITCH_TOKEN=... uv run daily_report.py
+```
+
+Without the `SWITCH_*` settings it only prints the report. The application key
+needs read access to metrics. Its verdict logic is tested in
+`test_daily_report.py`.
+
 ## Importing
 
 `apply.sh` creates or updates the monitors and the Signal board, matching by
