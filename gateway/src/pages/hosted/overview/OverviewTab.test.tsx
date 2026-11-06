@@ -182,8 +182,19 @@ describe("Overview's health, Needs attention and ceiling (UX operators 1, 2, 6, 
     expect(link.getAttribute("href")).toBe("#needs-attention");
   });
 
-  it("lists a paused box with Resume, which goes through the confirm and then refreshes", async () => {
-    const fetchMock = answer(200, { action_id: "a-1" });
+  it("lists a paused box with Resume, whose confirm says why they were paused, then refreshes", async () => {
+    const paused = {
+      action: "hosted.user_paused",
+      target_id: U3,
+      occurred_at: "2026-11-06T09:00:00+00:00",
+      details: { reason: "<b>Over the AI cap</b>" },
+    };
+    const fetchMock = vi.fn(async (path: string, _init?: RequestInit) =>
+      path.includes("/audit-events?")
+        ? new Response(JSON.stringify([paused]), { status: 200 })
+        : new Response(JSON.stringify({ action_id: "a-1" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
     const refresh = vi.fn(async () => undefined);
     renderTab(OverviewTab, { overview: fixture(), refresh });
     const row = within(screen.getByTestId(`attention-${B3}`));
@@ -193,12 +204,28 @@ describe("Overview's health, Needs attention and ceiling (UX operators 1, 2, 6, 
     expect(row.getByText("k1-f019 c27d 0b51").getAttribute("title")).toBe(U3);
     fireEvent.click(row.getByRole("button", { name: "Resume" }));
     const dialog = within(screen.getByRole("dialog"));
+    // The operator's reason, read from the audit log for this person, shown as text.
+    expect(await dialog.findByText(/^<b>Over the AI cap<\/b> \(paused /)).toBeTruthy();
+    expect(document.querySelector("[role=dialog] b")).toBeNull();
+    const [readPath] = fetchMock.mock.calls[0]!;
+    expect(readPath).toContain("/shared-cloud/audit-events?");
+    expect(readPath).toContain(`target_id=${U3}`);
     fireEvent.change(dialog.getByRole("textbox"), { target: { value: "Ticket 9" } });
     fireEvent.click(dialog.getByRole("button", { name: "Resume user" }));
     await waitFor(() => expect(refresh).toHaveBeenCalled());
-    const [path, init] = fetchMock.mock.calls[0]!;
+    const [path, init] = fetchMock.mock.calls[1]!;
     expect(path).toContain(`/shared-cloud/users/${U3}/resume`);
     expect(JSON.parse(String(init?.body))).toEqual({ reason: "Ticket 9" });
+  });
+
+  it("doesn't read the audit log for Restart, only for Resume", () => {
+    const fetchMock = answer(200, []);
+    const raw = fixture();
+    raw.boxes = [{ ...boxRow(B1, U1, [W1], "running", "shared-1", 1, 0), heartbeat_at: "2026-01-01T00:00:00Z" }];
+    renderTab(OverviewTab, { overview: raw });
+    fireEvent.click(within(screen.getByTestId(`attention-${B1}`)).getByRole("button", { name: "Restart" }));
+    expect(screen.queryByText("Why they were paused")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("offers Restart for an awake box with no recent report, and Open, to the box's page, for an error", () => {
