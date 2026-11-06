@@ -318,7 +318,7 @@ Sign in interactively on the controller host as the user running the controller:
 claude login
 
 # OpenAI Codex
-codex auth
+codex login
 
 # OpenCode
 opencode auth login
