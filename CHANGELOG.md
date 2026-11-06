@@ -97,8 +97,10 @@ version of their own to them without also giving them a release of their own.
   which warns that the key keeps working if it leaks. `POST /api-keys`
   takes `expires_in_days` (1 to 365, or `"never"`; 90 when left out), the
   key list shows each key's expiry or **No expiry**, and an expired key is
-  refused with 401 wherever keys are accepted. Keys made before this release,
-  agents' own keys and the deployment's bootstrap key do not expire.
+  refused with 401 by the agent API, the MCP server and agent registration.
+  Its owner can still reveal it under API keys, to see which key it was.
+  Keys made before this release, agents' own keys and the deployment's
+  bootstrap key do not expire.
 - **Messages with files attached are checked by Switch Trust.** A message with
   a file used to skip the check entirely, typed text included, both from a
   person on a chat platform and from an agent sending files. Now the text is
