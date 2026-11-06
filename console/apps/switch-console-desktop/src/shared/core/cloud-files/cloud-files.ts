@@ -96,6 +96,57 @@ export const CLOUD_FILE_CHUNK_BYTES = 128 * 1024;
 export const TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
 /** The largest image previewed inside Console. */
 export const IMAGE_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
+/** The largest video played inside Console: Core's own file cap, since it's fetched whole. */
+export const VIDEO_PREVIEW_MAX_BYTES = CLOUD_FILE_MAX_BYTES;
+/** Code larger than this shows as plain text, without highlighting. */
+export const HIGHLIGHT_MAX_BYTES = 200 * 1024;
+
+/** Video types played inline, by extension. The bytes must match too (see `videoTypeFromBytes`). */
+const VIDEO_EXTENSIONS: Record<string, 'video/mp4' | 'video/webm'> = {
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+};
+
+/** Code highlighted in the preview, by extension or plain name, as the highlighter's language. */
+const CODE_LANGUAGES: Record<string, string> = {
+  ts: 'typescript',
+  tsx: 'tsx',
+  js: 'javascript',
+  jsx: 'jsx',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  py: 'python',
+  rb: 'ruby',
+  go: 'go',
+  rs: 'rust',
+  java: 'java',
+  kt: 'kotlin',
+  swift: 'swift',
+  c: 'c',
+  h: 'c',
+  cc: 'cpp',
+  cpp: 'cpp',
+  hpp: 'cpp',
+  cs: 'csharp',
+  php: 'php',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  sql: 'sql',
+  css: 'css',
+  scss: 'scss',
+  less: 'less',
+  yaml: 'yaml',
+  yml: 'yaml',
+  toml: 'toml',
+  ini: 'ini',
+  xml: 'markup',
+  vue: 'markup',
+  svelte: 'markup',
+  jsonl: 'json',
+  dockerfile: 'docker',
+  makefile: 'makefile',
+};
 
 /** Image types shown inline, by extension. Only the four the chat shows; never SVG. */
 const IMAGE_EXTENSIONS: Record<string, string> = {
@@ -160,11 +211,18 @@ const TEXT_EXTENSIONS = new Set([
 /** Plain names with no extension that are text all the same. */
 const TEXT_NAMES = new Set(['readme', 'license', 'makefile', 'dockerfile', 'procfile']);
 
+/** Why a file is download only: a type never previewed, or over its preview size. */
+export type NoPreviewReason = 'type' | 'too_large';
+
 export type PreviewKind =
   | { kind: 'image'; mimeType: string }
-  | { kind: 'text' }
+  | { kind: 'video'; mimeType: 'video/mp4' | 'video/webm' }
   | { kind: 'markdown' }
-  | { kind: 'download' };
+  | { kind: 'json' }
+  | { kind: 'csv'; delimiter: ',' | '\t' }
+  | { kind: 'code'; language: string }
+  | { kind: 'text' }
+  | { kind: 'download'; reason: NoPreviewReason };
 
 function extensionOf(name: string): string {
   const base = name.toLowerCase();
@@ -175,8 +233,9 @@ function extensionOf(name: string): string {
 
 /**
  * How Console shows a file, from its name and size alone: one of the four safe
- * image types, text or code, Markdown, or download only. HTML, SVG, PDF and
- * anything unknown are download only, and so is anything over the preview size.
+ * image types, mp4 or webm video, Markdown, JSON, CSV, highlighted code, plain
+ * text, or download only. HTML, SVG, PDF and anything unknown are download
+ * only (`type`), and so is anything over its preview size (`too_large`).
  */
 export function previewKind(name: string, size: number): PreviewKind {
   const extension = extensionOf(name);
@@ -184,12 +243,52 @@ export function previewKind(name: string, size: number): PreviewKind {
   if (image)
     return size <= IMAGE_PREVIEW_MAX_BYTES
       ? { kind: 'image', mimeType: image }
-      : { kind: 'download' };
-  if (size > TEXT_PREVIEW_MAX_BYTES) return { kind: 'download' };
+      : { kind: 'download', reason: 'too_large' };
+  const video = VIDEO_EXTENSIONS[extension];
+  if (video)
+    return size <= VIDEO_PREVIEW_MAX_BYTES
+      ? { kind: 'video', mimeType: video }
+      : { kind: 'download', reason: 'too_large' };
+  const plainName = extension === '' && TEXT_NAMES.has(name.toLowerCase());
+  const isText =
+    extension === 'md' || extension === 'markdown' || TEXT_EXTENSIONS.has(extension) || plainName;
+  if (!isText) return { kind: 'download', reason: 'type' };
+  if (size > TEXT_PREVIEW_MAX_BYTES) return { kind: 'download', reason: 'too_large' };
   if (extension === 'md' || extension === 'markdown') return { kind: 'markdown' };
-  if (TEXT_EXTENSIONS.has(extension) || (extension === '' && TEXT_NAMES.has(name.toLowerCase())))
-    return { kind: 'text' };
-  return { kind: 'download' };
+  if (extension === 'json') return { kind: 'json' };
+  if (extension === 'csv') return { kind: 'csv', delimiter: ',' };
+  if (extension === 'tsv') return { kind: 'csv', delimiter: '\t' };
+  const language = CODE_LANGUAGES[plainName ? name.toLowerCase() : extension];
+  if (language) return { kind: 'code', language };
+  return { kind: 'text' };
+}
+
+/**
+ * A video's type, only when its opening bytes match its extension's type: an
+ * mp4 has `ftyp` at byte 4, a webm starts with the EBML header 1A 45 DF A3.
+ * Anything else is null, and is offered for download instead.
+ */
+export function videoTypeFromBytes(
+  bytes: Uint8Array,
+  mimeType: string
+): 'video/mp4' | 'video/webm' | null {
+  if (mimeType === 'video/mp4')
+    return bytes.length >= 12 &&
+      bytes[4] === 0x66 &&
+      bytes[5] === 0x74 &&
+      bytes[6] === 0x79 &&
+      bytes[7] === 0x70
+      ? 'video/mp4'
+      : null;
+  if (mimeType === 'video/webm')
+    return bytes.length >= 4 &&
+      bytes[0] === 0x1a &&
+      bytes[1] === 0x45 &&
+      bytes[2] === 0xdf &&
+      bytes[3] === 0xa3
+      ? 'video/webm'
+      : null;
+  return null;
 }
 
 /** Whether bytes meant for a text preview really are text: no NUL, and valid UTF-8. */

@@ -84,7 +84,7 @@ describe('preview', () => {
         await cloudFilesController.preview({ serverId: 'srv-1', path: name, name, size: 10 })
       ).toEqual({
         ok: true,
-        value: { kind: 'download' },
+        value: { kind: 'download', reason: 'type' },
       });
       expect(readCloudFile).not.toHaveBeenCalled();
     }
@@ -114,7 +114,69 @@ describe('preview', () => {
         name: 'x.txt',
         size: 3,
       })
-    ).toEqual({ ok: true, value: { kind: 'download' } });
+    ).toEqual({ ok: true, value: { kind: 'download', reason: 'type' } });
+  });
+
+  it('a file over its preview size is too large, and no bytes are fetched', async () => {
+    expect(
+      await cloudFilesController.preview({
+        serverId: 'srv-1',
+        path: 'big.mp4',
+        name: 'big.mp4',
+        size: 25 * 1024 * 1024 + 1,
+      })
+    ).toEqual({ ok: true, value: { kind: 'download', reason: 'too_large' } });
+    expect(readCloudFile).not.toHaveBeenCalled();
+  });
+
+  it('an mp4 whose bytes really are mp4 comes back as video, read up to the 25 MB cap', async () => {
+    const bytes = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    readCloudFile.mockResolvedValue(bytes);
+    expect(
+      await cloudFilesController.preview({
+        serverId: 'srv-1',
+        path: 'c.mp4',
+        name: 'c.mp4',
+        size: 12,
+      })
+    ).toEqual({
+      ok: true,
+      value: { kind: 'video', mimeType: 'video/mp4', data: Buffer.from(bytes).toString('base64') },
+    });
+    expect(readCloudFile).toHaveBeenCalledWith({ id: 'srv-1' }, 'c.mp4', 25 * 1024 * 1024);
+  });
+
+  it('a .webm that is really HTML is download only, never a video', async () => {
+    readCloudFile.mockResolvedValue(new TextEncoder().encode('<html><script>x</script>'));
+    expect(
+      await cloudFilesController.preview({
+        serverId: 'srv-1',
+        path: 'v.webm',
+        name: 'v.webm',
+        size: 24,
+      })
+    ).toEqual({ ok: true, value: { kind: 'download', reason: 'type' } });
+  });
+
+  it('code, CSV and JSON come back as text with what the renderer needs', async () => {
+    const ask = (name: string, text: string) => {
+      readCloudFile.mockResolvedValue(new TextEncoder().encode(text));
+      return cloudFilesController.preview({
+        serverId: 'srv-1',
+        path: name,
+        name,
+        size: text.length,
+      });
+    };
+    expect(await ask('a.py', 'x = 1')).toEqual({
+      ok: true,
+      value: { kind: 'code', text: 'x = 1', language: 'python' },
+    });
+    expect(await ask('m.csv', 'a,b')).toEqual({
+      ok: true,
+      value: { kind: 'csv', text: 'a,b', delimiter: ',' },
+    });
+    expect(await ask('d.json', '{}')).toEqual({ ok: true, value: { kind: 'json', text: '{}' } });
   });
 
   it('Markdown comes back as text, for the renderer to show without HTML', async () => {

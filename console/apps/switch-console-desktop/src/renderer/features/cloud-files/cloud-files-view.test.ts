@@ -85,6 +85,14 @@ async function open() {
   return { host, done: () => act(() => root.unmount()) };
 }
 const text = (host: HTMLElement) => host.textContent ?? '';
+/** The preview modal, which opens in a portal on the page, not inside the view. */
+const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
+const press = async (key: string, target: Element | null = dialog()) => {
+  if (!target) throw new Error('nothing to press on');
+  await act(async () => {
+    target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+  });
+};
 const click = async (element: Element | null | undefined) => {
   if (!element) throw new Error('nothing to click');
   await act(async () => (element as HTMLElement).click());
@@ -189,7 +197,7 @@ describe('Your cloud files', () => {
       size: 4,
     });
     expect(createObjectURL.mock.calls[0]![0].type).toBe('image/png');
-    expect(view.host.querySelector('img')?.getAttribute('src')).toBe('blob:preview');
+    expect(dialog()?.querySelector('img')?.getAttribute('src')).toBe('blob:preview');
     view.done();
   });
 
@@ -212,9 +220,9 @@ describe('Your cloud files', () => {
     preview.mockResolvedValue({ ok: true, value: { kind: 'download' } });
     const view = await open();
     await click([...view.host.querySelectorAll('tbody button')][0]);
-    expect(text(view.host)).toContain('no preview for this kind of file');
-    expect(button(view.host, 'Download')).toBeDefined();
-    expect(view.host.querySelector('iframe, img, object, embed')).toBeNull();
+    expect(text(dialog()!)).toContain('can’t be previewed here');
+    expect(button(dialog()!, 'Download')).toBeDefined();
+    expect(document.querySelector('iframe, img, object, embed, video')).toBeNull();
     view.done();
   });
 
@@ -255,14 +263,187 @@ describe('Your cloud files', () => {
     preview.mockResolvedValue({ ok: true, value: { kind: 'markdown', text: '# Hello' } });
     const view = await open();
     await click(button(view.host, 'README.md'));
-    const crumbs = view.host.querySelector('section nav[aria-label="Folder path"]');
+    const crumbs = dialog()?.querySelector('nav[aria-label="Folder path"]');
     expect(crumbs?.textContent).toBe('All filesSharedsample-bakeryREADME.md');
     expect(crumbs?.querySelector('[aria-current="page"]')?.textContent).toBe('README.md');
     await click(
       [...(crumbs?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'sample-bakery')
     );
-    expect(view.host.querySelector('[aria-label="Close preview"]')).toBeNull();
+    expect(dialog()).toBeNull();
+    expect(document.querySelector('[aria-label="Close preview"]')).toBeNull();
     expect(button(view.host, 'README.md')).toBeDefined();
+    view.done();
+  });
+
+  it('a file opens in a modal over the list, and Esc closes it with the list unchanged', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: [folder('src'), file('a.txt')] } });
+    preview.mockResolvedValue({ ok: true, value: { kind: 'text', text: 'hello' } });
+    const view = await open();
+    await click(button(view.host, 'a.txt'));
+    expect(dialog()?.getAttribute('aria-labelledby')).toBeTruthy();
+    expect(text(dialog()!)).toContain('hello');
+    expect(button(view.host, 'a.txt')).toBeDefined(); // the list is still there underneath
+    await press('Escape');
+    expect(dialog()).toBeNull();
+    expect(button(view.host, 'src')).toBeDefined();
+    view.done();
+  });
+
+  it('previous and next step through files only, stop at the ends, and fetch only the file shown', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({
+      ok: true,
+      value: { entries: [file('a.txt'), folder('src'), file('b.txt'), file('c.txt')] },
+    });
+    preview.mockImplementation(async ({ name }: { name: string }) => ({
+      ok: true,
+      value: { kind: 'text', text: `inside ${name}` },
+    }));
+    const view = await open();
+    await click(button(view.host, 'a.txt'));
+    const previous = () =>
+      dialog()?.querySelector<HTMLButtonElement>('[aria-label="Previous file"]');
+    const next = () => dialog()?.querySelector<HTMLButtonElement>('[aria-label="Next file"]');
+    expect(previous()?.disabled).toBe(true);
+    await press('ArrowRight');
+    expect(text(dialog()!)).toContain('inside b.txt');
+    await click(next());
+    expect(text(dialog()!)).toContain('inside c.txt');
+    expect(next()?.disabled).toBe(true);
+    await press('ArrowRight');
+    expect(text(dialog()!)).toContain('inside c.txt');
+    await press('ArrowLeft');
+    expect(text(dialog()!)).toContain('inside b.txt');
+    expect(preview.mock.calls.map(([call]) => (call as { name: string }).name)).toEqual([
+      'a.txt',
+      'b.txt',
+      'c.txt',
+      'b.txt',
+    ]);
+    view.done();
+  });
+
+  it('a video plays from a Blob typed by the main process’s check, muted and not autoplaying', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: [file('clip.mp4'), file('notes.txt')] } });
+    preview.mockImplementation(async ({ name }: { name: string }) => ({
+      ok: true,
+      value:
+        name === 'clip.mp4'
+          ? { kind: 'video', mimeType: 'video/mp4', data: 'AAAAGGZ0eXA=' }
+          : { kind: 'text', text: 'not the video' },
+    }));
+    const view = await open();
+    await click(button(view.host, 'clip.mp4'));
+    expect(createObjectURL.mock.calls[0]![0].type).toBe('video/mp4');
+    const video = dialog()?.querySelector('video');
+    expect(video?.getAttribute('src')).toBe('blob:preview');
+    expect(video?.hasAttribute('controls')).toBe(true);
+    expect(video?.muted).toBe(true);
+    expect(video?.autoplay).toBe(false);
+    expect(video?.getAttribute('preload')).toBe('metadata');
+    expect(video?.querySelector('track')).toBeNull();
+    // Arrow keys belong to the video while it has focus.
+    await press('ArrowRight', video!);
+    expect(dialog()?.querySelector('video')).not.toBeNull();
+    expect(preview).toHaveBeenCalledTimes(1);
+    await press('Escape');
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview');
+    view.done();
+  });
+
+  it('a video answer with any other type is never played', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: [file('clip.mp4')] } });
+    preview.mockResolvedValue({
+      ok: true,
+      value: { kind: 'video', mimeType: 'text/html', data: 'PGI+' },
+    });
+    const view = await open();
+    await click(button(view.host, 'clip.mp4'));
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(dialog()?.querySelector('video')).toBeNull();
+    expect(text(dialog()!)).toContain('can’t be previewed here');
+    view.done();
+  });
+
+  it('closing, or moving on, before a preview arrives never shows or keeps the late answer', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: [file('a.mp4'), file('b.txt')] } });
+    let answerA: (value: unknown) => void = () => {};
+    preview.mockImplementation(({ name }: { name: string }) =>
+      name === 'a.mp4'
+        ? new Promise((resolve) => (answerA = resolve))
+        : Promise.resolve({ ok: true, value: { kind: 'text', text: 'inside b' } })
+    );
+    const view = await open();
+    await click(button(view.host, 'a.mp4'));
+    await press('ArrowRight');
+    expect(text(dialog()!)).toContain('inside b');
+    await act(async () =>
+      answerA({ ok: true, value: { kind: 'video', mimeType: 'video/mp4', data: 'AAAAGGZ0eXA=' } })
+    );
+    expect(text(dialog()!)).toContain('inside b');
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(dialog()?.querySelector('video')).toBeNull();
+    view.done();
+  });
+
+  it('a file deleted while open, or a box gone to rest, gives fixed words, not a spinner', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: [file('gone.txt'), file('sleep.txt')] } });
+    preview.mockImplementation(async ({ name }: { name: string }) => ({
+      ok: false,
+      code: name === 'gone.txt' ? 'not_found' : 'box_resting',
+    }));
+    const view = await open();
+    await click(button(view.host, 'gone.txt'));
+    expect(text(dialog()!)).toContain('isn’t there any more');
+    await press('ArrowRight');
+    expect(text(dialog()!)).toContain('Your cloud is resting');
+    expect(text(dialog()!)).not.toContain('Loading the preview');
+    view.done();
+  });
+
+  it('too large says so, and offers Download', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: [file('huge.mp4')] } });
+    preview.mockResolvedValue({ ok: true, value: { kind: 'download', reason: 'too_large' } });
+    const view = await open();
+    await click(button(view.host, 'huge.mp4'));
+    expect(text(dialog()!)).toContain('too large to preview');
+    expect(button(dialog()!, 'Download')).toBeDefined();
+    view.done();
+  });
+
+  it('code, JSON and CSV get their own views, as text only', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({
+      ok: true,
+      value: { entries: [file('a.py'), file('bad.json'), file('menu.csv')] },
+    });
+    preview.mockImplementation(async ({ name }: { name: string }) => ({
+      ok: true,
+      value:
+        name === 'a.py'
+          ? { kind: 'code', text: 'x = "<img src=x onerror=alert(1)>"', language: 'python' }
+          : name === 'bad.json'
+            ? { kind: 'json', text: '{nope' }
+            : { kind: 'csv', text: 'item,price\nrye,3.20', delimiter: ',' },
+    }));
+    const view = await open();
+    await click(button(view.host, 'a.py'));
+    expect(dialog()?.querySelector('[data-code-view][data-language="python"]')).not.toBeNull();
+    expect(dialog()?.querySelector('img')).toBeNull();
+    expect(text(dialog()!)).toContain('<img src=x onerror=alert(1)>');
+    await press('ArrowRight');
+    expect(text(dialog()!)).toContain('This isn’t valid JSON.');
+    await press('ArrowRight');
+    expect([...(dialog()?.querySelectorAll('th') ?? [])].map((th) => th.textContent)).toEqual([
+      'item',
+      'price',
+    ]);
     view.done();
   });
 

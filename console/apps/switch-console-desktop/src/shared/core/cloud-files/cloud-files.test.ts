@@ -7,6 +7,7 @@ import {
   previewKind,
   safeSuggestedName,
   showsCloudFiles,
+  videoTypeFromBytes,
   zipSuggestedName,
 } from './cloud-files';
 
@@ -21,26 +22,62 @@ describe('previewKind', () => {
 
   it('never previews HTML, SVG, XHTML or PDF: download only', () => {
     for (const name of ['page.html', 'page.htm', 'art.svg', 'x.xhtml', 'doc.pdf', 'app.command'])
-      expect(previewKind(name, 10)).toEqual({ kind: 'download' });
+      expect(previewKind(name, 10)).toEqual({ kind: 'download', reason: 'type' });
   });
 
-  it('shows text, code and Markdown as text', () => {
+  it('plays mp4 and webm, up to the 25 MB file cap', () => {
+    expect(previewKind('clip.mp4', 10)).toEqual({ kind: 'video', mimeType: 'video/mp4' });
+    expect(previewKind('clip.WEBM', 10)).toEqual({ kind: 'video', mimeType: 'video/webm' });
+    expect(previewKind('clip.mp4', 25 * 1024 * 1024 + 1)).toEqual({
+      kind: 'download',
+      reason: 'too_large',
+    });
+    for (const name of ['clip.mov', 'clip.avi', 'song.mp3'])
+      expect(previewKind(name, 10)).toEqual({ kind: 'download', reason: 'type' });
+  });
+
+  it('tells Markdown, JSON, CSV, code and plain text apart', () => {
+    expect(previewKind('readme.md', 10)).toEqual({ kind: 'markdown' });
+    expect(previewKind('data.json', 10)).toEqual({ kind: 'json' });
+    expect(previewKind('menu.csv', 10)).toEqual({ kind: 'csv', delimiter: ',' });
+    expect(previewKind('menu.tsv', 10)).toEqual({ kind: 'csv', delimiter: '\t' });
+    expect(previewKind('main.py', 10)).toEqual({ kind: 'code', language: 'python' });
+    expect(previewKind('app.tsx', 10)).toEqual({ kind: 'code', language: 'tsx' });
+    expect(previewKind('Dockerfile', 10)).toEqual({ kind: 'code', language: 'docker' });
     expect(previewKind('notes.txt', 10)).toEqual({ kind: 'text' });
-    expect(previewKind('main.py', 10)).toEqual({ kind: 'text' });
     expect(previewKind('README', 10)).toEqual({ kind: 'text' });
     expect(previewKind('.gitignore', 10)).toEqual({ kind: 'text' });
-    expect(previewKind('readme.md', 10)).toEqual({ kind: 'markdown' });
   });
 
-  it('a text file over 1 MB, or an image over 10 MB, is download only', () => {
-    expect(previewKind('big.txt', 1024 * 1024 + 1)).toEqual({ kind: 'download' });
-    expect(previewKind('big.md', 1024 * 1024 + 1)).toEqual({ kind: 'download' });
-    expect(previewKind('big.png', 10 * 1024 * 1024 + 1)).toEqual({ kind: 'download' });
+  it('a text file over 1 MB, or an image over 10 MB, is too large to preview', () => {
+    for (const [name, size] of [
+      ['big.txt', 1024 * 1024 + 1],
+      ['big.md', 1024 * 1024 + 1],
+      ['big.json', 1024 * 1024 + 1],
+      ['big.png', 10 * 1024 * 1024 + 1],
+    ] as const)
+      expect(previewKind(name, size)).toEqual({ kind: 'download', reason: 'too_large' });
   });
 
-  it('an unknown type is download only', () => {
-    expect(previewKind('data.bin', 10)).toEqual({ kind: 'download' });
-    expect(previewKind('noextension', 10)).toEqual({ kind: 'download' });
+  it('an unknown type is download only, however small', () => {
+    expect(previewKind('data.bin', 10)).toEqual({ kind: 'download', reason: 'type' });
+    expect(previewKind('noextension', 10)).toEqual({ kind: 'download', reason: 'type' });
+  });
+});
+
+describe('videoTypeFromBytes', () => {
+  const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+  const webm = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2]);
+  const html = new TextEncoder().encode('<!doctype html><script>');
+
+  it('plays only bytes that match the extension’s type', () => {
+    expect(videoTypeFromBytes(mp4, 'video/mp4')).toBe('video/mp4');
+    expect(videoTypeFromBytes(webm, 'video/webm')).toBe('video/webm');
+    expect(videoTypeFromBytes(webm, 'video/mp4')).toBeNull();
+    expect(videoTypeFromBytes(mp4, 'video/webm')).toBeNull();
+    expect(videoTypeFromBytes(html, 'video/mp4')).toBeNull();
+    expect(videoTypeFromBytes(mp4, 'text/html')).toBeNull();
+    expect(videoTypeFromBytes(new Uint8Array(3), 'video/webm')).toBeNull();
   });
 });
 

@@ -1,7 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import CloudFilesPage, { DOWNLOAD_REVOKE_MS } from "./CloudFilesPage";
+import CloudFilesPage from "./CloudFilesPage";
+import { DOWNLOAD_REVOKE_MS } from "./cloudFiles";
+
+// The preview modal is loaded on demand; load it once here so no test waits on the first import.
+await import("./FilePreviewModal");
 
 // Your cloud files in Switch web, with fetch mocked by address: hidden with no
 // request unless both flags are on and there's a cloud agent, View files by
@@ -131,10 +135,11 @@ describe("Your cloud files (Switch web)", () => {
     ];
     open("?path=shared%2Fsample-bakery");
     fireEvent.click(await screen.findByRole("button", { name: /menu\.csv/ }));
-    const crumbs = await screen.findByRole("navigation", { name: "Folder path" });
+    const dialog = await screen.findByRole("dialog");
+    const crumbs = within(dialog).getByRole("navigation", { name: "Folder path" });
     await waitFor(() => expect(crumbs.textContent).toBe("All filesSharedsample-bakerymenu.csv"));
     expect(crumbs.querySelector('[aria-current="page"]')?.textContent).toBe("menu.csv");
-    expect(screen.getByText(/ago|Just now|\d{4}-\d{2}-\d{2}/, { selector: "span[title]" }).getAttribute("title")).toMatch(
+    expect(within(dialog).getByText(/ago|Just now|\d{4}-\d{2}-\d{2}/, { selector: "span[title]" }).getAttribute("title")).toMatch(
       /^\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} [AP]M$/,
     );
     fireEvent.click(within(crumbs).getByRole("button", { name: "sample-bakery" }));
@@ -194,11 +199,195 @@ describe("Your cloud files (Switch web)", () => {
     open();
     for (const name of ["art.svg", "page.html"]) {
       fireEvent.click(await screen.findByRole("button", { name: new RegExp(name.replace(".", "\\.")) }));
-      expect(await screen.findByText(/no preview for this kind of file/)).toBeTruthy();
+      expect(await screen.findByText(/can’t be previewed here/)).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     }
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/content"))).toBe(false);
-    expect(document.querySelector("img, iframe, object, embed")).toBeNull();
+    expect(document.querySelector("img, iframe, object, embed, video")).toBeNull();
+  });
+
+  const content =
+    (byPath: Record<string, Uint8Array>): Route =>
+    (url) => {
+      if (url.pathname !== "/gateway/cloud-files/content") return undefined;
+      const bytes = byPath[url.searchParams.get("path") ?? ""];
+      if (!bytes) return json({ detail: { code: "not_found" } }, 404);
+      return new Response(new Uint8Array(bytes), {
+        status: 206,
+        headers: { "content-range": `bytes 0-${bytes.length - 1}/${bytes.length}` },
+      });
+    };
+  const text = (value: string) => new TextEncoder().encode(value);
+
+  it("a file opens in a modal over the list; Esc closes it and the list is unchanged", async () => {
+    routes = [boxWithAgent, listing({ "": [folder("src"), file("a.txt", 5)] }), content({ "a.txt": text("hello") })];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /a\.txt/ }));
+    const dialog = await screen.findByRole("dialog", { name: "a.txt" });
+    expect(await within(dialog).findByText("hello")).toBeTruthy();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getAllByRole("button", { name: /^src$/ }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /a\.txt/ })).toBeTruthy();
+  });
+
+  it("previous and next step through files only, stop at the ends, and fetch only the file shown", async () => {
+    routes = [
+      boxWithAgent,
+      listing({ "": [file("a.txt", 1), folder("src"), file("b.txt", 1), file("c.txt", 1)] }),
+      content({ "a.txt": text("A"), "b.txt": text("B"), "c.txt": text("C") }),
+    ];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /a\.txt/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Previous file" })).toHaveProperty("disabled", true);
+    fireEvent.keyDown(dialog, { key: "ArrowRight" });
+    await within(dialog).findByText("B");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next file" }));
+    await within(dialog).findByText("C");
+    expect(within(dialog).getByRole("button", { name: "Next file" })).toHaveProperty("disabled", true);
+    fireEvent.keyDown(dialog, { key: "ArrowLeft" });
+    await within(dialog).findByText("B");
+    const read = fetchMock.mock.calls
+      .map(([input]) => new URL(input, "https://switch.example"))
+      .filter((url) => url.pathname === "/gateway/cloud-files/content")
+      .map((url) => url.searchParams.get("path"));
+    expect(read).toEqual(["a.txt", "b.txt", "c.txt", "b.txt"]);
+  });
+
+  it("an mp4 whose bytes are mp4 plays from a video/mp4 Blob, muted and not autoplaying", async () => {
+    const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    routes = [boxWithAgent, listing({ "": [file("clip.mp4", mp4.length)] }), content({ "clip.mp4": mp4 })];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /clip\.mp4/ }));
+    await waitFor(() => expect(document.querySelector("video")).not.toBeNull());
+    expect(createObjectURL.mock.calls.at(-1)![0].type).toBe("video/mp4");
+    const video = document.querySelector("video")!;
+    expect(video.getAttribute("src")).toBe("blob:preview");
+    expect(video.hasAttribute("controls")).toBe(true);
+    expect(video.muted).toBe(true);
+    expect(video.autoplay).toBe(false);
+    expect(video.getAttribute("preload")).toBe("metadata");
+    expect(video.querySelector("track")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview"));
+  });
+
+  it("arrow keys belong to a focused video, not to previous and next", async () => {
+    const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    routes = [
+      boxWithAgent,
+      listing({ "": [file("clip.mp4", mp4.length), file("notes.txt", 1)] }),
+      content({ "clip.mp4": mp4, "notes.txt": text("N") }),
+    ];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /clip\.mp4/ }));
+    await waitFor(() => expect(document.querySelector("video")).not.toBeNull());
+    fireEvent.keyDown(document.querySelector("video")!, { key: "ArrowRight" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(document.querySelector("video")).not.toBeNull();
+    const read = fetchMock.mock.calls.filter(([input]) => String(input).includes("/content"));
+    expect(read).toHaveLength(1);
+  });
+
+  it("closing partway through a video load stops the reads and never makes a Blob", async () => {
+    const half = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const reads: string[] = [];
+    routes = [
+      boxWithAgent,
+      listing({ "": [file("clip.mp4", 24)] }),
+      ((url: URL) => {
+        if (url.pathname !== "/gateway/cloud-files/content") return undefined;
+        reads.push(url.searchParams.get("offset") ?? "");
+        return gate.then(() => new Response(new Uint8Array(half), { status: 206, headers: { "content-range": "bytes 0-11/24" } }));
+      }) as unknown as Route,
+    ];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /clip\.mp4/ }));
+    await waitFor(() => expect(reads).toEqual(["0"]));
+    fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reads).toEqual(["0"]); // the second half is never asked for
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(document.querySelector("video")).toBeNull();
+  });
+
+  it("a file deleted while open, or a box gone to rest, gives fixed words, not a spinner", async () => {
+    routes = [
+      boxWithAgent,
+      listing({ "": [file("gone.txt", 3), file("sleep.txt", 3)] }),
+      (url) =>
+        url.pathname === "/gateway/cloud-files/content"
+          ? url.searchParams.get("path") === "gone.txt"
+            ? json({ detail: { code: "not_found" } }, 404)
+            : json({ detail: { code: "box_resting" } }, 409)
+          : undefined,
+    ];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /gone\.txt/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("That file or folder isn’t there any more.")).toBeTruthy();
+    fireEvent.keyDown(dialog, { key: "ArrowRight" });
+    expect(await within(dialog).findByText("Your cloud is resting.")).toBeTruthy();
+    expect(dialog.querySelector('[role="progressbar"]')).toBeNull();
+  });
+
+  it("a binary file named .txt can't be previewed", async () => {
+    routes = [boxWithAgent, listing({ "": [file("data.txt", 4)] }), content({ "data.txt": new Uint8Array([1, 0, 2, 0]) })];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /data\.txt/ }));
+    expect(await screen.findByText(/can’t be previewed here/)).toBeTruthy();
+  });
+
+  it("a .webm that is really HTML is never played", async () => {
+    const html = text("<html><script>alert(1)</script></html>");
+    routes = [boxWithAgent, listing({ "": [file("clip.webm", html.length)] }), content({ "clip.webm": html })];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /clip\.webm/ }));
+    expect(await screen.findByText(/can’t be previewed here/)).toBeTruthy();
+    expect(document.querySelector("video")).toBeNull();
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("Markdown is rendered with no raw HTML and no remote image, and Show source shows the text", async () => {
+    const md = "# Menu\n\n<script>window.ran = 1</script>\n\n![tracker](https://evil.example/p.png)\n\n[ok](https://example.com) [no](javascript:alert(1))";
+    routes = [boxWithAgent, listing({ "": [file("README.md", md.length)] }), content({ "README.md": text(md) })];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /README\.md/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect((await within(dialog).findByRole("heading", { name: "Menu" })).tagName).toBe("H1");
+    expect(dialog.querySelectorAll("script, img, iframe").length).toBe(0);
+    expect(dialog.innerHTML).not.toContain("evil.example");
+    const links = within(dialog).getAllByRole("link");
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["https://example.com"]);
+    expect(links[0]!.getAttribute("rel")).toContain("noopener");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Show source" }));
+    expect(within(dialog).getByText(/<script>window.ran = 1<\/script>/)).toBeTruthy();
+    expect((window as { ran?: number }).ran).toBeUndefined();
+  });
+
+  it("code is highlighted as text only, bad JSON says so, and CSV is a table", async () => {
+    const py = 'x = "<img src=x onerror=alert(1)>"';
+    routes = [
+      boxWithAgent,
+      listing({ "": [file("a.py", py.length), file("bad.json", 5), file("menu.csv", 20)] }),
+      content({ "a.py": text(py), "bad.json": text("{nope"), "menu.csv": text("item,price\nrye,3.20") }),
+    ];
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /a\.py/ }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(dialog.querySelector('[data-code-view][data-language="python"]')).not.toBeNull());
+    expect(dialog.querySelector("img")).toBeNull();
+    expect(dialog.textContent).toContain("<img src=x onerror=alert(1)>");
+    fireEvent.keyDown(dialog, { key: "ArrowRight" });
+    expect(await within(dialog).findByText("This isn’t valid JSON.")).toBeTruthy();
+    fireEvent.keyDown(dialog, { key: "ArrowRight" });
+    await waitFor(() => expect([...dialog.querySelectorAll("th")].map((th) => th.textContent)).toEqual(["item", "price"]));
   });
 
   it("a download goes through <a download> as bytes only, never window.open", async () => {

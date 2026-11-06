@@ -1,17 +1,14 @@
 import {
   ChevronDown,
   ChevronRight,
-  Download,
   File as FileIcon,
   Folder,
   FolderArchive,
   FolderOpen,
   Moon,
-  X,
 } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { attachmentBlobType } from '@renderer/features/chats/components/attachment-blob-type';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -28,6 +25,7 @@ import {
   type CloudFilesCode,
   cloudFilesMessage,
 } from '@shared/core/cloud-files/cloud-files';
+import { Breadcrumb } from './cloud-files-breadcrumb';
 import {
   childPath,
   entryTitle,
@@ -35,12 +33,10 @@ import {
   formatChangedFull,
   formatSize,
   NO_SIZE,
-  parentPath,
-  pathCrumbs,
   sortEntries,
   zipLabel,
 } from './cloud-files-format';
-import { FileMarkdown, FileText } from './file-markdown';
+import { FilePreviewModal } from './file-preview-modal';
 import { type CloudFolderState, useCloudFilesVisible, useCloudFolder } from './use-cloud-files';
 
 type CloudFilesParams = {
@@ -91,7 +87,6 @@ function CloudFilesPanel() {
   const visible = useCloudFilesVisible(serverId);
   const root = useCloudFolder(serverId, '', visible);
   const [folder, setFolder] = useState<string | null>(null);
-  const [file, setFile] = useState<{ path: string; entry: CloudFileEntry } | null>(null);
 
   // The folder to open first, once the top level is known: the `path` given, else
   // View files' agent folder (matched on its name, never its label), else the top level.
@@ -131,36 +126,18 @@ function CloudFilesPanel() {
                 entries={root.state.entries}
                 parent=""
                 selected={folder}
-                onSelect={(path) => {
-                  setFolder(path);
-                  setFile(null);
-                }}
+                onSelect={setFolder}
               />
             </nav>
             <section className="flex min-w-0 flex-1 flex-col">
-              {file ? (
-                <FilePreview
+              {folder !== null && (
+                <FolderList
+                  key={folder}
                   serverId={serverId}
-                  path={file.path}
-                  entry={file.entry}
+                  path={folder}
                   rootEntries={root.state.entries}
-                  onOpenFolder={(path) => {
-                    setFolder(path);
-                    setFile(null);
-                  }}
-                  onClose={() => setFile(null)}
+                  onOpenFolder={setFolder}
                 />
-              ) : (
-                folder !== null && (
-                  <FolderList
-                    key={folder}
-                    serverId={serverId}
-                    path={folder}
-                    rootEntries={root.state.entries}
-                    onOpenFolder={setFolder}
-                    onOpenFile={(path, entry) => setFile({ path, entry })}
-                  />
-                )
               )}
             </section>
           </div>
@@ -359,13 +336,11 @@ function FolderList({
   path,
   rootEntries,
   onOpenFolder,
-  onOpenFile,
 }: {
   serverId: string;
   path: string;
   rootEntries: readonly CloudFileEntry[];
   onOpenFolder: (path: string) => void;
-  onOpenFile: (path: string, entry: CloudFileEntry) => void;
 }) {
   const folder = useCloudFolder(serverId, path, path !== '');
   const state: CloudFolderState =
@@ -373,7 +348,11 @@ function FolderList({
   const [asking, setAsking] = useState<string | null>(null);
   const [caches, setCaches] = useState(false);
   const [zipping, setZipping] = useState(false);
+  // The file shown in the preview modal, over this list; the list stays as it is underneath.
+  const [shown, setShown] = useState<CloudFileEntry | null>(null);
   const name = path.split('/').pop() || 'cloud-files';
+
+  const sorted = state.kind === 'ready' ? sortEntries(state.entries, path === '') : [];
 
   const zip = async () => {
     setZipping(true);
@@ -426,7 +405,7 @@ function FolderList({
               </tr>
             </thead>
             <tbody>
-              {sortEntries(state.entries, path === '').map((entry) => {
+              {sorted.map((entry) => {
                 const target = childPath(path, entry.name);
                 return (
                   <tr key={entry.name} className="border-t border-border hover:bg-background-1">
@@ -444,10 +423,11 @@ function FolderList({
                       ) : (
                         <button
                           type="button"
+                          data-cloud-file={entry.kind === 'file' ? entry.name : undefined}
                           className="flex max-w-full items-center gap-2 text-left"
                           onClick={() =>
                             entry.kind === 'file'
-                              ? onOpenFile(target, entry)
+                              ? setShown(entry)
                               : entry.collapsed
                                 ? setAsking(entry.name)
                                 : onOpenFolder(target)
@@ -492,175 +472,18 @@ function FolderList({
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-/** Where you are: All files, then each folder (each opens it), then the open file's name if a file is open. */
-function Breadcrumb({
-  path,
-  rootEntries,
-  onOpen,
-  fileName,
-}: {
-  path: string;
-  rootEntries: readonly CloudFileEntry[];
-  onOpen: (path: string) => void;
-  fileName?: string;
-}) {
-  const crumbs = pathCrumbs(path);
-  const top = rootEntries.find((entry) => entry.name === crumbs[0]?.name);
-  return (
-    <nav aria-label="Folder path" className="flex min-w-0 items-center gap-1 text-sm">
-      <button
-        type="button"
-        className="shrink-0 text-foreground-muted hover:text-foreground"
-        onClick={() => onOpen('')}
-      >
-        All files
-      </button>
-      {crumbs.map((crumb, index) => (
-        <span key={crumb.path} className="flex min-w-0 items-center gap-1">
-          <ChevronRight className="size-3 shrink-0 text-foreground-muted" aria-hidden />
-          <button
-            type="button"
-            className={cn(
-              'truncate',
-              index === crumbs.length - 1 && fileName === undefined
-                ? 'text-foreground'
-                : 'text-foreground-muted hover:text-foreground'
-            )}
-            onClick={() => onOpen(crumb.path)}
-          >
-            {index === 0 && top ? entryTitle(top) : crumb.name}
-          </button>
-        </span>
-      ))}
-      {fileName !== undefined && (
-        <span className="flex min-w-0 items-center gap-1">
-          <ChevronRight className="size-3 shrink-0 text-foreground-muted" aria-hidden />
-          <span className="truncate font-medium text-foreground" aria-current="page">
-            {fileName}
-          </span>
-        </span>
+      {shown && (
+        <FilePreviewModal
+          serverId={serverId}
+          folder={path}
+          entries={sorted}
+          entry={shown}
+          rootEntries={rootEntries}
+          onShow={setShown}
+          onOpenFolder={onOpenFolder}
+          onClose={() => setShown(null)}
+        />
       )}
-    </nav>
-  );
-}
-
-type Preview =
-  | { kind: 'loading' }
-  | { kind: 'image'; url: string }
-  | { kind: 'text' | 'markdown'; text: string }
-  | { kind: 'download' }
-  | { kind: 'error'; code: CloudFilesCode };
-
-/**
- * One file: shown inside Console if it's one of the four safe image types,
- * text or Markdown, otherwise offered for download only. An image's bytes go
- * into a Blob typed by `attachmentBlobType`, so nothing else can sit there.
- */
-function FilePreview({
-  serverId,
-  path,
-  entry,
-  rootEntries,
-  onOpenFolder,
-  onClose,
-}: {
-  serverId: string;
-  path: string;
-  entry: CloudFileEntry;
-  rootEntries: readonly CloudFileEntry[];
-  onOpenFolder: (path: string) => void;
-  onClose: () => void;
-}) {
-  const [preview, setPreview] = useState<Preview>({ kind: 'loading' });
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    let url: string | null = null;
-    let current = true;
-    void rpc.cloudFiles
-      .preview({ serverId, path, name: entry.name, size: entry.size })
-      .then((result) => {
-        if (!current) return;
-        if (!result.ok) return setPreview({ kind: 'error', code: result.code });
-        const value = result.value;
-        if (value.kind === 'image') {
-          const bytes = Uint8Array.from(atob(value.data), (char) => char.charCodeAt(0));
-          url = URL.createObjectURL(
-            new Blob([bytes], { type: attachmentBlobType(value.mimeType) })
-          );
-          setPreview({ kind: 'image', url });
-        } else setPreview(value);
-      });
-    return () => {
-      current = false;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [serverId, path, entry.name, entry.size]);
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      const result = await rpc.cloudFiles.saveFile({ serverId, path, name: entry.name });
-      if (!result.ok) showError(result.code);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-        <div className="min-w-0">
-          <Breadcrumb
-            path={parentPath(path)}
-            rootEntries={rootEntries}
-            onOpen={onOpenFolder}
-            fileName={entry.name}
-          />
-          <p className="text-xs text-foreground-muted">
-            {formatSize(entry.size)} · changed{' '}
-            <span title={formatChangedFull(entry.mtime)}>{formatChanged(entry.mtime)}</span>
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button size="sm" disabled={saving} onClick={() => void save()}>
-            {saving ? <Spinner /> : <Download className="size-3.5" aria-hidden />}
-            Download
-          </Button>
-          <Button variant="ghost" size="icon-sm" aria-label="Close preview" onClick={onClose}>
-            <X className="size-4" />
-          </Button>
-        </div>
-      </header>
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        {preview.kind === 'loading' && (
-          <div className="flex items-center gap-2 text-sm text-foreground-muted">
-            <Spinner /> Loading the preview…
-          </div>
-        )}
-        {preview.kind === 'image' && (
-          <img
-            src={preview.url}
-            alt={entry.name}
-            className="max-h-[70vh] max-w-full rounded-md border border-border object-contain"
-          />
-        )}
-        {preview.kind === 'text' && <FileText text={preview.text} />}
-        {preview.kind === 'markdown' && <FileMarkdown text={preview.text} />}
-        {preview.kind === 'download' && (
-          <p className="text-sm text-foreground-muted">
-            There’s no preview for this kind of file. Download it to open it on your computer.
-          </p>
-        )}
-        {preview.kind === 'error' && (
-          <p role="alert" className="text-sm text-destructive">
-            {cloudFilesMessage(preview.code)}
-          </p>
-        )}
-      </div>
     </div>
   );
 }

@@ -128,11 +128,29 @@ export async function readCloudFileRange(
   }, sleep);
 }
 
-/** A whole file, read range by range: at most `max` bytes (25 MB by default), refused on the first range if larger. */
-export async function readCloudFile(path: string, max: number = CLOUD_FILE_MAX_BYTES, sleep?: Sleep): Promise<Uint8Array> {
+/** Thrown when a read is stopped part way, because the file is no longer wanted. */
+export class ReadStopped extends Error {
+  constructor() {
+    super("stopped");
+    this.name = "ReadStopped";
+  }
+}
+
+/**
+ * A whole file, read range by range: at most `max` bytes (25 MB by default),
+ * refused on the first range if larger. Once `signal` is aborted no further
+ * range is asked for, so a preview that's closed or moved past stops reading.
+ */
+export async function readCloudFile(
+  path: string,
+  max: number = CLOUD_FILE_MAX_BYTES,
+  sleep?: Sleep,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   const parts: Uint8Array[] = [];
   let offset = 0;
   for (;;) {
+    if (signal?.aborted) throw new ReadStopped();
     const range = await readCloudFileRange(path, offset, sleep);
     if (range.done) break;
     if (range.total > max) throw new CloudFilesError("too_large", 413);

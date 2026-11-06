@@ -1,6 +1,3 @@
-import ChevronRight from "@mui/icons-material/ChevronRight";
-import Close from "@mui/icons-material/Close";
-import DownloadOutlined from "@mui/icons-material/DownloadOutlined";
 import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import FolderZipOutlined from "@mui/icons-material/FolderZipOutlined";
@@ -14,7 +11,6 @@ import {
   Chip,
   CircularProgress,
   FormControlLabel,
-  IconButton,
   Link,
   List,
   ListItemButton,
@@ -28,31 +24,25 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router";
-import { readCloudFile, zipUrl } from "../../data/cloudFiles";
+import { zipUrl } from "../../data/cloudFiles";
 import { EM_DASH, absoluteTitle, formatRelative } from "../../theme/hootFormat";
 import {
   type CloudFileEntry,
-  CloudFilesError,
-  IMAGE_PREVIEW_MAX_BYTES,
-  TEXT_PREVIEW_MAX_BYTES,
   agentFolder,
-  blobType,
   childPath,
-  cloudFilesMessage,
   entryTitle,
   formatSize,
-  looksLikeText,
   openablePath,
-  parentPath,
-  pathCrumbs,
-  previewKind,
-  safeSuggestedName,
   sortEntries,
   zipLabel,
 } from "./cloudFiles";
+import { PathCrumbs } from "./PathCrumbs";
 import { type FolderState, useCloudFilesShown, useFolder } from "./useCloudFiles";
+
+// The preview modal, with its Markdown and highlighting packages, loads only when a file is opened.
+const FilePreviewModal = lazy(() => import("./FilePreviewModal").then((module) => ({ default: module.FilePreviewModal })));
 
 /**
  * Your cloud files: the person's own box's workspaces, read-only, in Switch
@@ -66,7 +56,6 @@ export default function CloudFilesPage() {
   const [params] = useSearchParams();
   const root = useFolder("", shown === true);
   const [folder, setFolder] = useState<string | null>(null);
-  const [file, setFile] = useState<{ path: string; entry: CloudFileEntry } | null>(null);
   const [missing, setMissing] = useState(false);
 
   useEffect(() => {
@@ -129,10 +118,7 @@ export default function CloudFilesPage() {
               <List dense>
                 <ListItemButton
                   selected={folder === ""}
-                  onClick={() => {
-                    setFolder("");
-                    setFile(null);
-                  }}
+                  onClick={() => setFolder("")}
                 >
                   <ListItemIcon sx={{ minWidth: 32 }}>
                     <FolderOpenOutlined fontSize="small" />
@@ -146,10 +132,7 @@ export default function CloudFilesPage() {
                     <ListItemButton
                       key={entry.name}
                       selected={folder === entry.name || (folder ?? "").startsWith(`${entry.name}/`)}
-                      onClick={() => {
-                        setFolder(entry.name);
-                        setFile(null);
-                      }}
+                      onClick={() => setFolder(entry.name)}
                     >
                       <ListItemIcon sx={{ minWidth: 32 }}>
                         <FolderOutlined fontSize="small" />
@@ -160,27 +143,13 @@ export default function CloudFilesPage() {
               </List>
             </Box>
             <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-              {file ? (
-                <FilePreview
-                  path={file.path}
-                  entry={file.entry}
+              {folder !== null && (
+                <FolderList
+                  key={folder}
+                  path={folder}
                   rootEntries={root.state.entries}
-                  onOpenFolder={(path) => {
-                    setFolder(path);
-                    setFile(null);
-                  }}
-                  onClose={() => setFile(null)}
+                  onOpenFolder={(path) => setFolder(path)}
                 />
-              ) : (
-                folder !== null && (
-                  <FolderList
-                    key={folder}
-                    path={folder}
-                    rootEntries={root.state.entries}
-                    onOpenFolder={(path) => setFolder(path)}
-                    onOpenFile={(path, entry) => setFile({ path, entry })}
-                  />
-                )
               )}
             </Box>
           </Stack>
@@ -235,17 +204,18 @@ function FolderList({
   path,
   rootEntries,
   onOpenFolder,
-  onOpenFile,
 }: {
   path: string;
   rootEntries: readonly CloudFileEntry[];
   onOpenFolder: (path: string) => void;
-  onOpenFile: (path: string, entry: CloudFileEntry) => void;
 }) {
   const folder = useFolder(path, path !== "");
   const state: FolderState = path === "" ? { kind: "ready", entries: [...rootEntries], more: false } : folder.state;
   const [asking, setAsking] = useState<string | null>(null);
   const [caches, setCaches] = useState(false);
+  // The file shown in the preview modal, over this list; the list stays as it is underneath.
+  const [shown, setShown] = useState<CloudFileEntry | null>(null);
+  const sorted = state.kind === "ready" ? sortEntries(state.entries, path === "") : [];
   return (
     <Stack sx={{ flex: 1, minHeight: 0 }}>
       <Stack
@@ -298,7 +268,7 @@ function FolderList({
               </TableRow>
             </TableHead>
             <TableBody>
-              {sortEntries(state.entries, path === "").map((entry) => {
+              {sorted.map((entry) => {
                 const target = childPath(path, entry.name);
                 return (
                   <TableRow key={entry.name} hover>
@@ -318,10 +288,11 @@ function FolderList({
                           component="button"
                           underline="hover"
                           color="inherit"
+                          data-cloud-file={entry.kind === "file" ? entry.name : undefined}
                           sx={{ display: "inline-flex", alignItems: "center", gap: 1, textAlign: "left" }}
                           onClick={() =>
                             entry.kind === "file"
-                              ? onOpenFile(target, entry)
+                              ? setShown(entry)
                               : entry.collapsed
                                 ? setAsking(entry.name)
                                 : onOpenFolder(target)
@@ -360,192 +331,21 @@ function FolderList({
           )}
         </Box>
       )}
-    </Stack>
-  );
-}
-
-/** How long a download's Blob address is kept after the click. */
-export const DOWNLOAD_REVOKE_MS = 5_000;
-
-/** Where you are: All files, then each folder (each opens it), then the open file's name if a file is open. */
-function PathCrumbs({
-  path,
-  rootEntries,
-  onOpen,
-  fileName,
-}: {
-  path: string;
-  rootEntries: readonly CloudFileEntry[];
-  onOpen: (path: string) => void;
-  fileName?: string;
-}) {
-  const crumbs = pathCrumbs(path);
-  const top = rootEntries.find((entry) => entry.name === crumbs[0]?.name);
-  return (
-    <Stack direction="row" alignItems="center" spacing={0.5} component="nav" aria-label="Folder path" sx={{ minWidth: 0 }}>
-      <Link component="button" underline="hover" onClick={() => onOpen("")}>
-        All files
-      </Link>
-      {crumbs.map((crumb, index) => (
-        <Stack key={crumb.path} direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0 }}>
-          <ChevronRight fontSize="small" color="action" />
-          <Link component="button" underline="hover" noWrap onClick={() => onOpen(crumb.path)}>
-            {index === 0 && top ? entryTitle(top) : crumb.name}
-          </Link>
-        </Stack>
-      ))}
-      {fileName !== undefined && (
-        <Stack direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0 }}>
-          <ChevronRight fontSize="small" color="action" />
-          <Typography variant="subtitle2" noWrap aria-current="page">
-            {fileName}
-          </Typography>
-        </Stack>
+      {shown && (
+        <Suspense fallback={null}>
+          <FilePreviewModal
+          folder={path}
+          entries={sorted}
+          entry={shown}
+          rootEntries={rootEntries}
+          onShow={setShown}
+          onOpenFolder={onOpenFolder}
+          onClose={() => setShown(null)}
+          />
+        </Suspense>
       )}
     </Stack>
   );
 }
 
-type Preview =
-  | { kind: "loading" }
-  | { kind: "image"; url: string }
-  | { kind: "text"; text: string }
-  | { kind: "download" }
-  | { kind: "error"; message: string };
 
-/**
- * One file: one of the four safe image types in an `<img>` (its Blob typed by
- * `blobType`), text and Markdown as plain text, anything else download only.
- * A download goes through a temporary `<a download>`; nothing opens as a page.
- */
-function FilePreview({
-  path,
-  entry,
-  rootEntries,
-  onOpenFolder,
-  onClose,
-}: {
-  path: string;
-  entry: CloudFileEntry;
-  rootEntries: readonly CloudFileEntry[];
-  onOpenFolder: (path: string) => void;
-  onClose: () => void;
-}) {
-  const [preview, setPreview] = useState<Preview>({ kind: "loading" });
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const kind = previewKind(entry.name, entry.size);
-    if (kind.kind === "download") {
-      setPreview({ kind: "download" });
-      return;
-    }
-    let url: string | null = null;
-    let current = true;
-    const max = kind.kind === "image" ? IMAGE_PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES;
-    readCloudFile(path, max)
-      .then((bytes) => {
-        if (!current) return;
-        if (kind.kind === "image") {
-          url = URL.createObjectURL(new Blob([bytes], { type: blobType(kind.mimeType) }));
-          setPreview({ kind: "image", url });
-        } else if (looksLikeText(bytes)) setPreview({ kind: "text", text: new TextDecoder().decode(bytes) });
-        else setPreview({ kind: "download" });
-      })
-      .catch((error: unknown) => {
-        if (current)
-          setPreview({
-            kind: "error",
-            message: cloudFilesMessage(error instanceof CloudFilesError ? error.code : "unknown"),
-          });
-      });
-    return () => {
-      current = false;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [path, entry.name, entry.size]);
-
-  const save = async () => {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const bytes = await readCloudFile(path);
-      const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = safeSuggestedName(entry.name, "file");
-      link.rel = "noopener";
-      link.click();
-      // Released a moment later: some Safari versions cancel a download whose
-      // address is revoked straight after the click.
-      window.setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_REVOKE_MS);
-    } catch (error) {
-      setSaveError(cloudFilesMessage(error instanceof CloudFilesError ? error.code : "unknown"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Stack sx={{ flex: 1, minHeight: 0 }}>
-      <Stack
-        direction="row"
-        alignItems="center"
-        justifyContent="space-between"
-        sx={{ px: 2, py: 1, borderBottom: 1, borderColor: "divider" }}
-      >
-        <Box sx={{ minWidth: 0 }}>
-          <PathCrumbs path={parentPath(path)} rootEntries={rootEntries} onOpen={onOpenFolder} fileName={entry.name} />
-          <Typography variant="caption" color="text.secondary">
-            {formatSize(entry.size)} · changed{" "}
-            <span title={absoluteTitle(new Date(entry.mtime).toISOString())}>
-              {formatRelative(new Date(entry.mtime).toISOString())}
-            </span>
-          </Typography>
-        </Box>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Button
-            size="small"
-            variant="contained"
-            startIcon={saving ? <CircularProgress size={14} /> : <DownloadOutlined />}
-            disabled={saving}
-            onClick={() => void save()}
-          >
-            Download
-          </Button>
-          <IconButton size="small" aria-label="Close preview" onClick={onClose}>
-            <Close fontSize="small" />
-          </IconButton>
-        </Stack>
-      </Stack>
-      <Box sx={{ flex: 1, minHeight: 0, overflow: "auto", p: 2 }}>
-        {saveError && (
-          <Alert severity="error" sx={{ mb: 2 }}>
-            {saveError}
-          </Alert>
-        )}
-        {preview.kind === "loading" && <CircularProgress size={18} />}
-        {preview.kind === "image" && (
-          <Box
-            component="img"
-            src={preview.url}
-            alt={entry.name}
-            sx={{ maxWidth: "100%", maxHeight: "70vh", objectFit: "contain", border: 1, borderColor: "divider", borderRadius: 1 }}
-          />
-        )}
-        {preview.kind === "text" && (
-          <Box component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace", fontSize: 12 }}>
-            {preview.text}
-          </Box>
-        )}
-        {preview.kind === "download" && (
-          <Typography variant="body2" color="text.secondary">
-            There’s no preview for this kind of file. Download it to open it on your computer.
-          </Typography>
-        )}
-        {preview.kind === "error" && <Alert severity="error">{preview.message}</Alert>}
-      </Box>
-    </Stack>
-  );
-}

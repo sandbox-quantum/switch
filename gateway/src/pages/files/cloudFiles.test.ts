@@ -11,6 +11,7 @@ import {
   previewKind,
   safeSuggestedName,
   sortEntries,
+  videoTypeFromBytes,
   zipLabel,
   type CloudFileEntry,
 } from "./cloudFiles";
@@ -33,15 +34,39 @@ describe("previewKind", () => {
 
   it("never previews SVG, HTML, XHTML or PDF: download only", () => {
     for (const name of ["art.svg", "page.html", "page.htm", "x.xhtml", "doc.pdf"])
-      expect(previewKind(name, 1)).toEqual({ kind: "download" });
+      expect(previewKind(name, 1)).toEqual({ kind: "download", reason: "type" });
   });
 
-  it("shows text, code and Markdown as plain text, up to 1 MB", () => {
+  it("plays mp4 and webm up to the 25 MB file cap, and nothing else", () => {
+    expect(previewKind("clip.mp4", 1)).toEqual({ kind: "video", mimeType: "video/mp4" });
+    expect(previewKind("clip.webm", 1)).toEqual({ kind: "video", mimeType: "video/webm" });
+    expect(previewKind("clip.mp4", 25 * 1024 * 1024 + 1)).toEqual({ kind: "download", reason: "too_large" });
+    expect(previewKind("clip.mov", 1)).toEqual({ kind: "download", reason: "type" });
+  });
+
+  it("tells Markdown, JSON, CSV, code and plain text apart, up to 1 MB", () => {
     expect(previewKind("notes.txt", 1)).toEqual({ kind: "text" });
-    expect(previewKind("readme.md", 1)).toEqual({ kind: "text" });
+    expect(previewKind("readme.md", 1)).toEqual({ kind: "markdown" });
+    expect(previewKind("data.json", 1)).toEqual({ kind: "json" });
+    expect(previewKind("menu.csv", 1)).toEqual({ kind: "csv", delimiter: "," });
+    expect(previewKind("menu.tsv", 1)).toEqual({ kind: "csv", delimiter: "\t" });
+    expect(previewKind("app.py", 1)).toEqual({ kind: "code", language: "python" });
+    expect(previewKind("Makefile", 1)).toEqual({ kind: "code", language: "makefile" });
     expect(previewKind("README", 1)).toEqual({ kind: "text" });
-    expect(previewKind("big.txt", 1024 * 1024 + 1)).toEqual({ kind: "download" });
-    expect(previewKind("big.png", 10 * 1024 * 1024 + 1)).toEqual({ kind: "download" });
+    expect(previewKind("big.txt", 1024 * 1024 + 1)).toEqual({ kind: "download", reason: "too_large" });
+    expect(previewKind("big.png", 10 * 1024 * 1024 + 1)).toEqual({ kind: "download", reason: "too_large" });
+  });
+});
+
+describe("videoTypeFromBytes", () => {
+  it("plays only bytes that match the extension's type", () => {
+    const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const webm = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2]);
+    expect(videoTypeFromBytes(mp4, "video/mp4")).toBe("video/mp4");
+    expect(videoTypeFromBytes(webm, "video/webm")).toBe("video/webm");
+    expect(videoTypeFromBytes(webm, "video/mp4")).toBeNull();
+    expect(videoTypeFromBytes(new TextEncoder().encode("<html><script>"), "video/webm")).toBeNull();
+    expect(videoTypeFromBytes(mp4, "text/html")).toBeNull();
   });
 });
 

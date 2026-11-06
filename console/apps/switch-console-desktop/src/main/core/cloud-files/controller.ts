@@ -8,9 +8,12 @@ import {
   CloudFilesError,
   IMAGE_PREVIEW_MAX_BYTES,
   looksLikeText,
+  type NoPreviewReason,
   previewKind,
   safeSuggestedName,
   TEXT_PREVIEW_MAX_BYTES,
+  VIDEO_PREVIEW_MAX_BYTES,
+  videoTypeFromBytes,
   zipSuggestedName,
 } from '@shared/core/cloud-files/cloud-files';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -24,8 +27,11 @@ export type CloudFilesResult<T> = { ok: true; value: T } | { ok: false; code: Cl
 /** A file's preview, decided from its name and size, then checked against its bytes. */
 export type CloudFilePreview =
   | { kind: 'image'; mimeType: string; data: string }
-  | { kind: 'text' | 'markdown'; text: string }
-  | { kind: 'download' };
+  | { kind: 'video'; mimeType: 'video/mp4' | 'video/webm'; data: string }
+  | { kind: 'text' | 'markdown' | 'json'; text: string }
+  | { kind: 'csv'; text: string; delimiter: ',' | '\t' }
+  | { kind: 'code'; text: string; language: string }
+  | { kind: 'download'; reason: NoPreviewReason };
 
 /**
  * Whether this server serves Your cloud files: a good flags read with both
@@ -73,9 +79,10 @@ export const cloudFilesController = createRPCController({
     onServer(params.serverId, (server) => listCloudFiles(server, params.path, params.cursor)),
 
   /**
-   * A file to show inside Console: one of the four safe image types, or text
-   * or Markdown that really is text. Anything else, or anything too big, is
-   * `download`, and its bytes are never fetched for a preview.
+   * A file to show inside Console: one of the four safe image types, an mp4 or
+   * webm whose opening bytes match, or text, code, Markdown, JSON or CSV that
+   * really is text. Anything else, or anything too big, is `download`, and its
+   * bytes are never fetched for a preview. Only the file asked for is read.
    */
   preview: (params: {
     serverId: string;
@@ -85,17 +92,28 @@ export const cloudFilesController = createRPCController({
   }): Promise<CloudFilesResult<CloudFilePreview>> =>
     onServer(params.serverId, async (server): Promise<CloudFilePreview> => {
       const kind = previewKind(params.name, params.size);
-      if (kind.kind === 'download') return { kind: 'download' };
-      const max = kind.kind === 'image' ? IMAGE_PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES;
+      if (kind.kind === 'download') return kind;
+      const max =
+        kind.kind === 'image'
+          ? IMAGE_PREVIEW_MAX_BYTES
+          : kind.kind === 'video'
+            ? VIDEO_PREVIEW_MAX_BYTES
+            : TEXT_PREVIEW_MAX_BYTES;
       const bytes = await readCloudFile(server, params.path, max);
-      if (kind.kind === 'image')
-        return {
-          kind: 'image',
-          mimeType: kind.mimeType,
-          data: Buffer.from(bytes).toString('base64'),
-        };
-      if (!looksLikeText(bytes)) return { kind: 'download' };
-      return { kind: kind.kind, text: new TextDecoder('utf-8').decode(bytes) };
+      const data = () => Buffer.from(bytes).toString('base64');
+      if (kind.kind === 'image') return { kind: 'image', mimeType: kind.mimeType, data: data() };
+      if (kind.kind === 'video') {
+        // The extension says video; the bytes must say the same, or it's download only.
+        const mimeType = videoTypeFromBytes(bytes, kind.mimeType);
+        return mimeType
+          ? { kind: 'video', mimeType, data: data() }
+          : { kind: 'download', reason: 'type' };
+      }
+      if (!looksLikeText(bytes)) return { kind: 'download', reason: 'type' };
+      const text = new TextDecoder('utf-8').decode(bytes);
+      if (kind.kind === 'csv') return { kind: 'csv', text, delimiter: kind.delimiter };
+      if (kind.kind === 'code') return { kind: 'code', text, language: kind.language };
+      return { kind: kind.kind, text };
     }),
 
   /** Saves one file where the person chooses. False when they cancelled. */

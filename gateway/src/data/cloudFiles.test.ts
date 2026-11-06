@@ -5,6 +5,7 @@ import {
   listCloudFiles,
   readCloudFile,
   readCloudFileRange,
+  ReadStopped,
   withFilesElsewhereRetry,
   zipUrl,
 } from "./cloudFiles";
@@ -89,6 +90,16 @@ describe("reading a file", () => {
     expect(await readCloudFileRange("a.txt", 5, noSleep)).toEqual({ done: true, total: 5 });
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
     expect((await readCloudFile("empty.txt", 1024, noSleep)).byteLength).toBe(0);
+  });
+
+  it("asks for no further range once the read is stopped", async () => {
+    const stop = new AbortController();
+    fetchMock.mockImplementationOnce(async () => {
+      stop.abort();
+      return chunk(new Uint8Array(10), 0, 20);
+    });
+    await expect(readCloudFile("big.mp4", undefined, noSleep, stop.signal)).rejects.toBeInstanceOf(ReadStopped);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a 26 MB file on the first range", async () => {
