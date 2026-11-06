@@ -1,8 +1,8 @@
 import { Box, LinearProgress, Link as MuiLink, Paper, Stack, Typography } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { useHosted } from "../HostedContext";
-import { groupedId } from "../hostedActions";
 import AlertTitle from "../w5shared/AlertTitle";
+import IdCell from "../w5shared/IdCell";
 import { shortTime } from "../w5shared/operatorFetch";
 import AttentionAction from "./AttentionAction";
 import {
@@ -268,14 +268,8 @@ export default function OverviewTab() {
                     {row.words}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Box{" "}
-                    <Box component="code" title={row.box.box} sx={{ fontFamily: "monospace" }}>
-                      {groupedId(row.box.box)}
-                    </Box>{" "}
-                    · user{" "}
-                    <Box component="code" title={row.box.user} sx={{ fontFamily: "monospace" }}>
-                      {groupedId(row.box.user)}
-                    </Box>
+                    Box <IdCell id={row.box.box} label="box" /> · user{" "}
+                    <IdCell id={row.box.user} label="user" />
                   </Typography>
                 </Box>
                 <AttentionAction row={row} onDone={() => void refresh()} />

@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MARKER, answer, renderTab } from "../w5shared/testing";
+import { groupedId } from "../hostedActions";
+import { shortId } from "../w5shared/IdCell";
 import { boxPageFor } from "./AttentionAction";
 import OverviewTab, {
   BOX_CEILING,
@@ -199,9 +201,9 @@ describe("Overview's health, Needs attention and ceiling (UX operators 1, 2, 6, 
     renderTab(OverviewTab, { overview: fixture(), refresh });
     const row = within(screen.getByTestId(`attention-${B3}`));
     expect(row.getByText("Paused by Switch")).toBeTruthy();
-    // Ids only, grouped, with the full id on hover: never a name.
-    expect(row.getByText("k1-0e77 b5aa 0b1c").getAttribute("title")).toBe(B3);
-    expect(row.getByText("k1-f019 c27d 0b51").getAttribute("title")).toBe(U3);
+    // Ids only, through the shared IdCell (short, full id on hover, copy): never a name.
+    expect(row.getByLabelText(`box ${groupedId(B3)}`).textContent).toBe(shortId(B3));
+    expect(row.getByLabelText(`user ${groupedId(U3)}`).textContent).toBe(shortId(U3));
     fireEvent.click(row.getByRole("button", { name: "Resume" }));
     const dialog = within(screen.getByRole("dialog"));
     // The operator's reason, read from the audit log for this person, shown as text.
@@ -216,6 +218,15 @@ describe("Overview's health, Needs attention and ceiling (UX operators 1, 2, 6, 
     const [path, init] = fetchMock.mock.calls[1]!;
     expect(path).toContain(`/shared-cloud/users/${U3}/resume`);
     expect(JSON.parse(String(init?.body))).toEqual({ reason: "Ticket 9" });
+  });
+
+  it("copies the exact box id from a Needs attention row", async () => {
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    renderTab(OverviewTab, { overview: fixture() });
+    const row = within(screen.getByTestId(`attention-${B3}`));
+    fireEvent.click(row.getByRole("button", { name: "Copy box" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(B3));
   });
 
   it("doesn't read the audit log for Restart, only for Resume", () => {
