@@ -22,6 +22,7 @@ from switch_core.accounts import deletion as deletion_module
 from switch_core.accounts.deletion import (
     USER_REFERENCES,
     AccountDeletion,
+    AccountDeletionIncomplete,
     Workspace,
 )
 from switch_core.bridges.resource.service import ResourceService
@@ -280,6 +281,63 @@ async def test_the_only_admin_of_a_shared_workspace_is_refused(
             session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
     assert reason is not None and "only admin of Acme" in reason
+
+
+async def test_becoming_the_only_admin_after_the_check_stops_before_anything_changes(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The other admin was demoted after `refusal` passed: nothing of the
+    person's in the workspace is deleted, archived or renamed."""
+    deletion, protocol, _ = _deletion(session_factory)
+    async with session_factory() as session:
+        leaving = await _user(session, "leaving")
+        other = await _user(session, "other")
+        await _member(session, TENANT_ZERO_ID, leaving, "admin")
+        await _member(session, TENANT_ZERO_ID, other, "member")
+        agent = await _agent(session, TENANT_ZERO_ID, leaving, "helper")
+        theirs = Client(
+            transport_user_id=f"@switch-member-{leaving.id}:test",
+            display_name="leaving",
+            type="member",
+            user_id=leaving.id,
+        )
+        room = Room(
+            transport_room_id=f"!{uuid.uuid4().hex}:test", name="Chat", description=""
+        )
+        session.add_all([theirs, room])
+        await session.flush()
+        await MessageStore().create(
+            session,
+            Message(
+                room_id=room.id,
+                transport_event_id="$mine",
+                sender_id=theirs.transport_user_id,
+                sender_client_id=theirs.id,
+                sender_name="leaving",
+                event_type="m.room.message",
+                content={"body": "hi", "sender_name": "leaving"},
+            ),
+            [],
+        )
+        await session.commit()
+        leaving_id, agent_id = leaving.id, agent.id
+
+    async with session_factory() as session:
+        user = await session.get(User, leaving_id)
+        assert user is not None
+        with pytest.raises(AccountDeletionIncomplete) as raised:
+            await deletion.delete(
+                session,
+                user,
+                [Workspace(TENANT_ZERO_ID, "Acme", "admin")],
+                actor_id=leaving_id,
+            )
+
+    assert "Nothing of theirs there has changed" in str(raised.value.__cause__)
+    async with session_factory() as session:
+        message = (await session.execute(select(Message))).scalar_one()
+        assert message.sender_name == "leaving"
+        assert await session.get(Agent, agent_id) is not None
 
 
 async def test_an_org_admin_with_a_member_row_takes_no_admin_away(

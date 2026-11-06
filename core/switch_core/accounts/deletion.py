@@ -531,6 +531,12 @@ class AccountDeletion:
         user_id = user.id
         tenant_id = workspace.id
         async with tenant_session(self.session_factory, tenant_id) as session:
+            await self._still_not_the_last_admin(
+                session,
+                user_id,
+                workspace,
+                "Nothing of theirs there has changed",
+            )
             agent_ids = [
                 agent.id for agent in await self.agents.get_by_owner(session, user_id)
             ]
@@ -567,7 +573,13 @@ class AccountDeletion:
         member = await self._rename_messages(user_id, tenant_id)
 
         async with tenant_session(self.session_factory, tenant_id) as session:
-            await self._still_not_the_last_admin(session, user_id, workspace)
+            await self._still_not_the_last_admin(
+                session,
+                user_id,
+                workspace,
+                "Their agents there are already deleted, their chats archived "
+                "and their messages renamed",
+            )
             if member is not None:
                 await self._retire_member(session, member, user.name)
             successor = await self._successor(session, user_id)
@@ -744,11 +756,13 @@ class AccountDeletion:
         )
 
     async def _still_not_the_last_admin(
-        self, session: AsyncSession, user_id: str, workspace: Workspace
+        self, session: AsyncSession, user_id: str, workspace: Workspace, done: str
     ) -> None:
-        """Check `refusal`'s last-admin rule again, in the transaction that
-        removes the membership and with the admin rows locked: another admin
-        may have been demoted or removed since `refusal` read them.
+        """Check `refusal`'s last-admin rule again, with the admin rows locked:
+        another admin may have been demoted or removed since `refusal` read
+        them. It runs before anything in the workspace changes, and again in
+        the transaction that removes the membership; `done` says, for the
+        error, what has changed by then.
 
         Their own membership row decides, not `workspace.role`: that is the
         role they act with, which is `admin` for the organization's
@@ -763,8 +777,8 @@ class AccountDeletion:
             raise RuntimeError(
                 f"Stopped deleting user {user_id} part-way: they became the only "
                 f"admin of workspace {workspace.id}, which has other members, after "
-                "the deletion was checked. Their agents there are already deleted; "
-                "make another member an admin and delete the account again."
+                f"the deletion was checked. {done}; make another member an admin "
+                "and delete the account again."
             )
 
     async def _successor(self, session: AsyncSession, user_id: str) -> str | None:
