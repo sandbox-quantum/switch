@@ -1,6 +1,6 @@
 image:
-  repository: ""
-  digest: ""
+  repository: "ghcr.io/render-check/switch-hosted-controller"
+  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 # Names of docker-registry Secrets for a private image registry.
 imagePullSecrets: []
 serviceAccount:

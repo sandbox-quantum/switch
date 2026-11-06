@@ -41,6 +41,20 @@ Secret of its own.
 {{- end }}
 
 {{/*
+"true" when GATEWAY_ADMIN_PASSWORD must be set: while password login is on
+(it is the seeded admin's credential), and with Mattermost, whose setup Job
+signs in as the admin with it. Empty otherwise: with OIDC-only sign-in the
+admin is seeded without a password.
+*/}}
+{{- define "switch.adminPasswordRequired" -}}
+{{- $passwordLogin := or (not .Values.switchCore.oidc.enabled) .Values.switchCore.oidc.passwordLoginEnabled }}
+{{- if and .Values.mattermost.enabled (not $passwordLogin) }}
+{{- fail "mattermost.enabled needs password login: its setup Job signs in as the admin with GATEWAY_ADMIN_PASSWORD. Keep switchCore.oidc.passwordLoginEnabled true or turn Mattermost off." }}
+{{- end }}
+{{- if $passwordLogin }}true{{ end }}
+{{- end }}
+
+{{/*
 The Secret's data block, so the pre-upgrade copy the migration reads is
 rendered from this one source and cannot drift from the release's own.
 */}}
@@ -70,7 +84,11 @@ JWT_SECRET_KEY: {{ . | b64enc | quote }}
 CONTROLLER_TOKEN_SECRET: {{ $controllerSecret | b64enc | quote }}
 {{- end }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
-GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
+{{- if include "switch.adminPasswordRequired" . }}
+GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required while password login is enabled" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
+{{- else if .Values.secrets.gatewayAdminPassword }}
+GATEWAY_ADMIN_PASSWORD: {{ .Values.secrets.gatewayAdminPassword | b64enc | quote }}
+{{- end }}
 {{- if .Values.mattermost.enabled }}
 MATTERMOST_ADMIN_PASSWORD: {{ .Values.secrets.mattermostAdminPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
 MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
@@ -780,6 +798,9 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: GATEWAY_ADMIN_PASSWORD
+      {{- if not (include "switch.adminPasswordRequired" .) }}
+      optional: true
+      {{- end }}
 {{- if .Values.switchCore.oidc.enabled }}
 - name: GATEWAY_OIDC_ISSUER_URL
   value: {{ required "switchCore.oidc.issuerUrl is required when oidc.enabled" .Values.switchCore.oidc.issuerUrl | quote }}

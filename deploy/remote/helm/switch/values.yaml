@@ -5,7 +5,7 @@ global:
   # "standard-rwo" on GKE) only if your cluster has no default or you need a
   # specific class.
   storageClass: ""
-  imageRegistry: ""
+  imageRegistry: "ghcr.io/render-check"
   # Names of pre-existing dockerconfigjson Secrets used to pull images from a
   # private registry (e.g. a private GHCR namespace). Applied to every pod. Leave
   # empty for public images.
@@ -100,7 +100,8 @@ ingress:
 #      DB_OWNER_PASSWORD (only if postgresql.owner.username is set, and unless
 #        postgresql.owner.existingSecret is set),
 #      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
-#      GATEWAY_ADMIN_PASSWORD,
+#      GATEWAY_ADMIN_PASSWORD (unless switchCore.oidc.enabled with
+#        passwordLoginEnabled false, and Mattermost off),
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
 #      CONTROLLER_TOKEN_SECRET (with the agent_management feature flag on),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
@@ -134,6 +135,8 @@ secrets:
   # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
   gatewayAdminEmail: ""
+  # Required while password login is on (or with Mattermost); may be left
+  # empty with switchCore.oidc.passwordLoginEnabled false.
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
   mattermostUserPassword: ""
@@ -222,7 +225,7 @@ switchCore:
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
-  image: switch-core:latest
+  image: "switch-core:0.0.0-check@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
@@ -775,7 +778,7 @@ switchCore:
 # switchCore's to different releases and those pages load blank.
 gateway:
   enabled: true
-  image: gateway:latest
+  image: "gateway:0.0.0-check@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
@@ -843,7 +846,7 @@ mattermost:
 
 # ── Setup Job ─────────────────────────────────────────────────────────────────
 setup:
-  image: setup:latest
+  image: "setup:0.0.0-check@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
