@@ -105,6 +105,25 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
     )
 
 
+def test_trello_needs_no_settings_and_registers_every_scope_without_a_port() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapter = adapters["trello"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request["redirect_uris"] == [
+        "http://127.0.0.1/switch-services/callback"
+    ]
+    assert client._request["scope"] == (
+        "read:me read:account offline_access read:board:trello "
+        "read:organization:trello read:member:trello read:member.inbox:trello "
+        "read:member.planner:trello write:board:trello write:organization:trello "
+        "write:member.inbox:trello write:member.planner:trello"
+    )
+
+
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:
     assert "airtable" not in build_adapters(
         CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
