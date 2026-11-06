@@ -120,3 +120,18 @@ def test_help_shaped_output_over_the_cap_splits() -> None:
     assert len(chunks) >= 2
     assert all(len(c) <= MAX_MESSAGE for c in chunks)
     assert _rejoin(chunks) == body
+
+
+def test_one_line_fenced_span_does_not_open_a_code_block() -> None:
+    body = (
+        "```npm test```\n"
+        + "\n".join(f"plain prose line number {i} with some words" for i in range(120))
+    )
+    chunks = chunk_message(body)
+    assert len(chunks) > 1
+    # Only the first chunk contains the one-line fenced span; subsequent chunks do not.
+    assert "```npm test```" in chunks[0]
+    for later_chunk in chunks[1:]:
+        assert "```npm test```" not in later_chunk
+        assert not later_chunk.startswith("```")
+        assert not later_chunk.endswith("```")

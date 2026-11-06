@@ -82,7 +82,8 @@ def chunk_message(content: str, limit: int = MAX_MESSAGE) -> list[str]:
             stripped = line.strip()
             if stripped.startswith(_FENCE):
                 if language is None:
-                    language = stripped[len(_FENCE) :].strip()
+                    if _FENCE not in stripped[len(_FENCE) :]:
+                        language = stripped[len(_FENCE) :].strip()
                 else:
                     language = None
 
