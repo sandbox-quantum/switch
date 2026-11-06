@@ -90,7 +90,12 @@ class _CollabLifecycle:
 def _protocol() -> SimpleNamespace:
     """The parts of `AgentCore` the agent detail reads: real stores and a real,
     empty connection registry, so presence is answered from the database."""
+
+    async def _no_statuses(*_: Any) -> dict[str, Any]:
+        return {}
+
     return SimpleNamespace(
+        get_agent_statuses_by_ids_in_session=_no_statuses,
         agent_store=AgentStore(),
         agent_session_store=AgentSessionStore(),
         room_role_store=RoomRoleStore(),
@@ -239,13 +244,16 @@ class _Seed:
             self.bridges.append(bridge)
 
     async def rooms(self, count: int) -> None:
-        """`count` rooms, each with its own owner and two member agents, every
-        other one bridged with a connected platform user."""
+        """`count` rooms, each with its own owner and two member agents. Two
+        in three are bridged with a connected platform user; the others
+        alternate between a plain room and a Switch Console chat with its
+        owner and one more person as members."""
         async with self._session_factory() as session:
             await self._bridges(session)
             for i in range(count):
                 owner = await self._user(session)
                 bridge = self.bridges[i % 2] if i % 3 else None
+                chat = bridge is None and i % 2 == 0
                 name = self._next("room")
                 room = Room(
                     transport_room_id=f"!{name}:test",
@@ -254,9 +262,16 @@ class _Seed:
                     owner_id=owner.id,
                     bridge_id=bridge.id if bridge else None,
                     external_channel_id=f"C-{name}" if bridge else None,
+                    metadata_={"chat_operation_id": f"op-{name}"} if chat else None,
                 )
                 session.add(room)
                 await session.flush()
+                if chat:
+                    for member in (owner, await self._user(session)):
+                        client = await self._client(session, "member")
+                        client.user_id = member.id
+                        session.add(ClientRoom(client_id=client.id, room_id=room.id))
+                    await session.flush()
                 for _ in range(2):
                     agent = await self._agent(session)
                     await session.execute(
@@ -358,6 +373,15 @@ class TestRoomList:
         assert all(r["agent_count"] == 2 for r in many_rooms)
         assert all(r["owner_name"] for r in many_rooms)
         assert all(r["connected_user_count"] == 1 for r in bridged)
+        chats = [r for r in many_rooms if r["is_console_chat"]]
+        assert len(chats) == 3
+        assert all(r["connected_user_count"] == 2 for r in chats)
+        assert all(len(r["connected_user_names"]) == 2 for r in chats)
+        assert all(
+            r["connected_user_count"] == 0
+            for r in many_rooms
+            if not r["bridge_id"] and not r["is_console_chat"]
+        )
         assert all(not r["name"].startswith("Slack: ") for r in bridged)
 
     async def test_marks_switch_console_chats_and_no_other_room(
@@ -393,6 +417,27 @@ class TestRoomList:
             "chat": True,
             "private-room": False,
         }
+
+    async def test_a_console_chat_counts_its_members_in_its_detail(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+        adapter: _Adapter,
+    ) -> None:
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        await seed.rooms(3)
+        app = _app(session_factory, statement_counts, pool_checkouts)
+
+        async with _client(app, user) as client:
+            _, rooms = await _count(client, statement_counts, "/rooms")
+            chat = next(r for r in rooms if r["is_console_chat"])
+            _, detail = await _count(client, statement_counts, f"/rooms/{chat['id']}")
+
+        assert detail["connected_user_count"] == 2
+        assert detail["connected_user_names"] == chat["connected_user_names"]
+        assert detail["connected_user_names"] == sorted(detail["connected_user_names"])
 
     async def test_the_platform_is_asked_for_deeplinks_holding_no_connection(
         self,

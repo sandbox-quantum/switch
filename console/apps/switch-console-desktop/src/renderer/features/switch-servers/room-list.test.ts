@@ -69,7 +69,33 @@ describe('a room as the Rooms page shows it', () => {
     expect(roomCard(room({ channelType: 'channel_private' }), VIEWER).privateChannel).toBe(true);
   });
 
-  it('puts a Console chat in Switch Console, private to its members, its people not known', () => {
+  it('puts a Console chat in Switch Console, private to its members, counting them', () => {
+    const card = roomCard(
+      room({
+        bridgeId: null,
+        bridgeType: null,
+        bridgeDisplayName: null,
+        isConsoleChat: true,
+        connectedUserCount: 3,
+      }),
+      VIEWER
+    );
+    expect(card).toMatchObject({
+      appLabel: 'Switch Console',
+      access: 'private',
+      peopleCount: 3,
+    });
+  });
+
+  it('does not know the people of a room with no app other than a Console chat', () => {
+    const card = roomCard(
+      room({ bridgeId: null, bridgeType: null, bridgeDisplayName: null, connectedUserCount: 0 }),
+      VIEWER
+    );
+    expect(card.peopleCount).toBeNull();
+  });
+
+  it('does not know the people of a Console chat on a server that does not count them', () => {
     const card = roomCard(
       room({
         bridgeId: null,

@@ -84,6 +84,7 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
+from switch_core.chats import is_console_chat
 from switch_core.chats.service import ChatError
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
@@ -4354,6 +4355,10 @@ class AgentCore:
                     for cid in client_ids
                     if cid in ext_client_to_name
                 )
+            if is_console_chat(room):
+                # A Console chat's people are its members, not accounts on an app.
+                members = await self.room_store.member_users_by_room(session, [room.id])
+                connected_user_names = [name for _, name in members.get(room.id, [])]
 
             group_name, group_path = await self._group_labels(session, room.group_id)
             join_listener_ids = await self.room_store.get_join_event_listeners(
