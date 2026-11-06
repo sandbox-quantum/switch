@@ -68,10 +68,14 @@ def slack_manifest() -> dict[str, Any]:
     return {
         "display_information": {"name": SLACK_APP_NAME},
         "features": {
+            # The Messages tab is where the app's direct messages show, read
+            # only: Switch sends the prompt that confirms a linked account
+            # there (CHOO-4121), and people press its buttons but cannot write
+            # to the app, which routes no messages to agents.
             "app_home": {
                 "home_tab_enabled": True,
-                "messages_tab_enabled": False,
-                "messages_tab_read_only_enabled": False,
+                "messages_tab_enabled": True,
+                "messages_tab_read_only_enabled": True,
             },
             "bot_user": {"display_name": SLACK_APP_NAME, "always_online": False},
             "agent_view": {

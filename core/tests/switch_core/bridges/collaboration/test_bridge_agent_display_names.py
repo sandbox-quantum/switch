@@ -270,6 +270,9 @@ def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
         def set_agent_presentation_resolver(self, resolver: Any) -> None:
             installed.append(resolver)
 
+        def set_interaction_handler(self, handler: Any) -> None:
+            return None
+
         async def start(self, **kwargs: Any) -> None:
             started.append("started")
             assert installed, "the resolver must be installed before start()"
