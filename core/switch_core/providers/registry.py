@@ -154,6 +154,20 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="junie",
+        label="Junie",
+        sign_in_command="junie login",
+        connector_type="Junie CLI",
+        tools=(
+            ToolSpec(name="Bash", description="Executes shell commands"),
+            ToolSpec(name="Edit", description="Edits existing files"),
+            ToolSpec(name="Write", description="Writes new files"),
+            ToolSpec(name="Read", description="Reads file contents"),
+            ToolSpec(name="Grep", description="Searches file contents"),
+            ToolSpec(name="Glob", description="Finds files by pattern"),
+        ),
+    ),
 )
 
 
