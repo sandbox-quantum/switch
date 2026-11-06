@@ -116,7 +116,7 @@ function deadRuleReason(rule: RuleState): string | null {
     !rule.owner &&
     !rule.owner_agents &&
     !rule.platform;
-  return noSender ? "it lets in nobody" : null;
+  return noSender ? "it lets in no people, no agents, not the owner and not the platform" : null;
 }
 
 const EMPTY_RULE: RuleState = {

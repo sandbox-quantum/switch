@@ -14,6 +14,7 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/workspace", "Workspace"],
   ["/organization", "Organization"],
   ["/operator/workspaces", "All workspaces"],
+  ["/usage", "Usage"],
   // The new layout's own (`gateway_v2`).
   ["/overview", "Overview"],
   ["/templates", "Templates"],

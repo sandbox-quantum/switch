@@ -55,7 +55,11 @@ describe("AddressingPolicySection", () => {
     show(OWNER_ONLY_POLICY);
     fireEvent.click(screen.getByRole("checkbox", { name: "Its owner" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Its owner's other agents" }));
-    expect(screen.getByText(/can never let anyone in: it lets in nobody/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /can never let anyone in: it lets in no people, no agents, not the owner and not the platform/,
+      ),
+    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Save policy" })).toHaveProperty("disabled", true);
   });
 
