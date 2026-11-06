@@ -1120,7 +1120,10 @@ class SlackAdapter(PlatformAdapter):
             channel_id=channel_id,
             ts=ts,
             opened_at=None,
-            blocks=dict(_STRANDED_BLOCKS),
+            blocks={
+                **_STRANDED_BLOCKS,
+                f"switch-cancel:{content.turn.turn_id}": {},
+            },
         )
         self._register_stream(message_ref, stream)
         try:
