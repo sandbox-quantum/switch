@@ -37,6 +37,8 @@ auth:
     # Switch cannot read the app back: the operator confirms the External
     # Client App requires PKCE and issues JWT-based access tokens for named
     # users, or every MCP call fails after sign-in (INVALID_JWT_FORMAT).
+    # Measured HTTP 400 unknown_error for a made-up code, including a nonexistent client.
+    inconclusive_probe: [{error: unknown_error}]
     unchecked: The External Client App must require PKCE and issue JWT-based access tokens for named users, or every MCP call fails after sign-in.
     # Salesforce's documented revoke endpoint takes the access or refresh
     # token as its POST body.
