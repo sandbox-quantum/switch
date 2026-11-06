@@ -117,6 +117,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "package_documents": "deleted",
     "package_references": "deleted",
     "pending_attachment_groups": "deleted",
+    "pending_decisions": "deleted",
     "role_leases": "deleted",
     "room_agents": "deleted",
     "room_documents": "deleted",
@@ -136,6 +137,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     # The workspace's own setup, and what the person deleting it holds in it.
     "api_keys": "deleted",
     "clients": "deleted",
+    "decision_settings": "deleted",
     "invitations": "deleted",
     "provider_connections": "deleted",
     "sign_in_flows": "deleted",
