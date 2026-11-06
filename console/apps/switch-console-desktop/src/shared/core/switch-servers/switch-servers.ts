@@ -272,6 +272,8 @@ export type SignupResult = {
 
 /** Read-only summary of a remote agent (mirrors the gateway `AgentSummary`). */
 export type RemoteAgentSummary = {
+  /** Persistent owner-only notices; absent on older Core. */
+  invitationWarnings?: string[];
   id: string;
   name: string;
   description: string;

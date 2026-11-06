@@ -60,6 +60,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
+from switch_core.invitations import InvitationActor, InvitationDenied
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -1124,6 +1125,7 @@ class CollaborationCore:
                         agent_name=msg.agent_name,
                         sender_name=msg.sender_name,
                         channel_name=msg.channel_name,
+                        invited_by=await self._inviter(msg.sender_id, msg.sender_name),
                     )
             if room_ids is None:
                 return
@@ -1526,6 +1528,7 @@ class CollaborationCore:
                         agent_name=cmd.agent_name,
                         sender_name=cmd.sender_name,
                         channel_name=cmd.channel_name,
+                        invited_by=await self._inviter(cmd.sender_id, cmd.sender_name),
                     )
             if room_ids is None:
                 return
@@ -1624,6 +1627,17 @@ class CollaborationCore:
             cmd.channel_id, reply, cmd.root_id or cmd.message_ref
         )
 
+    async def _inviter(
+        self, external_id: str | None, name: str | None
+    ) -> InvitationActor:
+        if not external_id:
+            return InvitationActor(kind="unknown")
+        account = await self.ensure_external_user(
+            external_user_id=external_id,
+            external_username=name or external_id,
+        )
+        return InvitationActor(kind="external", id=account.id)
+
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
         async with lock:
@@ -1648,9 +1662,15 @@ class CollaborationCore:
         if existing is not None:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
-            await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name], added_by_kind="system"
-            )
+            try:
+                await self._room_service.add_agents_to_room(
+                    room_id,
+                    agent_names=[join.agent_name],
+                    added_by_kind="system",
+                    invited_by=await self._inviter(join.inviter_id, join.inviter_name),
+                )
+            except InvitationDenied as error:
+                await self._adapter.admin_message(join.channel_id, str(error))
             return
 
         await self._create_room_for_channel(
@@ -1658,6 +1678,7 @@ class CollaborationCore:
             channel_type=join.channel_type,
             agent_name=join.agent_name,
             channel_name=join.channel_name,
+            invited_by=await self._inviter(join.inviter_id, join.inviter_name),
         )
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
@@ -1675,6 +1696,7 @@ class CollaborationCore:
                 channel_id=join.channel_id,
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
+                invited_by=await self._inviter(join.inviter_id, join.inviter_name),
             )
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
@@ -1772,6 +1794,7 @@ class CollaborationCore:
         agent_name: str | None = None,
         sender_name: str | None = None,
         channel_name: str | None = None,
+        invited_by: InvitationActor | None = None,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -1814,6 +1837,7 @@ class CollaborationCore:
             # Adopted from a channel that appeared on the platform, not asked
             # for by anyone in Switch.
             created_by_kind="system",
+            invited_by=invited_by,
             named_after_channel=(
                 channel_name if channel_type != "direct" and channel_name else None
             ),
@@ -1821,6 +1845,9 @@ class CollaborationCore:
 
         try:
             result = await self._room_service.create_room(config)
+        except InvitationDenied as error:
+            await self._adapter.admin_message(channel_id, str(error))
+            return None
         except IntegrityError:
             # Backstop: the (bridge_id, external_channel_id) unique index
             # rejected a concurrent duplicate. Adopt the room that won the race.
@@ -2221,6 +2248,8 @@ class CollaborationCore:
                     channel_type=join.channel_type,
                     agent_name=join.external_username,
                     channel_name=join.channel_name,
+                    inviter_id=join.inviter_id,
+                    inviter_name=join.inviter_name,
                 )
             )
             return
@@ -2235,6 +2264,9 @@ class CollaborationCore:
                         channel_type=join.channel_type,
                         sender_name=join.external_username,
                         channel_name=join.channel_name,
+                        invited_by=await self._inviter(
+                            join.external_user_id, join.external_username
+                        ),
                     )
             if room_ids is None:
                 return

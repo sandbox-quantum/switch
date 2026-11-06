@@ -1259,6 +1259,7 @@ export async function registerKnownAgent(
  * superset both send it. Fields the gateway added later are optional here so an
  * older server still parses. */
 type AgentSummaryJson = {
+  invitation_warnings?: string[];
   id: string;
   name: string;
   display_name?: string | null;
@@ -1278,6 +1279,7 @@ type AgentSummaryJson = {
  * one caller and silently miss another. */
 function toRemoteAgentSummary(json: AgentSummaryJson): RemoteAgentSummary {
   return {
+    invitationWarnings: json.invitation_warnings ?? [],
     id: json.id,
     name: json.name,
     displayName: json.display_name ?? null,

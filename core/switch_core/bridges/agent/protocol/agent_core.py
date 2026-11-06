@@ -133,6 +133,7 @@ from switch_core.events import (
 from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
+from switch_core.invitations import InvitationActor
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
 from switch_core.room_wide_mention import (
@@ -3298,6 +3299,7 @@ class AgentCore:
                 agent_names=[agent_name],
                 include_subagents_for=include_for,
                 added_by_kind="agent",
+                invited_by=InvitationActor(kind="agent", id=agent_id),
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e

@@ -76,7 +76,17 @@ class RoomStore:
         await session.flush()
         return room
 
-    async def get(self, session: AsyncSession, room_id: str) -> Room | None:
+    async def get(
+        self, session: AsyncSession, room_id: str, *, for_update: bool = False
+    ) -> Room | None:
+        if for_update:
+            result = await session.execute(
+                select(Room)
+                .where(Room.id == room_id, Room.tenant_id == require_tenant_id())
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            return result.scalar_one_or_none()
         return await session.get(Room, room_id)
 
     async def follow_ups_enabled(self, session: AsyncSession, room_id: str) -> bool:

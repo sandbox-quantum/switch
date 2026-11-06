@@ -311,6 +311,8 @@ class AgentSummary(BaseModel):
     # `switch_core.authz` so the Gateway does not repeat the rule; set by the
     # Gateway routes, and left out of what agents read.
     can_manage: bool = False
+    # Only the authenticated owner receives persistent platform-join notices.
+    invitation_warnings: list[str] = []
 
 
 class AgentToolSummary(BaseModel):

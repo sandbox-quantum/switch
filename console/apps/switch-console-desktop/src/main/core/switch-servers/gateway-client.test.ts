@@ -37,6 +37,10 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   noteManagedServerUnanswered,
 }));
 
+vi.mock('@main/lib/logger', () => ({
+  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
 vi.mock('./servers-store', () => ({ getSessionCookie, setSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer, extractAuthCookie }));
 vi.mock('./console-identity', () => ({
@@ -47,6 +51,7 @@ vi.mock('./console-identity', () => ({
 }));
 
 const {
+  fetchAgents,
   cloudMachineLifecycle,
   listCloudMachines,
   getConnectionCatalog,
@@ -4086,5 +4091,28 @@ describe('fetchTenants', () => {
     const tenants = await fetchTenants(SERVER);
 
     expect(tenants.map((t) => t.role)).toEqual(['admin', 'member']);
+  });
+});
+
+describe('owner-only invitation warnings', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('maps new warnings and tolerates older gateways', async () => {
+    vi.clearAllMocks();
+    getSessionCookie.mockResolvedValue(makeJwt(7200));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => [
+          { id: 'a', name: 'helper', invitation_warnings: ['Unknown inviter in Private room.'] },
+          { id: 'b', name: 'older' },
+        ],
+        headers: { get: () => null, getSetCookie: () => [] },
+      }))
+    );
+    const agents = await fetchAgents(SERVER);
+    expect(agents[0]?.invitationWarnings).toEqual(['Unknown inviter in Private room.']);
+    expect(agents[1]?.invitationWarnings).toEqual([]);
   });
 });

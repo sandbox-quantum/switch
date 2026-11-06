@@ -45,6 +45,7 @@ from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
+from switch_core.invitations import InvitationActor
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 
 if TYPE_CHECKING:
@@ -1084,6 +1085,7 @@ class RoomYamlService:
             group_id=group_id,
             created_by=user_id,
             from_template=True,
+            invited_by=InvitationActor(kind="user", id=user_id),
             created_by_agent_id=origin.agent_id if origin else None,
             parent_room_id=origin.parent_room_id if origin else None,
             run_id=origin.run_id if origin else None,

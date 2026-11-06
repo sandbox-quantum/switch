@@ -94,6 +94,7 @@ class FakeRoomService:
     ) -> None:
         self._sf = session_factory
         self._agents = agent_store
+        self.configs: list[RoomCreateConfig] = []
         #: username → external id, the people a bridge would resolve.
         self.bridge_users: dict[str, str] = {}
         self.bridge_user_lookups: list[tuple[str, list[str]]] = []
@@ -105,6 +106,7 @@ class FakeRoomService:
         return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+        self.configs.append(config)
         async with self._sf() as session:
             agent_ids: list[str] = []
             if config.agent_names:
@@ -389,6 +391,11 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
     )
     result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
+    from switch_core.invitations import InvitationActor
+
+    assert env["rooms"].configs[-1].invited_by == InvitationActor(
+        kind="user", id=env["user_id"]
+    )
     assert result.room_name == "Pilot"
     assert len(result.created_reference_ids) == 1
     assert len(result.created_document_ids) == 1

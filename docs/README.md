@@ -32,3 +32,7 @@ the one users act on.
   document that describes agents and rooms to create and the params a
   deployer fills in. The bundled Switch expert (`switch-expert/template.yaml`)
   is the worked example.
+
+- [`contributing/agent-invitations.md`](contributing/agent-invitations.md): how
+  addressing policies govern invitations, platform inviter limitations and
+  owner-visible warnings.

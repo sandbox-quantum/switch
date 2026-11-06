@@ -3457,6 +3457,10 @@ class SlackAdapter(PlatformAdapter):
         if not user_id or not channel_id:
             return
 
+        inviter_id = str(event.get("inviter") or "") or None
+        inviter_name = (
+            (await self._resolve_user_name(inviter_id)).name if inviter_id else None
+        )
         if user_id == self._bot_user_id:
             # The app itself was invited to / joined the channel. Surface it so
             # the room is auto-created immediately (single-app bridge: there is
@@ -3470,6 +3474,8 @@ class SlackAdapter(PlatformAdapter):
                     channel_id=channel_id,
                     channel_type=channel_type,
                     channel_name=channel_name,
+                    inviter_id=inviter_id,
+                    inviter_name=inviter_name,
                 )
             )
             return
@@ -3488,6 +3494,8 @@ class SlackAdapter(PlatformAdapter):
                 external_user_id=user_id,
                 external_username=user.name,
                 channel_name=channel_name,
+                inviter_id=inviter_id,
+                inviter_name=inviter_name,
             )
         )
 

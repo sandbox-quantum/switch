@@ -38,7 +38,7 @@ from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import Room, RoomGroup, RoomRole
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.agent_store import INVITATION_NOTICES_KEY, AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_role_store import validate_role_name
 from switch_core.db.stores.room_store import (
@@ -47,6 +47,7 @@ from switch_core.db.stores.room_store import (
     RoomStore,
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.invitations import InvitationActor, require_invitation
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -88,6 +89,7 @@ class RoleSpec(BaseModel):
 class RoomCreateConfig(BaseModel):
     name: str
     description: str
+    invited_by: InvitationActor | None = None
     agent_ids: list[str] | None = None
     agent_names: list[str] | None = None
     # Per-agent opt-in: the identifiers (same space as agent_ids/agent_names)
@@ -573,6 +575,26 @@ class RoomService:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
         join_event_listeners = await self._resolve_join_event_listeners(config)
+        actor = config.invited_by
+        if actor is None:
+            actor = (
+                InvitationActor(kind="unknown")
+                if config.created_by_kind == "system"
+                else InvitationActor(kind="agent", id=config.created_by_agent_id)
+                if config.created_by_kind == "agent"
+                else InvitationActor(
+                    kind="user", id=config.acting_user_id or config.created_by
+                )
+            )
+        if agent_ids:
+            async with self._session_factory() as session:
+                await self._check_invitations(
+                    session,
+                    agent_ids,
+                    actor,
+                    room_id="",
+                    group_id=config.group_id,
+                )
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
         bridge_id = await self._resolve_bridge_id(config)
@@ -722,6 +744,16 @@ class RoomService:
                         config.group_id,
                         acting_is_admin=config.acting_is_admin,
                     )
+                unverified = await self._check_invitations(
+                    session,
+                    agent_ids,
+                    actor,
+                    room_id="",
+                    group_id=config.group_id,
+                    lock=True,
+                )
+                if unverified:
+                    await self._record_unverified_invites(session, room, unverified)
                 if agent_ids:
                     await self._room_store.add_agents(
                         session,
@@ -868,6 +900,8 @@ class RoomService:
             )
 
         self.room_changed(room.tenant_id, room.id)
+        if unverified:
+            await self._announce_unverified_invites(room)
         return RoomCreateResult(room=room, failed_attachments=failed_attachments)
 
     async def _seed_aliases(
@@ -1023,6 +1057,84 @@ class RoomService:
             raise ValueError(f"Unknown agents: {', '.join(missing)}")
         return [name_to_id[n] for n in unique_names]
 
+    async def _announce_unverified_invites(self, room: Room) -> None:
+        from switch_core.clients.actor import SystemActor
+
+        body = (
+            "Switch could not verify who added an agent to this room because "
+            "the messaging platform did not identify the inviter. The join was "
+            "allowed without trusting that unknown person. The agent's owner "
+            "can remove it and has a warning on the agent page in Switch Console."
+        )
+        for client in self._client_lifecycle.get_by_type("admin", room.tenant_id):
+            if isinstance(client, SystemActor):
+                try:
+                    await client.send_notice(room.transport_room_id, body)
+                except Exception:
+                    # Membership and the owner's durable warning are committed.
+                    # A transport failure must not make callers retry the join.
+                    logger.exception(
+                        "Unable to deliver unverified-inviter notice in room %s",
+                        room.id,
+                    )
+                return
+        logger.warning("Unable to post unverified-inviter notice in room %s", room.id)
+
+    async def _check_invitations(
+        self,
+        session: AsyncSession,
+        agent_ids: list[str],
+        actor: InvitationActor | None,
+        *,
+        room_id: str,
+        group_id: str | None,
+        lock: bool = False,
+    ) -> list[str]:
+        unverified: list[str] = []
+        for agent_id in sorted(set(agent_ids)):
+            agent = (
+                await self._agent_store.get(session, agent_id, for_update=True)
+                if lock
+                else await self._agent_store.get(session, agent_id)
+            )
+            if agent is None:
+                raise ValueError(f"Unknown agent ID: {agent_id}")
+            if await require_invitation(
+                session,
+                agent=agent,
+                actor=actor,
+                room_id=room_id,
+                group_id=group_id,
+            ):
+                unverified.append(agent.id)
+        return unverified
+
+    async def _record_unverified_invites(
+        self,
+        session: AsyncSession,
+        room: Room,
+        agent_ids: list[str],
+    ) -> None:
+        for agent_id in agent_ids:
+            agent = await self._agent_store.get(session, agent_id)
+            assert agent is not None
+            metadata = (
+                dict(agent.metadata_) if isinstance(agent.metadata_, dict) else {}
+            )
+            notices = metadata.get(INVITATION_NOTICES_KEY, [])
+            notices = notices if isinstance(notices, list) else []
+            notice = {"room_id": room.id, "room_name": room.name}
+            if notice not in notices:
+                metadata[INVITATION_NOTICES_KEY] = [*notices[-19:], notice]
+                agent.metadata_ = metadata
+            logger.warning(
+                "Platform did not report who invited agent %s into room %s; "
+                "join allowed without verifying the inviter; owner %s can remove it",
+                agent.id,
+                room.id,
+                agent.owner_id,
+            )
+
     async def add_agents_to_room(
         self,
         room_id: str,
@@ -1031,6 +1143,7 @@ class RoomService:
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
         added_by_kind: Literal["user", "agent", "system"] = "user",
+        invited_by: InvitationActor | None = None,
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
     ) -> None:
         """`with_agents` runs in the transaction that records the agents, so
@@ -1069,13 +1182,34 @@ class RoomService:
             )
             return
 
-        agent_clients = self._resolve_agent_clients(new_agent_ids)
-
         # One binding for the whole membership change: the two writes below
         # and the invite between them (which itself writes a membership row
         # and an arrival message) all belong to this room's tenant.
         with tenant_scope(room.tenant_id):
             async with self._session_factory() as session:
+                # Group rules must use this transaction's current room, not the
+                # snapshot read before acquiring the target-agent policy locks.
+                current_room = await self._room_store.get(
+                    session, room.id, for_update=True
+                )
+                if current_room is None:
+                    raise ValueError(f"Room not found: {room.id}")
+                room = current_room
+                existing = await self._room_store.get_agent_ids(session, room.id)
+                new_agent_ids = [aid for aid in agent_ids if aid not in existing]
+                if not new_agent_ids:
+                    return
+                agent_clients = self._resolve_agent_clients(new_agent_ids)
+                unverified = await self._check_invitations(
+                    session,
+                    new_agent_ids,
+                    invited_by,
+                    room_id=room.id,
+                    group_id=getattr(room, "group_id", None),
+                    lock=True,
+                )
+                if unverified:
+                    await self._record_unverified_invites(session, room, unverified)
                 await self._room_store.add_agents(
                     session,
                     room.id,
@@ -1104,6 +1238,8 @@ class RoomService:
                 )
 
         logger.info("Added %d agents to room %s", len(agent_ids), room_id)
+        if unverified:
+            await self._announce_unverified_invites(room)
         await self.room_agents_changed(room.tenant_id, room.id)
         self.room_changed(room.tenant_id, room.id)
 

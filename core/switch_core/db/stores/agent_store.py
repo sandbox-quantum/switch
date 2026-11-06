@@ -14,6 +14,9 @@ from switch_core.db.models import (
     room_skills,
 )
 
+# Reserved server-owned state; client metadata replacements cannot erase it.
+INVITATION_NOTICES_KEY = "unverified_invites"
+
 
 class AgentStore:
     # ── Agent CRUD ────────────────────────────────────────────────────────────
@@ -25,10 +28,29 @@ class AgentStore:
         )
 
     async def create(self, session: AsyncSession, agent: Agent) -> None:
+        if isinstance(agent.metadata_, dict):
+            agent.metadata_ = {
+                key: value
+                for key, value in agent.metadata_.items()
+                if key != INVITATION_NOTICES_KEY
+            }
         session.add(agent)
         await session.flush()
 
-    async def get(self, session: AsyncSession, agent_id: str) -> Agent | None:
+    async def get(
+        self, session: AsyncSession, agent_id: str, *, for_update: bool = False
+    ) -> Agent | None:
+        if for_update:
+            result = await session.execute(
+                select(Agent)
+                .where(
+                    Agent.id == agent_id,
+                    Agent.tenant_id == require_tenant_id(),
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            return result.scalar_one_or_none()
         return await session.get(Agent, agent_id)
 
     async def get_many(
@@ -150,10 +172,23 @@ class AgentStore:
         agent_id: str,
         **kwargs: object,
     ) -> None:
-        agent = await session.get(Agent, agent_id)
+        # Refresh under the invite's row lock: a stale reconnect declaration
+        # must not erase a notice committed since it first read the metadata.
+        agent = (
+            await self.get(session, agent_id, for_update=True)
+            if "metadata_" in kwargs
+            else await session.get(Agent, agent_id)
+        )
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
         for key, value in kwargs.items():
+            if key == "metadata_":
+                metadata = dict(value) if isinstance(value, dict) else {}
+                metadata.pop(INVITATION_NOTICES_KEY, None)
+                stored = agent.metadata_
+                if isinstance(stored, dict) and INVITATION_NOTICES_KEY in stored:
+                    metadata[INVITATION_NOTICES_KEY] = stored[INVITATION_NOTICES_KEY]
+                value = metadata or ({} if isinstance(value, dict) else None)
             setattr(agent, key, value)
         await session.flush()
 

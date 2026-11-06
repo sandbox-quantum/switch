@@ -1040,6 +1040,7 @@ def test_bot_join_fires_on_app_joined() -> None:
 
     adapter = _adapter()
     adapter._bot_user_id = "UBOT"
+    adapter._user_cache["UINVITER"] = SlackUser(name="owner", display_name="Owner")
     adapter._web_client = _FakeConversationsInfoClient({})  # type: ignore[assignment]
     adapter._channel_name_cache["C123"] = "general"
 
@@ -1052,7 +1053,12 @@ def test_bot_join_fires_on_app_joined() -> None:
 
     _run(
         adapter._handle_member_joined_channel(
-            {"type": "member_joined_channel", "user": "UBOT", "channel": "C123"}
+            {
+                "type": "member_joined_channel",
+                "user": "UBOT",
+                "channel": "C123",
+                "inviter": "UINVITER",
+            }
         )
     )
 
@@ -1060,6 +1066,8 @@ def test_bot_join_fires_on_app_joined() -> None:
     assert joins[0].channel_id == "C123"
     assert joins[0].channel_type == "channel_public"
     assert joins[0].channel_name == "general"
+    assert joins[0].inviter_id == "UINVITER"
+    assert joins[0].inviter_name == "owner"
 
 
 def test_user_join_does_not_fire_on_app_joined() -> None:

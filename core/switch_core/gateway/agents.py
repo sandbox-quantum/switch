@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
@@ -32,8 +33,8 @@ from switch_core.bridges.agent.protocol.types import (
 )
 from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
-from switch_core.db.models import User, require_tenant_id
-from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.models import Agent, User, require_tenant_id
+from switch_core.db.stores.agent_store import INVITATION_NOTICES_KEY, AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -82,13 +83,32 @@ router = APIRouter()
 
 
 def _for_caller[Summary: AgentSummary](
-    summary: Summary, user: User, is_admin: bool
+    summary: Summary, user: User, is_admin: bool, warnings: list[str] | None = None
 ) -> Summary:
     """`summary` with what `user` may do with the agent filled in."""
     principal = Principal(user.id, is_admin)
     return summary.model_copy(
-        update={"can_manage": can_manage(principal, summary.owner_id)}
+        update={
+            "can_manage": can_manage(principal, summary.owner_id),
+            "invitation_warnings": (warnings or [])
+            if summary.owner_id == user.id
+            else [],
+        }
     )
+
+
+def _invitation_warnings(metadata: object) -> list[str]:
+    if not isinstance(metadata, dict):
+        return []
+    notices = metadata.get(INVITATION_NOTICES_KEY)
+    if not isinstance(notices, list):
+        return []
+    return [
+        "Switch could not verify who added your agent to "
+        f"{notice['room_name']}. You can remove the agent from that room."
+        for notice in notices[-20:]
+        if isinstance(notice, dict) and isinstance(notice.get("room_name"), str)
+    ]
 
 
 @router.get("")
@@ -100,7 +120,21 @@ async def list_agents(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[AgentSummary]:
     summaries = await list_agent_summaries(session, agent_store, user_store)
-    return [_for_caller(summary, user, is_admin) for summary in summaries]
+    # Only the owner gets these room details. Shared MCP summaries stay empty.
+    warnings = {
+        row.id: row.metadata_
+        for row in (
+            await session.execute(
+                select(Agent.id, Agent.metadata_).where(Agent.owner_id == user.id)
+            )
+        )
+    }
+    return [
+        _for_caller(
+            summary, user, is_admin, _invitation_warnings(warnings.get(summary.id))
+        )
+        for summary in summaries
+    ]
 
 
 @router.delete("/by-name/{agent_name}")
@@ -761,7 +795,7 @@ async def update_addressing_policy(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
-    return _for_caller(detail, user, is_admin)
+    return _for_caller(detail, user, is_admin, _invitation_warnings(agent.metadata_))
 
 
 @router.put("/{agent_id}/can-manage-agents")
@@ -815,7 +849,7 @@ async def update_can_manage_agents(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
-    return _for_caller(detail, user, is_admin)
+    return _for_caller(detail, user, is_admin, _invitation_warnings(agent.metadata_))
 
 
 # Declared after the literal GET routes (e.g. /known-types) so those are matched
@@ -846,4 +880,4 @@ async def get_agent_detail(
         room_role_store=protocol.room_role_store,
         connections=protocol.connections,
     )
-    return _for_caller(detail, user, is_admin)
+    return _for_caller(detail, user, is_admin, _invitation_warnings(agent.metadata_))

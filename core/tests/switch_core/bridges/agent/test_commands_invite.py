@@ -57,7 +57,9 @@ def _build_client(
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, thread_id=None, user_id="@sender:test"
+    )
 
 
 def _agent(
@@ -169,3 +171,20 @@ class TestInviteCommandRegistration:
         # reference).
         cmd = COMMANDS_BY_NAME["invite-agent"]
         assert cmd.admin_owned is True
+
+
+async def test_invite_forwards_actual_sender_and_reports_policy_refusal() -> None:
+    from unittest.mock import AsyncMock
+
+    from switch_core.invitations import InvitationActor, InvitationDenied
+
+    client, posted, _ = _build_client(
+        registry={"claude-code.alice": _ALICE}, room_agent_ids=[]
+    )
+    add = AsyncMock(side_effect=InvitationDenied("Ask the agent's owner to invite it."))
+    client._room_service.add_agents_to_room = add
+    await _cmd_invite(client, _Room(room_id="!m:x"), _event("@claude-code.alice"), True)
+    assert add.call_args.kwargs["invited_by"] == InvitationActor(
+        kind="sender", id="@sender:test"
+    )
+    assert posted == ["Ask the agent's owner to invite it."]

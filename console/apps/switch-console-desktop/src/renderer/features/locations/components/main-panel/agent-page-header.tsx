@@ -20,6 +20,7 @@ import {
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { InvitationWarnings } from './invitation-warnings';
 
 /**
  * Who this page is about: the agent's mark, its name and provider, the
@@ -154,6 +155,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
       titleActions={<AgentIdentityActions onRename={rename} onDelete={remove} disabled={false} />}
       machineName={showMachineName ? agentMachineName : null}
       description={description}
+      notices={<InvitationWarnings warnings={remote?.invitationWarnings} />}
       actions={
         <>
           {!newChat && (
@@ -214,6 +216,7 @@ export function AgentHeaderLayout({
   titleActions,
   machineName,
   description,
+  notices,
   actions,
 }: {
   avatar: React.ReactNode;
@@ -224,6 +227,7 @@ export function AgentHeaderLayout({
   /** The agent's name, shown under a display name that differs from it; null to leave it out. */
   machineName: string | null;
   description: React.ReactNode;
+  notices?: React.ReactNode;
   actions: React.ReactNode;
 }) {
   return (
@@ -245,6 +249,7 @@ export function AgentHeaderLayout({
           </p>
         )}
         {description && <p className="text-sm text-foreground-muted">{description}</p>}
+        {notices}
         <div className="mt-2 flex flex-wrap items-center gap-2">{actions}</div>
       </div>
     </header>

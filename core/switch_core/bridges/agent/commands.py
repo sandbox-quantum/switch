@@ -55,6 +55,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
+from switch_core.invitations import InvitationActor, InvitationDenied
 from switch_core.platform_access import administers_on_record
 from switch_core.transport import RoomRef
 
@@ -1237,9 +1238,15 @@ async def _cmd_invite(
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
     # MCP tool) so the agent is invited to the room AND added to any bridged
     # channel.
-    await cast("CommandConsumer", client)._room_service.add_agents_to_room(
-        meta.room_id, agent_names=[target.name]
-    )
+    try:
+        await cast("CommandConsumer", client)._room_service.add_agents_to_room(
+            meta.room_id,
+            agent_names=[target.name],
+            invited_by=InvitationActor(kind="sender", id=event.user_id),
+        )
+    except InvitationDenied as error:
+        await _reply(client, room, event, str(error))
+        return
     await _reply(
         client,
         room,

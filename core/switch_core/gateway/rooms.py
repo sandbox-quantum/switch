@@ -76,6 +76,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
+from switch_core.invitations import InvitationActor
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
 from switch_core.rooms_yaml import (
     GroupProvisionResult,
@@ -1187,6 +1188,7 @@ async def post_room_agents(
         await room_service.add_agents_to_room(
             room_id,
             agent_ids=req.agent_ids,
+            invited_by=InvitationActor(kind="user", id=user.id),
             include_subagents_for=req.include_subagents_for,
             join_event_listeners=req.join_event_listeners,
         )
