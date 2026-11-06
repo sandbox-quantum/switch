@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_connectors_that_are_built():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "trello",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "trello",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["trello"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -130,6 +133,39 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
         assert build.path == ("gws.exe" if target == "win32-x64" else "gws")
         if target.startswith("linux"):
             assert build.url.endswith("-unknown-linux-musl.tar.gz")
+
+
+def test_the_shipped_trello_entry_asks_for_the_whole_groups_trello_grants():
+    definition = CATALOG["trello"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    # A client registered without a port signed in on one it never named.
+    assert oauth.loopback_ports is None
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("trello", "https://mcp.trello.com/v1")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    identity = {"read:me", "read:account", "offline_access"}
+    groups = ("board", "organization", "member", "member.inbox", "member.planner")
+    reads = {f"read:{group}:trello" for group in groups}
+    writes = {f"write:{group}:trello" for group in groups if group != "member"}
+    # Leaving out a read blocks consent, and leaving out a write loses them all.
+    assert set(definition.access.read.scopes or []) == identity | reads
+    assert set(definition.access.write.scopes or []) == identity | reads | writes
 
 
 def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
