@@ -461,6 +461,13 @@ class PlatformAdapter(ABC):
     #: connection they opened; they leave this False.
     receives_webhooks: ClassVar[bool] = False
 
+    #: Whether the adapter gives its platform that address itself, over the
+    #: platform's API, when it starts.
+    #:
+    #: Leave False where somebody has to paste the address into the platform's
+    #: settings. Set by an adapter that registers it, so that nobody is told to.
+    registers_own_webhooks: ClassVar[bool] = False
+
     #: Whether this platform draws agents' session activity: each turn step by
     #: step, and the approval and question cards a session waits on.
     draws_session_activity: ClassVar[bool] = False

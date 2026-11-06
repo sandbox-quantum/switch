@@ -441,13 +441,19 @@ class CollaborationBridgeLifecycleService:
 
     def receives_webhooks(self, bridge_type: str) -> bool:
         """Whether this platform's connections receive events on an address of
-        their own. False for a type nobody registered."""
+        their own that the operator has to give it. False for a type nobody
+        registered, and for a platform whose adapter registers the address."""
         adapter_cls = self._adapter_registry.get(bridge_type)
-        return adapter_cls is not None and adapter_cls.receives_webhooks
+        return (
+            adapter_cls is not None
+            and adapter_cls.receives_webhooks
+            and not adapter_cls.registers_own_webhooks
+        )
 
     def webhook_url(self, bridge_id: str, bridge_type: str) -> str | None:
         """The address to give the platform for this connection's events, or
-        None where it takes none or the public origin is not configured."""
+        None where nobody has to give it one or the public origin is not
+        configured."""
         if not self.receives_webhooks(bridge_type):
             return None
         return webhook_url(self._config.messaging_public_url, bridge_id)
@@ -1194,7 +1200,9 @@ class CollaborationBridgeLifecycleService:
             adapter.set_callback_endpoint(callback_endpoint)
             self._callback_endpoints[bridge_id] = callback_endpoint
             if adapter_cls.receives_webhooks:
-                adapter.set_webhook_url(self.webhook_url(bridge_id, bridge.type))
+                adapter.set_webhook_url(
+                    webhook_url(self._config.messaging_public_url, bridge_id)
+                )
 
             gateway_warning = gateway_url_warning(
                 self._config.gateway_public_url, adapter_cls.renders_custom_url_schemes

@@ -269,6 +269,7 @@ class WebexAdapter(PlatformAdapter):
 
     display_name: ClassVar[str] = "Webex"
     receives_webhooks: ClassVar[bool] = True
+    registers_own_webhooks: ClassVar[bool] = True
     draws_session_activity: ClassVar[bool] = True
     # An edit notifies nobody, so a problem somebody has to act on is posted.
     separate_attention_slot: ClassVar[bool] = True
@@ -307,6 +308,7 @@ class WebexAdapter(PlatformAdapter):
         self._bridge_id: str | None = None
         # person id -> display name, so a sender is looked up once.
         self._names: OrderedDict[str, str] = OrderedDict()
+        self._space_titles: OrderedDict[str, str] = OrderedDict()
         self._names_max = 2000
         # handle -> person id, for rendering an outbound `@handle` as a mention.
         self._mention_targets: dict[str, str] = {}
@@ -587,6 +589,7 @@ class WebexAdapter(PlatformAdapter):
         sender_name = await self._name_of(person_id, message.get("personEmail"))
         content = self._inbound_text(message)
         root_id = message.get("parentId") or None
+        channel_name = await self._space_title(room_id)
 
         parsed = _parse_command(content)
         if parsed is not None and self._on_command is not None:
@@ -601,6 +604,7 @@ class WebexAdapter(PlatformAdapter):
                     args=args,
                     message_ref=message_id,
                     root_id=root_id,
+                    channel_name=channel_name,
                 )
             )
             return
@@ -619,6 +623,7 @@ class WebexAdapter(PlatformAdapter):
                 content=content,
                 message_ref=message_id,
                 root_id=root_id,
+                channel_name=channel_name,
                 attachments=attachments,
                 attachment_failures=failures,
                 self_mention_token=self._self_mention(content),
@@ -666,6 +671,27 @@ class WebexAdapter(PlatformAdapter):
                     count=1,
                 )
         return self.translate_inbound(body.strip())
+
+    async def _space_title(self, room_id: str) -> str | None:
+        """The space's title, which the room linked to it is named after.
+
+        None where Webex would not say: a room can be named without it, and a
+        lookup that failed is tried again on the next message."""
+        cached = self._space_titles.get(room_id)
+        if cached is not None:
+            return cached
+        try:
+            room = await self._require_client().room(room_id)
+        except (WebexAPIError, httpx.TransportError) as exc:
+            logger.warning("Could not look up Webex space %s: %s", room_id, exc)
+            return None
+        title = str(room.get("title") or "")
+        if not title:
+            return None
+        self._space_titles[room_id] = title
+        if len(self._space_titles) > self._names_max:
+            self._space_titles.popitem(last=False)
+        return title
 
     async def _name_of(self, person_id: str, email: object) -> str:
         cached = self._names.get(person_id)

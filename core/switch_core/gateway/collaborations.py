@@ -290,7 +290,7 @@ async def list_bridge_types(
                 display_name=platform.display_name,
                 docs_slug=platform.docs_slug,
                 icon_svg=platform.icon_svg,
-                receives_webhooks=adapter_cls.receives_webhooks,
+                receives_webhooks=collab_lifecycle.receives_webhooks(t),
                 config_schema=collab_lifecycle.get_config_schema(t),
                 channel_creation_supported=adapter_cls.supports_channel_creation,
                 directory_search_supported=adapter_cls.supports_directory_search,

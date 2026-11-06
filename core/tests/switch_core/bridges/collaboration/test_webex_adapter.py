@@ -584,6 +584,34 @@ class TestInbound:
         assert command.message_ref == "msg-1"
         assert received.messages == []
 
+    async def test_a_room_is_named_after_its_space(self, webex: FakeWebex) -> None:
+        adapter, received = await _started(webex)
+        webex.route("GET", "/v1/rooms/room-1", lambda r: _ok({"title": "Support Desk"}))
+        _serve_message(webex, _message(text="!help"))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload=_delivery("messages", "created", id="msg-1", personId="person-1"),
+        )
+        _serve_message(webex, _message(id="msg-2", text="good morning"))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload=_delivery("messages", "created", id="msg-2", personId="person-1"),
+        )
+        assert received.commands[0].channel_name == "Support Desk"
+        assert received.messages[0].channel_name == "Support Desk"
+        assert len(webex.sent("GET", "/v1/rooms/room-1")) == 1
+
+    async def test_a_message_still_arrives_when_webex_wont_say_the_title(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, received = await _started(webex)
+        _serve_message(webex, _message(text="good morning"))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload=_delivery("messages", "created", id="msg-1", personId="person-1"),
+        )
+        assert received.messages[0].channel_name is None
+
     async def test_a_file_link_off_webex_never_gets_the_token(
         self, webex: FakeWebex
     ) -> None:
