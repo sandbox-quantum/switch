@@ -156,6 +156,12 @@ version of their own to them without also giving them a release of their own.
   of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
+- **OAuth catalog entries can opt into MCP identity and unscoped consent.**
+  Identity tools must be read-only, take no arguments and identify one account;
+  ambiguous results fail sign-in. `account_id` may list several paths, joined
+  into one id, so a person in two accounts is two connections. Vendors with
+  documented absence of scopes can explicitly omit scope and are always shown
+  as read and write.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the

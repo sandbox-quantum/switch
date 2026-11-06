@@ -1,10 +1,9 @@
 # Asana on a self-hosted server
 
-> **Connection blocked:** The current connector checks identity through
-> Asana's REST API, but [Asana documents MCP-app tokens](https://developers.asana.com/docs/integrating-with-asanas-mcp-server)
-> as valid only with its MCP server. A real MCP-app connection is not expected to
-> complete until Switch can read identity through MCP. Live connection and
-> grant-removal verification are still pending.
+> **Integration candidate:** This local build identifies the account through
+> an MCP tool. The current Asana tool schema and result shape have not been
+> verified against the live service, and agent grants may persist when the
+> same person changes Asana workspaces. See the limits below.
 
 Agents can read and update tasks and projects in the Asana workspace their
 owner selects when authorizing the connection, within that owner's Asana
@@ -56,7 +55,7 @@ tool the server offers, within the selected workspace and the person's own
 Asana permissions. [Asana's tool reference](https://developers.asana.com/docs/mcp-tools-reference)
 says each MCP session is scoped to one workspace selected at authorization.
 The integration guide recommends omitting `scope` if it is rejected;
-the current Switch connector sends `default`.
+this integration candidate omits it.
 
 ## Give Switch the client
 
@@ -152,11 +151,11 @@ agents' next token requests:
 - Advanced task search (`search_tasks`) needs a paid Asana plan. On a free
   plan it is refused, and agents fall back to the basic task and project
   tools.
-- The current OAuth adapter sends the MCP endpoint URL as the `resource`
-  parameter. The server's protected-resource metadata identifies
+- The integration candidate uses the resource advertised in protected-resource
+  metadata. The server's protected-resource metadata identifies
   `https://mcp.asana.com/v2/mcp` as its resource, while Asana's integration
   guide gives `https://mcp.asana.com/v2` as an optional resource example.
-  Acceptance of the adapter's resource value by this PR has not been
+  Acceptance of this resource value by the integration candidate has not been
   verified with a real app and may prevent authorization.
 
 ## An organization's own Asana app

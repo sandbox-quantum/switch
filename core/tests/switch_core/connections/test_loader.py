@@ -267,16 +267,17 @@ def test_the_shipped_asana_entry_signs_in_as_the_docs_say_it_must():
         ("asana", "https://mcp.asana.com/v2/mcp")
     ]
     assert definition.access is not None and definition.access.write is not None
-    # The server's one scope, `default`, at both levels: consent is not
-    # granular, so a sign-in is write whichever level the person picked.
-    assert definition.access.read.scopes == ["default"]
-    assert definition.access.write.scopes == ["default"]
+    # Asana has no granular scopes; the sign-in is always write.
+    assert definition.access.unscoped is True
+    assert definition.access.read.scopes == []
+    assert definition.access.write.scopes == []
     assert definition.auth.identity is not None
-    assert definition.auth.identity.url == "https://app.asana.com/api/1.0/users/me"
+    assert definition.auth.identity.url is None
+    assert definition.auth.identity.mcp_tool == "get_user"
     assert (
         definition.auth.identity.account_id,
         definition.auth.identity.label,
-    ) == ("data.gid", "data.email")
+    ) == ("data.gid", "data.name")
 
 
 RESTRICTED_DRIVE = {
@@ -1251,3 +1252,10 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(raw.replace(b"\n", b"\r\n"))
+    assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()

@@ -36,26 +36,24 @@ auth:
     # is deauthorized, and its access tokens with it.
     revocation_discovered: true
   identity:
-    url: https://app.asana.com/api/1.0/users/me
+    # MCP tokens cannot call the REST API. Asana documents get_user without
+    # an identifier as the authenticated user; the live schema still needs
+    # verification (including readOnlyHint and no required arguments).
+    # https://developers.asana.com/docs/mcp-tools-reference
+    mcp_tool: get_user
     account_id: data.gid
-    label: data.email
+    label: data.name
 # Asana's access tokens live 60 minutes (documented, not measured).
 token: { kind: pass_through, max_lifetime: 3600 }
 mcp:
   servers:
     - { name: asana, url: "https://mcp.asana.com/v2/mcp" }
 access:
-  # Asana's MCP server knows one scope, `default`: its protected-resource
-  # metadata lists no other, and an MCP app's consent is not granular. Every
-  # authorization may use every tool the server offers, within the person's
-  # own Asana permissions, so the two levels name the same scope and a
-  # sign-in is granted as write whichever level the person picked: there is
-  # no read-only Asana sign-in. Not the personal access token the issue
-  # names as the alternative: Asana documents MCP apps' tokens for its MCP
-  # server, and does not document a pasted key working there, while a key
-  # would also reach the whole REST API rather than the server alone.
-  read:
-    scopes: [default]
-  write:
-    scopes: [default]
+  # MCP apps have no granular scopes; omitting scope is supported. Consent
+  # reaches every available MCP tool within the user's permissions.
+  # https://developers.asana.com/docs/mcp-tools-reference
+  # https://developers.asana.com/docs/integrating-with-asanas-mcp-server
+  unscoped: true
+  read: { scopes: [] }
+  write: { scopes: [] }
 tools: { mode: pass_through }
