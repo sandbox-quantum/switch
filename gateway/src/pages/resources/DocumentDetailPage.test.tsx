@@ -88,6 +88,11 @@ describe("DocumentDetailPage", () => {
     await screen.findByDisplayValue("Runbook");
     expect(field("Name").disabled).toBe(false);
     expect(screen.getByLabelText("Access").getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText(
+        "Anyone can see, attach and change it. Only its owner and admins can change who may.",
+      ),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Transfer ownership" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete document" })).toBeNull();
   });

@@ -22,6 +22,7 @@ import {
 } from "../../data/api";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
+  ACCESS_HELPERS_FOR_OTHERS,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
@@ -306,6 +307,7 @@ function EditFieldsSection({
         value={access}
         onChange={setAccess}
         disabled={!canChangeAccess || saving}
+        helpers={canChangeAccess ? undefined : ACCESS_HELPERS_FOR_OTHERS}
         sx={{ maxWidth: 320 }}
       />
       {error && <Alert severity="error">{error}</Alert>}

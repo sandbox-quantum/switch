@@ -28,6 +28,7 @@ import {
 } from "../../data/api";
 import { useOwnedReferenceTypes, useReferenceTypes } from "../../data/hooks";
 import {
+  ACCESS_HELPERS_FOR_OTHERS,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
@@ -328,6 +329,7 @@ function EditReferenceTypeDialog({
             value={access}
             onChange={setAccess}
             disabled={submitting || !referenceType.can_manage}
+            helpers={referenceType.can_manage ? undefined : ACCESS_HELPERS_FOR_OTHERS}
           />
           {referenceType.shadowed_by_builtin && (
             <Alert severity="warning">
