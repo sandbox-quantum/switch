@@ -73,4 +73,23 @@ describe('hiddenStopRows', () => {
     ];
     expect(hiddenStopRows(messages).size).toBe(0);
   });
+
+  it('hides old-format human !interrupt command and its acknowledgement', () => {
+    const messages = [
+      row('$ask', 'fix the build'),
+      row('$stop', '!interrupt @coder', human),
+      row('$ack', 'Interrupted my current turn.', agent, '$stop'),
+      row('$next', 'try again'),
+    ];
+    expect(hiddenStopRows(messages)).toEqual(new Set(['$stop', '$ack']));
+  });
+
+  it('hides old-format human !retry command and its acknowledgement', () => {
+    const messages = [
+      row('$ask', 'plan a picnic'),
+      row('$retry', '!retry @coder $ask', human),
+      row('$ack', 'Trying that message again.', agent, '$retry'),
+    ];
+    expect(hiddenStopRows(messages)).toEqual(new Set(['$retry', '$ack']));
+  });
 });
