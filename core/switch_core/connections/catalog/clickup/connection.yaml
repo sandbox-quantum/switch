@@ -1,0 +1,14 @@
+slug: clickup
+name: ClickUp
+category: Project management
+description: Read and update ClickUp tasks and lists.
+# Held back, not forgotten: ClickUp's MCP server (https://mcp.clickup.com/mcp)
+# signs in with OAuth 2.1 and dynamic registration, but its access tokens do
+# not expire and it issues no refresh token. Switch hands an agent only a
+# credential it can take back or wait out, so the oauth adapter needs a
+# refresh grant and a max_lifetime, and ClickUp offers neither. See
+# docs/design/service-connections-v2.md, "ClickUp", for what was measured and
+# what would let this entry be enabled.
+enabled: false
+auth:
+  type: oauth
