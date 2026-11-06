@@ -13,7 +13,7 @@ const NAMED_AGENTS = 4;
  * only forget it, not revoke it.
  */
 export function disconnectCopy(
-  entry: Pick<ConnectionCatalogEntry, 'name' | 'auth_type'>,
+  entry: Pick<ConnectionCatalogEntry, 'name' | 'auth_type' | 'method'>,
   grantedAgents: string[] | null
 ): { title: string; lines: string[] } {
   const { name } = entry;
@@ -26,11 +26,15 @@ export function disconnectCopy(
           ? `${grantedAgents[0]} loses ${name}.`
           : `${grantedAgents.length} agents lose ${name}: ${namedAgents(grantedAgents)}. Disconnecting removes their access.`,
   ];
-  if (entry.auth_type === 'api_key') {
+  if (entry.method === 'token' || entry.method === 'keys') {
+    lines.push(`Switch removes what you pasted for ${name}.`);
+  } else if (entry.auth_type === 'api_key') {
     lines.push('Switch removes the key it keeps.');
-    lines.push(`Switch can't revoke this key at ${name}; delete it there.`);
   } else {
     lines.push(`Switch removes the sign-in it keeps for ${name}.`);
+  }
+  if (entry.auth_type === 'api_key') {
+    lines.push(`Switch can't revoke this key at ${name}; delete it there.`);
   }
   return { title: `Disconnect ${name}?`, lines };
 }
