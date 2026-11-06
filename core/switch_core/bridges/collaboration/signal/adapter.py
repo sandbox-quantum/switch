@@ -14,14 +14,19 @@ message (Signal identifies one by the author that sent it and when).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
-from pydantic import Field
+import httpx
+from pydantic import Field, field_validator
 
 from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
+    BridgeCredentialError,
+    BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
     InboundAgentJoin,
@@ -31,6 +36,41 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
 )
 
+# The Signal number a connection acts as: E.164, 7 to 15 digits.
+_ACCOUNT_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+
+# The JSON-RPC error codes the daemon reports, as probed on 0.14.9: -32602 is
+# "the account is not on this daemon", a credential problem; -32600 is a request
+# this client built wrong; any other code is the platform refusing an operation.
+RPC_ACCOUNT_NOT_ON_DAEMON = -32602
+RPC_INVALID_REQUEST = -32600
+
+
+class SignalRpcError(BridgeOperationError):
+    """A JSON-RPC `error` result, classified by its code, never its message.
+
+    The code is what the classification keys on: the daemon's wording is free
+    text, and this has to be answerable without reading it.
+    """
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(f"signal-cli refused the request ({code}): {message}")
+        self.code = code
+
+
+def _json_rpc_body(response: httpx.Response) -> dict[str, Any]:
+    """Parse a JSON-RPC response body, refusing anything that is not one."""
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise BridgeOperationError(
+            f"The daemon answered without a JSON-RPC body (HTTP {response.status_code})"
+        ) from exc
+    if not isinstance(body, dict):
+        raise BridgeOperationError(
+            "The daemon answered with a JSON-RPC body that is not an object"
+        )
+    return body
 
 
 class SignalConnectionConfig(BridgeConnectionConfig):
@@ -50,6 +90,34 @@ class SignalConnectionConfig(BridgeConnectionConfig):
             "example +15555550100."
         ),
     )
+
+    @field_validator("daemon_url")
+    @classmethod
+    def _daemon_url_has_a_scheme_and_no_path(cls, url: str) -> str:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https"):
+            raise ValueError(
+                "must start with http:// or https:// — "
+                f"the daemon has no other transport ({url!r})"
+            )
+        if not parts.netloc:
+            raise ValueError(f"must name a host to reach the daemon ({url!r})")
+        if parts.path not in ("", "/"):
+            raise ValueError(
+                "is the daemon's base address; the JSON-RPC and event paths "
+                f"are appended by Switch, so no path ({url!r})"
+            )
+        return url
+
+    @field_validator("account")
+    @classmethod
+    def _account_is_e164(cls, account: str) -> str:
+        if not _ACCOUNT_RE.fullmatch(account):
+            raise ValueError(
+                "must be a Signal number in E.164 form: a leading +, then 7 "
+                "to 15 digits starting non-zero"
+            )
+        return account
 
 
 class SignalAdapter(PlatformAdapter):
@@ -73,6 +141,55 @@ class SignalAdapter(PlatformAdapter):
     def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
         url = connection_config.get("daemon_url")
         return [str(url)] if url else []
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Check the configured account is actually on that daemon.
+
+        The cheap authenticated call is `listAccounts`: the daemon's own JSON-RPC
+        answers for every other method, so a wrong address shows up here as a
+        connection error, and a number that is not registered on that daemon is
+        the one error case worth naming to the operator.
+        """
+        config = SignalConnectionConfig.model_validate(connection_config)
+        async with httpx.AsyncClient(timeout=30) as client:
+            try:
+                response = await client.post(
+                    config.daemon_url.rstrip("/") + "/api/v1/rpc",
+                    json={"jsonrpc": "2.0", "id": 1, "method": "listAccounts"},
+                )
+            except httpx.HTTPError as exc:
+                raise BridgeCredentialError(
+                    f"Could not reach the signal-cli daemon at {config.daemon_url}: "
+                    f"{exc or type(exc).__name__}. Check the address and that the "
+                    "daemon is running."
+                ) from exc
+        body = _json_rpc_body(response)
+        error = body.get("error")
+        if error is not None:
+            code = error.get("code")
+            message = error.get("message", "no reason given")
+            if code == RPC_ACCOUNT_NOT_ON_DAEMON:
+                raise BridgeCredentialError(
+                    f"No account {config.account!r} on that daemon: {message}. "
+                    "Register the number on this daemon, or point the bridge at "
+                    "the one that holds it."
+                )
+            # `listAccounts` takes no params, so -32600 is a client bug (ours),
+            # and anything else is the daemon refusing the call.
+            raise BridgeOperationError(
+                f"The daemon refused the request ({code}): {message}."
+            )
+        accounts = body.get("result") or []
+        numbers = {
+            str(account.get("number")) for account in accounts if account.get("number")
+        }
+        if config.account not in numbers:
+            raise BridgeCredentialError(
+                f"The daemon does not hold the account {config.account!r}. It "
+                "registers these instead: "
+                f"{', '.join(sorted(numbers)) if numbers else 'none'}."
+            )
 
     async def start(
         self,
@@ -106,7 +223,9 @@ class SignalAdapter(PlatformAdapter):
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
         raise NotImplementedError
 
-    async def send_typing(self, channel_id: str, sender_name: str, is_typing: bool) -> None:
+    async def send_typing(
+        self, channel_id: str, sender_name: str, is_typing: bool
+    ) -> None:
         raise NotImplementedError
 
     async def create_channel(
@@ -124,7 +243,9 @@ class SignalAdapter(PlatformAdapter):
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         raise NotImplementedError
 
-    async def add_agents_to_channel(self, channel_id: str, agent_names: list[str]) -> None:
+    async def add_agents_to_channel(
+        self, channel_id: str, agent_names: list[str]
+    ) -> None:
         raise NotImplementedError
 
     async def add_users_to_channel(
