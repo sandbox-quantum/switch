@@ -92,6 +92,10 @@ class FakeWebex:
             return httpx.Response(
                 404, json={"message": f"no route {request.method} {request.url.path}"}
             )
+        if b'"attachments"' in request.content and b"<@" in request.content:
+            body = json.loads(request.content)
+            if body.get("attachments") and "<@" in body.get("markdown", ""):
+                return _refused("Mentions not allowed to be used with attachments.")
         return handler(request)
 
     def sent(self, method: str, path: str) -> list[httpx.Request]:
@@ -1001,8 +1005,51 @@ class TestCards:
             notify_external_id="person-1",
         )
         await adapter.post_rich("room-1", "claude", card)
-        body = json.loads(webex.sent("POST", "/v1/messages")[0].content)
-        assert "<@personId:person-1|Ada Lovelace>" in body["markdown"]
+        drawn, notice = (
+            json.loads(c.content) for c in webex.sent("POST", "/v1/messages")
+        )
+        assert "Ada Lovelace" in drawn["markdown"]
+        assert "<@" not in drawn["markdown"]
+        assert "<@personId:person-1|Ada Lovelace>" in notice["markdown"]
+        assert notice["parentId"] == "card-1"
+        assert "attachments" not in notice
+
+    async def test_a_redrawn_card_carries_no_mention(self, webex: FakeWebex) -> None:
+        adapter, _ = await _started(webex)
+        webex.route("PUT", "/v1/messages/card-1", lambda r: _ok({"id": "card-1"}))
+        webex.route(
+            "GET", "/v1/people/person-1", lambda r: _ok({"displayName": "Ada Lovelace"})
+        )
+        card = RequestCard(
+            open_request(),
+            RequestReference(token="tok-1", handle="R7"),
+            notify_external_id="person-1",
+        )
+        await adapter.update_rich("room-1", "claude", "card-1", card, None)
+        body = json.loads(webex.sent("PUT", "/v1/messages/card-1")[0].content)
+        assert body["attachments"]
+        assert "<@" not in body["markdown"]
+
+    async def test_a_lost_notice_does_not_fail_a_card_that_is_up(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, _ = await _started(webex)
+
+        def post(request: httpx.Request) -> httpx.Response:
+            if b"attachments" in request.content:
+                return _ok({"id": "card-1"})
+            raise httpx.ConnectError("gone")
+
+        webex.route("POST", "/v1/messages", post)
+        webex.route(
+            "GET", "/v1/people/person-1", lambda r: _ok({"displayName": "Ada Lovelace"})
+        )
+        card = RequestCard(
+            open_request(),
+            RequestReference(token="tok-1", handle="R7"),
+            notify_external_id="person-1",
+        )
+        assert await adapter.post_rich("room-1", "claude", card) == "card-1"
 
     async def test_a_rate_limit_is_a_wait_not_a_refusal(self, webex: FakeWebex) -> None:
         adapter, _ = await _started(webex)

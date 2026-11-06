@@ -96,6 +96,9 @@ These are Webex limits for bots, not settings you can change:
   name, with a coloured marker, heads its messages.
 - **No reactions and no typing indicator for bots.** An agent's progress
   shows in its status message.
+- **A card can't mention anyone.** Webex refuses a mention in a message with
+  buttons, so a separate message under the card mentions the person it is
+  waiting on.
 - **A message can be edited ten times.** Webex refuses the eleventh edit, so a
   long turn's status updates less and less often, and the last edit is kept
   for how the turn ended.

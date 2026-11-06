@@ -164,6 +164,8 @@ _MENTION_HTML = re.compile(
 # `@name` at a word boundary, for rendering an outbound mention of a person
 # Switch has seen. Handles allow letters, digits and `._-`.
 _OUTBOUND_MENTION = re.compile(r"(?<![\w<@])@(?P<name>[\w][\w.\-]*)")
+# A mention as Webex takes it in `markdown`: `<@personId:id|Name>` or `<@all>`.
+_MENTION_MARKDOWN = re.compile(r"<@(?:[^>|]*\|(?P<name>[^>]*)|(?P<word>[^>|]*))>")
 
 
 class WebexConnectionConfig(BridgeConnectionConfig):
@@ -1012,6 +1014,10 @@ class WebexAdapter(PlatformAdapter):
         platform, with an Adaptive Card under it whose buttons answer in one
         press. The text is what a client without card support shows.
 
+        Webex refuses a mention in a message with a card, and a mention is the
+        only thing that notifies someone in a group space, so whoever a card
+        is waiting on is mentioned in a message of its own, under the card.
+
         Raises `RichContentFailed` only for what Webex definitely refused. A
         send whose outcome nobody knows raises its own error, so the caller
         keeps its reservation."""
@@ -1048,7 +1054,34 @@ class WebexAdapter(PlatformAdapter):
                 f"Webex accepted the post in space {channel_id} but gave no id.",
                 text=text,
             )
+        if attachments:
+            await self._notify_of_card(
+                channel_id, heading, content, thread_root_id or ref
+            )
         return ref
+
+    async def _notify_of_card(
+        self,
+        channel_id: str,
+        heading: str,
+        content: RichContent,
+        thread_root_id: str,
+    ) -> None:
+        mention = await self._person_mention(content.notify_external_id)
+        if mention is None:
+            return
+        try:
+            await self._post_text(
+                channel_id,
+                _join(heading, f"{mention} this is waiting for your answer."),
+                thread_root_id,
+            )
+        except httpx.TransportError as exc:
+            logger.warning(
+                "The card in Webex space %s is up, but its notice was not sent: %s",
+                channel_id,
+                exc,
+            )
 
     async def update_rich(
         self,
@@ -1132,6 +1165,7 @@ class WebexAdapter(PlatformAdapter):
         controls = offered_controls(content.request) if drawn.answerable else []
         if not controls:
             return text, []
+        text = _MENTION_MARKDOWN.sub(_mention_as_text, text)
         actions = [
             {
                 "type": "Action.Submit",
@@ -1331,6 +1365,10 @@ class WebexAdapter(PlatformAdapter):
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _mention_as_text(match: re.Match[str]) -> str:
+    return match.group("name") or f"@{match.group('word')}"
 
 
 async def _waiting_out_limits[T](
