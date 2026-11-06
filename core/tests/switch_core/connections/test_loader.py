@@ -221,7 +221,7 @@ def test_the_shipped_hubspot_entry_connects_as_hubspot_documents():
     assert definition.auth.identity.mcp_tool == "get_user_details"
     # Maintainer direction on #830: key by user id plus HubSpot account id,
     # via the list form of account_id added to the shared identity PR.
-    assert definition.auth.identity.account_id == ["userId", "hubId"]
+    assert definition.auth.identity.account_id == ["userId", "accountId"]
     assert definition.auth.identity.label == "userId"
     # HubSpot's metadata lists scopes_supported: [], so access is unscoped:
     # empty read and write scope lists, write consent implied, and the real

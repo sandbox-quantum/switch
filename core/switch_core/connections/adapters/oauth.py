@@ -210,6 +210,36 @@ def _path_value(document: Any, path: str) -> Any:
     return value
 
 
+def _hubspot_identity(document: dict[str, Any]) -> dict[str, int]:
+    """Read the two root integer IDs measured from get_user_details.
+
+    The live result has root integer user/account fields, not hubId.
+    Exact key case was not captured by the value-free diagnostic. Accept explicit case/snake spellings of these same two fields,
+    never a configured portal, nested search, label or different ID. Multiple
+    aliases are ambiguous even when their values agree, so fail closed.
+    """
+    aliases = {
+        "userId": ("userId", "userid", "user_id", "UserId", "UserID", "userID"),
+        "accountId": (
+            "accountId",
+            "accountid",
+            "account_id",
+            "AccountId",
+            "AccountID",
+            "accountID",
+        ),
+    }
+    identity: dict[str, int] = {}
+    for name, spellings in aliases.items():
+        found = [document[key] for key in spellings if key in document]
+        if len(found) != 1 or type(found[0]) is not int:
+            raise ServiceAdapterError(
+                "HubSpot did not name an unambiguous user and account id."
+            )
+        identity[name] = found[0]
+    return identity
+
+
 class OAuthAdapter:
     can_issue = True
 
@@ -543,6 +573,11 @@ class OAuthAdapter:
         """The account the token acts as, as the catalog says to read it."""
         if self._identity.mcp_tool is not None:
             body = await self._mcp_identity(access_token)
+            if (
+                self._definition.slug == "hubspot"
+                and self._identity.mcp_tool == "get_user_details"
+            ):
+                body = _hubspot_identity(body)
         else:
             assert self._identity.url is not None
             response = await self._send(
