@@ -16,7 +16,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
@@ -35,7 +35,14 @@ from switch_core.connections.flows import (
     ServiceFlow,
     ServiceFlows,
 )
-from switch_core.db.models import ServiceConnection, Tenant, User, require_tenant_id
+from switch_core.db.models import (
+    OrganizationAppCredential,
+    ServiceAppCredential,
+    ServiceConnection,
+    Tenant,
+    User,
+    require_tenant_id,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session, get_session_factory
@@ -254,6 +261,7 @@ async def callback(
 async def complete(
     service: str,
     flow_id: str,
+    request: Request,
     body: CompleteFlow,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -267,6 +275,40 @@ async def complete(
         _, adapter = await broker.sign_in(session, service)
     except ServiceError as error:
         return service_refusal(error)
+    # Snapshot only the app actually selected for this workspace. A client
+    # changed while its OAuth exchange is in flight must remain unverified.
+    app_snapshot = None
+    model: type[ServiceAppCredential] | type[OrganizationAppCredential]
+    organization_app = await broker.organization_app(session, service)
+    if organization_app is not None:
+        model = OrganizationAppCredential
+        conditions = [
+            model.organization_id == organization_app.organization_id,
+            model.service == service,
+        ]
+    else:
+        model = ServiceAppCredential
+        apps = getattr(request.app.state, "connector_apps", None)
+        conditions = (
+            [model.service == service]
+            if apps is not None
+            and service in apps.specs
+            and apps.effective(service).source == "saved"
+            else []
+        )
+    if conditions:
+        row = cast(
+            ServiceAppCredential | OrganizationAppCredential | None,
+            await session.scalar(select(model).where(*conditions)),
+        )
+        if row is not None and row.settings.get("verification") == "unverified":
+            app_snapshot = (
+                model,
+                conditions,
+                row.client_id,
+                row.updated_at,
+                dict(row.settings),
+            )
     try:
         exchange = await flows.complete(
             flow,
@@ -325,6 +367,33 @@ async def complete(
     except ServiceError as error:
         await flows.failed(exchange.flow, error.message)
         return service_refusal(error)
+    if app_snapshot is not None:
+        model, conditions, client_id, changed_at, settings = app_snapshot
+        if client_id == signed_in.client_id:
+            marked = await session.execute(
+                update(model)
+                .where(
+                    *conditions,
+                    model.client_id == client_id,
+                    model.updated_at == changed_at,
+                )
+                .values(settings={**settings, "verification": "verified"})
+                .returning(model.service)
+            )
+            did_mark = marked.scalar_one_or_none() is not None
+            await session.commit()
+            if did_mark:
+                if organization_app is not None:
+                    organization_apps = getattr(
+                        request.app.state, "organization_apps", None
+                    )
+                    if organization_apps is not None:
+                        organization_apps.changed(
+                            organization_app.organization_id, service
+                        )
+                elif apps is not None:
+                    await apps.apply(service, broker=broker, state=request.app.state)
+                    apps.announce(service)
     await flows.connected(exchange, warning)
     logger.info(
         "Service account linked: tenant=%s user=%s service=%s",

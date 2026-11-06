@@ -63,6 +63,7 @@ class Check:
     field: Field | None
     # What the check could not see, for the operator to confirm themselves.
     note: str | None
+    inconclusive: bool = False
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,10 @@ class CheckResult:
     @property
     def ok(self) -> bool:
         return all(check.ok for check in self.checks)
+
+    @property
+    def inconclusive(self) -> bool:
+        return bool(self.checks) and all(check.inconclusive for check in self.checks)
 
     def first_failure(self) -> Check | None:
         return next((check for check in self.checks if not check.ok), None)
@@ -218,8 +223,8 @@ async def check_oauth_client(
     redirect_uri: str,
 ) -> CheckResult:
     name = definition.name
-    # A public client has no secret to send: the probe still tells a right
-    # client id (`invalid_grant`) from a wrong one (`invalid_client`).
+    # A public client has no secret to send. Some vendors reject the code
+    # before checking the client, so invalid_grant is not universal proof.
     secret = values.secrets.get("client_secret")
     client = OAuthClientCredentials(values.client_id, secret, authentication=None)
     try:
@@ -246,25 +251,38 @@ async def check_oauth_client(
         ),
     )
     error = _body(response).get("error")
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    body = _body(response)
+    inconclusive = response.status_code == 400 and any(
+        error == pattern.error
+        and (pattern.body_status is None or body.get("status") == pattern.body_status)
+        for pattern in oauth.inconclusive_probe
+    )
+    if inconclusive:
+        return CheckResult(
+            [
+                Check(
+                    "client",
+                    False,
+                    f"{name} could not verify this client with Switch's setup check. "
+                    "The client will be checked by the first sign-in. No client "
+                    "credentials or redirect have been verified.",
+                    None,
+                    oauth.unchecked,
+                    inconclusive=True,
+                )
+            ],
+            settings={"verification": "unverified"},
+        )
     if error == "invalid_grant":
-        oauth = definition.auth.oauth
-        assert oauth is not None
         accepted = (
             f"{name} accepts this client ID and secret."
             if secret is not None
             else f"{name} accepts this client ID."
         )
         return CheckResult(
-            [
-                Check(
-                    "client",
-                    True,
-                    accepted,
-                    None,
-                    oauth.unchecked,
-                )
-            ],
-            settings={},
+            [Check("client", True, accepted, None, oauth.unchecked)], settings={}
         )
     if error == "redirect_uri_mismatch":
         return CheckResult(
@@ -280,7 +298,7 @@ async def check_oauth_client(
             ],
             settings={},
         )
-    if error in ("invalid_client", "unauthorized_client"):
+    if error in ("invalid_client", "invalid_client_id", "unauthorized_client"):
         if secret is None:
             return CheckResult(
                 [

@@ -56,6 +56,8 @@ export const connectorAppSchema = z.object({
   scopes: z.array(z.string()).default([]),
   /** Why it can't be set up here, before any vendor is asked. */
   setup_blocked: z.string().nullable(),
+  inconclusive_probe: z.boolean().optional(),
+  verification: z.enum(['verified', 'unverified', 'not_recorded']).optional(),
   install_url: z.string().nullable(),
   updated_by_name: z.string().nullable(),
   updated_at: z.string().nullable(),
@@ -85,6 +87,7 @@ export const connectorAppCheckSchema = z.object({
   field: connectorAppFieldSchema.nullable(),
   /** What the check could not see, for the operator to confirm themselves. */
   note: z.string().nullable().default(null),
+  inconclusive: z.boolean().optional(),
 });
 export type ConnectorAppCheck = z.infer<typeof connectorAppCheckSchema>;
 

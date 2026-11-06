@@ -348,6 +348,7 @@ def entry_body(
         else ({} if saved is None else saved.settings)
     )
     slug = settings.get("slug")
+    oauth = apps.definition(spec.service).auth.oauth
     return {
         "slug": spec.service,
         "name": spec.name,
@@ -374,6 +375,8 @@ def entry_body(
         "needs_public_url": needs_public_url(apps, spec),
         "scopes": app_scopes(apps, spec),
         "setup_blocked": setup_blocked(spec, apps.public_url),
+        "verification": settings.get("verification", "not_recorded"),
+        "inconclusive_probe": bool(oauth and oauth.inconclusive_probe),
         "install_url": (
             f"https://github.com/apps/{slug}/installations/new"
             if spec.kind == "github_app" and slug
@@ -504,6 +507,7 @@ def checks_body(result: CheckResult) -> list[dict[str, Any]]:
             "message": check.message,
             "field": check.field,
             "note": check.note,
+            "inconclusive": check.inconclusive,
         }
         for check in result.checks
     ]
@@ -580,6 +584,8 @@ class CheckedSave:
             ),
             "client_id": client_id,
         }
+        if self.result.settings.get("verification") == "unverified":
+            details["verification"] = "unverified"
         if self.previous_client_id not in (None, client_id):
             details["previous_client_id"] = self.previous_client_id
         return details
@@ -647,7 +653,8 @@ async def checked_save(
         ),
         redirects,
     )
-    if not result.ok:
+    unverified = result.inconclusive
+    if not result.ok and not unverified:
         failure = result.first_failure()
         assert failure is not None
         return JSONResponse(
@@ -658,6 +665,10 @@ async def checked_save(
                 "checks": checks_body(result),
             },
         )
+    result = CheckResult(
+        result.checks,
+        {**result.settings, **({"verification": "unverified"} if unverified else {})},
+    )
     return CheckedSave(
         result=result,
         previous=previous,

@@ -1239,3 +1239,41 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {
+            "registration": "dynamic",
+            "client_settings": None,
+            "unchecked": "Confirm it",
+            "inconclusive_probe": [{"error": "unknown_error"}],
+        },
+        {"unchecked": None, "inconclusive_probe": [{"error": "unknown_error"}]},
+        {
+            "unchecked": "Confirm it",
+            "inconclusive_probe": [{"error": "invalid_client"}],
+        },
+        {
+            "unchecked": "Confirm it",
+            "inconclusive_probe": [
+                {"error": "invalid_grant"},
+                {"error": "invalid_grant"},
+            ],
+        },
+    ],
+)
+def test_inconclusive_probe_requires_static_explicit_nondefinite_optin(changes):
+    from switch_core.connections.loader import OAuthClient
+
+    body = {
+        "registration": "static",
+        "client_settings": "EXAMPLE",
+        "redirect": ["core"],
+        "remove_access": "Remove Switch",
+        "unchecked": "Confirm it",
+        **changes,
+    }
+    with pytest.raises(ValueError):
+        OAuthClient.model_validate(body)

@@ -542,3 +542,10 @@ describe('public OAuth app credentials', () => {
     expect(menuActions(app({ secrets: {} }))).toEqual(['switch_app', 'remove']);
   });
 });
+
+it('never labels a persisted unverified configuration ready after reload', () => {
+  const unverified = app({ verification: 'unverified' });
+  expect(cardState(unverified, null)).not.toBe('ready');
+  expect(attention(unverified, null)?.cause).toBe('unverified');
+  expect(attention(unverified, null)?.sentence).toContain('Complete a real sign-in');
+});

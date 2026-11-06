@@ -962,3 +962,128 @@ class TestNoSecretLeaves:
             for text in [r.text for r in responses] + [audit, logged]:
                 assert secret not in text
         assert STATIC_CLIENT_SECRET[-4:] in responses[2].text
+
+
+class TestUnverifiedConfiguration:
+    async def test_explicit_unverified_save_keeps_failure_and_persists_warning(
+        self, world, operator, session_factory, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        from switch_core.connections.app_checks import Check, CheckResult
+        from switch_core.gateway import connector_apps
+
+        await world.install()
+        monkeypatch.setattr(
+            connector_apps,
+            "check_values",
+            AsyncMock(
+                return_value=CheckResult(
+                    [
+                        Check(
+                            "client",
+                            False,
+                            "Not verified. Complete a real sign-in.",
+                            None,
+                            None,
+                            inconclusive=True,
+                        )
+                    ],
+                    {},
+                )
+            ),
+        )
+        async with world.harness.client() as client:
+            answer = await client.put(
+                f"{APPS}/{GOOGLE}",
+                json=_google_body(),
+                cookies=cookies_for(operator),
+            )
+            assert answer.status_code == 200, answer.text
+            assert answer.json()["verification"] == "unverified"
+            assert not answer.json()["checks"][0]["ok"]
+            reread = await client.get(APPS, cookies=cookies_for(operator))
+            entry = next(a for a in reread.json()["apps"] if a["slug"] == GOOGLE)
+            assert entry["verification"] == "unverified"
+        [event] = await _audit(session_factory)
+        assert event.details["verification"] == "unverified"
+        assert STATIC_CLIENT_SECRET not in str(event.details)
+
+    async def test_explicit_invalid_credentials_cannot_be_overridden(
+        self, world, operator, session_factory
+    ):
+        await world.install()
+        async with world.harness.client() as client:
+            answer = await client.put(
+                f"{APPS}/{GOOGLE}",
+                json=_google_body(client_secret="wrong-secret"),
+                cookies=cookies_for(operator),
+            )
+        assert answer.status_code == 422
+        assert await _rows(session_factory) == []
+
+    async def test_replacing_app_still_requires_explicit_replace(
+        self, world, operator, session_factory, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        from switch_core.connections.app_checks import Check, CheckResult
+        from switch_core.gateway import connector_apps
+
+        await world.install()
+        async with world.harness.client() as client:
+            first = await client.put(
+                f"{APPS}/{GOOGLE}", json=_google_body(), cookies=cookies_for(operator)
+            )
+            assert first.status_code == 200
+            monkeypatch.setattr(
+                connector_apps,
+                "check_values",
+                AsyncMock(
+                    return_value=CheckResult(
+                        [
+                            Check(
+                                "client",
+                                False,
+                                "Not verified",
+                                None,
+                                None,
+                                inconclusive=True,
+                            )
+                        ],
+                        {},
+                    )
+                ),
+            )
+            answer = await client.put(
+                f"{APPS}/{GOOGLE}",
+                json=_google_body(client_id="other-client", replace=False),
+                cookies=cookies_for(operator),
+            )
+        assert answer.status_code == 409
+        [row] = await _rows(session_factory)
+        assert row.client_id == STATIC_CLIENT_ID
+
+    async def test_network_failure_is_not_eligible_for_unverified_save(
+        self, world, operator, session_factory, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        from switch_core.connections.app_checks import VendorUnreachableError
+        from switch_core.gateway import connector_apps
+
+        await world.install()
+        monkeypatch.setattr(
+            connector_apps,
+            "check_app",
+            AsyncMock(side_effect=VendorUnreachableError("Unavailable")),
+        )
+        async with world.harness.client() as client:
+            answer = await client.put(
+                f"{APPS}/{GOOGLE}",
+                json=_google_body(),
+                cookies=cookies_for(operator),
+            )
+        assert answer.status_code == 503
+        assert await _rows(session_factory) == []
+        assert await _audit(session_factory) == []

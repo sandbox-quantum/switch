@@ -21,7 +21,8 @@ export type AttentionCause =
   | 'unreadable'
   | 'load_error'
   | 'saved_ignored'
-  | 'stale';
+  | 'stale'
+  | 'unverified';
 
 export type CardAction = 'set_up' | 'manage_here' | 'check' | 'update_secret' | 'enter_again';
 
@@ -88,6 +89,13 @@ export function attention(app: ConnectorApp, checkFailure: string | null): Atten
   // A configured app keeps working: only setting one up here is blocked.
   if (app.setup_blocked !== null && app.source !== 'configuration')
     return { cause: 'setup_blocked', sentence: app.setup_blocked, action: 'set_up' };
+  if (app.verification === 'unverified')
+    return {
+      cause: 'unverified',
+      sentence:
+        'Saved without verification. Complete a real sign-in to validate the client and redirect.',
+      action: null,
+    };
   if (checkFailure !== null)
     return { cause: 'check_failed', sentence: checkFailure, action: 'update_secret' };
   if (app.unreadable)

@@ -66,6 +66,14 @@ RedirectMode = Literal["loopback", "core"]
 AuthorizationParam = Literal["access_type", "include_granted_scopes"]
 
 
+class InconclusiveProbe(BaseModel):
+    """A measured refusal that does not establish whether a client is valid."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    error: Literal["invalid_request", "unknown_error", "invalid_grant"]
+    body_status: str | None = Field(default=None, min_length=1, max_length=80)
+
+
 class OAuthClient(BaseModel):
     """How Core has its OAuth client at the vendor, and where a sign-in returns.
 
@@ -130,6 +138,9 @@ class OAuthClient(BaseModel):
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
+    inconclusive_probe: list[InconclusiveProbe] = Field(
+        default_factory=list, max_length=3
+    )
 
     @model_validator(mode="after")
     def _consistent(self) -> "OAuthClient":
@@ -175,6 +186,15 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "revocation_ends_grant is for a vendor Switch revokes sign-ins at"
             )
+        if self.inconclusive_probe and (
+            self.registration != "static" or not self.unchecked
+        ):
+            raise ValueError(
+                "inconclusive_probe needs a static client and unchecked operator requirements"
+            )
+        patterns = [(p.error, p.body_status) for p in self.inconclusive_probe]
+        if len(set(patterns)) != len(patterns):
+            raise ValueError("inconclusive_probe repeats a response")
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
         if (
