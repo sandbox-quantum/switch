@@ -13,7 +13,9 @@ never holds a long lock, and each whether or not the others failed:
 3. Deletes settled approval requests, lapsed invitations and expired install
    links once `SETTLED_GRACE` has passed.
 
-The audit log and usage records are never touched; `docs/design/data-retention.md`
+After the tenants, it purges the audit history of workspaces deleted more than
+`AUDIT_HISTORY_HORIZON` ago (`retention/audit_history.py`). A live workspace's
+audit log and usage records are never touched; `docs/design/data-retention.md`
 says why, and what retention does not yet cover.
 """
 
@@ -32,6 +34,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.retention.audit_history import purge_deleted_workspace_history
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -178,9 +181,12 @@ class RetentionService:
 
 
 async def retain_once(
-    session_factory: async_sessionmaker[AsyncSession], now: datetime
+    session_factory: async_sessionmaker[AsyncSession],
+    history_sessions: async_sessionmaker[AsyncSession],
+    now: datetime,
 ) -> None:
-    """One pass over every tenant, each bound before it is touched."""
+    """One pass over every tenant, each bound before it is touched, then the
+    purge of deleted workspaces' audit history on `history_sessions`."""
     service = RetentionService(session_factory)
     for tenant_id in await all_tenant_ids(session_factory):
         with tenant_scope(tenant_id):
@@ -189,9 +195,18 @@ async def retain_once(
             except Exception:
                 # One tenant's failure must not stop the others' retention.
                 logger.exception("Data retention failed for tenant %s", tenant_id)
+    try:
+        await purge_deleted_workspace_history(history_sessions, now)
+    except Exception:
+        logger.exception(
+            "Data retention could not purge deleted workspaces' audit history"
+        )
 
 
-async def retention_loop(session_factory: async_sessionmaker[AsyncSession]) -> None:
+async def retention_loop(
+    session_factory: async_sessionmaker[AsyncSession],
+    history_sessions: async_sessionmaker[AsyncSession],
+) -> None:
     """Retention at start and hourly, as a task of its own.
 
     Not in the session-activity upkeep loop, which also expires approval
@@ -201,7 +216,7 @@ async def retention_loop(session_factory: async_sessionmaker[AsyncSession]) -> N
     with no_tenant():
         while True:
             try:
-                await retain_once(session_factory, datetime.now(UTC))
+                await retain_once(session_factory, history_sessions, datetime.now(UTC))
             except Exception:
                 logger.exception("Data retention could not list tenants")
             await asyncio.sleep(PASS_EVERY_SECONDS)
