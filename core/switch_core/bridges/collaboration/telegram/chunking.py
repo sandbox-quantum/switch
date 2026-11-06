@@ -43,12 +43,20 @@ def open_tags(text: str) -> list[tuple[str, str]]:
 def safe_split(text: str, limit: int) -> int:
     """The best place to cut `text` at or before `limit`.
 
-    Never inside a tag — half an `<a href="…">` is unparseable — and on a
-    line break when there is one late enough to be worth using."""
+    Never inside a tag — half an `<a href="…">` is unparseable — or inside an
+    HTML entity, and on a line break when there is one late enough to be worth
+    using."""
     cut = min(limit, len(text))
     last_open = text.rfind("<", 0, cut)
     if last_open > text.rfind(">", 0, cut):
         cut = last_open
+    last_amp = text.rfind("&", 0, cut)
+    if last_amp != -1 and last_amp > text.rfind(";", 0, cut):
+        semi = text.find(";", last_amp)
+        if semi != -1 and semi >= cut:
+            candidate = text[last_amp + 1 : semi]
+            if re.fullmatch(r"#[0-9]+|#x[0-9a-fA-F]+|[a-zA-Z0-9]+", candidate):
+                cut = last_amp
     newline = text.rfind("\n", 0, cut)
     if newline > cut // 2:
         cut = newline
