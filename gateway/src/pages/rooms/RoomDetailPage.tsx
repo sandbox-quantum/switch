@@ -160,7 +160,7 @@ export default function RoomDetailPage() {
             <ArchiveSection room={room} onChanged={refetch} />
           </>
         )}
-        {canManage && (
+        {room.can_transfer && (
           <>
             <Divider />
             <TransferOwnershipSection
@@ -168,8 +168,13 @@ export default function RoomDetailPage() {
               resourceId={room.id}
               resourceLabel={room.name}
               ownerId={room.owner_id}
+              blockedReason={null}
               onTransferred={refetch}
             />
+          </>
+        )}
+        {canManage && (
+          <>
             <Divider />
             <DangerSection room={room} onDeleted={() => navigate("/rooms")} />
           </>
@@ -570,8 +575,7 @@ function EditableFieldsSection({
     try {
       await updateRoom(room.id, {
         name: name !== room.name ? name : undefined,
-        description:
-          !isBridged && description !== room.description ? description : undefined,
+        description: description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
         ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
@@ -582,7 +586,7 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
+  }, [room, name, description, instructions, access, canManage, onSaved]);
 
   return (
     <Stack spacing={2}>
@@ -614,7 +618,6 @@ function EditableFieldsSection({
         disabled={!canWrite || saving}
         multiline
         rows={2}
-        slotProps={{ input: { readOnly: isBridged } }}
       />
       <TextField
         label="Instructions"
@@ -762,7 +765,10 @@ function ParticipantsSection({
     [room.id, onChanged],
   );
 
-  const isFixedMembership = room.channel_type === "group" || room.channel_type === "direct";
+  // A direct or group chat takes its members from its platform: the server
+  // refuses changing them, and the page says where they are changed.
+  const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
+  const canChangeMembers = room.can_change_members;
 
   return (
     <Stack spacing={3}>
@@ -789,9 +795,7 @@ function ParticipantsSection({
                   : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                !canWrite || isFixedMembership || working
-                  ? undefined
-                  : () => handleRemoveAgent(id)
+                !canChangeMembers || working ? undefined : () => handleRemoveAgent(id)
               }
             />
           ))}
@@ -801,7 +805,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {canWrite && !isFixedMembership && (
+        {canChangeMembers && (
           <>
             <Button
               size="small"
@@ -826,14 +830,14 @@ function ParticipantsSection({
             />
           </>
         )}
-        {isFixedMembership && (
+        {platformMembership && (
           <Typography variant="caption" color="text.secondary">
             Membership for {channelTypeLabel(room.channel_type)} rooms is managed from the messaging platform.
           </Typography>
         )}
       </Box>
 
-      {room.bridge_id && !isFixedMembership && (
+      {room.bridge_id && !platformMembership && (
         <Box>
           <Typography variant="body2" gutterBottom>
             Connected users ({room.connected_user_names.length})
@@ -848,7 +852,7 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          {canWrite && (
+          {canChangeMembers && (
             <>
               <Button
                 size="small"

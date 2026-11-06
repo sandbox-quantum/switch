@@ -120,18 +120,26 @@ export default function RegistrationKeysPage() {
         filterable: false,
         renderCell: ({ row }) => (
           <>
-            <Tooltip title={copiedId === row.id ? "Copied!" : "Copy key"}>
-              <IconButton size="small" onClick={() => handleCopy(row.id)}>
-                {copiedId === row.id ? (
-                  <DoneOutline fontSize="small" color="success" />
-                ) : (
-                  <ContentCopy fontSize="small" />
-                )}
+            {row.can_reveal && (
+              <Tooltip title={copiedId === row.id ? "Copied!" : "Copy key"}>
+                <IconButton size="small" onClick={() => handleCopy(row.id)}>
+                  {copiedId === row.id ? (
+                    <DoneOutline fontSize="small" color="success" />
+                  ) : (
+                    <ContentCopy fontSize="small" />
+                  )}
+                </IconButton>
+              </Tooltip>
+            )}
+            {row.can_delete && (
+              <IconButton
+                size="small"
+                onClick={() => setDeleteTarget(row)}
+                aria-label={`Delete ${row.label}`}
+              >
+                <DeleteOutline fontSize="small" />
               </IconButton>
-            </Tooltip>
-            <IconButton size="small" onClick={() => setDeleteTarget(row)}>
-              <DeleteOutline fontSize="small" />
-            </IconButton>
+            )}
           </>
         ),
       },
@@ -169,19 +177,34 @@ export default function RegistrationKeysPage() {
       {
         field: "actions",
         headerName: "",
-        width: 60,
+        width: 100,
         sortable: false,
         filterable: false,
+        // An agent's key cannot be deleted while the agent signs in with it;
+        // one left behind by a deleted agent can.
         renderCell: ({ row }) => (
-          <Tooltip title={copiedId === row.id ? "Copied!" : "Copy key"}>
-            <IconButton size="small" onClick={() => handleCopy(row.id)}>
-              {copiedId === row.id ? (
-                <DoneOutline fontSize="small" color="success" />
-              ) : (
-                <ContentCopy fontSize="small" />
-              )}
-            </IconButton>
-          </Tooltip>
+          <>
+            {row.can_reveal && (
+              <Tooltip title={copiedId === row.id ? "Copied!" : "Copy key"}>
+                <IconButton size="small" onClick={() => handleCopy(row.id)}>
+                  {copiedId === row.id ? (
+                    <DoneOutline fontSize="small" color="success" />
+                  ) : (
+                    <ContentCopy fontSize="small" />
+                  )}
+                </IconButton>
+              </Tooltip>
+            )}
+            {row.can_delete && (
+              <IconButton
+                size="small"
+                onClick={() => setDeleteTarget(row)}
+                aria-label={`Delete ${row.label}`}
+              >
+                <DeleteOutline fontSize="small" />
+              </IconButton>
+            )}
+          </>
         ),
       },
     ],
@@ -260,8 +283,10 @@ export default function RegistrationKeysPage() {
         <DialogTitle>Delete API key</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Are you sure you want to delete key &quot;{deleteTarget?.label}&quot;? Agents
-            using this key will no longer be able to register.
+            Are you sure you want to delete key &quot;{deleteTarget?.label}&quot;?{" "}
+            {deleteTarget?.type === "agent"
+              ? "Its agent has been deleted, so nothing signs in with it."
+              : "Agents using this key will no longer be able to register."}
           </DialogContentText>
         </DialogContent>
         <DialogActions>

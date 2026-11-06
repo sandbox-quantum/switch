@@ -480,6 +480,3 @@ export function changeBlocked(app: ConnectorApp, publicUrl: string | null): bool
 
 export const PUBLIC_URL_BANNER =
   "Set GATEWAY_PUBLIC_URL first: Google and GitHub need to know where to send people back to Switch.";
-
-export const ONLY_THE_OPERATOR =
-  "Only the person who runs this Switch server can set up connectors.";

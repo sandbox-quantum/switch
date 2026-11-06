@@ -450,7 +450,8 @@ switchCore:
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
   # hosted_agents, service_connections, agent_chats, follow_the_conversation,
-  # switch_buddy, buddy_slack_handoff.
+  # switch_buddy, buddy_slack_handoff, gateway_v2 (development and staging only
+  # until the new dashboard layout is finished).
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people

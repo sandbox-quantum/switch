@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { capabilitiesOf } from "../../data/capabilities";
+import { ALL_OFF, type FeatureFlags } from "../../data/featureFlags";
 import { app } from "../connector-apps/testFixtures";
 import OrganizationPage from "./OrganizationPage";
 
@@ -42,7 +44,14 @@ function answer(routes: Record<string, unknown>) {
     if (!(key in routes)) {
       return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
     }
-    const answered = routes[key];
+    let answered = routes[key];
+    // The organization's own answers, as the server gives them to someone
+    // holding that role, unless the test says otherwise.
+    if (key === "GET /organizations/current" && !(answered instanceof Refusal)) {
+      const organization = answered as Record<string, unknown>;
+      const admin = organization.role === "org_admin";
+      answered = { administers: admin, can_manage_members: admin, ...organization };
+    }
     if (answered instanceof Refusal) {
       return new Response(JSON.stringify({ detail: answered.detail }), {
         status: answered.status,
@@ -61,10 +70,30 @@ class Refusal {
   ) {}
 }
 
-function signedInAs(current: Session) {
+const CONNECTORS_ON: FeatureFlags = {
+  ...ALL_OFF,
+  service_connections: true,
+  organization_connector_apps: true,
+};
+
+function signedInAs(current: Session, features: FeatureFlags = CONNECTORS_ON) {
   const refresh = vi.fn();
+  const administers = current.tenant?.role === "admin" || current.user.is_operator;
   vi.mocked(useAuth).mockReturnValue({
     session: current,
+    capabilities: capabilitiesOf(
+      current,
+      {
+        id: "t1",
+        slug: "acme",
+        name: "Acme",
+        role: current.tenant?.role ?? "member",
+        administers,
+        can_delete: false,
+        can_manage_data_protection: false,
+      },
+      features,
+    ),
     switchTo: vi.fn(),
     refresh,
   } as unknown as ReturnType<typeof useAuth>);
@@ -150,7 +179,7 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
     expect(
-      screen.getByText(
+      await screen.findByText(
         "Your workspaces use the server's Airtable client. Add your organization's own to use that instead.",
       ),
     ).toBeTruthy();
@@ -204,8 +233,8 @@ describe("OrganizationPage", () => {
     );
   });
 
-  it("shows no connectors where the server keeps them to itself", async () => {
-    signedInAs(session("org_admin", true));
+  it("shows no connectors where the server keeps them to itself, and asks nothing of it", async () => {
+    signedInAs(session("org_admin", true), { ...ALL_OFF, service_connections: true });
     const fetchMock = answer({
       "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
@@ -217,15 +246,11 @@ describe("OrganizationPage", () => {
     render(<OrganizationPage />);
 
     expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/gateway/organizations/current/connector-apps",
-        expect.anything(),
-      ),
-    );
     await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
     expect(screen.queryByRole("heading", { name: "Connectors" })).toBeNull();
     expect(screen.queryByText(/unmocked/)).toBeNull();
+    const asked = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(asked.filter((path) => /connector-apps|\/services/.test(path))).toEqual([]);
   });
 
   it("shows what a demotion could not revoke at a vendor", async () => {
@@ -353,12 +378,14 @@ describe("OrganizationPage", () => {
 
   it("tells the operator why where the organization has an admin", async () => {
     signedInAs(session(null, false, true));
-    answer(operatorRoutes(new Refusal(403, "Only an organization admin may do this")));
+    const fetchMock = answer(operatorRoutes(new Refusal(403, "Only an organization admin may do this")));
 
     render(<OrganizationPage />);
 
     expect(await screen.findByText(/only while it has no admin/)).toBeTruthy();
     expect(screen.queryByText("Only an organization admin may do this")).toBeNull();
+    const asked = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(asked.filter((path) => path.endsWith("/issues"))).toEqual([]);
   });
 
   it("shows the operator a failure as a failure", async () => {

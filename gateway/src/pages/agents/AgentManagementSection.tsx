@@ -6,9 +6,9 @@ import {
   Switch,
   Typography,
 } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { type AgentDetail, updateAgentCanManageAgents } from "../../data/api";
-import { fetchManagementAvailable } from "../../data/management";
+import { useAuth } from "../../data/AuthContext";
 
 /**
  * The agent's "can manage agents" capability: with it on, the agent may list
@@ -26,25 +26,11 @@ export default function AgentManagementSection({
   canEdit: boolean;
   onUpdated: () => void;
 }) {
-  const [available, setAvailable] = useState(false);
+  const { capabilities } = useAuth();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchManagementAvailable()
-      .then((value) => {
-        if (!cancelled) setAvailable(value);
-      })
-      .catch((err: unknown) => {
-        console.error("Could not tell whether agent management is enabled:", err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (!available) return null;
+  if (!capabilities.features.agent_management) return null;
 
   const toggle = async (enabled: boolean) => {
     setSaving(true);

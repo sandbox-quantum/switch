@@ -33,7 +33,6 @@ import {
   fetchManagedAgents,
   fetchOperations,
   type ManagedAgent,
-  ManagementApiError,
   type Operation,
   fetchProviders,
   type ProviderInfo,
@@ -223,11 +222,7 @@ export default function MachinesPage() {
       setOperations(o);
       setLoadError(null);
     } catch (err) {
-      setLoadError(
-        err instanceof ManagementApiError && err.status === 404 && err.code === "http_error"
-          ? "Agent management is not enabled on this server. An operator turns it on by adding agent_management to FEATURE_FLAGS_ENABLED."
-          : `Could not load machines and managed agents: ${errorMessage(err)}`,
-      );
+      setLoadError(`Could not load machines and managed agents: ${errorMessage(err)}`);
     }
   }, []);
 
@@ -385,54 +380,60 @@ export default function MachinesPage() {
           const live = row.state !== "revoked";
           return (
             <>
-              <Tooltip title="Re-check providers">
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Re-check providers on ${row.name}`}
-                    disabled={!live || providers.length === 0 || busy}
-                    onClick={() =>
-                      act(
-                        `Asked ${row.name} to re-check ${providers.length} provider(s)`,
-                        () =>
-                          Promise.all(
-                            providers.map((p) =>
-                              createOperation({
-                                controller_id: row.id,
-                                agent_id: null,
-                                kind: "provider.recheck",
-                                params: { provider: p.provider },
-                              }),
-                            ),
-                          ),
-                      )
-                    }
-                  >
-                    <RefreshOutlined fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title="Rename or describe">
-                <IconButton
-                  size="small"
-                  aria-label={`Edit machine ${row.name}`}
-                  onClick={() => setMachineTarget(row)}
-                >
-                  <EditOutlined fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Revoke">
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Revoke ${row.name}`}
-                    disabled={!live || busy}
-                    onClick={() => setRevokeTarget(row)}
-                  >
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
+              {row.can_edit && (
+                <>
+                  <Tooltip title="Re-check providers">
+                    <span>
+                      <IconButton
+                        size="small"
+                        aria-label={`Re-check providers on ${row.name}`}
+                        disabled={!live || providers.length === 0 || busy}
+                        onClick={() =>
+                          act(
+                            `Asked ${row.name} to re-check ${providers.length} provider(s)`,
+                            () =>
+                              Promise.all(
+                                providers.map((p) =>
+                                  createOperation({
+                                    controller_id: row.id,
+                                    agent_id: null,
+                                    kind: "provider.recheck",
+                                    params: { provider: p.provider },
+                                  }),
+                                ),
+                              ),
+                          )
+                        }
+                      >
+                        <RefreshOutlined fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Rename or describe">
+                    <IconButton
+                      size="small"
+                      aria-label={`Edit machine ${row.name}`}
+                      onClick={() => setMachineTarget(row)}
+                    >
+                      <EditOutlined fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </>
+              )}
+              {row.can_remove && (
+                <Tooltip title="Revoke">
+                  <span>
+                    <IconButton
+                      size="small"
+                      aria-label={`Revoke ${row.name}`}
+                      disabled={!live || busy}
+                      onClick={() => setRevokeTarget(row)}
+                    >
+                      <DeleteOutline fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
             </>
           );
         },
@@ -533,70 +534,90 @@ export default function MachinesPage() {
           const running = row.desired_state === "running";
           return (
             <>
-              <Tooltip title={running ? "Stop" : "Start"}>
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`${running ? "Stop" : "Start"} ${row.name}`}
-                    disabled={busy || row.controller_id === null}
-                    onClick={() =>
-                      act(`${running ? "Stopping" : "Starting"} ${row.name}`, () =>
-                        updateManagedAgent(row.agent_id, {
-                          desired_state: running ? "stopped" : "running",
-                        }),
-                      )
+              {row.can_edit && (
+                <>
+                  <Tooltip
+                    title={
+                      row.controller_id === null
+                        ? "Not on a machine: move it to one to start or stop it"
+                        : running
+                          ? "Stop"
+                          : "Start"
                     }
                   >
-                    {running ? (
-                      <PauseCircleOutline fontSize="small" />
-                    ) : (
-                      <PlayCircleOutline fontSize="small" />
-                    )}
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title="Restart">
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Restart ${row.name}`}
-                    disabled={busy || row.controller_id === null || !running}
-                    onClick={() =>
-                      act(`Asked to restart ${row.name}`, () =>
-                        createOperation({
-                          controller_id: row.controller_id as string,
-                          agent_id: row.agent_id,
-                          kind: "agent.restart",
-                          params: {},
-                        }),
-                      )
+                    <span>
+                      <IconButton
+                        size="small"
+                        aria-label={`${running ? "Stop" : "Start"} ${row.name}`}
+                        disabled={busy || row.controller_id === null}
+                        onClick={() =>
+                          act(`${running ? "Stopping" : "Starting"} ${row.name}`, () =>
+                            updateManagedAgent(row.agent_id, {
+                              desired_state: running ? "stopped" : "running",
+                            }),
+                          )
+                        }
+                      >
+                        {running ? (
+                          <PauseCircleOutline fontSize="small" />
+                        ) : (
+                          <PlayCircleOutline fontSize="small" />
+                        )}
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip
+                    title={
+                      row.controller_id === null
+                        ? "Not on a machine: move it to one to restart it"
+                        : "Restart"
                     }
                   >
-                    <RestartAltOutlined fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title="Edit">
-                <IconButton
-                  size="small"
-                  aria-label={`Edit ${row.name}`}
-                  onClick={() => setEditing(row)}
-                >
-                  <EditOutlined fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Stop managing">
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Stop managing ${row.name}`}
-                    disabled={busy}
-                    onClick={() => setUnmanageTarget(row)}
-                  >
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
+                    <span>
+                      <IconButton
+                        size="small"
+                        aria-label={`Restart ${row.name}`}
+                        disabled={busy || row.controller_id === null || !running}
+                        onClick={() =>
+                          act(`Asked to restart ${row.name}`, () =>
+                            createOperation({
+                              controller_id: row.controller_id as string,
+                              agent_id: row.agent_id,
+                              kind: "agent.restart",
+                              params: {},
+                            }),
+                          )
+                        }
+                      >
+                        <RestartAltOutlined fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Edit">
+                    <IconButton
+                      size="small"
+                      aria-label={`Edit ${row.name}`}
+                      onClick={() => setEditing(row)}
+                    >
+                      <EditOutlined fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </>
+              )}
+              {row.can_delete && (
+                <Tooltip title="Stop managing">
+                  <span>
+                    <IconButton
+                      size="small"
+                      aria-label={`Stop managing ${row.name}`}
+                      disabled={busy}
+                      onClick={() => setUnmanageTarget(row)}
+                    >
+                      <DeleteOutline fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
             </>
           );
         },

@@ -16,12 +16,12 @@ function Heading({ publicUrl }: { publicUrl: string | null }) {
 }
 
 /** The apps the organization's workspaces sign in through, for its admins.
- * Shown only where the server lets organizations save their own. */
+ * Shown only where the server lets organizations save their own
+ * (`organization_connector_apps`). */
 export default function OrganizationConnectorsSection() {
   return (
     <ConnectorAppsList
       scope="organization"
-      notEnabled={null}
       heading={(publicUrl) => <Heading publicUrl={publicUrl} />}
     />
   );

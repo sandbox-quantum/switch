@@ -75,16 +75,12 @@ const ENDED_COLOR: Record<string, "warning" | "default"> = {
 };
 
 interface Props {
-  isAdmin: boolean;
   // Disconnecting removes the connection the install created, so the list of
   // connections above this section is stale once it succeeds.
   onConnectionsChanged: () => void;
 }
 
-export default function InstalledAppsSection({
-  isAdmin,
-  onConnectionsChanged,
-}: Props) {
+export default function InstalledAppsSection({ onConnectionsChanged }: Props) {
   const { data: offered, refetch: refetchOffered } = useInstallablePlatforms();
   const { data: installs, loading, refetch } = useInstalledApps();
   const [starting, setStarting] = useState<string | null>(null);
@@ -103,13 +99,14 @@ export default function InstalledAppsSection({
 
   // Every platform this organisation can add to, or has anything recorded
   // for — a platform whose app was since removed still shows its history.
+  // The server offers the OAuth platforms to its admins alone.
   const platforms = useMemo(() => {
     const seen = new Set<string>();
     for (const c of claimable) seen.add(c.platform);
-    if (isAdmin) for (const p of installable) seen.add(p);
+    for (const p of installable) seen.add(p);
     for (const row of rows) seen.add(row.platform);
     return [...seen];
-  }, [claimable, installable, rows, isAdmin]);
+  }, [claimable, installable, rows]);
 
   const handleInstall = useCallback(async (platform: string) => {
     setStarting(platform);
@@ -189,8 +186,7 @@ export default function InstalledAppsSection({
                 platform={platform}
                 installs={rows.filter((row) => row.platform === platform)}
                 claimable={claimed}
-                canInstall={isAdmin && installable.includes(platform)}
-                canDisconnect={isAdmin || claimed !== undefined}
+                canInstall={installable.includes(platform)}
                 starting={starting}
                 onAdd={() =>
                   claimed ? handleClaim(platform) : handleInstall(platform)
@@ -222,7 +218,6 @@ interface CardProps {
   // Set for a claim-based platform, with what this caller may do on it.
   claimable: ClaimablePlatform | undefined;
   canInstall: boolean;
-  canDisconnect: boolean;
   starting: string | null;
   onAdd: () => void;
   onDisconnect: (install: InstalledApp) => void;
@@ -233,7 +228,6 @@ function PlatformCard({
   installs,
   claimable,
   canInstall,
-  canDisconnect,
   starting,
   onAdd,
   onDisconnect,
@@ -293,7 +287,7 @@ function PlatformCard({
         <InstallRow
           key={install.id}
           install={install}
-          onDisconnect={canDisconnect ? () => onDisconnect(install) : undefined}
+          onDisconnect={install.can_disconnect ? () => onDisconnect(install) : undefined}
         />
       ))}
 

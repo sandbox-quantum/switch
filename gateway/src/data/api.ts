@@ -1,3 +1,5 @@
+import { type FeatureFlagState, type FeatureFlags, featureFlagsFrom } from "./featureFlags";
+
 const BASE = "/gateway";
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T | null> {
@@ -36,13 +38,18 @@ export interface RoomSummary {
   created_at: string;
   archived: boolean;
   // What the viewer may do, as the server decides it. `can_write` covers the
-  // room's settings, roles, participants, links and attaching resources;
+  // room's settings, roles, links and attaching resources;
+  // `can_change_members` covers adding and removing its agents and people,
+  // which a direct or group chat takes from its platform instead;
   // `can_manage` (owner or workspace admin) covers its access and deleting it;
   // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
-  // reference, document or package from it.
+  // reference, document or package from it; `can_transfer` (managing it,
+  // and never for a chat) covers handing it to someone else.
   can_write: boolean;
+  can_change_members: boolean;
   can_manage: boolean;
   can_unlink: boolean;
+  can_transfer: boolean;
 }
 
 export interface AgentSummary {
@@ -63,9 +70,19 @@ export interface AgentSummary {
   parent_agent_id: string | null;
   known_agent_type: string | null;
   known_agent_options: Record<string, unknown> | null;
-  // Whether the caller may rename the agent and edit its options and who may
-  // address it, as the server decides it: its owner or a workspace admin.
+  // What the caller may do to the agent, as the server decides it.
+  // `can_manage` (its owner or a workspace admin) covers its options, icon,
+  // display name, description, who may address it, and deleting it.
   can_manage: boolean;
+  // Renaming it: managing it, and neither a sub-agent nor a parent of one.
+  can_rename: boolean;
+  // Editing its options: managing it, and Switch Console running it from an
+  // agent type it knows, which is where its options come from.
+  can_edit_options: boolean;
+  can_transfer: boolean;
+  // Why it cannot be handed to someone else, for whoever manages it; null
+  // when it can, or when they could not anyway.
+  transfer_blocked_reason: string | null;
 }
 
 export interface AgentToolSummary {
@@ -113,6 +130,12 @@ export interface AgentDetail extends AgentSummary {
    * Only the owner changes it.
    */
   can_manage_agents: boolean;
+  // Its owner's alone: letting it manage their agents, and granting it their
+  // service connections (only where the server runs them, and only to an
+  // agent run from a known agent type). Seeing and removing the grants it
+  // has needs only ownership.
+  can_change_manage_agents: boolean;
+  can_grant_services: boolean;
 }
 
 // Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)
@@ -177,6 +200,10 @@ export interface BridgeDetail {
   // connection's app is in (the distributed Teams app). False while the
   // bridge is not running.
   team_placement_supported: boolean;
+  // What the caller may do to the connection: change it, and delete it. A
+  // connection an install holds is refused at the time, with the reason.
+  can_manage: boolean;
+  can_delete: boolean;
 }
 
 export interface ExternalUserSummary {
@@ -766,6 +793,10 @@ export interface ApiKeyDetail {
   created_at: string;
   /** `null` for a key that never expires. */
   expires_at: string | null;
+  // Copying the key, and deleting it: never a key an agent still signs in
+  // with, though one a deleted agent left behind can go.
+  can_reveal: boolean;
+  can_delete: boolean;
 }
 
 export interface CreateApiKeyResult {
@@ -1041,6 +1072,7 @@ export interface InstalledApp {
   bridge_id: string | null;
   installed_at: string;
   ended_at: string | null;
+  can_disconnect: boolean;
 }
 
 // A platform installed by claiming a chat (Telegram) rather than by OAuth, and
@@ -1120,6 +1152,12 @@ export interface UserInfo {
   email: string;
   role: string;
   created_at: string;
+}
+
+/** A user on the operator's list. */
+export interface ListedUser extends UserInfo {
+  // Deleting the account: never your own, nor another operator's.
+  can_delete: boolean;
 }
 
 export async function login(email: string, password: string): Promise<UserInfo> {
@@ -1336,6 +1374,11 @@ export interface CurrentOrganization {
   // Changes made here to those members are made in that directory too, so
   // they last; the admin may first be sent to sign in there.
   directory_takes_changes: boolean;
+  // Whether the caller is one of its admins, and whether they may manage its
+  // members and read what needs their attention: its admins, or the
+  // operator while it has none.
+  administers: boolean;
+  can_manage_members: boolean;
 }
 
 export interface OperatorWorkspace {
@@ -1686,8 +1729,8 @@ export async function changePassword(
   });
 }
 
-export async function fetchUsers(): Promise<UserInfo[] | null> {
-  return fetchJson<UserInfo[]>("/users");
+export async function fetchUsers(): Promise<ListedUser[] | null> {
+  return fetchJson<ListedUser[]>("/users");
 }
 
 // The roles `POST /users` accepts; `admin` makes a deployment operator.
@@ -1737,6 +1780,11 @@ export interface ReferenceTypeDetail {
   write_visibility: "public" | "private";
   shadowed_by_builtin: boolean;
   created_at: string;
+  // What the caller may do to it, as the server decides it. `can_edit` is
+  // writing it; `can_manage` is deleting it, changing who may see or change
+  // it, and handing it to someone else.
+  can_edit: boolean;
+  can_manage: boolean;
 }
 
 export interface ReferenceTypeCreateInput {
@@ -1780,6 +1828,11 @@ export interface ReferenceDetail {
   // Resolved server-side and unfiltered by the type's visibility. Null when
   // the slug resolves to no type at all.
   type_display_name: string | null;
+  // What the caller may do to it, as the server decides it. `can_edit` is
+  // writing it; `can_manage` is deleting it, changing who may see or change
+  // it, and handing it to someone else.
+  can_edit: boolean;
+  can_manage: boolean;
 }
 
 export interface ReferenceCreateInput {
@@ -1820,6 +1873,13 @@ export interface DocumentSummary {
   created_by_agent_id: string | null;
   created_by_agent_name: string | null;
   created_at: string;
+  // What the caller may do to it, as the server decides it. `can_edit` is
+  // writing it; `can_manage` is deleting it, changing who may see or change
+  // it, and handing it to someone else.
+  can_edit: boolean;
+  can_manage: boolean;
+  // Handing it to someone else: never for a document scoped to one room.
+  can_transfer: boolean;
 }
 
 export interface DocumentDetail extends DocumentSummary {
@@ -2174,6 +2234,11 @@ export interface PackageDetail {
   // Whether the caller may open the package. Only a room's package list
   // includes packages the caller cannot read.
   can_read: boolean;
+  // What the caller may do to it, as the server decides it. `can_edit` is
+  // writing it; `can_manage` is deleting it, changing who may see or change
+  // it, and handing it to someone else.
+  can_edit: boolean;
+  can_manage: boolean;
 }
 
 export interface PackageCreateInput {
@@ -2469,6 +2534,13 @@ export interface CurrentTenant {
   // Whether the caller may manage the workspace: an admin membership,
   // `org_admin` of its organization, or the operator bit.
   administers: boolean;
+  // Whether they may delete it: an admin membership of their own, which the
+  // organization admin's and the operator's reach do not count as, and never
+  // the server's default workspace.
+  can_delete: boolean;
+  // Whether they may set a retention window and erase people's data: their
+  // own admin membership, as for deleting it.
+  can_manage_data_protection: boolean;
 }
 
 export type UsageMetric =
@@ -2542,6 +2614,18 @@ export interface BudgetUpdate {
 
 export async function fetchCurrentTenant(): Promise<CurrentTenant | null> {
   return fetchJson<CurrentTenant>("/tenants/current");
+}
+
+/** The current workspace as the server sees the caller in it. Throws rather
+ * than answering null: what the dashboard lets someone open is worked out
+ * from it, so a failed read must not look like "not an admin". */
+export async function loadCurrentTenant(): Promise<CurrentTenant> {
+  return jsonRequest<CurrentTenant>("/tenants/current", "GET");
+}
+
+export async function fetchFeatureFlags(): Promise<FeatureFlags> {
+  const { flags } = await jsonRequest<{ flags: FeatureFlagState[] }>("/feature-flags", "GET");
+  return featureFlagsFrom(flags);
 }
 
 export async function fetchUsage(
