@@ -682,6 +682,7 @@ class BridgeDetail(BaseModel):
     # which is then what stands between this connection and its events.
     receives_webhooks: bool = False
     webhook_url: str | None = None
+    setup_values: dict[str, str] | None = None
 
 
 class BridgeUpdateRequest(BaseModel):

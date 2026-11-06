@@ -80,6 +80,25 @@ describe('createBridgeOnServer', () => {
     vi.unstubAllGlobals();
   });
 
+  it('passes one-time setup values through the create response', async () => {
+    fetchMock.mockResolvedValue(
+      response(200, {
+        ...CREATED,
+        bridge_type: 'webhook',
+        receives_webhooks: true,
+        webhook_url: 'https://switch.example/messaging/bridges/bridge-1/events',
+        setup_values: { inbound_token: 'demo-inbound-value', signing_secret: 'demo-signing-value' },
+      })
+    );
+    const result = await createBridgeOnServer(SERVER, PARAMS);
+    expect(result).toMatchObject({
+      kind: 'created',
+      bridge: {
+        setupValues: { inbound_token: 'demo-inbound-value', signing_secret: 'demo-signing-value' },
+      },
+    });
+  });
+
   it('returns the registered bridge on success', async () => {
     fetchMock.mockResolvedValue(response(200, CREATED));
 
