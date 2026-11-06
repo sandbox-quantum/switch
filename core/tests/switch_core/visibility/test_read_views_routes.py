@@ -255,6 +255,91 @@ async def test_the_overview_shows_keyed_ids_with_no_names_emails_or_raw_ids(
     )
 
 
+# --- the overview: each box's capacity and times ----------------------------------------------
+
+
+async def test_the_overview_shows_each_box_s_memory_awake_count_and_times(
+    views,
+) -> None:
+    controller_id, agent_ids = await enrolled(views.base, agents=1)
+    await _running(views.base, used_pct=25)
+    seen = datetime(2026, 11, 6, 9, 0, tzinfo=UTC)
+    await update_machine(
+        views.base.factory,
+        views.base.machine_id,
+        active_at=seen,
+        heartbeat_at=seen + timedelta(minutes=5),
+        running_observed_at=seen - timedelta(hours=1),
+    )
+    async with views.base.factory() as session:
+        controller = await session.scalar(
+            select(AgentController).where(AgentController.id == controller_id)
+        )
+        assert controller is not None
+        controller.status = {
+            "agents": [{"agent_id": agent_ids[0], "process": "running"}],
+            "machine": {"sessions_running": 3, "sessions_max": 12},
+            "note": f"{MARKER} {DUMMY_SECRET}",
+        }
+        await session.commit()
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 200, answer.text
+    (row,) = answer.json()["boxes"]
+    assert row["memory_total_bytes"] == 4 * GIB
+    assert row["memory_used_bytes"] == GIB
+    assert row["awake"] == {"running": 3, "max": 12}
+    assert row["active_at"] == seen.isoformat()
+    assert row["heartbeat_at"] == (seen + timedelta(minutes=5)).isoformat()
+    assert row["running_observed_at"] == (seen - timedelta(hours=1)).isoformat()
+    _never_leaks(answer.text, controller_id, *agent_ids)
+
+
+async def test_a_box_that_has_not_reported_shows_no_capacity(views) -> None:
+    await enrolled(views.base, agents=0)
+    await update_machine(views.base.factory, views.base.machine_id, heartbeat=None)
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 200, answer.text
+    (row,) = answer.json()["boxes"]
+    assert (row["memory_used_bytes"], row["memory_total_bytes"], row["awake"]) == (
+        None,
+        None,
+        None,
+    )
+    assert row["heartbeat_at"] is None
+
+
+async def test_a_put_away_box_shows_when_it_goes_for_good(views) -> None:
+    await enrolled(views.base, agents=0)
+    until = datetime(2026, 11, 20, 0, 0, tzinfo=UTC)
+    await update_machine(
+        views.base.factory,
+        views.base.machine_id,
+        state="retained",
+        desired_state="retained",
+        retain_until=until,
+    )
+    (row,) = (await views.client.get(OVERVIEW)).json()["boxes"]
+    assert (row["state"], row["retain_until"]) == ("retired", until.isoformat())
+
+
+async def test_a_current_box_has_no_kept_until_date(views) -> None:
+    await enrolled(views.base, agents=0)
+    await _running(views.base, used_pct=25)
+    (row,) = (await views.client.get(OVERVIEW)).json()["boxes"]
+    assert row["retain_until"] is None
+
+
+@pytest.mark.parametrize("who", ["owner", "second", "admin", "deployment_admin"])
+async def test_members_never_see_a_box_s_capacity(views, who) -> None:
+    await enrolled(views.base, agents=0)
+    await _running(views.base, used_pct=25)
+    views.as_(who)
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 403
+    assert "memory_total_bytes" not in answer.text
+    assert "awake" not in answer.text
+
+
 # --- the overview: nodes from the cluster report ------------------------------------------------
 
 
