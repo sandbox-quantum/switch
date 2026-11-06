@@ -46,7 +46,9 @@ const providerReady = (provider: string, isReady: boolean) => ({
 
 describe('setupChecklist', () => {
   it('waits, rather than flash "No AI login yet", while the machine list loads', () => {
-    expect(setupChecklist({ view: ready, agents: [], controller: undefined })).toBeNull();
+    expect(
+      setupChecklist({ view: ready, agents: [], controller: undefined, agentProviders: null })
+    ).toBeNull();
   });
 
   it('folds away once all three are ticked', () => {
@@ -55,13 +57,14 @@ describe('setupChecklist', () => {
         view: ready,
         agents: ['a1'],
         controller: controller({ providers: [providerReady('claude', true)] }),
+        agentProviders: ['claude'],
       })
     ).toBeNull();
   });
 
   it('a resting box counts as ready; a stopped one offers Start, the same way the card would', () => {
     const lines = (view: YourCloudView) =>
-      setupChecklist({ view, agents: [], controller: controller() })!;
+      setupChecklist({ view, agents: [], controller: controller(), agentProviders: null })!;
     expect(lines(resting)[0]).toEqual({
       key: 'cloud',
       done: true,
@@ -83,7 +86,12 @@ describe('setupChecklist', () => {
       heading: 'Paused by Switch',
       line: 'Contact your admin',
     };
-    const line = setupChecklist({ view: paused, agents: [], controller: controller() })![0];
+    const line = setupChecklist({
+      view: paused,
+      agents: [],
+      controller: controller(),
+      agentProviders: null,
+    })![0];
     expect(line).toEqual({
       key: 'cloud',
       done: false,
@@ -94,7 +102,7 @@ describe('setupChecklist', () => {
 
   it('the login is set when any provider on the box is ready; otherwise Give login, for one that isn’t', () => {
     const login = (box: OwnedMachine | null) =>
-      setupChecklist({ view: ready, agents: [], controller: box })![1];
+      setupChecklist({ view: ready, agents: [], controller: box, agentProviders: null })![1];
     expect(
       login(
         controller({ providers: [providerReady('codex', false), providerReady('claude', true)] })
@@ -112,9 +120,70 @@ describe('setupChecklist', () => {
     expect(login(controller({ acceptsLogins: false }))?.action).toBeNull();
   });
 
+  it('with agents, the login ticks only when every provider they use is ready, else Give login for the missing one', () => {
+    const login = (agentProviders: readonly string[] | null | undefined, ready: string[]) =>
+      setupChecklist({
+        view: resting,
+        agents: ['a1', 'a2'],
+        controller: controller({
+          providers: ['claude', 'codex'].map((p) => providerReady(p, ready.includes(p))),
+        }),
+        agentProviders,
+      });
+    // A Codex login only, with a Claude agent: not set, and Give login is for Claude.
+    expect(login(['claude'], ['codex'])![1]).toEqual({
+      key: 'login',
+      done: false,
+      text: 'No AI login yet',
+      action: { kind: 'give_login', provider: 'claude' },
+    });
+    expect(login(['claude', 'codex'], ['claude'])![1]?.action).toEqual({
+      kind: 'give_login',
+      provider: 'codex',
+    });
+    expect(login(['claude', 'codex'], ['claude', 'codex'])).toBeNull();
+    // The agent list still loading: wait, rather than show a tick that may be wrong.
+    expect(login(undefined, [])).toBeNull();
+    expect(login(undefined, ['codex'])).toBeNull();
+    // It can't be read: any ready provider counts, as with no agents.
+    expect(login(null, ['codex'])).toBeNull();
+  });
+
+  it('an agent on a provider the box doesn’t list neither blocks the tick nor gets Give login', () => {
+    const login = (agentProviders: string[], ready: string[]) =>
+      setupChecklist({
+        view: resting,
+        agents: ['a1', 'a2'],
+        controller: controller({
+          providers: ['claude', 'codex'].map((p) => providerReady(p, ready.includes(p))),
+        }),
+        agentProviders,
+      });
+    // Claude ready, plus an agent on a provider the box doesn't list: ticked.
+    expect(login(['claude', 'mystery'], ['claude'])).toBeNull();
+    // The unlisted one first, Codex missing: Give login is for Codex, never the unlisted one.
+    expect(login(['mystery', 'codex'], ['claude'])![1]?.action).toEqual({
+      kind: 'give_login',
+      provider: 'codex',
+    });
+    // Only unlisted providers: any ready provider counts, as with no agents.
+    expect(login(['mystery'], ['codex'])).toBeNull();
+    expect(login(['mystery'], [])![1]?.done).toBe(false);
+  });
+
+  it('with no agent yet, any ready provider ticks the login, whatever the agent list says', () => {
+    const line = setupChecklist({
+      view: resting,
+      agents: [],
+      controller: controller({ providers: [providerReady('codex', true)] }),
+      agentProviders: ['claude'],
+    })![1];
+    expect(line).toEqual({ key: 'login', done: true, text: 'AI login set', action: null });
+  });
+
   it('no agent yet offers Add agent; one agent ticks it', () => {
     const agent = (agents: string[]) =>
-      setupChecklist({ view: resting, agents, controller: controller() })![2];
+      setupChecklist({ view: resting, agents, controller: controller(), agentProviders: null })![2];
     expect(agent([])).toEqual({
       key: 'agent',
       done: false,

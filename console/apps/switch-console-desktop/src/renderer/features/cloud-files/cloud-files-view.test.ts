@@ -179,6 +179,11 @@ describe('Your cloud files', () => {
     list.mockResolvedValue({ ok: false, code: 'box_resting' });
     const view = await open();
     expect(text(view.host)).toContain('Your cloud is resting');
+    // The PM's resting line, the same everywhere in both apps.
+    expect(text(view.host)).toContain(
+      'Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.'
+    );
+    expect(text(view.host)).not.toContain('counts as awake time');
     expect(button(view.host, 'Wake it')).toBeDefined();
     expect(list).toHaveBeenCalledTimes(1);
     view.done();

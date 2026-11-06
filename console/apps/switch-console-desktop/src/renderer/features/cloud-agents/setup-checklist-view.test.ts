@@ -10,11 +10,13 @@ import type { YourCloudView } from './your-cloud';
 // once all three are ticked.
 
 const owned = vi.hoisted(() => ({ data: undefined as unknown, isError: false }));
+const managed = vi.hoisted(() => ({ data: [] as unknown, isError: false, isLoading: false }));
 const showAddAgent = vi.hoisted(() => vi.fn());
 const gave = vi.hoisted(() => ({ provider: null as string | null }));
 
 vi.mock('@renderer/features/managed-agents/use-managed-agents', () => ({
   useOwnedMachines: () => owned,
+  useManagedAgents: () => managed,
 }));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({ useShowModal: () => showAddAgent }));
 vi.mock('@renderer/features/locations/components/add-agent-modal/give-machine-login', () => ({
@@ -72,6 +74,9 @@ const click = async (host: HTMLElement, label: string) => {
 afterEach(() => {
   owned.data = undefined;
   owned.isError = false;
+  managed.data = [];
+  managed.isError = false;
+  managed.isLoading = false;
   showAddAgent.mockReset();
   gave.provider = null;
   document.body.innerHTML = '';
@@ -131,6 +136,27 @@ describe('BoxSetupChecklist', () => {
     const view = await show(ready, []);
     expect(view.host.textContent).toContain('No AI login yet');
     expect(buttons(view.host)).toEqual(['Add agent']);
+    view.done();
+  });
+
+  it('a Claude agent on a box with only a Codex login asks for the Claude login', async () => {
+    owned.data = [
+      {
+        id: 'c-box',
+        acceptsLogins: true,
+        providers: [
+          { provider: 'codex', ready: true, problem: null, detail: null, loginHelps: true },
+          { provider: 'claude', ready: false, problem: 'x', detail: null, loginHelps: true },
+        ],
+      },
+    ];
+    managed.data = [{ agentId: 'a1', definition: { provider: 'claude' } }];
+    const view = await show(ready, ['a1']);
+    expect(
+      view.host.querySelector('[data-checklist-line="login"]')?.getAttribute('data-done')
+    ).toBe('false');
+    await click(view.host, 'Give login');
+    expect(gave.provider).toBe('claude');
     view.done();
   });
 

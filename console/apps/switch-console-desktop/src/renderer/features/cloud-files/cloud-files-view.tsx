@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { PEOPLE_WORDS } from '@renderer/features/cloud-agents/people-words';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -173,7 +174,7 @@ function RootState({
           </p>
           <p className="mt-1 text-xs text-foreground-muted">
             {state.kind === 'resting'
-              ? 'It sleeps when no agent is working. Wake it to see your files; it counts as awake time.'
+              ? PEOPLE_WORDS.restingExplanation
               : 'This usually takes a minute or two. Your files show here as soon as it’s up.'}
           </p>
         </div>

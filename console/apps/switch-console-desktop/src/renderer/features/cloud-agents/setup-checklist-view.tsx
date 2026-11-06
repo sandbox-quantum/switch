@@ -1,7 +1,10 @@
 import { Check, Circle } from 'lucide-react';
 import { useState } from 'react';
 import { GiveMachineLogin } from '@renderer/features/locations/components/add-agent-modal/give-machine-login';
-import { useOwnedMachines } from '@renderer/features/managed-agents/use-managed-agents';
+import {
+  useManagedAgents,
+  useOwnedMachines,
+} from '@renderer/features/managed-agents/use-managed-agents';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
@@ -129,7 +132,22 @@ export function BoxSetupChecklist({
     : owned.data
       ? (owned.data.find((candidate) => candidate.id === machine.controller_id) ?? null)
       : undefined;
-  const lines = setupChecklist({ view, agents: machine.agents, controller });
+  // The providers the box's agents use, from the agent list Your Agents already loads.
+  const managed = useManagedAgents(serverId);
+  const agentProviders = managed.isError
+    ? null
+    : managed.data
+      ? [
+          ...new Set(
+            managed.data
+              .filter((agent) => machine.agents.includes(agent.agentId))
+              .map((agent) => agent.definition.provider)
+          ),
+        ]
+      : managed.isLoading
+        ? undefined
+        : null;
+  const lines = setupChecklist({ view, agents: machine.agents, controller, agentProviders });
   if (lines)
     return (
       <SetupChecklist
