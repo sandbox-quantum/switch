@@ -167,7 +167,7 @@ Before opening your pull request on GitHub:
 - [ ] **Lint and formatting:** `just check` reports clean formatting.
 - [ ] **No committed secrets:** Never commit tokens, `.env` files, private keys, or personal tenant URLs.
 - [ ] **Conventional commit messages:** Use clear prefix tags like `feat(core): ...`, `fix(agent-controller): ...`, or `docs: ...`.
-- [ ] **Issue reference:** Link your PR to its issue using `Closes #<issue-number>` in the description.
+- [ ] **Issue reference:** Link your PR to its issue using `Closes #1234` (replacing 1234 with your target issue number).
 
 ---
 
