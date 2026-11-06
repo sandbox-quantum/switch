@@ -75,8 +75,12 @@ class OAuthClient(BaseModel):
     `authorization_url` and `token_url`, both are discovered from the MCP
     server's metadata. `revocation_url` is where a disconnect revokes the
     sign-in, where the vendor has one; `revocation_discovered` revokes at the
-    authorization server's advertised revocation endpoint instead. A vendor
-    with neither needs `remove_access`: where the person removes Switch
+    authorization server's advertised revocation endpoint instead.
+    `revocation_bearer` is for a vendor whose revocation is a POST to
+    `revocation_url` with an access token as the bearer and no body, not RFC
+    7009's token in a form (Dropbox's); revoking an access token there ends
+    its sign-in, and so every token issued on it. A vendor with neither
+    needs `remove_access`: where the person removes Switch
     themselves, and what the sign-in does until they do, said whenever Switch
     drops one it cannot revoke.
 
@@ -113,6 +117,7 @@ class OAuthClient(BaseModel):
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
+    revocation_bearer: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
 
@@ -150,6 +155,8 @@ class OAuthClient(BaseModel):
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
             )
+        if self.revocation_bearer and self.revocation_url is None:
+            raise ValueError("revocation_bearer is a call to the named revocation_url")
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
         if (

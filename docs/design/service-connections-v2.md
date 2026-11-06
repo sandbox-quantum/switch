@@ -42,6 +42,8 @@ auth:
     #   include_granted_scopes, token_access_type)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
+    # revocation_bearer: true     # with revocation_url: a POST with an access
+                                  # token as the bearer and no body (Dropbox)
   identity:                   # method (GET, or POST with an optional static
     method: GET               # body) with the token; dotted paths in its JSON
     url: https://api.atlassian.com/me
@@ -577,13 +579,11 @@ Entry: `core/switch_core/connections/catalog/dropbox/`.
   kept.
   The level lives on the person's connection; a grant is on or off and issues
   at the connection's level each time (`ServiceBroker.decide`). Changing the
-  level means connecting again, and lowering it is not a revocation: Dropbox's
-  earlier write sign-in stays alive until removed under Connected apps (the
-  entry has `remove_access`, so Switch says so), an access token already handed
-  to an agent works until it expires (at most the entry's `max_lifetime`), and
-  connecting again does not move a grant's revision, so an agent host may keep
-  handing out its cached token for up to `USE_WITHIN` (an hour). Tokens issued
-  after the reconnect are at the new level.
+  level means connecting again. The earlier sign-in is then revoked at Dropbox
+  (below), which ends the access tokens already handed to agents too. Connecting
+  again does not move a grant's revision, so an agent host may keep offering the
+  token it cached for up to `USE_WITHIN` (an hour), which Dropbox refuses. Tokens
+  issued after the reconnect are at the new level.
 - Dropbox's MCP server (`https://mcp.dropbox.com/mcp`, answering as `text/event-stream`) lists
   its write tools to a read sign-in. Dropbox refuses them: `create_folder`
   answered "insufficient scope: need [files.content.write]" and made no
@@ -600,15 +600,31 @@ Entry: `core/switch_core/connections/catalog/dropbox/`.
   it, and use the schema it returns.
 - Searching inside files depends on the plan (see the operator's guide); the
   one search that matched had the word in a file's name as well as its text.
-- Disconnecting: Dropbox lists a revocation endpoint, `/2/auth/token/revoke`,
-  which is not RFC 7009. Its spec says it disables the access token the call
-  is made with, and with it the refresh token and every other access token
-  for that refresh token. Sent with a made-up token in a form body, as the
-  adapter revokes, it answered 400; with a made-up token as the bearer, 401
-  `invalid_access_token` (measured 2026-11-04, no account involved). Whether
-  a real access token as the bearer revokes the sign-in was not tried, so the
-  entry names `remove_access` (Settings, Security, Connected apps) and the
-  sign-in keeps working until the person removes it.
+- Revoking: `/2/auth/token/revoke` is not RFC 7009. Sent with a made-up token
+  in a form body, as the generic revoke sends it, it answered 400; with a
+  made-up token as the bearer, 401 `invalid_access_token` (no account
+  involved). With real tokens, on a disposable account that authorized the app
+  twice (a write sign-in A, then a read sign-in B; separate refresh tokens),
+  revoking with one of A's access tokens answered 200, and then all three of
+  A's access tokens answered 401, A's refresh token answered 400
+  `invalid_grant`, and B's access token and refresh token still worked. So the
+  entry sets `revocation_url` and `revocation_bearer: true`, and
+  `OAuthAdapter._revoke_by_bearer` sends the bearer POST with no body. A stored
+  access token past its expiry (or refused with 401) is replaced first by one
+  the refresh token fetches, used for that call alone and never stored; a
+  refresh token Dropbox no longer knows (`invalid_grant`) is a sign-in already
+  gone. The broker revokes only after the new connection is committed (relink,
+  `ServiceBroker.connect`), after the connection is deleted (disconnect,
+  `finish_disconnect`), or for a sign-in it did not keep (`_revoke_unkept`); on
+  success it no longer warns that withdrawn tokens may keep working, because
+  the vendor ended them (`revoke_withdrawn(ended=…)`). The revoke is shielded
+  from cancellation (`_revoke_sign_in`, for every vendor), since it runs after
+  the commit and the old secret lives only in memory. On failure or timeout the
+  change stands, the old secret is already replaced so there is no retry, and
+  the warning tells the person to revoke it in Dropbox. A process that dies
+  between the commit and the revoke loses the old secret the same way; keeping
+  it durably until revoked would be a platform change (a stored secret and a
+  retry in the maintenance tick) and is not part of this entry.
 - The Connector apps check is the generic token-endpoint one (a made-up code
   and verifier). Dropbox answers a wrong client with
   `invalid_client: Invalid client_id or client_secret`, the code followed by a

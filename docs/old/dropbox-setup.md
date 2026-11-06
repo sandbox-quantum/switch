@@ -101,19 +101,23 @@ switch-core does not start, and says why.
    anything it creates, moves or deletes shows in Dropbox as done by them.
 
 To change the choice, disconnect and connect again. Switch Console shows the
-choice made next to the connection. The sign-in the person leaves behind
-still works at Dropbox until they remove Switch under Connected apps (below),
-so a person who goes from read and write to read only should remove it there.
+choice made next to the connection. Connecting again revokes the earlier
+sign-in at Dropbox once the new one is saved (below).
 
 A sign-in made for reading holds only the three read permissions. Dropbox
 enforces permissions, not Switch and not the Dropbox MCP server: the server
 lists the same tools to every connection, including ones that write, and
 Dropbox refuses a call whose permission the sign-in lacks.
 
-Switch has not been seen to revoke a sign-in at Dropbox. When someone
-disconnects, or connects again, the sign-in Switch stops using still works
-until they remove Switch in Dropbox, under Settings, Security, Connected apps.
-Switch says so each time.
+When someone disconnects, or connects again, Switch revokes the sign-in it
+stops using at Dropbox, after the change is saved. Revoking ends that sign-in's
+refresh token and every access token made from it, so an agent holding one
+stops working at once rather than at its expiry; the person's other Dropbox
+sign-ins are not affected. If Dropbox cannot be reached, or refuses, the
+connection still changes and Switch says the old sign-in could not be revoked;
+the person then removes Switch in Dropbox, under Settings, Security,
+Connected apps. An agent host may keep offering a token it fetched earlier for
+up to an hour, and Dropbox will refuse it.
 
 ## Searching inside files
 

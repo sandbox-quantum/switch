@@ -253,11 +253,12 @@ def test_the_shipped_dropbox_entry_signs_in_as_the_live_test_found_it_must():
         "pass_through",
         14400,
     )
-    # Switch has not been seen to revoke at Dropbox's advertised endpoint, so
-    # people remove Switch there, and are told the sign-in still works.
-    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
-    assert oauth.remove_access is not None
-    assert "Connected apps" in oauth.remove_access
+    # Dropbox revokes with an access token as the bearer, at its own endpoint.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (
+        "https://api.dropboxapi.com/2/auth/token/revoke",
+        False,
+    )
+    assert oauth.revocation_bearer is True
     assert oauth.unchecked is not None and "other than its owner" in oauth.unchecked
     identity = definition.auth.identity
     assert identity is not None

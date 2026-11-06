@@ -207,9 +207,13 @@ version of their own to them without also giving them a release of their own.
   it, Dropbox is listed as not set up. Like Airtable, it needs
   `GATEWAY_PUBLIC_URL`. Dropbox's MCP server lists its write tools to every
   connection and Dropbox refuses them where the sign-in lacks the permission.
-  Dropbox's revocation endpoint is not one Switch revokes through yet, so a
-  sign-in Switch drops still works until the person removes Switch under
-  Connected apps in Dropbox; disconnecting says so. Searching inside files
+  Disconnecting, or connecting again, revokes the old sign-in at Dropbox,
+  which takes its refresh token and every access token made from it, and not
+  the person's other sign-ins; a new `revocation_bearer` setting in an OAuth
+  entry's `oauth` block says a vendor revokes that way (an access token as the
+  bearer of a POST with no body) and nothing changes for the other entries.
+  Where Dropbox cannot be reached the connection still changes, and Switch
+  says the old sign-in could not be revoked. Searching inside files
   depends on the account's Dropbox plan, and Basic accounts get name search.
 - **Connector apps checks read a vendor's reason.** A token endpoint that
   follows its error code with a reason (Dropbox's

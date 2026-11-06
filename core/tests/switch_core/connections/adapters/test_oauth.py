@@ -465,17 +465,6 @@ class TestTheShippedDropboxEntry:
         with pytest.raises(ReauthorizationRequiredError):
             await adapter.refresh(signed_in.secret)
 
-    async def test_disconnect_says_where_to_remove_switch_and_asks_nothing_of_dropbox(
-        self,
-    ) -> None:
-        vendor = _dropbox_vendor()
-        adapter = _dropbox_adapter(vendor)
-        signed_in = await _dropbox_sign_in(adapter, vendor, DROPBOX_READ)
-        calls = len(vendor.paths)
-        with pytest.raises(ConnectionNotRevocable, match="Connected apps"):
-            await adapter.revoke_connection(signed_in.secret)
-        assert vendor.revoked == [] and len(vendor.paths) == calls
-
 
 class TestIssue:
     async def test_hands_out_the_owners_token_which_the_mcp_server_takes(

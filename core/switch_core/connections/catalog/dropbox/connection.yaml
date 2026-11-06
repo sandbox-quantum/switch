@@ -25,14 +25,12 @@ auth:
     # also returns the refresh token (measured).
     authorization_params:
       token_access_type: offline
-    # Dropbox lists a revocation endpoint, but it is a call that takes the
-    # access token as its bearer rather than a token in a form (RFC 7009),
-    # which Switch has not been seen to revoke through. Until it is, a
-    # sign-in Switch drops lives on in Dropbox.
-    remove_access: >-
-      Remove it in Dropbox under Settings, Security, Connected apps, where
-      each app is listed once. Until then, the sign-in Switch dropped still
-      works.
+    # Dropbox revokes with a POST that takes an access token as its bearer
+    # and no body, not RFC 7009's token in a form. Revoking one access token
+    # ended its whole sign-in (measured with two sign-ins of one account): its
+    # other access tokens and its refresh token, and not the other sign-in.
+    revocation_url: https://api.dropboxapi.com/2/auth/token/revoke
+    revocation_bearer: true
     # Dropbox keeps a new app in development, limited to its owner until
     # "Enable additional users" is switched on in the app console.
     unchecked: >-
