@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, X } from 'lucide-react';
+import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, SquareIcon, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react';
 import { reportBuddyMessage } from '@renderer/features/switch-buddy/buddy-telemetry';
@@ -205,7 +205,7 @@ export const ChatComposer = observer(function ChatComposer({
   agents,
   people,
   groupName,
-  activity,
+  activities,
   replyTo,
   onClearReply,
   disabled,
@@ -217,7 +217,8 @@ export const ChatComposer = observer(function ChatComposer({
   people: (MentionPerson & { email: string | null })[];
   /** The chat's name when it is a group, which is who a message goes to; null in a direct chat. */
   groupName: string | null;
-  activity: AgentActivity | null;
+  /** One per agent in the chat. */
+  activities: AgentActivity[];
   replyTo: ChatMessage | null;
   onClearReply: () => void;
   disabled: string | null;
@@ -307,7 +308,11 @@ export const ChatComposer = observer(function ChatComposer({
     setDraft(next);
   };
   const [files, setFiles] = useState<{ id: string; file: File }[]>([]);
-  const [confirmReset, setConfirmReset] = useState(false);
+  /** A Reset or Compact being set up: in a group its agents are picked first (null), then a Reset is confirmed. */
+  const [contextStep, setContextStep] = useState<{
+    command: 'reset' | 'compact';
+    targets: AgentActivity[] | null;
+  } | null>(null);
   const [contextOpen, setContextOpen] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -389,7 +394,12 @@ export const ChatComposer = observer(function ChatComposer({
   }, []);
   const agent = agents[0] ?? null;
   const recipient = groupName ?? (agent ? chatAgentLabel(agent) : 'the agent');
-  const stopActivity = activity?.runningTurn ? activity : null;
+  const labelOf = (activity: AgentActivity) => {
+    const owner = agents.find((each) => each.id === activity.agentId);
+    return owner ? chatAgentLabel(owner) : 'the agent';
+  };
+  const group = activities.length > 1;
+  const stopActivities = activities.filter((activity) => activity.runningTurn);
 
   const addFiles = (list: File[]) => {
     if (!list.length) return;
@@ -503,23 +513,43 @@ export const ChatComposer = observer(function ChatComposer({
     onClearReply();
   };
 
-  const showStop = Boolean(stopActivity) && !draft.trim() && !files.length;
-  const stopping = stopActivity?.pendingControl?.command === 'interrupt';
-  const status = stopping ? 'sending' : showStop ? 'running' : 'idle';
+  const hasRunningAgent = stopActivities.length > 0;
+  const hasContent = draft.trim() !== '' || files.length > 0;
+  const stopping = stopActivities.some(
+    (activity) => activity.pendingControl?.command === 'interrupt'
+  );
+  const status = stopping ? 'sending' : hasRunningAgent && !hasContent ? 'running' : 'idle';
+  const showSeparateStop = hasRunningAgent && hasContent;
   // Not blocked while working: a turn whose host died stays running in the feed, and Reset is the way out.
-  const contextBlocked = activity?.pendingControl
+  const contextBlocked = activities.some((activity) => activity.pendingControl)
     ? 'Waiting for the previous command to be sent.'
     : null;
+  const runContext = (command: 'reset' | 'compact', targets: AgentActivity[]) => {
+    setContextOpen(false);
+    setContextStep(null);
+    for (const activity of targets) void activity.control(command);
+  };
+  const pickContext = (command: 'reset' | 'compact') => {
+    if (group) setContextStep({ command, targets: null });
+    else if (command === 'reset') setContextStep({ command, targets: activities });
+    else runContext(command, activities);
+  };
+  const choose = (targets: AgentActivity[]) => {
+    if (contextStep?.command === 'reset') setContextStep({ command: 'reset', targets });
+    else runContext('compact', targets);
+  };
+  const resetTargets = contextStep?.command === 'reset' ? contextStep.targets : null;
 
   return (
     <div className="mx-auto w-full max-w-[860px] px-5 pb-1.5">
-      {activity && (
+      {activities.map((activity) => (
         <ControlStatus
+          key={activity.agentId}
           activity={activity}
           timeline={timeline}
-          who={agent ? chatAgentLabel(agent) : 'the agent'}
+          who={labelOf(activity)}
         />
-      )}
+      ))}
       {replyTo && (
         <div className="mb-2 flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs text-foreground-muted">
           <span className="min-w-0 flex-1 truncate">
@@ -697,22 +727,45 @@ export const ChatComposer = observer(function ChatComposer({
                 }}
               />
             </div>
+            {showSeparateStop && (
+              <PromptInputButton
+                tooltip={
+                  stopActivities.some((activity) => activity.pendingControl) ? 'Sending…' : 'Stop'
+                }
+                variant="ghost"
+                size="icon-sm"
+                className="h-8 min-w-8 rounded-xl border-none bg-(--composer-send-bg) text-(--composer-send-fg) hover:bg-(--composer-send-bg-hover) active:bg-(--composer-send-bg-active) disabled:opacity-50"
+                disabled={
+                  disabled !== null || stopActivities.some((activity) => activity.pendingControl)
+                }
+                onClick={() => {
+                  for (const activity of stopActivities) void activity.control('interrupt');
+                }}
+                aria-label="Stop reply"
+              >
+                <SquareIcon className="size-3 fill-current" />
+              </PromptInputButton>
+            )}
             <PromptInputSubmit
               status={status}
               className="h-8 min-w-8"
-              onStop={() => void stopActivity?.control('interrupt')}
-              stopDisabledReason={stopActivity?.pendingControl ? 'Sending…' : null}
-              disabled={disabled !== null || (!showStop && !draft.trim() && !files.length)}
+              onStop={() => {
+                for (const activity of stopActivities) void activity.control('interrupt');
+              }}
+              stopDisabledReason={
+                stopActivities.some((activity) => activity.pendingControl) ? 'Sending…' : null
+              }
+              disabled={disabled !== null || (!hasRunningAgent && !draft.trim() && !files.length)}
             />
           </div>
         </PromptInput>
         <div className="mt-1.5 flex min-h-7 items-center justify-end gap-1 px-2">
-          {activity && (
+          {activities.length > 0 && (
             <Popover
               open={contextOpen}
               onOpenChange={(open) => {
                 setContextOpen(open);
-                setConfirmReset(false);
+                setContextStep(null);
               }}
             >
               <PopoverTrigger
@@ -729,30 +782,68 @@ export const ChatComposer = observer(function ChatComposer({
                 className="w-80 max-w-[calc(100vw-2rem)] gap-2 p-3"
               >
                 <PopoverTitle>
-                  {confirmReset ? 'Start a fresh conversation?' : 'Conversation context'}
+                  {resetTargets
+                    ? group
+                      ? `Start a fresh conversation for ${resetTargets.length === 1 ? labelOf(resetTargets[0]!) : 'all agents'}?`
+                      : 'Start a fresh conversation?'
+                    : contextStep
+                      ? `${contextStep.command === 'reset' ? 'Reset' : 'Compact'} which agent?`
+                      : 'Conversation context'}
                 </PopoverTitle>
-                {confirmReset ? (
+                {resetTargets ? (
                   <>
                     <p className="text-xs text-foreground-muted">
-                      The agent starts with a fresh context. Earlier messages stay in the transcript
-                      as history.
+                      {resetTargets.length === 1 ? 'The agent starts' : 'Each agent starts'} with a
+                      fresh context. Earlier messages stay in the transcript as history.
                     </p>
                     <div className="flex justify-end gap-2 pt-2">
-                      <Button size="sm" variant="ghost" onClick={() => setConfirmReset(false)}>
+                      <Button size="sm" variant="ghost" onClick={() => setContextStep(null)}>
                         Cancel
                       </Button>
                       <Button
                         size="sm"
                         disabled={contextBlocked !== null}
-                        onClick={() => {
-                          setContextOpen(false);
-                          setConfirmReset(false);
-                          void activity.control('reset');
-                        }}
+                        onClick={() => runContext('reset', resetTargets)}
                       >
                         Start fresh
                       </Button>
                     </div>
+                  </>
+                ) : contextStep ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      disabled={contextBlocked !== null}
+                      className="justify-start px-2"
+                      onClick={() => choose(activities)}
+                    >
+                      All agents
+                    </Button>
+                    {activities.map((activity) => {
+                      const owner = agents.find((each) => each.id === activity.agentId);
+                      return (
+                        <Button
+                          key={activity.agentId}
+                          variant="ghost"
+                          disabled={contextBlocked !== null}
+                          className="justify-start gap-2 px-2"
+                          onClick={() => choose([activity])}
+                        >
+                          {owner && (
+                            <AgentAvatar
+                              name={owner.name}
+                              iconUrl={owner.iconUrl}
+                              serverId={serverId}
+                              size={20}
+                            />
+                          )}
+                          <span className="truncate">{labelOf(activity)}</span>
+                        </Button>
+                      );
+                    })}
+                    {contextBlocked && (
+                      <p className="text-xs text-foreground-muted">{contextBlocked}</p>
+                    )}
                   </>
                 ) : (
                   <>
@@ -760,14 +851,11 @@ export const ChatComposer = observer(function ChatComposer({
                       variant="ghost"
                       disabled={contextBlocked !== null}
                       className="h-auto justify-start gap-3 px-2 py-2 text-left"
-                      onClick={() => {
-                        setContextOpen(false);
-                        void activity.control('compact');
-                      }}
+                      onClick={() => pickContext('compact')}
                     >
                       <Minimize2 className="size-4 shrink-0" />
                       <span>
-                        <span className="block">Compact context</span>
+                        <span className="block">Compact context{group ? '...' : ''}</span>
                         <span className="block text-xs font-normal text-foreground-muted">
                           Free up space in this conversation
                         </span>
@@ -777,7 +865,7 @@ export const ChatComposer = observer(function ChatComposer({
                       variant="ghost"
                       disabled={contextBlocked !== null}
                       className="h-auto justify-start gap-3 px-2 py-2 text-left"
-                      onClick={() => setConfirmReset(true)}
+                      onClick={() => pickContext('reset')}
                     >
                       <RotateCcw className="size-4 shrink-0" />
                       <span>
