@@ -168,6 +168,8 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("service_connections", "user_id"): "database cascades",
     ("sign_in_flows", "user_id"): "database cascades",
     ("clients", "user_id"): "cleared",
+    ("room_schedules", "created_by_user_id"): "database clears",
+    ("room_schedules", "updated_by_user_id"): "database clears",
     ("organization_app_credentials", "updated_by"): "database clears",
     ("organization_service_settings", "updated_by"): "database clears",
     ("tenant_retention_policies", "updated_by_user_id"): "database clears",

@@ -111,6 +111,10 @@ import {
   type UnconfirmedLink,
   type UpdateTrustSettingsParams,
   type LinkedRoom,
+  type RoomSchedule,
+  type RoomScheduleChanges,
+  type RoomScheduleInput,
+  type RoomScheduleOutcome,
   type RoomDocumentContent,
   type RoomResource,
   type RoomResourceKind,
@@ -5284,6 +5288,106 @@ export async function removeLinkedRoom(
   await gatewayFetch(
     server,
     `/rooms/${encodeURIComponent(roomId)}/linked-rooms/${encodeURIComponent(targetRoomId)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+}
+
+type RoomScheduleJson = {
+  id: string;
+  room_id: string;
+  agent_ids: string[];
+  message: string;
+  schedule_type: 'once' | 'cron';
+  cron_expression: string | null;
+  run_at: string | null;
+  timezone: string;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_outcome: RoomScheduleOutcome | null;
+  last_error: string | null;
+};
+
+function mapRoomSchedule(r: RoomScheduleJson): RoomSchedule {
+  return {
+    id: r.id,
+    roomId: r.room_id,
+    agentIds: r.agent_ids,
+    message: r.message,
+    type: r.schedule_type,
+    cronExpression: r.cron_expression,
+    runAt: r.run_at,
+    timezone: r.timezone,
+    enabled: r.enabled,
+    nextRunAt: r.next_run_at,
+    lastRunAt: r.last_run_at,
+    lastOutcome: r.last_outcome,
+    lastError: r.last_error,
+  };
+}
+
+/** The wire body for the fields of a schedule that are set. */
+function roomScheduleBody(fields: RoomScheduleChanges): Record<string, unknown> {
+  return {
+    ...(fields.agentIds !== undefined && { agent_ids: fields.agentIds }),
+    ...(fields.message !== undefined && { message: fields.message }),
+    ...(fields.type !== undefined && { schedule_type: fields.type }),
+    ...(fields.cronExpression !== undefined && { cron_expression: fields.cronExpression }),
+    ...(fields.runAt !== undefined && { run_at: fields.runAt }),
+    ...(fields.timezone !== undefined && { timezone: fields.timezone }),
+    ...(fields.enabled !== undefined && { enabled: fields.enabled }),
+  };
+}
+
+/** A room's scheduled messages (`GET /rooms/{id}/schedules`). */
+export async function fetchRoomSchedules(
+  server: SwitchServer,
+  roomId: string
+): Promise<RoomSchedule[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/schedules`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as RoomScheduleJson[]).map(mapRoomSchedule);
+}
+
+/** Schedule a message to some of the room's agents. */
+export async function createRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  input: RoomScheduleInput
+): Promise<RoomSchedule> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/schedules`, {
+    authenticated: true,
+    method: 'POST',
+    body: roomScheduleBody(input),
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/** Change a schedule, or pause and resume it with `enabled`. */
+export async function updateRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string,
+  changes: RoomScheduleChanges
+): Promise<RoomSchedule> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/schedules/${encodeURIComponent(scheduleId)}`,
+    { authenticated: true, method: 'PATCH', body: roomScheduleBody(changes) }
+  );
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/** Delete a schedule. */
+export async function deleteRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/schedules/${encodeURIComponent(scheduleId)}`,
     { authenticated: true, method: 'DELETE' }
   );
 }

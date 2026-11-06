@@ -12,9 +12,11 @@
     "create_room_document",
     "create_room_from_yaml",
     "create_room_group",
+    "create_schedule",
     "define_role",
     "delete_role",
     "delete_room_document",
+    "delete_schedule",
     "delete_template",
     "edit_role",
     "get_advanced_config",
@@ -41,6 +43,7 @@
     "list_roles",
     "list_room_groups",
     "list_rooms",
+    "list_schedules",
     "list_templates",
     "load_internal_documents",
     "post_message",
@@ -58,6 +61,7 @@
     "update_agent_detail",
     "update_room",
     "update_room_document",
+    "update_schedule",
     "update_template"
   ],
   "gatewayRoutes": [
@@ -254,6 +258,11 @@
     },
     {
       "route": "DELETE /gateway/rooms/{room_id}/roles/{name}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}/schedules/{schedule_id}",
       "auth": "session",
       "flags": []
     },
@@ -844,6 +853,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/rooms/{room_id}/schedules",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/rooms/{room_id}/yaml",
       "auth": "session",
       "flags": []
@@ -1056,6 +1070,11 @@
     },
     {
       "route": "PATCH /gateway/rooms/{room_id}/roles/{name}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/rooms/{room_id}/schedules/{schedule_id}",
       "auth": "session",
       "flags": []
     },
@@ -1426,6 +1445,11 @@
     },
     {
       "route": "POST /gateway/rooms/{room_id}/roles",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/schedules",
       "auth": "session",
       "flags": []
     },

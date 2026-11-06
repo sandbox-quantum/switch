@@ -1335,6 +1335,95 @@ class RoomLink(TenantScoped, Base):
     )
 
 
+# ── Room schedules ────────────────────────────────────────────────────────────
+
+
+class RoomSchedule(TenantScoped, Base):
+    """A message Switch posts to some of a room's agents at a set time.
+
+    `schedule_type` is `once` (fires at `run_at`, then pauses itself) or
+    `cron` (a five-field `cron_expression` read in `timezone`). `next_run_at`
+    is when it fires next and is NULL while it is paused or finished, which
+    is what the due-poll in `RoomScheduleStore.claim_due` keys on.
+    `agent_ids` are agents of the room when it was written; which of them are
+    still in the room is decided when it fires (`room_schedules.py`).
+    `updated_by_user_id` is the person the posted message speaks for: whoever
+    last changed what is sent.
+    """
+
+    __tablename__ = "room_schedules"
+    __table_args__ = (
+        Index("ix_room_schedules_tenant_id", "tenant_id"),
+        Index("ix_room_schedules_room_id", "room_id"),
+        Index(
+            "ix_room_schedules_next_run_at",
+            "next_run_at",
+            postgresql_where=text("next_run_at IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "schedule_type IN ('once', 'cron')", name="ck_room_schedules_type"
+        ),
+        CheckConstraint(
+            "(schedule_type = 'cron' AND cron_expression IS NOT NULL "
+            "AND run_at IS NULL) OR "
+            "(schedule_type = 'once' AND run_at IS NOT NULL "
+            "AND cron_expression IS NULL)",
+            name="ck_room_schedules_timing",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_schedules_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id", ondelete="SET NULL", name="fk_room_schedules_created_by"
+        ),
+        nullable=True,
+    )
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id", ondelete="SET NULL", name="fk_room_schedules_updated_by"
+        ),
+        nullable=True,
+    )
+    agent_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    schedule_type: Mapped[str] = mapped_column(Text, nullable=False)
+    cron_expression: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    timezone: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, server_default="true", nullable=False
+    )
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # ── Tasks ──────────────────────────────────────────────────────────────────────
 
 

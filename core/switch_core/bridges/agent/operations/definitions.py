@@ -60,6 +60,7 @@ from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.room_schedules import parse_schedule_time
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
@@ -1173,6 +1174,137 @@ async def delete_role(name: str) -> dict[str, Any]:
     room_id = await require_connected_room()
     await get_protocol().delete_room_role(agent_id, room_id, name)
     return {"status": "deleted", "name": name}
+
+
+@operation
+async def list_schedules() -> list[dict[str, Any]]:
+    """List the connected room's schedules: messages Switch posts to some of its
+    agents at a set time, once or on a repeat.
+
+    Returns:
+        A list of `{id, agent_ids, message, schedule_type, cron_expression,
+        run_at, timezone, enabled, next_run_at, last_run_at, last_outcome,
+        last_error}`. `next_run_at` is null while a schedule is paused or
+        finished. `last_outcome` is `posted`, `partial` (some addressed agents
+        had left the room), `skipped`, `missed` (too late to run) or `failed`;
+        `last_error` says why for anything but `posted`.
+    """
+    agent_id = get_agent_id()
+    room_id = await require_connected_room()
+    return await get_protocol().list_room_schedules(agent_id, room_id)
+
+
+@operation
+async def create_schedule(
+    agent_ids: list[str],
+    message: str,
+    schedule_type: str,
+    timezone: str,
+    cron_expression: str | None = None,
+    run_at: str | None = None,
+) -> dict[str, Any]:
+    """Schedule a message to some of the connected room's agents. Requires your
+    owner to own the room or be a workspace admin; the message speaks with
+    your owner's authority.
+
+    When it fires, Switch posts `message` in the room addressed to the agents
+    (`@name` each), so they receive it like any mention. Confirm the wording
+    and timing with the user first: it keeps firing until paused or deleted.
+
+    Args:
+        agent_ids: Ids of agents in the room to address (`list_participants`
+            gives them). At least one.
+        message: What to post, without the `@name`s; they are added.
+        schedule_type: `once` for one moment (give `run_at`) or `cron` for a
+            repeat (give `cron_expression`).
+        timezone: IANA timezone the times are read in, such as `UTC` or
+            `Europe/Berlin`.
+        cron_expression: Five fields, `minute hour day-of-month month
+            day-of-week`: `0 9 * * 1-5` is 09:00 on weekdays. Supports `*`,
+            lists, ranges and `*/n` steps.
+        run_at: For `once`: ISO 8601 date and time in the future. Without an
+            offset it is read in `timezone`.
+
+    A run missed because the server was down is posted once, late, if it is
+    under 24 hours overdue, and skipped after that. An agent that has left the
+    room is dropped from the audience; with none left the schedule is paused.
+
+    Returns:
+        The schedule, as `list_schedules` shows it.
+    """
+    agent_id = get_agent_id()
+    room_id = await require_connected_room()
+    return await get_protocol().create_room_schedule(
+        agent_id,
+        room_id,
+        agent_ids=agent_ids,
+        message=message,
+        schedule_type=schedule_type,
+        cron_expression=cron_expression,
+        run_at=parse_schedule_time(run_at),
+        timezone=timezone,
+    )
+
+
+@operation
+async def update_schedule(
+    schedule_id: str,
+    agent_ids: list[str] | None = None,
+    message: str | None = None,
+    schedule_type: str | None = None,
+    timezone: str | None = None,
+    cron_expression: str | None = None,
+    run_at: str | None = None,
+    enabled: bool | None = None,
+) -> dict[str, Any]:
+    """Change a schedule of the connected room, or pause (`enabled=false`) or
+    resume (`enabled=true`) it. Requires your owner to own the room or be a
+    workspace admin.
+
+    Only the arguments you pass change. Pausing clears `next_run_at`; resuming
+    works the next run out again from now. Changing `message` or `agent_ids`
+    makes the message speak with your owner's authority from then on.
+
+    Args:
+        schedule_id: The `id` from `list_schedules`.
+        agent_ids, message, schedule_type, timezone, cron_expression, run_at:
+            As for `create_schedule`.
+        enabled: false to pause, true to resume.
+
+    Returns:
+        The schedule, as `list_schedules` shows it.
+    """
+    agent_id = get_agent_id()
+    room_id = await require_connected_room()
+    return await get_protocol().update_room_schedule(
+        agent_id,
+        room_id,
+        schedule_id,
+        agent_ids=agent_ids,
+        message=message,
+        schedule_type=schedule_type,
+        cron_expression=cron_expression,
+        run_at=parse_schedule_time(run_at),
+        timezone=timezone,
+        enabled=enabled,
+    )
+
+
+@operation
+async def delete_schedule(schedule_id: str) -> dict[str, bool]:
+    """Delete a schedule of the connected room. Requires your owner to own the
+    room or be a workspace admin.
+
+    Args:
+        schedule_id: The `id` from `list_schedules`.
+
+    Returns:
+        `{"ok": true}` on success.
+    """
+    agent_id = get_agent_id()
+    room_id = await require_connected_room()
+    await get_protocol().delete_room_schedule(agent_id, room_id, schedule_id)
+    return {"ok": True}
 
 
 @operation

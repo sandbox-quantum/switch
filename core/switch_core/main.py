@@ -167,6 +167,7 @@ from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.service_app_credential_store import ServiceAppCredentialStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
@@ -215,6 +216,10 @@ from switch_core.retention.audit_history import check_purge_privilege
 from switch_core.retention.erasure import ErasureService, erasure_loop
 from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
+from switch_core.room_schedules import (
+    POLL_SECONDS as ROOM_SCHEDULE_POLL_SECONDS,
+)
+from switch_core.room_schedules import RoomScheduleService, utc_now
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
@@ -349,6 +354,29 @@ async def _attachment_group_sweep_loop(
                 except Exception:
                     logger.exception(
                         "Attachment group sweep failed for tenant %s", tenant_id
+                    )
+
+
+async def _room_schedule_loop(
+    session_factory: async_sessionmaker[AsyncSession], schedules: RoomScheduleService
+) -> None:
+    """Every few seconds, post the room schedules that are due, in every
+    tenant. Every process runs it, since a due schedule is claimed by whoever
+    gets to it first."""
+    with no_tenant():
+        while True:
+            await asyncio.sleep(ROOM_SCHEDULE_POLL_SECONDS)
+            try:
+                tenants = await all_tenant_ids(session_factory)
+            except Exception:
+                logger.exception("Room schedule poll failed")
+                continue
+            for tenant_id in tenants:
+                try:
+                    await schedules.run_due(tenant_id)
+                except Exception:
+                    logger.exception(
+                        "Room schedule poll failed for tenant %s", tenant_id
                     )
 
 
@@ -1172,6 +1200,16 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     agent_admin.bind(protocol)
     protocol.deletion_requests = deletion_requests
+    room_schedules = RoomScheduleService(
+        schedule_store=RoomScheduleStore(),
+        room_store=room_store,
+        agent_store=agent_store,
+        user_store=user_store,
+        client_lifecycle=client_lifecycle,
+        session_factory=session_factory,
+        clock=utc_now,
+    )
+    protocol.room_schedules = room_schedules
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
@@ -1540,6 +1578,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
+            room_schedule_task = asyncio.create_task(
+                _room_schedule_loop(session_factory, room_schedules)
+            )
             service_token_task = asyncio.create_task(
                 service_token_maintenance_loop(session_factory, service_broker)
             )
@@ -1597,6 +1638,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 router.close()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
+                room_schedule_task.cancel()
                 await _stop_tasks(data_retention_task, erasure_task)
                 if history_engine is not None:
                     await history_engine.dispose()
