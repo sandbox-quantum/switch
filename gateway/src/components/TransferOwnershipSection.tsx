@@ -38,15 +38,11 @@ const LABELS: Record<OwnershipKind, string> = {
   template: "template",
 };
 
-/** Who the thing can go to: anyone in the workspace but its owner and the
- * caller. An admin handing over someone else's thing can't take it for
- * themselves; the server refuses that too. */
-export function transferCandidates(
-  members: Member[],
-  ownerId: string | null,
-  callerId: string | null,
-): Member[] {
-  return members.filter((m) => m.user_id !== ownerId && m.user_id !== callerId);
+/** Who the thing can go to: whoever the server says may receive it (a
+ * member of this workspace other than the caller, and not an organization
+ * admin listed through the organization), but the owner it already has. */
+export function transferCandidates(members: Member[], ownerId: string | null): Member[] {
+  return members.filter((m) => m.can_receive_transfer && m.user_id !== ownerId);
 }
 
 /** Hands the thing to another member of this workspace. The server decides
@@ -116,7 +112,7 @@ export function TransferOwnershipDialog({
   onClose,
   onTransferred,
 }: DialogProps) {
-  const { session, user } = useAuth();
+  const { session } = useAuth();
   const tenantId = session?.tenant?.id;
   const [members, setMembers] = useState<Member[] | null>(null);
   const [recipient, setRecipient] = useState("");
@@ -157,7 +153,7 @@ export function TransferOwnershipDialog({
     }
   };
 
-  const candidates = transferCandidates(members ?? [], ownerId, user?.id ?? null);
+  const candidates = transferCandidates(members ?? [], ownerId);
 
   return (
     <Dialog open onClose={close} fullWidth maxWidth="xs">
