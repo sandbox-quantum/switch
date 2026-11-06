@@ -180,3 +180,16 @@ describe("Resume says why they were paused", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("the pause reason is capped", () => {
+  it("shows at most 300 characters, with an ellipsis, never splitting a character", async () => {
+    const { capped, REASON_SHOWN } = await import("./OperatorActionDialog");
+    expect(REASON_SHOWN).toBe(300);
+    expect(capped("short")).toBe("short");
+    const long = "a".repeat(299) + "😀" + "b".repeat(50);
+    const shown = capped(long);
+    expect(Array.from(shown)).toHaveLength(301);
+    expect(shown.endsWith("😀…")).toBe(true);
+    expect(capped("x".repeat(300))).toBe("x".repeat(300));
+  });
+});

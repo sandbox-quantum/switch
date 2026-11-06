@@ -26,6 +26,16 @@ interface Props {
   pausedBecause?: PauseReason;
 }
 
+/** The most of an operator's reason the confirm shows (security's cap). */
+export const REASON_SHOWN = 300;
+
+/** A reason cut to `REASON_SHOWN` characters, with an ellipsis when cut.
+ *  Counted by code point, so an emoji is never split in half. */
+export function capped(reason: string): string {
+  const chars = Array.from(reason.trim());
+  return chars.length <= REASON_SHOWN ? chars.join("") : `${chars.slice(0, REASON_SHOWN).join("")}…`;
+}
+
 /** Resume's "Why they were paused" line. An operator's reason is shown as
  *  text only, never markup. */
 export function pausedLine(paused: PauseReason): string {
@@ -33,7 +43,7 @@ export function pausedLine(paused: PauseReason): string {
     case "loading":
       return "Checking the audit log…";
     case "found":
-      return `${paused.reason} (paused ${shortTime(paused.at)})`;
+      return `${capped(paused.reason)} (paused ${shortTime(paused.at)})`;
     case "none":
       return "No reason is recorded. Switch may have paused them itself.";
     case "error":

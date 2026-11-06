@@ -46,7 +46,7 @@ describe("the Boxes tab (W4, p10)", () => {
     expect(first.getByLabelText("workspace k1-7c10 ab12 cd34")).toBeTruthy();
     expect(first.getByLabelText("person k1-a83e 91f0 c2d4")).toBeTruthy();
     expect(first.getByText("Running")).toBeTruthy();
-    expect(first.getByText("shared-1 · eu-west-3a")).toBeTruthy();
+    expect(first.getByText("shared-1 · zone-a")).toBeTruthy();
     expect(first.getByText("1.9 GB")).toBeTruthy();
     expect(screen.queryByText(/k1-7aa0/)).toBeNull(); // retired
     expect(fetchMock).not.toHaveBeenCalled();
@@ -258,7 +258,7 @@ describe("Show name (W4, p15)", () => {
     renderTab(BoxesTab, { overview: fixture() });
     const table = screen.getByRole("table", { name: "Boxes" });
     expect(getComputedStyle(table.parentElement as HTMLElement).overflowX).toBe("auto");
-    const cell = rowOf("k1-4f2a 91aa 0b1c").getByText("shared-1 · eu-west-3a").closest("td");
+    const cell = rowOf("k1-4f2a 91aa 0b1c").getByText("shared-1 · zone-a").closest("td");
     expect(getComputedStyle(cell as HTMLElement).whiteSpace).toBe("nowrap");
   });
 
@@ -360,7 +360,7 @@ describe("the Boxes filter bar and rows (UX, operators 3 and 5)", () => {
     expect(first.getByRole("link", { name: "Open" }).getAttribute("href")).toBe(
       `/hosted/boxes/${encodeURIComponent(B1)}`,
     );
-    expect(first.getByRole("link", { name: "shared-1 · eu-west-3a" }).getAttribute("href")).toBe(
+    expect(first.getByRole("link", { name: "shared-1 · zone-a" }).getAttribute("href")).toBe(
       `/hosted/machines/${machineId("shared-1")}`,
     );
   });

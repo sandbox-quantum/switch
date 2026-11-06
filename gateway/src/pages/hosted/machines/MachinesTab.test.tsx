@@ -27,7 +27,7 @@ describe("the Machines tab (W4, p12)", () => {
     renderTab(MachinesTab, { overview: fixture() });
     expect(screen.getAllByTestId("machine-row")).toHaveLength(5);
     const one = rowOf("shared-1");
-    const zone = one.getByText("eu-west-3a");
+    const zone = one.getByText("zone-a");
     expect(getComputedStyle(zone).textTransform).not.toBe("uppercase"); // lower case, as on Boxes
     expect(one.getByText("Used 62%")).toBeTruthy();
     expect(one.getByText("Booked 84%")).toBeTruthy();
