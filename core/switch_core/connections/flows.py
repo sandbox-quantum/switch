@@ -260,6 +260,9 @@ class ServiceFlows:
                 redirect_uri=flow.stored.redirect_uri,
                 state=flow.state,
                 code_challenge=s256(flow.stored.verifier),
+                # Domain-separate the flow-bound OIDC nonce from the PKCE challenge
+                # without exposing the verifier needed to redeem the code.
+                oidc_nonce=s256("oidc:" + flow.stored.verifier),
                 scopes=list(flow.stored.details["scopes"]),
             )
         except BaseException:
@@ -332,7 +335,9 @@ class ServiceFlows:
                 redirect_uri=flow.stored.redirect_uri,
                 scopes=list(flow.stored.details["scopes"]),
             )
-            account = await adapter.identify(signed_in.secret.access_token or "")
+            account = signed_in.identity or await adapter.identify(
+                signed_in.secret.access_token or ""
+            )
         except ReauthorizationRequiredError:
             await self.failed(
                 checking, f"{flow.name} refused the sign-in. Connect again."

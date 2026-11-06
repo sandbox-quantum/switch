@@ -7,6 +7,7 @@ from switch_core.connections.loader import (
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
     CatalogError,
+    OidcIdentity,
     load_catalog,
     with_access_profiles,
 )
@@ -18,7 +19,6 @@ PLACEHOLDERS = {
     "microsoft-365",
     "new-relic",
     "notion",
-    "linear",
     "salesforce",
     "box",
     "canva",
@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_linear():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "linear",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "linear",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["linear"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -228,6 +231,39 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_linear_entry_signs_in_as_it_was_found_to_must():
+    definition = CATALOG["linear"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Linear registers a client for Core itself, so no operator setup, and
+    # a sign-in may return either way the flow offers.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback", "core"],
+    )
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    # Linear's MCP tokens live a day; one handed out never has more left.
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("linear", "https://mcp.linear.app/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["read", "openid", "email"]
+    assert definition.access.write.scopes == ["read", "write", "openid", "email"]
+    identity = definition.auth.identity
+    assert identity is not None
+    assert identity.type == "oidc"
+    assert identity.issuer == "https://mcp.linear.app"
+    assert (identity.account_id, identity.label) == ("sub", "email")
 
 
 RESTRICTED_DRIVE = {
@@ -754,6 +790,54 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
     assert old in OAUTH_ENTRY
     _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
     with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+OIDC_ENTRY = OAUTH_ENTRY.replace(
+    "    url: https://api.example.test/me\n",
+    "    type: oidc\n    issuer: https://auth.example.test\n",
+).replace(
+    'read: { scopes: ["read:items"] }\n'
+    '  write: { scopes: ["read:items", "write:items"] }',
+    'read: { scopes: ["read:items", "openid"] }\n'
+    '  write: { scopes: ["read:items", "write:items", "openid"] }',
+)
+
+
+def test_loads_an_oauth_entry_whose_identity_is_an_oidc_id_token(catalog_copy):
+    assert OIDC_ENTRY != OAUTH_ENTRY
+    _write_example(catalog_copy, OIDC_ENTRY)
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert isinstance(identity, OidcIdentity)
+    assert identity.issuer == "https://auth.example.test"
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (
+            'read: { scopes: ["read:items", "openid"] }',
+            'read: { scopes: ["read:items"] }',
+        ),
+        (
+            '["read:items", "write:items", "openid"]',
+            '["read:items", "write:items"]',
+        ),
+    ],
+)
+def test_an_oidc_identity_needs_the_openid_scope_at_each_level(catalog_copy, old, new):
+    assert old in OIDC_ENTRY
+    _write_example(catalog_copy, OIDC_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match="(?s)example is invalid.*openid scope"):
+        load_catalog(catalog_copy)
+
+
+def test_an_oidc_issuer_is_https(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OIDC_ENTRY.replace("https://auth.example.test", "http://auth.example.test"),
+    )
+    with pytest.raises(CatalogError, match="example is invalid"):
         load_catalog(catalog_copy)
 
 

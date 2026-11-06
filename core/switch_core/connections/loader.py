@@ -181,10 +181,21 @@ class OAuthClient(BaseModel):
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
     token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    people recognise (an email, a login). A vendor whose authorization server
+    signs an OpenID Connect ID token instead names an `OidcIdentity`."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    label: str = Field(pattern=JSON_PATH_PATTERN)
+
+
+class OidcIdentity(BaseModel):
+    """Identity from a signed ID token issued during the OAuth code exchange."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    type: Literal["oidc"]
+    issuer: str = Field(pattern=HTTPS_URL_PATTERN)
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
 
@@ -326,7 +337,7 @@ class ConnectionAuth(BaseModel):
     # survives its use. none: the stored secret is used as it is.
     refresh: Literal["rotating", "reusable", "none"] | None = None
     oauth: OAuthClient | None = None
-    identity: ConnectionIdentity | None = None
+    identity: ConnectionIdentity | OidcIdentity | None = None
     api_key: ApiKeySignIn | None = None
 
 
@@ -737,6 +748,19 @@ class ConnectionDefinition(BaseModel):
                 raise ValueError(
                     "an entry without MCP servers names its authorization_url and "
                     "token_url, and its revocation_url where it has one"
+                )
+        if isinstance(self.auth.identity, OidcIdentity):
+            if self.mcp is None or oauth is None or oauth.authorization_url is not None:
+                raise ValueError(
+                    "OIDC identity requires discovered MCP authorization endpoints"
+                )
+            if self.access is not None and any(
+                level is not None
+                and (level.scopes is None or "openid" not in level.scopes)
+                for level in (self.access.read, self.access.write)
+            ):
+                raise ValueError(
+                    "OIDC identity requires the openid scope at each access level"
                 )
         if self.auth.refresh not in (None, "rotating", "reusable"):
             raise ValueError("an oauth sign-in is refreshed: rotating or reusable")

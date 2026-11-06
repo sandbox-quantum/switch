@@ -26,6 +26,7 @@ from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
+import jwt
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -37,9 +38,15 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.connections.loader import (
+    AccessLevel,
+    ConnectionDefinition,
+    OidcIdentity,
+)
 
 MAX_METADATA_BYTES = 64 * 1024
+# Allow a bounded clock difference when validating exp, nbf and iat.
+OIDC_CLOCK_SKEW_SECONDS = 60
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
@@ -130,11 +137,12 @@ class SignIn:
     secret: ConnectionSecret
     granted_scopes: list[str]
     client_id: str
+    identity: Identity | None = None
 
 
 @dataclass(frozen=True)
 class TokenAnswer:
-    body: dict[str, Any]
+    body: dict[str, Any] = field(repr=False)
     client_id: str
 
 
@@ -186,6 +194,7 @@ class OAuthAdapter:
         self._client = client
         self._http = http
         self._endpoints: AuthorizationEndpoints | None = None
+        self._oidc_metadata: dict[str, Any] | None = None
 
     @property
     def _name(self) -> str:
@@ -234,6 +243,22 @@ class OAuthAdapter:
                 )
         raise ServiceAdapterError(f"{self._name} publishes no {what}.")
 
+    async def _oidc_configuration(self, identity: OidcIdentity) -> dict[str, Any]:
+        """Reuse issuer-checked discovery metadata within this adapter."""
+        if self._oidc_metadata is not None:
+            return self._oidc_metadata
+        issuer = urlsplit(identity.issuer)
+        if issuer.query or issuer.fragment or issuer.username or issuer.password:
+            raise ServiceAdapterError(f"{self._name} has an invalid OIDC issuer.")
+        metadata = await self._metadata(
+            [identity.issuer.rstrip("/") + "/.well-known/openid-configuration"],
+            "OIDC metadata",
+        )
+        if metadata.get("issuer") != identity.issuer:
+            raise ServiceAdapterError(f"{self._name}'s OIDC issuer does not match.")
+        self._oidc_metadata = metadata
+        return metadata
+
     async def endpoints(self) -> AuthorizationEndpoints:
         """The vendor's OAuth endpoints: the catalog's, or discovered once."""
         if self._endpoints is not None:
@@ -279,7 +304,15 @@ class OAuthAdapter:
             raise ServiceAdapterError(
                 f"{self._name}'s MCP server names no authorization server."
             )
-        issuer = urlsplit(_https(servers[0], "authorization server"))
+        issuer_url = _https(servers[0], "authorization server")
+        if (
+            isinstance(self._identity, OidcIdentity)
+            and issuer_url != self._identity.issuer
+        ):
+            raise ServiceAdapterError(
+                f"{self._name}'s authorization server does not match its OIDC issuer."
+            )
+        issuer = urlsplit(issuer_url)
         issuer_origin = f"{issuer.scheme}://{issuer.netloc}"
         issuer_path = issuer.path.rstrip("/")
         candidates = (
@@ -294,7 +327,11 @@ class OAuthAdapter:
                 f"{issuer_origin}/.well-known/openid-configuration",
             ]
         )
-        metadata = await self._metadata(candidates, "authorization server metadata")
+        metadata = (
+            await self._oidc_configuration(self._identity)
+            if isinstance(self._identity, OidcIdentity)
+            else await self._metadata(candidates, "authorization server metadata")
+        )
         methods = metadata.get("code_challenge_methods_supported")
         if not isinstance(methods, list) or "S256" not in methods:
             raise ServiceAdapterError(
@@ -444,6 +481,7 @@ class OAuthAdapter:
         state: str,
         code_challenge: str,
         scopes: list[str],
+        oidc_nonce: str | None = None,
     ) -> str:
         """Where the person's browser goes to sign in and consent."""
         endpoints = await self.endpoints()
@@ -457,6 +495,10 @@ class OAuthAdapter:
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if isinstance(self._identity, OidcIdentity):
+            if not oidc_nonce:
+                raise ServiceAdapterError(f"{self._name} requires an OIDC nonce.")
+            query["nonce"] = oidc_nonce
         for key, value in self._oauth.authorization_params.items():
             query[key] = value
         if self._oauth.prompt is not None:
@@ -478,16 +520,94 @@ class OAuthAdapter:
                 "redirect_uri": redirect_uri,
             }
         )
+        identity = None
+        proven: set[str] = set()
+        if isinstance(self._identity, OidcIdentity):
+            identity, proven = await self._verify_id_token(
+                answer.body.get("id_token"), answer.client_id, s256("oidc:" + verifier)
+            )
         values = self._credentials(answer.body, {})
         granted = values.get("scope")
+        granted_scopes = granted.split() if isinstance(granted, str) else list(scopes)
+        # A verified ID token proves the identity scopes it answers were
+        # granted, even where the token response lists only the others.
+        granted_scopes += [
+            scope for scope in scopes if scope in proven and scope not in granted_scopes
+        ]
         return SignIn(
             ConnectionSecret(values),
-            granted.split() if isinstance(granted, str) else list(scopes),
+            granted_scopes,
             answer.client_id,
+            identity,
+        )
+
+    async def _verify_id_token(
+        self, token: object, client_id: str, nonce: str
+    ) -> tuple[Identity, set[str]]:
+        """The account a signed ID token names, and the identity scopes it
+        proves were granted (`openid`, and `email` where it carries one)."""
+        identity = self._identity
+        assert isinstance(identity, OidcIdentity)
+        if not isinstance(token, str) or len(token) > MAX_METADATA_BYTES:
+            raise ServiceAdapterError(f"{self._name} returned no valid ID token.")
+        metadata = await self._oidc_configuration(identity)
+        jwks_url = _https(metadata.get("jwks_uri"), "JWKS endpoint")
+        jwks = await self._metadata([jwks_url], "signing keys")
+        try:
+            header = jwt.get_unverified_header(token)
+            if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
+                raise ValueError("invalid signing algorithm or key id")
+            key_set = jwt.PyJWKSet.from_dict(jwks)
+            keys = [
+                key
+                for key in key_set.keys
+                if key.key_id == header["kid"]
+                and key.key_type == "RSA"
+                and key.public_key_use in (None, "sig")
+                and key.algorithm_name == "RS256"
+            ]
+            if len(keys) != 1:
+                raise ValueError("invalid signing key")
+            claims = jwt.decode(
+                token,
+                keys[0].key,
+                algorithms=["RS256"],
+                audience=client_id,
+                issuer=identity.issuer,
+                leeway=OIDC_CLOCK_SKEW_SECONDS,
+                options={"require": ["iss", "sub", "aud", "exp", "iat", "nonce"]},
+            )
+            if claims.get("nonce") != nonce:
+                raise ValueError("invalid nonce")
+            audience = claims.get("aud")
+            if (
+                isinstance(audience, list) and len(audience) > 1 or "azp" in claims
+            ) and claims.get("azp") != client_id:
+                raise ValueError("invalid authorized party")
+            account_id = _path_value(claims, identity.account_id)
+            label = _path_value(claims, identity.label)
+            if not isinstance(account_id, str) or not account_id:
+                raise ValueError("missing account id")
+        except (jwt.PyJWTError, ValueError, TypeError, KeyError):
+            raise ServiceAdapterError(
+                f"{self._name}'s ID token could not be verified."
+            ) from None
+        proven = {"openid"} | (
+            {"email"} if isinstance(claims.get("email"), str) else set()
+        )
+        return (
+            Identity(
+                account_id, label if isinstance(label, str) and label else account_id
+            ),
+            proven,
         )
 
     async def identify(self, access_token: str) -> Identity:
-        """The account the token acts as, as the catalog says to read it."""
+        """Read an HTTP identity; OIDC identity is verified in exchange_code."""
+        if isinstance(self._identity, OidcIdentity):
+            raise ServiceAdapterError(
+                f"{self._name} identity must be read during sign-in."
+            )
         response = await self._send(
             self._http.build_request(
                 "GET",

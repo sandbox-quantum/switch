@@ -56,6 +56,27 @@ access:
 tools: { mode: pass_through } # the vendor's tool list as it is, until classified
 ```
 
+OAuth identity has two forms. The usual one is a GET of an HTTPS `url` with
+the access token, with `account_id` and `label` as dotted paths into its JSON
+answer, as above.
+
+If the provider returns identity in an OpenID Connect ID token instead, use
+`type: oidc` with the expected HTTPS `issuer` and paths into the verified
+claims, rather than a `url`. Each offered access level must
+include `openid` in its scopes. For example, Linear uses:
+
+```yaml
+identity:
+  type: oidc
+  issuer: https://mcp.linear.app
+  account_id: sub
+  label: email
+```
+
+During sign-in Core verifies the ID token's signature and claims, including
+issuer, audience, expiry and nonce, before using the account identity. A
+missing or invalid ID token fails the sign-in.
+
 The loader stays strict and refuses an entry whose fields contradict its
 adapter: a GitHub entry with MCP servers, a pass-through GitHub token, an
 `oauth` entry without its client, identity or tools, a minted token that

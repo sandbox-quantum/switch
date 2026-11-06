@@ -1,7 +1,39 @@
 slug: linear
 name: Linear
 category: Project management
-description: Read and update Linear issues and projects.
-enabled: false
+description: Read and update Linear issues and projects, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Each refresh returns a new refresh token and spends the old one, so two
+  # refreshes must never race.
+  refresh: rotating
+  oauth:
+    # Linear offers no client to configure: its MCP authorization server
+    # registers one for Core itself (RFC 7591), so nothing is set up on the
+    # server. Its endpoints are discovered from the MCP server, whose
+    # metadata names the registration endpoint, a revocation endpoint and
+    # PKCE with S256.
+    registration: dynamic
+    # A sign-in may come back to Switch Console's listener on 127.0.0.1 or
+    # to Core's own callback, in the order the flow offers them.
+    redirect: [loopback, core]
+    revocation_discovered: true
+  identity:
+    type: oidc
+    issuer: https://mcp.linear.app
+    account_id: sub
+    label: email
+# An agent receives the owner's token; a copy can outlive an individual grant.
+# Agents still ask Switch again hourly.
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    - { name: linear, url: "https://mcp.linear.app/mcp" }
+access:
+  read:
+    scopes: [read, openid, email]
+  write:
+    scopes: [read, write, openid, email]
+tools: { mode: pass_through }
