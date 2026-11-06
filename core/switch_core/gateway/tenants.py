@@ -864,13 +864,18 @@ async def set_retention_policy(
     session: Annotated[AsyncSession, Depends(get_session)],
     retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> RetentionPolicyResponse:
     """Delete the bound tenant's room messages once they are older than
-    `message_retention_days`. Admins only.
+    `message_retention_days`. Admins only, by their own admin membership:
+    the messages it deletes cannot be brought back.
 
     Takes effect at the next hourly retention pass, not in this request.
     """
     _require_bound_tenant(tenant_id)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "set when messages are deleted"
+    )
     previous = await retention_store.get_policy(session)
     previous_days = None if previous is None else previous.message_retention_days
     policy = await retention_store.set_policy(
@@ -946,14 +951,19 @@ def _erasure_detail(erasure: PersonErasure) -> ErasureDetail:
 
 
 async def _require_admin_membership(
-    session: AsyncSession, user_store: UserStore, tenant_id: str, user: User
+    session: AsyncSession,
+    user_store: UserStore,
+    tenant_id: str,
+    user: User,
+    action: str,
 ) -> None:
-    """Erasing a person cannot be undone, so, like deleting the workspace, it
-    takes the caller's own admin membership: not the deployment operator's
-    bypass, and not an organization admin acting as one."""
+    """What cannot be undone, erasing a person or setting messages to be
+    deleted, takes, like deleting the workspace, the caller's own admin
+    membership: not the deployment operator's bypass, and not an organization
+    admin acting as one. `action` completes "Only a workspace admin may"."""
     if await user_store.tenant_role(session, tenant_id, user.id) != "admin":
         raise HTTPException(
-            status_code=403, detail="Only a workspace admin may erase people"
+            status_code=403, detail=f"Only a workspace admin may {action}"
         )
 
 
@@ -971,7 +981,9 @@ async def list_people(
     including deleted accounts. Admins only, by their own admin membership:
     this is the list a person is erased from."""
     _require_bound_tenant(tenant_id)
-    await _require_admin_membership(session, user_store, tenant_id, user)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "erase people"
+    )
     people = [
         PersonDetail(
             id=person.external_user_id,
@@ -1025,7 +1037,9 @@ async def list_erasures(
     """The bound tenant's erasure requests, newest first. Admins only, by
     their own admin membership."""
     _require_bound_tenant(tenant_id)
-    await _require_admin_membership(session, user_store, tenant_id, user)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "erase people"
+    )
     return [
         _erasure_detail(e) for e in await erasure_store.list_erasures(session, limit=50)
     ]
@@ -1049,7 +1063,9 @@ async def create_erasure(
     in this workspace; 409 means one is already being erased.
     """
     _require_bound_tenant(tenant_id)
-    await _require_admin_membership(session, user_store, tenant_id, user)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "erase people"
+    )
     ids = list(dict.fromkeys(body.external_user_ids))
     former_ids = list(dict.fromkeys(body.former_sender_ids))
     member_ids = list(dict.fromkeys(body.member_client_ids))

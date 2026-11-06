@@ -2856,6 +2856,39 @@ class TestRetentionRoutes:
         assert read.status_code == 403
         assert written.status_code == 403
 
+    async def test_an_operator_without_admin_membership_cannot_set_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        operator_id = await _make_member(
+            session_factory,
+            name="retention-operator",
+            tenant_id=TENANT_A,
+            role="member",
+            user_role="admin",
+        )
+        operator = create_jwt(
+            operator_id,
+            "retention-operator@example.invalid",
+            "admin",
+            _KEYRING,
+            TENANT_A,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+
+        async with _client(_app(session_factory), operator) as client:
+            read = await client.get(f"/tenants/{TENANT_A}/retention")
+            written = await client.put(
+                f"/tenants/{TENANT_A}/retention", json={"message_retention_days": 30}
+            )
+
+        assert read.status_code == 200
+        assert written.status_code == 403
+        assert written.json()["detail"] == (
+            "Only a workspace admin may set when messages are deleted"
+        )
+
     @pytest.mark.parametrize("days", [0, 3651])
     async def test_a_window_out_of_range_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession], days: int
