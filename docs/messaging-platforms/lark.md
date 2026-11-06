@@ -82,6 +82,8 @@ Back in the developer console:
    - `im.message.receive_v1` (Message received)
    - `im.chat.member.bot.added_v1` (Bot added to a group)
    - `im.chat.member.user.added_v1` (User added to a group)
+   - `im.chat.updated_v1` (Group settings changed), so a chat made public or
+     private is picked up straight away rather than within a minute
 3. On **Events & Callbacks → Callback Configuration**, choose **Send callbacks
    to developer's server**, paste the same address, and add the
    `card.action.trigger` callback. This is what makes the buttons on approval
