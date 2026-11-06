@@ -7,21 +7,13 @@ import { Alert, Box, Link, Stack, Typography } from "@mui/material";
 import { useMemo } from "react";
 import { Link as RouterLink, useParams } from "react-router";
 import CapacityList from "../../agents/cloud/CapacityList";
-import { shortId } from "../audit/auditWords";
 import { useHosted } from "../HostedContext";
 import { STALE } from "../overview/overview";
 import { Activity, Donut, Fact, Section, ago } from "./DetailParts";
 import { BOX_GONE, boxDetail, boxMemory, runningSince } from "./detail";
 import { STATE_WORDS } from "./MachineDetailPage";
 import { readDetail } from "./readDetail";
-
-function Id({ id }: { id: string }) {
-  return (
-    <Box component="span" title={id} sx={{ fontFamily: "monospace" }}>
-      {shortId(id)}
-    </Box>
-  );
-}
+import IdCell from "../w5shared/IdCell";
 
 export default function BoxDetailPage() {
   const { boxId = "" } = useParams();
@@ -49,7 +41,7 @@ export default function BoxDetailPage() {
         All boxes
       </Link>
       <Typography variant="h6" component="h2">
-        Box <Id id={box.box} />
+        Box <IdCell id={box.box} label="box id" />
       </Typography>
       {overviewStale && <Alert severity="warning">{STALE}</Alert>}
 
@@ -77,7 +69,7 @@ export default function BoxDetailPage() {
             Person
           </Typography>
           <Typography variant="body2">
-            <Id id={box.user} />
+            <IdCell id={box.user} label="person id" />
           </Typography>
         </Box>
         <Box>
@@ -90,7 +82,7 @@ export default function BoxDetailPage() {
               : box.workspaces.map((w, i) => (
                   <span key={w}>
                     {i > 0 && ", "}
-                    <Id id={w} />
+                    <IdCell id={w} label="workspace id" />
                   </span>
                 ))}
           </Typography>

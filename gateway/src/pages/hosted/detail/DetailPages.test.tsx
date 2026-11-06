@@ -73,7 +73,7 @@ const overview = {
       {
         name: "node-a",
         machine: MACHINE,
-        zone: "eu-west-3a",
+        zone: "zone-a",
         memory_used_pct: 90,
         memory_booked_pct: 60,
       },
@@ -150,12 +150,14 @@ describe("the machine page", () => {
     expect(screen.getByText(/isn't in the latest report/)).toBeTruthy();
   });
 
-  it("links each box to its own page by its short id", () => {
+  it("shows each box by its short id with a copy button, and links it to its own page", () => {
     answer(200, []);
     renderAt(`/hosted/machines/${MACHINE}`);
-    const link = screen.getByRole("link", { name: "k1-6d2c" });
+    const link = screen.getByRole("link", { name: `Open box ${BOX_1}` });
     expect(link.getAttribute("href")).toBe(`/hosted/boxes/${BOX_1}`);
-    expect(link.getAttribute("title")).toBe(BOX_1);
+    const table = screen.getByRole("table", { name: "Boxes on this machine" });
+    expect(within(table).getByText("k1-6d2c…4e5f")).toBeTruthy();
+    expect(within(table).getAllByRole("button", { name: "Copy box id" })).toHaveLength(2);
   });
 });
 

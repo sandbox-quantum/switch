@@ -1,14 +1,16 @@
-import type { ComponentType } from "react";
+import { type ComponentType, lazy } from "react";
 import AlertsTab from "./alerts/AlertsTab";
 import AuditTab from "./audit/AuditTab";
 import BoxesTab from "./boxes/BoxesTab";
-import BoxDetailPage from "./detail/BoxDetailPage";
-import MachineDetailPage from "./detail/MachineDetailPage";
 import { withDetail } from "./detail/withDetail";
 import IsolationTab from "./isolation/IsolationTab";
 import MachinesTab from "./machines/MachinesTab";
 import OperatorsTab from "./operators/OperatorsTab";
 import OverviewTab from "./overview/OverviewTab";
+
+// The detail pages, and the charts they draw, load only when one is opened.
+const BoxDetailPage = lazy(() => import("./detail/BoxDetailPage"));
+const MachineDetailPage = lazy(() => import("./detail/MachineDetailPage"));
 
 /** One tab of Switch web's Hosted page.
  *

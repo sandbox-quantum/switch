@@ -18,12 +18,22 @@ import {
 import { useMemo, useState } from "react";
 import { Link as RouterLink, useParams } from "react-router";
 import { CapacityRow } from "../../agents/cloud/CapacityList";
-import { shortId } from "../audit/auditWords";
+import IdCell from "../w5shared/IdCell";
 import { useHosted } from "../HostedContext";
 import { STALE } from "../overview/overview";
 import { Activity, Donut, Fact, Section, ago } from "./DetailParts";
 import { MACHINE_GONE, NOT_AVAILABLE, boxSlice, machineDetail } from "./detail";
 import { readDetail } from "./readDetail";
+
+/** Read by screen readers, not shown: the header of the column of Open links. */
+const SCREEN_READER_ONLY = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  overflow: "hidden",
+  clip: "rect(0 0 0 0)",
+  whiteSpace: "nowrap",
+} as const;
 
 export const STATE_WORDS: Record<string, string> = {
   running: "Awake",
@@ -118,23 +128,30 @@ export default function MachineDetailPage() {
                   <TableCell>Box</TableCell>
                   <TableCell>State</TableCell>
                   <TableCell>Restarts today</TableCell>
+                  <TableCell>
+                    <Box component="span" sx={SCREEN_READER_ONLY}>
+                      Open
+                    </Box>
+                  </TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {boxes.map((b) => (
                   <TableRow key={b.box}>
                     <TableCell>
-                      <Link
-                        component={RouterLink}
-                        to={`/hosted/boxes/${encodeURIComponent(b.box)}`}
-                        title={b.box}
-                        sx={{ fontFamily: "monospace" }}
-                      >
-                        {shortId(b.box)}
-                      </Link>
+                      <IdCell id={b.box} label="box id" />
                     </TableCell>
                     <TableCell>{STATE_WORDS[b.state] ?? b.state}</TableCell>
                     <TableCell>{b.restartsToday ?? NOT_AVAILABLE}</TableCell>
+                    <TableCell>
+                      <Link
+                        component={RouterLink}
+                        to={`/hosted/boxes/${encodeURIComponent(b.box)}`}
+                        aria-label={`Open box ${b.box}`}
+                      >
+                        Open
+                      </Link>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
