@@ -3,7 +3,14 @@ import { join } from 'node:path';
 import { parse } from 'smol-toml';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
+import { ACP_CANCELLED } from '../acp/protocol';
 import type { RuntimeMode } from '../adapter';
+import {
+  elicitationAnswer,
+  elicitationQuestions,
+  type AcpElicitationRequest,
+} from '../antigravity/antigravity-adapter';
+import type { UserInputQuestion } from '../events';
 import { optionalText } from '../host/provider-home';
 import { loginWontHelp, readiness, signInWith, type ProviderReadiness } from '../readiness';
 
@@ -24,6 +31,20 @@ const KIMI_MODES: Record<RuntimeMode, string> = {
 /** Kimi's subagent tools, by name or by the description it titles them with. */
 const SUBAGENT_TITLE =
   /^(Agent|AgentSwarm)$|^Launching (background )?.+ agent: |^Launching agent swarm: /;
+
+/**
+ * A form's questions by their full text. Kimi titles each field with the
+ * question's short header and puts the questions in `message`, one per line.
+ */
+function kimiFormQuestions(request: AcpElicitationRequest): UserInputQuestion[] {
+  const questions = elicitationQuestions(request);
+  const lines = request.message?.split('\n') ?? [];
+  if (lines.length !== questions.length) return questions;
+  return questions.map((question, i) => ({
+    ...question,
+    question: lines[i]!.trim() || question.question,
+  }));
+}
 
 async function hasRefreshToken(path: string): Promise<boolean> {
   const text = await optionalText(path);
@@ -105,8 +126,21 @@ export const kimiAcp: AcpProviderHooks = {
   },
   mcpServerOf: (toolCall) => /^mcp__(.+?)__/.exec(toolCall.title ?? '')?.[1],
   itemType: (toolCall) => (SUBAGENT_TITLE.test(toolCall.title ?? '') ? 'subagent' : undefined),
-  // Kimi asks its questions as permission requests, one option per choice.
-  // shortcut: only one question per request (`q0_…`) has been seen; map `q1_…` when Kimi sends it.
+  // Kimi asks every question in one form when the client can answer forms.
+  clientCapabilities: { elicitation: { form: {} } },
+  extensions: (context, on) => {
+    on.request('elicitation/create', async (params) => {
+      const request = params as AcpElicitationRequest;
+      const questions = kimiFormQuestions(request);
+      if (!questions.length) return { action: 'decline' };
+      const result = await context.askQuestions(questions, (selected) =>
+        elicitationAnswer(request, selected)
+      );
+      return result === ACP_CANCELLED ? { action: 'cancel' } : result;
+    });
+  },
+  // Kimi's fallback when a form fails: a permission request carrying only the first
+  // question (`q0_…`), one option per choice.
   permission: (context, { toolCall, options }) => {
     if (toolCall.title !== 'AskUserQuestion') return undefined;
     return context.askQuestions(

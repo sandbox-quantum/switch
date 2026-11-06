@@ -195,6 +195,123 @@ it('asks a question as a question, even in full access, and answers with the cho
   });
 });
 
+/** Kimi 2.5.0's form for two questions: fields titled by header, the questions in `message`. */
+const kimiForm = (message: string) => ({
+  sessionId: 'native',
+  mode: 'form',
+  message,
+  requestedSchema: {
+    type: 'object',
+    properties: {
+      q0: {
+        type: 'string',
+        title: 'Color',
+        oneOf: [
+          { const: 'red', title: 'red' },
+          { const: 'green', title: 'green' },
+        ],
+      },
+      q1: {
+        type: 'array',
+        title: 'Sizes',
+        minItems: 1,
+        items: {
+          anyOf: [
+            { const: 'S', title: 'S' },
+            { const: 'M', title: 'M' },
+            { const: 'L', title: 'L' },
+          ],
+        },
+      },
+    },
+    required: ['q0', 'q1'],
+  },
+});
+
+async function startedKimi() {
+  const adapter = createKimiAdapter();
+  const events: ProviderRuntimeEvent[] = [];
+  adapter.subscribe((e) => events.push(e));
+  await adapter.startSession({
+    sessionId: 's',
+    cwd: '/work',
+    runtimeMode: 'auto',
+    env: {},
+    mcpServers: {},
+    connectorMcpServers: [],
+  });
+  const server = servers.at(-1)!;
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  return { adapter, events, server };
+}
+
+it('asks every question of a form at once, by its full text, and answers with labels', async () => {
+  const { adapter, events, server } = await startedKimi();
+  expect(server.received.find((m) => m.method === 'initialize')?.params).toMatchObject({
+    clientCapabilities: { elicitation: { form: {} } },
+  });
+  server.send({
+    id: 81,
+    method: 'elicitation/create',
+    params: kimiForm('Which color?\nWhich sizes?'),
+  });
+  await flush();
+  const asked = events.find((e) => e.type === 'user-input.requested');
+  if (asked?.type !== 'user-input.requested') throw new Error('No question');
+  expect(asked.questions).toEqual([
+    {
+      id: 'q0',
+      question: 'Which color?',
+      options: [
+        { value: 'red', label: 'red' },
+        { value: 'green', label: 'green' },
+      ],
+      multiSelect: false,
+      allowCustomAnswer: false,
+    },
+    {
+      id: 'q1',
+      question: 'Which sizes?',
+      options: [
+        { value: 'S', label: 'S' },
+        { value: 'M', label: 'M' },
+        { value: 'L', label: 'L' },
+      ],
+      multiSelect: true,
+      allowCustomAnswer: false,
+    },
+  ]);
+  await adapter.respondToUserInput('s', asked.requestId, { q0: 'green', q1: ['S', 'L'] });
+  await flush();
+  expect(server.received.find((m) => m.id === 81)?.result).toEqual({
+    action: 'accept',
+    content: { q0: 'green', q1: ['S', 'L'] },
+  });
+});
+
+it('keeps the field titles when the message does not hold one line per question', async () => {
+  const { events, server } = await startedKimi();
+  server.send({
+    id: 82,
+    method: 'elicitation/create',
+    params: kimiForm('Which color,\nand\nsize?'),
+  });
+  await flush();
+  const asked = events.find((e) => e.type === 'user-input.requested');
+  if (asked?.type !== 'user-input.requested') throw new Error('No question');
+  expect(asked.questions.map((q) => q.question)).toEqual(['Color', 'Sizes']);
+});
+
+it('cancels the form when the turn is interrupted', async () => {
+  const { adapter, events, server } = await startedKimi();
+  server.send({ id: 83, method: 'elicitation/create', params: kimiForm('A?\nB?') });
+  await flush();
+  expect(events.some((e) => e.type === 'user-input.requested')).toBe(true);
+  await adapter.interruptTurn('s');
+  await flush();
+  expect(server.received.find((m) => m.id === 83)?.result).toEqual({ action: 'cancel' });
+});
+
 it.each([
   'Agent',
   'AgentSwarm',
