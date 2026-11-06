@@ -2212,9 +2212,9 @@ class CollaborationCore:
                     )
                 )
             ).scalar_one_or_none()
-            agents = {
-                turn.agent_id: await session.get(Agent, turn.agent_id) for turn in turns
-            }
+            agents: dict[str, Agent | None] = {turn.agent_id: None for turn in turns}
+            for found in await self._agent_store.get_many(session, agents.keys()):
+                agents[found.id] = found
         actor_id = await self._identify_actor(edit)
         if actor_id is None:
             logger.warning(
