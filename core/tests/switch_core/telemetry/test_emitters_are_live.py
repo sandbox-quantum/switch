@@ -41,6 +41,7 @@ def _telemetry() -> TelemetryService:
         version="1.0.0",
         telemetry_environment="prod",
         telemetry_internal=False,
+        deployment_kind="self_hosted",
     )
 
 

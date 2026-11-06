@@ -112,6 +112,11 @@ _ALLOWED_MODULES = {
     # `tenants_of_cloud_machine`, and each one's row on the machine is then
     # read with that workspace bound.
     "switch_core.db.stores.hosted_machine_store",
+    # Deleting an account also clears the workspaces the person was removed
+    # from, where nothing binds them any more: enumerate the tenants, then
+    # look for their rows in each under its own policy, the same fan-out as
+    # the boot work.
+    "switch_core.accounts.deletion",
     # Enumerating tenants at boot, and starting one bridge by id from a
     # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
@@ -132,6 +137,16 @@ _ALLOWED_MODULES = {
     # the flow's tenant, and the flow is then read scoped to it, so a wrong
     # answer is a missing flow rather than a cross-tenant read.
     "switch_core.connections.sign_in_flows",
+    # A WorkOS sign-in names the WorkOS organizations the person belongs to;
+    # which Switch organizations follow them has to be read before any is
+    # bound, and the membership is then written with that organization bound,
+    # so a wrong answer is a missing row rather than a write into another
+    # organization.
+    "switch_core.organization_mirror",
+    # The WorkOS mirror acts for no tenant and no person: which organizations
+    # are linked is read before any is bound, and each is then read and
+    # written with it bound.
+    "switch_core.workos_mirror",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
@@ -232,6 +247,15 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
     # deployment, so there is no tenant for a policy to narrow on.
     "switch_core.trust.client",
+    # The operator's account linking reads `users` and writes
+    # `oidc_identities`, both global (`rls_ddl.GLOBAL_TABLES`): a person and
+    # their sign-in identities belong to no tenant. Its organization linking
+    # binds the organization (`organization_session`).
+    "switch_core.workos_linking",
+    # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
+    # and reads `oidc_identities` to match people, both global
+    # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.
+    "switch_core.workos_mirror",
     #
     # ── The OAuth client Core registers for itself at a vendor that offers
     # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The

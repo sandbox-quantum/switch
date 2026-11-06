@@ -223,6 +223,11 @@ class RequestCard:
     # nobody is not the same as a redraw of one already asked, and only the
     # first is worth saying out loud.
     notify_unreachable: bool = False
+    # The request's turn was asked at the channel root, so a card threaded
+    # under that message is somewhere the channel does not look. Set on the
+    # first post only; an adapter that can also show a thread reply in the
+    # channel (Slack's `reply_broadcast`) does.
+    asked_at_root: bool = False
 
 
 RichContent = TurnActivity | RequestCard
