@@ -1,3 +1,4 @@
+import re
 import shutil
 
 import pytest
@@ -26,13 +27,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_pagerduty():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "pagerduty",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +42,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "pagerduty",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["pagerduty"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -228,6 +232,71 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+PAGERDUTY_READ = [
+    "users.read",
+    "incidents.read",
+    "services.read",
+    "schedules.read",
+    "oncalls.read",
+    "escalation_policies.read",
+    "teams.read",
+    "change_events.read",
+]
+
+
+def test_the_shipped_pagerduty_entry_signs_in_as_its_docs_say_it_must():
+    definition = CATALOG["pagerduty"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # PagerDuty offers no dynamic registration, so each server's operator
+    # registers a Scoped OAuth app, which comes back to Core's own callback.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "PAGERDUTY"
+    assert oauth.loopback_ports is None
+    # Its documented endpoints, not discovery; PKCE (S256) is always sent.
+    assert (oauth.authorization_url, oauth.token_url) == (
+        "https://identity.pagerduty.com/oauth/authorize",
+        "https://identity.pagerduty.com/oauth/token",
+    )
+    # No endpoint revokes one sign-in, so people revoke it on the app's page.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None and "OAuth Apps" in oauth.remove_access
+    assert oauth.unchecked is not None and "installed" in oauth.unchecked
+    # Scoped OAuth access tokens live a day; each refresh returns a new
+    # refresh token.
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url, s.headers) for s in definition.mcp.servers] == [
+        ("pagerduty", "https://mcp.pagerduty.com/mcp", None)
+    ]
+    # Answers only for a user's token: never an account-level one.
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == ("https://api.pagerduty.com/users/me", "user.id", "user.email")
+    # A real read-only level, and writing reaches incidents alone.
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == PAGERDUTY_READ
+    read, write = set(PAGERDUTY_READ), set(definition.access.write.scopes or [])
+    assert write - read == {"incidents.write"}
+    assert read <= write
+    assert not any(scope.endswith(".write") for scope in read)
+    # Every scope is PagerDuty's resource.read or resource.write form: a scope
+    # it does not know is not refused but leaves a token holding only openid.
+    assert all(re.fullmatch(r"[a-z_]+\.(read|write)", scope) for scope in write)
 
 
 RESTRICTED_DRIVE = {
