@@ -29,7 +29,7 @@ function UsersSections({
 }) {
   return (
     <>
-      <MembersSection tenantId={tenant.id} selfId={session.user.id} canAdmin={canAdmin} />
+      <MembersSection tenantId={tenant.id} selfId={session.user.id} />
       {canAdmin ? (
         <InvitationsSection
           tenantId={tenant.id}

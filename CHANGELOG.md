@@ -74,6 +74,26 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Security
+- **Only the people in a direct or group conversation decide who is in it.**
+  The room routes and the agent tools added agents and people to one from
+  outside it, though its platform fixes its members; a DM the bridge adopted
+  is writable by every member, so anyone could put their own agent in someone
+  else's DM and have it receive their messages. The room routes now refuse
+  adding or removing with a 409, as do `invite_agent_to_room`,
+  `add_users_to_room` and `remove_agent_from_room`, and a template whose new
+  agent joins one is refused before anything is made. Rooms carry
+  `can_change_members`, false for one, and Switch Console no longer offers
+  it. The people in the conversation still invite and remove agents with
+  `!invite-agent` and `!remove-agent`, and a Switch Console chat still
+  changes its own through its chat routes.
+- **Adding to a package takes being able to read what is added.** Only the
+  package owner's reading was checked, and a package lists what it holds to
+  everyone who may read it, so someone who could edit a publicly writable
+  package could add a private reference or document by id and then read it.
+- **A refused agent transfer names the services it uses to its owner only.**
+  An admin who tried to transfer someone's agent was told which of the owner's
+  connections it was granted, which the owner's service access otherwise
+  shows nobody.
 - **Sign out of all devices.** Signing out used to clear only that browser's
   cookie, so a copied cookie or a browser left signed in elsewhere stayed
   valid until it expired. The account menu now has **Sign out of all
@@ -207,6 +227,31 @@ version of their own to them without also giving them a release of their own.
   being built, so turn it on for development and staging only. With it off,
   the dashboard is laid out as before, and the new URLs lead back to today's
   pages.
+- **The gateway says what the caller may do with every object it shows**, so
+  no page works a permission out for itself. Alongside the room, template and
+  agent flags already there:
+  - references, reference types, documents and packages carry `can_edit` and
+    `can_manage`, documents and rooms `can_transfer`, and rooms
+    `can_change_members`;
+  - agents carry `can_edit_options`, `can_rename`, `can_transfer` with
+    `transfer_blocked_reason`, and, on their detail, `can_change_manage_agents`
+    and `can_grant_services`; an agent's sub-agents carry them too;
+  - workspace and organization members carry `can_change_role` and
+    `can_remove`, workspace members `can_receive_transfer`, and organization
+    members `can_grant_org_admin`;
+  - `GET /tenants/current` carries `can_delete` and
+    `can_manage_data_protection` (setting messages to be deleted, listing
+    and erasing people: its admins by their own membership), and
+    `GET /organizations/current` `administers` and `can_manage_members`;
+  - API keys carry `can_reveal` and `can_delete`, machines `can_edit` and
+    `can_remove`, managed agents `can_edit` and `can_delete`;
+  - messaging apps carry `can_manage` and `can_delete`, installs
+    `can_disconnect`, claims on a chat account `can_unlink`, connections
+    `can_revoke`, and the operator's list of accounts `can_delete`.
+  Each is decided by the same rule its route enforces, and a test holds every
+  flag to its route for each kind of caller. A flag says whether the caller
+  may, not whether there is anything left to do: an ended install or a revoked
+  machine says that by its own status.
 - **The server's administrator can delete someone's account.** The Users page
   has a Delete action (`DELETE /users/{id}`) that removes the account in every
   workspace, with the same refusals as deleting your own. Administrator
@@ -408,6 +453,22 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Admins step down and leave from their own row.** The workspace and
+  organization members pages offer changing your own role and leaving, while
+  another admin remains; the last one is refused, as before. Leaving the
+  workspace your session is on moves the session to your other workspace, or
+  to none, as deleting a workspace does, rather than leaving it on one you
+  left.
+- **A room's own document is changed in its room.** `PATCH` and
+  `DELETE /documents/{id}` refuse one with a 409, and its library flags say no.
+- **Revoking an invitation that has already ended is refused** with a 409,
+  rather than rewriting when, and by whom, it ended.
+- **An addressing rule that can never let anyone in is refused when it is
+  saved**, with a 422 naming the rule and why: one that names no rooms or no
+  room groups, or lets in no people, no agents, not the owner and not the
+  platform. Next to other rules it changed nothing while looking as if it did,
+  and a policy of only such rules shut the agent off, its owner included.
+  Policies already saved are left as they are.
 - **Removing a member hands what they own to an admin.** Their rooms,
   packages, references, reference types, library documents and templates in
   that workspace stayed theirs, though they could no longer reach them, and
@@ -767,6 +828,20 @@ version of their own to them without also giving them a release of their own.
   to be off when a page answered "not found"; they are now read from the
   server's flags, and if those cannot be read the dashboard says so rather
   than hiding pages.
+- **Two organization admins demoting or removing each other at once** could
+  leave the refused one without their keys and connections in the workspaces
+  they reached as an organization admin: those were taken away before the
+  last-admin check that refused the change. The check is now made, under a
+  lock held until the change is saved, before anything is taken away.
+- **Deleting an API key an agent still signs in with** failed with a 500. It
+  is refused with a 409 that says to delete the agent; once the agent is gone,
+  its leftover key can be deleted.
+- **Attaching a document or package that is already attached**, to a room or
+  a package, failed with a 500. It now changes nothing, as for a reference,
+  and attaching anything a room already has is no longer reported as a new
+  attachment.
+- **A package in a room's list said the caller may open it** only on that
+  list; every route now works it out from the package's read rule.
 - **Stable Switch Console can link chat accounts again.** Since links have to
   be confirmed from the account with a one-time code, a claim from a Console
   that cannot show the code was refused with "Update Switch Console", and no
@@ -2785,6 +2860,10 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Direct and group conversations no longer offer adding or removing
+  agents**, in a room's side column, the sidebar or an agent's "Add to rooms",
+  where the server refuses it now that their platform decides who is in them.
+  People in the conversation still use `!invite-agent` and `!remove-agent`.
 - **Antigravity runs Google's own `agy` CLI, on Windows too.** Switch Console
   finds `agy` (including `%LOCALAPPDATA%\agy\bin` on Windows), installs it with
   Google's installers, runs sessions with `agy acp`, and checks the sign-in you

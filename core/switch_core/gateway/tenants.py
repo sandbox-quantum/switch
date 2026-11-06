@@ -17,7 +17,10 @@ from switch_core.accounts.workspace_deletion import (
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
+    admin_by_own_membership,
     administers_tenant,
+    can_change_workspace_member,
+    can_delete_workspace,
     effective_tenant_role,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -38,6 +41,7 @@ from switch_core.db.audit import (
 )
 from switch_core.db.models import (
     MAX_MESSAGE_RETENTION_DAYS,
+    TENANT_ZERO_ID,
     Invitation,
     Organization,
     OrganizationMember,
@@ -80,9 +84,11 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
+    get_tenant_is_admin,
     initial_tenant_claim,
     list_tenant_memberships,
     may_bind_tenant,
+    rebind_if_left,
     record_operator_entry,
     require_tenant_admin,
     session_auth_time,
@@ -216,8 +222,17 @@ def _invitation_detail(invitation: Invitation) -> InvitationDetail:
 
 
 def _member_detail(
-    user: User, membership: TenantMember, organization_role: str | None
+    user: User,
+    membership: TenantMember,
+    organization_role: str | None,
+    *,
+    caller_id: str,
+    administers: bool,
 ) -> MemberDetail:
+    may_change = can_change_workspace_member(
+        administers=administers,
+        member_is_organization_admin=organization_role == ORGANIZATION_ADMIN_ROLE,
+    )
     return MemberDetail(
         user_id=user.id,
         name=user.name,
@@ -227,6 +242,9 @@ def _member_detail(
         service_account=is_bootstrap_owner(user),
         organization_role=organization_role,
         via_organization=False,
+        can_change_role=may_change,
+        can_remove=may_change,
+        can_receive_transfer=user.id != caller_id,
     )
 
 
@@ -345,6 +363,10 @@ async def current_tenant(
             tenant_role=tenant_role,
             organization_role=organization_role,
         ),
+        can_delete=can_delete_workspace(
+            tenant_role=tenant_role, is_default=tenant.id == TENANT_ZERO_ID
+        ),
+        can_manage_data_protection=admin_by_own_membership(tenant_role),
     )
 
 
@@ -416,7 +438,9 @@ async def delete_tenant(
     is exactly one.
     """
     _require_bound_tenant(tenant_id)
-    if await user_store.tenant_role(session, tenant_id, user.id) != "admin":
+    if not admin_by_own_membership(
+        await user_store.tenant_role(session, tenant_id, user.id)
+    ):
         raise HTTPException(
             status_code=403, detail="Only a workspace admin may delete the workspace"
         )
@@ -961,7 +985,9 @@ async def _require_admin_membership(
     deleted, takes, like deleting the workspace, the caller's own admin
     membership: not the deployment operator's bypass, and not an organization
     admin acting as one. `action` completes "Only a workspace admin may"."""
-    if await user_store.tenant_role(session, tenant_id, user.id) != "admin":
+    if not admin_by_own_membership(
+        await user_store.tenant_role(session, tenant_id, user.id)
+    ):
         raise HTTPException(
             status_code=403, detail=f"Only a workspace admin may {action}"
         )
@@ -1159,6 +1185,8 @@ async def revoke_invitation(
         invitation = await invitation_store.revoke(session, invitation_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvitationNotUsableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await record_audit_event(
         session,
         tenant_id=tenant_id,
@@ -1689,42 +1717,55 @@ async def list_members(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[MemberDetail]:
     """Every member of the bound tenant, then every `org_admin` of its
     organization who is not one, as `admin` via the organization. Any member
     may list their own workspace's roster; changing or removing one is
     admin-gated below."""
+    caller_id = user.id
     _require_bound_tenant(tenant_id)
     tenant = await session.get(Tenant, tenant_id)
     organization_roles: dict[str, str] = {}
     organization_admins: list[tuple[User, OrganizationMember]] = []
     if tenant is not None and tenant.organization_id is not None:
-        for user, member in await organization_store.list_members(
+        for person, member in await organization_store.list_members(
             session, tenant.organization_id
         ):
-            organization_roles[user.id] = member.role
+            organization_roles[person.id] = member.role
             if member.role == ORGANIZATION_ADMIN_ROLE:
-                organization_admins.append((user, member))
+                organization_admins.append((person, member))
     members = await user_store.list_tenant_members(session)
     roster = [
-        _member_detail(user, membership, organization_roles.get(user.id))
-        for user, membership in members
+        _member_detail(
+            person,
+            membership,
+            organization_roles.get(person.id),
+            caller_id=caller_id,
+            administers=is_admin,
+        )
+        for person, membership in members
     ]
-    listed = {user.id for user, _ in members}
+    listed = {person.id for person, _ in members}
     roster.extend(
         MemberDetail(
-            user_id=user.id,
-            name=user.name,
-            email=user.email,
+            user_id=person.id,
+            name=person.name,
+            email=person.email,
             role=ORGANIZATION_ADMIN_TENANT_ROLE,
             created_at=str(member.created_at),
-            service_account=is_bootstrap_owner(user),
+            service_account=is_bootstrap_owner(person),
             organization_role=member.role,
             via_organization=True,
+            # Changed only through the organization's members; and a transfer
+            # needs a membership here, which they don't hold.
+            can_change_role=False,
+            can_remove=False,
+            can_receive_transfer=False,
         )
-        for user, member in organization_admins
-        if user.id not in listed
+        for person, member in organization_admins
+        if person.id not in listed
     )
     return roster
 
@@ -1738,7 +1779,8 @@ async def update_member_role(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     admin: Annotated[User, Depends(require_tenant_admin)],
 ) -> MemberDetail:
-    """Change a member's role. Admins only.
+    """Change a member's role. Admins only, their own included, so an admin
+    steps down while another remains.
 
     Refuses to demote the last admin: a workspace with none has nobody who
     can manage it, and getting one back takes the server's operator.
@@ -1774,15 +1816,21 @@ async def update_member_role(
         user,
         membership,
         await user_store.organization_role(session, tenant_id, user_id),
+        caller_id=admin.id,
+        administers=True,
     )
 
 
 @router.delete("/tenants/{tenant_id}/members/{user_id}", response_model=None)
 async def remove_member(
     request: Request,
+    response: Response,
     tenant_id: str,
     user_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
@@ -1791,7 +1839,9 @@ async def remove_member(
     config: Annotated[SwitchConfig, Depends(get_config)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict | JSONResponse:
-    """Remove a member from the bound tenant. Admins only.
+    """Remove a member from the bound tenant. Admins only, their own
+    membership included, so an admin leaves while another remains; the
+    session then moves off the workspace (`rebind_if_left`).
 
     Refuses to remove the last admin, as demoting one does.
 
@@ -1874,4 +1924,8 @@ async def remove_member(
     await session.commit()
 
     warning = await revocation.finish(session, user_id, revoked)
+    if user_id == admin.id:
+        await rebind_if_left(
+            request, response, session_factory, user_store, admin, config
+        )
     return {"ok": True, "warning": warning}

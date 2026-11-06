@@ -135,6 +135,7 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
+from switch_core.room_service import require_membership_changeable_from_outside
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
     is_reserved_mention_name,
@@ -3284,7 +3285,9 @@ class AgentCore:
         """
         include_for: list[str] | None = None
         async with self.session_factory() as session:
-            await self._require_room_roster_change(session, agent_id, room_id)
+            require_membership_changeable_from_outside(
+                await self._require_room_roster_change(session, agent_id, room_id)
+            )
             if include_subagents:
                 target = await self.agent_store.get_by_name(session, agent_name)
                 if target is None:
@@ -3316,7 +3319,9 @@ class AgentCore:
         were skipped); an empty list means every requested user was added.
         """
         async with self.session_factory() as session:
-            await self._require_room_roster_change(session, agent_id, room_id)
+            require_membership_changeable_from_outside(
+                await self._require_room_roster_change(session, agent_id, room_id)
+            )
         try:
             return await self.room_service.add_users_to_room(room_id, user_names)
         except ValueError as e:
@@ -3330,7 +3335,8 @@ class AgentCore:
         Allowed when the caller may address the target in that room, or when
         the caller can manage agents and the target belongs to the caller's
         owner. Membership of the room is not required: an owner's assistant
-        tidies rooms it was never in.
+        tidies rooms it was never in. Never in a direct or group conversation
+        (`require_membership_changeable_from_outside`).
         """
         async with self.session_factory() as session:
             caller = await self.agent_store.get(session, agent_id)
@@ -3339,6 +3345,7 @@ class AgentCore:
             room = await self.room_store.get(session, room_id)
             if room is None:
                 raise ValueError(f"Room not found: {room_id}")
+            require_membership_changeable_from_outside(room)
             target = await self.agent_store.get_by_name(session, agent_name)
             if target is None:
                 raise ValueError(f"Failed to remove agent: unknown agent {agent_name}")

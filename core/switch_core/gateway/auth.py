@@ -25,7 +25,7 @@ from switch_core.authz import (
 )
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import Organization, Room, Tenant, User
+from switch_core.db.models import Organization, Room, Tenant, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
@@ -886,6 +886,31 @@ async def initial_tenant_claim(
     if len(memberships) == 1:
         return memberships[0]
     return None
+
+
+async def rebind_if_left(
+    request: Request,
+    response: Response,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user: User,
+    config: SwitchConfig,
+) -> None:
+    """After the caller changed their own membership: when the workspace the
+    session is bound to is no longer one they may enter, re-mint the session
+    onto the one `initial_tenant_claim` picks, or none, as deleting a
+    workspace does, rather than leave it naming one they left. A re-mint, so
+    it keeps the session's sign-in time (`session_auth_time`)."""
+    if require_tenant_id() in await tenants_bindable_by(session_factory, user.id):
+        return
+    set_session_cookie(
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        await initial_tenant_claim(session_factory, user_store, user),
+        session_auth_time(request),
+    )
 
 
 def workspace_creation_refusal(

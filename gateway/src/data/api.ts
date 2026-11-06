@@ -1263,6 +1263,12 @@ export interface Member {
   // An organization admin with no membership of their own here, listed
   // because the organization makes them an admin of every workspace.
   via_organization: boolean;
+  // What you may do with this member, as the server decides it: change their
+  // role or remove them (an admin, never on your own row or an organization
+  // admin's), and hand them something you own.
+  can_change_role: boolean;
+  can_remove: boolean;
+  can_receive_transfer: boolean;
 }
 
 export async function fetchMembers(tenantId: string): Promise<Member[]> {
@@ -1334,6 +1340,12 @@ export interface OrganizationMember {
    * taking away what they held in workspaces they were in only as an
    * organization admin. */
   warning: string | null;
+  /** What you may do with them, as the server decides it: never on your own
+   * row; making them Org Admin not where the members come from account
+   * settings Switch cannot change; removing them as an Org Admin only. */
+  can_change_role: boolean;
+  can_grant_org_admin: boolean;
+  can_remove: boolean;
 }
 
 export interface OrganizationAuditEvent {

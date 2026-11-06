@@ -94,13 +94,19 @@ class RoomSummary(BaseModel):
     is_console_chat: bool = False
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. `can_write` covers its settings, roles,
-    # participants, links and attaching resources; `can_manage` (owner or
-    # tenant admin) covers its access, deleting it and taking the platform
-    # channel's name; `can_unlink` (taking part in it, or tenant admin) covers
-    # unlinking a reference, document or package from it.
+    # links and attaching resources; `can_change_members` covers adding and
+    # removing its agents and people, which is `can_write` unless it is a
+    # direct or group conversation, whose platform fixes who is in it;
+    # `can_manage` (owner or tenant admin) covers its access, deleting it and
+    # taking the platform channel's name; `can_unlink` (taking part in it, or
+    # tenant admin) covers unlinking a reference, document or package from it;
+    # `can_transfer` is `can_manage` for anything but a chat, which stays with
+    # its people.
     can_write: bool
+    can_change_members: bool
     can_manage: bool
     can_unlink: bool
+    can_transfer: bool
 
 
 class RoomDetail(RoomSummary):
@@ -307,11 +313,6 @@ class AgentSummary(BaseModel):
     # owner-restricted without fetching each one — the console warns about
     # exactly that, and per-agent reads would make it a request storm.
     addressing_policy: AddressingPolicy | None = None
-    # Whether the caller may manage the agent (rename it, edit its options and
-    # who may address it): its owner or a workspace admin. Decided here by
-    # `switch_core.authz` so the Gateway does not repeat the rule; set by the
-    # Gateway routes, and left out of what agents read.
-    can_manage: bool = False
 
 
 class AgentToolSummary(BaseModel):
@@ -378,6 +379,49 @@ class AgentDetail(AgentSummary):
     rooms: list[AgentRoomMembership]
     sessions: list[AgentSessionDetail]
     children: list[AgentSummary]
+
+
+class AgentCapabilities(BaseModel):
+    """What the caller may do with an agent, as the Gateway reports it.
+
+    On Gateway-only models rather than on `AgentSummary`, which the agent
+    tools share, so an agent never reads them. Each is decided by the rule its
+    route enforces, so no client repeats it.
+    """
+
+    # Edit its icon, display name, description and who may address it, and
+    # delete it: its owner or a workspace admin.
+    can_manage: bool
+    # Edit its options: `can_manage`, for an agent Switch Console runs from a
+    # spec it knows. Any other agent has no options to edit.
+    can_edit_options: bool
+    # Change its name: `can_manage`, unless it is a sub-agent, whose name
+    # comes from its parent's, or has sub-agents named after it. A sub-agent's
+    # display name is still covered by `can_manage`.
+    can_rename: bool
+    # Hand it to another member: `can_manage`, unless it is tied to its owner
+    # by more than its owner id (`accounts/transfer.py`).
+    can_transfer: bool
+    # Why it can't be handed over, set only when `can_manage` is true and
+    # `can_transfer` false. Only its owner is told which services it uses.
+    transfer_blocked_reason: str | None
+
+
+class GatewayAgentSummary(AgentSummary, AgentCapabilities):
+    pass
+
+
+class GatewayAgentDetail(AgentDetail, AgentCapabilities):
+    # Its owner only, not an admin: turning on that it may manage its
+    # owner's agents.
+    can_change_manage_agents: bool
+    # Granting it service access: its owner only, since a grant is made on
+    # the owner's own connections, while service connections are switched on,
+    # and for an agent Switch Console runs from a spec it knows, since nothing
+    # else would start its service tools. Seeing and revoking the grants it
+    # already has needs only the first two.
+    can_grant_services: bool
+    children: list[GatewayAgentSummary]  # type: ignore[assignment]  # narrows the base type
 
 
 class NamedEntry(BaseModel):
@@ -484,7 +528,7 @@ class RenameAgentResponse(BaseModel):
     `templates_mentioning_old_name` lists saved templates whose text still
     says the old name."""
 
-    agent: AgentSummary
+    agent: GatewayAgentSummary
     old_name: str
     bridge_failures: list[str]
     templates_mentioning_old_name: list[str]
@@ -626,6 +670,11 @@ class ApiKeyDetail(BaseModel):
     key_prefix: str
     created_at: str
     expires_at: datetime | None
+    # What the caller may do with it: reveal and copy it, their own only; and
+    # delete it, their own unless an agent still signs in with it
+    # (`authz.can_delete_api_key`).
+    can_reveal: bool
+    can_delete: bool
 
 
 class CreateApiKeyResponse(BaseModel):
@@ -699,6 +748,12 @@ class BridgeDetail(BaseModel):
     # which is then what stands between this connection and its events.
     receives_webhooks: bool = False
     webhook_url: str | None = None
+    # What the caller may do with it: change its settings, Teams placement
+    # and confirmation rules, or delete it — a workspace admin. That chats
+    # still connected through it must be disconnected first is answered when
+    # it is deleted.
+    can_manage: bool
+    can_delete: bool
 
 
 class BridgeUpdateRequest(BaseModel):
@@ -770,6 +825,9 @@ class IdentityClaimant(BaseModel):
     # False for a claim made before accounts had to confirm their links
     # (CHOO-3881). It still counts, and its owner is asked to confirm it.
     verified: bool
+    # Whether the caller may drop this claim: their own, or anyone's for an
+    # admin.
+    can_unlink: bool
 
 
 class LinkCode(BaseModel):
@@ -983,6 +1041,15 @@ Email = Annotated[
 ]
 
 
+class OperatorUserResponse(UserResponse):
+    """An account as the deployment operator manages it. `can_delete`: not
+    their own, which they delete from their account settings, and not the
+    server's administrator account (`accounts.deletion.is_server_administrator`).
+    What else stands in the way is answered when it is asked."""
+
+    can_delete: bool
+
+
 class CreateUserRequest(BaseModel):
     name: str
     email: Email
@@ -1066,9 +1133,17 @@ class OperatorWorkspaceResponse(BaseModel):
 class CurrentTenantResponse(TenantMembershipResponse):
     """The tenant this request is bound to. `administers` is whether the
     caller may manage it — an `admin` membership, `org_admin` of its
-    organization, or the operator bit, which no membership role shows."""
+    organization, or the operator bit, which no membership role shows.
+    `can_delete` is whether they may delete it (`authz.can_delete_workspace`):
+    by their own admin membership, never the server's default workspace.
+    `can_manage_data_protection` is whether they may set its messages to be
+    deleted, list the people seen in it and erase them: by their own admin
+    membership too (`authz.admin_by_own_membership`); reading and clearing
+    its retention window takes `administers` only."""
 
     administers: bool
+    can_delete: bool
+    can_manage_data_protection: bool
 
 
 class TenantCreateRequest(BaseModel):
@@ -1104,6 +1179,11 @@ class CurrentOrganizationResponse(BaseModel):
     role: str | None
     members_from_directory: bool
     directory_takes_changes: bool
+    # Whether the caller is its `org_admin`, and whether they may manage its
+    # members and read its issues: its `org_admin`, or the platform operator
+    # while it has none, to make one.
+    administers: bool
+    can_manage_members: bool
 
 
 class OrganizationIssueDetail(BaseModel):
@@ -1342,6 +1422,15 @@ class MemberDetail(BaseModel):
     service_account: bool
     organization_role: str | None
     via_organization: bool
+    # What the caller may do with this member (`authz.can_change_workspace_member`):
+    # an admin of the workspace, their own row included, never on an
+    # organization admin's. That the last admin stays and that someone still
+    # owning agents can't be removed is checked when it is asked.
+    can_change_role: bool
+    can_remove: bool
+    # Whether the caller may hand them something they own: a member of the
+    # workspace by their own membership, and not the caller.
+    can_receive_transfer: bool
 
 
 class UsageTotalResponse(BaseModel):
@@ -1372,6 +1461,16 @@ class OrganizationMemberDetail(BaseModel):
     # What could not be revoked at a vendor when a demotion took away what
     # they held in workspaces they were in only as `org_admin`.
     warning: str | None
+    # What the caller may do with them, their own row included:
+    # `can_change_role` for whoever passes the role route's gate, the
+    # operator restoring an `org_admin` included;
+    # `can_grant_org_admin` too, unless the organization's members come from
+    # a directory Switch cannot change; `can_remove` for its `org_admin` only.
+    # The last `org_admin`, someone still in a workspace, and a directory that
+    # wants a sign-in first are answered when it is asked.
+    can_change_role: bool
+    can_grant_org_admin: bool
+    can_remove: bool
 
 
 class OrganizationMemberUpdateRequest(BaseModel):
@@ -1469,6 +1568,12 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
+    # What the caller may do with it (`switch_core.authz`). `can_edit`: change
+    # it — its owner, an admin, or anyone when it is publicly writable.
+    # `can_manage`: delete it, change who may see or edit it, transfer it — its
+    # owner or an admin.
+    can_edit: bool
+    can_manage: bool
 
 
 class ReferenceCreateRequest(BaseModel):
@@ -1530,6 +1635,10 @@ class ReferenceTypeDetail(BaseModel):
     write_visibility: str
     shadowed_by_builtin: bool
     created_at: str
+    # As on `ReferenceDetail`. A built-in is never listed here, so never
+    # offered for editing.
+    can_edit: bool
+    can_manage: bool
 
 
 class ReferenceTypeCreateRequest(BaseModel):
@@ -1672,6 +1781,12 @@ class DocumentDetail(BaseModel):
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+    # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
+    # All three are false for a room's own document, which is changed and
+    # removed in its room, not through the library.
+    can_edit: bool
+    can_manage: bool
+    can_transfer: bool
 
 
 # Whether the caller may remove a document from a room it is in: delete it if
@@ -1705,6 +1820,10 @@ class DocumentSummary(BaseModel):
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+    # As on `DocumentDetail`.
+    can_edit: bool
+    can_manage: bool
+    can_transfer: bool
 
 
 class RoomDocumentSummary(DocumentSummary):
@@ -1761,7 +1880,10 @@ class PackageDetail(BaseModel):
     # packages the caller may read, except a room's package list: a private
     # package its owner attached is listed to every reader of the room, and the
     # Gateway shows that one without a link.
-    can_read: bool = True
+    can_read: bool
+    # As on `ReferenceDetail`.
+    can_edit: bool
+    can_manage: bool
 
 
 class PackageCreateRequest(BaseModel):

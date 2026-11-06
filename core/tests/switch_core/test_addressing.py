@@ -8,6 +8,7 @@ from switch_core.addressing import (
     AddressingRule,
     can_address,
     default_agent_policy,
+    never_allows,
     owner_and_owner_agents_policy,
     owner_only_policy,
     parse_policy,
@@ -867,3 +868,45 @@ class TestPlatformSenderKind:
             )
             is False
         )
+
+
+class TestNeverAllows:
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            AddressingRule(rooms=[]),
+            AddressingRule(room_groups=[]),
+            AddressingRule(users=[], agents=[]),
+        ],
+    )
+    def test_a_rule_that_can_never_let_anyone_in_says_why(
+        self, rule: AddressingRule
+    ) -> None:
+        assert never_allows(rule) is not None
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            AddressingRule(),
+            AddressingRule(users=[], agents=[], owner=True),
+            AddressingRule(users=[], agents=[], owner_agents=True),
+            AddressingRule(users=[], agents=[], platform=True),
+            AddressingRule(users=["u-1"], agents=[]),
+            AddressingRule(rooms=["r-1"], users=[], agents=["a-1"]),
+        ],
+    )
+    def test_a_rule_that_lets_someone_in_somewhere_is_fine(
+        self, rule: AddressingRule
+    ) -> None:
+        assert never_allows(rule) is None
+
+    def test_none_of_the_built_in_policies_has_one(self) -> None:
+        for policy in (
+            owner_only_policy([]),
+            owner_and_owner_agents_policy(),
+            default_agent_policy(),
+            platform_allowed_policy(),
+        ):
+            assert [never_allows(rule) for rule in policy.rules] == [None] * len(
+                policy.rules
+            )
