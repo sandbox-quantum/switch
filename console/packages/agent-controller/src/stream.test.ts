@@ -13,7 +13,12 @@ import { DEFAULT_TIMING } from './controller';
 import { silentLogger } from './log';
 import type { AgentCursor, ControllerConnection } from './schemas';
 import { SocketCallLost, SocketCalls } from './socket-calls';
-import { type ControllerFrame, type ControllerStreamOptions, runControllerStream } from './stream';
+import {
+  type ControllerFrame,
+  ControllerStream,
+  type ControllerStreamOptions,
+  runControllerStream,
+} from './stream';
 import { FakeCore } from './testing/fake-core';
 
 type Message = { event: string; data: unknown };
@@ -137,6 +142,103 @@ function run(
   });
   return { frames, states, ending };
 }
+
+describe('ControllerStream.send', () => {
+  it('sends up the socket now open, and says when there is none', async () => {
+    const scripted = new ScriptedClient();
+    const stop = new AbortController();
+    const stream = new ControllerStream({
+      client: scripted.client,
+      cursors: () => ({}),
+      confirmed: () => ({}),
+      onOpened: () => {},
+      onConnected: () => {},
+      onDisconnected: () => {},
+      onFrame: async () => {},
+      signal: stop.signal,
+      log: silentLogger,
+      idleTimeoutMs: 2_000,
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+      random: () => 0,
+    });
+    expect(stream.send({ type: 'decision.result', request_id: 'r0' })).toBe(false);
+    const ending = stream.run();
+    await waitFor(() => scripted.opened[0]?.readyState === 1, 'the socket open');
+    await waitFor(
+      () => stream.send({ type: 'decision.result', request_id: 'r1', ok: true }),
+      'a send'
+    );
+    expect(scripted.opened[0]!.sent).toContainEqual({
+      type: 'decision.result',
+      request_id: 'r1',
+      ok: true,
+    });
+    stop.abort();
+    expect(await ending).toBe('stopped');
+    expect(stream.send({ type: 'decision.result', request_id: 'r2' })).toBe(false);
+  });
+});
+
+describe('the socket carries calls and decisions together', () => {
+  it('answers a call and hands down a decision request, and sends the decision’s result up the same socket', async () => {
+    const scripted = new ScriptedClient();
+    const offering = {
+      event: 'connection_state',
+      data: { connection_id: 'connection-1', calls: { max_in_flight: 2 } },
+    };
+    const decision = {
+      event: 'decision.request',
+      data: {
+        request_id: 'r1',
+        kind: 'llamacpp',
+        model: 'qwen3.5-4b-q4_k_m',
+        payload: { messages: [] },
+        deadline_ms: 2000,
+      },
+    };
+    scripted.sockets = () => scriptedSocket([offering, decision], 'open');
+    const calls = new SocketCalls();
+    const frames: ControllerFrame[] = [];
+    const stop = new AbortController();
+    const stream = new ControllerStream({
+      client: scripted.client,
+      cursors: () => ({}),
+      confirmed: () => ({}),
+      onOpened: () => {},
+      onConnected: () => {},
+      onDisconnected: () => {},
+      onFrame: async (frame) => void frames.push(frame),
+      signal: stop.signal,
+      log: silentLogger,
+      idleTimeoutMs: 2_000,
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+      random: () => 0,
+      calls,
+    });
+    const ending = stream.run();
+    await waitFor(() => frames.some((frame) => frame.type === 'decision.request'), 'the decision');
+
+    const answered = calls.call({
+      agentId: 'agent-1',
+      roomId: 'room-a',
+      operation: 'post_message',
+      args: { body: 'hi' },
+      requestId: null,
+    })!;
+    expect(stream.send({ type: 'decision.result', request_id: 'r1', ok: true })).toBe(true);
+    const socket = scripted.opened[0]!;
+    expect(socket.sent).toContainEqual(expect.objectContaining({ type: 'call', id: 1 }));
+    expect(socket.sent).toContainEqual({ type: 'decision.result', request_id: 'r1', ok: true });
+    socket.deliver({ event: 'call.result', data: { id: 1, status: 200, body: { result: 'ok' } } });
+    expect(await answered).toEqual({ status: 200, body: { result: 'ok' } });
+
+    stop.abort();
+    expect(await ending).toBe('stopped');
+    expect(frames.map((frame) => frame.type)).not.toContain('call.result');
+  });
+});
 
 describe('runControllerStream', () => {
   it('takes calls on a socket that offers them, answers each as it arrives, and fails them when it closes', async () => {

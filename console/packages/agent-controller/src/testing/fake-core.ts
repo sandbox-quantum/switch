@@ -102,6 +102,8 @@ export class FakeCore {
   readonly results = new Map<string, OperationResult>();
   readonly opens: Record<string, AgentCursor>[] = [];
   readonly beats: Record<string, number>[] = [];
+  /** What the controller answered `decision.request` frames with, in order. */
+  readonly decisionResults: Record<string, unknown>[] = [];
   /** The machine's name and description, as `PATCH .../controllers/{id}` changes them. */
   info: { name: string; description: string | null } = { name: 'laptop', description: null };
   /** The key the controller registered for sealed logins. */
@@ -110,6 +112,8 @@ export class FakeCore {
   readonly sealedLogins = new Map<string, { revision: number; sealed: unknown }>();
   /** What status responses name as `controller_release`; left out while undefined. */
   controllerRelease: unknown = undefined;
+  /** While set, a status report is recorded and its answer held until this resolves. */
+  holdStatus: Promise<void> | null = null;
   /** Answers the next request to a path with this, once. */
   readonly scripted: { method: string; path: string; status: number; body: unknown }[] = [];
   /** What `GET .../media` sends, in these chunks; `waitBetween` holds back all but the first. */
@@ -242,6 +246,10 @@ export class FakeCore {
     this.pings.add(ping);
     socket.onSend = (data) => {
       const message = JSON.parse(data) as { type?: string; cursors?: Record<string, number> };
+      if (message.type === 'decision.result') {
+        this.decisionResults.push(message as unknown as Record<string, unknown>);
+        return;
+      }
       if (message.type !== 'pong') return;
       if (connection.superseded || !this.connections.has(connection.id)) {
         socket.deliver('evicted', {
@@ -440,6 +448,7 @@ export class FakeCore {
     }
     if (method === 'PUT' && url.pathname === `${base}/status`) {
       this.statusReports.push(body as StatusReport);
+      if (this.holdStatus) await this.holdStatus;
       return this.json(res, 200, {
         assignment_revision: this.assignment.revision,
         report_within_s: this.reportWithinS,

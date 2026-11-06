@@ -15,9 +15,18 @@ timeout). The choices:
 - `haiku_bedrock`: Claude Haiku on Amazon Bedrock, on the server's own AWS
   credentials, also in the server's decision service: offered only when the
   operator sets `DECISION_BEDROCK_ENABLED`.
+- `machine`: a model served on one of the workspace admin's own agent
+  controllers, asked over its connection (`decision/machine.py`). Until the
+  machine first reports the model running, auto-route is unavailable there,
+  saying it is getting ready, and posts no notices; a revoked or deleted
+  machine makes it unavailable too, also without notices. Once ready, a
+  machine that is offline, busy or failing takes the failure path. So does
+  one whose owner no longer administers the workspace, checked before each
+  decision as when it was chosen (`UserStore.administers`): it is sent
+  nothing, and auto-route reads as unavailable, saying why.
 
 Auto-route is available in a workspace when the `decision_routing` flag is
-on and the workspace resolves to a backend other than none. The room detail,
+on and the workspace resolves to a backend it can ask. The room detail,
 the room toggle and `!auto-route` all ask `DecisionAvailability`.
 """
 
@@ -26,15 +35,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from switch_core.db.models import User
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
+from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.machine import MachineChoice, machine_choice
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from switch_core.config import SwitchConfig
-    from switch_core.db.models import DecisionSettings
+    from switch_core.db.models import AgentController, DecisionSettings
 
-Backend = Literal["none", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+Backend = Literal["none", "endpoint", "haiku_anthropic", "haiku_bedrock", "machine"]
 Source = Literal["workspace", "server_default"]
 
 FLAG_OFF_REASON = (
@@ -45,6 +58,8 @@ NO_BACKEND_REASON = (
     "Auto-route needs a decision service. A workspace admin can set one up in "
     "Switch Console → Admin → Decision routing."
 )
+_USERS = UserStore()
+
 WORKSPACE_OFF_REASON = (
     "This workspace's admins turned auto-route off by choosing no decision "
     "service. A workspace admin can choose one in Switch Console → Admin → "
@@ -91,7 +106,8 @@ class ResolvedSettings:
     `api_key_encrypted` is the workspace's stored key, still encrypted; the
     server default's key is the server's own (`ServerDefault.api_key`).
     `backend` is `none` when nothing applies, whether chosen or for want of a
-    server default; `reason` then says which.
+    server default; `reason` then says which. For `machine`, `machine` is the
+    machine as last heard of, and `reason` says why it can't be asked yet.
     """
 
     source: Source
@@ -100,14 +116,28 @@ class ResolvedSettings:
     api_key_encrypted: str | None
     threshold: float | None
     reason: str | None
+    machine: MachineChoice | None
 
     @property
     def has_backend(self) -> bool:
+        """Whether decisions are asked of the backend at all."""
+        if self.machine is not None:
+            return self.machine.usable
         return self.backend != "none"
 
 
-def resolve(row: DecisionSettings | None, server: ServerDefault) -> ResolvedSettings:
-    """What applies to a workspace whose row is `row` (None: no choice)."""
+def resolve(
+    row: DecisionSettings | None,
+    server: ServerDefault,
+    controller: AgentController | None,
+    connected: bool | None,
+    owner_admin: bool,
+) -> ResolvedSettings:
+    """What applies to a workspace whose row is `row` (None: no choice).
+    `controller` is a `machine` row's controller (None when it is gone, and
+    for every other backend), `connected` whether it is connected, None
+    where that was not read, and `owner_admin` whether its owner still
+    administers the workspace (read only for a `machine` row)."""
     if row is None:
         if not server.configured:
             return ResolvedSettings(
@@ -117,6 +147,7 @@ def resolve(row: DecisionSettings | None, server: ServerDefault) -> ResolvedSett
                 api_key_encrypted=None,
                 threshold=None,
                 reason=NO_BACKEND_REASON,
+                machine=None,
             )
         return ResolvedSettings(
             source="server_default",
@@ -125,9 +156,21 @@ def resolve(row: DecisionSettings | None, server: ServerDefault) -> ResolvedSett
             api_key_encrypted=None,
             threshold=None,
             reason=None,
+            machine=None,
         )
     backend: Backend = row.backend  # type: ignore[assignment]
     reason: str | None = None
+    if backend == "machine":
+        machine = machine_choice(row, controller, connected, owner_admin)
+        return ResolvedSettings(
+            source="workspace",
+            backend="machine",
+            endpoint=None,
+            api_key_encrypted=None,
+            threshold=row.threshold,
+            reason=machine.unavailable_reason,
+            machine=machine,
+        )
     if backend == "none":
         reason = WORKSPACE_OFF_REASON
     elif backend in ("haiku_anthropic", "haiku_bedrock") and not server.configured:
@@ -143,6 +186,7 @@ def resolve(row: DecisionSettings | None, server: ServerDefault) -> ResolvedSett
         api_key_encrypted=row.api_key_encrypted,
         threshold=row.threshold,
         reason=reason,
+        machine=None,
     )
 
 
@@ -156,9 +200,14 @@ class Availability:
 
 
 def availability(enabled: bool, settings: ResolvedSettings) -> Availability:
+    """Whether auto-route can act. A machine whose owner is no longer a
+    workspace admin still has the rooms decide by it, each decision failing
+    with a notice, but reads as unavailable, saying why."""
     if not enabled:
         return Availability(available=False, reason=FLAG_OFF_REASON)
-    if not settings.has_backend:
+    if not settings.has_backend or (
+        settings.machine is not None and not settings.machine.owner_admin
+    ):
         return Availability(available=False, reason=settings.reason)
     return Availability(available=True, reason=None)
 
@@ -171,6 +220,7 @@ class DecisionAvailability:
     enabled: bool
     server: ServerDefault
     store: DecisionSettingsStore
+    controllers: AgentControllerStore
 
     @classmethod
     def from_config(cls, config: SwitchConfig) -> DecisionAvailability:
@@ -178,10 +228,39 @@ class DecisionAvailability:
             enabled=config.decision_routing_enabled,
             server=ServerDefault.from_config(config),
             store=DecisionSettingsStore(),
+            controllers=AgentControllerStore(),
         )
 
+    async def controller_of(
+        self, session: AsyncSession, row: DecisionSettings | None
+    ) -> AgentController | None:
+        """A `machine` row's controller, None when it is gone or for any
+        other row."""
+        if row is None or row.backend != "machine" or row.controller_id is None:
+            return None
+        return await self.controllers.get(session, row.tenant_id, row.controller_id)
+
+    async def owner_administers(
+        self, session: AsyncSession, controller: AgentController | None
+    ) -> bool:
+        """Whether a machine's owner still administers the workspace bound to
+        `session`, by the check that let them choose it
+        (`UserStore.administers`). True when there is no machine to ask."""
+        if controller is None:
+            return True
+        owner = await session.get(User, controller.owner_id)
+        return owner is not None and await _USERS.administers(session, owner)
+
     async def settings(self, session: AsyncSession, tenant_id: str) -> ResolvedSettings:
-        return resolve(await self.store.get(session, tenant_id), self.server)
+        row = await self.store.get(session, tenant_id)
+        controller = await self.controller_of(session, row)
+        return resolve(
+            row,
+            self.server,
+            controller,
+            None,
+            await self.owner_administers(session, controller),
+        )
 
     async def check(self, session: AsyncSession, tenant_id: str) -> Availability:
         return availability(self.enabled, await self.settings(session, tenant_id))
