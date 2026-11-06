@@ -112,9 +112,19 @@ export const copilotAcp: AcpProviderHooks = {
     const init = await handshake();
     return (init.authMethods ?? []).length > 0
       ? readiness('unauthenticated', signInWith(COPILOT_LOGIN))
-      : readiness('authenticated', 'The CLI offers no sign-in method, so it is already signed in.');
+      : readiness('unknown', 'The CLI did not advertise an authentication method.');
   },
-  inheritEnv: ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'COPILOT_PROVIDERS_CONFIG'],
+  inheritEnv: [
+    'COPILOT_GITHUB_TOKEN',
+    'GH_TOKEN',
+    'GITHUB_TOKEN',
+    'COPILOT_PROVIDERS_CONFIG',
+    'COPILOT_PROVIDER_TYPE',
+    'COPILOT_PROVIDER_BASE_URL',
+    'COPILOT_PROVIDER_API_KEY',
+    'COPILOT_PROVIDER_BEARER_TOKEN',
+    'COPILOT_PROVIDER_API_KEY_COMMAND',
+  ],
 };
 
 export function createCopilotAdapter(options: AcpAdapterOptions = {}): AcpAdapter {
