@@ -55,7 +55,7 @@ export default function RowActionsMenu({ label, actions }: { label: string; acti
         {actions.map((action) => {
           const disabled = action.disabledReason !== undefined;
           const tone = disabled
-            ? "var(--hoot-muted-foreground)"
+            ? "var(--hoot-field-disabled-foreground)"
             : action.destructive
               ? "var(--hoot-destructive)"
               : undefined;
