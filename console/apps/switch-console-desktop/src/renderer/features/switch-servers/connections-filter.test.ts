@@ -17,6 +17,7 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     pass_through: false,
     token_lifetime: null,
     loopback_ports: null,
+    loopback_callback_path: null,
     key: null,
     external_identity: null,
     consent: null,

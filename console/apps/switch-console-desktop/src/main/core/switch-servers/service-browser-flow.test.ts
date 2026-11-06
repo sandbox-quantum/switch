@@ -32,7 +32,7 @@ const server = {
 } as SwitchServer;
 const flows: [string, string][] = [];
 /** The service as the server lists it: on any port, or only on `ports`. */
-function listed(ports: number[] | null): ConnectionCatalogEntry[] {
+function listed(ports: number[] | null, callbackPath: string | null = null): ConnectionCatalogEntry[] {
   return [
     {
       slug: 'example',
@@ -48,6 +48,7 @@ function listed(ports: number[] | null): ConnectionCatalogEntry[] {
       pass_through: true,
       token_lifetime: 28_800,
       loopback_ports: ports,
+      loopback_callback_path: callbackPath,
       key: null,
       external_identity: null,
       consent: null,
@@ -63,7 +64,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.resetAllMocks();
 });
-async function start(service = 'example') {
+async function start(service = 'example', callbackPath = '/switch-services/callback') {
   vi.mocked(cancelServiceConnection).mockResolvedValue(undefined);
   vi.mocked(completeServiceConnection).mockResolvedValue({
     warning: null,
@@ -79,7 +80,14 @@ async function start(service = 'example') {
   const id = await startServiceBrowserFlow(server, service, open);
   flows.push([service, id]);
   const input = vi.mocked(startServiceConnection).mock.calls[0]![2];
-  return { id, input, open, url: `http://127.0.0.1:${input.port}/switch-services/callback` };
+  const callbackPathArg = vi.mocked(startServiceConnection).mock.calls[0]![3];
+  return {
+    id,
+    input,
+    open,
+    callbackPathArg,
+    url: `http://127.0.0.1:${input.port}${callbackPath}`,
+  };
 }
 
 it('takes back only this Console’s state, and hands the code to Core with its secret', async () => {
@@ -231,6 +239,22 @@ it('listens on the first free port of those the vendor takes a sign-in back on',
   } finally {
     await new Promise((resolve) => busy.close(resolve));
   }
+});
+
+it('listens on, and asks Core to check, a catalog entry’s own callback path', async () => {
+  vi.mocked(getConnectionCatalog).mockResolvedValue(listed(null, '/callback'));
+  const { id, input, callbackPathArg, url } = await start('example', '/callback');
+  expect(callbackPathArg).toBe('/callback');
+  expect(url).toBe(`http://127.0.0.1:${input.port}/callback`);
+  // The server's own default path is not this flow's: it is not listening there.
+  expect(
+    (
+      await fetch(
+        `http://127.0.0.1:${input.port}/switch-services/callback?state=${id}&code=SYNTHETIC`
+      )
+    ).status
+  ).toBe(400);
+  expect((await fetch(url + `?state=${id}&code=SYNTHETIC`)).status).toBe(200);
 });
 
 it('says which ports to free when every one is taken, and starts nothing', async () => {

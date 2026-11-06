@@ -262,15 +262,26 @@ async def test_the_runtime_role_registers_outside_any_tenant(
 def test_registers_the_redirects_this_server_can_use() -> None:
     public = "https://switch.example.com"
     core = f"{public}/gateway/service-connections/example/flows/callback"
-    assert redirect_uris("example", ["loopback", "core"], public, None) == [
+    assert redirect_uris("example", ["loopback", "core"], public, None, None) == [
         LOOPBACK_REDIRECT_URI,
         core,
     ]
-    assert redirect_uris("example", ["loopback", "core"], None, [43123, 43124]) == [
+    assert redirect_uris(
+        "example", ["loopback", "core"], None, [43123, 43124], None
+    ) == [
         "http://127.0.0.1:43123/switch-services/callback",
         "http://127.0.0.1:43124/switch-services/callback",
     ]
-    assert redirect_uris("example", ["core"], None, None) == []
+    assert redirect_uris("example", ["core"], None, None, None) == []
+    assert redirect_uris("example", ["loopback"], None, None, "/callback") == [
+        "http://127.0.0.1/callback"
+    ]
+    assert redirect_uris(
+        "example", ["loopback"], None, [43123, 43124], "/callback"
+    ) == [
+        "http://127.0.0.1:43123/callback",
+        "http://127.0.0.1:43124/callback",
+    ]
     assert core_callback(public + "/", "example") == core
 
 

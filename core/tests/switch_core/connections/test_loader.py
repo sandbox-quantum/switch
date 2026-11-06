@@ -16,7 +16,6 @@ PLACEHOLDERS = {
     "gitlab",
     "bitbucket",
     "microsoft-365",
-    "new-relic",
     "notion",
     "linear",
     "salesforce",
@@ -26,12 +25,13 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_new_relic_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
+        "new-relic",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
@@ -40,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "new-relic",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["new-relic"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -228,6 +230,49 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_new_relic_entry():
+    definition = CATALOG["new-relic"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    # Measured live, 2026-11-05: New Relic's authorization server accepts an
+    # authorize request against a redirect_uri ending in /callback.
+    assert oauth.loopback_callback_path == "/callback"
+    assert oauth.loopback_ports == [39241, 39242, 39243, 39244, 39245]
+    assert oauth.revocation_discovered is True
+    assert (oauth.revocation_url, oauth.remove_access) == (None, None)
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url == "https://oauth2.service.newrelic.com/userinfo"
+    )
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "sub",
+        "email",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("new-relic", "https://mcp.newrelic.com/mcp/")
+    ]
+    assert definition.access is not None
+    # Read-only: nothing New Relic documents over MCP writes anything.
+    assert definition.access.write is None
+    assert definition.access.read.scopes == [
+        "openid",
+        "observability:read",
+        "offline_access",
+    ]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 RESTRICTED_DRIVE = {
@@ -580,6 +625,8 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.auth.oauth is not None
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
+    # The server's default applies when the entry says nothing of its own.
+    assert definition.auth.oauth.loopback_callback_path is None
     assert definition.auth.identity is not None
     assert definition.auth.identity.account_id == "account.id"
     assert definition.token is not None
@@ -587,6 +634,18 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_loads_a_custom_loopback_callback_path(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /callback\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None and oauth.loopback_callback_path == "/callback"
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -709,6 +768,47 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    loopback_ports: [80]\n",
             "loopback_ports",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [core]\n    loopback_callback_path: /callback\n",
+            "loopback_callback_path is for a loopback redirect",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: callback\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /call?back\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /call#back\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: //callback\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    loopback_callback_path: https://evil.example/callback\n",
+            "loopback_callback_path",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /../callback\n",
+            "loopback_callback_path may not contain a . or .. segment",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_callback_path: /./callback\n",
+            "loopback_callback_path may not contain a . or .. segment",
         ),
         (
             "    redirect: [loopback, core]\n",

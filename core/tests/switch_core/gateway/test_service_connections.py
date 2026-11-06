@@ -135,6 +135,7 @@ class TestConnections:
         assert github["connectable"] is True
         assert (github["pass_through"], github["token_lifetime"]) == (False, 3600)
         assert github["loopback_ports"] is None
+        assert github["loopback_callback_path"] is None
         asana = entries["asana"]
         assert (asana["pass_through"], asana["token_lifetime"]) == (False, None)
         assert asana["configured"] is False
@@ -148,6 +149,7 @@ class TestConnections:
             28800,
         )
         assert atlassian["loopback_ports"] == [39231, 39232, 39233, 39234, 39235]
+        assert atlassian["loopback_callback_path"] is None
 
     async def test_disconnecting_deletes_grants_and_revokes_the_sign_in(
         self, harness: Harness, vendor: FakeVendor

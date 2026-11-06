@@ -9,6 +9,7 @@ import {
   unknownHostReachability,
 } from '@shared/core/remote-hosts/reachability';
 import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
+import { SERVICE_CALLBACK_PATH } from '@shared/core/switch-servers/service-connection';
 
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const refreshSession = vi.hoisted(() => vi.fn());
@@ -1422,6 +1423,7 @@ describe('GitHub connection transport', () => {
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
+        loopback_callback_path: null,
         key: null,
         external_identity: 'ada-gh',
         consent: 'write',
@@ -1496,6 +1498,7 @@ describe('GitHub connection transport', () => {
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
+        loopback_callback_path: null,
         key: null,
         external_identity: null,
         consent: null,
@@ -1836,7 +1839,9 @@ describe('a service sign-in', () => {
       mode: 'loopback',
       url: vendor({ state, redirect_uri: 'http://127.0.0.1:12345/switch-services/callback' }),
     });
-    expect((await startServiceConnection(SERVER, 'example', input)).mode).toBe('loopback');
+    expect(
+      (await startServiceConnection(SERVER, 'example', input, SERVICE_CALLBACK_PATH)).mode
+    ).toBe('loopback');
     answer({ warning: null, consent: 'write', account: 'ada@example.test' });
     expect(
       await completeServiceConnection(SERVER, 'example', state, 'SYNTHETIC-CODE', 'b'.repeat(43))
@@ -1851,15 +1856,39 @@ describe('a service sign-in', () => {
 
   it('accepts Core’s own authorize step on this server in core mode', async () => {
     answer({ id: state, mode: 'core', url: `${flows}/authorize?state=${state}` });
-    expect((await startServiceConnection(SERVER, 'example', input)).url).toBe(
-      `${flows}/authorize?state=${state}`
-    );
+    expect(
+      (await startServiceConnection(SERVER, 'example', input, SERVICE_CALLBACK_PATH)).url
+    ).toBe(`${flows}/authorize?state=${state}`);
   });
 
   it('accepts Core’s authorize step on the separate dashboard host an older server keeps', async () => {
     const url = `https://switch-dashboard.example.com/gateway/service-connections/example/flows/authorize?state=${state}`;
     answer({ id: state, mode: 'core', url });
-    expect((await startServiceConnection(SPLIT, 'example', input)).url).toBe(url);
+    expect(
+      (await startServiceConnection(SPLIT, 'example', input, SERVICE_CALLBACK_PATH)).url
+    ).toBe(url);
+  });
+
+  it('accepts a vendor page returning to a catalog entry’s own callback path', async () => {
+    answer({
+      id: state,
+      mode: 'loopback',
+      url: vendor({ state, redirect_uri: 'http://127.0.0.1:12345/callback' }),
+    });
+    expect((await startServiceConnection(SERVER, 'example', input, '/callback')).mode).toBe(
+      'loopback'
+    );
+  });
+
+  it('refuses the default callback path once a catalog entry names its own', async () => {
+    answer({
+      id: state,
+      mode: 'loopback',
+      url: vendor({ state, redirect_uri: `http://127.0.0.1:12345${SERVICE_CALLBACK_PATH}` }),
+    });
+    await expect(
+      startServiceConnection(SERVER, 'example', input, '/callback')
+    ).rejects.toThrow('invalid sign-in URL');
   });
 
   it.each([
@@ -1895,9 +1924,9 @@ describe('a service sign-in', () => {
     ],
   ])('refuses %s', async (_name, mode, url) => {
     answer({ id: state, mode, url });
-    await expect(startServiceConnection(SPLIT, 'example', input)).rejects.toThrow(
-      'invalid sign-in URL'
-    );
+    await expect(
+      startServiceConnection(SPLIT, 'example', input, SERVICE_CALLBACK_PATH)
+    ).rejects.toThrow('invalid sign-in URL');
   });
 
   it('connects with a key on the service’s key route, and reads its form from the catalog', async () => {

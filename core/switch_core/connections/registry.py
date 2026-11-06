@@ -125,7 +125,11 @@ def build_adapter(
         assert oauth is not None
         if oauth.registration == "dynamic":
             uris = redirect_uris(
-                slug, oauth.redirect, registration.public_url, oauth.loopback_ports
+                slug,
+                oauth.redirect,
+                registration.public_url,
+                oauth.loopback_ports,
+                oauth.loopback_callback_path,
             )
             if not uris:
                 raise ServiceSetupError(

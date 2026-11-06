@@ -242,7 +242,13 @@ def saved_app_redirects(apps: ConnectorApps, spec: AppSpec) -> list[str]:
         )
     oauth = apps.definition(spec.service).auth.oauth
     assert oauth is not None
-    return redirect_uris(spec.service, oauth.redirect, public_url, oauth.loopback_ports)
+    return redirect_uris(
+        spec.service,
+        oauth.redirect,
+        public_url,
+        oauth.loopback_ports,
+        oauth.loopback_callback_path,
+    )
 
 
 def needs_public_url(apps: ConnectorApps, spec: AppSpec) -> bool:

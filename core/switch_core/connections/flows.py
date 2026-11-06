@@ -43,7 +43,11 @@ from switch_core.connections.loader import (
     ConnectionDefinition,
     RedirectMode,
 )
-from switch_core.connections.oauth_clients import core_callback, loopback_redirect
+from switch_core.connections.oauth_clients import (
+    LOOPBACK_CALLBACK_PATH,
+    core_callback,
+    loopback_redirect,
+)
 from switch_core.connections.sign_in_flows import (
     FlowGoneError,
     FlowsBusyError,
@@ -105,6 +109,15 @@ class ServiceFlow:
     @property
     def port(self) -> int:
         return self.stored.port
+
+    @property
+    def loopback_callback_path(self) -> str:
+        """The path a loopback redirect returns to Console's listener on, as
+        this flow started it: the catalog entry's own, or the server's
+        default."""
+        return str(
+            self.stored.details.get("loopback_callback_path", LOOPBACK_CALLBACK_PATH)
+        )
 
     @property
     def error(self) -> str | None:
@@ -182,6 +195,7 @@ class ServiceFlows:
         consent: AccessLevel = "write" if access.write is not None else "read"
         level = access.write or access.read
         assert level.scopes is not None and access.read.scopes is not None
+        path = definition.auth.oauth.loopback_callback_path or LOOPBACK_CALLBACK_PATH
         try:
             stored = await self._flows.start(
                 kind=KIND,
@@ -192,7 +206,7 @@ class ServiceFlows:
                 mode=mode,
                 port=port,
                 redirect_uri=(
-                    loopback_redirect(port)
+                    loopback_redirect(port, path)
                     if mode == "loopback"
                     else core_callback(self._public_url or "", definition.slug)
                 ),
@@ -203,6 +217,7 @@ class ServiceFlows:
                     "scopes": list(level.scopes),
                     "read_scopes": list(access.read.scopes),
                     "write_scopes": list(level.scopes) if consent == "write" else [],
+                    "loopback_callback_path": path,
                 },
                 completion_secret=completion_secret,
             )
@@ -291,8 +306,9 @@ class ServiceFlows:
         )
         if taken is None:
             raise FlowError("The sign-in could not be verified.")
-        return f"{loopback_redirect(flow.port)}?" + urlencode(
-            {"code": code, "state": flow.state}
+        return (
+            f"{loopback_redirect(flow.port, flow.loopback_callback_path)}?"
+            + urlencode({"code": code, "state": flow.state})
         )
 
     async def complete(
