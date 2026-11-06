@@ -451,7 +451,33 @@ describe("Your cloud files (Switch web)", () => {
     expect(links[0]!.getAttribute("rel")).toContain("noopener");
     fireEvent.click(within(dialog).getByRole("button", { name: "Show source" }));
     expect(within(dialog).getByText(/<script>window.ran = 1<\/script>/)).toBeTruthy();
+    // The toggle says what it will do next.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Show formatted" }));
+    expect(within(dialog).getByRole("heading", { name: "Menu" })).toBeTruthy();
     expect((window as { ran?: number }).ran).toBeUndefined();
+  });
+
+  it("Wrap lines shows its state, and is on by default at phone width", async () => {
+    const py = "x = 1";
+    routes = [boxWithAgent, listing({ "": [file("a.py", py.length)] }), content({ "a.py": text(py) })];
+    const phone = (query: string) => ({
+      matches: query.includes("max-width"),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    });
+    vi.stubGlobal("matchMedia", phone);
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: /a\.py/ }));
+    const dialog = await screen.findByRole("dialog");
+    const wrap = await within(dialog).findByRole("button", { name: "Wrap lines" });
+    expect(wrap.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(wrap);
+    expect(within(dialog).getByRole("button", { name: "Wrap lines" }).getAttribute("aria-pressed")).toBe("false");
   });
 
   it("code is highlighted as text only, bad JSON says so, and CSV is a table", async () => {

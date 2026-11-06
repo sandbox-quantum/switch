@@ -1,4 +1,4 @@
-import { Box, Button, Typography } from "@mui/material";
+import { Box, Button, Typography, useMediaQuery, useTheme } from "@mui/material";
 import { useState } from "react";
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
@@ -65,7 +65,10 @@ export function PlainText({ text }: { text: string }) {
 
 /** Code with highlighting and line numbers, or plain text once it's too big to highlight quickly. */
 export function CodeView({ text, language }: { text: string; language: string }) {
-  const [wrap, setWrap] = useState(false);
+  // Long lines wrap by default on a phone, where they'd otherwise run off the right edge.
+  const phone = useMediaQuery(useTheme().breakpoints.down("sm"));
+  const [chosen, setChosen] = useState<boolean | null>(null);
+  const wrap = chosen ?? phone;
   if (new TextEncoder().encode(text).length > HIGHLIGHT_MAX_BYTES)
     return (
       <>
@@ -76,7 +79,7 @@ export function CodeView({ text, language }: { text: string; language: string })
   return (
     <Box sx={{ minWidth: 0 }}>
       <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
-        <Button size="small" aria-pressed={wrap} onClick={() => setWrap((on) => !on)}>
+        <Button size="small" variant={wrap ? "contained" : "outlined"} aria-pressed={wrap} onClick={() => setChosen(!wrap)}>
           Wrap lines
         </Button>
       </Box>
@@ -143,8 +146,8 @@ export function MarkdownView({ text }: { text: string }) {
   return (
     <Box sx={{ minWidth: 0 }}>
       <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
-        <Button size="small" aria-pressed={source} onClick={() => setSource((on) => !on)}>
-          Show source
+        <Button size="small" variant="outlined" onClick={() => setSource((on) => !on)}>
+          {source ? "Show formatted" : "Show source"}
         </Button>
       </Box>
       {source ? <PlainText text={text} /> : <FileMarkdown text={text} />}

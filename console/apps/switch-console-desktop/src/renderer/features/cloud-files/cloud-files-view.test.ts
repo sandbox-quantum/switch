@@ -471,6 +471,30 @@ describe('Your cloud files', () => {
     }
   });
 
+  it('the toggles say what they do: Show source and Show formatted, and Wrap lines shows on or off', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: [file('a.py'), file('r.md')] } });
+    preview.mockImplementation(async ({ name }: { name: string }) => ({
+      ok: true,
+      value:
+        name === 'a.py'
+          ? { kind: 'code', text: 'x = 1', language: 'python' }
+          : { kind: 'markdown', text: '# Hi' },
+    }));
+    const view = await open();
+    await click(button(view.host, 'a.py'));
+    expect(button(dialog()!, 'Wrap lines')?.getAttribute('aria-pressed')).toBe('false');
+    await click(button(dialog()!, 'Wrap lines'));
+    expect(button(dialog()!, 'Wrap lines')?.getAttribute('aria-pressed')).toBe('true');
+    await press('ArrowRight');
+    await click(button(dialog()!, 'Show source'));
+    expect(button(dialog()!, 'Show formatted')).toBeDefined();
+    expect(text(dialog()!)).toContain('# Hi');
+    await click(button(dialog()!, 'Show formatted'));
+    expect(button(dialog()!, 'Show source')).toBeDefined();
+    view.done();
+  });
+
   it('too large says so, and offers Download', async () => {
     flagsState.set('s1', on('s1'));
     list.mockResolvedValue({ ok: true, value: { entries: [file('huge.mp4')] } });

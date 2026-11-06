@@ -32,7 +32,12 @@ export function CodeView({ text, language }: { text: string; language: string })
   return (
     <div className="min-w-0">
       <div className="mb-2 flex justify-end">
-        <Button variant="ghost" size="xs" aria-pressed={wrap} onClick={() => setWrap((on) => !on)}>
+        <Button
+          variant={wrap ? 'secondary' : 'outline'}
+          size="xs"
+          aria-pressed={wrap}
+          onClick={() => setWrap((on) => !on)}
+        >
           Wrap lines
         </Button>
       </div>
@@ -111,13 +116,8 @@ export function MarkdownView({ text }: { text: string }) {
   return (
     <div className="min-w-0">
       <div className="mb-2 flex justify-end">
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-pressed={source}
-          onClick={() => setSource((on) => !on)}
-        >
-          Show source
+        <Button variant="outline" size="xs" onClick={() => setSource((on) => !on)}>
+          {source ? 'Show formatted' : 'Show source'}
         </Button>
       </div>
       {source ? <FileText text={text} /> : <FileMarkdown text={text} />}
