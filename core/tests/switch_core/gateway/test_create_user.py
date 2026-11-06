@@ -208,7 +208,7 @@ class TestCreateUserOverHttp:
         assert await _emails_like(session_factory, "ed@example.invalid") == []
 
     @pytest.mark.parametrize(
-        ("role", "membership_role"), [("user", "member"), ("admin", "owner")]
+        ("role", "membership_role"), [("user", "member"), ("admin", "admin")]
     )
     async def test_a_known_role_is_stored_with_its_membership(
         self,

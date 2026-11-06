@@ -1,13 +1,27 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppRoutes } from "./App";
 import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
 import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
 
-const acme: TenantMembership = { id: "t1", slug: "acme", name: "Acme", role: "owner" };
-const beta: TenantMembership = { id: "t2", slug: "beta", name: "Beta Co", role: "member" };
+const acme: TenantMembership = {
+  id: "t1",
+  slug: "acme",
+  name: "Acme",
+  role: "admin",
+  organization_role: "org_admin",
+  organization_id: "o1",
+};
+const beta: TenantMembership = {
+  id: "t2",
+  slug: "beta",
+  name: "Beta Co",
+  role: "member",
+  organization_role: "member",
+  organization_id: "o2",
+};
 
 function session(overrides: Partial<Session>): Session {
   return {
@@ -16,6 +30,7 @@ function session(overrides: Partial<Session>): Session {
     tenants: [],
     state: "needs_workspace",
     can_create_workspace: true,
+    can_add_workspace: false,
     invite_email_enabled: false,
     ...overrides,
   };
@@ -78,14 +93,14 @@ describe("AppRoutes", () => {
     mockFetch({ "/auth/session": [200, session({})] });
     renderAt("/");
     expect(await screen.findByText("Welcome to Switch")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Create workspace" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create organization" })).toBeTruthy();
   });
 
   it("only offers an invite when workspaces cannot be created", async () => {
     mockFetch({ "/auth/session": [200, session({ can_create_workspace: false })] });
     renderAt("/");
     expect(await screen.findByText(/Ask a workspace admin for an invite link/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Create workspace" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
   });
 
   it("asks someone in several workspaces to choose", async () => {
@@ -157,5 +172,51 @@ describe("AppRoutes", () => {
       await screen.findByText(/Could not load your session: database unavailable/),
     ).toBeTruthy();
     expect(screen.queryByText("Switch Gateway")).toBeNull();
+  });
+});
+
+describe("a page restored by back or forward", () => {
+  const originalLocation = window.location;
+  const reload = vi.fn();
+
+  beforeEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, reload },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    reload.mockClear();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
+  });
+
+  async function restoreAfter(serverSession: Session) {
+    mockFetch({
+      "/auth/session": [200, session({ state: "ready", tenant: acme, tenants: [acme, beta] })],
+    });
+    renderAt("/workspace");
+    expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
+    mockFetch({ "/auth/session": [200, serverSession] });
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+  }
+
+  it("reloads when the session has moved to another workspace", async () => {
+    await restoreAfter(session({ state: "ready", tenant: beta, tenants: [acme, beta] }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it("stays as it is in the same workspace", async () => {
+    await restoreAfter(session({ state: "ready", tenant: acme, tenants: [acme, beta] }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reload).not.toHaveBeenCalled();
   });
 });

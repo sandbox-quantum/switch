@@ -1,10 +1,20 @@
 from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import (
+    ColumnElement,
+    bindparam,
+    func,
+    or_,
+    select,
+    text,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.db.id_lists import any_of
 from switch_core.db.models import Message, MessageAttachment
+from switch_core.db.notify_ddl import SET_WRITER_ANNOUNCES
+from switch_core.db.raw import RawStatement
 
 
 class MessageStore:
@@ -13,6 +23,8 @@ class MessageStore:
         session: AsyncSession,
         message: Message,
         attachments: list[MessageAttachment],
+        *,
+        announced_by_writer: bool = False,
     ) -> Message:
         """Persist a message and its files as one unit.
 
@@ -20,8 +32,15 @@ class MessageStore:
         they were sent in.
 
         The caller must not have set `seq`; this assigns it.
+
+        With `announced_by_writer`, the triggers on `messages` and
+        `agent_events` send nothing for the rest of the transaction, and the
+        caller announces every row of either table it writes in it once it
+        has committed (`WRITER_ANNOUNCES_SETTING` in `db/notify_ddl.py`).
         """
-        message.seq = await self._next_seq(session, message.room_id)
+        message.seq = await self._next_seq(
+            session, message.room_id, announced_by_writer=announced_by_writer
+        )
         session.add(message)
         await session.flush()
         for position, attachment in enumerate(attachments):
@@ -36,6 +55,8 @@ class MessageStore:
         session: AsyncSession,
         message: Message,
         attachments: list[MessageAttachment],
+        *,
+        announced_by_writer: bool = False,
     ) -> bool:
         """`create`, unless a message with the same `transport_event_id` is
         already stored, in which case nothing is written. Returns whether the
@@ -45,8 +66,12 @@ class MessageStore:
         twice writes once. The check runs under the room's lock, which every
         writer to the room holds to commit, so an earlier write of the same
         message has either committed and is found, or has not started.
+
+        `announced_by_writer` as for `create`.
         """
-        message.seq = await self._next_seq(session, message.room_id)
+        message.seq = await self._next_seq(
+            session, message.room_id, announced_by_writer=announced_by_writer
+        )
         if await self.get_by_transport_event_id(session, message.transport_event_id):
             return False
         session.add(message)
@@ -116,7 +141,9 @@ class MessageStore:
         )
         return min(int(result.scalar_one()), 0) - 1
 
-    async def _next_seq(self, session: AsyncSession, room_id: str) -> int:
+    async def _next_seq(
+        self, session: AsyncSession, room_id: str, *, announced_by_writer: bool = False
+    ) -> int:
         """The next position in this room, allocated in commit order.
 
         One above the room's highest, so live positions run 1, 2, 3 with no
@@ -145,34 +172,43 @@ class MessageStore:
 
         The cost is per-room serialisation of a single INSERT. Rooms do not
         contend with each other.
-        """
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"),
-            {"room_id": room_id},
-        )
-        result = await session.execute(
-            select(func.coalesce(func.max(Message.seq), 0)).where(
-                Message.room_id == room_id
-            )
-        )
-        return int(result.scalar_one()) + 1
 
-    async def head_seq(self, session: AsyncSession, room_id: str) -> int:
+        A writer that announces its own rows sets that up in the same
+        statement as the lock, so it costs no round trip of its own.
+        """
+        lock = _LOCK_ROOM_ANNOUNCED_BY_WRITER if announced_by_writer else _LOCK_ROOM
+        await lock.all(session, {"room_id": room_id})
+        head = await _ROOM_HEAD.all(session, {"room_id": room_id})
+        return int(head[0].head) + 1
+
+    async def head_seq(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        types: Collection[str] | None = None,
+    ) -> int:
         """The room's current position, or 0 when nothing has been sent.
 
         What a subscriber starts from when it wants everything after now
         rather than everything. Reconstructed history is numbered below zero,
         so an empty live log answers 0 whatever has been backfilled into it.
+        With `types`, the position of the last row of those types.
         """
-        result = await session.execute(
-            select(func.coalesce(func.max(Message.seq), 0)).where(
-                Message.room_id == room_id
-            )
+        query = select(func.coalesce(func.max(Message.seq), 0)).where(
+            Message.room_id == room_id
         )
+        if types is not None:
+            query = query.where(Message.event_type.in_(list(types)))
+        result = await session.execute(query)
         return max(int(result.scalar_one()), 0)
 
     async def head_seqs(
-        self, session: AsyncSession, room_ids: list[str]
+        self,
+        session: AsyncSession,
+        room_ids: list[str],
+        *,
+        types: Collection[str] | None = None,
     ) -> dict[str, int]:
         """`head_seq` for many rooms in one query, 0 for a room with nothing sent.
 
@@ -182,13 +218,44 @@ class MessageStore:
         """
         if not room_ids:
             return {}
-        result = await session.execute(
-            select(Message.room_id, func.max(Message.seq))
-            .where(Message.room_id.in_(room_ids))
-            .group_by(Message.room_id)
+        query = select(Message.room_id, func.max(Message.seq)).where(
+            any_of(Message.room_id, room_ids)
         )
+        if types is not None:
+            query = query.where(Message.event_type.in_(list(types)))
+        result = await session.execute(query.group_by(Message.room_id))
         heads = {room_id: max(int(seq or 0), 0) for room_id, seq in result.all()}
         return {room_id: heads.get(room_id, 0) for room_id in room_ids}
+
+    async def rooms_past(
+        self,
+        session: AsyncSession,
+        cursors: dict[str, int],
+        *,
+        types: Collection[str] | None = None,
+    ) -> set[str]:
+        """Of the rooms in `cursors`, the ones with a row after their cursor,
+        in one query whose result is only those rooms. With `types`, a row
+        of one of those types.
+
+        The rooms and cursors go as two arrays, so the statement is the same
+        however many rooms there are: a reader in every room of a workspace
+        asks about tens of thousands, past the 32,767 parameters a statement
+        may have, and building a statement that size would hold the event
+        loop for a good part of a second."""
+        if not cursors:
+            return set()
+        params: dict[str, object] = {
+            "room_ids": list(cursors),
+            "seqs": list(cursors.values()),
+        }
+        if types is None:
+            statement = _ROOMS_PAST
+        else:
+            statement = _ROOMS_PAST_OF_TYPES
+            params["types"] = list(types)
+        result = await session.execute(statement, params)
+        return set(result.scalars().all())
 
     async def get_by_transport_event_id(
         self, session: AsyncSession, transport_event_id: str
@@ -199,7 +266,13 @@ class MessageStore:
         return result.scalar_one_or_none()
 
     async def list_for_room(
-        self, session: AsyncSession, room_id: str, *, after_seq: int, limit: int
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        after_seq: int,
+        limit: int,
+        types: Collection[str] | None = None,
     ) -> list[Message]:
         """Oldest first, from just after `after_seq`. Pass 0 to start.
 
@@ -213,13 +286,16 @@ class MessageStore:
         the same cursor delivers nothing twice. Passing 0 also skips
         reconstructed history, which is numbered below zero — a backfill is
         not something to deliver.
+
+        With `types`, only rows of those types, for a reader that acts on no
+        others (`MessageListener.subscribe`).
         """
-        result = await session.execute(
-            select(Message)
-            .where(Message.room_id == room_id, Message.seq > after_seq)
-            .order_by(Message.seq)
-            .limit(limit)
+        query = select(Message).where(
+            Message.room_id == room_id, Message.seq > after_seq
         )
+        if types is not None:
+            query = query.where(Message.event_type.in_(list(types)))
+        result = await session.execute(query.order_by(Message.seq).limit(limit))
         return list(result.scalars().all())
 
     async def list_timeline(
@@ -253,8 +329,10 @@ class MessageStore:
         *,
         thread_root_event_id: str,
         limit: int,
+        before_seq: int | None = None,
     ) -> list[Message]:
-        """A thread's newest messages, its root included, newest first."""
+        """A thread's newest messages, its root included, newest first; only
+        those written before `before_seq` when it is given."""
         result = await session.execute(
             select(Message)
             .where(
@@ -263,6 +341,7 @@ class MessageStore:
                     Message.thread_root_event_id == thread_root_event_id,
                     Message.transport_event_id == thread_root_event_id,
                 ),
+                *_before(before_seq),
             )
             .order_by(Message.seq.desc())
             .limit(limit)
@@ -270,15 +349,22 @@ class MessageStore:
         return list(result.scalars().all())
 
     async def list_top_level_newest_first(
-        self, session: AsyncSession, room_id: str, *, limit: int
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        limit: int,
+        before_seq: int | None = None,
     ) -> list[Message]:
-        """The room's newest top-level messages, newest first. Replies inside
-        threads are left out."""
+        """The room's newest top-level messages, newest first; only those
+        written before `before_seq` when it is given. Replies inside threads
+        are left out."""
         result = await session.execute(
             select(Message)
             .where(
                 Message.room_id == room_id,
                 Message.thread_root_event_id.is_(None),
+                *_before(before_seq),
             )
             .order_by(Message.seq.desc())
             .limit(limit)
@@ -332,3 +418,35 @@ class MessageStore:
             .order_by(MessageAttachment.position)
         )
         return list(result.scalars().all())
+
+
+# The two statements a message's number costs, run by asyncpg directly
+# (`db/raw.py`): every message an agent or a person sends takes the room's
+# lock and reads its head.
+_ROOMS_PAST_SQL = (
+    "SELECT position.room_id "
+    "FROM unnest(CAST(:room_ids AS text[]), CAST(:seqs AS bigint[])) "
+    "AS position(room_id, seq) "
+    "WHERE EXISTS (SELECT 1 FROM messages "
+    "WHERE messages.room_id = position.room_id AND messages.seq > position.seq{types})"
+)
+_ROOMS_PAST = text(_ROOMS_PAST_SQL.format(types=""))
+_ROOMS_PAST_OF_TYPES = text(
+    _ROOMS_PAST_SQL.format(
+        types=" AND messages.event_type = ANY(CAST(:types AS text[]))"
+    )
+)
+_LOCK_ROOM = RawStatement(text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"))
+_LOCK_ROOM_ANNOUNCED_BY_WRITER = RawStatement(
+    text(f"SELECT pg_advisory_xact_lock(hashtext(:room_id)), {SET_WRITER_ANNOUNCES}")
+)
+_ROOM_HEAD = RawStatement(
+    select(func.coalesce(func.max(Message.seq), 0).label("head")).where(
+        Message.room_id == bindparam("room_id")
+    )
+)
+
+
+def _before(seq: int | None) -> list[ColumnElement[bool]]:
+    """The condition keeping rows written before `seq`; none when not given."""
+    return [] if seq is None else [Message.seq < seq]

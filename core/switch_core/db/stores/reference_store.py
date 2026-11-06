@@ -3,6 +3,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Reference, Room, User, room_references
+from switch_core.db.stores.room_store import AttachedRooms, readable_by
 
 _LIKE_ESCAPE = "\\"
 
@@ -24,6 +25,19 @@ class ReferenceStore:
 
     async def get(self, session: AsyncSession, reference_id: str) -> Reference | None:
         return await session.get(Reference, reference_id)
+
+    async def get_for_update(
+        self, session: AsyncSession, reference_id: str
+    ) -> Reference | None:
+        """Load the row locked until the transaction ends, for a caller that
+        checks it and then writes it.
+
+        ``populate_existing`` refreshes a copy already in the session, so the
+        check sees the committed row rather than an earlier read of it.
+        """
+        return await session.get(
+            Reference, reference_id, with_for_update=True, populate_existing=True
+        )
 
     async def list_for_user(
         self, session: AsyncSession, user_id: str
@@ -188,27 +202,48 @@ class ReferenceStore:
         return result.scalar_one_or_none() is not None
 
     async def get_attached_counts(
-        self, session: AsyncSession, reference_ids: list[str]
-    ) -> dict[str, int]:
+        self,
+        session: AsyncSession,
+        reference_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
+    ) -> dict[str, AttachedRooms]:
+        """How many rooms each is attached to: every one, and those the reader
+        may read."""
         if not reference_ids:
             return {}
         result = await session.execute(
             select(
                 room_references.c.reference_id,
                 func.count(room_references.c.room_id),
+                func.count(room_references.c.room_id).filter(
+                    readable_by(reader_id, is_admin=reader_is_admin)
+                ),
             )
+            .join(Room, Room.id == room_references.c.room_id)
             .where(room_references.c.reference_id.in_(reference_ids))
             .group_by(room_references.c.reference_id)
         )
-        counts = {rid: int(c) for rid, c in result.all()}
-        return {rid: counts.get(rid, 0) for rid in reference_ids}
+        counts = {
+            rid: AttachedRooms(every=int(every), readable=int(readable))
+            for rid, every, readable in result.all()
+        }
+        return {rid: counts.get(rid, AttachedRooms(0, 0)) for rid in reference_ids}
 
     async def list_rooms_for_reference(
-        self, session: AsyncSession, reference_id: str
+        self,
+        session: AsyncSession,
+        reference_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[tuple[str, str]]:
+        """The rooms it is attached to, of those the reader may read."""
         result = await session.execute(
             select(Room.id, Room.name)
             .join(room_references, Room.id == room_references.c.room_id)
             .where(room_references.c.reference_id == reference_id)
+            .where(readable_by(reader_id, is_admin=reader_is_admin))
         )
         return [(rid, name) for rid, name in result.all()]

@@ -41,6 +41,7 @@ def _telemetry() -> TelemetryService:
         version="1.0.0",
         telemetry_environment="prod",
         telemetry_internal=False,
+        deployment_kind="self_hosted",
     )
 
 
@@ -75,6 +76,7 @@ def _config() -> Any:
     class _Config:
         agent_auth_cache_ttl_seconds = 1
         agent_auth_cache_max_entries = 16
+        agent_open_limit = 8
         keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
         oauth_issuer_url = None
         oauth_audience = None

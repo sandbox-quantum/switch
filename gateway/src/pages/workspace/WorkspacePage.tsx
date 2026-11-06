@@ -1,6 +1,6 @@
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useAuth } from "../../data/AuthContext";
-import { ownsTenant } from "../../data/sessionState";
+import DeleteWorkspaceSection from "./DeleteWorkspaceSection";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
 
@@ -8,7 +8,6 @@ export default function WorkspacePage() {
   const { session, canAdminTenant } = useAuth();
   const tenant = session?.tenant;
   if (!tenant) return <CircularProgress />;
-  const isOwner = ownsTenant(session);
 
   return (
     <Box>
@@ -23,18 +22,21 @@ export default function WorkspacePage() {
           tenantId={tenant.id}
           selfId={session.user.id}
           canAdmin={canAdminTenant}
-          isOwner={isOwner}
         />
         {canAdminTenant ? (
           <InvitationsSection
             tenantId={tenant.id}
-            isOwner={isOwner}
+            inOrganization={tenant.organization_id !== null}
             emailEnabled={session.invite_email_enabled}
           />
         ) : (
           <Alert severity="info">
-            Ask a workspace owner or admin to invite someone.
+            Ask a workspace admin to invite someone.
           </Alert>
+        )}
+        {/* An admin membership, not the operator's bypass: the server checks the same. */}
+        {tenant.role === "admin" && (
+          <DeleteWorkspaceSection tenantId={tenant.id} tenantName={tenant.name} />
         )}
       </Stack>
     </Box>

@@ -1,6 +1,7 @@
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
 import {
   decodeJwtTenantId,
+  fetchOrganizationNames,
   fetchTenants,
   type RemoteTenant,
 } from '@main/core/switch-servers/gateway-client';
@@ -18,8 +19,49 @@ import {
   leaveUnavailableActiveWorkspace,
   listWorkspacesForServer,
   setWorkspaceTenant,
+  type TenantRecord,
   workspaceHasAgents,
 } from './workspaces-store';
+
+/**
+ * The account's memberships on `server`, each with its organization's name.
+ *
+ * The names are asked for only where a membership names an organization, so a
+ * server from before organizations is not asked about a route it lacks. They
+ * only label the switcher, so failing to read them does not stop the
+ * reconcile — which records a workspace just created or joined — but leaves
+ * them null, with a warning, and the rows keep the names they already had.
+ */
+async function fetchTenantRecords(server: SwitchServer): Promise<TenantRecord[]> {
+  const tenants = await fetchTenants(server);
+  const names = tenants.some((tenant) => tenant.organizationId !== null)
+    ? await organizationNames(server)
+    : null;
+  return tenants.map((tenant) => withOrganizationName(tenant, names));
+}
+
+async function organizationNames(server: SwitchServer): Promise<Map<string, string> | null> {
+  try {
+    return await fetchOrganizationNames(server);
+  } catch (error) {
+    log.warn('workspaces: the server reports organizations but could not name them', {
+      server: server.id,
+      error: String(error),
+    });
+    return null;
+  }
+}
+
+function withOrganizationName(
+  tenant: RemoteTenant,
+  names: Map<string, string> | null
+): TenantRecord {
+  return {
+    ...tenant,
+    organizationName:
+      tenant.organizationId === null ? null : (names?.get(tenant.organizationId) ?? null),
+  };
+}
 
 /**
  * The tenant this server's session resolves to — the one whose data every call
@@ -33,8 +75,8 @@ import {
  */
 async function resolvedTenant(
   server: SwitchServer,
-  tenants: RemoteTenant[]
-): Promise<RemoteTenant | null> {
+  tenants: TenantRecord[]
+): Promise<TenantRecord | null> {
   const cookie = await getSessionCookie(server.id);
   const selected = cookie ? decodeJwtTenantId(cookie) : null;
   // A claim naming a membership the account no longer holds answers nothing, so
@@ -60,9 +102,9 @@ async function resolvedTenant(
 async function tenantToAdopt(
   server: SwitchServer,
   unclaimed: Workspace,
-  tenants: RemoteTenant[],
-  unmatched: RemoteTenant[]
-): Promise<RemoteTenant | null> {
+  tenants: TenantRecord[],
+  unmatched: TenantRecord[]
+): Promise<TenantRecord | null> {
   // The one this row's calls have been reaching all along, when no other row
   // holds it already.
   const resolved = await resolvedTenant(server, tenants);
@@ -89,7 +131,7 @@ async function tenantToAdopt(
 async function markWithdrawnMemberships(
   serverId: string,
   local: Workspace[],
-  tenants: RemoteTenant[]
+  tenants: TenantRecord[]
 ): Promise<void> {
   for (const workspace of local) {
     if (!workspace.tenantId) continue;
@@ -161,7 +203,7 @@ export function listServersWithoutMembership(): string[] {
 
 async function reconcileOneServer(serverId: string): Promise<void> {
   const server = await requireServer(serverId);
-  const tenants = await fetchTenants(server);
+  const tenants = await fetchTenantRecords(server);
   const local = await listWorkspacesForServer(serverId);
   // Marked before the short-circuit below, not after it: an account that is in
   // nothing has had every membership withdrawn, and that is precisely the case
