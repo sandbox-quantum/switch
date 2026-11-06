@@ -274,9 +274,11 @@ class SwitchConfig(BaseSettings):
             return None
         return value
 
-    # Gateway admin seed
+    # Gateway admin seed. The password is the seeded admin's password-login
+    # credential, so it is required only while password login is on; without
+    # it the admin is seeded with no password and signs in through OIDC.
     gateway_admin_email: str
-    gateway_admin_password: str
+    gateway_admin_password: str | None = None
 
     # OIDC (optional — enables OAuth token validation on the MCP server).
     # The audience is required with the issuer: without it, a token the same
@@ -1355,6 +1357,16 @@ class SwitchConfig(BaseSettings):
                 f"{FOLLOW_THE_CONVERSATION!r} in FEATURE_FLAGS_ENABLED as well: "
                 "it asks about the messages the follow-the-conversation rules "
                 "leave with nobody."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_admin_password(self) -> "SwitchConfig":
+        if self.gateway_password_login_enabled and not self.gateway_admin_password:
+            raise ValueError(
+                "GATEWAY_ADMIN_PASSWORD is required while password login is "
+                "enabled. Set it, or set GATEWAY_PASSWORD_LOGIN_ENABLED=false "
+                "to seed the admin without a password and sign in through OIDC."
             )
         return self
 

@@ -1910,6 +1910,11 @@ async def _seed_admin_user(
     user_store: UserStore,
     config: SwitchConfig,
 ) -> None:
+    if config.gateway_admin_password and not config.gateway_password_login_enabled:
+        logger.warning(
+            "GATEWAY_ADMIN_PASSWORD is set but password login is disabled, so "
+            "it signs nobody in; it can be removed."
+        )
     # Tenant zero by name, not by fallback. The admin `User` row is global
     # (db/models.py) and the lookup below spans every tenant either way, but
     # `UserStore.create` also writes a `tenant_members` row, and which tenant
@@ -1946,7 +1951,11 @@ async def _seed_admin_user(
             name="Admin",
             email=config.gateway_admin_email,
             role="admin",
-            password_hash=hash_password(config.gateway_admin_password),
+            password_hash=(
+                hash_password(config.gateway_admin_password)
+                if config.gateway_admin_password
+                else None
+            ),
         )
         await user_store.create(session, admin)
         await session.commit()
