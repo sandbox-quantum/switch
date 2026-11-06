@@ -44,6 +44,20 @@ Deleting the author's account removes their schedules.
 Edits and pauses serialize with a firing already in progress. A message committed
 before a pause or deletion is accepted remains in the room.
 
+## Agent tools
+
+Agents can use `list_room_schedules`, `schedule_room_message`,
+`edit_room_schedule`, `pause_room_schedule` and `delete_room_schedule` through
+Switch MCP and the operations API. The agent must belong to the room, its owner
+must remain a workspace member, and the owner must own that room. An agent
+does not inherit its owner's workspace-admin access.
+
+The admin posts agent-created work on behalf of the creating agent, so a
+target's owner-only policy still refuses it. Changing the creating agent's
+owner or removing it from the room pauses its work. A human who edits or resumes
+the schedule explicitly adopts it as their own. Deleting the creating agent
+removes its schedules. Console uses the same schedule service and validations.
+
 ## Reliability
 
 The message, its routed agent events, the run receipt, and the next scheduled

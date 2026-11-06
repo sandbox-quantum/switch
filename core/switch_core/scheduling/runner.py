@@ -92,6 +92,22 @@ class RoomScheduler:
             ).all()
         )
         is_admin = author is not None and await UserStore().administers(session, author)
+        creator = (
+            await session.get(Agent, schedule.author_agent_id)
+            if schedule.author_agent_id
+            else None
+        )
+        creator_member = (
+            await session.scalar(
+                select(room_agents.c.agent_id).where(
+                    room_agents.c.room_id == schedule.room_id,
+                    room_agents.c.agent_id == schedule.author_agent_id,
+                    room_agents.c.tenant_id == schedule.tenant_id,
+                )
+            )
+            if schedule.author_agent_id
+            else None
+        )
         problem = None
         if room is None or room.archived_at is not None:
             problem = "The room is missing or archived."
@@ -99,6 +115,14 @@ class RoomScheduler:
             is_admin or (role is not None and room.owner_id == author.id)
         ):
             problem = "The schedule author can no longer manage this room."
+        elif schedule.author_agent_id and (
+            creator is None
+            or creator.owner_id != schedule.author_id
+            or creator_member is None
+            or role is None
+            or room.owner_id != schedule.author_id
+        ):
+            problem = "The creating agent can no longer manage schedules in this room."
         elif not targets:
             problem = "None of the target agents remains in the room."
         if problem:
@@ -126,15 +150,18 @@ class RoomScheduler:
             schedule.last_error = str(exc)
             return None
         event_id = new_event_id()
+        attribution = {"user_id": author.id, "name": author.name}
+        if creator is not None:
+            attribution = {
+                "user_id": author.id,
+                "name": creator.name,
+                "agent_id": creator.id,
+            }
         content = message_content(
             " ".join(f"@{a.name}" for a in targets) + " " + schedule.body,
             sender_name=admin.display_name,
             format="markdown",
-            extra_content={
-                PLATFORM_MARKER: {
-                    "on_behalf_of": {"user_id": author.id, "name": author.name}
-                }
-            },
+            extra_content={PLATFORM_MARKER: {"on_behalf_of": attribution}},
         )
         routed = await self.router.store(
             session,

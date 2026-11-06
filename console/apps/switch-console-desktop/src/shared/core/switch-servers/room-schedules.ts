@@ -8,6 +8,7 @@ export type RoomScheduleInput = {
 
 export type RemoteRoomSchedule = Omit<RoomScheduleInput, 'runAt'> & {
   id: string;
+  authorAgentId: string | null;
   nextRunAt: string | null;
   paused: boolean;
   lastError: string | null;

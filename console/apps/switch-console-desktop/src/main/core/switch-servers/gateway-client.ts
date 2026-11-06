@@ -3425,6 +3425,7 @@ export async function syncRoomName(
 
 type RoomScheduleJson = {
   id: string;
+  author_agent_id?: string | null;
   body: string;
   agent_ids: string[];
   timezone: string;
@@ -3438,6 +3439,7 @@ type RoomScheduleJson = {
 function mapRoomSchedule(row: RoomScheduleJson): RemoteRoomSchedule {
   return {
     id: row.id,
+    authorAgentId: row.author_agent_id ?? null,
     body: row.body,
     agentIds: row.agent_ids,
     timezone: row.timezone,

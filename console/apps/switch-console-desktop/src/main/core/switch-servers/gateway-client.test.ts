@@ -255,6 +255,7 @@ describe('room schedules', () => {
     const rows = await fetchRoomSchedules(SERVER, 'room/one');
     expect(rows[0]).toMatchObject({
       agentIds: ['triage'],
+      authorAgentId: null,
       nextRunAt: wire.next_run_at,
       lastError: null,
     });
@@ -262,6 +263,13 @@ describe('room schedules', () => {
       expect.stringContaining('/rooms/room%2Fone/schedules'),
       expect.any(Object)
     );
+  });
+
+  it('preserves the creating agent identity for Console display', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([{ ...wire, author_agent_id: 'creator' }])
+    );
+    expect((await fetchRoomSchedules(SERVER, 'room'))[0].authorAgentId).toBe('creator');
   });
 
   it.each([undefined, 'schedule/one'])('saves the correct schedule with id %s', async (id) => {

@@ -4859,6 +4859,12 @@ class RoomSchedule(TenantScoped, Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "id", name="uq_room_schedules_tenant_id"),
         ForeignKeyConstraint(
+            ["tenant_id", "author_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            ondelete="CASCADE",
+            name="fk_room_schedules_author_agent",
+        ),
+        ForeignKeyConstraint(
             ["room_id", "tenant_id"],
             ["rooms.id", "rooms.tenant_id"],
             ondelete="CASCADE",
@@ -4879,6 +4885,7 @@ class RoomSchedule(TenantScoped, Base):
         Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    author_agent_id: Mapped[str | None] = mapped_column(Text)
     cron: Mapped[str | None] = mapped_column(Text)
     timezone: Mapped[str] = mapped_column(Text, nullable=False, default="UTC")
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

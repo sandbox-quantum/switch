@@ -126,6 +126,12 @@ export const RoomSchedulesSection = observer(function RoomSchedulesSection({
       {schedules.data?.map((row) => (
         <div key={row.id} className="space-y-2 rounded-md border border-border p-3">
           <p className="text-sm whitespace-pre-wrap">{row.body}</p>
+          {row.authorAgentId && (
+            <p className="text-xs text-foreground-muted">
+              Scheduled by{' '}
+              {agents.data?.find((a) => a.id === row.authorAgentId)?.name ?? row.authorAgentId}
+            </p>
+          )}
           <p className="text-xs text-foreground-muted">
             {row.agentIds.map((id) => agents.data?.find((a) => a.id === id)?.name ?? id).join(', ')}
           </p>
