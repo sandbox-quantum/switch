@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, X } from 'lucide-react';
+import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, SquareIcon, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react';
 import { reportBuddyMessage } from '@renderer/features/switch-buddy/buddy-telemetry';
@@ -513,11 +513,13 @@ export const ChatComposer = observer(function ChatComposer({
     onClearReply();
   };
 
-  const showStop = stopActivities.length > 0 && !draft.trim() && !files.length;
+  const hasRunningAgent = stopActivities.length > 0;
+  const hasContent = draft.trim() !== '' || files.length > 0;
   const stopping = stopActivities.some(
     (activity) => activity.pendingControl?.command === 'interrupt'
   );
-  const status = stopping ? 'sending' : showStop ? 'running' : 'idle';
+  const status = stopping ? 'sending' : hasRunningAgent && !hasContent ? 'running' : 'idle';
+  const showSeparateStop = hasRunningAgent && hasContent;
   // Not blocked while working: a turn whose host died stays running in the feed, and Reset is the way out.
   const contextBlocked = activities.some((activity) => activity.pendingControl)
     ? 'Waiting for the previous command to be sent.'
@@ -725,6 +727,25 @@ export const ChatComposer = observer(function ChatComposer({
                 }}
               />
             </div>
+            {showSeparateStop && (
+              <PromptInputButton
+                tooltip={
+                  stopActivities.some((activity) => activity.pendingControl) ? 'Sending…' : 'Stop'
+                }
+                variant="ghost"
+                size="icon-sm"
+                className="h-8 min-w-8 rounded-xl border-none bg-(--composer-send-bg) text-(--composer-send-fg) hover:bg-(--composer-send-bg-hover) active:bg-(--composer-send-bg-active) disabled:opacity-50"
+                disabled={
+                  disabled !== null || stopActivities.some((activity) => activity.pendingControl)
+                }
+                onClick={() => {
+                  for (const activity of stopActivities) void activity.control('interrupt');
+                }}
+                aria-label="Stop reply"
+              >
+                <SquareIcon className="size-3 fill-current" />
+              </PromptInputButton>
+            )}
             <PromptInputSubmit
               status={status}
               className="h-8 min-w-8"
@@ -734,7 +755,7 @@ export const ChatComposer = observer(function ChatComposer({
               stopDisabledReason={
                 stopActivities.some((activity) => activity.pendingControl) ? 'Sending…' : null
               }
-              disabled={disabled !== null || (!showStop && !draft.trim() && !files.length)}
+              disabled={disabled !== null || (!hasRunningAgent && !draft.trim() && !files.length)}
             />
           </div>
         </PromptInput>

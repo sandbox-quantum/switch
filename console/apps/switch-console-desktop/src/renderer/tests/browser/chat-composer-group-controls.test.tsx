@@ -155,3 +155,44 @@ it('compacts every agent when all are picked', async () => {
     ['agent-b', 'compact'],
   ]);
 });
+
+it('shows Stop next to Send when agent is working and user has typed a draft', async () => {
+  const control = await render();
+  const textarea = document.querySelector('textarea');
+  expect(textarea).toBeDefined();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+      textarea,
+      'test message'
+    );
+    textarea!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await vi.waitFor(() => {
+    const stopButton = button('Stop reply');
+    const sendButton = button('Send');
+    expect(stopButton).toBeDefined();
+    expect(sendButton).toBeDefined();
+  });
+  await click('Stop reply');
+  expect(sent(control)).toEqual([['agent-b', 'interrupt']]);
+});
+
+it('shows Stop next to Send when agent is working and user has attached a file', async () => {
+  const control = await render();
+  const fileInput = document.querySelector('input[type="file"]');
+  expect(fileInput).toBeDefined();
+  const file = new File(['content'], 'test.txt', { type: 'text/plain' });
+  await act(async () => {
+    Object.defineProperty(fileInput, 'files', {
+      value: [file],
+      writable: false,
+    });
+    fileInput!.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  const stopButton = button('Stop reply');
+  const sendButton = button('Send');
+  expect(stopButton).toBeDefined();
+  expect(sendButton).toBeDefined();
+  await click('Stop reply');
+  expect(sent(control)).toEqual([['agent-b', 'interrupt']]);
+});
