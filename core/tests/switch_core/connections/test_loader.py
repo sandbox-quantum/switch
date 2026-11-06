@@ -640,6 +640,20 @@ def test_every_shipped_oauth_entry_names_its_identity_method():
             assert identity.method in ("GET", "POST")
 
 
+def test_takes_dropboxs_offline_parameter(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    authorization_params: { token_access_type: offline }\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+
+
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     _write_example(
         catalog_copy,

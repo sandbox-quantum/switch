@@ -545,6 +545,19 @@ class TestWhereTheMetadataIs:
         await _sign_in(plain, vendor)
         assert "access_type" not in vendor.authorizations[-1]
 
+    async def test_asks_dropbox_style_for_a_refresh_token(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n"
+                "    authorization_params: { token_access_type: offline }\n",
+            ),
+        )
+        await _sign_in(adapter, vendor)
+        assert vendor.authorizations[-1]["token_access_type"] == "offline"
+        assert "access_type" not in vendor.authorizations[-1]
+
 
 class TestThroughTheBroker:
     async def test_agents_renewing_at_once_refresh_a_rotating_sign_in_once(
