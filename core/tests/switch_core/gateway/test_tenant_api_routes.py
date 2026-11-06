@@ -40,6 +40,7 @@ from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Agent,
     ApiKey,
     AuditEvent,
@@ -1500,26 +1501,33 @@ class TestMemberRoutes:
         flags = {row["name"]: row["service_account"] for row in response.json()}
         assert flags == {"Agent Bootstrap": False, "robot": True}
 
-    async def test_the_last_admin_cannot_be_demoted(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_admin_steps_down_while_another_admin_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
+        """Their own row is theirs to change; the last admin of all stays."""
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="sole-admin", tenant_id=TENANT_A, role="admin"
+            session_factory, name="stepping-down", tenant_id=TENANT_A, role="admin"
         )
-        token = _token(admin_id, "sole-admin@example.invalid", TENANT_A)
+        await _make_member(
+            session_factory,
+            name="other",
+            tenant_id=TENANT_A,
+            role="admin" if another_admin else "member",
+        )
+        token = _token(admin_id, "stepping-down@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             response = await client.patch(
                 f"/tenants/{TENANT_A}/members/{admin_id}", json={"role": "member"}
             )
 
-        assert response.status_code == 409
-
+        assert response.status_code == (200 if another_admin else 409), response.text
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, admin_id))
             assert membership is not None
-            assert membership.role == "admin"
+            assert membership.role == ("member" if another_admin else "admin")
 
     async def test_an_admin_can_be_demoted_when_another_admin_remains(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1542,22 +1550,32 @@ class TestMemberRoutes:
         assert response.status_code == 200, response.text
         assert response.json()["role"] == "member"
 
-    async def test_the_last_admin_cannot_be_removed(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_admin_leaves_while_another_admin_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
+        """As with their own role. Having left, the session no longer names
+        the workspace: it is re-minted onto none, their only one gone."""
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="undeletable-admin", tenant_id=TENANT_A, role="admin"
+            session_factory, name="leaving", tenant_id=TENANT_A, role="admin"
         )
-        token = _token(admin_id, "undeletable-admin@example.invalid", TENANT_A)
+        await _make_member(
+            session_factory,
+            name="other",
+            tenant_id=TENANT_A,
+            role="admin" if another_admin else "member",
+        )
+        token = _token(admin_id, "leaving@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{admin_id}")
 
-        assert response.status_code == 409
-
+        assert response.status_code == (200 if another_admin else 409), response.text
         async with session_factory() as session:
-            assert await session.get(TenantMember, (TENANT_A, admin_id)) is not None
+            left = await session.get(TenantMember, (TENANT_A, admin_id)) is None
+        assert left is another_admin
+        assert ("set-cookie" in response.headers) is another_admin
 
     async def test_removing_a_member_deletes_their_membership(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1825,6 +1843,8 @@ class TestCurrentTenantRoute:
             "organization_role": None,
             "organization_id": None,
             "administers": False,
+            "can_delete": False,
+            "can_manage_data_protection": False,
         }
 
     @pytest.mark.parametrize(
@@ -1913,6 +1933,11 @@ class TestOrganizationAdmins:
             "organization_role": "org_admin",
             "organization_id": organization_id,
             "administers": True,
+            # An organization admin administers it, but deletes it, erases
+            # people and sets messages to be deleted only by an admin
+            # membership of their own.
+            "can_delete": False,
+            "can_manage_data_protection": False,
         }
 
     async def test_an_org_admin_is_offered_and_may_switch_to_every_workspace_of_it(
@@ -2050,6 +2075,28 @@ class TestOrganizationAdmins:
         assert last.status_code == 409, last.text
         assert last.json()["detail"] == "Cannot demote the last admin"
 
+    async def test_an_org_admin_cannot_remove_the_workspaces_last_admin(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, members={admin_id: "org_admin"}
+        )
+        last_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.delete(f"/tenants/{TENANT_A}/members/{last_id}")
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "Cannot remove the last admin"
+        async with session_factory() as session:
+            assert await session.get(TenantMember, (TENANT_A, last_id)) is not None
+
     @pytest.mark.parametrize("method", ["patch", "delete"])
     async def test_a_workspace_cannot_demote_or_remove_an_org_admin(
         self, session_factory: async_sessionmaker[AsyncSession], method: str
@@ -2089,6 +2136,101 @@ class TestOrganizationAdmins:
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, admin_id))
         assert membership is not None and membership.role == "admin"
+
+    @pytest.mark.parametrize("caller", ["ws-admin", "member", "org-admin"])
+    async def test_each_member_row_says_what_the_caller_may_do_with_it(
+        self, session_factory: async_sessionmaker[AsyncSession], caller: str
+    ) -> None:
+        """An admin may change and remove anyone, themselves included, but an
+        organization admin, whose standing comes from the organization; a
+        transfer may go to anyone with a membership here but the caller."""
+        org_admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        org_admin_member_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin-member", role="user"
+        )
+        await self._organization_of(
+            session_factory,
+            TENANT_A,
+            members={org_admin_id: "org_admin", org_admin_member_id: "org_admin"},
+        )
+        async with session_factory() as session:
+            session.add(
+                TenantMember(
+                    tenant_id=TENANT_A, user_id=org_admin_member_id, role="member"
+                )
+            )
+            await session.commit()
+        ids = {
+            "ws-admin": await _make_member(
+                session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+            ),
+            "member": await _make_member(
+                session_factory, name="member", tenant_id=TENANT_A, role="member"
+            ),
+            "org-admin": org_admin_id,
+            "org-admin-member": org_admin_member_id,
+        }
+        token = _token(ids[caller], f"{caller}@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(f"/tenants/{TENANT_A}/members")
+
+        assert response.status_code == 200, response.text
+        rows = {
+            row["name"]: (
+                row["can_change_role"],
+                row["can_remove"],
+                row["can_receive_transfer"],
+            )
+            for row in response.json()
+        }
+        administers = caller != "member"
+        expected = {
+            "ws-admin": (administers, administers, True),
+            "member": (administers, administers, True),
+            # Listed through the organization, with no membership here.
+            "org-admin": (False, False, False),
+            "org-admin-member": (False, False, True),
+        }
+        # An admin's own row is theirs to change too; nobody hands themselves
+        # anything.
+        change, remove, _ = expected[caller]
+        expected[caller] = (change, remove, False)
+        assert rows == expected
+
+
+class TestWorkspaceDeletionFlag:
+    async def test_an_admin_member_is_told_they_may_delete_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["can_delete"] is True
+
+    async def test_nobody_is_told_they_may_delete_the_default_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_member(
+            session_factory, name="zero-admin", tenant_id=TENANT_ZERO_ID, role="admin"
+        )
+        token = _token(admin_id, "zero-admin@example.invalid", TENANT_ZERO_ID)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["administers"] is True
+        assert response.json()["can_delete"] is False
 
 
 class TestUsageRoute:

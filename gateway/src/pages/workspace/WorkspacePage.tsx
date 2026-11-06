@@ -20,11 +20,7 @@ export default function WorkspacePage() {
         </Typography>
       </Stack>
       <Stack spacing={4}>
-        <MembersSection
-          tenantId={tenant.id}
-          selfId={session.user.id}
-          canAdmin={canAdminTenant}
-        />
+        <MembersSection tenantId={tenant.id} selfId={session.user.id} />
         {canAdminTenant ? (
           <InvitationsSection
             tenantId={tenant.id}

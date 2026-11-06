@@ -59,6 +59,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         gateway_cookie_secure=False,
         gateway_password_login_enabled=True,
         gateway_tenant_choice_enabled=False,
+        gateway_admin_email="admin@example.invalid",
     )
     return app
 
@@ -372,3 +373,34 @@ class TestCreateUserSchemaValidation:
     def test_bad_email_rejected(self) -> None:
         with pytest.raises(ValidationError):
             CreateUserRequest(name="Ada", email="not-an-email", password="good-pass-1")
+
+
+class TestWhichAccountsTheOperatorMayDelete:
+    async def test_each_user_says_whether_the_operator_may_delete_them(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Not their own account, nor the server's administrator account,
+        which the server recreates; the same refusals `DELETE /users/{id}`
+        makes before anything else."""
+        async with session_factory() as session:
+            for name, email, role in (
+                ("Ada", "ada@example.invalid", "user"),
+                ("Root", "root@example.invalid", "admin"),
+                ("Configured", "admin@example.invalid", "user"),
+            ):
+                await _USER_STORE.create(
+                    session,
+                    User(name=name, email=email, role=role, password_hash=None),
+                )
+            await session.commit()
+        app = _app(session_factory)
+        async with await _admin_client(session_factory, app) as client:
+            response = await client.get("/users")
+
+        assert response.status_code == 200, response.text
+        assert {u["name"]: u["can_delete"] for u in response.json()} == {
+            "Operator": False,
+            "Ada": True,
+            "Root": False,
+            "Configured": False,
+        }
