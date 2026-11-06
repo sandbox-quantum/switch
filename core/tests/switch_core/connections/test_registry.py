@@ -119,7 +119,7 @@ def test_grafana_needs_no_settings_and_registers_a_loopback_of_any_port() -> Non
     assert client._request["redirect_uris"] == [
         "http://127.0.0.1/switch-services/callback"
     ]
-    assert client._request["scope"] == "grafana:read grafana:query grafana:write"
+    assert client._request["scope"] == "grafana:read"
 
 
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:

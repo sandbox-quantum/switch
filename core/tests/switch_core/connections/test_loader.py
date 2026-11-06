@@ -221,15 +221,9 @@ def test_the_shipped_grafana_entry_connects_as_grafana_documents_and_serves():
     assert definition.auth.identity.mcp_tool == "user_info"
     assert definition.auth.identity.account_id == ["connection.stack", "login"]
     assert definition.auth.identity.label == "login"
-    assert definition.access is not None and definition.access.write is not None
-    # grafana:query runs raw SQL as written and can change data, so only
-    # grafana:read is read-only, and write asks for all three explicitly.
+    assert definition.access is not None and definition.access.read is not None
     assert definition.access.read.scopes == ["grafana:read"]
-    assert definition.access.write.scopes == [
-        "grafana:read",
-        "grafana:query",
-        "grafana:write",
-    ]
+    assert definition.access.write is None
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():

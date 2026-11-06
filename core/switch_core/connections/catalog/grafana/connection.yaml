@@ -1,7 +1,7 @@
 slug: grafana
 name: Grafana
 category: Observability
-description: Query Grafana Cloud dashboards, metrics, logs, traces and alerts, as you. Needs Grafana Assistant on the stack, and each person who connects counts as an Assistant user for billing.
+description: Read Grafana Cloud dashboards, metrics, logs, traces and alerts, as you. Needs Grafana Assistant on the stack, and each person who connects counts as an Assistant user for billing.
 enabled: true
 adapter: oauth
 auth:
@@ -67,13 +67,8 @@ access:
   read:
     scopes:
       - grafana:read
-  # grafana:query runs raw SQL as written and can change data where the data
-  # source's own credentials allow it, so it sits at the write level, as
-  # does grafana:write (create, change and delete resources; Grafana says it
-  # includes read and query, and all three are asked for explicitly).
-  write:
-    scopes:
-      - grafana:read
-      - grafana:query
-      - grafana:write
+  # Inspection only: grafana:query can mutate SQL data, and grafana:write
+  # changes resources. Neither is needed for this connector's read workflows.
+  # Generic sign-in asks for the broadest declared level, so do not declare
+  # a write level unless an explicit access-choice flow is added first.
 tools: { mode: pass_through }
