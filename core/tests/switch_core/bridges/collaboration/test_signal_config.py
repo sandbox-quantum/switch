@@ -52,7 +52,7 @@ class _Daemon:
 
 
 def _patch_daemon(monkeypatch: pytest.MonkeyPatch, daemon: _Daemon) -> None:
-    """Route the adapter's own HTTP client at the stand-in daemon.
+    """Route the RPC client's HTTP at the stand-in daemon.
 
     The client is still a real `httpx.AsyncClient` on a `MockTransport` —
     only the bytes that would cross the network are faked.
@@ -66,7 +66,7 @@ def _patch_daemon(monkeypatch: pytest.MonkeyPatch, daemon: _Daemon) -> None:
         return real_client(transport=httpx.MockTransport(daemon.handler), **kwargs)
 
     monkeypatch.setattr(
-        "switch_core.bridges.collaboration.signal.adapter.httpx.AsyncClient", factory
+        "switch_core.bridges.collaboration.signal.rpc.httpx.AsyncClient", factory
     )
 
 
@@ -164,16 +164,19 @@ async def test_the_daemons_own_rejection_is_a_credential_error(
     )
     _patch_daemon(monkeypatch, daemon)
 
-    with pytest.raises(BridgeCredentialError, match="No account"):
+    with pytest.raises(BridgeCredentialError, match="is not on that daemon"):
         await SignalAdapter.verify_credentials(_VALID)
 
 
-async def test_an_unreachable_daemon_is_a_credential_error(
+async def test_an_unreachable_daemon_is_not_a_credential_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # An unreachable daemon surfaces as the httpx transport error itself, so
+    # telemetry classifies it `network` — not `auth_failed`, which would tell
+    # the operator their number is wrong when the real problem is the address.
     _patch_daemon(monkeypatch, _Daemon(None, failing=True))
 
-    with pytest.raises(BridgeCredentialError, match="Could not reach"):
+    with pytest.raises(httpx.ConnectError):
         await SignalAdapter.verify_credentials(_VALID)
 
 

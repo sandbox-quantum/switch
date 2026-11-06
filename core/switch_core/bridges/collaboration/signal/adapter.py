@@ -16,17 +16,15 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any, ClassVar
+from typing import ClassVar
 from urllib.parse import urlsplit
 
-import httpx
 from pydantic import Field, field_validator
 
 from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
-    BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
     InboundAgentJoin,
@@ -35,42 +33,10 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
 )
+from switch_core.bridges.collaboration.signal.rpc import SignalRpcClient
 
 # The Signal number a connection acts as: E.164, 7 to 15 digits.
 _ACCOUNT_RE = re.compile(r"^\+[1-9]\d{6,14}$")
-
-# The JSON-RPC error codes the daemon reports, as probed on 0.14.9: -32602 is
-# "the account is not on this daemon", a credential problem; -32600 is a request
-# this client built wrong; any other code is the platform refusing an operation.
-RPC_ACCOUNT_NOT_ON_DAEMON = -32602
-RPC_INVALID_REQUEST = -32600
-
-
-class SignalRpcError(BridgeOperationError):
-    """A JSON-RPC `error` result, classified by its code, never its message.
-
-    The code is what the classification keys on: the daemon's wording is free
-    text, and this has to be answerable without reading it.
-    """
-
-    def __init__(self, code: int, message: str) -> None:
-        super().__init__(f"signal-cli refused the request ({code}): {message}")
-        self.code = code
-
-
-def _json_rpc_body(response: httpx.Response) -> dict[str, Any]:
-    """Parse a JSON-RPC response body, refusing anything that is not one."""
-    try:
-        body = response.json()
-    except ValueError as exc:
-        raise BridgeOperationError(
-            f"The daemon answered without a JSON-RPC body (HTTP {response.status_code})"
-        ) from exc
-    if not isinstance(body, dict):
-        raise BridgeOperationError(
-            "The daemon answered with a JSON-RPC body that is not an object"
-        )
-    return body
 
 
 class SignalConnectionConfig(BridgeConnectionConfig):
@@ -146,43 +112,23 @@ class SignalAdapter(PlatformAdapter):
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
         """Check the configured account is actually on that daemon.
 
-        The cheap authenticated call is `listAccounts`: the daemon's own JSON-RPC
-        answers for every other method, so a wrong address shows up here as a
-        connection error, and a number that is not registered on that daemon is
-        the one error case worth naming to the operator.
+        The cheap authenticated call is `listAccounts`. The call's transport
+        errors are left to surface as themselves: an unreachable daemon is a
+        `network` failure, not a credential one, and wrapping it here would
+        read as `auth_failed` in telemetry and tell the operator the wrong
+        thing. The credential errors are the daemon's own answer: it reports
+        that the account is not one it holds, or holds a different set.
         """
         config = SignalConnectionConfig.model_validate(connection_config)
-        async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                response = await client.post(
-                    config.daemon_url.rstrip("/") + "/api/v1/rpc",
-                    json={"jsonrpc": "2.0", "id": 1, "method": "listAccounts"},
-                )
-            except httpx.HTTPError as exc:
-                raise BridgeCredentialError(
-                    f"Could not reach the signal-cli daemon at {config.daemon_url}: "
-                    f"{exc or type(exc).__name__}. Check the address and that the "
-                    "daemon is running."
-                ) from exc
-        body = _json_rpc_body(response)
-        error = body.get("error")
-        if error is not None:
-            code = error.get("code")
-            message = error.get("message", "no reason given")
-            if code == RPC_ACCOUNT_NOT_ON_DAEMON:
-                raise BridgeCredentialError(
-                    f"No account {config.account!r} on that daemon: {message}. "
-                    "Register the number on this daemon, or point the bridge at "
-                    "the one that holds it."
-                )
-            # `listAccounts` takes no params, so -32600 is a client bug (ours),
-            # and anything else is the daemon refusing the call.
-            raise BridgeOperationError(
-                f"The daemon refused the request ({code}): {message}."
-            )
-        accounts = body.get("result") or []
+        client = SignalRpcClient(daemon_url=config.daemon_url, account=config.account)
+        try:
+            accounts = await client.call("listAccounts")
+        finally:
+            await client.aclose()
         numbers = {
-            str(account.get("number")) for account in accounts if account.get("number")
+            str(account.get("number"))
+            for account in (accounts or [])
+            if isinstance(account, dict) and account.get("number")
         }
         if config.account not in numbers:
             raise BridgeCredentialError(
