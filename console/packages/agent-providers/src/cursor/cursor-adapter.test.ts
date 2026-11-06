@@ -55,7 +55,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 it('keeps Cursor in its agent workflow in every runtime mode, auto included', () => {
   for (const mode of ['approval-required', 'auto-accept-edits', 'auto', 'full-access'] as const)
-    expect(cursorAcp.sessionMode?.(mode)).toBe('agent');
+    expect(cursorAcp.sessionMode?.(mode, undefined)).toBe('agent');
 });
 
 it('signs in with cursor_login only when it was given no API key', async () => {

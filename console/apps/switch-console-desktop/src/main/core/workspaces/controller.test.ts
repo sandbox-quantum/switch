@@ -783,6 +783,9 @@ describe('an action a workspace whose host has gone down cannot take', () => {
         description: '',
         bridgeId: 'b1',
         agentIds: ['a1'],
+        channel: null,
+        groupId: null,
+        access: null,
       })
     ).rejects.toBeInstanceOf(HostUnreachableError);
 

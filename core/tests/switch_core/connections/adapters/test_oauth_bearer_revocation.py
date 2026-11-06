@@ -281,6 +281,21 @@ class TestOtherEntriesAreUnchanged:
             "google-workspace": False,
         }
 
+    def test_only_google_revokes_whole_grants(self) -> None:
+        """Dropbox ends the one sign-in it is given and no other of the same
+        account (measured), so a reconnect must still revoke the old one."""
+        flags = {
+            slug: entry.definition.auth.oauth.revocation_ends_grant
+            for slug, entry in CATALOG.items()
+            if entry.definition.auth.oauth is not None
+        }
+        assert flags == {
+            "airtable": False,
+            "atlassian": False,
+            "dropbox": False,
+            "google-workspace": True,
+        }
+
     def test_google_and_atlassian_keep_the_form_revocation_they_had(self) -> None:
         google = CATALOG["google-workspace"].definition.auth.oauth
         atlassian = CATALOG["atlassian"].definition.auth.oauth

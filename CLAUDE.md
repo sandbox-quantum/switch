@@ -192,6 +192,10 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   under Connector apps or in `DROPBOX_CLIENT_CONFIG_PATH`, and switching it off
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
   OIDC browser sign-in (variables, redirect URI, WorkOS Connect setup)
+- `docs/old/workos-directory.md` — keeping organizations in WorkOS
+  (`ORGANIZATION_DIRECTORY=workos`): what it needs, linking organizations and
+  existing accounts with `switch-link-workos`, what a sign-in and the mirror
+  bring in or take away, and what is not done yet
 - `docs/old/google-workspace-setup.md` — offering Google Workspace on a
   self-hosted server: registering the Google app (Internal or External), its
   redirect URI, saving it under Connectors or in

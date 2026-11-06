@@ -152,6 +152,22 @@ class TestConnectingAgain:
         assert await _relink(pt, session_factory) is None
         assert seen == [("owner_access_0", "owner_access_1")]
 
+    async def test_revokes_when_the_same_account_signs_in_again_through_the_same_client(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=BEARER_ENTRY
+        )
+        pt.vendor.client_id = "client-1"
+        revoked: list[str] = []
+
+        async def revoke(secret: ConnectionSecret) -> None:
+            revoked.append(secret.access_token)
+
+        pt.vendor.revoke_connection = revoke  # type: ignore[method-assign]
+        assert await _relink(pt, session_factory) is None
+        assert revoked == ["owner_access_0"]
+
     async def test_a_save_that_fails_revokes_nothing(
         self, session_factory, tmp_path, monkeypatch
     ) -> None:

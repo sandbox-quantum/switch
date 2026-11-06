@@ -296,12 +296,36 @@ async def _register_known(
     return result.agent_id, result.api_key
 
 
+async def _require_own_parent(
+    session: AsyncSession, protocol: AgentCore, parent_agent_id: str, owner_id: str
+) -> Agent:
+    """Load the parent a registration names, refusing one the registering
+    user does not own: a child inherits its parent's name and settings, so
+    naming someone else's agent would read and impersonate it."""
+    parent = await protocol.agent_store.get(session, parent_agent_id)
+    if parent is None:
+        raise HTTPException(
+            status_code=404, detail=f"Parent agent not found: {parent_agent_id}"
+        )
+    if parent.owner_id != owner_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the parent agent's owner can register agents under it.",
+        )
+    return parent
+
+
 @router.post("/register-known")
 async def register_known_agent_endpoint(
     req: RegisterKnownAgentRequest,
     owner_id: Annotated[str, Depends(_resolve_registration_user_id)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> RegisterAgentResponse:
+    if req.parent_agent_id is not None:
+        await _require_own_parent(session, protocol, req.parent_agent_id, owner_id)
+        # Not held across registration, which opens its own session.
+        await session.commit()
     agent_id, api_key = await _register_known(
         agent_type=req.agent_type,
         name=req.name,
@@ -334,11 +358,7 @@ async def register_known_agents_bulk_endpoint(
     if not req.subagents:
         raise HTTPException(status_code=400, detail="No subagents provided")
 
-    parent = await protocol.agent_store.get(session, req.parent_agent_id)
-    if parent is None:
-        raise HTTPException(
-            status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
-        )
+    parent = await _require_own_parent(session, protocol, req.parent_agent_id, owner_id)
 
     # Subagents inherit the parent's operational settings unless the caller
     # overrides them: they should run in the same channels mode and use the
@@ -473,7 +493,7 @@ async def send_message(
 ) -> dict[str, object]:
     logger.debug("Recieved message from agent %s: %s", agent.name, req.content)
     try:
-        event_id = await protocol.send_message(agent.id, req.room_id, req.content)
+        sent = await protocol.send_message(agent.id, req.room_id, req.content)
     except BudgetExceeded as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     except GuardrailBlockedError as e:
@@ -483,7 +503,10 @@ async def send_message(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
-    return {"ok": True, "event_id": event_id}
+    result: dict[str, object] = {"ok": True, "event_id": sent.event_id}
+    if sent.trust is not None:
+        result["trust"] = sent.trust.to_result()
+    return result
 
 
 @router.get("/{agent_id}/rooms/{room_id}/media", response_model=None)
@@ -570,6 +593,8 @@ async def upload_media(
         )
     except BudgetExceeded as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
+    except GuardrailBlockedError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
@@ -666,18 +691,22 @@ async def update_status(
     req: StatusRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
+) -> dict[str, object]:
+    """Post a status line in the room. The result carries `trust` only when
+    Switch Trust changed or flagged it, as a sent message's does."""
+    result: dict[str, object] = {"ok": True}
     if req.detail:
         try:
-            await protocol.update_status(agent.id, req.room_id, req.detail)
+            feedback = await protocol.update_status(agent.id, req.room_id, req.detail)
         except GuardrailBlockedError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return {"ok": True}
+        if feedback is not None:
+            result["trust"] = feedback.to_result()
+    return result
 
 
 @router.post("/{agent_id}/runtime-state")
@@ -1743,13 +1772,16 @@ async def get_room_history(
 @router.get("/rooms/{room_id}/participants")
 async def list_participants(
     room_id: str,
-    _agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> ParticipantsResponse:
     try:
+        await protocol.require_room_member(agent.id, room_id)
         participants_desc = await protocol.list_participants(room_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
 
     participants = [
         ParticipantInfo(

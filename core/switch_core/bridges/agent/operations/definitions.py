@@ -19,7 +19,7 @@ from typing import Any
 from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import plan_template
-from switch_core.authz import Principal
+from switch_core.authz import Principal, require_group_filing
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
@@ -54,7 +54,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 )
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
-from switch_core.bridges.agent.protocol.types import IntegrationProfile
+from switch_core.bridges.agent.protocol.types import IntegrationProfile, TrustFeedback
 from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
@@ -445,14 +445,25 @@ async def _decorate_linked_rooms(
     ``"member"`` if the calling agent is assigned to the target room,
     ``"not_member"`` otherwise. For ``not_member`` rows, also include a
     human-readable ``access_note`` warning that ``connect_to_room`` will
-    fail until the agent is added by an operator."""
+    fail until the agent is added by an operator.
+
+    A link whose target the agent may not see (see `list_all_rooms`) is left
+    out: it would show a private room's name and description."""
     if not linked_rooms:
         return []
     async with protocol.session_factory() as session:
         agent_rooms = await protocol.room_store.get_rooms_for_agent(session, agent_id)
+        visible_ids = {
+            r.id
+            for r in await protocol.rooms_visible_to(
+                session, agent_id, include_archived=True
+            )
+        }
     member_ids = {r.id for r in agent_rooms}
     out: list[dict[str, Any]] = []
     for entry in linked_rooms:
+        if entry["target_room_id"] not in visible_ids:
+            continue
         is_member = entry["target_room_id"] in member_ids
         decorated = {
             **entry,
@@ -774,7 +785,7 @@ async def list_participants() -> list[dict[str, Any]]:
 
 
 @operation
-async def post_message(body: str, thread_id: str | None = None) -> dict[str, str]:
+async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any]:
     """Send a message to the connected room (broadcast, no specific recipient).
 
     Args:
@@ -790,14 +801,26 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, str
             thread_id.
 
     Returns:
-        {"event_id": "<event id>"} for the posted message.
+        {"event_id": "<event id>"} for the posted message, plus `trust` when
+        Switch Trust changed or flagged it (see below). No `trust` means the
+        room received exactly what you sent.
+
+        `trust` is {"outcome": "redacted", "delivered": "<the text the room
+        received>"} when parts of your message were redacted before anyone
+        saw them; {"outcome": "alerted", "note": "<the notice>"} when it was
+        delivered as sent but flagged, with that notice posted under it; or
+        {"outcome": "errored", "note": "<the notice>"} when it was delivered
+        without being fully checked. `note` is there only when the notice was
+        posted in the room; when it could not be, `note` is absent and
+        `notice_error` says why, and the room was not warned. A blocked
+        message is not delivered at all, and the call fails instead.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
 
     protocol = get_protocol()
-    event_id = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
-    return {"event_id": event_id}
+    sent = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
+    return _with_trust({"event_id": sent.event_id}, sent.trust)
 
 
 @operation
@@ -860,6 +883,9 @@ async def send_targeted_message(
         (its bridge is down or has no channel for the room, so the message
         never reaches the platform). It says what Switch sent, not what the
         platform confirmed.
+
+        `trust` is present, as for post_message, when Switch Trust changed or
+        flagged the message.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
@@ -873,10 +899,21 @@ async def send_targeted_message(
         thread_id=thread_id,
         target_roles=target_roles or [],
     )
-    return {
-        "event_id": result.event_id,
-        "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
-    }
+    return _with_trust(
+        {
+            "event_id": result.event_id,
+            "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
+        },
+        result.trust,
+    )
+
+
+def _with_trust(result: dict[str, Any], trust: TrustFeedback | None) -> dict[str, Any]:
+    """A send's result, with `trust` only when Switch Trust did something:
+    a message it left alone reports nothing about it."""
+    if trust is not None:
+        result["trust"] = trust.to_result()
+    return result
 
 
 # ── Moderation ───────────────────────────────────────────────────────────────
@@ -904,6 +941,7 @@ async def create_room(
     include_subagents_for: list[str] | None = None,
     join_event_listeners: list[str] | None = None,
     aliases: dict[str, str] | None = None,
+    include_owner: bool = False,
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
@@ -929,7 +967,8 @@ async def create_room(
             their account there (not on Discord, which never shares e-mail
             addresses); their Switch name does not resolve. Your
             owner's usernames are in `get_my_context` (`messaging_apps`,
-            `your_usernames`). Only meaningful for bridged rooms.
+            `your_usernames`). Only meaningful for bridged rooms; to put your
+            owner in an internal-only room, use `include_owner`.
         channel_type: One of "channel_public", "channel_private", or "direct".
             Required when `bridge_id` is set; ignored for internal-only rooms.
             Use "direct" to open a 1:1 DM room — exactly one entry in
@@ -963,6 +1002,8 @@ async def create_room(
             Names match exactly. An ambiguous bare name errors with the path
             of each match to retry with; an unknown path errors naming the
             first segment not found. Omit to leave the room standalone.
+            Filing a room in a group needs an owner who is a workspace
+            admin; anyone else is refused.
         roles: Optional room-roles to define at creation. Each entry is
             `{"name": "...", "instructions": "...", "exclusive": bool}`.
             Roles are assumable instruction bundles agents pick up with
@@ -980,6 +1021,12 @@ async def create_room(
             real name. Each agent must be in `agent_names`; an alias may
             contain only letters, digits, '.', '-', '_' and must not clash
             with an agent's real name, a room role, or another alias.
+        include_owner: Also add your owner (the person who owns you) to the
+            room, so it shows in their Switch Console chat list as a group
+            chat with its agents, where they read and post. Requires
+            `internal_only=True`, no `bridge_id`, and a channel_type other
+            than "direct". As in any group chat, their messages reach an
+            agent they @-mention (or a follow-up to one).
 
     Returns:
         `{"id", "name", "matrix_room_id", "caller_is_member",
@@ -1015,6 +1062,7 @@ async def create_room(
             roles=roles,
             aliases=aliases,
             from_room_id=await connected_room(),
+            include_owner=include_owner,
         )
     async with protocol.session_factory() as session:
         caller_is_member = agent_id in await protocol.room_store.get_agent_ids(
@@ -1473,9 +1521,11 @@ async def list_all_rooms(
     limit: int = 100,
     cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List every room on this Switch instance (not just rooms this agent
-    is a member of), a page at a time, oldest first. Use `list_rooms` instead
-    to see only the rooms this agent is assigned to.
+    """List the rooms on this Switch instance this agent may see, a page at
+    a time, oldest first: every room its owner can read (public rooms and
+    ones the owner takes part in; all rooms for a workspace admin) plus the
+    rooms it is a member of. Use `list_rooms` instead to see only the rooms
+    this agent is assigned to.
 
     Args:
         include_archived: When false (default), archived rooms are omitted.
@@ -1548,7 +1598,9 @@ async def create_room_group(
     A room group is a named bucket that rooms can be filed under (via
     `create_room`'s `group_name`), and groups can nest under a parent group to
     form a tree. Creating a group does not move any rooms into it, and does
-    not create missing parents: create each level first.
+    not create missing parents: create each level first. Groups are shared by
+    the whole workspace, so only an agent whose owner is a workspace admin
+    may create one; anyone else gets a permission error.
 
     Args:
         name: The group's display name. It cannot contain "/" (the path
@@ -1618,7 +1670,9 @@ async def create_room_from_yaml(
     Args:
         yaml: The template text. A top-level ``room:`` makes one room; a
             ``group:`` with a ``rooms:`` list (and optional ``links:``) makes
-            a room group. Either may declare ``params:`` with defaults and
+            a room group, which an agent is refused: only a workspace admin
+            puts rooms in a group, and an agent acts without its owner's
+            admin reach. Either may declare ``params:`` with defaults and
             descriptions; placeholders are filled in before provisioning.
         inputs: Values for declared params. A required param with no default
             must be supplied here, or provisioning fails naming it.
@@ -1737,6 +1791,9 @@ async def _provision_as_agent(
         user_id=owner.id, name=owner.name, email=owner.email, text=yaml, inputs=inputs
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
+    if isinstance(parsed.spec, GroupSpec):
+        # Without the owner's admin reach, which filing rooms in a group needs.
+        require_group_filing(False)
     await rooms_yaml.check_entity_params(parsed, reader=reader)
     await rooms_yaml.check_bridges(parsed)
     room_specs = (
@@ -2213,6 +2270,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
+    A room your owner cannot read is not named in it.
 
     Args:
         agent_id: The target agent's id (from `list_participants` or
