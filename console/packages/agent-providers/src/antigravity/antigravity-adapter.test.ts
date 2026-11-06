@@ -60,8 +60,8 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { antigravityAcp, createAntigravityAdapter, elicitationAnswer, elicitationQuestions } =
-  await import('./antigravity-adapter');
+const { elicitationAnswer, elicitationQuestions } = await import('../acp/elicitation');
+const { antigravityAcp, createAntigravityAdapter } = await import('./antigravity-adapter');
 beforeEach(() => {
   servers.length = 0;
   spawned.length = 0;

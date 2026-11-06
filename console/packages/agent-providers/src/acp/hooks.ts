@@ -149,6 +149,8 @@ export interface AcpProviderHooks {
    * agent's default.
    */
   sessionMode?(runtimeMode: RuntimeMode, modes: AcpSessionModes | undefined): string | undefined;
+  /** Remove vendor permission options whose scope cannot be represented safely. */
+  permissionOptions?(options: AcpPermissionRequest['options']): AcpPermissionRequest['options'];
   /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id
