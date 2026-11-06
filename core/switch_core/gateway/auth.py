@@ -319,6 +319,20 @@ async def _require_current_session(
     _refuse_ended_session(version, payload)
 
 
+async def session_is_current(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    session_version: int,
+) -> bool:
+    """Whether a session minted with `session_version` still stands: the
+    account exists and its sessions have not been ended since. Asked again
+    by a socket or stream that stays open long after it was authenticated."""
+    async with session_factory() as system_session:
+        current = await user_store.session_version(system_session, user_id)
+    return current == session_version
+
+
 async def _require_user_exists(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
@@ -1137,6 +1151,9 @@ class SocketCaller:
     # time: the socket is closed then, and the client opens it again with the
     # cookie it has renewed meanwhile.
     expires_at: float
+    # The `users.session_version` the cookie was minted with, checked again
+    # while the socket is open (`session_is_current`).
+    session_version: int
 
 
 async def authenticate_socket(
@@ -1163,7 +1180,10 @@ async def authenticate_socket(
         config.gateway_tenant_choice_enabled,
     )
     return SocketCaller(
-        user_id=user_id, tenant_id=tenant_id, expires_at=float(payload["exp"])
+        user_id=user_id,
+        tenant_id=tenant_id,
+        expires_at=float(payload["exp"]),
+        session_version=_session_version(payload),
     )
 
 
