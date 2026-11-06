@@ -18,7 +18,12 @@ import type { LibraryItem, LibraryKind } from '@shared/core/switch-servers/libra
 import { emptyForm, formProblem, inputOf, type LibraryForm } from './library-form';
 import { LibraryItemFields } from './library-item-form';
 import { hiddenRoomsText, KIND_TEXT } from './library-model';
-import { invalidateLibrary, libraryRoomsKey, referenceTypesKey } from './library-queries';
+import {
+  forgetLibraryItem,
+  invalidateLibrary,
+  libraryRoomsKey,
+  referenceTypesKey,
+} from './library-queries';
 
 type NewProps = BaseModalProps<LibraryItem> & { workspaceId: string; kind: LibraryKind };
 
@@ -136,9 +141,11 @@ export function DeleteLibraryItemModal({ workspaceId, item, onSuccess, onClose }
     setError(null);
     try {
       await rpc.workspaces.deleteLibraryItem({ workspaceId, kind: item.kind, itemId: item.id });
-      await invalidateLibrary(queryClient, workspaceId, item.kind);
       toast({ title: `"${item.name}" deleted` });
+      // Leave first (closing this and, from its page, the page itself), then
+      // drop what was read for the item rather than reading it again: it is gone.
       onSuccess();
+      await forgetLibraryItem(queryClient, workspaceId, item.kind, item.id);
     } catch (e) {
       setError(failureText(e, `Could not delete the ${noun}.`));
       setDeleting(false);

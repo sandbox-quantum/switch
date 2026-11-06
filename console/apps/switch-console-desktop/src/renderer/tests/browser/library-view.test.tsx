@@ -32,6 +32,7 @@ const rpcMock = vi.hoisted(() => ({
   listLibraryItemRooms: vi.fn(),
   listReferenceTypes: vi.fn(),
   listLibrary: vi.fn(),
+  deleteLibraryItem: vi.fn(),
   setRoomResourceAttached: vi.fn(),
 }));
 const showModal = vi.hoisted(() => vi.fn());
@@ -143,6 +144,7 @@ beforeEach(() => {
     },
   ]);
   rpcMock.listLibrary.mockResolvedValue([]);
+  rpcMock.deleteLibraryItem.mockResolvedValue({ detachedRoomIds: [], affectedPackageIds: [] });
   rpcMock.updateLibraryItem.mockResolvedValue({});
   rpcMock.setRoomResourceAttached.mockResolvedValue(undefined);
   showModal.mockReset();
@@ -351,6 +353,17 @@ describe('an item’s page', () => {
     expect(container.querySelector('[aria-label="Detach from support"]')).not.toBeNull();
   });
 
+  it('shows two packages of the same name as two', async () => {
+    state.item = item({ packageIds: ['pkg-a', 'pkg-b'] });
+    rpcMock.listLibrary.mockResolvedValue([
+      { id: 'pkg-a', name: 'Onboarding' },
+      { id: 'pkg-b', name: 'Onboarding' },
+    ]);
+    await render(libraryItemView.MainPanel);
+    const section = container.querySelector('[aria-label="In packages"]')!;
+    expect(section.textContent?.match(/Onboarding/g)).toHaveLength(2);
+  });
+
   it('renders a document’s content as markdown', async () => {
     state.params = { serverId: 'srv', kind: 'documents', itemId: 'doc-1' };
     state.item = {
@@ -385,6 +398,52 @@ describe('deleting', () => {
     await renderDelete({ hiddenRoomsCount: 2 });
     expect(dialogText()).toContain('design');
     expect(dialogText()).toContain('and 2 private rooms you can’t open');
+  });
+
+  it('leaves, then reads nothing more about the item it deleted', async () => {
+    state.params = { serverId: 'srv', kind: 'references', itemId: 'ref-1' };
+    state.item = item({});
+    await render(libraryItemView.MainPanel);
+    await act(async () => button('Delete')!.click());
+    const args = showModal.mock.calls.at(-1)![1] as { onSuccess: () => void };
+    await act(async () => root.unmount());
+    container.remove();
+    const onSuccess = vi.fn(args.onSuccess);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    // The page and the dialog, as the app shows them, sharing one cache.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const Panel = libraryItemView.MainPanel;
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <Panel />
+          <Dialog open>
+            <DialogContent>
+              <DeleteLibraryItemModal
+                workspaceId="ws"
+                item={item({})}
+                onSuccess={onSuccess}
+                onClose={() => {}}
+              />
+            </DialogContent>
+          </Dialog>
+        </QueryClientProvider>
+      )
+    );
+    await settle();
+    rpcMock.getLibraryItem.mockClear();
+    rpcMock.listLibraryItemRooms.mockClear();
+    const confirm = [
+      ...document.querySelectorAll<HTMLButtonElement>('[data-slot="dialog-content"] button'),
+    ].find((b) => b.textContent === 'Delete')!;
+    await act(async () => confirm.click());
+    await settle();
+    expect(rpcMock.deleteLibraryItem).toHaveBeenCalled();
+    expect(onSuccess).toHaveBeenCalled();
+    expect(rpcMock.getLibraryItem).not.toHaveBeenCalled();
+    expect(rpcMock.listLibraryItemRooms).not.toHaveBeenCalled();
   });
 
   it('counts the rooms you cannot open when they are all it is in', async () => {

@@ -40,3 +40,22 @@ export async function invalidateLibrary(
     queryClient.invalidateQueries({ queryKey: ['room-resources', workspaceId] }),
   ]);
 }
+
+/**
+ * A library item was deleted: what was read for it is dropped rather than
+ * read again (it would only fail), and what lists items reads again.
+ */
+export async function forgetLibraryItem(
+  queryClient: QueryClient,
+  workspaceId: string,
+  kind: LibraryKind,
+  itemId: string
+): Promise<void> {
+  queryClient.removeQueries({ queryKey: libraryItemKey(workspaceId, kind, itemId), exact: true });
+  queryClient.removeQueries({ queryKey: libraryRoomsKey(workspaceId, kind, itemId), exact: true });
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['library-items', workspaceId] }),
+    queryClient.invalidateQueries({ queryKey: ['library', workspaceId] }),
+    queryClient.invalidateQueries({ queryKey: ['room-resources', workspaceId] }),
+  ]);
+}

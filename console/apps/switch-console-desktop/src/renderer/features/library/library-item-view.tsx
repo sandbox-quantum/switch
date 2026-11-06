@@ -597,19 +597,21 @@ function PackagesLine({ workspaceId, item }: { workspaceId: string; item: Librar
     queryKey: ['library', workspaceId, 'packages'],
     queryFn: () => rpc.workspaces.listLibrary({ workspaceId, kind: 'packages' }),
   });
-  const names = item.packageIds.map((id) => packages.data?.find((p) => p.id === id)?.name ?? null);
-  const hidden = names.filter((name) => name === null).length;
+  // Keyed by id: two packages may share a name.
+  const named = item.packageIds.flatMap((id) => {
+    const name = packages.data?.find((p) => p.id === id)?.name;
+    return name === undefined ? [] : [{ id, name }];
+  });
+  const hidden = item.packageIds.length - named.length;
   return (
     <Section title="In packages">
       <div className="flex flex-wrap items-center gap-1.5">
-        {names
-          .filter((name): name is string => name !== null)
-          .map((name) => (
-            <Badge key={name} variant="outline">
-              <Package className="size-3" />
-              {name}
-            </Badge>
-          ))}
+        {named.map((pkg) => (
+          <Badge key={pkg.id} variant="outline">
+            <Package className="size-3" />
+            {pkg.name}
+          </Badge>
+        ))}
         {hidden > 0 && !packages.isPending && (
           <span className="text-xs text-foreground-muted">
             {hidden === 1 ? 'and 1 you cannot see' : `and ${hidden} you cannot see`}
