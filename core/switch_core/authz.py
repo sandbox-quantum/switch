@@ -12,10 +12,10 @@ Model:
     owner holds there.
   - `Principal.is_admin` means "may administer the tenant bound to this
     request" — the deployment operator bypass (`User.role == "admin"`, global,
-    never granted by anything self-service) OR an `owner`/`admin` membership
-    row for this user in the bound tenant (`tenant_members.role`, granted per
-    tenant, e.g. by creating it) OR `org_admin` of the organization the bound
-    tenant belongs to (`organization_members.role`), which administers every
+    never granted by anything self-service) OR an `admin` membership row for
+    this user in the bound tenant (`tenant_members.role`, granted per tenant,
+    e.g. by creating it) OR `org_admin` of the organization the bound tenant
+    belongs to (`organization_members.role`), which administers every
     workspace in it. `administers_tenant` below computes it; a
     caller with a database session should use that rather than re-deriving it.
   - Owned entities carry a nullable owner plus independent `read_visibility`
@@ -55,7 +55,7 @@ class Principal:
 
 
 # `tenant_members.role` is a checked string, not an enum type (`db/models.py`).
-TENANT_ADMIN_ROLES = ("owner", "admin")
+TENANT_ADMIN_ROLES = ("admin",)
 
 
 ORGANIZATION_ADMIN_ROLE = "org_admin"
@@ -74,10 +74,9 @@ def administers_tenant(
     True for a deployment operator (the global bypass), regardless of
     membership — an operator administers every tenant. True for the
     organization's `org_admin`, with or without a membership row in the tenant.
-    Otherwise true only if the membership role itself is `owner` or `admin`; a
-    plain `member`, or no membership row at all, is false. This is the one
-    function that should ever turn a role into an admin bit — see
-    `Principal.is_admin`.
+    Otherwise true only if the membership role itself is `admin`; a plain
+    `member`, or no membership row at all, is false. This is the one function
+    that should ever turn a role into an admin bit — see `Principal.is_admin`.
     """
     return (
         is_operator
@@ -97,22 +96,6 @@ def effective_tenant_role(
     if organization_role == ORGANIZATION_ADMIN_ROLE:
         return ORGANIZATION_ADMIN_TENANT_ROLE
     return tenant_role
-
-
-def owns_tenant(*, is_operator: bool, tenant_role: str | None) -> bool:
-    """Whether a caller may dispose of the tenant they hold `tenant_role` in.
-
-    Narrower than `administers_tenant` on purpose. An `admin` runs a workspace;
-    an `owner` decides who else gets to. The two collapse into one bit for
-    everything inside a workspace — rooms, agents, references — but not for the
-    ownership set itself: if an admin may grant `owner`, demote an owner, or
-    remove one, then an admin may take the workspace, and each of those steps
-    passes a last-owner guard on its own. Gate those three on this.
-
-    An organization's `org_admin` administers its workspaces but does not own
-    them: the organization's role is `admin`-level in each workspace.
-    """
-    return is_operator or tenant_role == "owner"
 
 
 @runtime_checkable
@@ -180,6 +163,34 @@ def require_manage(principal: Principal, owner_id: str | None) -> None:
     """Raise ``PermissionError`` unless `principal` owns the entity or is admin."""
     if not can_manage(principal, owner_id):
         raise PermissionError("Not authorized to manage this resource")
+
+
+def require_visibility_change(
+    principal: Principal,
+    resource: Authorizable,
+    read_visibility: str | None,
+    write_visibility: str | None,
+    label: str,
+) -> None:
+    """Raise ``PermissionError`` if this changes who may see or edit
+    `resource` and `principal` is neither its owner nor an admin.
+
+    Write access is not enough, the same as for a room: with write visibility
+    public, anyone could otherwise make the resource private and lock everyone
+    else out of it, and out of the rooms that use it. A value equal to the
+    current one changes nothing, so an edit that sends it back unchanged
+    needs only write access.
+    """
+    changes = (
+        read_visibility is not None and read_visibility != resource.read_visibility
+    ) or (
+        write_visibility is not None and write_visibility != resource.write_visibility
+    )
+    if changes and not can_manage(principal, resource.owner_id):
+        raise PermissionError(
+            f"Only the {label}'s owner or a workspace admin can change who may "
+            "see or edit it."
+        )
 
 
 def can_unlink_from_room(principal: Principal, *, takes_part: bool) -> bool:

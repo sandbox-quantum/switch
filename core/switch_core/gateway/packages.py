@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal
+from switch_core.authz import Principal, can
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Package, User
 from switch_core.db.stores.agent_store import AgentStore
@@ -441,9 +441,10 @@ async def list_room_packages(
 ) -> list[PackageDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     pkgs = await resource_service.list_room_packages(session, room_id)
-    return await _enrich(
-        session, pkgs, resource_service, user_store, Principal(user.id, is_admin)
-    )
+    principal = Principal(user.id, is_admin)
+    readable = {p.id for p in pkgs if can(principal, "read", p)}
+    details = await _enrich(session, pkgs, resource_service, user_store, principal)
+    return [d.model_copy(update={"can_read": d.id in readable}) for d in details]
 
 
 @router.post("/rooms/{room_id}/packages/{package_id}", status_code=201)

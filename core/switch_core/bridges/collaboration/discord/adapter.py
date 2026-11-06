@@ -2511,7 +2511,7 @@ class DiscordAdapter(PlatformAdapter):
         # the pair, visible only to the bridge and the user.
         guild = await self._get_guild()
         channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(f"dm-{user_name}-{agent_name}"),
+            name=self._sanitize_channel_name(f"{agent_name}-{user_name}"),
             topic=f"Direct conversation between {user_name} and {agent_name}",
             overwrites=self._private_channel_overwrites(guild),
         )

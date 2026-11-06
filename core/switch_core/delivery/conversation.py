@@ -20,10 +20,11 @@ A room can turn the two follow-up rules off with `!follow-ups off`; the main
 agent rule is separate and unaffected. Both settings live in the room's
 `metadata` (`db/stores/room_store.py`).
 
-The rules only ever consider a person's text message that has no `@` in it
-at all: a mention always wins, and a message from an agent, an app or Switch
+The rules only ever consider a person's message that has no `@` in it at
+all: a mention always wins, and a message from an agent, an app or Switch
 itself never reaches anyone by these rules, so agents cannot set each other
-off. Permissions are not decided here; the caller applies the agent's policy
+off. A post of files counts as one message, read from its first file, which
+carries the post's text and thread. Permissions are not decided here; the caller applies the agent's policy
 afterwards, as it does for a mention.
 
 The router (`delivery/router.py`) asks these rules about a message that no
@@ -167,6 +168,10 @@ class ConversationMessage:
     content: Mapping[str, object]
     thread_root_id: str | None
     sent_at: datetime
+    # Set for a message whose rows were written a while before it is decided
+    # (a multi-file post): the rules then read only rows written before it,
+    # not what was written in the room while it waited.
+    before_seq: int | None = None
 
 
 def may_follow(
@@ -363,6 +368,7 @@ class RoomConversation:
                 self._room_id,
                 thread_root_event_id=thread_root_id,
                 limit=THREAD_LOOKBACK + 1,
+                before_seq=self._message.before_seq,
             )
             self._thread_rows = self._before_message(rows, THREAD_LOOKBACK)
         return self._thread_rows
@@ -370,7 +376,10 @@ class RoomConversation:
     async def _channel(self, session: AsyncSession) -> list[Message]:
         if self._channel_rows is None:
             rows = await self._rules.message_store.list_top_level_newest_first(
-                session, self._room_id, limit=CHANNEL_LOOKBACK + 1
+                session,
+                self._room_id,
+                limit=CHANNEL_LOOKBACK + 1,
+                before_seq=self._message.before_seq,
             )
             self._channel_rows = self._before_message(rows, CHANNEL_LOOKBACK)
         return self._channel_rows

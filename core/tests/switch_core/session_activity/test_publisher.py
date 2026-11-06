@@ -177,6 +177,7 @@ async def _step(
     turn_id="turn-1",
     title="",
     text="",
+    message_id=ASKED,
 ):
     await service.report_item(
         AGENT,
@@ -191,7 +192,7 @@ async def _step(
         command_id="command-1" if kind == "turn" else None,
         room_id=room_id,
         thread_id=ASKED,
-        message_id=ASKED,
+        message_id=message_id,
         occurred_at=datetime.now(UTC),
         usage=[],
     )
@@ -318,6 +319,45 @@ async def test_a_card_goes_into_the_thread_it_answers(
     [posted] = await platform.wait_for(1)
     assert posted.thread_ref == ASKED_POST
     assert (await _card_post(session_factory)).thread_ref == ASKED_POST
+
+
+@pytest.mark.parametrize(
+    ("message_id", "at_root"), [(ASKED, True), ("sw_reply", False)]
+)
+async def test_a_card_says_whether_its_turn_was_asked_at_the_channel_root(
+    service, publisher, platform, bridged, message_id, at_root
+):
+    """So an adapter that can also show a thread reply in the channel does,
+    for a question threaded under a channel-root message only."""
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id=message_id,
+    )
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref == ASKED_POST
+    assert card.content.asked_at_root is at_root
+
+
+async def test_a_card_whose_turn_is_not_recorded_stays_in_its_thread(
+    service, publisher, platform, bridged
+):
+    """An unrecorded turn may have been a thread conversation the channel was
+    never part of, so its card is not also shown in the channel."""
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.content.asked_at_root is False
 
 
 async def test_a_card_in_a_thread_names_the_owner_who_may_answer_it(

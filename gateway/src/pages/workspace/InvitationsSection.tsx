@@ -30,12 +30,10 @@ function invitationStatus(inv: Invitation, now: number): string {
 export default function InvitationsSection({
   tenantId,
   inOrganization,
-  isOwner,
   emailEnabled,
 }: {
   tenantId: string;
   inOrganization: boolean;
-  isOwner: boolean;
   emailEnabled: boolean;
 }) {
   const load = useCallback(() => fetchInvitations(tenantId), [tenantId]);
@@ -159,7 +157,6 @@ export default function InvitationsSection({
       <CreateInvitationDialog
         open={createOpen}
         tenantId={tenantId}
-        isOwner={isOwner}
         emailEnabled={emailEnabled}
         onClose={() => setCreateOpen(false)}
         onCreated={refetch}

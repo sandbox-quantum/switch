@@ -306,6 +306,11 @@ class AgentSummary(BaseModel):
     # owner-restricted without fetching each one — the console warns about
     # exactly that, and per-agent reads would make it a request storm.
     addressing_policy: AddressingPolicy | None = None
+    # Whether the caller may manage the agent (rename it, edit its options and
+    # who may address it): its owner or a workspace admin. Decided here by
+    # `switch_core.authz` so the Gateway does not repeat the rule; set by the
+    # Gateway routes, and left out of what agents read.
+    can_manage: bool = False
 
 
 class AgentToolSummary(BaseModel):
@@ -834,8 +839,10 @@ class ClaimIdentityRequest(BaseModel):
     user_id: str | None = None
     # That the caller knows the link will wait for the account to confirm it
     # (CHOO-3881). A Console from before then leaves it out and would report
-    # a link that does not count as made, so the claim is refused with a
-    # reason it shows instead.
+    # a link that does not count as made, so its claim is answered with a 409
+    # whose text carries the code, which it shows. One for someone else is
+    # refused while the link needs confirming, since that text would show the
+    # code to the wrong person.
     expects_confirmation: bool = False
 
 
@@ -1041,8 +1048,8 @@ class OperatorWorkspaceResponse(BaseModel):
 
 class CurrentTenantResponse(TenantMembershipResponse):
     """The tenant this request is bound to. `administers` is whether the
-    caller may manage it — an `owner` or `admin` membership, or the operator
-    bit, which no membership role shows."""
+    caller may manage it — an `admin` membership, `org_admin` of its
+    organization, or the operator bit, which no membership role shows."""
 
     administers: bool
 
@@ -1118,6 +1125,11 @@ class OrganizationCreateResponse(BaseModel):
 
 
 class WorkspaceCreateRequest(BaseModel):
+    name: str
+
+
+class TenantDeleteRequest(BaseModel):
+    # The workspace's name, typed by the person deleting it.
     name: str
 
 
@@ -1728,6 +1740,11 @@ class PackageDetail(BaseModel):
     # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
     hidden_rooms_count: int = 0
     created_at: str
+    # Whether the caller may open the package. Every route returns only
+    # packages the caller may read, except a room's package list: a private
+    # package its owner attached is listed to every reader of the room, and the
+    # Gateway shows that one without a link.
+    can_read: bool = True
 
 
 class PackageCreateRequest(BaseModel):

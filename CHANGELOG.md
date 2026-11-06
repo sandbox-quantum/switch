@@ -128,6 +128,29 @@ version of their own to them without also giving them a release of their own.
   is named (a definition, a template, the gateway's provider list) and has no
   advanced settings; its owner signs it in on the machine it runs on with `pi`,
   then `/login`.
+- **The server's administrator can delete someone's account.** The Users page
+  has a Delete action (`DELETE /users/{id}`) that removes the account in every
+  workspace, with the same refusals as deleting your own. Administrator
+  accounts and your own account are refused, and every attempt is recorded in
+  the server audit log with its outcome.
+- **Transfer ownership.** The owner, or a workspace admin, can hand an agent,
+  room, package, reference, reference type, library document or template to
+  another member of the workspace (`POST /ownership/transfer`, and a Transfer
+  ownership action on the detail pages). Each transfer is audited. An agent
+  that uses its owner's service connections, is managed on its owner's
+  machine, can manage agents, has sub-agents or signs in with its own OAuth
+  client is refused; any other agent gets a new API key that only the new
+  owner can see, so it has to be reconnected. Chats and room documents are not
+  transferable.
+- **Workspace admins can delete an empty workspace.** Workspace settings has a
+  Delete workspace action that asks for the workspace's name
+  (`DELETE /tenants/{id}`). It is refused, with what is left by kind and count,
+  until the workspace has no rooms (archived ones included), agents, packages,
+  references, reference types, documents, templates, room groups, messaging or
+  service connections, machines, connectors, skills or other members. Its audit
+  history is kept, and the deletion is recorded in the server audit log. The
+  server's default workspace can't be deleted. Deleting your account now also
+  deletes a workspace you leave empty.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -279,6 +302,24 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **One role runs a workspace: owner merges into admin.** Every workspace
+  `owner` becomes an `admin`, and every admin now manages every member, other
+  admins included, as well as everything an owner could. A workspace always
+  keeps at least one admin: demoting or removing the last one is refused
+  (409), and so is deleting the account of the last admin of a workspace
+  others are in. Two admins demoting each other at once can't both succeed. A
+  client that still asks for `owner`, in an invitation or a role change, gets
+  `admin`. The organization issue `workspace_without_owner` is now
+  `workspace_without_admin`. The migration is not expand-only: until every
+  replica runs this release, an older one creating a workspace writes `owner`,
+  which the new check refuses, and an older one sees former owners as plain
+  admins with no last-admin rule. Roll every replica together.
+- **Only the owner or a workspace admin can change a reference's, reference
+  type's, package's or library document's visibility.** This tightens
+  permissions: before, anyone with write access could, so on a publicly
+  writable resource any member could make it private and lock everyone else
+  out of it and the rooms that use it.
+  Editing its other fields still needs only write access, as it does for rooms.
 - **Unlinking a resource from a room is for those taking part in it.** It
   took write access to the room, which on a publicly writable room, the
   default, is everyone's. It is now for the room's owner, people in it (in
@@ -580,6 +621,23 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **Stable Switch Console can link chat accounts again.** Since links have to
+  be confirmed from the account with a one-time code, a claim from a Console
+  that cannot show the code was refused with "Update Switch Console", and no
+  stable release could show it, so nobody on stable could link a new account.
+  Switch now issues the code anyway and returns it as the 409's text, which
+  stable Switch Console shows in the link dialog: what to post from the
+  account and that the code expires in 30 minutes. An account already
+  confirmed links normally. An admin linking someone else from an older client
+  is still refused while the link needs confirming, since the code would be
+  shown to the admin.
+- **A file that names nobody now follows the conversation like text does.**
+  A post with one or more files and no mention never reached the room's
+  assigned agent, the agent whose thread it was posted in, or the agent the
+  sender was just talking to, even with follow-ups on; the same words as a
+  text message did. A post is now decided by the same rules, read from its
+  first file's caption and thread, and the agent gets the post with every
+  file on it, in that thread.
 - **The dashboard offers only the room changes the server would allow.** On
   a publicly writable room, the default, anyone could change the Access
   setting and press Save, only for the server to refuse it. Someone who could
@@ -738,6 +796,10 @@ version of their own to them without also giving them a release of their own.
   through. Slack apps that list `/run-cmd` in their manifest keep showing it,
   answering "Unknown command", until an admin deletes it; Discord and Telegram
   drop it from their command lists by themselves (#730).
+- **Deleting your account now also clears workspaces you were removed from.**
+  Removing a member leaves what they own in that workspace, and deleting their
+  account afterwards failed on it. Those rows are now deleted or handed over as
+  they are in the workspaces you are still in.
 
 ### [0.31.0] - 2026-10-20
 
@@ -2551,6 +2613,10 @@ version of their own to them without also giving them a release of their own.
   terminal can't be picked. No earlier prompt is sent again.
 
 #### Changed
+- **No Owner role.** Inviting people and changing roles offer Admin and
+  Member, and the copy says "an admin of this workspace" where it said "an
+  owner or admin". A server from before the merge that still reports `owner`
+  shows as Admin, including for workspaces stored before the update.
 - **Usage data follows an install to a working agent.** Three new
   `activation_milestone` steps (`server_ready`, `agent_ready`,
   `first_agent_session`) are each sent once per install, and only by installs

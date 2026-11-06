@@ -10,7 +10,7 @@ const acme: TenantMembership = {
   id: "t1",
   slug: "acme",
   name: "Acme",
-  role: "owner",
+  role: "admin",
   organization_role: "org_admin",
   organization_id: "o1",
 };

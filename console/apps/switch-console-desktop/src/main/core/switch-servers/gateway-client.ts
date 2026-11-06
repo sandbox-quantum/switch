@@ -601,7 +601,7 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
 
 /**
  * Delete the signed-in account on this server, confirmed by its email. A
- * refusal (the only owner of a shared workspace, the server's own admin, …) is
+ * refusal (the only admin of a shared workspace, the server's own admin, …) is
  * raised with the server's own reason, which says what to do first.
  */
 export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
@@ -684,7 +684,9 @@ type TenantJson = {
 };
 
 function mapRole(raw: unknown): WorkspaceRole {
-  if (raw === 'owner' || raw === 'admin' || raw === 'member') return raw;
+  // A server from before `owner` merged into `admin` still reports it.
+  if (raw === 'owner') return 'admin';
+  if (raw === 'admin' || raw === 'member') return raw;
   throw new GatewayError('http', `Switch server reported an unknown workspace role: ${raw}`);
 }
 
@@ -989,7 +991,7 @@ function joinDomainsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/join-domains`;
 }
 
-/** The domains a workspace is open to. Admins and owners only. */
+/** The domains a workspace is open to. Admins only. */
 export async function fetchJoinDomains(
   server: SwitchServer,
   tenantId: string
@@ -1041,7 +1043,7 @@ function invitationsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/invitations`;
 }
 
-/** Every invitation to a workspace, revoked and spent ones included. Admins and owners only. */
+/** Every invitation to a workspace, revoked and spent ones included. Admins only. */
 export async function fetchInvitations(
   server: SwitchServer,
   tenantId: string
@@ -2384,9 +2386,9 @@ export async function searchBridgeDirectory(
  * with that status.
  *
  * A current server answers with the link still pending and a code to post from
- * the account (`link_request`); see {@link issueIdentityLinkCode}. It refuses a
- * claim that does not say it can show that code (`expects_confirmation`), since
- * a client that cannot would leave the link pending with no way to finish it.
+ * the account (`link_request`); see {@link issueIdentityLinkCode}. A claim that
+ * does not say it can show that code (`expects_confirmation`) gets it as the
+ * text of a 409 instead, which is all a Console from before then shows.
  */
 export async function claimBridgeIdentity(
   server: SwitchServer,
@@ -3297,6 +3299,7 @@ type RoomSummaryJson = {
   description: string;
   channel_type: string | null;
   agent_count: number;
+  bridge_id?: string | null;
   bridge_display_name: string | null;
   bridge_type?: string | null;
   external_channel_url?: string | null;
@@ -3310,6 +3313,11 @@ type RoomSummaryJson = {
   can_write?: boolean;
   can_manage?: boolean;
   can_unlink?: boolean;
+  group_id?: string | null;
+  group_name?: string | null;
+  owner_name?: string | null;
+  read_visibility?: string;
+  connected_user_count?: number;
 };
 
 function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
@@ -3329,6 +3337,11 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     createdAt: r.created_at,
     // The same reading as a room's detail, so the list and the room page offer the same changes.
     writeVisibility: visibilityOf(r.write_visibility),
+    ...(r.read_visibility !== undefined ? { readVisibility: visibilityOf(r.read_visibility) } : {}),
+    ...(r.bridge_id !== undefined ? { bridgeId: r.bridge_id } : {}),
+    ...(r.group_id !== undefined ? { groupId: r.group_id, groupName: r.group_name ?? null } : {}),
+    ...(r.owner_name !== undefined ? { ownerName: r.owner_name } : {}),
+    ...(r.connected_user_count !== undefined ? { connectedUserCount: r.connected_user_count } : {}),
     ...(r.can_write !== undefined && r.can_manage !== undefined
       ? {
           serverPermissions: {

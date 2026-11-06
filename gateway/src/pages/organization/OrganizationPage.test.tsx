@@ -600,7 +600,7 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
       "GET /organizations/current/issues": [
-        { kind: "workspace_without_owner", workspace_id: "t1", workspace_name: "Acme", agents: [] },
+        { kind: "workspace_without_admin", workspace_id: "t1", workspace_name: "Acme", agents: [] },
         {
           kind: "agents_without_acting_owner",
           workspace_id: "t1",
@@ -613,7 +613,7 @@ describe("OrganizationPage", () => {
     render(<OrganizationPage />);
 
     expect(await screen.findByText("2 things need your attention")).toBeTruthy();
-    expect(screen.getByText(/Acme has no owner/)).toBeTruthy();
+    expect(screen.getByText(/Acme has no admin/)).toBeTruthy();
     expect(screen.getByText(/reviewer, triage/)).toBeTruthy();
   });
 

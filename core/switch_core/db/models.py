@@ -140,9 +140,9 @@ class OrganizationMember(Base):
     changing or removing a workspace membership leaves this row as it is. Only
     an organization's own `org_admin`s grant or revoke `org_admin`, through
     the organization's API. The one exception is migration `238c68b7306e`:
-    it made each existing workspace's owners `org_admin` of the organization
-    it created for that workspace alone, which gave them nothing they did not
-    already control.
+    it made each existing workspace's owners (a role since merged into
+    `admin`) `org_admin` of the organization it created for that workspace
+    alone, which gave them nothing they did not already control.
     """
 
     __tablename__ = "organization_members"
@@ -175,9 +175,10 @@ class OrganizationMember(Base):
 class Tenant(Base):
     """The top-level customer boundary every scoped table hangs off.
 
-    Deliberately minimal: no `plan`, `status` or `deleted_at`. A later phase
-    adds plans and deletion; a `deleted_at` that nothing honours yet would
-    read as a guarantee the code does not make.
+    Deliberately minimal: no `plan`, `status` or `deleted_at`. Deleting a
+    workspace deletes this row (`accounts/workspace_deletion.py`); a
+    `deleted_at` that nothing honours would read as a guarantee the code does
+    not make.
     """
 
     __tablename__ = "tenants"
@@ -216,9 +217,7 @@ class TenantMember(Base):
 
     __tablename__ = "tenant_members"
     __table_args__ = (
-        CheckConstraint(
-            "role IN ('owner', 'admin', 'member')", name="ck_tenant_members_role"
-        ),
+        CheckConstraint("role IN ('admin', 'member')", name="ck_tenant_members_role"),
     )
 
     tenant_id: Mapped[str] = mapped_column(
@@ -370,8 +369,8 @@ class User(Base):
     )
     # Workspaces this person has created through self-service, which is what
     # `GATEWAY_MAX_WORKSPACES_PER_USER` bounds. A count of creations rather
-    # than of current ownership, so handing a workspace to someone else does
-    # not free an allowance to create another.
+    # than of workspaces administered now, so handing a workspace to another
+    # admin does not free an allowance to create another.
     workspaces_created: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
@@ -625,9 +624,7 @@ class Invitation(TenantScoped, Base):
     __tablename__ = "invitations"
     __table_args__ = (
         Index("ix_invitations_tenant_id", "tenant_id"),
-        CheckConstraint(
-            "role IN ('owner', 'admin', 'member')", name="ck_invitations_role"
-        ),
+        CheckConstraint("role IN ('admin', 'member')", name="ck_invitations_role"),
         CheckConstraint(
             "uses_remaining >= 0", name="ck_invitations_uses_remaining_not_negative"
         ),
@@ -695,7 +692,7 @@ class TenantJoinDomain(TenantScoped, Base):
     )
 
 
-class AuditEvent(TenantScoped, Base):
+class AuditEvent(Base):
     """One security-relevant change in a tenant: who did what, to what, when.
 
     Written in the same transaction as the change it records wherever that
@@ -717,6 +714,11 @@ class AuditEvent(TenantScoped, Base):
     `occurred_at` defaults to `clock_timestamp()`, not `now()`: two events in
     one transaction would otherwise share a timestamp, and the read pages back
     by it.
+
+    `tenant_id` carries no foreign key either, for the same reason: deleting a
+    workspace leaves its history behind, readable by no member since none is
+    left, and the runtime role could not delete it anyway. It is still scoped
+    by the policy (`rls_ddl.HISTORY_TABLES`).
     """
 
     __tablename__ = "audit_events"
@@ -724,6 +726,9 @@ class AuditEvent(TenantScoped, Base):
         Index("ix_audit_events_tenant_occurred_at", "tenant_id", "occurred_at"),
     )
 
+    tenant_id: Mapped[str] = mapped_column(
+        Text, nullable=False, default=require_tenant_id
+    )
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False

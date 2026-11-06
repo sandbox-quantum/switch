@@ -14,7 +14,6 @@ from switch_core.authz import (
     TENANT_ADMIN_ROLES,
     administers_tenant,
     effective_tenant_role,
-    owns_tenant,
 )
 from switch_core.db.models import (
     OidcIdentity,
@@ -130,7 +129,7 @@ class UserStore:
         `gateway/oidc_routes.py`).
 
         The role mirrors the migration's own mapping for pre-existing users:
-        `owner` for the global admin role, `member` otherwise.
+        `admin` for the global admin role, `member` otherwise.
         """
         existing = await session.execute(
             select(TenantMember.tenant_id).where(TenantMember.user_id == user.id)
@@ -142,7 +141,7 @@ class UserStore:
             TenantMember(
                 tenant_id=tenant_id,
                 user_id=user.id,
-                role="owner" if user.role == "admin" else "member",
+                role="admin" if user.role == "admin" else "member",
             )
         )
         await session.flush()
@@ -489,7 +488,7 @@ class UserStore:
         caller's global bit and is a no-op when a membership already exists:
         this is the explicit write for the two places that grant a *specific*
         role by a caller's own action — creating a workspace (the creator
-        becomes its `owner`) and accepting an invitation (the invited role).
+        becomes its `admin`) and accepting an invitation (the invited role).
         It does not check for an existing row first; a caller that needs that
         checks before calling. Kept as the one place `TenantMember` is
         constructed (`tests/switch_core/test_seed_admin_membership.py` pins
@@ -579,7 +578,7 @@ class UserStore:
         self, session: AsyncSession, tenant_id: str, user_id: str
     ) -> bool:
         """Whether `user_id` administers `tenant_id` through a role they hold
-        (a workspace admin or owner membership, or `org_admin` of its
+        (a workspace admin membership, or `org_admin` of its
         organization), leaving the operator flag out. An operator who does
         not is there on `platform_access`."""
         return await self._administers(session, tenant_id, user_id, is_operator=False)
@@ -631,22 +630,40 @@ class UserStore:
         )
         return [(row[0], row[1]) for row in result.all()]
 
-    async def count_owners(self, session: AsyncSession) -> int:
-        """How many `owner` memberships exist in the session's bound tenant.
-
-        Backs "a workspace must always have an owner": removing or demoting a
-        member is refused when they are the one row this counts.
-        """
-        result = await session.execute(
-            select(func.count())
-            .select_from(TenantMember)
-            .where(TenantMember.role == "owner")
+    async def count_admins(self, session: AsyncSession) -> int:
+        """How many `admin` memberships the session's bound tenant has, locking
+        nothing. For reporting how things stand; a write that must keep an admin
+        counts with `lock_admins` instead."""
+        return (
+            await session.scalar(
+                select(func.count())
+                .select_from(TenantMember)
+                .where(TenantMember.role == "admin")
+            )
+            or 0
         )
-        return result.scalar_one()
+
+    async def lock_admins(self, session: AsyncSession) -> int:
+        """How many `admin` memberships the session's bound tenant has, with
+        each of those rows locked until the transaction ends.
+
+        Backs "a workspace must always have an admin": removing or demoting a
+        member is refused when they are the one row this counts. The lock is
+        what makes that hold when two admins act at once: without it, each of
+        two concurrent demotions counts two admins and both commit. With it,
+        the second waits for the first, and its count leaves out the row the
+        first demoted or removed.
+        """
+        result = await session.scalars(
+            select(TenantMember.user_id)
+            .where(TenantMember.role == "admin")
+            .with_for_update()
+        )
+        return len(result.all())
 
     async def administers(self, session: AsyncSession, user: User) -> bool:
         """Whether `user` may administer the tenant bound to `session`'s
-        context — the operator bypass, an owner/admin membership in it, or
+        context — the operator bypass, an admin membership in it, or
         `org_admin` of its organization.
 
         See `authz.administers_tenant`, which this composes with a read of the
@@ -656,7 +673,7 @@ class UserStore:
             RuntimeError: no tenant is bound. The question has no
                 tenant-independent answer: half of it is a membership row that
                 cannot be read without one. Answering on the operator bit
-                alone would quietly demote a workspace owner to a plain
+                alone would quietly demote a workspace admin to a plain
                 member, and the symptom — a 403 on their own workspace — says
                 nothing about why.
         """
@@ -670,23 +687,3 @@ class UserStore:
         return await self._administers(
             session, tenant_id, user.id, is_operator=user.role == "admin"
         )
-
-    async def owns(self, session: AsyncSession, user: User) -> bool:
-        """Whether `user` may decide who owns the tenant bound to `session`'s
-        context — the operator bypass, or an `owner` membership in it.
-
-        The same composition as `administers`, over `authz.owns_tenant`; see
-        there for why the two are separate bits rather than one.
-
-        Raises:
-            RuntimeError: no tenant is bound, for the same reason
-                `administers` raises.
-        """
-        tenant_id = current_tenant_id()
-        if tenant_id is None:
-            raise RuntimeError(
-                "owns requires a bound tenant; whether someone owns a "
-                "workspace is only answerable about a particular one"
-            )
-        role = await self.tenant_role(session, tenant_id, user.id)
-        return owns_tenant(is_operator=user.role == "admin", tenant_role=role)

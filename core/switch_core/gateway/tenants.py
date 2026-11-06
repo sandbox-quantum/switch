@@ -10,6 +10,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.workspace_deletion import (
+    WorkspaceDeletionRefused,
+    delete_workspace,
+)
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
@@ -18,14 +22,20 @@ from switch_core.authz import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
-from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from switch_core.clients.client_lifecycle_service import (
+    ClientLifecycleService,
+)
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import (
     ServiceBroker,
     ServiceError,
     get_service_broker,
 )
-from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
+from switch_core.db.audit import (
+    AuditAction,
+    list_audit_events,
+    record_audit_event,
+)
 from switch_core.db.models import (
     Invitation,
     Organization,
@@ -62,7 +72,7 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
-    get_tenant_is_owner,
+    initial_tenant_claim,
     list_tenant_memberships,
     may_bind_tenant,
     record_operator_entry,
@@ -120,6 +130,7 @@ from switch_core.gateway.schemas import (
     OperatorWorkspaceResponse,
     SessionUserResponse,
     TenantCreateRequest,
+    TenantDeleteRequest,
     TenantMembershipResponse,
     UsageTotalResponse,
 )
@@ -140,7 +151,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-TENANT_MEMBER_ROLES = ("owner", "admin", "member")
+TENANT_MEMBER_ROLES = ("admin", "member")
+
+
+def _member_role(role: str) -> str:
+    """`role` as this server stores it. `owner` was a role of its own until it
+    merged into `admin`; a client from before the merge may still ask for it,
+    and gets the role that now carries everything it did."""
+    if role == "owner":
+        return "admin"
+    if role not in TENANT_MEMBER_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role: {role}")
+    return role
 
 
 def _require_bound_tenant(tenant_id: str) -> None:
@@ -210,23 +232,6 @@ async def _refuse_organization_admin(
                 "gives them admin rights in every one of its workspaces. Change "
                 "their role in the organization's members first."
             ),
-        )
-
-
-def _require_owner(is_owner: bool, action: str) -> None:
-    """Raise 403 unless the caller owns the bound tenant.
-
-    The three actions this guards — granting `owner`, changing an owner's
-    role, removing an owner — are the ones that move a workspace's ownership
-    set, and none of them is reachable by a last-owner guard: an admin who
-    promotes themselves first leaves two owners standing at every subsequent
-    step, so each individual request looks safe while the sequence takes the
-    workspace. `require_tenant_admin` still gates getting this far; this is
-    the narrower bit on top (`authz.owns_tenant`).
-    """
-    if not is_owner:
-        raise HTTPException(
-            status_code=403, detail=f"Only a workspace owner may {action}"
         )
 
 
@@ -363,6 +368,70 @@ async def create_tenant(
     return created.workspace
 
 
+@router.delete("/tenants/{tenant_id}")
+async def delete_tenant(
+    tenant_id: str,
+    req: TenantDeleteRequest,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, bool]:
+    """Delete the bound workspace, once it has been emptied.
+
+    Its admins only, by their own admin membership: not the deployment
+    operator's bypass, and not an organization admin acting as one, since
+    deleting a workspace is the one act that cannot be undone by anyone. The
+    caller confirms by typing its name.
+    A workspace that still holds anything is refused, 409, with what is left
+    by kind and count (`accounts/workspace_deletion.py`). The session cookie
+    is re-minted without it, onto the caller's only other workspace if there
+    is exactly one.
+    """
+    _require_bound_tenant(tenant_id)
+    if await user_store.tenant_role(session, tenant_id, user.id) != "admin":
+        raise HTTPException(
+            status_code=403, detail="Only a workspace admin may delete the workspace"
+        )
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        # Deleted by a request that got here first.
+        raise HTTPException(status_code=404, detail="That workspace doesn't exist.")
+    if req.name.strip() != tenant.name:
+        raise HTTPException(
+            status_code=400, detail="That name doesn't match this workspace."
+        )
+    try:
+        key_hashes = await delete_workspace(session, tenant_id, user.id, user.id)
+    except WorkspaceDeletionRefused as refused:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(refused)) from None
+    await session.commit()
+    logger.info("Admin %s deleted workspace %s", user.id, tenant_id)
+
+    for key_hash in key_hashes:
+        protocol.api_key_cache.invalidate(key_hash)
+    # The clients the server ran for it stop here, and everywhere else on the
+    # announcement.
+    await client_lifecycle.reconcile_tenant(tenant_id)
+    client_lifecycle.announce(tenant_id)
+
+    set_session_cookie(
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        await initial_tenant_claim(session_factory, user_store, user),
+    )
+    return {"ok": True}
+
+
 @router.post("/tenants/{tenant_id}/switch")
 async def switch_tenant(
     tenant_id: str,
@@ -442,15 +511,10 @@ async def create_invitation(
     session: Annotated[AsyncSession, Depends(get_session)],
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
-    is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     mailer: Annotated[InviteMailer | None, Depends(get_invite_mailer)],
 ) -> InvitationCreateResponse:
-    """Mint an invitation to the bound tenant. `owner`/`admin` only.
-
-    An `owner` invitation is owner-only: minting one is granting ownership
-    with a step of indirection, so it answers to the same gate the direct
-    grant does (`_require_owner`).
+    """Mint an invitation to the bound tenant. Admins only.
 
     An invitation naming an e-mail is also sent there when a relay is
     configured. The e-mail is a convenience on top of the link, not a
@@ -458,10 +522,7 @@ async def create_invitation(
     stands, and `email_delivery` tells the admin to share the link instead.
     """
     _require_bound_tenant(tenant_id)
-    if req.role not in TENANT_MEMBER_ROLES:
-        raise HTTPException(status_code=400, detail=f"Invalid role: {req.role}")
-    if req.role == "owner":
-        _require_owner(is_owner, "invite another owner")
+    role = _member_role(req.role)
     if req.email is not None and mailer is not None and user.role != "admin":
         sent_today = await invitation_store.count_addressed_since(
             session, datetime.now(UTC) - timedelta(days=1)
@@ -481,7 +542,7 @@ async def create_invitation(
     expires_at = datetime.now(UTC) + timedelta(hours=req.expires_in_hours)
     invitation, token = await invitation_store.create(
         session,
-        role=req.role,
+        role=role,
         email=req.email,
         expires_at=expires_at,
         uses_remaining=req.uses_remaining,
@@ -570,7 +631,7 @@ async def get_usage(
 ) -> list[UsageTotalResponse]:
     """The bound tenant's usage per metric, consumer and model over `[since, until)`.
 
-    `owner`/`admin` only. Usage is counted in whole UTC hours, so `since` is
+    Admins only. Usage is counted in whole UTC hours, so `since` is
     widened to the start of its hour. Both bounds must carry a timezone: a
     naive time would be read in the server's zone and quietly shift the window.
     """
@@ -631,7 +692,7 @@ async def list_budgets(
     _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> list[BudgetResponse]:
     """Every budget of the bound tenant with its spend in the current period.
-    `owner`/`admin` only."""
+    Admins only."""
     _require_bound_tenant(tenant_id)
     standings = await budget_store.standings(
         session, tenant_id=tenant_id, agent_id=None
@@ -648,7 +709,7 @@ async def create_budget(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BudgetResponse:
-    """Add a budget to the bound tenant. `owner`/`admin` only.
+    """Add a budget to the bound tenant. Admins only.
 
     404 when `agent_id` names no agent in this workspace; 409 when the same
     agent (or the whole workspace), metric and model already has one — edit
@@ -687,7 +748,7 @@ async def update_budget(
     budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
     _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BudgetResponse:
-    """Change a budget's limit and period. `owner`/`admin` only. What it
+    """Change a budget's limit and period. Admins only. What it
     covers is fixed; to cover something else, add another budget."""
     _require_bound_tenant(tenant_id)
     try:
@@ -712,7 +773,7 @@ async def delete_budget(
     budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
     _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> Response:
-    """Remove a budget. `owner`/`admin` only."""
+    """Remove a budget. Admins only."""
     _require_bound_tenant(tenant_id)
     try:
         await budget_store.delete(session, tenant_id=tenant_id, budget_id=budget_id)
@@ -729,7 +790,7 @@ async def list_invitations(
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
     _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> list[InvitationDetail]:
-    """Every invitation of the bound tenant. `owner`/`admin` only."""
+    """Every invitation of the bound tenant. Admins only."""
     _require_bound_tenant(tenant_id)
     invitations = await invitation_store.list_for_tenant(session)
     return [_invitation_detail(i) for i in invitations]
@@ -743,7 +804,7 @@ async def list_tenant_audit_events(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before: Annotated[datetime | None, Query()] = None,
 ) -> list[AuditEventDetail]:
-    """The bound tenant's audit log, newest first. `owner`/`admin` only.
+    """The bound tenant's audit log, newest first. Admins only.
 
     Page back by passing the oldest `occurred_at` returned as `before`.
     """
@@ -773,7 +834,7 @@ async def revoke_invitation(
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
 ) -> InvitationDetail:
-    """Revoke an invitation of the bound tenant. `owner`/`admin` only."""
+    """Revoke an invitation of the bound tenant. Admins only."""
     _require_bound_tenant(tenant_id)
     try:
         invitation = await invitation_store.revoke(session, invitation_id)
@@ -1105,7 +1166,7 @@ async def list_join_domains(
     user: Annotated[User, Depends(require_tenant_admin)],
 ) -> JoinDomainsResponse:
     """The e-mail domains the bound tenant lets people join from, and whether
-    the caller could add their own. `owner`/`admin` only."""
+    the caller could add their own. Admins only."""
     _require_bound_tenant(tenant_id)
     own_domain = email_domain(user.email)
     rows = await join_domain_store.list_for_tenant(session, tenant_id)
@@ -1125,7 +1186,7 @@ async def add_join_domain(
     user: Annotated[User, Depends(require_tenant_admin)],
 ) -> JoinDomainDetail:
     """Let anyone signed in with an address at a domain join the bound tenant
-    as a member, without an invitation. `owner`/`admin` only.
+    as a member, without an invitation. Admins only.
 
     Only the domain of the admin's own address. That is the proof the domain
     is theirs to open: their account's address is either asserted verified by
@@ -1174,7 +1235,7 @@ async def remove_join_domain(
     join_domain_store: Annotated[JoinDomainStore, Depends(get_join_domain_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
 ) -> None:
-    """Stop letting people at a domain join the bound tenant. `owner`/`admin`
+    """Stop letting people at a domain join the bound tenant. Admins
     only, and any domain: closing a workspace needs no proof of anything.
     Members who already joined stay members."""
     _require_bound_tenant(tenant_id)
@@ -1343,37 +1404,25 @@ async def update_member_role(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     admin: Annotated[User, Depends(require_tenant_admin)],
-    is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
 ) -> MemberDetail:
-    """Change a member's role. `owner`/`admin` only.
+    """Change a member's role. Admins only.
 
-    Both ends of the ownership set are owner-only: an admin may promote a
-    member to admin, but not to `owner`, and may not touch an existing
-    owner's role at all. See `_require_owner` for what an admin who could do
-    either would be able to do in three requests.
-
-    Refuses to demote the last `owner` on top of that: with no workspace
-    deletion in this phase, there is no legitimate route to a workspace with
-    none.
+    Refuses to demote the last admin: a workspace with none has nobody who
+    can manage it, and getting one back takes the server's operator.
     """
     _require_bound_tenant(tenant_id)
-    if req.role not in TENANT_MEMBER_ROLES:
-        raise HTTPException(status_code=400, detail=f"Invalid role: {req.role}")
+    role = _member_role(req.role)
 
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
         raise HTTPException(status_code=404, detail="Not a member of this tenant")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
-    if req.role == "owner" and membership.role != "owner":
-        _require_owner(is_owner, "grant ownership")
+    if membership.role == "admin" and role != "admin":
+        if await user_store.lock_admins(session) <= 1:
+            raise HTTPException(status_code=409, detail="Cannot demote the last admin")
 
-    if membership.role == "owner" and req.role != "owner":
-        _require_owner(is_owner, "change an owner's role")
-        if await user_store.count_owners(session) <= 1:
-            raise HTTPException(status_code=409, detail="Cannot demote the last owner")
-
-    if membership.role != req.role:
+    if membership.role != role:
         await record_audit_event(
             session,
             tenant_id=tenant_id,
@@ -1381,9 +1430,9 @@ async def update_member_role(
             action=AuditAction.MEMBER_ROLE_CHANGED,
             target_type="user",
             target_id=user_id,
-            details={"from": membership.role, "to": req.role},
+            details={"from": membership.role, "to": role},
         )
-    membership.role = req.role
+    membership.role = role
     await session.commit()
 
     user = await user_store.get(session, user_id)
@@ -1406,14 +1455,12 @@ async def remove_member(
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     admin: Annotated[User, Depends(require_tenant_admin)],
-    is_owner: Annotated[bool, Depends(get_tenant_is_owner)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict | JSONResponse:
-    """Remove a member from the bound tenant. `owner`/`admin` only.
+    """Remove a member from the bound tenant. Admins only.
 
-    Removing an *owner* is owner-only, the same as demoting one and for the
-    same reason (`_require_owner`), and refuses on the last owner besides.
+    Refuses to remove the last admin, as demoting one does.
 
     Removal also revokes what the member's own credentials in this tenant let
     them do here, in the same transaction as the membership row going away —
@@ -1433,21 +1480,27 @@ async def remove_member(
     enough, including by mistake, that it must not be the thing that makes an
     irreversible call about shared infrastructure. An admin who hits this
     deletes those agents deliberately, with the agent in front of them, then
-    removes the member. The 409 says exactly that and nothing more: there is
-    no route that reassigns an agent's owner in this phase, so offering
-    reassignment as the way out would send an admin looking for a button that
-    does not exist.
+    removes the member, or hands them to someone else first
+    (`POST /ownership/transfer`, which refuses an agent still tied to its
+    owner's own connections or machine).
     """
     _require_bound_tenant(tenant_id)
-    membership = await session.get(TenantMember, (tenant_id, user_id))
+    # Locked until the removal commits, as handing the member something locks
+    # it (`accounts/transfer.py`), so no agent reaches them after the check
+    # below finds none.
+    membership = await session.get(
+        TenantMember,
+        (tenant_id, user_id),
+        with_for_update=True,
+        populate_existing=True,
+    )
     if membership is None:
         raise HTTPException(status_code=404, detail="Not a member of this tenant")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
-    if membership.role == "owner":
-        _require_owner(is_owner, "remove an owner")
-        if await user_store.count_owners(session) <= 1:
-            raise HTTPException(status_code=409, detail="Cannot remove the last owner")
+    if membership.role == "admin":
+        if await user_store.lock_admins(session) <= 1:
+            raise HTTPException(status_code=409, detail="Cannot remove the last admin")
 
     owned_agents = await agent_store.get_by_owner(session, user_id)
     if owned_agents:
@@ -1455,8 +1508,8 @@ async def remove_member(
         raise HTTPException(
             status_code=409,
             detail=(
-                "Cannot remove: this member owns agents in this tenant — "
-                f"delete them first: {names}"
+                "Cannot remove: this member owns agents in this workspace. "
+                f"Transfer or delete them first: {names}"
             ),
         )
 

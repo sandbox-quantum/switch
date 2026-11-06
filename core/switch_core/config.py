@@ -386,8 +386,9 @@ class SwitchConfig(BaseSettings):
     # rooms. Unbounded self-service creation therefore buys steady-state work
     # in the deployment, not storage.
     #
-    # Counts `owner` memberships only, so being invited into someone else's
-    # workspace never spends an allowance the invitee cannot get back. Deployment
+    # Counts workspaces created (`users.workspaces_created`), so being invited
+    # into someone else's workspace never spends an allowance the invitee
+    # cannot get back. Deployment
     # operators (`users.role == "admin"`) are exempt, on the same grounds as
     # every other operator bypass in `authz.py`: this bounds self-service, and
     # an operator provisioning workspaces for other people is not that.
@@ -428,7 +429,7 @@ class SwitchConfig(BaseSettings):
     gateway_smtp_password: str | None = None
     gateway_smtp_from: str | None = None
     # How many e-mailed invitations one workspace may send in 24 hours. With
-    # sign-up open anyone can own a workspace, so without this the server is
+    # sign-up open anyone can create a workspace, so without this the server is
     # a relay for mail to arbitrary addresses. Operators are not limited.
     gateway_invite_emails_per_day: int = 50
 

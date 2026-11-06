@@ -25,7 +25,6 @@ function renderDialog(emailEnabled: boolean) {
     <CreateInvitationDialog
       open
       tenantId="t1"
-      isOwner={false}
       emailEnabled={emailEnabled}
       onClose={() => {}}
       onCreated={() => {}}

@@ -63,6 +63,9 @@ export interface AgentSummary {
   parent_agent_id: string | null;
   known_agent_type: string | null;
   known_agent_options: Record<string, unknown> | null;
+  // Whether the caller may rename the agent and edit its options and who may
+  // address it, as the server decides it: its owner or a workspace admin.
+  can_manage: boolean;
 }
 
 export interface AgentToolSummary {
@@ -1136,7 +1139,7 @@ export interface AuthConfig {
 
 // ── Session and workspaces ──────────────────────────────────────────────────
 
-export type TenantRole = "owner" | "admin" | "member";
+export type TenantRole = "admin" | "member";
 
 export type OrganizationRole = "org_admin" | "member";
 
@@ -1211,6 +1214,42 @@ export interface Member {
 
 export async function fetchMembers(tenantId: string): Promise<Member[]> {
   return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
+}
+
+// Owner only, and only once the workspace is empty: the server refuses
+// otherwise, listing what is left.
+export async function deleteWorkspace(tenantId: string, name: string): Promise<void> {
+  await jsonRequest(`/tenants/${encodeURIComponent(tenantId)}`, "DELETE", { name });
+}
+
+export type OwnershipKind =
+  | "agent"
+  | "room"
+  | "package"
+  | "reference"
+  | "reference_type"
+  | "document"
+  | "template";
+
+export interface OwnershipTransferResult {
+  kind: OwnershipKind;
+  id: string;
+  owner_id: string;
+  // An agent's API key is re-issued to its new owner, who has to reconnect it.
+  agent_key_reissued: boolean;
+}
+
+// The current owner or a workspace admin, to a current member of the workspace.
+export async function transferOwnership(
+  kind: OwnershipKind,
+  id: string,
+  newOwnerId: string,
+): Promise<OwnershipTransferResult> {
+  return jsonRequest<OwnershipTransferResult>("/ownership/transfer", "POST", {
+    kind,
+    id,
+    new_owner_id: newOwnerId,
+  });
 }
 
 export async function updateMemberRole(
@@ -1371,7 +1410,7 @@ export async function removeOrganizationMember(
 // Mirrors `OrganizationIssueKind` in core/switch_core/db/audit.py, by hand.
 export type OrganizationIssueKind =
   | "no_org_admin"
-  | "workspace_without_owner"
+  | "workspace_without_admin"
   | "agents_without_acting_owner"
   | "directory_organization_deleted";
 
@@ -1530,6 +1569,13 @@ export async function createUser(
   role: UserRole,
 ): Promise<UserInfo> {
   return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
+}
+
+// Deployment operator only. Deletes the whole account, as the person
+// deleting it themselves would; the server refuses its own administrator
+// account and the caller's own.
+export async function deleteUser(userId: string): Promise<void> {
+  await jsonRequest(`/users/${encodeURIComponent(userId)}`, "DELETE");
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────
@@ -1994,6 +2040,9 @@ export interface PackageDetail {
   // Counted only for whoever may manage the resource; zero for anyone else.
   hidden_rooms_count: number;
   created_at: string;
+  // Whether the caller may open the package. Only a room's package list
+  // includes packages the caller cannot read.
+  can_read: boolean;
 }
 
 export interface PackageCreateInput {
@@ -2286,8 +2335,8 @@ export interface CurrentTenant {
   slug: string;
   name: string;
   role: string;
-  // Whether the caller may manage the workspace: an owner or admin
-  // membership, or the operator bit.
+  // Whether the caller may manage the workspace: an admin membership,
+  // `org_admin` of its organization, or the operator bit.
   administers: boolean;
 }
 
