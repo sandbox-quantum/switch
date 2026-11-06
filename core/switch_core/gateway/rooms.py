@@ -32,6 +32,15 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.room import (
+    AutoRouteRefused,
+    AutoRouteState,
+    auto_route_state,
+    room_agent,
+    set_auto_route_fallback,
+    set_auto_route_on,
+)
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.auth import (
     authorize_room,
@@ -62,6 +71,8 @@ from switch_core.gateway.schemas import (
     BulkDeleteResponse,
     RoomAgentsRequest,
     RoomAgentUpdateRequest,
+    RoomAutoRoute,
+    RoomAutoRouteRequest,
     RoomCreateRequest,
     RoomDeleteResponse,
     RoomDetail,
@@ -164,6 +175,7 @@ async def _build_room_detail(
     external_user_store: ExternalUserStore,
     protocol: AgentCore,
     principal: Principal,
+    decisions: DecisionAvailability,
 ) -> RoomDetail:
     agent_ids = await room_store.get_agent_ids(session, room.id)
     client_ids = await room_store.get_client_ids(session, room.id)
@@ -199,6 +211,7 @@ async def _build_room_detail(
     join_event_listeners = await room_store.get_join_event_listeners(session, room.id)
     owner = await session.get(User, room.owner_id) if room.owner_id else None
     takes_part = await takes_part_in_room(session, room_store, room.id, principal.id)
+    auto_route = await auto_route_state(session, decisions, room)
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
     external_channel_url = await _external_channel_url(room)
@@ -246,7 +259,26 @@ async def _build_room_detail(
         can_write=can(principal, "write", room),
         can_manage=can(principal, "delete", room),
         can_unlink=can_unlink_from_room(principal, takes_part=takes_part),
+        auto_route=_auto_route_detail(auto_route),
     )
+
+
+def _auto_route_detail(state: AutoRouteState) -> RoomAutoRoute:
+    return RoomAutoRoute(
+        on=state.on,
+        available=state.available,
+        reason=state.reason,
+        fallback_agent=state.fallback_agent,
+        fallback_agent_name=state.fallback_agent_name,
+    )
+
+
+def get_decision_availability(
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> DecisionAvailability:
+    """Whether auto-route can act in a room: the server's flag and default,
+    and the room's workspace's choice (`decision/settings.py`)."""
+    return DecisionAvailability.from_config(config)
 
 
 async def _list_room_role_details(
@@ -408,6 +440,7 @@ async def create_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -457,6 +490,7 @@ async def create_room(
         external_user_store,
         protocol,
         Principal(user.id, is_admin),
+        decisions,
     )
 
 
@@ -896,6 +930,7 @@ async def get_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -909,6 +944,7 @@ async def get_room(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -922,6 +958,7 @@ async def patch_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -966,6 +1003,7 @@ async def patch_room(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -1065,6 +1103,7 @@ async def put_room_group(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1097,6 +1136,7 @@ async def put_room_group(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -1110,6 +1150,7 @@ async def put_protection(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1131,6 +1172,7 @@ async def put_protection(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -1144,6 +1186,7 @@ async def put_observe(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1165,7 +1208,53 @@ async def put_observe(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
+
+
+@router.put("/{room_id}/auto-route")
+async def put_auto_route(
+    room_id: str,
+    req: RoomAutoRouteRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomAutoRoute:
+    """Turn the room's auto-route on or off, and name or clear its triage
+    agent: the same settings as `!auto-route` and `!auto-route fallback`.
+    Turning it on or off takes write access to the room, the same as
+    follow-ups; naming the triage agent also takes the room's owner or a
+    workspace admin (`can_manage`). Turning it on where it cannot act
+    (`available` false) is refused with 409 and the reason."""
+    principal = Principal(user.id, is_admin)
+    room = await authorize_room(session, room_store, room_id, principal, "write")
+    if "fallback_agent" in req.model_fields_set and not can(principal, "delete", room):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the room's owner or a workspace admin can name the triage agent.",
+        )
+    try:
+        if "fallback_agent" in req.model_fields_set:
+            agent = None
+            if req.fallback_agent is not None:
+                agent = await room_agent(session, room.id, req.fallback_agent)
+                if agent is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"No agent {req.fallback_agent!r} in this room.",
+                    )
+            await set_auto_route_fallback(session, room_store, room, agent)
+        if req.on is not None:
+            await set_auto_route_on(session, decisions, room_store, room, req.on)
+    except AutoRouteRefused as refused:
+        raise HTTPException(
+            status_code=409 if req.on else 422, detail=str(refused)
+        ) from refused
+    await session.commit()
+    await session.refresh(room)
+    return _auto_route_detail(await auto_route_state(session, decisions, room))
 
 
 @router.post("/{room_id}/agents")
@@ -1178,6 +1267,7 @@ async def post_room_agents(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1204,6 +1294,7 @@ async def post_room_agents(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -1218,6 +1309,7 @@ async def patch_room_agent(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1240,6 +1332,7 @@ async def patch_room_agent(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -1253,6 +1346,7 @@ async def delete_room_agent(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1274,6 +1368,7 @@ async def delete_room_agent(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -1287,6 +1382,7 @@ async def post_room_users(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1308,6 +1404,7 @@ async def post_room_users(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -1320,6 +1417,7 @@ async def _set_archived(
     bridge_store: CollaborationBridgeStore,
     external_user_store: ExternalUserStore,
     protocol: AgentCore,
+    decisions: DecisionAvailability,
     user: User,
     is_admin: bool,
 ) -> RoomDetail:
@@ -1340,6 +1438,7 @@ async def _set_archived(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -1352,6 +1451,7 @@ async def sync_room_name(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1381,6 +1481,7 @@ async def sync_room_name(
         external_user_store,
         protocol,
         principal,
+        decisions,
     )
 
 
@@ -1393,6 +1494,7 @@ async def archive_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1407,6 +1509,7 @@ async def archive_room(
         bridge_store,
         external_user_store,
         protocol,
+        decisions,
         user,
         is_admin,
     )
@@ -1421,6 +1524,7 @@ async def unarchive_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1434,6 +1538,7 @@ async def unarchive_room(
         bridge_store,
         external_user_store,
         protocol,
+        decisions,
         user,
         is_admin,
     )

@@ -14,7 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.agent_detail import agent_facing_summary
 from switch_core.db.models import Package, User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.gateway.agents import list_agents
 from switch_core.gateway.packages import list_room_packages
 from switch_core.gateway.rooms import get_room
@@ -25,6 +27,12 @@ from tests.switch_core.gateway.test_room_detail_access import (
     _add_room,
     _protocol,
     _svc,
+)
+
+_NO_DECISIONS = DecisionAvailability(
+    enabled=False,
+    server=ServerDefault(endpoint_url=None, api_key=None, bedrock_enabled=False),
+    store=DecisionSettingsStore(),
 )
 
 
@@ -65,6 +73,7 @@ class TestRoomPermissions:
                 None,  # type: ignore[arg-type]  # bridge_store: the room has no bridge
                 None,  # type: ignore[arg-type]  # external_user_store
                 _protocol(),
+                _NO_DECISIONS,
                 user,
                 caller == "admin",
             )
