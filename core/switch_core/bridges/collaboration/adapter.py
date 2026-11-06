@@ -720,7 +720,6 @@ class PlatformAdapter(ABC):
         self._outbound_attempt_persister: (
             Callable[[str, dict[str, dict[str, str]], bool], Awaitable[None]] | None
         ) = None
-        self._outbound_attempt_cache: dict[str, dict[str, dict[str, str]]] = {}
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
@@ -780,14 +779,9 @@ class PlatformAdapter(ABC):
     async def load_outbound_attempts(
         self, transport_event_id: str
     ) -> dict[str, dict[str, str]]:
-        if self._outbound_attempt_loader is not None:
-            return await self._outbound_attempt_loader(transport_event_id)
-        return {
-            key: dict(value)
-            for key, value in self._outbound_attempt_cache.get(
-                transport_event_id, {}
-            ).items()
-        }
+        if self._outbound_attempt_loader is None:
+            raise RuntimeError("Outbound attempt store is not configured")
+        return await self._outbound_attempt_loader(transport_event_id)
 
     async def persist_outbound_attempts(
         self,
@@ -795,13 +789,9 @@ class PlatformAdapter(ABC):
         attempts: dict[str, dict[str, str]],
         uncertain: bool,
     ) -> None:
-        if self._outbound_attempt_persister is not None:
-            await self._outbound_attempt_persister(
-                transport_event_id, attempts, uncertain
-            )
-        self._outbound_attempt_cache[transport_event_id] = {
-            key: dict(value) for key, value in attempts.items()
-        }
+        if self._outbound_attempt_persister is None:
+            raise RuntimeError("Outbound attempt store is not configured")
+        await self._outbound_attempt_persister(transport_event_id, attempts, uncertain)
 
     @classmethod
     def describe(cls, key: str) -> MessagingPlatform:

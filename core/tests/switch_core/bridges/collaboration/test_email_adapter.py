@@ -110,6 +110,15 @@ def test_config_masks_passwords_and_rejects_invalid_sender_address() -> None:
     assert config.smtp_security == "starttls"
 
 
+@pytest.mark.asyncio
+async def test_outbound_attempt_store_is_required() -> None:
+    adapter = EmailAdapter(config=_config())
+    with pytest.raises(RuntimeError, match="Outbound attempt store is not configured"):
+        await adapter.load_outbound_attempts("$transport-event")
+    with pytest.raises(RuntimeError, match="Outbound attempt store is not configured"):
+        await adapter.persist_outbound_attempts("$transport-event", {}, False)
+
+
 def test_email_threads_use_message_id_and_references() -> None:
     root = BytesParser(policy=default).parsebytes(_message())
     reply = BytesParser(policy=default).parsebytes(
@@ -870,6 +879,15 @@ async def test_long_email_replies_are_split_and_follow_the_first_part_thread(
         run_inline,
     )
     adapter = EmailAdapter(config=_config())
+    attempts: dict[str, dict[str, dict[str, str]]] = {}
+
+    async def load(event_id):
+        return attempts.get(event_id, {})
+
+    async def save(event_id, saved_attempts, uncertain):
+        attempts[event_id] = saved_attempts
+
+    adapter.set_outbound_attempt_store(load, save)
     content = "\n\n".join(f"Paragraph {index}. " + "x" * 6000 for index in range(4))
     first_id = await adapter.send_message(
         _channel_id("switch@example.test"), "Avery", content

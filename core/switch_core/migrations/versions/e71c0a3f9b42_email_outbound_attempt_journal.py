@@ -1,7 +1,7 @@
 """Persist outbound platform attempt state on bridge message claims.
 
 Revision ID: e71c0a3f9b42
-Revises: c3d9a1f7b246
+Revises: a3d9f6c2b871
 Create Date: 2026-11-05 16:20:00.000000
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "e71c0a3f9b42"
-down_revision: str | None = "c3d9a1f7b246"
+down_revision: str | None = "a3d9f6c2b871"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
