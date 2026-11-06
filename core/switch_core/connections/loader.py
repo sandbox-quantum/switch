@@ -3,8 +3,9 @@
 Each ``catalog/<slug>/connection.yaml`` describes one service a user can
 connect. Enabled entries ship a skill under ``catalog/<slug>/skill/``, which
 each session of an agent granted the service is given; placeholder entries
-ship none. The catalog is validated once, at import, so a malformed
-entry stops the server rather than surfacing on the first launch.
+ship none. A disabled entry naming an adapter may stage a skill, validated
+but never published to sessions. The catalog is validated once, at import,
+so a malformed entry stops the server rather than surfacing on the first launch.
 
 An enabled entry also names the adapter that reaches the vendor (``adapter``:
 ``github``, the generic ``oauth``, or ``api_key`` for a vendor whose people
@@ -867,7 +868,7 @@ def load_catalog(root: Path) -> dict[str, Connection]:
                 f"Connection {directory.name} declares a different slug: {definition.slug}"
             )
         skill = directory / "skill"
-        if definition.enabled:
+        if definition.enabled or (definition.adapter is not None and skill.exists()):
             if not skill.is_dir() or skill.is_symlink():
                 raise CatalogError(
                     f"Connection {definition.slug} is enabled but has no skill."
@@ -880,6 +881,8 @@ def load_catalog(root: Path) -> dict[str, Connection]:
                         f"a skill file it does not ship: {profile.skill}"
                     )
                 _check_frontmatter(definition.slug, profile.skill, files[profile.skill])
+            if not definition.enabled:
+                files = {}
         else:
             if skill.exists():
                 raise CatalogError(

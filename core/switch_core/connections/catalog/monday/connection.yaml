@@ -1,0 +1,35 @@
+slug: monday
+name: Monday.com
+category: Project management
+description: Read and update Monday.com boards and items, as you.
+# Staged, not connectable. See docs/connections/monday-setup.md.
+# DCR metadata offers S256, refresh and revocation but advertises no scopes.
+# The new OAuth guide uses JWT exp rather than expires_in; Switch requires
+# expires_in. No authenticated DCR token lifetime or identity run is available.
+# Do not enable, invent a lifetime, or fall back to a non-expiring personal key.
+enabled: false
+adapter: oauth
+auth:
+  type: oauth
+  # The new OAuth flow documents single-use, rotating refresh tokens.
+  # Its use by this DCR client still needs authenticated verification.
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    # Account admins approve exact callback URLs. Core's HTTPS callback keeps
+    # the URL stable and avoids needing locally hosted connector permission.
+    redirect: [core]
+    revocation_discovered: true
+  identity:
+    method: POST
+    url: https://api.monday.com/v2
+    body: { query: "{ me { id email } }" }
+    account_id: data.me.id
+    label: data.me.email
+mcp:
+  servers:
+    - { name: monday, url: "https://mcp.monday.com/mcp" }
+# token.max_lifetime and access are intentionally absent until measured and
+# verified for DCR. Hosted consent inherits the user's permissions; it must
+# not be represented as scope-enforced read-only access.
+tools: { mode: pass_through }

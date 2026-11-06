@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "monday",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -46,6 +47,64 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+
+
+def test_monday_is_staged_for_oauth_without_invented_token_or_scope_policy():
+    entry = CATALOG["monday"]
+    definition = entry.definition
+    assert definition.name == "Monday.com"
+    assert definition.enabled is False
+    assert definition.adapter == "oauth"
+    assert definition.auth.type == "oauth"
+    assert definition.auth.api_key is None
+    assert definition.auth.refresh == "rotating"
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert oauth.registration == "dynamic"
+    assert oauth.redirect == ["core"]
+    assert oauth.loopback_ports is None
+    assert oauth.authorization_url is None
+    assert oauth.token_url is None
+    assert oauth.revocation_discovered is True
+    identity = definition.auth.identity
+    assert identity is not None
+    assert identity.method == "POST"
+    assert identity.url == "https://api.monday.com/v2"
+    assert identity.body == {"query": "{ me { id email } }"}
+    assert (identity.account_id, identity.label) == ("data.me.id", "data.me.email")
+    assert definition.token is None
+    assert definition.access is None
+    assert definition.cli is None
+    assert definition.mcp is not None
+    assert [(s.name, s.url, s.headers) for s in definition.mcp.servers] == [
+        ("monday", "https://mcp.monday.com/mcp", None)
+    ]
+    assert definition.tools is not None
+    assert definition.tools.mode == "pass_through"
+    # A staged skill is validated on disk but never supplied to sessions.
+    assert entry.skill_files == {}
+    assert (CATALOG_ROOT / "monday" / "skill" / "SKILL.md").is_file()
+
+
+def test_monday_cannot_be_enabled_without_resolving_policy(catalog_copy):
+    path = catalog_copy / "monday" / "connection.yaml"
+    path.write_text(path.read_text().replace("enabled: false", "enabled: true"))
+    with pytest.raises(CatalogError, match="an enabled entry needs token, access"):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    "content,message",
+    [
+        ("---\nname: another\n---\n", "frontmatter"),
+        ("---\nname: monday\ndescription: Work.\n---\nUse API key.", "API key"),
+    ],
+)
+def test_a_staged_skill_is_still_validated(catalog_copy, content, message):
+    path = catalog_copy / "monday" / "skill" / "SKILL.md"
+    path.write_text(content)
+    with pytest.raises(CatalogError, match=message):
+        load_catalog(catalog_copy)
 
 
 GOOGLE = "https://www.googleapis.com/auth/"

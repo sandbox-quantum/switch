@@ -433,6 +433,9 @@ one of three shapes. Pick the first that fits:
 
 Then:
 
+- A disabled entry naming an adapter may stage its skill for later enablement.
+  The loader validates it but publishes no skill files to sessions; short
+  placeholders without an adapter still must not ship a skill.
 - `connections/catalog/<slug>/connection.yaml`, and `skill/SKILL.md` with
   `name: <slug>` and a description in its frontmatter. The skill describes
   tasks, tools and limits, never credentials: the loader refuses one that
