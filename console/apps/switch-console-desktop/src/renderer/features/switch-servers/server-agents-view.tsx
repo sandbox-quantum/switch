@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { CloudMachineCard } from '@renderer/features/cloud-agents/cloud-machine-card';
+import { PEOPLE_WORDS } from '@renderer/features/cloud-agents/people-words';
 import { useResealResult } from '@renderer/features/cloud-agents/repair-cloud';
 import {
   useCloudMachineFor,
@@ -96,6 +97,14 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   const sharedById = new Map((shared.data ?? []).map((entry) => [entry.agent_id, entry]));
   // Hosted agents v2 only (`hosted_v2`), and only a machine Core's `backend` says is a box.
   const v2 = useFeatureFlags(serverId).hosted_v2;
+  // A box with no agent yet says what to do first (the PM's words, the same as Switch web).
+  const emptyBox =
+    v2 &&
+    (machines.data ?? []).some(
+      (machine) =>
+        machine.backend === 'box' && machine.state !== 'deleted' && machine.agents.length === 0
+    ) &&
+    !any;
 
   return (
     <ServerPage
@@ -146,6 +155,11 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
       {any && agents.length === 0 && managedAgents.length === 0 && (
         <p className="mb-3 py-2 text-sm text-foreground-muted">
           No agent here matches “{filter.trim()}”.
+        </p>
+      )}
+      {emptyBox && (
+        <p className="mb-3 text-sm text-foreground-muted" data-empty-no-agents="">
+          {PEOPLE_WORDS.emptyNoAgents}
         </p>
       )}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-[14px]">

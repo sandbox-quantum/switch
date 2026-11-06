@@ -1,3 +1,4 @@
+import { PEOPLE_WORDS } from '@renderer/features/cloud-agents/people-words';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type {
@@ -62,7 +63,7 @@ export function sharedCloudPresentation(
         return { label: 'Stopped', detail: 'Start your cloud to use it', tone: 'resting', when };
       return {
         label: 'Resting',
-        detail: agent.box_stopped ? 'Starts when messaged' : 'Wakes when you message it',
+        detail: agent.box_stopped ? 'Starts when messaged' : PEOPLE_WORDS.agentResting,
         tone: 'resting',
         when,
       };
@@ -101,7 +102,7 @@ export function sharedCloudPresentation(
             ? "Finishing your cloud's repair. Open Switch Console on your computer."
             : // One reason covers a missing login and one the box couldn't sign in with,
               // so the words fit both (the PM's table; splitting them is on the later list).
-              'Check your AI login',
+              PEOPLE_WORDS.agentLoginNeeded,
           tone: 'problem',
           when,
         };

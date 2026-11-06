@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PEOPLE_WORDS } from '@renderer/features/cloud-agents/people-words';
 import { yourCloudView } from '@renderer/features/cloud-agents/your-cloud';
 import { sharedCloudPresentation } from '@renderer/features/shared-cloud/shared-cloud-state';
 
@@ -10,6 +11,26 @@ const RESTING_EXPLANATION =
   'Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.';
 
 describe('people words, the same as Switch web', () => {
+  it('the words module holds the stories table exactly', () => {
+    expect(PEOPLE_WORDS).toEqual({
+      restingExplanation: RESTING_EXPLANATION,
+      emptyNoAgents: 'Add your first agent on Switch cloud',
+      agentResting: 'Wakes when you message it',
+      agentLoginNeeded: 'Check your AI login',
+      checklist: {
+        cloudReady: 'Your cloud is ready',
+        cloudStopped: 'Your cloud is stopped',
+        start: 'Start',
+        loginSet: 'AI login set',
+        loginMissing: 'No AI login yet',
+        giveLogin: 'Give login',
+        agentAdded: 'First agent added',
+        agentMissing: 'No agent yet',
+        addAgent: 'Add agent',
+      },
+    });
+  });
+
   it('a resting cloud with agents explains itself in the PM’s words', () => {
     const view = yourCloudView(
       {

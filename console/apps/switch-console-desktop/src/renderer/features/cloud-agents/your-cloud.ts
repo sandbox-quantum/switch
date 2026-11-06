@@ -1,4 +1,5 @@
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
+import { PEOPLE_WORDS } from './people-words';
 
 /** Room steps (designer): from 80% "A little left" (the same point the capacity bars warn), from 95% "Full right now". */
 export const NEARLY_FULL = 0.8;
@@ -113,7 +114,7 @@ export function yourCloudView(
           resting: true,
           heading: 'Resting',
           // The PM's resting explanation, the same in Switch web.
-          line: 'Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.',
+          line: PEOPLE_WORDS.restingExplanation,
           start: 'ensure',
           startLabel: 'Wake',
         };

@@ -215,6 +215,34 @@ it("shows a shared-cloud user's own box as Your cloud, with Repair and no machin
   expect(button(el, /stop machine/i)).toBeUndefined();
 });
 
+it('a box with no agent yet says how to start, in the PM’s words; with v2 off it says nothing new', async () => {
+  flags.hosted_agents = true;
+  flags.hosted_v2 = true;
+  switchServers.sharedCloudAgents.mockResolvedValue([]);
+  const empty = {
+    ...sleepingMachine(),
+    state: 'ready',
+    desired_state: 'running',
+    stop_reason: null,
+    sleeping: false,
+    instance_type: null,
+    controller_id: 'c-box',
+    agents: [],
+    backend: 'box',
+  } satisfies CloudMachine;
+  switchServers.cloudMachines.mockResolvedValue([empty]);
+  let el = await render();
+  await settle();
+  expect(el.textContent).toContain('Add your first agent on Switch cloud');
+  await act(async () => root!.unmount());
+  container?.remove();
+
+  flags.hosted_v2 = false;
+  el = await render();
+  await settle();
+  expect(el.textContent).not.toContain('Add your first agent on Switch cloud');
+});
+
 it('says a paused box is paused by Switch, and offers no start', async () => {
   flags.hosted_agents = true;
   flags.hosted_v2 = true;

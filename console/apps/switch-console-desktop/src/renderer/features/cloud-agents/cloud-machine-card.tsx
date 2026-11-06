@@ -12,6 +12,7 @@ import { type MachineAction, machinePresentation } from './cloud-machine-state';
 import { hostedSummary } from './hosted-summary';
 import { HostedCapacityRows } from './hosted-summary-view';
 import { RepairCloud } from './repair-cloud';
+import { BoxSetupChecklist, stoppedStart } from './setup-checklist-view';
 import { CLOUD_MACHINES_KEY } from './use-cloud-agents';
 import { yourCloudView } from './your-cloud';
 
@@ -93,6 +94,8 @@ export function CloudMachineCard({
     }
   };
   const agentCount = machine.agents.length;
+  // A stopped box's Start is the setup checklist's (BoxSetupChecklist), so it isn't shown twice.
+  const checklistStarts = box && stoppedStart(cloud);
   // Your cloud files (the file explorer): a v2 box only, and only once the flags allow it.
   const filesShown = useCloudFilesVisible(box ? serverId : null);
   return (
@@ -132,7 +135,7 @@ export function CloudMachineCard({
       {!box ? null : cloud.resting ? (
         <div className="mt-2 text-xs text-foreground-muted">
           <span className="font-medium text-foreground">{cloud.heading}</span> · {cloud.line}
-          {cloud.start && !blocked && (
+          {cloud.start && !blocked && !checklistStarts && (
             <div className="mt-2">
               <Button
                 variant="outline"
@@ -161,6 +164,16 @@ export function CloudMachineCard({
             </p>
           )}
         </div>
+      )}
+      {box && (
+        <BoxSetupChecklist
+          machine={machine}
+          serverId={serverId}
+          view={cloud}
+          pending={pending}
+          blocked={blocked}
+          onStart={(how) => void startBox(how)}
+        />
       )}
       {box && filesShown && (
         <div className="mt-2">
