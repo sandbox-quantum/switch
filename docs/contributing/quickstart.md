@@ -26,11 +26,11 @@ Before starting, ensure the following core tools are installed on your workstati
 > **Windows Environment Notes:**
 > - **Shell:** Always use **Git Bash** (or WSL 2) to run `just` commands, as recipes execute POSIX shell scripts (`set -euo pipefail`).
 > - **Docker Engine:** Ensure Docker Desktop is running with the **WSL 2 backend** enabled.
-> - **Line Endings (LF):** Switch requires LF line endings for test fixtures and schema files. Before cloning, configure git to keep LF line endings:
+> - **Line Endings (LF):** Switch requires LF line endings for test fixtures and schema files. Before cloning, configure Git to preserve LF line endings:
 >   ```bash
 >   git config --global core.autocrlf false
 >   ```
->   *(If you already cloned with CRLF and experience formatting check failures across files, re-checkout files with LF: `git config core.autocrlf false && git checkout-index --force --all`).*
+>   *(If you already cloned with CRLF and see repository-wide formatting failures, ensure any current work is committed or stashed, set `git config core.autocrlf false`, and check out clean LF files: `git checkout .`).*
 
 ---
 
@@ -133,10 +133,13 @@ pnpm --filter @switch-console/desktop run dev
 
 1. **Connect to Server:** When Console opens, point it to your local Switch server: `http://localhost:8000`.
 2. **Create an Agent:** Navigate to **Agents** > **New Agent**. Select an available provider on your machine (e.g. Claude Code, Codex, or OpenCode).
-3. **Open a Room:** Create a new Room, invite your agent, and type:
+   > [!TIP]
+   > If you install a provider CLI after Switch Console is already running, restart Console so its PATH discovery scanner detects the newly installed binary.
+3. **Open a Room & Mention Your Agent:** Create a new Room, invite your agent, and address it with an explicit `@mention`:
    ```text
-   Hello! Are you ready to pair program?
+   @your-agent-name Hello! Are you ready to pair program?
    ```
+   *(Switch rooms require an explicit `@mention` to route instructions to the target agent).*
 4. **Observe Response:** The agent will receive your prompt, stream its thoughts, and reply in the room!
 
 ---
@@ -165,10 +168,7 @@ Here is a quick walkthrough to verify your complete code-to-test workflow:
    # Run a targeted unit test
    just test -k test_ingress_agent_api_paths
    ```
-5. **Revert your test edit:**
-   ```bash
-   git checkout core/switch_core/main.py
-   ```
+5. **Revert your test edit:** Open `core/switch_core/main.py` in your editor and remove the `"environment": "dev"` property so the response returns to `{"status": "ok"}`. Run `git diff` to verify your working tree is clean.
 
 ---
 
