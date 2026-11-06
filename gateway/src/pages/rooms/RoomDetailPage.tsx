@@ -765,7 +765,10 @@ function ParticipantsSection({
     [room.id, onChanged],
   );
 
-  const isFixedMembership = room.channel_type === "group" || room.channel_type === "direct";
+  // A direct or group chat takes its members from its platform: the server
+  // refuses changing them, and the page says where they are changed.
+  const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
+  const canChangeMembers = room.can_change_members;
 
   return (
     <Stack spacing={3}>
@@ -792,9 +795,7 @@ function ParticipantsSection({
                   : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                !canWrite || isFixedMembership || working
-                  ? undefined
-                  : () => handleRemoveAgent(id)
+                !canChangeMembers || working ? undefined : () => handleRemoveAgent(id)
               }
             />
           ))}
@@ -804,7 +805,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {canWrite && !isFixedMembership && (
+        {canChangeMembers && (
           <>
             <Button
               size="small"
@@ -829,14 +830,14 @@ function ParticipantsSection({
             />
           </>
         )}
-        {isFixedMembership && (
+        {platformMembership && (
           <Typography variant="caption" color="text.secondary">
             Membership for {channelTypeLabel(room.channel_type)} rooms is managed from the messaging platform.
           </Typography>
         )}
       </Box>
 
-      {room.bridge_id && !isFixedMembership && (
+      {room.bridge_id && !platformMembership && (
         <Box>
           <Typography variant="body2" gutterBottom>
             Connected users ({room.connected_user_names.length})
@@ -851,7 +852,7 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          {canWrite && (
+          {canChangeMembers && (
             <>
               <Button
                 size="small"

@@ -38,12 +38,15 @@ export interface RoomSummary {
   created_at: string;
   archived: boolean;
   // What the viewer may do, as the server decides it. `can_write` covers the
-  // room's settings, roles, participants, links and attaching resources;
+  // room's settings, roles, links and attaching resources;
+  // `can_change_members` covers adding and removing its agents and people,
+  // which a direct or group chat takes from its platform instead;
   // `can_manage` (owner or workspace admin) covers its access and deleting it;
   // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
   // reference, document or package from it; `can_transfer` (managing it,
   // and never for a chat) covers handing it to someone else.
   can_write: boolean;
+  can_change_members: boolean;
   can_manage: boolean;
   can_unlink: boolean;
   can_transfer: boolean;
