@@ -567,6 +567,23 @@ async def _close_by(
         )
 
 
+async def _stop_tasks(*tasks: asyncio.Task[None]) -> None:
+    """Cancel `tasks` and wait until each has stopped, so nothing they were in
+    the middle of still runs against what is closed next. A task that had
+    already failed is logged, not raised: shutdown goes on."""
+    for task in tasks:
+        task.cancel()
+    for task, outcome in zip(
+        tasks, await asyncio.gather(*tasks, return_exceptions=True), strict=True
+    ):
+        if isinstance(outcome, Exception):
+            logger.error(
+                "Background task %s had failed before shutdown",
+                task.get_name(),
+                exc_info=outcome,
+            )
+
+
 async def _snapshot_loop(reporter: SnapshotReporter) -> None:
     # `no_tenant` for the reason every other long-lived task does it: the
     # snapshot binds each tenant in turn as it counts, and must not inherit
@@ -1580,10 +1597,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 router.close()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
-                data_retention_task.cancel()
+                await _stop_tasks(data_retention_task, erasure_task)
                 if history_engine is not None:
                     await history_engine.dispose()
-                erasure_task.cancel()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 shared_connections_task.cancel()
