@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from switch_core.sessions.contract import (
+    TURN_ENDED,
     Item,
     event_bytes,
     parse_command,
@@ -193,3 +194,54 @@ def test_host_publication_claims_are_rejected() -> None:
     payload["body"]["request"]["audience"] = {"kind": "room", "roomId": "room-demo"}
     with pytest.raises(ValueError):
         parse_host_event(payload)
+
+
+# ── Cancelling a queued turn ─────────────────────────────────────────────────
+
+
+def test_a_turn_cancel_command_names_a_turn_and_nothing_more() -> None:
+    """The TypeScript half is `turn-cancel.test.ts`, beside `session-v1.test.ts`."""
+    command = {
+        **EXAMPLES["platformAnswer"],
+        "body": {"type": "turn.cancel", "turnId": "turn-queued"},
+    }
+
+    parsed = parse_command(command)
+
+    assert parsed.body.type == "turn.cancel"
+    assert parsed.body.turn_id == "turn-queued"
+    with pytest.raises(ValueError):
+        parse_command({**command, "body": {"type": "turn.cancel"}})
+    with pytest.raises(ValueError):
+        parse_command(
+            {**command, "body": {"type": "turn.cancel", "turnId": "t", "extra": 1}}
+        )
+
+
+def test_a_cancelled_turn_is_a_state_both_readers_know_and_an_ended_one() -> None:
+    body = {
+        "type": "turn.upsert",
+        "turnId": "turn-queued",
+        "status": "cancelled",
+        "commandId": None,
+    }
+
+    host = parse_host_event({**EXAMPLES["hostRequest"], "body": body})
+    server = parse_server_event(
+        {
+            "contractVersion": 1,
+            "eventId": "event-cancelled",
+            "sessionId": "session-demo",
+            "sequence": 12,
+            "occurredAt": "2026-09-07T12:00:00Z",
+            "body": body,
+        }
+    )
+
+    assert host.body.status == "cancelled"  # type: ignore[union-attr]
+    assert server.body.status == "cancelled"  # type: ignore[union-attr]
+    assert "cancelled" in TURN_ENDED
+    with pytest.raises(ValueError):
+        parse_host_event(
+            {**EXAMPLES["hostRequest"], "body": {**body, "status": "withdrawn"}}
+        )

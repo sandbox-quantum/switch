@@ -1112,6 +1112,12 @@ read context, re-assume the previous role if one was held, and confirm the resul
 to the requester in the original thread. If the role cannot be restored, report
 that limitation. Failed or unknown controls do not queue a success announcement.
 
+A person can also withdraw a message still queued behind your current turn with
+`!cancel @you <turn id>`, the command their chat copies from that message. Only the
+sender of the message can, and only before you start it: the host drops the turn
+unrun, so you never see it, and the message stays in the room's history. Once a turn
+has started, only `!interrupt` stops it.
+
 ## Tool index
 
 Every Switch tool you call in normal operation, one line each.

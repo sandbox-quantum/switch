@@ -691,6 +691,49 @@ async def test_a_queued_turns_stop_control_follows_the_running_turn(
     await platform.wait_until(lambda: queued_names()[-1] == "turn-2")
 
 
+async def test_a_queued_turn_offers_the_command_that_cancels_it_until_it_starts(
+    service, publisher, platform, bridged
+):
+    await _turn(service, bridged.room_id, "running", 1, turn_id="turn-1")
+    await _turn(service, bridged.room_id, "queued", 1, turn_id="1a2b3c4d-9999")
+    await platform.wait_until(lambda: len(_turns(platform)) >= 2)
+
+    def queued():
+        return [
+            d.content
+            for d in _turns(platform)
+            if d.content.turn.turn_id == "1a2b3c4d-9999"
+        ]
+
+    assert queued()[-1].cancel_command == "!cancel @agent-demo 1a2b3c4d"
+    await _turn(service, bridged.room_id, "running", 2, turn_id="1a2b3c4d-9999")
+    await platform.wait_until(lambda: queued()[-1].turn.status == "running")
+    assert queued()[-1].cancel_command is None
+    first = next(
+        d.content for d in _turns(platform) if d.content.turn.turn_id == "turn-1"
+    )
+    assert first.cancel_command is None
+
+
+async def test_a_cancelled_turn_ends_where_it_was_queued(
+    service, publisher, platform, bridged
+):
+    await _turn(service, bridged.room_id, "running", 1, turn_id="turn-1")
+    await _turn(service, bridged.room_id, "queued", 1, turn_id="turn-2")
+    await platform.wait_until(lambda: len(_turns(platform)) >= 2)
+    await _turn(service, bridged.room_id, "cancelled", 2, turn_id="turn-2")
+    await platform.wait_until(
+        lambda: any(
+            d.content.turn.turn_id == "turn-2" and d.content.turn.status == "cancelled"
+            for d in _turns(platform)
+        )
+    )
+    ended = [d for d in _turns(platform) if d.content.turn.turn_id == "turn-2"][-1]
+    assert ended.call == "update_rich"
+    assert ended.content.cancel_command is None
+    assert ended.content.interrupt_turn_id is None
+
+
 async def test_a_press_on_a_turns_message_finds_its_turn(
     service, publisher, platform, bridged
 ):

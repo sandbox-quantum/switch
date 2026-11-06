@@ -1005,6 +1005,48 @@ it('reports what an ended turn spent on its row, and the row alone to a server t
   }
 }, 20000);
 
+it('reports a cancelled turn as interrupted to a server that predates cancelled', async () => {
+  const host = await start();
+  const sent = (status: string) =>
+    host.switchCore.calls.filter(
+      (c) =>
+        c.path.endsWith('/activity') &&
+        (c.body as { kind: string; status: string }).kind === 'turn' &&
+        (c.body as { status: string }).status === status
+    );
+  try {
+    host.switchCore.state.refusesCancelled = true;
+    const epoch = await host.snapshotEpoch();
+    const send = (commandId: string) =>
+      host.parent.ask({
+        type: 'command',
+        requesterName: null,
+        command: relayed(epoch, commandId, {
+          type: 'message.send',
+          delivery: 'queue',
+          text: 'Hello',
+          attachments: [],
+        }),
+      });
+    await send('first');
+    await until(() => expect(host.turns).toHaveLength(1));
+    await send('second');
+    expect(
+      await host.parent.ask({
+        type: 'command',
+        requesterName: null,
+        command: relayed(epoch, 'withdraw', { type: 'turn.cancel', turnId: 'second' }),
+      })
+    ).toMatchObject({ ok: true, value: { status: 'applied' } });
+    await until(() => expect(sent('interrupted')).toHaveLength(1));
+    expect(sent('cancelled')).toHaveLength(1);
+    expect(sent('interrupted')[0]!.body).toMatchObject({ turn_id: 'second' });
+    expect(host.turns).toHaveLength(1);
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
 it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
   const host = await start({ resettable: true });
   try {

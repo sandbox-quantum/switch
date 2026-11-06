@@ -5,13 +5,14 @@ import { commandSchema, hasOwnActivity } from '@switch-console/shared/session-v1
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
-import { ActivityReporter, type Report } from './activity-reporter';
+import { ActivityReporter, asInterrupted, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
 import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
 import {
+  cancelRefusal,
   followupCommandId,
   retryRefusal,
   roomControlFollowup,
@@ -485,6 +486,17 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    // A server that predates `cancelled` refuses a turn row that says it. The
+    // turn goes again as interrupted, which it knows, so it still ends there.
+    const sentAsInterrupted = async (item: Report, error: RequestError): Promise<boolean> => {
+      const interrupted = asInterrupted(item);
+      if (!interrupted || error.status !== 422) return false;
+      console.warn(
+        `Switch refused a cancelled turn, so it is reported to it as interrupted: ${error.message}`
+      );
+      await send(interrupted);
+      return true;
+    };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
@@ -505,6 +517,7 @@ export async function runSharedHost(
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
             if (await sentWithoutUsage(item, error)) continue;
+            if (await sentAsInterrupted(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -798,6 +811,27 @@ export async function runSharedHost(
           .catch((error: unknown) =>
             console.warn(
               `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
+            )
+          );
+      // A cancel refused (the message already started, or is not the asker's) is answered where it was asked.
+      if (
+        command.body.type === 'turn.cancel' &&
+        status?.status === 'rejected' &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection &&
+        command.origin.roomId
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: command.origin.roomId,
+            threadId: command.origin.threadId,
+            body: cancelRefusal(status.message),
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${command.origin.roomId} that its cancel was refused: ${String(error)}`
             )
           );
       // A fresh conversation starts with the instructions this host was given,

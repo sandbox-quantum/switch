@@ -73,7 +73,18 @@ export type Report =
 
 type Placement = Pick<ActivityRow, 'room_id' | 'thread_id' | 'message_id'>;
 
-const ENDED = new Set(['completed', 'interrupted', 'error']);
+const ENDED = new Set(['completed', 'interrupted', 'error', 'cancelled']);
+
+/**
+ * The row of a turn withdrawn from the queue, for a server that predates
+ * `cancelled` and refuses it: the turn is still ended there, as interrupted,
+ * rather than left on "Queued" for good. Null for any other report.
+ */
+export function asInterrupted(report: Report): Report | null {
+  if (report.kind !== 'activity' || report.row.kind !== 'turn' || report.row.status !== 'cancelled')
+    return null;
+  return { kind: 'activity', row: { ...report.row, status: 'interrupted' } };
+}
 
 const cursorSchema = z.strictObject({ through: z.number().int().nonnegative() });
 
