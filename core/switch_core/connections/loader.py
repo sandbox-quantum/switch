@@ -61,9 +61,13 @@ AccessLevel = Literal["read", "write"]
 
 AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
-# Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
-# authorization request is Core's to set.
-AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+# Sign-in parameters a vendor may need beyond OAuth's own: Google's
+# `access_type` and `include_granted_scopes`, and Dropbox's
+# `token_access_type`, without which it hands out no refresh token. The
+# rest of an authorization request is Core's to set.
+AuthorizationParam = Literal[
+    "access_type", "include_granted_scopes", "token_access_type"
+]
 
 
 class OAuthClient(BaseModel):
@@ -82,6 +86,12 @@ class OAuthClient(BaseModel):
     themselves, and what the sign-in does until they do, said whenever Switch
     drops one it cannot revoke.
 
+    `revocation_by_bearer`: the revocation endpoint takes the sign-in's
+    access token as its bearer and no body, as Dropbox's
+    `auth/token/revoke` does, rather than an RFC 7009 form. That ends the
+    access token, its refresh token and every access token the refresh
+    token gave out.
+
     `revocation_ends_grant`: revoking any of an account's sign-ins through
     the client ends all of them, as Google's does. A reconnect to the same
     account through the same client then does not revoke the sign-in it
@@ -98,8 +108,9 @@ class OAuthClient(BaseModel):
     `select_account`, to let the person choose the account), one value or
     several separated by spaces, as OAuth writes it.
     So are `authorization_params`, which only a vendor-specific key may name
-    (`access_type: offline`, for a vendor that hands out a refresh token only
-    when asked), never one Core sets itself.
+    (`access_type: offline` for Google, `token_access_type: offline` for
+    Dropbox, each of which hands out a refresh token only when asked),
+    never one Core sets itself.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -120,6 +131,7 @@ class OAuthClient(BaseModel):
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
+    revocation_by_bearer: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
@@ -158,6 +170,12 @@ class OAuthClient(BaseModel):
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
             )
+        if self.revocation_by_bearer and (
+            self.revocation_url is None and not self.revocation_discovered
+        ):
+            raise ValueError(
+                "revocation_by_bearer is for a vendor Switch revokes sign-ins at"
+            )
         if self.revocation_ends_grant and (
             self.revocation_url is None and not self.revocation_discovered
         ):
@@ -179,14 +197,27 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id is read: `method` to `url` with the
+    access token, and the dotted paths in its JSON answer to the id and to a
+    label people recognise (an email, a login).
+
+    A POST sends `body`, a fixed JSON object, where there is one, and no body
+    at all otherwise, as Dropbox's `users/get_current_account` takes it; a
+    GET sends none. The token goes in the Authorization header only.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"]
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    body: dict[str, object] | None = None
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _body_only_for_post(self) -> "ConnectionIdentity":
+        if self.body is not None and self.method != "POST":
+            raise ValueError("only a POST identity call sends a body")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"

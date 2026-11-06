@@ -36,6 +36,7 @@ const MARK_COLOR: Record<string, string> = {
   atlassian: 'text-[#0052CC] emdark:text-foreground',
   bitbucket: 'text-[#0052CC] emdark:text-foreground',
   box: 'text-[#0061D5] emdark:text-foreground',
+  dropbox: 'text-[#0061FF] emdark:text-foreground',
   datadog: 'text-[#632CA6] emdark:text-foreground',
   'new-relic': 'text-foreground emdark:text-[#1CE783]',
   airtable: 'text-foreground emdark:text-[#18BFFF]',
