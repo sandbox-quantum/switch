@@ -482,10 +482,20 @@ describe("Boxes on a laptop screen (1440 px)", () => {
     expect(cells.length).toBe(headers.length);
   });
 
+  it("puts the zone in the machine's hover text, so Restarts today fits", () => {
+    windowOf(1440);
+    renderTab(BoxesTab, { overview: fixture() });
+    const link = rowOf("k1-4f2a 91aa 0b1c").getByRole("link", { name: "shared-1" });
+    expect(link.getAttribute("title")).toBe("Zone zone-a");
+    expect(screen.queryByText("shared-1 · zone-a")).toBeNull();
+    expect(screen.getByRole("columnheader", { name: "Restarts today" })).toBeTruthy();
+  });
+
   it("keeps the Workspace column on a wide screen", () => {
     windowOf(1920);
     renderTab(BoxesTab, { overview: fixture() });
     const table = screen.getByRole("table", { name: "Boxes" });
     expect(within(table).getByRole("columnheader", { name: "Workspace" })).toBeTruthy();
+    expect(rowOf("k1-4f2a 91aa 0b1c").getByText("shared-1 · zone-a")).toBeTruthy();
   });
 });

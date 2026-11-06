@@ -153,6 +153,16 @@ const PINNED_SX = {
   boxShadow: "inset 1px 0 0 rgba(0, 0, 0, 0.12)",
 } as const;
 
+/** The machine's name, with its zone when there's room for it. On a narrow
+ *  screen the zone is in the hover text instead (and on the machine page). */
+export function machineText(node: string, zone: string | null, narrow: boolean): string {
+  return zone && !narrow ? `${node} · ${zone}` : node;
+}
+
+function zoneHint(zone: string | null): string | undefined {
+  return zone ? `Zone ${zone}` : undefined;
+}
+
 export default function BoxesTab() {
   const { overview: raw, overviewStale, refresh } = useHosted();
   useOverviewRefresh();
@@ -240,7 +250,13 @@ export default function BoxesTab() {
           lines (designer), with the actions pinned at the right. Headings may
           wrap ("Restarts today"); cells don't. */}
       <Box sx={{ overflowX: "auto", maxWidth: "100%" }} data-testid="boxes-frame">
-      <Table size="small" aria-label="Boxes" sx={{ "& td": { whiteSpace: "nowrap" } }}>
+      <Table
+        size="small"
+        aria-label="Boxes"
+        // Narrower cell padding on a laptop screen, so "Restarts today" fits
+        // beside the pinned actions rather than under them.
+        sx={{ "& td": { whiteSpace: "nowrap" }, ...(narrow && { "& td, & th": { px: 1 } }) }}
+      >
         <TableHead>
           <TableRow>
             <TableCell>Box</TableCell>
@@ -328,13 +344,14 @@ export default function BoxesTab() {
                     <Link
                       component={RouterLink}
                       to={`/hosted/machines/${encodeURIComponent(machine.machine)}`}
+                      title={zoneHint(machine.zone)}
                     >
-                      {machine.zone ? `${b.node} · ${machine.zone}` : b.node}
+                      {machineText(b.node, machine.zone, narrow)}
                     </Link>
-                  ) : machine?.zone ? (
-                    `${b.node} · ${machine.zone}`
                   ) : (
-                    b.node
+                    <span title={zoneHint(machine?.zone ?? null)}>
+                      {machineText(b.node, machine?.zone ?? null, narrow)}
+                    </span>
                   )}
                 </TableCell>
                 <TableCell>
