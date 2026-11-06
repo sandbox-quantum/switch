@@ -60,6 +60,7 @@ from switch_core.gateway.auth import (
     organization_workspaces_bindable_by,
     organizations_bindable_by,
     rebind_if_left,
+    session_auth_time,
     workspaces_in_organization,
     workspaces_reached_through_organization,
 )
@@ -252,6 +253,7 @@ async def list_organizations(
 @router.post("/organizations", status_code=201)
 async def create_organization(
     req: OrganizationCreateRequest,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
@@ -288,6 +290,7 @@ async def create_organization(
         config,
         name=req.name,
         workspace_name=req.workspace_name or req.name,
+        auth_time=session_auth_time(request),
     )
 
 
@@ -847,7 +850,9 @@ async def update_organization_member_role(
     target = await user_store.get(session, user_id)
     assert target is not None
     if user_id == user.id:
-        await rebind_if_left(response, session_factory, user_store, user, config)
+        await rebind_if_left(
+            request, response, session_factory, user_store, user, config
+        )
     return _member_detail(
         target,
         member,
@@ -987,5 +992,7 @@ async def remove_organization_member(
     )
     await session.commit()
     if user_id == user.id:
-        await rebind_if_left(response, session_factory, user_store, user, config)
+        await rebind_if_left(
+            request, response, session_factory, user_store, user, config
+        )
     return {"ok": True, "warning": warning}

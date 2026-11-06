@@ -21,6 +21,7 @@ from __future__ import annotations
 import secrets
 import threading
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -301,7 +302,15 @@ def _app(
 
 
 def _client(app: Any, user: User) -> httpx.AsyncClient:
-    token = create_jwt(user.id, user.email, user.role, _KEYRING, TENANT_ZERO_ID)
+    token = create_jwt(
+        user.id,
+        user.email,
+        user.role,
+        _KEYRING,
+        TENANT_ZERO_ID,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",

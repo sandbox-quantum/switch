@@ -94,6 +94,33 @@ version of their own to them without also giving them a release of their own.
   An admin who tried to transfer someone's agent was told which of the owner's
   connections it was granted, which the owner's service access otherwise
   shows nobody.
+- **Sign out of all devices.** Signing out used to clear only that browser's
+  cookie, so a copied cookie or a browser left signed in elsewhere stayed
+  valid until it expired. The account menu now has **Sign out of all
+  devices**, which ends every session the account holds
+  (`POST /auth/sessions/revoke`), and the server administrator can do the
+  same for anyone (`POST /users/{id}/sessions/revoke`, recorded in the server
+  audit log). Changing a password, including a reset made directly in the
+  database, and losing the server-admin role also end every session; the
+  device that changed its own password stays signed in. Sessions from before
+  this release stay valid.
+- **Dashboard sessions end 14 days after sign-in.** A session could be
+  refreshed forever, so a browser that stayed active never had to sign in
+  again. Refreshing or switching workspace now keeps the original sign-in
+  time, and 14 days after it the session ends and the person signs in again,
+  however active they are. A session still ends after 24 hours without a
+  refresh. Sessions from before this release count from when their cookie
+  was issued.
+- **Registration keys expire.** A registration key made under API keys
+  worked until someone deleted it. A new key now expires after 90 days by
+  default; when creating it you can choose 1 year instead, or **Never**,
+  which warns that the key keeps working if it leaks. `POST /api-keys`
+  takes `expires_in_days` (1 to 365, or `"never"`; 90 when left out), the
+  key list shows each key's expiry or **No expiry**, and an expired key is
+  refused with 401 by the agent API, the MCP server and agent registration.
+  Its owner can still reveal it under API keys, to see which key it was.
+  Keys made before this release, agents' own keys and the deployment's
+  bootstrap key do not expire.
 - **Messages with files attached are checked by Switch Trust.** A message with
   a file used to skip the check entirely, typed text included, both from a
   person on a chat platform and from an agent sending files. Now the text is
@@ -229,6 +256,33 @@ version of their own to them without also giving them a release of their own.
   client is refused; any other agent gets a new API key that only the new
   owner can see, so it has to be reconnected. Chats and room documents are not
   transferable.
+- **Workspaces keep messages for a chosen time.** A workspace admin sets a
+  message-retention window on the Workspace page; once an hour, messages older
+  than it are deleted with their attachments, and stored files no message
+  carries any more are swept. Lapsed invitations, settled approval requests
+  and expired install links are deleted 30 days after they end.
+- **A workspace admin can erase a person.** The People list on the Workspace
+  page erases everything a person sent in the workspace, in every room: their
+  messages, the files only those carried, the copies kept for agents, and
+  their name on approval answers. It works for people on a chat platform,
+  people from a chat app that has since been disconnected, and members who
+  wrote from Switch Console. A chat-platform person's identity goes too; a
+  Switch Console member keeps their account and can go on writing. The admin
+  confirms by typing the person's name, and the request and its outcome are
+  recorded in the audit log.
+- **A deleted account's messages read "Former member".** Deleting an account
+  keeps the messages it sent, so conversations stay whole, but takes the
+  person's name off them, off the copies kept for agents and commands, and
+  out of the names of the Switch Console chats they were in. Invitations
+  addressed to their email are deleted in every workspace, whether or not
+  they were still open. Erasing the messages themselves is the workspace
+  admin's erase action above.
+- **A deleted workspace's audit history goes after two years.** It is kept
+  while the workspace exists and for two years after it is deleted, then
+  deleted by the hourly retention pass. The server's own record of the
+  deletion stays. Deleting audit rows needs the schema owner's connection
+  (`DB_OWNER_USER` and `DB_OWNER_PASSWORD`); without it, switch-core logs an
+  error at startup saying the history will not be purged.
 - **Workspace admins can delete an empty workspace.** Workspace settings has a
   Delete workspace action that asks for the workspace's name
   (`DELETE /tenants/{id}`). It is refused, with what is left by kind and count,

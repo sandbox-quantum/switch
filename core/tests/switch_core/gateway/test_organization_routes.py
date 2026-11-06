@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -139,7 +139,13 @@ def _app(
 
 def _client(app: FastAPI, user_id: str, tenant_id: str | None) -> httpx.AsyncClient:
     token = create_jwt(
-        user_id, f"{user_id}@example.invalid", "user", _KEYRING, tenant_id
+        user_id,
+        f"{user_id}@example.invalid",
+        "user",
+        _KEYRING,
+        tenant_id,
+        session_version=0,
+        auth_time=datetime.now(UTC),
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

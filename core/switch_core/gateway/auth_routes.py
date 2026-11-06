@@ -42,12 +42,14 @@ from switch_core.gateway.auth import (
     describe_session_state,
     get_authenticated_caller,
     get_authenticated_session,
+    get_authenticated_user_id,
     get_current_user,
     hash_password_off_loop,
     initial_tenant_claim,
     list_tenant_memberships,
     operator_entered_workspace,
     require_admin,
+    session_auth_time,
     set_session_cookie,
     tenants_bindable_by,
     verify_password_off_loop,
@@ -178,6 +180,7 @@ async def login(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return _session_response(user)
 
@@ -299,6 +302,7 @@ async def signup(
             config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
+            datetime.now(UTC),
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -328,12 +332,42 @@ async def refresh(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
+        session_auth_time(request),
     )
     return _session_response(user)
 
 
 @router.post("/auth/logout")
 async def logout(response: Response) -> dict[str, bool]:
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+@router.post("/auth/sessions/revoke")
+async def end_my_sessions(
+    response: Response,
+    user_id: Annotated[str, Depends(get_authenticated_user_id)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, bool]:
+    """Sign out of all devices, this one included.
+
+    `/auth/logout` clears only this browser's cookie, so a copy of it, or a
+    session left open elsewhere, stays valid until it expires. This moves the
+    account's session version on, which every cookie minted before it fails
+    against. Needs no workspace selected, like `/tenants/{id}/switch`, so a
+    person with several can always reach it.
+    """
+    await user_store.end_sessions(session, user_id)
+    await record_server_audit_event(
+        session,
+        actor_user_id=user_id,
+        action=ServerAuditAction.USER_SESSIONS_ENDED,
+        target_type="user",
+        target_id=user_id,
+        details=None,
+    )
+    await session.commit()
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -621,14 +655,34 @@ async def update_me(
 @router.put("/auth/me/password")
 async def change_password(
     req: ChangePasswordRequest,
+    request: Request,
+    response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
+    """Change the signed-in person's password, signing them out everywhere
+    else.
+
+    The database ends every session on a password change
+    (`db/session_version_ddl.py`), this one included, so the cookie is
+    minted again from the row as it now stands: whoever changed the password
+    stays signed in here, and every other copy of the old cookie is refused.
+    """
     if not await verify_password_off_loop(req.current_password, user.password_hash):
         raise HTTPException(status_code=403, detail="Current password is incorrect")
 
     user.password_hash = await hash_password_off_loop(req.new_password)
     await session.commit()
+    await session.refresh(user)
+    set_session_cookie(
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        request.state.tenant_id,
+        session_auth_time(request),
+    )
     return {"ok": True}
 
 
@@ -808,6 +862,34 @@ async def delete_user(
         await session.commit()
         raise
     logger.info("Operator %s deleted the account of user %s", operator_id, target_id)
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/sessions/revoke")
+async def end_user_sessions(
+    user_id: str,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, bool]:
+    """The deployment operator signs someone out of all their devices, for a
+    lost laptop or an account that looks taken over. Recorded in the server's
+    audit log, like the operator deleting an account."""
+    if await user_store.session_version(session, user_id) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await user_store.end_sessions(session, user_id)
+    await record_server_audit_event(
+        session,
+        actor_user_id=admin.id,
+        action=ServerAuditAction.USER_SESSIONS_ENDED,
+        target_type="user",
+        target_id=user_id,
+        details=None,
+    )
+    await session.commit()
+    if user_id == admin.id:
+        response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
 
