@@ -71,6 +71,12 @@ _LINE_INTERVAL = 1.5
 #: rather than holding the channel for minutes.
 _MAX_REPLY_LINES = 15
 _RECONNECT_MAX = 300.0
+#: The most bytes of a message one relayed request carries. The signal bus
+#: refuses a payload of about 8 KB, so a longer message is relayed in parts.
+_RELAY_PART_BYTES = 6000
+#: How many relayed requests the holder remembers having begun, so a retried
+#: one does not post the lines it already sent a second time.
+_RELAY_MEMORY = 512
 
 #: The prefix of a sender id for a person the network did not say is logged
 #: in to an account: the nick alone, which anyone can take when it is free.
@@ -314,6 +320,7 @@ class IrcAdapter(PlatformAdapter):
         self._pacer = _Pacer()
         # One reply's lines go out together, not interleaved with another's.
         self._send_lock = asyncio.Lock()
+        self._relay_progress: dict[str, int] = {}
         self._stopping = False
 
     # ── Who this is ──────────────────────────────────────────────────────
@@ -599,15 +606,25 @@ class IrcAdapter(PlatformAdapter):
         in the channel. A long line is cut to what the server relays whole,
         and a reply longer than `_MAX_REPLY_LINES` says how much it left out."""
         if not self._listening:
-            self._hand_to_holder(
-                {
-                    "action": "send",
-                    "channel_id": channel_id,
-                    "sender_name": sender_name,
-                    "content": content,
-                }
-            )
+            for part in _relay_parts(content):
+                self._hand_to_holder(
+                    {
+                        "action": "send",
+                        "id": uuid.uuid4().hex,
+                        "channel_id": channel_id,
+                        "sender_name": sender_name,
+                        "content": part,
+                    }
+                )
             return uuid.uuid4().hex
+        prefix, lines = self._compose(channel_id, sender_name, content)
+        await self._post(channel_id, prefix, lines)
+        return uuid.uuid4().hex
+
+    @staticmethod
+    def _compose(
+        channel_id: str, sender_name: str, content: str
+    ) -> tuple[str, list[str]]:
         prefix = f"[{sender_name}] "
         budget = privmsg_budget(channel_id) - len(prefix.encode())
         lines = split_text(content, budget)
@@ -617,18 +634,36 @@ class IrcAdapter(PlatformAdapter):
                 *lines[: _MAX_REPLY_LINES - 1],
                 f"… {left} more lines not shown here; the whole reply is in Switch.",
             ]
+        return prefix, lines
+
+    async def _post(
+        self,
+        channel_id: str,
+        prefix: str,
+        lines: list[str],
+        relay_id: str | None = None,
+    ) -> None:
+        """Write `lines`. For a relayed request, remember how many went out, so
+        a retry after a write failed part-way sends only the rest."""
         async with self._send_lock:
-            for text in lines:
-                await self._write("PRIVMSG", channel_id, prefix + text)
-        return uuid.uuid4().hex
+            start = self._relay_progress.get(relay_id, 0) if relay_id else 0
+            for index in range(start, len(lines)):
+                await self._write("PRIVMSG", channel_id, prefix + lines[index])
+                if relay_id:
+                    self._relay_progress[relay_id] = index + 1
+            if relay_id:
+                self._relay_progress.setdefault(relay_id, len(lines))
+                while len(self._relay_progress) > _RELAY_MEMORY:
+                    del self._relay_progress[next(iter(self._relay_progress))]
 
     async def receive_relayed(self, request: Mapping[str, str]) -> None:
         if request.get("action") != "send":
             await super().receive_relayed(request)
             return
-        await self.send_message(
+        prefix, lines = self._compose(
             request["channel_id"], request["sender_name"], request["content"]
         )
+        await self._post(request["channel_id"], prefix, lines, request.get("id"))
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -688,3 +723,21 @@ class IrcAdapter(PlatformAdapter):
 
     def translate_inbound(self, raw_message: str) -> str:
         return strip_formatting(raw_message)
+
+
+def _relay_parts(content: str) -> list[str]:
+    """`content` in pieces of at most `_RELAY_PART_BYTES`, cut between lines
+    where it can be, so each fits in one relayed request."""
+    parts: list[str] = []
+    current: list[str] = []
+    size = 0
+    for line in split_text(content, _RELAY_PART_BYTES):
+        extra = len(line.encode()) + (1 if current else 0)
+        if current and size + extra > _RELAY_PART_BYTES:
+            parts.append("\n".join(current))
+            current, size, extra = [], 0, len(line.encode())
+        current.append(line)
+        size += extra
+    if current:
+        parts.append("\n".join(current))
+    return parts
