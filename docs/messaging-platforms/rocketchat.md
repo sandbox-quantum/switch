@@ -19,8 +19,9 @@ Tested with Rocket.Chat 8.9.
 In Rocket.Chat, as an administrator:
 
 1. Open **Administration → Users → New user**.
-2. Fill in a **Name**, a **Username** (for example `switch`), an **Email** and a
-   **Password**, and turn **Verified** on.
+2. Fill in an **Email**, a **Name** and a **Username** (for example `switch`), and
+   tick **Mark email as verified**. Under **Password**, choose **Set manually** and
+   enter one.
 3. Under **Roles**, choose **bot**, and remove **user**. Click **Add user**.
 
 ## 2. Give the bot role two permissions
@@ -34,15 +35,17 @@ Permissions** and tick the `bot` column for:
 | **Delete Own Message** | So agents can take back what they posted. |
 
 The `bot` role already has **Impersonate Other Users**, which lets each agent post
-under its own name, and **Bypass rate limit for REST API**. If you take
+under its own name, and **Bypass Rate Limit for REST API**. If you take
 impersonation away, Switch still works and writes the agent's name at the top of
 each message instead.
 
 ## 3. Create the token
 
 1. Log out, and log in as the bot.
-2. Open your avatar menu → **Profile** → **Personal Access Tokens**.
-3. Enter a name, tick **Ignore Two Factor Authentication**, and click **Add**.
+2. Open your avatar menu → **Profile**, then **Personal Access Tokens** in the
+   sidebar.
+3. Enter a name, choose **Ignore Two Factor Authentication** from the list next to
+   it, and click **Add**.
 4. Copy the **Token** and the **User ID**. Rocket.Chat shows them only once.
 
 ## 4. Connect it in Switch Console
