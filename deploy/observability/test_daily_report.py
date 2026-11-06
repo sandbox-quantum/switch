@@ -58,14 +58,14 @@ def test_the_graph_of_the_day_explains_the_first_line_to_look_at():
     lines = r.lines_for({**FINE, "pool_ratio": 0.95, "loop_lag_max": 1500})
     graph, reason = r.pick_graph(lines, GRAPHS, NO_CHANGE, day_number=0)
     assert graph.key == "pool"
-    assert reason == "it's behind a line above"
+    assert reason == "it's behind a line above that needs a look"
 
 
 def test_on_a_good_day_the_graph_that_moved_most_is_featured():
     change = {**NO_CHANGE, "traffic": 0.4, "api": -0.6}
     graph, reason = r.pick_graph(r.lines_for(FINE), GRAPHS, change, day_number=0)
     assert graph.key == "api"
-    assert reason == "it moved most since last week (down 60%)"
+    assert reason == "it moved most against the same day last week (down 60%)"
 
 
 def test_a_quiet_week_walks_through_every_graph():
@@ -81,3 +81,71 @@ def test_every_graph_definition_is_valid_json():
 
     for graph in GRAPHS:
         assert json.loads(r.graph_def(graph))["requests"]
+
+
+BY_KEY = {graph.key: graph for graph in GRAPHS}
+
+
+def test_a_full_pool_is_explained_and_comes_with_a_next_step():
+    day = r.Day(peak=133, peak_where="pod zjttv", peak_at="14:05", minutes_over=40)
+    text = r.graph_caption(BY_KEY["pool"], "it's behind a line above", day)
+    assert "How to read it: Each pod keeps a fixed set" in text
+    assert (
+        "Today: Peak use was 133% on pod zjttv around 14:05 UTC, above the line for about 40 min."
+        in text
+    )
+    assert "add a pod or raise the pool size" in text
+
+
+def test_a_quiet_graph_says_there_is_nothing_to_do():
+    day = r.Day(peak=900, peak_at="03:00")
+    today, advice = r.commentary(BY_KEY["delivery"], day)
+    assert today == "The worst was 900 ms around 03:00 UTC."
+    assert advice.startswith("Nothing to do")
+
+
+def test_close_to_the_limit_is_flagged_before_it_fires():
+    _, advice = r.commentary(BY_KEY["api"], r.Day(peak=1500))
+    assert "over half the 2 s limit" in advice
+
+
+def test_failing_bridges_name_the_likely_cause():
+    day = r.Day(
+        peak=20,
+        notes={"check": "failing", "top_failure": "mattermost, network (1073 times)"},
+    )
+    today, advice = r.commentary(BY_KEY["bridges"], day)
+    assert today == "The bridges health check failed for most of the day."
+    assert advice.startswith(
+        "Most failed connections were mattermost, network (1073 times)."
+    )
+
+
+def test_missing_data_is_not_read_as_good_news():
+    today, advice = r.commentary(BY_KEY["stalls"], r.Day())
+    assert today == "No data in the last 24 hours."
+    assert "stopped reporting" in advice
+
+
+def test_series_names_are_short():
+    assert (
+        r.series_name(
+            "pod_name:switch-switch-core-58f65f47cf-zjttv,service:switch-core"
+        )
+        == "pod zjttv"
+    )
+    assert r.series_name("platform:slack,service:switch-core") == "slack"
+
+
+def test_a_whole_day_over_the_line_says_so():
+    today, _ = r.commentary(BY_KEY["pool"], r.Day(peak=133, minutes_over=1435))
+    assert today.endswith("above the line for the whole day.")
+
+
+def test_a_handful_of_errors_is_background():
+    notes = {"server_errors": "6", "lost": "0", "top_route": "/gateway/rooms (5)"}
+    _, advice = r.commentary(BY_KEY["errors"], r.Day(peak=5, notes=notes))
+    assert advice == (
+        "Nothing to do: a handful a day is background "
+        "(the most came from /gateway/rooms (5))."
+    )

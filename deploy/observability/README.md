@@ -60,11 +60,13 @@ would page on noise.
 
 `daily_report.py` posts once a day into a Switch room, as an agent in that room:
 a first line that says "all good" or how many things to look at, one line per
-signal for the last 24 hours, and one graph of the day with two sentences on
-what it shows and why it matters. The graph is the one behind the first line
-that needs a look; on a good day, the one that moved most against the same day
-last week; on a quiet day, the next in turn, so the team meets every signal
-over a week or two. It covers what can wait for the morning, the
+signal for the last 24 hours, and one graph of the day. The graph comes with a
+short lesson (how to read it, what to look for) and a comment on the day: what
+it did, with numbers, and what that means, down to a likely cause and the
+detail-board chart to open next when something is off. The graph is the one
+behind the first line that needs a look; on a good day, the one that moved most
+against the same day last week; on a quiet day, the next in turn, so the team
+meets every signal over a week or two. It covers what can wait for the morning, the
 things the monitors deliberately don't post: a pool that came close to full,
 latency creeping up, agents still on the old connection, events dropped for
 agents that were away.
@@ -75,7 +77,7 @@ DD_API_KEY=... DD_APP_KEY=... SWITCH_URL=... SWITCH_AGENT_ID=... \
 ```
 
 Without the `SWITCH_*` settings it only prints the report. The application key
-needs read access to metrics. Its verdict and the choice of graph are tested in
+needs read access to metrics, and to logs for the reason bridges fail. Its verdict, the choice of graph and the comments are tested in
 `test_daily_report.py`.
 
 ## Importing

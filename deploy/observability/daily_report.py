@@ -139,24 +139,43 @@ def lines_for(m: dict[str, float | None]) -> list[Line]:
 
 @dataclass(frozen=True)
 class Graph:
-    """One graph the report can feature, and how to explain it to the team."""
+    """One graph the report can feature, and how to teach it to the team."""
 
     key: str
     title: str
     queries: tuple[str, ...]
-    marker: str | None
-    what: str
-    why: str
-    # The query whose daily mean is compared with last week's.
-    trend: str
+    # The alert's limit, drawn as a dashed red line; None when there is none.
+    limit: float | None
+    how_to_read: str
+    what_matters: str
+    # Grouped by pod or app where it helps, so the comment can say which one.
+    detail: str
+    unit: str = "ms"
+
+
+@dataclass(frozen=True)
+class Day:
+    """What one graph did over the report's 24 hours."""
+
+    peak: float | None = None
+    peak_where: str = ""
+    peak_at: str = ""
+    mean: float | None = None
+    last_week: float | None = None
+    minutes_over: int = 0
+    # Extra findings some graphs need: the top error route, why bridges fail.
+    notes: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def change(self) -> float | None:
+        if self.mean is None or not self.last_week:
+            return None
+        return (self.mean - self.last_week) / self.last_week
 
 
 def featured_graphs(service: str) -> list[Graph]:
     s = f"service:{service}"
-    api = (
-        f"p95:switch.http.request.duration{{{s},"
-        "!route:/gateway/chats/events,!route:/gateway/chats/activity/events}"
-    )
+    streams = "!route:/gateway/chats/events,!route:/gateway/chats/activity/events"
     pool = (
         f"100 * max:switch.db.pool.in_use{{{s}}} by {{pod_name}}"
         f" / max:switch.db.pool.size{{{s}}} by {{pod_name}}"
@@ -166,53 +185,64 @@ def featured_graphs(service: str) -> list[Graph]:
             "delivery",
             "Time for a message to reach everyone in the room (p95, ms)",
             (f"p95:switch.messages.delivery_lag{{{s}}}",),
-            "10000",
-            "How long the slowest 5 in 100 messages took to reach every person "
-            "and agent in the room.",
-            "It's what using Switch feels like; the average hides the slow "
-            "messages people complain about. The alert line is at 10 s.",
+            10_000,
+            "Each point is p95: line up every message from that minute by how "
+            "long it took to reach the people and agents in the room, and p95 "
+            "is the one 95 in from the fast end. So only the slowest 5 in 100 "
+            "took longer than the line.",
+            "Stretches above the dashed red line at 10 s. A single spike is one "
+            "bad minute; the alert needs 15 minutes above it.",
             f"p95:switch.messages.delivery_lag{{{s}}}",
         ),
         Graph(
             "api",
             "API response time (p95, ms)",
-            (api,),
-            "2000",
-            "How long the slowest 5 in 100 requests to the server took, leaving "
-            "out the live streams that stay open on purpose.",
-            "A slow API is a slow Console and slow agents. The alert line is at 2 s.",
-            api,
+            (f"p95:switch.http.request.duration{{{s},{streams}}}",),
+            2_000,
+            "Each point is how long the slowest 5 in 100 requests to the server "
+            "took that minute. The two live streams are left out: they stay "
+            "open for about 10 s on purpose.",
+            "Time above the dashed red line at 2 s. Everything the Console and "
+            "the agents do goes through the API, so this is how fast Switch "
+            "feels to them.",
+            f"p95:switch.http.request.duration{{{s},{streams}}}",
         ),
         Graph(
             "agents",
-            "Agent connections, both pods together",
+            "Agent connections, all pods together",
             (f"sum:switch.agents.connected{{{s}}}",),
             None,
-            "How many agent connections the server holds; one agent can hold "
-            "one per room it serves.",
-            "Agents are half of Switch: if they can't connect, rooms go quiet "
-            "even when everything else is fine.",
-            f"sum:switch.agents.connected{{{s}}}",
+            "How many agent connections the server holds. One agent can hold "
+            "several, one per room it serves, so it counts connections, not "
+            "agents.",
+            "Cliffs: a sudden drop that stays down means agents were cut off. "
+            "Short spikes are agents reconnecting after a deploy.",
+            f"sum:switch.agents.connected{{{s}}} by {{pod_name}}",
+            unit="",
         ),
         Graph(
             "pool",
             "Database pool in use, per pod (% of its size)",
             (pool,),
-            "100",
-            "How many of each pod's database connections were busy.",
-            "At 100% requests queue for a connection, and everything slows "
-            "down at once. That's what happened from 30 Oct to 2 Nov.",
-            f"max:switch.db.pool.in_use{{{s}}}",
+            100,
+            "Each pod keeps a fixed set of database connections, its pool. One "
+            "line per pod shows how many were busy, as a share of the set.",
+            "The dashed red line is 100%: every connection busy. Above it, "
+            "requests queue for a connection and everything slows down at "
+            "once. That's what happened from 30 Oct to 2 Nov.",
+            pool,
+            unit="%",
         ),
         Graph(
             "stalls",
-            "Server stalls: event-loop lag, worst (ms)",
+            "Server stalls: longest time each pod was too busy (ms)",
             (f"max:switch.runtime.event_loop_lag{{{s}}} by {{pod_name}}",),
-            "1000",
-            "The longest time each pod was too busy to pick up new work.",
-            "switch-core does one thing at a time per pod, so a stall delays "
-            "every message on that pod. The alert line is at 1 s.",
-            f"max:switch.runtime.event_loop_lag{{{s}}}",
+            1_000,
+            "switch-core does one thing at a time on each pod. This is the "
+            "longest each pod made new work wait, minute by minute.",
+            "Spikes towards the dashed red line at 1 s. During a stall every "
+            "message on that pod waits, so stalls show up as late messages.",
+            f"max:switch.runtime.event_loop_lag{{{s}}} by {{pod_name}}",
         ),
         Graph(
             "errors",
@@ -224,30 +254,37 @@ def featured_graphs(service: str) -> list[Graph]:
                 ".rollup(sum, 3600)",
             ),
             None,
-            "Requests the server failed to answer, and messages it failed to save.",
-            "A lost message is the worst thing a messaging system can do; "
-            "these should stay near zero.",
-            f"sum:switch.http.requests{{{s},status_class:5xx}}.as_count()",
+            "Bars per hour: requests the server failed to answer (5xx), and "
+            "messages it failed to save.",
+            "Clusters of bars, and any lost message at all. A few scattered "
+            "errors a day are background; a lost message never is.",
+            f"sum:switch.http.requests{{{s},status_class:5xx}} by {{route}}.as_count()",
+            unit="",
         ),
         Graph(
             "traffic",
             "Requests per second, against the same time last week",
             (f"sum:switch.http.requests{{{s}}}.as_rate()",),
             None,
-            "How busy the server was.",
-            "Traffic gives every other graph its context: errors with a "
-            "traffic spike are load, without one they're a bug.",
+            "The solid line is today, the dashed one the same hours a week "
+            "earlier, so the daily rhythm cancels out.",
+            "A gap opening between the two lines. Traffic isn't good or bad by "
+            "itself, but it explains the rest: errors with a traffic spike are "
+            "load, without one they're a bug.",
             f"sum:switch.http.requests{{{s}}}.as_rate()",
+            unit=" requests/s",
         ),
         Graph(
             "bridges",
             "Messaging-app bridges running, by app",
             (f"sum:switch.bridges.running{{{s}}} by {{platform}}",),
             None,
-            "How many bridges to Slack, Discord and the others were running.",
-            "When a bridge stops, the people in that app's rooms stop hearing "
-            "from the agents.",
-            f"sum:switch.bridges.running{{{s}}}",
+            "One line per messaging app: how many bridges to it are running, "
+            "over both pods.",
+            "A line falling to zero. When a bridge stops, the people in that "
+            "app's rooms stop hearing from the agents.",
+            f"sum:switch.bridges.running{{{s}}} by {{platform}}",
+            unit="",
         ),
     ]
 
@@ -268,22 +305,193 @@ def pick_graph(
     by_key = {graph.key: graph for graph in graphs}
     for line in lines:
         if line.state != GOOD and line.graph in by_key:
-            return by_key[line.graph], "it's behind a line above"
+            return by_key[line.graph], "it's behind a line above that needs a look"
     moved = [(abs(c), k) for k, c in change.items() if c is not None and k in by_key]
     if moved:
         size, key = max(moved)
         if size >= 0.25:
             direction = "up" if (change[key] or 0) > 0 else "down"
-            return by_key[
-                key
-            ], f"it moved most since last week ({direction} {size:.0%})"
-    return graphs[day_number % len(graphs)], "it's this one's turn"
+            return by_key[key], (
+                f"it moved most against the same day last week ({direction} {size:.0%})"
+            )
+    return graphs[day_number % len(graphs)], (
+        "nothing stood out today, so it's this one's turn"
+    )
 
 
-def graph_caption(graph: Graph, reason: str) -> str:
-    return (
-        f"Graph of the day: {graph.title}, because {reason}.\n"
-        f"What it shows: {graph.what}\nWhy it matters: {graph.why}"
+def _v(value: float | None, unit: str) -> str:
+    if value is None:
+        return "no data"
+    if unit == "ms":
+        return _ms(value)
+    if unit == "%":
+        return f"{value:.0f}%"
+    return f"{value:,.0f}{unit}" if value >= 10 else f"{value:.1f}{unit}"
+
+
+def _limit(value: float, unit: str) -> str:
+    return f"{value / 1000:g} s" if unit == "ms" and value >= 1000 else _v(value, unit)
+
+
+def _for(minutes: int) -> str:
+    if minutes >= 23 * 60:
+        return "the whole day"
+    if minutes >= 90:
+        return f"about {minutes / 60:.0f} h"
+    return f"about {minutes} min"
+
+
+def _where(day: Day) -> str:
+    where = f" on {day.peak_where}" if day.peak_where else ""
+    at = f" around {day.peak_at} UTC" if day.peak_at else ""
+    return where + at
+
+
+def commentary(graph: Graph, day: Day) -> tuple[str, str]:
+    """What the graph says about the last 24 hours, and what to do about it.
+
+    The first part reads the numbers back in plain words; the second is a
+    diagnosis and a next step when something is off, or says there's nothing
+    to do. The advice points at the detail board's charts by name.
+    """
+    peak = _v(day.peak, graph.unit)
+    if day.peak is None:
+        return (
+            "No data in the last 24 hours.",
+            "No data usually means switch-core stopped reporting, not that all "
+            "is well: check that the pods are up and that the 'has stopped "
+            "reporting' alert hasn't fired.",
+        )
+    over = f", above the line for {_for(day.minutes_over)}" if day.minutes_over else ""
+
+    if graph.key in ("delivery", "api", "stalls"):
+        limit = graph.limit or 0
+        today = f"The worst was {peak}{_where(day)}{over}."
+        if day.minutes_over:
+            advice = {
+                "delivery": "Late messages usually come from a stalled pod or a "
+                "full database pool. On the detail board, check 'Server stalls' "
+                "and 'Database strain' for the same time. If neither moved, "
+                "check how long Slack and Discord took to answer: the delay may "
+                "be on their side.",
+                "api": "The detail board's 'Five slowest API routes' names the "
+                "route. If every route slowed together, the cause is shared: "
+                "look at 'Database query time' and 'Server stalls' for the same "
+                "time.",
+                "stalls": "A stall means one piece of work held the pod. Check "
+                "that pod's CPU on the detail board; if it was near 100%, the "
+                "pod ran out of room and another pod would help. If CPU was "
+                "low, the pod was waiting on something slow, usually the "
+                "database.",
+            }[graph.key]
+        elif day.peak >= limit / 2:
+            advice = (
+                f"Nothing fired, but {peak} is over half the {_limit(limit, graph.unit)} "
+                "limit. Not a problem yet; worth a glance if it happens again "
+                "tomorrow."
+            )
+        else:
+            advice = f"Nothing to do: well under the {_limit(limit, graph.unit)} line."
+        return today, advice
+
+    if graph.key == "pool":
+        today = f"Peak use was {peak}{_where(day)}{over}."
+        if day.minutes_over:
+            advice = (
+                "Requests queued for a database connection, so everything on "
+                "that pod slowed down at once. On the detail board, 'Database "
+                "query time' shows whether a slow query held connections, and "
+                "'Database strain' how long requests waited. If both pods "
+                "filled up, it's load: add a pod or raise the pool size."
+            )
+        elif day.peak >= 70:
+            advice = (
+                "Getting close to full. If it stays this high, it's time to "
+                "plan another pod before it tips over."
+            )
+        else:
+            advice = "Nothing to do: plenty of room left."
+        return today, advice
+
+    if graph.key in ("agents", "traffic"):
+        change = day.change
+        compared = (
+            f", against about {_v(day.last_week, graph.unit)} on the same day last week "
+            f"({'up' if change > 0 else 'down'} {abs(change):.0%})"
+            if change is not None
+            else ""
+        )
+        today = f"On average {_v(day.mean, graph.unit)}{compared}."
+        if graph.key == "agents" and change is not None and change <= -0.3:
+            advice = (
+                "Fewer agent connections than last week. If 'Agents that went "
+                "silent' on the detail board spiked at the same time, they were "
+                "cut off (network or a stalled pod); if not, people are simply "
+                "running fewer agents."
+            )
+        elif graph.key == "traffic" and change is not None and abs(change) >= 0.5:
+            advice = (
+                "A big change in traffic. Fine on its own; if errors or latency "
+                "moved too, the two are likely connected."
+            )
+        else:
+            advice = "Nothing to do: in line with last week."
+        return today, advice
+
+    if graph.key == "errors":
+        total = day.notes.get("server_errors", _v(day.mean, ""))
+        lost = day.notes.get("lost", "0")
+        today = f"{total} server errors and {lost} lost messages in 24 hours."
+        if lost != "0":
+            advice = (
+                "Messages were lost: someone sent something nobody received. "
+                "That's worth a look today. The switch-core logs for the same "
+                "time say which room and why."
+            )
+        elif float(total) >= 20 and day.notes.get("top_route"):
+            advice = (
+                f"More than the usual background. Most came from "
+                f"{day.notes['top_route']}: start there; 'Routes returning "
+                "server errors' on the detail board has the rest."
+            )
+        else:
+            top = day.notes.get("top_route")
+            advice = "Nothing to do: a handful a day is background" + (
+                f" (the most came from {top})." if top else "."
+            )
+        return today, advice
+
+    # bridges
+    if day.notes.get("check") == "failing":
+        today = "The bridges health check failed for most of the day."
+        reason = day.notes.get("top_failure")
+        advice = (f"Most failed connections were {reason}. " if reason else "") + (
+            "A 'network' failure means the app's server didn't answer; if that "
+            "bridge isn't used any more, deactivating it clears the check. "
+            "'Why connecting to a messaging app failed' on the detail board "
+            "has the full list."
+        )
+    else:
+        today = (
+            f"{peak} bridges running at the busiest point, and the health check passed."
+        )
+        advice = "Nothing to do."
+    return today, advice
+
+
+def graph_caption(graph: Graph, reason: str, day: Day) -> str:
+    today, advice = commentary(graph, day)
+    return "\n".join(
+        [
+            f"📊 Graph of the day: {graph.title}",
+            f"Picked because {reason}.",
+            "",
+            f"How to read it: {graph.how_to_read}",
+            f"What to look for: {graph.what_matters}",
+            "",
+            f"Today: {today}",
+            f"What it means: {advice}",
+        ]
     )
 
 
@@ -320,6 +528,59 @@ class Datadog:
             for _, value in series.get("pointlist", [])
             if value is not None
         ]
+
+    def series(
+        self, query: str, start: int, end: int
+    ) -> dict[str, list[tuple[float, float]]]:
+        """Points per series, keyed by a short name for what the series is
+        split by (a pod, an app, a route); "" when it isn't split."""
+        response = self.http.get(
+            "/query", params={"from": start, "to": end, "query": query}
+        )
+        response.raise_for_status()
+        out: dict[str, list[tuple[float, float]]] = {}
+        for series in response.json().get("series", []):
+            name = series_name(series.get("scope", ""))
+            out[name] = [
+                (ts / 1000, value)
+                for ts, value in series.get("pointlist", [])
+                if value is not None
+            ]
+        return out
+
+    def top_log_group(
+        self, search: str, facets: tuple[str, ...], start: int, end: int
+    ) -> tuple[str, int] | None:
+        """The most common combination of facets among matching logs, and how
+        many there were. None when there are none or logs can't be read."""
+        body = {
+            "compute": [{"aggregation": "count"}],
+            "filter": {
+                "query": search,
+                "from": str(start * 1000),
+                "to": str(end * 1000),
+            },
+            "group_by": [
+                {
+                    "facet": f,
+                    "limit": 1,
+                    "sort": {"aggregation": "count", "order": "desc"},
+                }
+                for f in facets
+            ],
+        }
+        response = self.http.post(
+            str(self.http.base_url).replace("/v1", "/v2") + "/logs/analytics/aggregate",
+            json=body,
+        )
+        response.raise_for_status()
+        buckets = response.json().get("data", {}).get("buckets", [])
+        if not buckets:
+            return None
+        top = buckets[0]
+        return ", ".join(str(v) for v in top.get("by", {}).values()), int(
+            top.get("computes", {}).get("c0", 0)
+        )
 
     def snapshot(self, graph_def: str, title: str, start: int, end: int) -> bytes:
         """A PNG of one graph. Datadog renders it after answering, so the
@@ -393,31 +654,82 @@ def graph_def(graph: Graph) -> str:
             '"style":{"palette":"grey","type":"dashed"}}'
         )
     markers = (
-        f',"markers":[{{"value":"y = {graph.marker}","type":"error dashed"}}]'
-        if graph.marker
+        f',"markers":[{{"value":"y = {graph.limit:g}","type":"error dashed"}}]'
+        if graph.limit is not None
         else ""
     )
     return f'{{"viz":"timeseries","requests":[{",".join(requests)}]{markers}}}'
 
 
-def change_since_last_week(
-    dd: Datadog, graphs: list[Graph], start: int, end: int
-) -> dict[str, float | None]:
-    """Each graph's daily mean against the same 24 hours a week earlier."""
+def series_name(scope: str) -> str:
+    """'pod_name:switch-switch-core-58f65f47cf-zjttv,service:switch-core'
+    becomes 'pod zjttv'; other splits keep their value."""
+    for tag in scope.split(","):
+        key, _, value = tag.partition(":")
+        if key == "pod_name":
+            return f"pod {value.rsplit('-', 1)[-1]}"
+        if key in ("platform", "route", "check"):
+            return value
+    return ""
 
-    def mean(query: str, a: int, b: int) -> float | None:
-        values = dd.points(query, a, b)
-        return sum(values) / len(values) if values else None
 
+def mean_of(dd: Datadog, query: str, start: int, end: int) -> float | None:
+    values = dd.points(query, start, end)
+    return sum(values) / len(values) if values else None
+
+
+def read_day(dd: Datadog, graph: Graph, service: str, start: int, end: int) -> Day:
+    """What the graph did over the day: its peak and where, time over the
+    limit, and its mean against the same 24 hours a week earlier."""
+    split = dd.series(graph.detail, start, end)
+    points = [(v, t, name) for name, pts in split.items() for t, v in pts]
+    if not points:
+        return Day()
+    peak, at, where = max(points)
+    minutes_over = 0
+    if graph.limit is not None:
+        for pts in split.values():
+            over = sum(b[0] - a[0] for a, b in zip(pts, pts[1:]) if a[1] > graph.limit)
+            minutes_over = max(minutes_over, round(over / 60))
     week = 7 * DAY
-    out: dict[str, float | None] = {}
-    for graph in graphs:
-        now, before = (
-            mean(graph.trend, start, end),
-            mean(graph.trend, start - week, end - week),
+    notes: dict[str, str] = {}
+    s = f"service:{service}"
+    if graph.key == "errors":
+        totals = {name: sum(v for _, v in pts) for name, pts in split.items()}
+        notes["server_errors"] = f"{sum(totals.values()):.0f}"
+        if totals:
+            route, count = max(totals.items(), key=lambda kv: kv[1])
+            if count:
+                notes["top_route"] = f"{route} ({count:.0f})"
+        lost = sum(
+            sum(dd.points(f"sum:switch.messages.{m}{{{s}}}.as_count()", start, end))
+            for m in ("send_failures", "delivery_failures")
         )
-        out[graph.key] = (now - before) / before if now is not None and before else None
-    return out
+        notes["lost"] = f"{lost:.0f}"
+    if graph.key == "bridges":
+        checks = dd.points(f"min:switch.health.check{{{s},check:bridges}}", start, end)
+        if checks and sum(1 for v in checks if v < 1) > len(checks) / 2:
+            notes["check"] = "failing"
+            try:
+                top = dd.top_log_group(
+                    f"{s} @event.name:switch_core.bridge_connected @outcome:failure",
+                    ("@bridge_platform", "@failure_reason"),
+                    start,
+                    end,
+                )
+            except httpx.HTTPError:
+                top = None
+            if top:
+                notes["top_failure"] = f"{top[0]} ({top[1]} times)"
+    return Day(
+        peak=peak,
+        peak_where=where if len(split) > 1 else "",
+        peak_at=time.strftime("%H:%M", time.gmtime(at)),
+        mean=mean_of(dd, graph.queries[0], start, end),
+        last_week=mean_of(dd, graph.queries[0], start - week, end - week),
+        minutes_over=minutes_over,
+        notes=notes,
+    )
 
 
 def post(text: str, images: list[tuple[str, bytes]]) -> None:
@@ -460,10 +772,15 @@ def main() -> int:
     lines = lines_for(measure(dd, service, start, end))
     text = report_text(lines, service, os.environ.get("DASHBOARD_URL", ""))
     graphs = featured_graphs(service)
-    graph, reason = pick_graph(
-        lines, graphs, change_since_last_week(dd, graphs, start, end), end // DAY
-    )
-    text = f"{text}\n\n{graph_caption(graph, reason)}"
+    week = 7 * DAY
+    change: dict[str, float | None] = {}
+    for g in graphs:
+        now = mean_of(dd, g.queries[0], start, end)
+        before = mean_of(dd, g.queries[0], start - week, end - week)
+        change[g.key] = (now - before) / before if now is not None and before else None
+    graph, reason = pick_graph(lines, graphs, change, end // DAY)
+    day = read_day(dd, graph, service, start, end)
+    text = f"{text}\n\n{graph_caption(graph, reason, day)}"
     print(text, flush=True)
     images = []
     try:

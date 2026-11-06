@@ -36,7 +36,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "agent connections now",
+              "title": "connections now",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
@@ -78,14 +78,63 @@
             "layout": {
               "x": 0,
               "y": 0,
-              "width": 4,
+              "width": 2,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "pods running",
+              "title_size": "13",
+              "precision": 0,
+              "autoscale": true,
+              "time": {
+                "live_span": "1h"
+              },
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "count_not_null(q)"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.runtime.cpu_seconds{service:switch-core} by {pod_name}.as_rate()",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "conditional_formats": [
+                    {
+                      "comparator": "<=",
+                      "value": 0,
+                      "palette": "white_on_red"
+                    },
+                    {
+                      "comparator": ">",
+                      "value": 0,
+                      "palette": "custom_text",
+                      "custom_fg_color": "#5b6672"
+                    }
+                  ]
+                }
+              ]
+            },
+            "layout": {
+              "x": 2,
+              "y": 0,
+              "width": 2,
               "height": 2
             }
           },
           {
             "definition": {
               "type": "timeseries",
-              "title": "agent connections, both pods together",
+              "title": "agent connections, all pods together",
               "title_size": "13",
               "show_legend": false,
               "legend_layout": "horizontal",
@@ -150,7 +199,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "bridges healthy, last hour (1 = all running)",
+              "title": "bridges health check, last hour",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
@@ -158,7 +207,13 @@
                 {
                   "formulas": [
                     {
-                      "formula": "q"
+                      "formula": "1 - q",
+                      "number_format": {
+                        "unit": {
+                          "type": "custom_unit_label",
+                          "label": "failing"
+                        }
+                      }
                     }
                   ],
                   "queries": [
@@ -172,15 +227,14 @@
                   "response_format": "scalar",
                   "conditional_formats": [
                     {
-                      "comparator": "<",
-                      "value": 1,
+                      "comparator": ">",
+                      "value": 0,
                       "palette": "white_on_red"
                     },
                     {
-                      "comparator": ">=",
-                      "value": 1,
-                      "palette": "custom_text",
-                      "custom_fg_color": "#5b6672"
+                      "comparator": "<=",
+                      "value": 0,
+                      "palette": "white_on_green"
                     }
                   ]
                 }
@@ -294,8 +348,7 @@
                     {
                       "comparator": "<=",
                       "value": 2000,
-                      "palette": "custom_text",
-                      "custom_fg_color": "#5b6672"
+                      "palette": "white_on_green"
                     }
                   ]
                 }
@@ -343,8 +396,7 @@
                     {
                       "comparator": "<=",
                       "value": 10000,
-                      "palette": "custom_text",
-                      "custom_fg_color": "#5b6672"
+                      "palette": "white_on_green"
                     }
                   ]
                 }
@@ -584,7 +636,7 @@
         "x": 0,
         "y": 10,
         "width": 4,
-        "height": 6
+        "height": 8
       }
     },
     {
@@ -626,8 +678,7 @@
                     {
                       "comparator": "<",
                       "value": 10,
-                      "palette": "custom_text",
-                      "custom_fg_color": "#5b6672"
+                      "palette": "white_on_green"
                     }
                   ]
                 }
@@ -742,7 +793,7 @@
         "x": 4,
         "y": 10,
         "width": 4,
-        "height": 6
+        "height": 8
       }
     },
     {
@@ -866,6 +917,75 @@
               "width": 4,
               "height": 2
             }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "capacity: CPU cores used against pods running",
+              "title_size": "13",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "value",
+                "max"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "a",
+                      "alias": "cores used, all pods"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "a",
+                      "query": "sum:switch.runtime.cpu_seconds{service:switch-core}.as_rate()"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "area",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                },
+                {
+                  "formulas": [
+                    {
+                      "formula": "count_not_null(p)",
+                      "alias": "pods running (one core each)"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "p",
+                      "query": "sum:switch.runtime.cpu_seconds{service:switch-core} by {pod_name}.as_rate()"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "line",
+                  "style": {
+                    "palette": "red",
+                    "line_type": "dashed",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 5,
+              "width": 4,
+              "height": 2
+            }
           }
         ]
       },
@@ -873,7 +993,7 @@
         "x": 8,
         "y": 10,
         "width": 4,
-        "height": 6
+        "height": 8
       }
     }
   ],
