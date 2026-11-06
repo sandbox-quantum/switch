@@ -249,11 +249,10 @@ class UserStore:
         users = result.scalars().all()
         if len(users) > 1:
             logger.error(
-                "Multiple users share email %r case-insensitively (ids: %s); "
-                "returning %s (lowest id, an arbitrary but stable pick). This "
-                "is pre-existing duplicate data, not something this login "
-                "caused — merge or rename the extra account(s).",
-                email,
+                "Multiple users share an email address case-insensitively "
+                "(ids: %s); returning %s (lowest id, an arbitrary but stable "
+                "pick). This is pre-existing duplicate data, not something "
+                "this login caused — merge or rename the extra account(s).",
                 [u.id for u in users],
                 users[0].id,
             )

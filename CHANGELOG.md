@@ -153,6 +153,10 @@ version of their own to them without also giving them a release of their own.
   anything past that reaches agents unchecked, and the message carries a note
   saying the rest was not checked. switch-core now depends on `pypdf` to read
   PDFs.
+- **Logs no longer carry email addresses.** Signing up, creating a user,
+  creating or deleting an API key, seeding the admin account and finding two
+  accounts with the same address each logged the person's email. They now log
+  the user id. A test fails if a log call passes an email again.
 - **Counts and replies no longer name private rooms either.** Beyond the
   room listings below, a reference, document or package's attached-rooms count
   took in every room it was attached to, an agent's detail named every room
