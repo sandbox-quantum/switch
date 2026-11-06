@@ -102,6 +102,7 @@ Add hooks only for what really differs:
 | `itemType` | Vendor typing for tool calls, such as subagents. |
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
+| `clientCapabilities` | Capabilities announced in `initialize` beyond the protocol's own, for requests `extensions` answers. An agent that asks its questions as an ACP form (`elicitation/create`) needs `{ elicitation: { form: {} } }`; `elicitationQuestions` and `elicitationAnswer` in `src/acp/elicitation.ts` read the form's questions and build its answer, as Antigravity and Kimi Code do. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:
