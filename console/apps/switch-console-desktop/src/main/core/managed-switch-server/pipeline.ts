@@ -1,10 +1,13 @@
+import { userInfo } from 'node:os';
 import { passwordLogin } from '@main/core/switch-servers/auth';
 import {
   assertManagedServerUrlFree,
   ensureManagedServer,
   setActiveServerId,
 } from '@main/core/switch-servers/servers-store';
+import { updateMyName } from '@main/core/switch-servers/gateway-client';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
+import { execCommand } from '@main/core/app/utils';
 import { log } from '@main/lib/logger';
 import { RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
@@ -466,6 +469,23 @@ async function registerAndSignIn(
   );
 }
 
+async function getOsUserFullName(): Promise<string | null> {
+  if (process.platform === 'darwin') {
+    try {
+      const fullName = await execCommand('id -F', { timeout: 5_000 });
+      const trimmed = fullName.trim();
+      if (trimmed) return trimmed;
+    } catch {
+      // Fall through to username fallback
+    }
+  }
+  try {
+    return userInfo().username;
+  } catch {
+    return null;
+  }
+}
+
 /** {@link registerAndSignIn} with the server's addresses given explicitly, for
  * a server that is not a compose stack (a native local server runs no
  * dashboard of its own, so it has no separate dashboard address). */
@@ -487,6 +507,18 @@ export async function registerManagedServer(
       error: login.error,
     });
   } else {
+    if (login.data.name === 'Admin') {
+      const osUserName = await getOsUserFullName();
+      if (osUserName) {
+        try {
+          await updateMyName(server, osUserName);
+        } catch (error) {
+          log.warn('managed-switch-server: could not rename default admin user', {
+            error: String(error),
+          });
+        }
+      }
+    }
     // The user never sees a login form for a managed stack, so this is the only
     // sign-in it will ever have — without matching the workspaces here, its
     // placeholder one would stay unmatched until some later launch happened to.
