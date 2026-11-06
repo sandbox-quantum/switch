@@ -85,15 +85,24 @@ export const agentIdentity: FastScenario = {
       link.bridgeId,
       link.identityId,
     );
-    let sinceLink = Date.now();
+    // Switch answers account commands with an ephemeral post, which the REST
+    // API cannot read back, so the link's state is the evidence, and the
+    // channel stays clear of both answers.
+    const sinceLink = Date.now();
     await mm.post({ channelId, message: `!link-account ${link.code}` });
-    await switchReply(mm, channelId, admin.id, sinceLink, /doesn't match/);
-    sinceLink = Date.now();
+    await sleep(3_000);
+    expect(await switchClient.pendingIdentityIds()).toContain(link.identityId);
     await mm.post({ channelId, message: `!link-account ${code}` });
-    await switchReply(mm, channelId, admin.id, sinceLink, /Linked this/);
+    for (let attempt = 0; attempt < 30; attempt++) {
+      if (!(await switchClient.pendingIdentityIds()).includes(link.identityId))
+        break;
+      await sleep(1_000);
+    }
     expect(await switchClient.pendingIdentityIds()).not.toContain(
       link.identityId,
     );
+    expect((await claim()).code).toBeNull();
+    expect(await mm.postsFrom(channelId, admin.id, sinceLink)).toEqual([]);
     // Confirmed, so not among the older links an admin could demote.
     expect(await switchClient.unconfirmedLinkIds(link.bridgeId)).not.toContain(
       link.identityId,
