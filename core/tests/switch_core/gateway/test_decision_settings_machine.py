@@ -142,7 +142,7 @@ async def test_the_owner_admin_runs_it_on_their_machine(
 async def test_once_ready_and_connected_it_applies(
     session_factory: async_sessionmaker[AsyncSession], service: _Service
 ) -> None:
-    ada = await _person(session_factory, "ada", role="owner")
+    ada = await _person(session_factory, "ada", role="admin")
     machine = await _machine(session_factory, ada.id)
     await _connected(session_factory, machine)
     app = _app(session_factory, service, server_url=None)
