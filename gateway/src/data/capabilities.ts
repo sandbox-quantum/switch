@@ -25,6 +25,10 @@ export interface Capabilities {
    * caller's, which the reach of an organization admin or the operator does
    * not count as, and never the server's default workspace. */
   canDeleteWorkspace: boolean;
+  /** The current workspace's own `can_manage_data_protection`: setting a
+   * retention window and erasing people's data, which take an admin
+   * membership of the caller's, as deleting it does. */
+  canManageDataProtection: boolean;
   features: FeatureFlags;
 }
 
@@ -39,6 +43,7 @@ export function capabilitiesOf(
     administersOrganization: session?.tenant?.organization_role === "org_admin",
     inOrganization: (session?.tenant?.organization_id ?? null) !== null,
     canDeleteWorkspace: tenant?.can_delete ?? false,
+    canManageDataProtection: tenant?.can_manage_data_protection ?? false,
     features,
   };
 }

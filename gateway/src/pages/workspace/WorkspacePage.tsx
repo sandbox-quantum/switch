@@ -4,6 +4,8 @@ import { useAuth } from "../../data/AuthContext";
 import DeleteWorkspaceSection from "./DeleteWorkspaceSection";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
+import PeopleSection from "./PeopleSection";
+import RetentionSection from "./RetentionSection";
 
 function WorkspaceHeading({ tenant }: { tenant: TenantMembership }) {
   return (
@@ -41,6 +43,23 @@ function UsersSections({
   );
 }
 
+/** Retention, for any admin, and erasing people's data, which like setting a
+ * retention window takes an admin's own membership. */
+function DataProtectionSections({ tenant }: { tenant: TenantMembership }) {
+  const { capabilities } = useAuth();
+  return (
+    <>
+      {capabilities.administersWorkspace && (
+        <RetentionSection
+          tenantId={tenant.id}
+          canSetWindow={capabilities.canManageDataProtection}
+        />
+      )}
+      {capabilities.canManageDataProtection && <PeopleSection tenantId={tenant.id} />}
+    </>
+  );
+}
+
 function DeleteSection({ tenant }: { tenant: TenantMembership }) {
   const { capabilities } = useAuth();
   if (!capabilities.canDeleteWorkspace) return null;
@@ -57,6 +76,7 @@ export default function WorkspacePage() {
       <WorkspaceHeading tenant={tenant} />
       <Stack spacing={4}>
         <UsersSections session={session} tenant={tenant} canAdmin={canAdminTenant} />
+        <DataProtectionSections tenant={tenant} />
         <DeleteSection tenant={tenant} />
       </Stack>
     </Box>
@@ -73,6 +93,7 @@ export function WorkspaceGeneralPage() {
     <Box>
       <WorkspaceHeading tenant={tenant} />
       <Stack spacing={4}>
+        <DataProtectionSections tenant={tenant} />
         <DeleteSection tenant={tenant} />
       </Stack>
     </Box>

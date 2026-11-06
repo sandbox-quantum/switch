@@ -24,6 +24,7 @@ from switch_core.db.audit import OrganizationIssueKind
 from switch_core.db.models import (
     MAX_BUDGET_AMOUNT,
     MAX_BUDGET_PERIOD_HOURS,
+    MAX_MESSAGE_RETENTION_DAYS,
     UsageMetric,
 )
 
@@ -600,8 +601,22 @@ class RegisterAgentResponse(BaseModel):
 # ── API Keys ────────────────────────────────────────────────────────────────
 
 
+API_KEY_DEFAULT_LIFETIME_DAYS = 90
+API_KEY_MAX_LIFETIME_DAYS = 365
+
+
 class CreateApiKeyRequest(BaseModel):
     label: str
+    expires_in_days: (
+        Annotated[int, Field(ge=1, le=API_KEY_MAX_LIFETIME_DAYS)] | Literal["never"]
+    ) = Field(
+        default=API_KEY_DEFAULT_LIFETIME_DAYS,
+        description=(
+            "Days until the key stops working, at most "
+            f"{API_KEY_MAX_LIFETIME_DAYS}, or `never` for a key that does not "
+            "expire."
+        ),
+    )
 
 
 class ApiKeyDetail(BaseModel):
@@ -610,6 +625,7 @@ class ApiKeyDetail(BaseModel):
     type: str
     key_prefix: str
     created_at: str
+    expires_at: datetime | None
 
 
 class CreateApiKeyResponse(BaseModel):
@@ -617,6 +633,7 @@ class CreateApiKeyResponse(BaseModel):
     label: str
     key: str
     created_at: str
+    expires_at: datetime | None
 
 
 class RevealKeyResponse(BaseModel):
@@ -839,8 +856,10 @@ class ClaimIdentityRequest(BaseModel):
     user_id: str | None = None
     # That the caller knows the link will wait for the account to confirm it
     # (CHOO-3881). A Console from before then leaves it out and would report
-    # a link that does not count as made, so the claim is refused with a
-    # reason it shows instead.
+    # a link that does not count as made, so its claim is answered with a 409
+    # whose text carries the code, which it shows. One for someone else is
+    # refused while the link needs confirming, since that text would show the
+    # code to the wrong person.
     expects_confirmation: bool = False
 
 
@@ -2020,3 +2039,84 @@ class SlackTokensChecked(BaseModel):
     workspace_id: str
     workspace_name: str
     bot_name: str
+
+
+# ── Data retention ──────────────────────────────────────────────────────────
+
+
+class RetentionPolicyRequest(BaseModel):
+    message_retention_days: int = Field(ge=1, le=MAX_MESSAGE_RETENTION_DAYS)
+
+
+class RetentionPolicyResponse(BaseModel):
+    """The workspace's retention policy. `message_retention_days` null means
+    messages are kept forever."""
+
+    message_retention_days: int | None
+    updated_at: datetime | None
+    updated_by_user_id: str | None
+
+
+class RetentionPreviewResponse(BaseModel):
+    """What a window would delete if it applied now."""
+
+    message_retention_days: int
+    messages_to_delete: int
+
+
+# ── Erasing a person ────────────────────────────────────────────────────────
+
+
+class ClaimantDetail(BaseModel):
+    user_id: str
+    name: str
+
+
+class PersonDetail(BaseModel):
+    """Someone seen in the workspace's rooms.
+
+    `kind` is `identity` for a person on a connected chat app, where `id` is
+    their platform identity; `former` for a person on an app since
+    disconnected, where `id` is the transport id their messages carry and
+    `bridge_name` is null; or `member` for a person taking part from Switch
+    Console, where `id` is their member client, `platform` is `switch` and
+    `bridge_name` is null (a deleted account's shows as "Former member").
+    Erase by passing `id` in the matching list of the request.
+    """
+
+    id: str
+    kind: Literal["identity", "former", "member"]
+    username: str
+    platform: str
+    bridge_name: str | None
+    message_count: int
+    claimed_by: list[ClaimantDetail]
+
+
+class ErasureCreateRequest(BaseModel):
+    external_user_ids: list[str] = Field(default_factory=list, max_length=50)
+    former_sender_ids: list[str] = Field(default_factory=list, max_length=50)
+    member_client_ids: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _names_someone(self) -> ErasureCreateRequest:
+        if (
+            not self.external_user_ids
+            and not self.former_sender_ids
+            and not self.member_client_ids
+        ):
+            raise ValueError("name at least one person to erase")
+        return self
+
+
+class ErasureDetail(BaseModel):
+    id: str
+    state: Literal["queued", "running", "done", "failed"]
+    identities: int
+    identities_erased: int
+    messages_deleted: int
+    files_deleted: int
+    error: str | None
+    requested_by_user_id: str | None
+    created_at: datetime
+    completed_at: datetime | None

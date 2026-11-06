@@ -85,7 +85,8 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
 
 export default memo(function NavRail({ layout }: { layout: Layout }) {
   const location = useLocation();
-  const { user, session, isOperator, capabilities, logout, switchTo } = useAuth();
+  const { user, session, isOperator, capabilities, logout, logoutEverywhere, switchTo } =
+    useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -284,6 +285,10 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
         <MenuItem onClick={logout} sx={{ gap: 1 }}>
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out
+        </MenuItem>
+        <MenuItem onClick={logoutEverywhere} sx={{ gap: 1 }}>
+          <LogoutOutlined sx={{ fontSize: 16 }} />
+          Sign out of all devices
         </MenuItem>
       </Menu>
 

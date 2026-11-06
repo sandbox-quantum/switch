@@ -35,7 +35,7 @@ function session(tenant: Partial<TenantMembership> = {}, isOperator = false): Se
 }
 
 function tenant(administers: boolean): CurrentTenant {
-  return { id: "t1", slug: "acme", name: "Acme", role: "member", administers, can_delete: false };
+  return { id: "t1", slug: "acme", name: "Acme", role: "member", administers, can_delete: false, can_manage_data_protection: false };
 }
 
 describe("featureFlagsFrom", () => {

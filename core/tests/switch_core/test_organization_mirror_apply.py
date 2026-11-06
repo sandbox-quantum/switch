@@ -26,6 +26,7 @@ from switch_core.db.models import (
     Organization,
     OrganizationAuditEvent,
     OrganizationMember,
+    Package,
     Tenant,
     TenantMember,
     User,
@@ -304,6 +305,51 @@ class TestTakingAway:
         assert await _keys(owner, world.reached, world.ada) == []
         [(action, _)] = await _organization_events(owner, world.organization_id)
         assert action == OrganizationAuditAction.MEMBER_DEMOTED_FROM_DIRECTORY
+
+    async def test_what_only_org_admin_reached_passes_to_an_admin_there(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Ending access that came only from being `org_admin` leaves what Ada
+        owns in that workspace with someone who can still reach it, as a
+        removal does."""
+        owner = rls_harness.owner
+        world = await _World.make(owner)
+        cleo = _id("cleo")
+        async with owner() as session:
+            session.add(
+                User(id=cleo, name=cleo, email=f"{cleo}@example.invalid", role="user")
+            )
+            await session.flush()
+            session.add(
+                TenantMember(tenant_id=world.reached, user_id=cleo, role="admin")
+            )
+            package = Package(
+                tenant_id=world.reached,
+                owner_id=world.ada,
+                name="kit",
+                description="",
+                instructions="",
+                read_visibility="private",
+                write_visibility="private",
+            )
+            session.add(package)
+            await session.commit()
+            package_id = package.id
+
+        await _apply(rls_harness, world, "member")
+
+        async with owner() as session:
+            moved = await session.get(Package, package_id)
+            assert moved is not None and moved.owner_id == cleo
+            ended = await session.scalar(
+                select(AuditEvent).where(
+                    AuditEvent.tenant_id == world.reached,
+                    AuditEvent.action == AuditAction.ORGANIZATION_ADMIN_ACCESS_ENDED,
+                )
+            )
+            assert ended is not None and ended.details is not None
+            assert ended.details["handed_over_to"] == cleo
+            assert ended.details["handed_over"] == {"package": 1}
 
     async def test_nothing_is_applied_once_the_organization_follows_another(
         self, rls_harness: RLSHarness

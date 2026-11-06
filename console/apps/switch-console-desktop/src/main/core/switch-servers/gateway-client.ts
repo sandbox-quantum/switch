@@ -2386,9 +2386,9 @@ export async function searchBridgeDirectory(
  * with that status.
  *
  * A current server answers with the link still pending and a code to post from
- * the account (`link_request`); see {@link issueIdentityLinkCode}. It refuses a
- * claim that does not say it can show that code (`expects_confirmation`), since
- * a client that cannot would leave the link pending with no way to finish it.
+ * the account (`link_request`); see {@link issueIdentityLinkCode}. A claim that
+ * does not say it can show that code (`expects_confirmation`) gets it as the
+ * text of a 409 instead, which is all a Console from before then shows.
  */
 export async function claimBridgeIdentity(
   server: SwitchServer,
@@ -5145,6 +5145,9 @@ type ResourceJson = {
   created_by_agent_name?: string | null;
   can_remove?: boolean;
   content?: string;
+  owner_id?: string | null;
+  read_visibility?: string;
+  can_read?: boolean;
 };
 
 function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
@@ -5163,6 +5166,9 @@ function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
     packageIds: r.packages ?? [],
     ...(r.can_remove !== undefined ? { canRemove: r.can_remove } : {}),
     ...(kind === 'documents' && typeof r.content === 'string' ? { content: r.content } : {}),
+    ownerId: r.owner_id ?? null,
+    readVisibility: r.read_visibility === 'public' ? 'public' : 'private',
+    ...(r.can_read !== undefined ? { canRead: r.can_read } : {}),
   };
 }
 

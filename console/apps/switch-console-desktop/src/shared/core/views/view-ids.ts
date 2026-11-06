@@ -24,6 +24,8 @@ export const VIEW_IDS = [
   'remoteHosts',
   'remoteHost',
   'templateImport',
+  'library',
+  'libraryItem',
   'templates',
   'templateDetail',
   'templateUse',

@@ -1383,6 +1383,14 @@ export type RoomResource = {
   canRemove?: boolean;
   /** A document's content, when the listing carried it (a room's documents do). */
   content?: string;
+  /** Who owns it, and whether everyone may read it, for working out if the viewer may open its own page. */
+  ownerId: string | null;
+  readVisibility: 'public' | 'private';
+  /**
+   * Whether the viewer may open it, when the server says (a room's packages:
+   * one its owner attached privately is still listed to every reader).
+   */
+  canRead?: boolean;
 };
 
 /** A document read in full, through the room it is attached to. */

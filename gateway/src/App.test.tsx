@@ -96,6 +96,7 @@ function signedInAs(
         role: tenant.role,
         administers: role !== "member",
         can_delete: canDelete,
+        can_manage_data_protection: canDelete,
       },
     ],
   };

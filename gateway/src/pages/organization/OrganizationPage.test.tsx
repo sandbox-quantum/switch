@@ -90,6 +90,7 @@ function signedInAs(current: Session, features: FeatureFlags = CONNECTORS_ON) {
         role: current.tenant?.role ?? "member",
         administers,
         can_delete: false,
+        can_manage_data_protection: false,
       },
       features,
     ),

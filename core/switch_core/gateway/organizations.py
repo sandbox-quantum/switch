@@ -59,6 +59,7 @@ from switch_core.gateway.auth import (
     organization_candidates,
     organization_workspaces_bindable_by,
     organizations_bindable_by,
+    session_auth_time,
     workspaces_in_organization,
     workspaces_reached_through_organization,
 )
@@ -204,6 +205,7 @@ async def list_organizations(
 @router.post("/organizations", status_code=201)
 async def create_organization(
     req: OrganizationCreateRequest,
+    request: Request,
     response: Response,
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
@@ -240,6 +242,7 @@ async def create_organization(
         config,
         name=req.name,
         workspace_name=req.workspace_name or req.name,
+        auth_time=session_auth_time(request),
     )
 
 

@@ -31,6 +31,7 @@ function authState(canAdminTenant: boolean) {
       administersOrganization: false,
       inOrganization: false,
       canDeleteWorkspace: false,
+      canManageDataProtection: false,
       features: ALL_OFF,
     },
     staleError: null,
@@ -38,6 +39,7 @@ function authState(canAdminTenant: boolean) {
     refresh: vi.fn(async () => {}),
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
+    logoutEverywhere: vi.fn(async () => {}),
     switchTo: vi.fn(async () => {}),
   };
 }

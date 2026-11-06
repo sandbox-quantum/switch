@@ -12,6 +12,7 @@ function key(id: string, overrides: Partial<ApiKeyDetail>): ApiKeyDetail {
     type: "registration",
     key_prefix: `sk_${id}`,
     created_at: "2026-10-01T00:00:00Z",
+    expires_at: null,
     can_reveal: true,
     can_delete: true,
     ...overrides,

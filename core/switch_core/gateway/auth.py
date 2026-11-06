@@ -60,6 +60,18 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
+# The `users.session_version` a session was minted with. A cookie minted before
+# the claim existed carries none and counts as 0, the value every account
+# started at, so the deploy that added it signed nobody out.
+SESSION_VERSION_CLAIM = "sv"
+# When the person last proved who they are, as a UNIX time. Every re-mint
+# (refresh, switching workspace) carries it forward, and no session outlives
+# it by more than `SESSION_MAX_AGE`, however often it is refreshed: then the
+# person signs in again. A cookie minted before the claim existed is taken
+# to have signed in when it was minted (`iat`), the earliest moment it can
+# vouch for, so the deploy that added it signed nobody out early.
+AUTH_TIME_CLAIM = "auth_time"
+SESSION_MAX_AGE = datetime.timedelta(days=14)
 
 # The `error` discriminator on the three tenant-resolution failures a client
 # has to tell apart. A bare `{"detail": [...]}` is indistinguishable from
@@ -103,7 +115,14 @@ async def verify_password_off_loop(password: str, password_hash: str | None) -> 
 
 
 def create_jwt(
-    user_id: str, email: str, role: str, keyring: Keyring, tenant_id: str | None
+    user_id: str,
+    email: str,
+    role: str,
+    keyring: Keyring,
+    tenant_id: str | None,
+    *,
+    session_version: int,
+    auth_time: datetime.datetime,
 ) -> str:
     """Sign a session JWT. `tenant_id` is the caller's selected tenant, or
     `None` for a session that has not selected one yet (a fresh login, or a
@@ -112,15 +131,22 @@ def create_jwt(
     The claim only ever *selects*: `_resolve_tenant_id` re-checks it against a
     live membership row on every request, so a forged or stale value buys
     nothing (`docs/old/multi-tenancy-phase2-tenants.md`, §3).
+
+    `auth_time` is when the person signed in: now, for a sign-in, and the
+    presented session's own (`session_auth_time`) for a re-mint. A session
+    signed in `SESSION_MAX_AGE` ago or longer is refused with 401 rather than
+    minted again.
     """
+    now = datetime.datetime.now(datetime.UTC)
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
         "tenant_id": tenant_id,
-        "exp": datetime.datetime.now(datetime.UTC)
-        + datetime.timedelta(hours=JWT_EXPIRY_HOURS),
-        "iat": datetime.datetime.now(datetime.UTC),
+        SESSION_VERSION_CLAIM: session_version,
+        AUTH_TIME_CLAIM: int(auth_time.timestamp()),
+        "exp": session_expires_at(now, auth_time),
+        "iat": now,
     }
     return jwt.encode(
         payload,
@@ -130,12 +156,25 @@ def create_jwt(
     )
 
 
+def session_expires_at(
+    now: datetime.datetime, auth_time: datetime.datetime
+) -> datetime.datetime:
+    """When a session minted at `now` expires: `JWT_EXPIRY_HOURS` from now,
+    or `SESSION_MAX_AGE` after its sign-in if that comes first. 401 for a
+    session already past the second."""
+    signed_in_until = auth_time + SESSION_MAX_AGE
+    if signed_in_until <= now:
+        raise HTTPException(status_code=401, detail="Session too old; sign in again")
+    return min(now + datetime.timedelta(hours=JWT_EXPIRY_HOURS), signed_in_until)
+
+
 def set_session_cookie(
     response: Response,
     user: User,
     keyring: Keyring,
     secure: bool,
     tenant_id: str | None,
+    auth_time: datetime.datetime,
 ) -> None:
     """Mint the switch_auth session cookie for an authenticated user.
 
@@ -148,15 +187,29 @@ def set_session_cookie(
 
     `secure` gates the Secure flag: True on HTTPS deployments so the JWT is
     never sent over plain HTTP, False for local dev served over http://.
+
+    `auth_time` is the same as `create_jwt`'s: now for a sign-in, and
+    `session_auth_time(request)` for every re-mint, so refreshing or switching
+    workspace never extends a session past `SESSION_MAX_AGE`.
     """
-    token = create_jwt(user.id, user.email, user.role, keyring, tenant_id)
+    now = datetime.datetime.now(datetime.UTC)
+    expires_at = session_expires_at(now, auth_time)
+    token = create_jwt(
+        user.id,
+        user.email,
+        user.role,
+        keyring,
+        tenant_id,
+        session_version=user.session_version,
+        auth_time=auth_time,
+    )
     response.set_cookie(
         key="switch_auth",
         value=token,
         httponly=True,
         samesite="lax",
         secure=secure,
-        max_age=86400,
+        max_age=int((expires_at - now).total_seconds()),
         path="/",
     )
 
@@ -205,15 +258,79 @@ async def _authenticate(
     one) and `get_authenticated_user_id` (which deliberately does not).
     """
     payload = _session_claims(request, config)
-    await _require_user_exists(session_factory, user_store, payload["sub"])
+    await _require_current_session(session_factory, user_store, payload)
     return payload
 
 
 def _session_claims(request: HTTPConnection, config: SwitchConfig) -> dict:
+    """The session cookie's claims, verified. Also records on the request
+    when the session signed in, for a route that mints it again
+    (`session_auth_time`)."""
     token = request.cookies.get("switch_auth")
     if token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return decode_jwt(token, config.keyring)
+    payload = decode_jwt(token, config.keyring)
+    request.state.session_auth_time = datetime.datetime.fromtimestamp(
+        payload.get(AUTH_TIME_CLAIM, payload["iat"]), datetime.UTC
+    )
+    return payload
+
+
+def session_auth_time(request: Request) -> datetime.datetime:
+    """When the request's session signed in, for minting it again.
+
+    Set by every dependency that authenticates the session cookie, so a route
+    that re-mints one without having authenticated it is a bug, and fails here
+    rather than starting the session's lifetime over.
+    """
+    auth_time: datetime.datetime | None = getattr(
+        request.state, "session_auth_time", None
+    )
+    if auth_time is None:
+        raise RuntimeError(
+            "session_auth_time read on a request whose session was not authenticated"
+        )
+    return auth_time
+
+
+def _session_version(payload: dict) -> int:
+    return int(payload.get(SESSION_VERSION_CLAIM, 0))
+
+
+def _refuse_ended_session(current_version: int, payload: dict) -> None:
+    """401 for a cookie minted before the account's sessions were ended: a
+    password change, losing the server-admin role, or "Sign out of all
+    devices" (`users.session_version`)."""
+    if current_version != _session_version(payload):
+        raise HTTPException(status_code=401, detail="Session ended")
+
+
+async def _require_current_session(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    payload: dict,
+) -> None:
+    """The cookie's subject still exists and its sessions were not ended
+    since this one was minted."""
+    async with session_factory() as system_session:
+        version = await user_store.session_version(system_session, payload["sub"])
+    if version is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    _refuse_ended_session(version, payload)
+
+
+async def session_is_current(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    session_version: int,
+) -> bool:
+    """Whether a session minted with `session_version` still stands: the
+    account exists and its sessions have not been ended since. Asked again
+    by a socket or stream that stays open long after it was authenticated."""
+    async with session_factory() as system_session:
+        current = await user_store.session_version(system_session, user_id)
+    return current == session_version
 
 
 async def _require_user_exists(
@@ -313,11 +430,12 @@ async def get_authenticated_caller(
     claims, which are a snapshot from login: an address can change, and a
     revoked operator bit must not stay valid for the life of a cookie.
     """
-    payload = await _authenticate(request, session_factory, user_store, config)
+    payload = _session_claims(request, config)
     async with session_factory() as system_session:
         user = await user_store.get(system_session, payload["sub"])
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    _refuse_ended_session(user.session_version, payload)
     return AuthenticatedCaller(
         id=user.id, email=user.email, is_operator=user.role == "admin"
     )
@@ -998,6 +1116,7 @@ async def _bound_user(
         if user is None:
             # Deleted between the two reads; rare, and still not a 500.
             raise HTTPException(status_code=401, detail="User not found")
+        _refuse_ended_session(user.session_version, payload)
         request.state.platform_access = (
             user.role == "admin"
             and not await user_store.administers_by_role(session, tenant_id, user_id)
@@ -1033,6 +1152,9 @@ class SocketCaller:
     # time: the socket is closed then, and the client opens it again with the
     # cookie it has renewed meanwhile.
     expires_at: float
+    # The `users.session_version` the cookie was minted with, checked again
+    # while the socket is open (`session_is_current`).
+    session_version: int
 
 
 async def authenticate_socket(
@@ -1050,6 +1172,7 @@ async def authenticate_socket(
     """
     payload = _session_claims(connection, config)
     user_id: str = payload["sub"]
+    await _require_current_session(session_factory, user_store, payload)
     tenant_id = await _resolve_tenant_id(
         session_factory,
         user_store,
@@ -1058,7 +1181,10 @@ async def authenticate_socket(
         config.gateway_tenant_choice_enabled,
     )
     return SocketCaller(
-        user_id=user_id, tenant_id=tenant_id, expires_at=float(payload["exp"])
+        user_id=user_id,
+        tenant_id=tenant_id,
+        expires_at=float(payload["exp"]),
+        session_version=_session_version(payload),
     )
 
 

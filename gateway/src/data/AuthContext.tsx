@@ -9,6 +9,7 @@ import {
   loadCurrentTenant,
   login as apiLogin,
   logout as apiLogout,
+  signOutEverywhere,
   switchTenant,
 } from "./api";
 import { type Capabilities, capabilitiesOf } from "./capabilities";
@@ -33,6 +34,7 @@ interface AuthState {
   refresh: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  logoutEverywhere: () => Promise<void>;
   switchTo: (tenantId: string) => Promise<void>;
 }
 
@@ -158,6 +160,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);
 
+  const logoutEverywhere = useCallback(async () => {
+    clearPendingInvite();
+    await signOutEverywhere();
+    setLoaded({ session: null, tenant: null, flags: ALL_OFF });
+  }, []);
+
   // A full reload rather than a state update: every page holds data fetched
   // for the workspace it was opened in, and none of it is valid in the next.
   const newLayout = loaded.flags[GATEWAY_V2];
@@ -183,6 +191,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh,
     login,
     logout,
+    logoutEverywhere,
     switchTo,
   };
 
