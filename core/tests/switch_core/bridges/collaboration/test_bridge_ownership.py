@@ -75,6 +75,7 @@ from switch_core.messages.notify import MessageListener
 from switch_core.ownership import Ownership
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning.postgres import PostgresProvisioning
+from switch_core.room_invites import SystemInviter
 from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.signals import SignalBus
 from switch_core.tenant_context import tenant_scope
@@ -909,7 +910,8 @@ class TestChangesMadeElsewhere:
                     external_channel_id="C2",
                     channel_type="channel_public",
                     created_by_kind="system",
-                )
+                ),
+                invited_by=SystemInviter("test"),
             )
         async with session_factory() as session:
             await RoomStore().add_client(session, bridge.speaker_id, created.room.id)

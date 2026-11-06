@@ -34,7 +34,7 @@ class _RaisingRoomService:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
-    async def create_room(self, config: Any) -> Any:
+    async def create_room(self, config: Any, *, invited_by: Any) -> Any:
         raise self._exc
 
 

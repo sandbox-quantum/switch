@@ -46,7 +46,7 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
         def __init__(self) -> None:
             self.configs: list[Any] = []
 
-        async def create_room(self, config: Any) -> SimpleNamespace:
+        async def create_room(self, config: Any, *, invited_by: Any) -> SimpleNamespace:
             self.configs.append(config)
             return SimpleNamespace(room=room)
 

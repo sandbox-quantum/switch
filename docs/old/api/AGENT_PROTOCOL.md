@@ -528,6 +528,14 @@ which the owner can narrow to themselves alone or widen. A human is recognised a
 have claimed that messaging-app account as theirs; an unclaimed account never
 matches, and the reply says as much rather than leaving them guessing.
 
+The same policy decides who may put an agent in a room. `RoomService` takes an
+`Inviter` for every `add_agents_to_room` and `create_room` and asks it about
+each agent before anything is written (`room_invites.py`): a person, a calling
+agent, a chat sender judged as they would be addressing the agent, or `System`
+for what the platform itself does, such as a channel it delivered to a bridge.
+A refused invite raises `InviteRefused` and changes nothing; agents already in
+a room are not removed when their policy narrows.
+
 Attachments carry a pointer, never bytes; fetch via the media endpoint.
 
 ### 6.3 `command`

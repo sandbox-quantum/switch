@@ -77,6 +77,7 @@ from switch_core.observability.runtime import EventLoopLag
 from switch_core.ownership import Ownership
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
+from switch_core.room_invites import SystemInviter
 from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -294,7 +295,8 @@ class BenchServer:
                 name=name,
                 description="connection-model baseline benchmark room",
                 agent_ids=agent_ids,
-            )
+            ),
+            invited_by=SystemInviter("test"),
         )
         return result.room.id
 

@@ -101,6 +101,20 @@ version of their own to them without also giving them a release of their own.
   Its owner can still reveal it under API keys, to see which key it was.
   Keys made before this release, agents' own keys and the deployment's
   bootstrap key do not expire.
+- **Adding an agent to a room asks whether the person may talk to it.** An
+  agent's addressing policy decided who could address it but not who could add
+  it to a room, so someone it refused to talk to could still pull it into their
+  own room, where it only answered that it couldn't act, and see where it was
+  used. The `!invite-agent` command and its slash forms, the
+  `invite_agent_to_room` tool, the room-agents and create-room calls of the
+  agent API and the gateway, creating a room with agents, and the agents a
+  template run adds to its rooms now all apply the policy, in one place in the
+  room service. A refused invite changes nothing and says whose agent it is: a
+  403 from the gateway, a permission error from the tool, a reply in the room
+  from the command. An agent that can manage agents may still add its owner's
+  agents, as it may remove them. Agents already in a room stay when their
+  policy narrows. A channel the platform delivers to a bridge is not judged,
+  as no person asked for it.
 - **Messages with files attached are checked by Switch Trust.** A message with
   a file used to skip the check entirely, typed text included, both from a
   person on a chat platform and from an agent sending files. Now the text is

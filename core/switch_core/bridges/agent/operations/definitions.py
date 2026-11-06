@@ -1438,6 +1438,10 @@ async def invite_agent_to_room(
 ) -> dict[str, bool]:
     """Invite an agent into an existing room by name.
 
+    Allowed when you may address that agent in the room (its addressing policy
+    admits you), or when you can manage agents and it belongs to your owner.
+    Anything else is refused with the reason — relay it rather than retrying.
+
     Args:
         room_id: The Switch room id (UUID string).
         agent_name: Registry name of the agent to add.
