@@ -136,6 +136,78 @@ async def test_the_summary_lists_the_agents_placed_on_its_controller(
     assert summary["heartbeat_at"] is not None
 
 
+async def test_the_disk_says_it_is_the_workspace_only_when_the_box_says_so(
+    controller_app,  # noqa: F811
+):
+    """The apps show a disk only when it is the agents' own volume: a box on
+    the old image reports its controller's small volume, unmarked."""
+    app = controller_app
+    controller_id, _ = await enrolled(app, agents=1)
+    figures = dict(
+        disk_free_bytes=12, disk_total_bytes=15, mem_free_bytes=5, mem_total_bytes=50
+    )
+
+    await report_status(app, controller_id, sessions_running=0, **figures)
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    assert summary["disk"] == {"total_bytes": 15, "available_bytes": 12}
+
+    await report_status(
+        app, controller_id, sessions_running=0, disk_scope="workspace", **figures
+    )
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    # The v1/v2 switch: with v2 off, the summary is exactly as before v2.
+    if process_hosted_v2():
+        assert summary["disk"] == {
+            "total_bytes": 15,
+            "available_bytes": 12,
+            "scope": "workspace",
+        }
+    else:
+        assert summary["disk"] == {"total_bytes": 15, "available_bytes": 12}
+    # Memory is never marked.
+    assert summary["memory"] == {"total_bytes": 50, "available_bytes": 5}
+
+    # Unknown (0 of 0) is no disk at all, marked or not.
+    await report_status(
+        app,
+        controller_id,
+        sessions_running=0,
+        disk_scope="workspace",
+        **{**figures, "disk_free_bytes": 0, "disk_total_bytes": 0},
+    )
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    assert summary["disk"] is None
+
+    # "unknown" is passed on as it is, so the apps know not to show it.
+    await report_status(
+        app, controller_id, sessions_running=0, disk_scope="unknown", **figures
+    )
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    if process_hosted_v2():
+        assert summary["disk"] == {
+            "total_bytes": 15,
+            "available_bytes": 12,
+            "scope": "unknown",
+        }
+    else:
+        assert summary["disk"] == {"total_bytes": 15, "available_bytes": 12}
+
+    # A mark from outside the fixed set is stored and served as "unknown".
+    await report_status(
+        app, controller_id, sessions_running=0, disk_scope="system", **figures
+    )
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    stored = (await machine_of(app.factory, app.machine_id)).heartbeat
+    assert stored is not None
+    if process_hosted_v2():
+        unknown = {"total_bytes": 15, "available_bytes": 12, "scope": "unknown"}
+        assert summary["disk"] == unknown
+        assert stored["disk"] == unknown
+    else:
+        assert summary["disk"] == {"total_bytes": 15, "available_bytes": 12}
+        assert stored["disk"] == {"total_bytes": 15, "available_bytes": 12}
+
+
 @pytest.mark.usefixtures("hosted_v2_on")
 async def test_your_cloud_figures_come_from_this_workspace_s_controller(
     controller_app,  # noqa: F811

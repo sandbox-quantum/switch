@@ -15,6 +15,7 @@ import {
 } from '@switch-console/agent-providers-box';
 import { AgentHub } from './agent-hub';
 import { LeftoverWatch } from './agent-removal';
+import { AgentsDisk } from './agents-disk';
 import {
   AccessTokens,
   ControllerClient,
@@ -853,6 +854,10 @@ export async function runController(
     onChange: () => reporter?.request(),
   });
   providers.seed(deps.providerSeed);
+  // Split boxes: the agents' volume is the box's disk, and only the launcher mounts it.
+  const agentsDisk = split
+    ? new AgentsDisk({ ask: () => split.link.order({ kind: 'disk' }), now: deps.now })
+    : null;
   const collector = new StatusCollector({
     store,
     runtime,
@@ -881,6 +886,7 @@ export async function runController(
       gateway ? { ...gateway.gateway.counts(), ...(dailyCap ? dailyCap.counts() : {}) } : null,
     operatorExec: split?.operatorExec === true,
     dataDir: deps.dataDir,
+    ...(agentsDisk ? { disk: () => agentsDisk.reading() } : {}),
     workspacesDir: workspaces,
     version: deps.version,
     updatedBy: deps.updatedBy,

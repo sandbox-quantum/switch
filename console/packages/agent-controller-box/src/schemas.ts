@@ -284,6 +284,13 @@ export const statusReportSchema = z.object({
     platform: platformSchema,
     disk_free_bytes: z.number().nonnegative(),
     disk_total_bytes: z.number().nonnegative(),
+    /**
+     * Which disk the figures are: `workspace` when they are the agents' own
+     * volume (a split box's launcher measured it), `unknown` otherwise (this
+     * controller's data folder, or no reading, 0 of 0). Switch shows a disk
+     * only for `workspace`. Absent from controllers older than this field.
+     */
+    disk_scope: z.enum(['workspace', 'unknown']).optional(),
     mem_free_bytes: z.number().nonnegative(),
     mem_total_bytes: z.number().nonnegative(),
     sessions_running: z.number().int().nonnegative(),

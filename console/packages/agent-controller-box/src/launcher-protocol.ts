@@ -136,6 +136,12 @@ export const launcherOrderSchema = z.discriminatedUnion('kind', [
    * pid-0 tree) is left running, counted to the box, instead of ended.
    */
   z.object({ kind: z.literal('settings'), id: requestId, operatorExec: z.boolean() }).strict(),
+  /**
+   * The agents' disk: free and total bytes of the launcher's data folder (the
+   * agents' volume), which the controller's container doesn't mount, so only
+   * the launcher can measure it. Numbers only come back.
+   */
+  z.object({ kind: z.literal('disk'), id: requestId }).strict(),
   /** A fresh ticket for a living host to reconnect with, pushed over its control channel. */
   z.object({ kind: z.literal('ticket'), id: requestId, agentId, launchId, ticket }).strict(),
   /** One page of a folder under the workspaces folder, after `cursor` (the last name of the page before). */
@@ -252,6 +258,8 @@ export const launcherReportSchema = z.discriminatedUnion('kind', [
       told: count.optional(),
       /** `probe`: the provider's answer, checked again by the controller's own schema. */
       readiness: z.record(z.string(), z.unknown()).optional(),
+      /** `disk`: the agents' volume, in bytes. */
+      disk: z.object({ free: bytes, total: bytes }).strict().optional(),
       /** `files_list`: one page, and the cursor for the next when there is more. */
       listing: z
         .object({

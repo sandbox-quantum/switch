@@ -226,6 +226,25 @@ class MachineStatus(_StatusBody):
     # "failing" while readings fail after good ones (new starts wait). Absent
     # when readings are fine, the valve is off, or the controller is older.
     valve_memory: Literal["unprotected", "failing"] | None = None
+    # Which disk `disk_free_bytes` and `disk_total_bytes` measure: "workspace"
+    # when a box's controller has the agents' own volume measured (its
+    # launcher), "unknown" otherwise. Absent from older controllers, whose
+    # figure is their own data folder. The apps show a disk only for "workspace".
+    # Any other value is stored as "unknown", never refused: a bad mark must not
+    # cost the box its whole report (heartbeat, memory, agents).
+    disk_scope: Literal["workspace", "unknown"] | None = None
+
+    @field_validator("disk_scope", mode="before")
+    @classmethod
+    def _disk_scope_or_unknown(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return (
+            value
+            if value in ("workspace", "unknown") and isinstance(value, str)
+            else "unknown"
+        )
+
     # The box valve's agent hosts on the hub, and how many joined it (B85).
     # Absent where the valve is off, and from controllers older than these.
     valve_hosts: int | None = Field(default=None, ge=0, le=MAX_VALVE_HOSTS, strict=True)
@@ -391,6 +410,7 @@ V2_MACHINE_STATUS_FIELDS = (
     "mem_anon_bytes",
     "mem_cached_bytes",
     "valve_memory",
+    "disk_scope",
     "valve_hosts",
     "valve_hosts_joined",
     "gateway_agents",
@@ -412,6 +432,7 @@ class _V1MachineStatus(MachineStatus):
     mem_anon_bytes: Any = None
     mem_cached_bytes: Any = None
     valve_memory: Any = None
+    disk_scope: Any = None
     valve_hosts: Any = None
     valve_hosts_joined: Any = None
     gateway_agents: Any = None
@@ -433,6 +454,12 @@ class _V1MachineStatus(MachineStatus):
     ) -> Self:
         # As upstream: a note is kept as sent, never dropped.
         return handler(data)
+
+    @field_validator("disk_scope", mode="before")
+    @classmethod
+    def _disk_scope_or_unknown(cls, value: object) -> Any:
+        # As upstream: any value, kept as sent.
+        return value
 
 
 class _V1AgentStatus(AgentStatus):

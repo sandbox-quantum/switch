@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, statfs } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { sharedConfigSchema } from '@switch-console/agent-providers-box';
 import type { FilesReader } from './files-reader';
@@ -105,6 +105,8 @@ export type LauncherDeps = {
   workspacesRoot?: string;
   /** The agents' data folder: a launch's `directory` may also be an existing one inside it. */
   dataRoot?: string;
+  /** Measures a folder's file system, as `statfs` (tests substitute their own). */
+  statfs?: (path: string) => Promise<{ bavail: number; blocks: number; bsize: number }>;
   /** Overrides `CONFIRM_KEY_MS` (tests). */
   confirmMs?: number;
   /** The controller's socket closed: the caller exits. */
@@ -390,6 +392,21 @@ export class Launcher {
         case 'ticket':
           this.handOver(order.agentId, order.ticket);
           return this.reply(order.id, true);
+        case 'disk': {
+          // The agents' volume, where their workspaces live: the figure Switch
+          // shows as the box's disk. Without a data folder there is nothing to measure.
+          if (this.deps.dataRoot === undefined) return this.reply(order.id, false, 'failed');
+          const fs = await (this.deps.statfs ?? statfs)(this.deps.dataRoot);
+          const bytes = (n: number) =>
+            Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(n)));
+          const total = bytes(fs.blocks * fs.bsize);
+          return this.report({
+            kind: 'reply',
+            id: order.id,
+            ok: true,
+            disk: { free: Math.min(bytes(fs.bavail * fs.bsize), total), total },
+          });
+        }
         case 'settings':
           this.operatorExec = order.operatorExec;
           if (order.operatorExec) this.deps.log('operator_exec_on', {});

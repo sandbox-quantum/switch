@@ -851,6 +851,13 @@ export class StatusCollector {
       /** Switch has the agent attached on a connected controller stream, host or not. */
       streamCarries?: (agentId: string) => boolean;
       dataDir: string;
+      /**
+       * Split boxes: the agents' disk, as the launcher measures it
+       * (`AgentsDisk`), reported in place of `dataDir`'s, which is then the
+       * controller's own small volume. Null is unknown, sent as 0 of 0, which
+       * Switch reads as no figure rather than a wrong one.
+       */
+      disk?: () => Promise<{ free: number; total: number } | null>;
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
       version: string;
@@ -887,6 +894,19 @@ export class StatusCollector {
       meminfo?: () => Promise<MeminfoReading | null>;
     }
   ) {}
+
+  /**
+   * The disk to report: the agents' on a split box, marked `workspace`, else
+   * the data folder's own, marked `unknown`. No reading is 0 of 0, `unknown`.
+   */
+  private async disk(): Promise<{ free: number; total: number; workspace: boolean }> {
+    if (this.deps.disk) {
+      const reading = await this.deps.disk().catch(() => null);
+      return reading ? { ...reading, workspace: true } : { free: 0, total: 0, workspace: false };
+    }
+    const fs = await statfs(this.deps.dataDir);
+    return { free: fs.bavail * fs.bsize, total: fs.blocks * fs.bsize, workspace: false };
+  }
 
   async collect(assignment: Assignment | null): Promise<Omit<StatusReport, 'seq'>> {
     const nowMs = this.deps.now();
@@ -963,7 +983,7 @@ export class StatusCollector {
     for (const agentId of this.previous.keys())
       if (!seen.has(agentId)) this.previous.delete(agentId);
     this.deps.onAgentsSeen?.(seen);
-    const disk = await statfs(this.deps.dataDir);
+    const disk = await this.disk();
     const memoryNote = this.deps.guard?.boxNote() ?? null;
     const meminfo = await (this.deps.meminfo ?? readMeminfo)();
     return {
@@ -976,8 +996,9 @@ export class StatusCollector {
       },
       machine: {
         platform: contractPlatform(),
-        disk_free_bytes: disk.bavail * disk.bsize,
-        disk_total_bytes: disk.blocks * disk.bsize,
+        disk_free_bytes: disk.free,
+        disk_total_bytes: disk.total,
+        disk_scope: disk.workspace ? 'workspace' : 'unknown',
         mem_free_bytes: freemem(),
         mem_total_bytes: totalmem(),
         // Awake sessions only: a parked session holds no process, so counting
