@@ -49,6 +49,8 @@ class _FakeHumanActor:
 
 
 class _FakeAdapter:
+    confirms_webhook_delivery = False
+
     def __init__(self, *, raise_on_admin_message: bool = False) -> None:
         self.admin_messages: list[tuple[str, str, str | None, str]] = []
         self._raise_on_admin_message = raise_on_admin_message

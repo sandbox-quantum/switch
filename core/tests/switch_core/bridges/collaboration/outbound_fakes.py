@@ -13,6 +13,7 @@ each post is recorded as the message map would hold it.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any
 
 
@@ -22,6 +23,8 @@ def posting_without_a_database(core: Any) -> list[dict[str, str]]:
     every settled post is appended to."""
     recorded: list[dict[str, str]] = []
     claimed: dict[str, str] = {}
+    if not hasattr(core._adapter, "delivery_scope"):
+        core._adapter.delivery_scope = lambda _source_id: nullcontext()
 
     async def is_human_sender(sender: str) -> bool:
         return sender in core._human_user_ids

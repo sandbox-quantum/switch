@@ -69,7 +69,9 @@ def _fake_bridge(
     bridge = SimpleNamespace(
         _bridge_id="bridge-1",
         _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},
-        _adapter=SimpleNamespace(translate_inbound=translate),
+        _adapter=SimpleNamespace(
+            translate_inbound=translate, confirms_webhook_delivery=False
+        ),
         _ensure_human_in_room=_ensure_human_in_room,
         _event_for_external_post=_event_for_external_post,
         _record_message_map=_record_message_map,

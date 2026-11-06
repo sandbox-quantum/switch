@@ -28,6 +28,8 @@ def _make_bridge(**overrides: Any) -> CollaborationCore:
         return SimpleNamespace(room=room)
 
     class _Adapter:
+        confirms_webhook_delivery = False
+
         async def admin_message(self, *a: Any, **k: Any) -> str:
             return "C1:1.1"
 

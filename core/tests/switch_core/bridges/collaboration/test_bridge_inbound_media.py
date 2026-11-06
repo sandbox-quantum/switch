@@ -78,6 +78,8 @@ class _FakeHumanActor:
 
 
 class _FakeAdapter:
+    confirms_webhook_delivery = False
+
     def translate_inbound(self, content: str) -> str:
         return content
 

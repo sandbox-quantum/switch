@@ -5,6 +5,7 @@ import math
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -460,6 +461,11 @@ class PlatformAdapter(ABC):
     #: Most adapters dial out to their platform and are handed events on a
     #: connection they opened; they leave this False.
     receives_webhooks: ClassVar[bool] = False
+    #: Confirm receipt only after the transport callback completes. These
+    #: adapters require sender retries and durable, idempotent transport writes.
+    confirms_webhook_delivery: ClassVar[bool] = False
+    #: Optional limit enforced while streaming, before allocating a whole body.
+    webhook_body_limit: ClassVar[int | None] = None
 
     #: Whether this platform draws agents' session activity: each turn step by
     #: step, and the approval and question cards a session waits on.
@@ -937,6 +943,17 @@ class PlatformAdapter(ABC):
         should not pretend to.
         """
         return None
+
+    @classmethod
+    async def verify_connection(
+        cls, connection_config: dict[str, object], policy: OutboundPolicy
+    ) -> None:
+        """Check credentials with the same outbound policy used at runtime."""
+        await cls.verify_credentials(connection_config)
+
+    def delivery_scope(self, source_id: str) -> AbstractContextManager[None]:
+        """Supply a durable source identity to adapters with idempotent receivers."""
+        return nullcontext()
 
     @abstractmethod
     async def start(

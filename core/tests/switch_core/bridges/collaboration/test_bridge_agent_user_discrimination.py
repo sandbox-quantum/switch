@@ -65,6 +65,7 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
         return None
 
     return SimpleNamespace(
+        _adapter=SimpleNamespace(confirms_webhook_delivery=False),
         _handle_text_answer=_no_text_answer,
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,

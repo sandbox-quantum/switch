@@ -106,6 +106,7 @@ async def test_inbound_non_lobby_message_is_not_short_circuited() -> None:
         return None
 
     bridge = SimpleNamespace(
+        _adapter=SimpleNamespace(confirms_webhook_delivery=False),
         _is_registered_agent=_is_registered_agent,
         _handle_lobby_message=_handle_lobby_message,
         _create_room_for_channel=_create_room_for_channel,

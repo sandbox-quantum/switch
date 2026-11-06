@@ -16,6 +16,7 @@ delivery so it is handled once.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -126,6 +127,29 @@ class BridgeWebhookService:
         Dispatched with nothing bound, as a socket-delivered event is — see
         `MessagingInstallService.deliver`.
         """
+        if target.adapter.confirms_webhook_delivery:
+            # Hold the unique receipt until the callback has completed. Other
+            # pods wait on this transaction; a crash rolls it back. The room
+            # transport independently derives stable write ids from message_ref
+            # so replay after a callback committed cannot duplicate the message.
+            if event.external_event_id is None:
+                raise WebhookPayloadError("Confirmed delivery requires an event ID")
+            async with tenant_session(
+                self._session_factory, target.tenant_id
+            ) as session:
+                receipt = await self._receipts.claim(
+                    session,
+                    platform=target.bridge_type,
+                    external_event_id=f"{target.bridge_id}:{event.external_event_id}",
+                )
+                if receipt is None:
+                    return
+                await self._dispatch(target, event)
+                await self._receipts.mark_handled(session, receipt_id=receipt.id)
+                await self._receipts.prune(session)
+                await session.commit()
+            return
+
         if event.external_event_id is None:
             await self._dispatch(target, event)
             return
@@ -158,7 +182,10 @@ class BridgeWebhookService:
     async def _dispatch(
         self, target: BridgeWebhookTarget, event: InboundWebhook
     ) -> None:
-        with no_tenant():
+        with (
+            no_tenant(),
+            target.adapter.delivery_scope(f"inbound:{event.external_event_id}"),
+        ):
             await target.adapter.dispatch_event(
                 envelope_type=event.envelope_type, payload=event.payload
             )
@@ -197,11 +224,18 @@ def create_bridge_webhook_router(service: BridgeWebhookService) -> APIRouter:
             logger.error("Could not deliver a webhook: %s", failure)
             return Response(status_code=503)
 
+        body = bytearray()
+        limit = target.adapter.webhook_body_limit
+        async for chunk in request.stream():
+            if limit is not None and len(body) + len(chunk) > limit:
+                return Response(status_code=413)
+            body.extend(chunk)
+
         webhook = WebhookRequest(
             method=request.method,
             headers={k.lower(): v for k, v in request.headers.items()},
             query=dict(request.query_params),
-            body=await request.body(),
+            body=bytes(body),
         )
         try:
             event = await service.authenticate(target, webhook)
@@ -243,6 +277,17 @@ def create_bridge_webhook_router(service: BridgeWebhookService) -> APIRouter:
                 bridge_id,
             )
             return Response(status_code=501)
+
+        if target.adapter.confirms_webhook_delivery:
+            try:
+                async with asyncio.timeout(30):
+                    await service.deliver(target, event)
+            except Exception:
+                logger.exception(
+                    "Confirmed webhook delivery failed for bridge %s", bridge_id
+                )
+                return Response(status_code=503)
+            return Response(status_code=200)
 
         # Answered first, handled after: the platform's deadline is short and a
         # turn can take minutes.

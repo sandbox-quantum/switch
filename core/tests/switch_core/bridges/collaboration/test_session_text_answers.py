@@ -68,6 +68,8 @@ def test_the_positions_are_the_ones_the_card_actually_rendered() -> None:
 class _Notices:
     """An adapter that only records what it was asked to say to one person."""
 
+    confirms_webhook_delivery = False
+
     def __init__(self) -> None:
         self.told: list[tuple[str, str, str, str | None, str]] = []
 

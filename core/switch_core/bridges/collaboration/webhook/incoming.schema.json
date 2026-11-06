@@ -1,0 +1,154 @@
+{
+  "$defs": {
+    "File": {
+      "additionalProperties": false,
+      "properties": {
+        "filename": {
+          "maxLength": 255,
+          "minLength": 1,
+          "pattern": "^[^/\\\\\\x00-\\x1f\\x7f]+$",
+          "title": "Filename",
+          "type": "string"
+        },
+        "mimetype": {
+          "maxLength": 127,
+          "minLength": 3,
+          "pattern": "^[a-zA-Z0-9.+_-]+/[a-zA-Z0-9.+_-]+$",
+          "title": "Mimetype",
+          "type": "string"
+        },
+        "data_base64": {
+          "maxLength": 1398104,
+          "title": "Data Base64",
+          "type": "string"
+        }
+      },
+      "required": [
+        "filename",
+        "mimetype",
+        "data_base64"
+      ],
+      "title": "File",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "event_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "message.created",
+        "message.updated",
+        "message.deleted",
+        "channel.connected"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "channel_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+      "title": "Channel Id",
+      "type": "string"
+    },
+    "channel_type": {
+      "default": "channel_public",
+      "enum": [
+        "channel_public",
+        "channel_private",
+        "group",
+        "direct"
+      ],
+      "title": "Channel Type",
+      "type": "string"
+    },
+    "channel_name": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Channel Name"
+    },
+    "sender_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+      "title": "Sender Id",
+      "type": "string"
+    },
+    "sender_name": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+      "title": "Sender Name",
+      "type": "string"
+    },
+    "message_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+      "title": "Message Id",
+      "type": "string"
+    },
+    "thread_id": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thread Id"
+    },
+    "text": {
+      "default": "",
+      "maxLength": 100000,
+      "title": "Text",
+      "type": "string"
+    },
+    "attachments": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/File"
+      },
+      "maxItems": 4,
+      "title": "Attachments",
+      "type": "array"
+    }
+  },
+  "required": [
+    "version",
+    "event_id",
+    "type",
+    "channel_id",
+    "sender_id",
+    "sender_name",
+    "message_id"
+  ],
+  "title": "Incoming",
+  "type": "object"
+}

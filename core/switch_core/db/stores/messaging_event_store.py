@@ -38,11 +38,16 @@ class MessagingEventReceiptStore:
         by design, and a caller that treats the second one as an error would
         fill the log with the system working correctly.
 
-        **Commit before doing the work.** An uncommitted claim still holds the
+        **Usually commit before doing the work.** An uncommitted claim holds the
         index entry, so a concurrent retry's insert blocks on it rather than
         failing — and would stay blocked for as long as the first delivery
         takes, which is the length of an agent's turn. Committing straight away
         turns that wait into the immediate refusal it should be.
+
+        A confirmed webhook instead deliberately keeps this transaction open
+        through its bounded transport callback. Failure then rolls back the
+        claim, allowing sender retries; its transport writes must independently
+        deduplicate a replay after a crash between their commit and this one.
         """
         receipt = MessagingEventReceipt(
             platform=platform, external_event_id=external_event_id

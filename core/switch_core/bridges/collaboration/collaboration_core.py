@@ -1122,6 +1122,8 @@ class CollaborationCore:
                         channel_name=msg.channel_name,
                     )
             if room_ids is None:
+                if self._adapter.confirms_webhook_delivery:
+                    raise RuntimeError("Webhook room could not be provisioned")
                 return
 
         room_id, transport_room_id = room_ids
@@ -1144,6 +1146,8 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
+            if self._adapter.confirms_webhook_delivery:
+                raise RuntimeError("Webhook sender could not be provisioned")
             return
 
         content = self._adapter.translate_inbound(msg.content)
@@ -1164,6 +1168,8 @@ class CollaborationCore:
         if msg.root_id is not None:
             thread_root_id = await self._event_for_external_post(msg.root_id)
             if thread_root_id is None:
+                if self._adapter.confirms_webhook_delivery:
+                    raise RuntimeError("Webhook thread root has not been stored yet")
                 logger.warning(
                     "[BRIDGE-IN] no room message mapped for external root %s; "
                     "posting top-level in room %s",
@@ -1237,6 +1243,10 @@ class CollaborationCore:
                     msg.sender_name,
                     transport_room_id,
                 )
+                if self._adapter.confirms_webhook_delivery:
+                    raise RuntimeError(
+                        "Webhook message was not stored by the transport"
+                    )
                 return
             # Tell the sender what happened only now that the message is
             # actually confirmed to have reached the room — posting this
@@ -1318,6 +1328,10 @@ class CollaborationCore:
                     msg.sender_name,
                     transport_room_id,
                 )
+                if self._adapter.confirms_webhook_delivery:
+                    raise RuntimeError(
+                        "Webhook attachment was not stored by the transport"
+                    )
             if index == 0:
                 first_event_id = event_id
 
@@ -1369,6 +1383,8 @@ class CollaborationCore:
                         channel_name=cmd.channel_name,
                     )
             if room_ids is None:
+                if self._adapter.confirms_webhook_delivery:
+                    raise RuntimeError("Webhook command room could not be provisioned")
                 return
         room_id, transport_room_id = room_ids
 
@@ -1379,6 +1395,8 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
+            if self._adapter.confirms_webhook_delivery:
+                raise RuntimeError("Webhook command sender could not be provisioned")
             return
 
         # Where the command's result should thread. A command typed inside an
@@ -1390,6 +1408,12 @@ class CollaborationCore:
         existing_root: str | None = None
         if thread_root_post is not None:
             existing_root = await self._event_for_external_post(thread_root_post)
+        if (
+            cmd.root_id is not None
+            and existing_root is None
+            and self._adapter.confirms_webhook_delivery
+        ):
+            raise RuntimeError("Webhook command thread root has not been stored yet")
 
         content: dict[str, object] = {
             "command": cmd.command,
@@ -1430,6 +1454,8 @@ class CollaborationCore:
                 transport_room_id,
                 exc,
             )
+            if self._adapter.confirms_webhook_delivery:
+                raise
             return
 
         # No bridged room event for the thread root yet: map the command event
@@ -1512,11 +1538,13 @@ class CollaborationCore:
                     "App joined channel %s but room already exists", join.channel_id
                 )
                 return
-            await self._create_room_for_channel(
+            room_ids = await self._create_room_for_channel(
                 channel_id=join.channel_id,
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
             )
+            if room_ids is None and self._adapter.confirms_webhook_delivery:
+                raise RuntimeError("Webhook channel room could not be provisioned")
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
         """The platform reissued a channel's id: move the room onto the new one.
@@ -2534,14 +2562,15 @@ class CollaborationCore:
         if not await self._claim_outbound(channel_id, event.event_id):
             return
         try:
-            message_ref = await self._post_outbound_message(
-                channel_id,
-                event,
-                sender_name,
-                thread_root_ref,
-                admin_marker=admin_marker if is_system else None,
-                is_system=is_system,
-            )
+            with self._adapter.delivery_scope(event.event_id):
+                message_ref = await self._post_outbound_message(
+                    channel_id,
+                    event,
+                    sender_name,
+                    thread_root_ref,
+                    admin_marker=admin_marker if is_system else None,
+                    is_system=is_system,
+                )
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -2755,33 +2784,34 @@ class CollaborationCore:
             return
         message_ref: str | None
         try:
-            if data is None or len(data) > self._max_attachment_bytes:
-                if data is not None:
-                    logger.warning(
-                        "[BRIDGE-OUT] attachment %s is %d bytes, over the "
-                        "%d-byte relay cap",
-                        filename,
-                        len(data),
-                        self._max_attachment_bytes,
+            with self._adapter.delivery_scope(event.event_id):
+                if data is None or len(data) > self._max_attachment_bytes:
+                    if data is not None:
+                        logger.warning(
+                            "[BRIDGE-OUT] attachment %s is %d bytes, over the "
+                            "%d-byte relay cap",
+                            filename,
+                            len(data),
+                            self._max_attachment_bytes,
+                        )
+                    note = f"_sent an attachment that couldn't be relayed: {filename}_"
+                    body = f"{caption}\n{note}" if caption else note
+                    message_ref = await self._adapter.send_message(
+                        channel_id,
+                        sender_name,
+                        self._adapter.translate_outbound(body),
+                        thread_root_id=thread_root_ref,
                     )
-                note = f"_sent an attachment that couldn't be relayed: {filename}_"
-                body = f"{caption}\n{note}" if caption else note
-                message_ref = await self._adapter.send_message(
-                    channel_id,
-                    sender_name,
-                    self._adapter.translate_outbound(body),
-                    thread_root_id=thread_root_ref,
-                )
-            else:
-                message_ref = await self._adapter.send_attachment(
-                    channel_id,
-                    sender_name,
-                    filename,
-                    mimetype,
-                    data,
-                    caption=caption,
-                    thread_root_id=thread_root_ref,
-                )
+                else:
+                    message_ref = await self._adapter.send_attachment(
+                        channel_id,
+                        sender_name,
+                        filename,
+                        mimetype,
+                        data,
+                        caption=caption,
+                        thread_root_id=thread_root_ref,
+                    )
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -2905,13 +2935,14 @@ class CollaborationCore:
         if not await self._claim_outbound(channel_id, claim_event_id):
             return
         try:
-            message_ref = await self._adapter.send_attachments(
-                channel_id,
-                sender_name,
-                [pending.parts[i] for i in sorted(pending.parts)],
-                caption=pending.caption,
-                thread_root_id=thread_root_ref,
-            )
+            with self._adapter.delivery_scope(claim_event_id):
+                message_ref = await self._adapter.send_attachments(
+                    channel_id,
+                    sender_name,
+                    [pending.parts[i] for i in sorted(pending.parts)],
+                    caption=pending.caption,
+                    thread_root_id=thread_root_ref,
+                )
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(claim_event_id))
             raise
