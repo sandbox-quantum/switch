@@ -40,7 +40,12 @@ import {
   type LibraryFilter,
   visibilityOf,
 } from './library-model';
-import { referenceTypesKey } from './library-queries';
+import {
+  libraryItemsKey,
+  libraryItemsOfKindKey,
+  referenceTypesKey,
+  roomResourcesInWorkspaceKey,
+} from './library-queries';
 import { slugAsTyped, slugFromName, slugProblem } from './reference-type-slug';
 
 export const managedReferenceTypesKey = (workspaceId: string) => [
@@ -186,38 +191,53 @@ export function ReferenceTypesPanel({
       </p>
     );
   }
+  // Without the types you may change, edit and delete would vanish silently.
+  const managedError = managed.isError ? (
+    <p role="alert" className="text-xs text-destructive">
+      {failureText(
+        managed.error,
+        'Could not read which types you can change, so editing and deleting are unavailable.'
+      )}
+    </p>
+  ) : null;
   if (shown.length === 0) {
     return (
-      <p className="py-2 text-sm text-foreground-muted">
-        {filter.mineOnly && !filter.query.trim()
-          ? 'You have made no reference types yet.'
-          : 'No reference type matches.'}
-      </p>
+      <>
+        {managedError}
+        <p className="py-2 text-sm text-foreground-muted">
+          {filter.mineOnly && !filter.query.trim()
+            ? 'You have made no reference types yet.'
+            : 'No reference type matches.'}
+        </p>
+      </>
     );
   }
   return (
-    <div
-      role="list"
-      aria-label="Reference types"
-      className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-[14px]"
-    >
-      {shown.map((card) => (
-        <div role="listitem" key={card.key}>
-          <TypeCard
-            card={card}
-            viewerId={viewerId}
-            showYours={!filter.mineOnly}
-            onOpen={() => showType({ workspaceId, editing: card.managed, viewing: card })}
-            onEdit={
-              card.managed
-                ? () => showType({ workspaceId, editing: card.managed, viewing: card })
-                : null
-            }
-            onDelete={card.managed ? () => remove(card) : null}
-          />
-        </div>
-      ))}
-    </div>
+    <>
+      {managedError}
+      <div
+        role="list"
+        aria-label="Reference types"
+        className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-[14px]"
+      >
+        {shown.map((card) => (
+          <div role="listitem" key={card.key}>
+            <TypeCard
+              card={card}
+              viewerId={viewerId}
+              showYours={!filter.mineOnly}
+              onOpen={() => showType({ workspaceId, editing: card.managed, viewing: card })}
+              onEdit={
+                card.managed
+                  ? () => showType({ workspaceId, editing: card.managed, viewing: card })
+                  : null
+              }
+              onDelete={card.managed ? () => remove(card) : null}
+            />
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -329,9 +349,12 @@ export async function invalidateReferenceTypes(
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: referenceTypesKey(workspaceId) }),
     queryClient.invalidateQueries({ queryKey: managedReferenceTypesKey(workspaceId) }),
-    // References show their type's name.
-    queryClient.invalidateQueries({ queryKey: ['library-items', workspaceId, 'references'] }),
-    queryClient.invalidateQueries({ queryKey: ['library-item', workspaceId, 'references'] }),
+    // References show their type's name: in Resources, on their pages, and in rooms.
+    queryClient.invalidateQueries({ queryKey: libraryItemsKey(workspaceId, 'references') }),
+    queryClient.invalidateQueries({
+      queryKey: libraryItemsOfKindKey(workspaceId, 'references'),
+    }),
+    queryClient.invalidateQueries({ queryKey: roomResourcesInWorkspaceKey(workspaceId) }),
   ]);
 }
 
@@ -349,6 +372,12 @@ type ModalProps = BaseModalProps<ManagedReferenceType> & {
   editing: ManagedReferenceType | null;
   /** A type to show read-only when it is not the viewer's to change. */
   viewing?: ReferenceTypeCard;
+  /**
+   * Shown as a step inside another dialog (New reference). There is no close
+   * button, and Escape goes back to that dialog (`onClose`) rather than
+   * closing it and losing what was filled in there.
+   */
+  embedded?: boolean;
 };
 
 /**
@@ -360,6 +389,7 @@ export function ReferenceTypeModal({
   workspaceId,
   editing,
   viewing,
+  embedded = false,
   onSuccess,
   onClose,
 }: ModalProps) {
@@ -428,138 +458,149 @@ export function ReferenceTypeModal({
       : `Edit ${editing?.displayName ?? 'reference type'}`;
 
   return (
-    <ModalLayout
-      header={
-        <DialogHeader showCloseButton={!saving}>
-          <DialogTitle>{title}</DialogTitle>
-        </DialogHeader>
-      }
-      footer={
-        <DialogFooter>
-          {readOnly ? (
-            <Button type="button" variant="outline" onClick={onClose}>
-              Close
-            </Button>
-          ) : (
-            <>
-              <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                onClick={() => void save()}
-                disabled={
-                  saving ||
-                  nameMissing ||
-                  problem !== null ||
-                  (editing !== null && Object.keys(changesOf(editing, form)).length === 0)
-                }
-              >
-                {saving ? 'Saving…' : creating ? 'Add type' : 'Save'}
-              </Button>
-            </>
-          )}
-        </DialogFooter>
-      }
+    <div
+      className="contents"
+      onKeyDownCapture={(e) => {
+        if (embedded && e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!saving) onClose();
+        }
+      }}
     >
-      <DialogContentArea className="max-h-[calc(100dvh-2rem-var(--modal-chrome,10rem))] gap-4 overflow-y-auto">
-        {readOnly && viewing?.isBuiltin && (
-          <p className="text-sm text-foreground-muted">
-            Comes with Switch, so it can’t be changed.
-          </p>
-        )}
-        {readOnly && !viewing?.isBuiltin && (
-          <p className="text-sm text-foreground-muted">
-            {viewing?.ownerName ? `${viewing.ownerName}’s type. ` : ''}Only its owner or an admin
-            changes it.
-          </p>
-        )}
-        <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor={`${id}-name`}>Name</FieldLabel>
-            <Input
-              id={`${id}-name`}
-              value={form.displayName}
-              disabled={readOnly}
-              onChange={(e) => setForm({ ...form, displayName: e.target.value })}
-              placeholder="Linear issues"
-              autoFocus={!readOnly}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={`${id}-slug`}>Slug</FieldLabel>
-            <Input
-              id={`${id}-slug`}
-              value={form.type}
-              disabled={!creating}
-              aria-invalid={creating && touchedSlug && problem !== null}
-              className="h-9 font-mono text-[13px] leading-6 md:text-[13px]"
-              onChange={(e) => {
-                slugEdited.current = true;
-                setTouchedSlug(true);
-                setForm({ ...form, type: slugAsTyped(e.target.value) });
-              }}
-              onBlur={() => setTouchedSlug(true)}
-              placeholder="linear_issues"
-            />
-            {creating && (touchedSlug || form.type !== '') && problem !== null ? (
-              <p className="text-xs text-destructive">{problem}</p>
-            ) : null}
-            <p className="text-xs text-foreground-muted">
-              Stored on every reference of this type, so it cannot be changed later.
+      <ModalLayout
+        header={
+          <DialogHeader showCloseButton={!saving && !embedded}>
+            <DialogTitle>{title}</DialogTitle>
+          </DialogHeader>
+        }
+        footer={
+          <DialogFooter>
+            {readOnly ? (
+              <Button type="button" variant="outline" onClick={onClose}>
+                Close
+              </Button>
+            ) : (
+              <>
+                <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+                  {embedded ? 'Back' : 'Cancel'}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void save()}
+                  disabled={
+                    saving ||
+                    nameMissing ||
+                    problem !== null ||
+                    (editing !== null && Object.keys(changesOf(editing, form)).length === 0)
+                  }
+                >
+                  {saving ? 'Saving…' : creating ? 'Add type' : 'Save'}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        }
+      >
+        <DialogContentArea className="max-h-[calc(100dvh-2rem-var(--modal-chrome,10rem))] gap-4 overflow-y-auto">
+          {readOnly && viewing?.isBuiltin && (
+            <p className="text-sm text-foreground-muted">
+              Comes with Switch, so it can’t be changed.
             </p>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={`${id}-hint`}>What the links point at</FieldLabel>
-            <Input
-              id={`${id}-hint`}
-              value={form.valueHint}
-              disabled={readOnly}
-              onChange={(e) => setForm({ ...form, valueHint: e.target.value })}
-              placeholder="Links to Linear issues, e.g. https://linear.app/acme/issue/ENG-123"
-            />
-            <p className="text-xs text-foreground-muted">
-              Shown under the links when someone adds a reference of this type.
+          )}
+          {readOnly && !viewing?.isBuiltin && (
+            <p className="text-sm text-foreground-muted">
+              {viewing?.ownerName ? `${viewing.ownerName}’s type. ` : ''}Only its owner or an admin
+              changes it.
             </p>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={`${id}-instructions`}>Instructions for agents</FieldLabel>
-            <Textarea
-              id={`${id}-instructions`}
-              value={form.instructions}
-              disabled={readOnly}
-              onChange={(e) => setForm({ ...form, instructions: e.target.value })}
-              placeholder="What an agent needs to use these links, such as the connector to read them with"
-              className="min-h-20"
-            />
-            <p className="text-xs text-foreground-muted">
-              Every agent in a room with a reference of this type is told this.
-            </p>
-          </Field>
-          {!readOnly && (
+          )}
+          <FieldGroup>
             <Field>
-              <FieldLabel>Who can see it</FieldLabel>
-              <div className="flex">
-                <SegmentedControl
-                  value={form.access}
-                  onChange={(access) => setForm({ ...form, access })}
-                  options={LIBRARY_ACCESS_OPTIONS}
-                  ariaLabel="Who can see it"
-                />
-              </div>
+              <FieldLabel htmlFor={`${id}-name`}>Name</FieldLabel>
+              <Input
+                id={`${id}-name`}
+                value={form.displayName}
+                disabled={readOnly}
+                onChange={(e) => setForm({ ...form, displayName: e.target.value })}
+                placeholder="Linear issues"
+                autoFocus={!readOnly}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor={`${id}-slug`}>Slug</FieldLabel>
+              <Input
+                id={`${id}-slug`}
+                value={form.type}
+                disabled={!creating}
+                aria-invalid={creating && touchedSlug && problem !== null}
+                className="h-9 font-mono text-[13px] leading-6 md:text-[13px]"
+                onChange={(e) => {
+                  slugEdited.current = true;
+                  setTouchedSlug(true);
+                  setForm({ ...form, type: slugAsTyped(e.target.value) });
+                }}
+                onBlur={() => setTouchedSlug(true)}
+                placeholder="linear_issues"
+              />
+              {creating && (touchedSlug || form.type !== '') && problem !== null ? (
+                <p className="text-xs text-destructive">{problem}</p>
+              ) : null}
               <p className="text-xs text-foreground-muted">
-                {LIBRARY_ACCESS_OPTIONS.find((o) => o.value === form.access)?.hint}
+                Stored on every reference of this type, so it cannot be changed later.
               </p>
             </Field>
+            <Field>
+              <FieldLabel htmlFor={`${id}-hint`}>What the links point at</FieldLabel>
+              <Input
+                id={`${id}-hint`}
+                value={form.valueHint}
+                disabled={readOnly}
+                onChange={(e) => setForm({ ...form, valueHint: e.target.value })}
+                placeholder="Links to Linear issues, e.g. https://linear.app/acme/issue/ENG-123"
+              />
+              <p className="text-xs text-foreground-muted">
+                Shown under the links when someone adds a reference of this type.
+              </p>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor={`${id}-instructions`}>Instructions for agents</FieldLabel>
+              <Textarea
+                id={`${id}-instructions`}
+                value={form.instructions}
+                disabled={readOnly}
+                onChange={(e) => setForm({ ...form, instructions: e.target.value })}
+                placeholder="What an agent needs to use these links, such as the connector to read them with"
+                className="min-h-20"
+              />
+              <p className="text-xs text-foreground-muted">
+                Every agent in a room with a reference of this type is told this.
+              </p>
+            </Field>
+            {!readOnly && (
+              <Field>
+                <FieldLabel>Who can see it</FieldLabel>
+                <div className="flex">
+                  <SegmentedControl
+                    value={form.access}
+                    onChange={(access) => setForm({ ...form, access })}
+                    options={LIBRARY_ACCESS_OPTIONS}
+                    ariaLabel="Who can see it"
+                  />
+                </div>
+                <p className="text-xs text-foreground-muted">
+                  {LIBRARY_ACCESS_OPTIONS.find((o) => o.value === form.access)?.hint}
+                </p>
+              </Field>
+            )}
+          </FieldGroup>
+          {error && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           )}
-        </FieldGroup>
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-      </DialogContentArea>
-    </ModalLayout>
+        </DialogContentArea>
+      </ModalLayout>
+    </div>
   );
 }
 

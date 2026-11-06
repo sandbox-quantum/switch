@@ -67,6 +67,7 @@ export function NewLibraryItemModal({ workspaceId, kind, onSuccess, onClose }: N
       <ReferenceTypeModal
         workspaceId={workspaceId}
         editing={null}
+        embedded
         onSuccess={(created) => {
           setForm((now) => ({ ...now, type: created.type }));
           setAddingType(false);

@@ -722,6 +722,53 @@ describe('reference types', () => {
     });
   });
 
+  it('goes back to New reference on Escape in the new type step, keeping what was typed', async () => {
+    await render(() => (
+      <Dialog open>
+        <DialogContent>
+          <NewLibraryItemModal
+            workspaceId="ws"
+            kind="references"
+            onSuccess={() => {}}
+            onClose={() => {}}
+          />
+        </DialogContent>
+      </Dialog>
+    ));
+    const links = dialog().querySelector<HTMLTextAreaElement>('textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        links,
+        'https://example.com/a'
+      );
+      links.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => dialogButton('None fit? New type…')!.click());
+    expect(dialog().textContent).toContain('New reference type');
+    expect(dialog().querySelector('[data-slot="dialog-close"]')).toBeNull();
+    await act(async () => {
+      input('Linear issues').dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+      );
+    });
+    expect(dialog()).not.toBeNull();
+    expect(dialog().textContent).not.toContain('New reference type');
+    expect(dialog().querySelector<HTMLTextAreaElement>('textarea')!.value).toBe(
+      'https://example.com/a'
+    );
+  });
+
+  it('says when the types you may change could not be read', async () => {
+    state.params = { serverId: 'srv' };
+    rpcMock.listManagedReferenceTypes.mockRejectedValue(new Error('Switch gateway returned 500'));
+    await render(libraryView.MainPanel);
+    await act(async () => button('Reference types')!.click());
+    await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      'Switch gateway returned 500'
+    );
+  });
+
   it('makes a new type from New reference, then picks it', async () => {
     await render(() => (
       <Dialog open>

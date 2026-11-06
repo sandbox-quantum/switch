@@ -7,12 +7,20 @@ export const libraryItemsKey = (workspaceId: string, kind: LibraryKind) => [
   kind,
 ];
 
-export const libraryItemKey = (workspaceId: string, kind: LibraryKind, itemId: string) => [
+/** Every item page of a kind, to refresh them all at once. */
+export const libraryItemsOfKindKey = (workspaceId: string, kind: LibraryKind) => [
   'library-item',
   workspaceId,
   kind,
+];
+
+export const libraryItemKey = (workspaceId: string, kind: LibraryKind, itemId: string) => [
+  ...libraryItemsOfKindKey(workspaceId, kind),
   itemId,
 ];
+
+/** Every room's Resources tab in the workspace (the room-resources panel's keys start so). */
+export const roomResourcesInWorkspaceKey = (workspaceId: string) => ['room-resources', workspaceId];
 
 export const libraryRoomsKey = (workspaceId: string, kind: LibraryKind, itemId: string) => [
   'library-item-rooms',
