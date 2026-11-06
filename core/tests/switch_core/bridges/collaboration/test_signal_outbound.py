@@ -10,12 +10,13 @@ message ref that comes back.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
 import pytest
 
-from switch_core.bridges.collaboration.adapter import RequestCard
+from switch_core.bridges.collaboration.adapter import RequestCard, RichContentFailed
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     OutboundAttachment,
@@ -156,6 +157,46 @@ async def test_a_delete_sends_remote_delete_of_the_target_timestamp() -> None:
 
     assert transport.method() == "remoteDelete"
     assert transport.params()["targetTimestamp"] == _TS
+
+
+async def test_a_refused_edit_reaches_the_caller_as_a_rich_content_failure() -> None:
+    """The edit window is the daemon's to close: past the ~24 h limit the
+    daemon refuses the `send` with `editTimestamp`, and that refusal must
+    reach the card and turn redrawers as `RichContentFailed` — the one
+    exception their retry paths key on. Never swallowed (the card would
+    silently stay stale) and never a crash of the delivery loop."""
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "signal_fixtures" / "error_unknown_group.json"
+        ).read_text()
+    )
+    refusal = cast(dict[str, Any], fixture["response"]["error"])
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jsonrpc": "2.0", "error": refusal, "id": 1})
+
+    adapter, _ = _adapter()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    adapter._rpc_client = SignalRpcClient(
+        daemon_url=adapter.config.daemon_url,
+        account=adapter.config.account,
+        http=http,
+    )
+    card = RequestCard(
+        open_request(),
+        RequestReference(token="tok-signal", handle="R42"),
+    )
+
+    with pytest.raises(RichContentFailed) as caught:
+        await adapter.update_rich(
+            f"d:{_PEER_UUID}", "Ops", f"{_ACCOUNT}:{_TS}", card, None
+        )
+    # Mapped at the seam, not raised raw and not converted away: the
+    # underlying refusal keeps its captured code, the failure carries the
+    # text it was drawing so the fallback reply can name it.
+    assert caught.value.__cause__ is not None
+    assert "signal-cli refused" in str(caught.value.__cause__)
+    assert "R42" in caught.value.text
 
 
 # ── typing ───────────────────────────────────────────────────────────────────

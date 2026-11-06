@@ -132,6 +132,9 @@ class SignalAdapter(PlatformAdapter):
     # typed back: Signal has no buttons, and the shared answer path keys a
     # typed answer on the handle the card text names.
     draws_session_activity: ClassVar[bool] = True
+    # The daemon has no group-delete RPC, so retiring a room cannot touch the
+    # Signal chat; the base's "kept" is this adapter's deliberate choice too.
+    channel_on_delete = "kept"
 
     def __init__(self, *, config: SignalConnectionConfig) -> None:
         super().__init__()
