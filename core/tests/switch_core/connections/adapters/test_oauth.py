@@ -502,6 +502,108 @@ class TestDisconnect:
         assert not isinstance(raised.value, ConnectionNotRevocable)
 
 
+BEARER = STATIC.replace(
+    "    client_settings: EXAMPLE\n",
+    "    client_settings: EXAMPLE\n"
+    "    revocation_discovered: true\n"
+    "    revocation_bearer: true\n",
+)
+
+
+class TestBearerRevocation:
+    """Revocation as Dropbox's /2/auth/token/revoke takes it: the access token
+    as a bearer and no body, ending the refresh token with it."""
+
+    @pytest.fixture
+    def vendor(self) -> FakeOAuthServer:
+        vendor = FakeOAuthServer(rotating=False)
+        vendor.revocation_bearer = True
+        return vendor
+
+    async def test_revokes_with_the_access_token_as_a_bearer_and_no_body(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.revoke_connection(secret)
+        assert vendor.bearer_revoked == [secret.access_token]
+        assert vendor.revoked == []
+        # The refresh token went with it.
+        assert secret.values["refresh_token"] not in vendor.live_refresh
+        with pytest.raises(ReauthorizationRequiredError):
+            await adapter.refresh(secret)
+
+    async def test_an_rfc_7009_request_is_what_the_vendor_refuses(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n    revocation_discovered: true\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="HTTP 400"):
+            await adapter.revoke_connection(secret)
+        assert secret.values["refresh_token"] in vendor.live_refresh
+
+    async def test_refreshes_an_expired_access_token_first(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        expired = ConnectionSecret({**secret.values, "expires_at": time.time() - 1})
+        await adapter.revoke_connection(expired)
+        [revoked] = vendor.bearer_revoked
+        assert revoked != secret.access_token
+        assert secret.access_token not in vendor.live_access
+        assert secret.values["refresh_token"] not in vendor.live_refresh
+
+    async def test_refreshes_once_where_the_vendor_says_the_token_expired(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        vendor.expired_access.add(secret.access_token)
+        await adapter.revoke_connection(secret)
+        assert len(vendor.bearer_revoked) == 1
+        assert vendor.token_requests[-1]["grant_type"] == "refresh_token"
+        assert secret.values["refresh_token"] not in vendor.live_refresh
+
+    async def test_does_not_refresh_twice(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        vendor.expired_access.add(secret.access_token)
+        real_mint = vendor.mint
+
+        def mint_expired(scopes, grant=None):
+            minted = real_mint(scopes, grant)
+            vendor.expired_access.add(minted["access_token"])
+            return minted
+
+        vendor.mint = mint_expired  # type: ignore[method-assign]
+        with pytest.raises(ServiceAdapterError, match="HTTP 401"):
+            await adapter.revoke_connection(secret)
+        refreshes = [
+            r for r in vendor.token_requests if r["grant_type"] == "refresh_token"
+        ]
+        assert len(refreshes) == 1
+
+    async def test_a_sign_in_already_revoked_is_gone(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.revoke_connection(secret)
+        await adapter.revoke_connection(secret)
+        assert vendor.bearer_revoked == [secret.access_token]
+
+    async def test_an_expired_token_whose_refresh_is_refused_is_gone(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        vendor.live_refresh.clear()
+        expired = ConnectionSecret({**secret.values, "expires_at": time.time() - 1})
+        await adapter.revoke_connection(expired)
+        assert vendor.bearer_revoked == []
+
+
 class TestWhereTheMetadataIs:
     async def test_follows_the_metadata_the_servers_401_names(self, vendor) -> None:
         vendor.resource_metadata_path = "/resource-metadata/v1"

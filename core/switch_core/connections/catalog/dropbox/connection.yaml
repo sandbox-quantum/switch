@@ -25,13 +25,15 @@ auth:
     # Without it Dropbox hands out an access token and no refresh token.
     authorization_params:
       token_access_type: offline
-    # The endpoints are discovered from the MCP server. The revocation
-    # endpoint Dropbox advertises (/2/auth/token/revoke) is its own API call,
-    # authenticated by the token as a bearer with no body, and refuses an RFC
-    # 7009 request, so Switch cannot revoke a sign-in there.
-    remove_access: >-
-      Remove Switch in Dropbox under Settings, Connected apps. Until then the
-      sign-in keeps working.
+    # The endpoints are discovered from the MCP server, the revocation
+    # endpoint too. It (/2/auth/token/revoke) is Dropbox's own API call,
+    # authenticated by the access token as a bearer with no body, and refuses
+    # an RFC 7009 request. Revoking the access token ends its refresh token.
+    revocation_discovered: true
+    revocation_bearer: true
+    # Not revocation_ends_grant: a revocation ends only the sign-in whose
+    # token it was. Dropbox keeps the app's other sign-ins to the same account,
+    # so a reconnect's replaced sign-in is still revoked.
   identity:
     # Dropbox's account call is a POST that takes no arguments, so it is sent
     # with no body.

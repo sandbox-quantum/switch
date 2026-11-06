@@ -333,11 +333,12 @@ def test_the_shipped_dropbox_entry_signs_in_as_dropbox_was_found_to_need():
     # A refresh token comes only with offline access, and survives its use.
     assert oauth.authorization_params == {"token_access_type": "offline"}
     assert definition.auth.refresh == "reusable"
-    # Dropbox's advertised revocation endpoint is not RFC 7009, so people
-    # remove Switch there.
-    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
-    assert oauth.remove_access is not None
-    assert "Connected apps" in oauth.remove_access
+    # Dropbox's advertised revocation endpoint is not RFC 7009: it takes the
+    # access token as a bearer, and ends that sign-in alone.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, True)
+    assert oauth.revocation_bearer is True
+    assert oauth.revocation_ends_grant is False
+    assert oauth.remove_access is None
     identity = definition.auth.identity
     assert identity is not None
     # Dropbox's account call is a POST that takes no arguments.
@@ -760,6 +761,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    revocation_ends_grant: true\n",
             "revocation_ends_grant",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_bearer: true\n",
+            "revocation_bearer",
         ),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),
