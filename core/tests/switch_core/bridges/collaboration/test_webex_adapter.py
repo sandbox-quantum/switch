@@ -275,6 +275,49 @@ class TestClassifyFailure:
 
 
 class TestStart:
+    async def test_every_webhook_is_made_when_webex_limits_the_rate(
+        self, webex: FakeWebex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        limited = httpx.Response(429, headers={"retry-after": "2"}, json={})
+        answers = iter(
+            [_ok({"id": "h1"}), limited, limited, _ok({"id": "h2"}), _ok({"id": "h3"})]
+        )
+        webex.route("POST", "/v1/webhooks", lambda r: next(answers))
+        waited: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            waited.append(seconds)
+
+        monkeypatch.setattr(webex_module.asyncio, "sleep", sleep)
+        await _started(webex)
+
+        created = [json.loads(c.content) for c in webex.sent("POST", "/v1/webhooks")]
+        assert [c["resource"] for c in created] == [
+            "messages",
+            "attachmentActions",
+            "attachmentActions",
+            "attachmentActions",
+            "memberships",
+        ]
+        assert waited == [2, 2]
+
+    async def test_a_rate_limit_that_never_lifts_still_fails_the_start(
+        self, webex: FakeWebex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        webex.route(
+            "POST",
+            "/v1/webhooks",
+            lambda r: httpx.Response(429, headers={"retry-after": "2"}, json={}),
+        )
+
+        async def sleep(seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr(webex_module.asyncio, "sleep", sleep)
+        with pytest.raises(WebexAPIError):
+            await _started(webex)
+        assert len(webex.sent("POST", "/v1/webhooks")) == 4
+
     async def test_the_holder_replaces_its_own_webhooks_and_no_others(
         self, webex: FakeWebex
     ) -> None:

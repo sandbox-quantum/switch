@@ -26,6 +26,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
+from functools import partial
 from typing import Any, ClassVar
 
 import httpx
@@ -122,6 +123,9 @@ _MAX_EDITS = 10
 # A 429 that names no wait, and the longest a plain message waits on one.
 _DEFAULT_RETRY_SECONDS = 5.0
 _MAX_SEND_WAIT_SECONDS = 30.0
+# Webex limits how fast webhooks are made, and a bridge left with only some of
+# them hears only some events, so connecting outlasts more than one wait.
+_REGISTER_ATTEMPTS = 4
 
 # Webex tells these refusals apart only in its words: each is a 400 with no
 # code of its own, and each needs a different answer.
@@ -431,16 +435,21 @@ class WebexAdapter(PlatformAdapter):
         set that is known to be right is the one just made."""
         client = self._require_client()
         name = self._webhook_name()
-        for hook in await client.webhooks():
+        for hook in await _waiting_out_limits(client.webhooks):
             if hook.get("name") == name and hook.get("id"):
-                await client.delete_webhook(str(hook["id"]))
+                await _waiting_out_limits(
+                    partial(client.delete_webhook, str(hook["id"]))
+                )
         for resource, event in _SUBSCRIPTIONS:
-            await client.create_webhook(
-                name=name,
-                target_url=target_url,
-                resource=resource,
-                event=event,
-                secret=secret,
+            await _waiting_out_limits(
+                partial(
+                    client.create_webhook,
+                    name=name,
+                    target_url=target_url,
+                    resource=resource,
+                    event=event,
+                    secret=secret,
+                )
             )
 
     async def stop(self) -> None:
@@ -868,15 +877,7 @@ class WebexAdapter(PlatformAdapter):
 
         Nothing retries a plain message on this bridge's behalf, so a wait
         Webex asked for is served here rather than losing what was said."""
-        try:
-            return await self._send(body)
-        except WebexAPIError as exc:
-            if exc.status != 429:
-                raise
-            await asyncio.sleep(
-                min(exc.retry_after or _DEFAULT_RETRY_SECONDS, _MAX_SEND_WAIT_SECONDS)
-            )
-        return await self._send(body)
+        return await _waiting_out_limits(lambda: self._send(body), attempts=2)
 
     async def _send(self, body: dict[str, Any]) -> dict[str, Any]:
         return await self._in_thread(self._require_client().post_message, body)
@@ -1328,6 +1329,22 @@ class WebexAdapter(PlatformAdapter):
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+async def _waiting_out_limits[T](
+    call: Callable[[], Awaitable[T]], *, attempts: int = _REGISTER_ATTEMPTS
+) -> T:
+    """Make `call`, serving the waits Webex asks for with a 429."""
+    for _ in range(attempts - 1):
+        try:
+            return await call()
+        except WebexAPIError as exc:
+            if exc.status != 429:
+                raise
+            await asyncio.sleep(
+                min(exc.retry_after or _DEFAULT_RETRY_SECONDS, _MAX_SEND_WAIT_SECONDS)
+            )
+    return await call()
 
 
 def _mention_name(match: re.Match[str]) -> str:
