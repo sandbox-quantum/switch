@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast, get_args
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from switch_core.authz import Principal, can_manage, owns
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -400,3 +401,90 @@ async def transfer_ownership(
         new_owner_id=new_owner_id,
         retired_key_hash=retired,
     )
+
+
+# What passes to an heir when its owner leaves the workspace, in the order
+# handed over. Agents are not here: removing a member who owns one is refused
+# until it is transferred or deleted with it in front of an admin.
+_HANDED_OVER: tuple[tuple[str, type[Owned]], ...] = (
+    ("room", Room),
+    ("package", Package),
+    ("reference", Reference),
+    ("reference_type", ReferenceType),
+    ("document", Document),
+    ("template", Template),
+)
+
+
+async def hand_over_everything(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    previous_owner_id: str,
+    heir_id: str,
+    actor_id: str | None,
+    reason: str,
+) -> dict[str, int]:
+    """Make `heir_id` the owner of what `previous_owner_id` owns in the
+    workspace bound on `session`, each with its audit event, so nothing there
+    is left owned by someone who can no longer reach it. Returns how many of
+    each kind passed.
+
+    What a transfer refuses stays with them: a chat, which is one person's
+    conversation; a room's own document, which goes with its room; and a
+    template whose name the heir already uses. The caller commits."""
+    handed: dict[str, int] = {}
+    for kind, model in _HANDED_OVER:
+        rows: list[Owned] = list(
+            await session.scalars(
+                select(model)
+                .where(
+                    model.tenant_id == tenant_id,
+                    model.owner_id == previous_owner_id,
+                )
+                .with_for_update()
+            )
+        )
+        for row in rows:
+            if isinstance(row, Room) and "chat_operation_id" in (row.metadata_ or {}):
+                continue
+            if isinstance(row, Document) and row.room_id is not None:
+                continue
+            if isinstance(row, Template):
+                if not await _template_passes(session, row, heir_id):
+                    continue
+            else:
+                row.owner_id = heir_id
+            await record_audit_event(
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=actor_id,
+                action=AuditAction.OWNERSHIP_TRANSFERRED,
+                target_type=kind,
+                target_id=row.type if isinstance(row, ReferenceType) else row.id,
+                details={
+                    "from": previous_owner_id,
+                    "to": heir_id,
+                    "reason": reason,
+                    "agent_key_reissued": False,
+                },
+            )
+            handed[kind] = handed.get(kind, 0) + 1
+    await session.flush()
+    return handed
+
+
+async def _template_passes(
+    session: AsyncSession, template: Template, heir_id: str
+) -> bool:
+    """Make `heir_id` the owner of `template` unless they already have a
+    template by its name. Template names are unique per owner across every
+    workspace, and this session sees only its own, so the clash is found by
+    trying: in a savepoint, which a clash rolls back alone."""
+    try:
+        async with session.begin_nested():
+            template.owner_id = heir_id
+            await session.flush()
+    except IntegrityError:
+        return False
+    return True

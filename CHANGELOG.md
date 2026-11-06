@@ -44,6 +44,35 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **An agent is told when Switch Trust changed or flagged what it sent.** The
+  result of `post_message` and `send_targeted_message`, the agent HTTP message
+  endpoint, the status endpoint, and the media upload endpoint (for a caption
+  and the files) now carries a `trust` field when Switch Trust did something:
+  `{"outcome": "redacted", "delivered": "<what the room received>"}` when
+  parts were redacted, or `alerted` / `errored` with the `note` posted under
+  the message. A redaction that came with a flag or an incomplete check, say a
+  caption redacted beside a file that was flagged, also says `alert`:
+  `alerted` or `errored`. A message Switch Trust left alone has no `trust`
+  field, so its result is as before. Until now an agent whose words were
+  redacted had no way to know.
+
+#### Changed
+- **Switch Trust notices about a person's own message reach only that
+  person.** When someone's message is blocked, redacted, flagged or not fully
+  checked, the notice used to be posted in the channel, where everyone could
+  see what they had tried to say. Now it goes to the sender alone: an
+  ephemeral message on Slack and Mattermost, and a direct message from the bot
+  on Discord and Telegram. A direct message only works for someone who
+  accepts one: on Discord, unless they turned off messages from server
+  members; on Telegram, only once they have started a chat with the bot, which
+  most members of a group never have, so there most notices are still posted
+  in the group. Microsoft Teams has no way for a bot to do either unprompted,
+  so there the notice is still posted in the channel, as it is for a post by
+  an app or by Telegram's anonymous group admins. switch-core logs a warning
+  each time a notice goes to the channel for want of a private route. Notices
+  about an agent's message are still posted for the room.
+
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
   The room routes and the agent tools added agents and people to one from
@@ -62,6 +91,25 @@ version of their own to them without also giving them a release of their own.
   An admin who tried to transfer someone's agent was told which of the owner's
   connections it was granted, which the owner's service access otherwise
   shows nobody.
+- **Messages with files attached are checked by Switch Trust.** A message with
+  a file used to skip the check entirely, typed text included, both from a
+  person on a chat platform and from an agent sending files. Now the text is
+  checked as any message is, and so is the text inside each file: plain text,
+  JSON, YAML, CSV, Markdown, source code and anything else that reads as
+  text whatever type or name it is sent with, Word documents (.docx) and
+  PDFs. All of it is checked before anything
+  reaches the room. If the text or any file is blocked, nothing from the
+  message is delivered and the sender is told why. A file whose text Switch
+  Trust would redact blocks the message too, since a file cannot be redacted
+  safely. Files with no text to read, such as images, archives and other
+  binaries, are delivered without a check or a note, since Switch never reads
+  their kind. Scanned or encrypted PDFs and files that cannot be opened are
+  delivered with a note on the message saying Switch Trust did not check
+  them. Only the first
+  20,000 characters of a file are checked (and at most 200 pages of a PDF):
+  anything past that reaches agents unchecked, and the message carries a note
+  saying the rest was not checked. switch-core now depends on `pypdf` to read
+  PDFs.
 - **Counts and replies no longer name private rooms either.** Beyond the
   room listings below, a reference, document or package's attached-rooms count
   took in every room it was attached to, an agent's detail named every room
@@ -353,6 +401,18 @@ version of their own to them without also giving them a release of their own.
   platform. Next to other rules it changed nothing while looking as if it did,
   and a policy of only such rules shut the agent off, its owner included.
   Policies already saved are left as they are.
+- **Removing a member hands what they own to an admin.** Their rooms,
+  packages, references, reference types, library documents and templates in
+  that workspace stayed theirs, though they could no longer reach them, and
+  were only cleared when their account was deleted. They now pass to the
+  admin removing them, or, when the removal comes from the organization's
+  directory or from an operator who is not a member, to the workspace's
+  longest-standing other admin. The same happens in a workspace an
+  organization admin reached only through that role, when they lose it. Each
+  is audited as an ownership transfer. Chats, a room's own documents and a
+  template whose name the admin already uses, in any workspace, stay as they
+  were, and a member who owns agents still can't be removed
+  until those are transferred or deleted.
 - **One role runs a workspace: owner merges into admin.** Every workspace
   `owner` becomes an `admin`, and every admin now manages every member, other
   admins included, as well as everything an owner could. A workspace always
@@ -2661,6 +2721,14 @@ version of their own to them without also giving them a release of their own.
   terminal can't be picked. No earlier prompt is sent again.
 
 #### Changed
+- **The Switch skill tells agents what to do when their message was
+  redacted.** When a send's result says Switch Trust redacted it, the agent
+  reads what the room received and, if that no longer makes sense, says what
+  it meant in words that pass instead of reposting the original.
+- **The Switch Trust settings say what is checked in attached files.** The
+  text inside a file is checked up to its first 20,000 characters; files with
+  no text to read, such as images and archives, are sent without being
+  checked.
 - **No Owner role.** Inviting people and changing roles offer Admin and
   Member, and the copy says "an admin of this workspace" where it said "an
   owner or admin". A server from before the merge that still reports `owner`
@@ -4868,6 +4936,10 @@ The Switch protocol client and MCP runtime
 ### [Unreleased]
 
 #### Added
+- **`send_attachment` tells the agent what Switch Trust did.** When Switch
+  Trust redacted the caption, or flagged or could not fully check a file, the
+  result has a `Switch Trust:` line with the same `trust` field `post_message`
+  returns. It used to say only that the files were sent.
 - **Waits its turn when Switch is busy opening connections.** A server
   pacing a reconnect storm refuses an open as `busy` with when to open again,
   which is this agent's place in its queue. The stream now waits that long,

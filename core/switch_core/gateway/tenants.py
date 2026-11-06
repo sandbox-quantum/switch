@@ -1518,6 +1518,13 @@ async def remove_member(
     here, and every service connection they hold here (their grants go with
     them), revoking what was issued on those once the removal has committed.
 
+    What the member owns here (rooms, packages, references, reference types,
+    library documents, templates) passes to the admin removing them, or to the
+    workspace's longest-standing other admin when the remover is not a member
+    of it (`organization_access.removal_heir`), so nothing is left owned by
+    someone who can no longer reach it. Chats and a room's own documents stay
+    as they are, as a transfer refuses them.
+
     It does **not** touch any agent the member owns — it refuses instead, 409,
     naming them. An agent is not that member's private property to lose along
     with their membership: it sits in rooms with other people, it may be the

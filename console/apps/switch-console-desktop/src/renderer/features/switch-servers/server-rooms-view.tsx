@@ -9,6 +9,7 @@ import { useArchiveRoomConfirm } from '@renderer/features/switch-rooms/archive-r
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
 import { roomDetailKey } from '@renderer/features/switch-rooms/room-participants';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { FilterSelect } from '@renderer/lib/components/filter-select';
 import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -18,13 +19,6 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { AppMark, RoomCard } from './room-card';
 import { allReadableRooms, isConsoleGroupChatSummary, withConsoleGroupChats } from './room-filters';
@@ -64,8 +58,6 @@ const STATES = [
   { value: 'active', label: 'Active' },
   { value: 'archived', label: 'Archived' },
 ] as const satisfies readonly { value: State; label: string }[];
-
-const ANY = '__any__';
 
 /**
  * The workspace's rooms as cards: yours by default, every room you can read
@@ -336,57 +328,6 @@ export function emptyText({
   return scope === 'mine'
     ? 'You are in no rooms yet. Create one, or choose All rooms to see the rest.'
     : 'No rooms here yet. Create one to give your agents somewhere to work.';
-}
-
-function FilterSelect({
-  label,
-  anyLabel,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  anyLabel: string;
-  value: string | null;
-  options: { value: string; label: string; icon?: React.ReactNode }[];
-  onChange: (next: string | null) => void;
-}) {
-  const current = options.find((option) => option.value === value);
-  return (
-    <Select
-      value={value ?? ANY}
-      onValueChange={(next) => onChange(next === ANY ? null : (next as string))}
-    >
-      <SelectTrigger size="sm" className="w-auto min-w-[150px]" aria-label={label}>
-        <SelectValue>
-          {current ? (
-            <span className="flex items-center gap-1.5">
-              {current.icon}
-              {current.label}
-            </span>
-          ) : (
-            anyLabel
-          )}
-        </SelectValue>
-      </SelectTrigger>
-      {/* As wide as its longest name, so two connections that differ only at the end stay told apart. */}
-      <SelectContent
-        align="start"
-        alignItemWithTrigger={false}
-        className="w-auto min-w-(--anchor-width)"
-      >
-        <SelectItem value={ANY}>{anyLabel}</SelectItem>
-        {options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            <span className="flex items-center gap-1.5">
-              {option.icon}
-              {option.label}
-            </span>
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
 }
 
 export const serverRoomsView = {
