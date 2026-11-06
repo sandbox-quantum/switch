@@ -2252,7 +2252,9 @@ class ServiceBroker:
 
         Re-linking keeps the grants (a different account then fails them with
         `grant_account_changed`) and revokes what was issued on the old
-        sign-in, and the old sign-in itself when it is not the new one.
+        sign-in, and the old sign-in itself when it is not the new one. Where
+        the vendor's revocation ends the whole grant, the old sign-in of the
+        same account through the same client is kept.
         Commits `session`; returns a warning naming what could not be revoked.
         """
         entry = self._entry(service)
