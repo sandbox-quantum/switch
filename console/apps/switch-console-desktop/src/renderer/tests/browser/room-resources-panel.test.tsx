@@ -301,4 +301,16 @@ describe('the Resources tab', () => {
     expect(row).toBeUndefined();
     expect(navigate).not.toHaveBeenCalled();
   });
+
+  it('opens no page for a package its owner keeps private', async () => {
+    listRoomResources.mockImplementation(async ({ kind }: { kind: keyof typeof RESOURCES }) =>
+      kind === 'packages' ? [{ ...RESOURCES.packages[0], canRead: false }] : RESOURCES[kind]
+    );
+    const el = await renderPanel();
+    const row = [...el.querySelectorAll('[aria-label="Packages"] button')].find((b) =>
+      b.textContent?.includes('Onboarding')
+    );
+    expect(row).toBeUndefined();
+    expect(el.querySelector('[aria-label="Packages"]')?.textContent).toContain('Onboarding');
+  });
 });

@@ -205,8 +205,11 @@ const ResourceSection = observer(function ResourceSection({
                       ? () => void openExternalUrl(resource.urls[0]!, 'Could not open the link')
                       : kind === 'documents'
                         ? () => setReading(resource)
-                        : // A package has nothing to read here: its page shows what it holds.
-                          kind === 'packages' && serverId !== null
+                        : // A package has nothing to read here: its page shows what it holds,
+                          // when the viewer may open it (the server says per package).
+                          kind === 'packages' &&
+                            serverId !== null &&
+                            opensInResources(resource, viewer)
                           ? () =>
                               navigate('libraryItem', {
                                 serverId,
