@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
-import { withWindowsAgyBinDir } from '@switch-console/plugins/agents';
+import { withWindowsAgyBinDir, withWindowsGitBashDir } from '@switch-console/plugins/agents';
 import { log } from '@main/lib/logger';
 import { buildExternalToolEnv } from './childProcessEnv';
 import { getWindowsPathEnvKey, prependWindowsPathEntry } from './windows-env';
@@ -104,14 +104,33 @@ export function ensureWindowsNpmGlobalBinInPath(
  * `%LOCALAPPDATA%\agy\bin` and adds it to the user's PATH, which an app
  * started before the install does not see. Added last, in the same order as
  * the agent controller adds it (`withWindowsAgyBinDir`).
+ *
+ * Also adds Git for Windows' `bin` folder, which holds `bash.exe`, when no Git
+ * Bash is on PATH (`withWindowsGitBashDir`): Git's installer puts only
+ * `...\Git\cmd` there, and a provider CLI such as Cursor's fails with
+ * "Can't find Bash" when an agent runs a shell command.
  */
-export function ensureWindowsUserBinDirsInPath(env: NodeJS.ProcessEnv = process.env): string[] {
+export function ensureWindowsUserBinDirsInPath(
+  env: NodeJS.ProcessEnv = process.env,
+  isFile: (file: string) => boolean = fs.existsSync
+): string[] {
   const pathKey = getWindowsPathEnvKey(env);
   const before = env[pathKey] ?? '';
-  const after = withWindowsAgyBinDir(before, getWindowsEnvValue(env, 'LOCALAPPDATA'));
+  const withAgy = withWindowsAgyBinDir(before, getWindowsEnvValue(env, 'LOCALAPPDATA'));
+  const after = withWindowsGitBashDir(
+    withAgy,
+    {
+      localAppData: getWindowsEnvValue(env, 'LOCALAPPDATA'),
+      programFiles: getWindowsEnvValue(env, 'ProgramFiles'),
+      programW6432: getWindowsEnvValue(env, 'ProgramW6432'),
+      programFilesX86: getWindowsEnvValue(env, 'ProgramFiles(x86)'),
+    },
+    isFile
+  );
   if (after === before) return [];
   env[pathKey] = after;
-  return [after.split(path.win32.delimiter).at(-1)!];
+  const had = new Set(before.split(path.win32.delimiter));
+  return after.split(path.win32.delimiter).filter((entry) => !had.has(entry));
 }
 
 /**

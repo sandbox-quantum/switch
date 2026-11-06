@@ -88,6 +88,16 @@ describe('ensureWindowsUserBinDirsInPath', () => {
     expect(ensureWindowsUserBinDirsInPath(env)).toEqual([]);
     expect(env.Path).toBe('C:\\Windows\\System32');
   });
+
+  it('adds the Git for Windows bin folder when git is on PATH but bash is not', () => {
+    const git = 'C:\\Users\\test\\AppData\\Local\\Programs\\Git';
+    const files = new Set([`${git}\\cmd\\git.exe`, `${git}\\bin\\bash.exe`]);
+    const env: NodeJS.ProcessEnv = { Path: `C:\\Windows\\System32;${git}\\cmd` };
+
+    expect(ensureWindowsUserBinDirsInPath(env, (file) => files.has(file))).toEqual([`${git}\\bin`]);
+    expect(env.Path).toBe(`C:\\Windows\\System32;${git}\\cmd;${git}\\bin`);
+    expect(ensureWindowsUserBinDirsInPath(env, (file) => files.has(file))).toEqual([]);
+  });
 });
 
 describe('resolveUserEnv (AppImage env scrub)', () => {
