@@ -91,8 +91,9 @@ After a 30-day grace period, every pass also deletes:
 
 ### What is deliberately not touched
 
-- **The audit log** (`audit_events`). It is append-only by design, and the
-  runtime database role cannot delete from it. See below.
+- **A live workspace's audit log** (`audit_events`). It is append-only by
+  design, and the runtime database role cannot delete from it. Only a deleted
+  workspace's history is purged, two years after the deletion. See below.
 - **Usage records** (`tenant_usage`). They are billing and quota data, hold no
   message content, and are aggregated per hour.
 - **Copies on chat platforms.** A message bridged to Slack, Mattermost, Discord,
@@ -202,6 +203,18 @@ sent deleted, nothing would show a placeholder anyway.
 - **Channel room names.** Only direct rooms are named after a person. A
   channel's name is the platform's.
 
+**Members who wrote from Switch Console.** A member chatting from Switch
+Console writes through a member client (`type = 'member'`) of their own,
+whose transport id is `@switch-member-{user id}:{server}`: it embeds the
+account's id, never a name or email. The People list shows these clients
+under "Switch Console", and an erasure request names them by client id
+(`member_client_ids`). Erasing one deletes the messages it sent, their files,
+bridge post mappings and agent event copies, and scrubs its approval answers,
+exactly as for an identity. The client, its memberships and the Switch
+account stay: the member is still a member and can go on writing, and
+removing them is its own action. Once their account is deleted, the client
+is kept under "Former member" (see below) and can still be erased.
+
 **People from a disconnected chat app.** Disconnecting an app deletes its
 identity and client rows but keeps their messages in the detached rooms. These
 former participants are found by their messages instead: every sender whose id
@@ -215,6 +228,37 @@ messages were deleted from, since their memberships went with their client.
 There is no identity left to delete and no bridge to tell. Listing them scans
 the tenant's messages, which is fine for an admin-only page opened rarely; an
 index on the sender's shape would be the fix if it is not.
+
+### Deleting a Switch account (built)
+
+Deleting an account (`accounts/deletion.py`), by its holder or by the server's
+administrator, keeps the messages it sent, so other people's conversations
+stay whole, but takes the person's name off them. The account's name goes
+from every place a copy of it was stored, replaced by "Former member":
+
+- `messages.sender_name`, and the `sender_name` (or, for a command, the
+  `user_name`) inside each message's content, for every row the account's
+  member client sent, in every workspace it held rows in. This runs in
+  batches of 1000 rows, each in its own transaction, before the transaction
+  that removes the membership, which renames whatever was sent meanwhile;
+- the copies stored as events for agents (`agent_events`): the sender's name
+  on a message, the user's on a command, the member's on a join;
+- the member client's `display_name`, and its link to the account, which is
+  cleared. The client and its transport id stay, since the id embeds only the
+  account's id;
+- the account's name in the descriptions of the Switch Console chats the
+  client is in ("Switch Console chat with …").
+
+Invitations addressed to the account's email are deleted in every workspace,
+whether still open, accepted, expired or revoked, matching the address without
+regard to case. Audit rows are not changed: they hold the account's id, not
+its name, and are kept for accountability (see "The audit log").
+
+Not renamed: what other people wrote (quotes, mentions), names in session
+activity lines, which are pruned after 7 days, a chat or room name someone
+chose, copies on chat platforms, and the name a running process still holds
+in memory for the client until it next loads it. Erasing the messages
+altogether is the workspace admin's erase action above.
 
 ### Data export (not built)
 
@@ -230,18 +274,38 @@ A workspace admin can delete a workspace once it has been emptied
 (`accounts/workspace_deletion.py`): its own setup goes with it in one
 transaction, including its retention policy and erasure requests, and the
 deletion is recorded in the server's audit log. The workspace's own audit
-history stays, which the audit-log horizon below would bound.
+history stays for two years, then goes (below).
 
 ### The audit log
 
-The audit log cannot be pruned by the application on purpose: the runtime role
-has `UPDATE` and `DELETE` revoked, so a compromised process cannot erase its
-tracks. Bounding it needs a separate, privileged job, for example a
-`SECURITY DEFINER` function owned by the migration role that deletes events
-older than a fixed horizon. The horizon should be a deployment setting, not a
-workspace one, because the log protects the operator as well as the customer.
-Audit entries hold ids and small details, not message content, so keeping them
-longer than messages is defensible under the accountability principle.
+Audit entries keep the acting account's id, including after the account is
+deleted. The legal basis is accountability (Art. 5(2)): the log is how the
+operator and the customer show who did what. Entries hold ids and small
+details, not message content, so keeping them longer than messages is
+proportionate.
+
+A workspace's audit log is kept for as long as the workspace exists. Once the
+workspace is deleted, its history is kept for `AUDIT_HISTORY_HORIZON`, two
+years, and then deleted by the hourly retention pass
+(`retention/audit_history.py`). The horizon is a constant, not a workspace
+setting, because the log protects the operator as well as the customer.
+
+- **When the workspace was deleted** comes from the server's audit log, which
+  outlives every workspace: the `workspace.deleted` row deleting it wrote. A
+  workspace whose `tenants` row exists is never purged, whatever that log says.
+- **Purged:** the workspace's `audit_events`, every row carrying its tenant id.
+- **Kept:** the server's `workspace.deleted` row, which proves when the
+  workspace went and so why its history did; and the organization's audit log
+  (`organization_audit_events`), which is the organization's history rather
+  than the workspace's and is bounded by the organization's own lifetime.
+
+The runtime role has `UPDATE` and `DELETE` revoked on the audit tables, so a
+compromised process cannot erase its tracks. The purge therefore runs on the
+schema owner's connection (`DB_OWNER_USER` and `DB_OWNER_PASSWORD`). A
+deployment without one runs it on the runtime connection, which works only
+where that role owns the schema; otherwise switch-core logs an error at
+startup saying the history will not be purged, and each pass logs the
+refusal.
 
 ### Backups and logs
 
