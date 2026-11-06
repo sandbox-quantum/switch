@@ -1,9 +1,9 @@
 # Asana on a self-hosted server
 
-> **Integration candidate:** This local build identifies the account through
-> an MCP tool. The current Asana tool schema and result shape have not been
-> verified against the live service, and agent grants may persist when the
-> same person changes Asana workspaces. See the limits below.
+> **Verification pending:** The connector identifies the account through an
+> MCP tool. The tool's current read-only annotation and full schema have not
+> been verified, and agent grants may persist when the same person changes
+> Asana workspaces. See the limits below.
 
 Agents can read and update tasks and projects in the Asana workspace their
 owner selects when authorizing the connection, within that owner's Asana
@@ -55,7 +55,7 @@ tool the server offers, within the selected workspace and the person's own
 Asana permissions. [Asana's tool reference](https://developers.asana.com/docs/mcp-tools-reference)
 says each MCP session is scoped to one workspace selected at authorization.
 The integration guide recommends omitting `scope` if it is rejected;
-this integration candidate omits it.
+this connector omits it.
 
 ## Give Switch the client
 
@@ -151,11 +151,11 @@ agents' next token requests:
 - Advanced task search (`search_tasks`) needs a paid Asana plan. On a free
   plan it is refused, and agents fall back to the basic task and project
   tools.
-- The integration candidate uses the resource advertised in protected-resource
+- The connector uses the resource advertised in protected-resource
   metadata. The server's protected-resource metadata identifies
   `https://mcp.asana.com/v2/mcp` as its resource, while Asana's integration
   guide gives `https://mcp.asana.com/v2` as an optional resource example.
-  Acceptance of this resource value by the integration candidate has not been
+  Acceptance of this resource value by this PR has not been
   verified with a real app and may prevent authorization.
 
 ## An organization's own Asana app
