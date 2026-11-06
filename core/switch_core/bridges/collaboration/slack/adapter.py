@@ -783,6 +783,8 @@ class SlackAdapter(PlatformAdapter):
         text: str,
         blocks: list[dict[str, Any]],
         thread_root_id: str | None,
+        *,
+        reply_broadcast: bool,
     ) -> str | None:
         """Post a Block Kit message, for what plain text cannot carry.
 
@@ -812,6 +814,8 @@ class SlackAdapter(PlatformAdapter):
             unfurl_media=False,
             **_publication_metadata(blocks),
         )
+        if reply_broadcast and thread_ts:
+            arguments["reply_broadcast"] = True
         try:
             try:
                 result = await self._web_client.chat_postMessage(**arguments)
@@ -989,7 +993,15 @@ class SlackAdapter(PlatformAdapter):
                 return ref
         message = self._render_rich(content)
         ref = await self.post_blocks(
-            channel_id, agent_name, message.text, message.blocks, thread_root_id
+            channel_id,
+            agent_name,
+            message.text,
+            message.blocks,
+            thread_root_id,
+            # A question threaded under a channel-root message would otherwise
+            # be seen only by whoever opens the thread: show it in the channel
+            # too. Same message, so its buttons and later edits still work.
+            reply_broadcast=isinstance(content, RequestCard) and content.asked_at_root,
         )
         if ref is None:
             raise RichContentFailed(
@@ -1888,7 +1900,7 @@ class SlackAdapter(PlatformAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=self._admin_body(content, drawn),
+                text=self._admin_body(self.translate_outbound(content), drawn),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -2384,8 +2396,8 @@ class SlackAdapter(PlatformAdapter):
         if not self._web_client:
             raise RuntimeError("Slack client not connected")
 
-        raw_name = f"dm-{user_name}-{agent_name}"
-        channel_name = re.sub(r"[^a-z0-9_-]", "-", raw_name.lower()).strip("-")[:80]
+        raw_name = f"{agent_name}-{user_name}"
+        channel_name = re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80]
         try:
             result = await self._web_client.conversations_create(
                 name=channel_name, is_private=True
