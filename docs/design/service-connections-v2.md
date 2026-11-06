@@ -42,7 +42,9 @@ auth:
     #   include_granted_scopes)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
-  identity:                   # GET with the token; dotted paths in its JSON
+  identity:                   # JSON with the token; dotted paths in its response
+    method: GET               # GET (default) or POST
+    # body: { query: "{ me { id email } }" }  # optional static JSON, POST only
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
