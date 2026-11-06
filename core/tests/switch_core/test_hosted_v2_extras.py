@@ -221,6 +221,18 @@ def test_v2_off_a_status_report_is_read_as_upstream(v2) -> None:
     assert report.machine._dropped_old_note is False
 
 
+@pytest.mark.parametrize("value", ["system", "workspace", 7])
+def test_v2_off_a_disk_scope_is_kept_as_sent(v2, value: object) -> None:
+    """With v2 off, `disk_scope` is an undeclared field to upstream: any value
+    is accepted and kept as sent, never refused or turned into "unknown"."""
+    from switch_core.management.schemas import StatusReport
+
+    v2(False)
+    report = StatusReport.model_validate(_status_with({"disk_scope": value}, {}))
+    dumped = report.model_dump(mode="json", exclude_unset=True)
+    assert dumped["machine"]["disk_scope"] == value
+
+
 def test_v2_on_the_same_report_is_refused(v2) -> None:
     from pydantic import ValidationError
 

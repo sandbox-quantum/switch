@@ -491,6 +491,46 @@ describe('Launcher: the tech lead’s answers', () => {
   });
 });
 
+describe('the agents’ disk', () => {
+  it('measures its own data folder (the agents’ volume) and answers with numbers only', async () => {
+    const asked: string[] = [];
+    const l = launcher({
+      statfs: async (path) => {
+        asked.push(path);
+        return { bavail: 3_000_000, blocks: 3_840_000, bsize: 4096 };
+      },
+    });
+    l.feed(Buffer.from(encodeLine({ kind: 'disk', id: 4 })));
+    await settle();
+    expect(asked).toEqual([join(dir, 'agents')]);
+    expect(sent).toEqual([
+      { kind: 'reply', id: 4, ok: true, disk: { free: 12_288_000_000, total: 15_728_640_000 } },
+    ]);
+  });
+
+  it('never says more is free than the disk holds', async () => {
+    const l = launcher({ statfs: async () => ({ bavail: 10, blocks: 5, bsize: 1 }) });
+    l.feed(Buffer.from(encodeLine({ kind: 'disk', id: 1 })));
+    await settle();
+    expect(sent).toEqual([{ kind: 'reply', id: 1, ok: true, disk: { free: 5, total: 5 } }]);
+  });
+
+  it('fails, with a code only, when there is no data folder or it can’t be measured', async () => {
+    launcher({ dataRoot: undefined }).feed(Buffer.from(encodeLine({ kind: 'disk', id: 1 })));
+    launcher({
+      statfs: async () => {
+        throw new Error('EACCES: /data/agents secret-path');
+      },
+    }).feed(Buffer.from(encodeLine({ kind: 'disk', id: 2 })));
+    await settle();
+    expect(sent).toEqual([
+      { kind: 'reply', id: 1, ok: false, code: 'failed' },
+      { kind: 'reply', id: 2, ok: false, code: 'failed' },
+    ]);
+    expect(JSON.stringify(logged)).not.toContain('secret-path');
+  });
+});
+
 describe('Launcher.checkHosts', () => {
   it('reports a host that died once, not one stopped on order, and never starts either', async () => {
     let alive = true;

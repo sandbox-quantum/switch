@@ -250,6 +250,27 @@ def _reading(free: Any, total: Any) -> dict[str, int] | None:
     return None
 
 
+DISK_SCOPES = frozenset({"workspace", "unknown"})
+
+
+def _disk_reading(machine_reading: dict[str, Any], v2: bool) -> dict[str, Any] | None:
+    """The disk figures, with the controller's `scope` (v2 only): "workspace"
+    when they are the agents' own volume, "unknown" otherwise. Unmarked (an
+    older controller) they may be its own small volume. The apps show a disk
+    only for "workspace"."""
+    reading: dict[str, Any] | None = _reading(
+        machine_reading.get("disk_free_bytes"),
+        machine_reading.get("disk_total_bytes"),
+    )
+    scope = machine_reading.get("disk_scope")
+    if reading is not None and v2 and scope is not None:
+        # Anything outside the fixed set is "unknown", as the status schema reads it.
+        reading["scope"] = (
+            scope if isinstance(scope, str) and scope in DISK_SCOPES else "unknown"
+        )
+    return reading
+
+
 async def record_controller_status(
     session: AsyncSession,
     controller_id: str,
@@ -283,10 +304,7 @@ async def record_controller_status(
     machine.heartbeat = {
         # Keys this function doesn't own (the operator's `box` facts) stay.
         **((machine.heartbeat or {}) if v2 else {}),
-        "disk": _reading(
-            machine_reading.get("disk_free_bytes"),
-            machine_reading.get("disk_total_bytes"),
-        ),
+        "disk": _disk_reading(machine_reading, v2),
         "memory": _reading(
             machine_reading.get("mem_free_bytes"),
             machine_reading.get("mem_total_bytes"),

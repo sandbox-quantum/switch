@@ -85,10 +85,15 @@ def _usage(heartbeat: dict | None, key: str) -> dict | None:
     reading = None if heartbeat is None else heartbeat.get(key)
     if reading is None:
         return None
-    return {
+    usage = {
         "total_bytes": reading["total_bytes"],
         "available_bytes": reading["available_bytes"],
     }
+    # Which disk it is: "workspace" (the agents' volume) or "unknown"; absent
+    # from older boxes. The apps show a disk only for "workspace".
+    if reading.get("scope") in ("workspace", "unknown"):
+        usage["scope"] = reading["scope"]
+    return usage
 
 
 # Bounds for what Your cloud reads back from the stored report: the same as

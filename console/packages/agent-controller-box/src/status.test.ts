@@ -961,6 +961,59 @@ describe('StatusCollector', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("reports the agents' disk on a split box, and 0 of 0 (no figure) when it's unknown, never the data folder's", async () => {
+    const runtime = new FakeRuntime();
+    const providers = new ProviderStatuses({
+      locator: new FakeLocator(),
+      runtime,
+      sealed: null,
+      probeCwd: dir,
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    const collectorWith = (disk?: () => Promise<{ free: number; total: number } | null>) =>
+      new StatusCollector({
+        store,
+        runtime,
+        providers,
+        tools: async () => [],
+        attached: () => true,
+        dataDir: dir,
+        ...(disk ? { disk } : {}),
+        workspacesDir: join(dir, 'workspaces'),
+        version: '0.1.0',
+        updatedBy: 'self',
+        now: () => NOW,
+        meminfo: async () => null,
+      });
+    const assignment = { revision: 1, agents: [] };
+    const agents = await collectorWith(async () => ({
+      free: 12_000_000_000,
+      total: 15_000_000_000,
+    })).collect(assignment);
+    expect(agents.machine).toMatchObject({
+      disk_free_bytes: 12_000_000_000,
+      disk_total_bytes: 15_000_000_000,
+    });
+    // Marked as the agents' volume, so Switch shows it.
+    expect(agents.machine.disk_scope).toBe('workspace');
+    expect(statusReportSchema.safeParse({ ...agents, seq: 1 }).success).toBe(true);
+
+    for (const unknown of [async () => null, async () => Promise.reject(new Error('lost'))]) {
+      const report = await collectorWith(unknown).collect(assignment);
+      expect(report.machine).toMatchObject({ disk_free_bytes: 0, disk_total_bytes: 0 });
+      expect(report.machine.disk_scope).toBe('unknown');
+      expect(statusReportSchema.safeParse({ ...report, seq: 1 }).success).toBe(true);
+    }
+
+    // No reader (not a split box): the data folder's own file system, as before.
+    const own = await collectorWith().collect(assignment);
+    expect(own.machine.disk_total_bytes).toBeGreaterThan(0);
+    // The data folder may be the controller's own volume: never marked as the agents'.
+    expect(own.machine.disk_scope).toBe('unknown');
+  });
+
   it("reports the box's /proc/meminfo figures when there are some, and leaves them out when not", async () => {
     const runtime = new FakeRuntime();
     const providers = new ProviderStatuses({
