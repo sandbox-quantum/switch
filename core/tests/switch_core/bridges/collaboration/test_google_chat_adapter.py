@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -867,6 +868,79 @@ class TestGoogleChatWorkspaceEventsLifecycle:
             ttl_seconds=14400,
         )
 
+    @pytest.mark.asyncio
+    async def test_subscription_adoption_and_reconciliation_on_startup_and_handoff(
+        self,
+    ) -> None:
+        cfg = _make_config(
+            user_client_id="user-cid",
+            user_client_secret="user-sec",
+            user_refresh_token="user-ref",
+        )
+        pod_b = GoogleChatAdapter(cfg)
+        pod_b.client.list_workspace_events_subscriptions = AsyncMock(
+            return_value=[
+                {
+                    "name": "subscriptions/existing-sub-1",
+                    "targetResource": "//chat.googleapis.com/spaces/SPACE_1",
+                    "expireTime": "2028-11-02T22:00:00Z",
+                }
+            ]
+        )
+        pod_b.client.list_spaces = AsyncMock(
+            return_value=[
+                {"name": "spaces/SPACE_1"},
+                {"name": "spaces/SPACE_2"},
+            ]
+        )
+        pod_b.client.create_workspace_events_subscription = AsyncMock(
+            return_value={
+                "name": "subscriptions/new-sub-2",
+                "expireTime": "2028-11-02T20:00:00Z",
+            }
+        )
+
+        # 1. On startup / lease acquisition, reconcile existing subscriptions and joined spaces
+        await pod_b.workspace_events_mgr.reconcile_subscriptions()
+
+        # SPACE_1 was adopted from existing subscriptions, so create was NOT called for it
+        assert "spaces/SPACE_1" in pod_b.workspace_events_mgr.active_subscriptions
+        assert (
+            pod_b.workspace_events_mgr.active_subscriptions[
+                "spaces/SPACE_1"
+            ].subscription_name
+            == "subscriptions/existing-sub-1"
+        )
+
+        # SPACE_2 was missing a subscription, so create WAS called for it
+        assert "spaces/SPACE_2" in pod_b.workspace_events_mgr.active_subscriptions
+        assert (
+            pod_b.workspace_events_mgr.active_subscriptions[
+                "spaces/SPACE_2"
+            ].subscription_name
+            == "subscriptions/new-sub-2"
+        )
+        pod_b.client.create_workspace_events_subscription.assert_called_once_with(
+            "spaces/SPACE_2",
+            TEST_TOPIC_ID,
+            include_resource=True,
+        )
+
+        # 2. Database channels passed via ensure_channel_subscriptions
+        pod_b.set_listening(True)
+        pod_b.client.create_workspace_events_subscription.reset_mock()
+        pod_b.client.create_workspace_events_subscription.return_value = {
+            "name": "subscriptions/new-sub-3",
+            "expireTime": "2028-11-02T20:00:00Z",
+        }
+        await pod_b.ensure_channel_subscriptions([("spaces/SPACE_3", "channel_public")])
+        assert "spaces/SPACE_3" in pod_b.workspace_events_mgr.active_subscriptions
+        pod_b.client.create_workspace_events_subscription.assert_called_once_with(
+            "spaces/SPACE_3",
+            TEST_TOPIC_ID,
+            include_resource=True,
+        )
+
 
 # ── 9. Multi-Pod Lease Handoff Simulation ────────────────────────────────────
 
@@ -931,4 +1005,117 @@ class TestGoogleChatMultiPodLeaseHandoff:
             "spaces/S1/messages/M_HANDOFF_2",
         ]
 
+        await pod_b.stop()
+
+    @pytest.mark.asyncio
+    async def test_lease_handoff_with_shared_receipt_store_prevents_duplicate(
+        self,
+    ) -> None:
+        cfg = _make_config()
+        pod_a = GoogleChatAdapter(cfg)
+        pod_b = GoogleChatAdapter(cfg)
+
+        # Shared MessagingEventReceiptStore between pods
+        shared_claimed_receipts: set[str] = set()
+        mock_receipt_store = MagicMock()
+
+        async def fake_claim(
+            session: Any, *, platform: str, external_event_id: str
+        ) -> Any:
+            key = f"{platform}:{external_event_id}"
+            if key in shared_claimed_receipts:
+                return None
+            shared_claimed_receipts.add(key)
+            receipt = MagicMock()
+            receipt.id = f"rcpt-{uuid.uuid4().hex[:8]}"
+            return receipt
+
+        mock_receipt_store.claim = AsyncMock(side_effect=fake_claim)
+        mock_receipt_store.mark_handled = AsyncMock()
+        mock_receipt_store.prune = AsyncMock()
+
+        pod_a.consumer.receipt_store = mock_receipt_store
+        pod_b.consumer.receipt_store = mock_receipt_store
+
+        fake_session_factory = MagicMock()
+        fake_session = AsyncMock()
+        fake_session_factory.return_value.__aenter__.return_value = fake_session
+
+        pod_a.set_tenant_id("tenant-1")
+        pod_a.set_session_factory(fake_session_factory)
+        pod_b.set_tenant_id("tenant-1")
+        pod_b.set_session_factory(fake_session_factory)
+
+        dispatched_messages: list[str] = []
+
+        async def record_message(msg: InboundMessage) -> None:
+            dispatched_messages.append(msg.message_ref)
+
+        pod_a.consumer.set_callbacks(on_message=record_message)
+        pod_b.consumer.set_callbacks(on_message=record_message)
+
+        pod_a.set_listening(True)
+        pod_b.set_listening(False)
+
+        # 1. Pod A processes message M1
+        payload1 = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/S1"},
+            "message": {
+                "name": "spaces/S1/messages/M_HANDOFF_1",
+                "text": "first turn",
+                "sender": {"name": "users/U1", "displayName": "Alice", "type": "HUMAN"},
+            },
+        }
+        await pod_a.consumer._handle_interaction_event(payload1, "evt-1")
+        assert dispatched_messages == ["spaces/S1/messages/M_HANDOFF_1"]
+        mock_receipt_store.mark_handled.assert_called_once()
+
+        # 2. Handover from Pod A to Pod B
+        await pod_a.stop()
+        pod_b.set_listening(True)
+        pod_b.consumer.start()
+
+        # 3. Pub/Sub redelivers M1 to Pod B after failover
+        await pod_b.consumer._handle_interaction_event(payload1, "evt-1-retry")
+        # Pod B claimed through shared receipt store, saw it was already taken, and dropped it!
+        assert dispatched_messages == ["spaces/S1/messages/M_HANDOFF_1"]
+
+        # 4. Workspace Events CloudEvent for M1 arrives at Pod B
+        ce_payload = {
+            "specversion": "1.0",
+            "id": "ce-msg-1",
+            "type": "google.workspace.chat.message.v1.created",
+            "data": {
+                "space": {"name": "spaces/S1"},
+                "message": {
+                    "name": "spaces/S1/messages/M_HANDOFF_1",
+                    "text": "first turn",
+                    "sender": {
+                        "name": "users/U1",
+                        "displayName": "Alice",
+                        "type": "HUMAN",
+                    },
+                },
+            },
+        }
+        await pod_b.consumer._handle_cloud_event(ce_payload, {}, "ce-msg-1")
+        # Still not dispatched again!
+        assert dispatched_messages == ["spaces/S1/messages/M_HANDOFF_1"]
+
+        # 5. Brand new message M2 arrives at Pod B
+        payload2 = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/S1"},
+            "message": {
+                "name": "spaces/S1/messages/M_HANDOFF_2",
+                "text": "second turn",
+                "sender": {"name": "users/U2", "displayName": "Bob", "type": "HUMAN"},
+            },
+        }
+        await pod_b.consumer._handle_interaction_event(payload2, "evt-2")
+        assert dispatched_messages == [
+            "spaces/S1/messages/M_HANDOFF_1",
+            "spaces/S1/messages/M_HANDOFF_2",
+        ]
         await pod_b.stop()

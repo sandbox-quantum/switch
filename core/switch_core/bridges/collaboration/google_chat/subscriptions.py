@@ -116,11 +116,89 @@ class WorkspaceEventsManager:
                 int(expires_at - now),
             )
         except Exception as exc:
+            err_str = str(exc)
+            if "409" in err_str or "ALREADY_EXISTS" in err_str:
+                logger.info(
+                    "Workspace Events subscription for %s already exists, adopting...",
+                    space_name,
+                )
+                try:
+                    norm_space = self._client._normalize_space_name(space_name)
+                    target_res = f"//chat.googleapis.com/{norm_space}"
+                    subs = await self._client.list_workspace_events_subscriptions(
+                        target_resource=target_res
+                    )
+                    if subs:
+                        sub = subs[0]
+                        sub_name = sub.get("name", "")
+                        expire_time_str = sub.get("expireTime")
+                        expires_at = self._parse_expire_time(expire_time_str)
+                        self._subscriptions[space_name] = WorkspaceEventsSubscription(
+                            space_name=space_name,
+                            subscription_name=sub_name,
+                            expires_at=expires_at,
+                        )
+                        return
+                except Exception as adopt_exc:
+                    logger.debug(
+                        "Failed to adopt existing subscription for %s: %s",
+                        space_name,
+                        adopt_exc,
+                    )
             logger.warning(
                 "Failed to create Workspace Events subscription for %s: %s",
                 space_name,
                 exc,
             )
+
+    async def reconcile_subscriptions(self) -> None:
+        """Discover existing subscriptions and ensure subscriptions exist for all joined spaces.
+
+        Called on startup by the lease-holding pod so that after pod failover or rolling deploy,
+        the incoming owner re-attaches to existing Workspace Events subscriptions without dropouts.
+        """
+        if not self._has_user_oauth or not self._pubsub_topic:
+            return
+
+        now = time.time()
+
+        # 1. Adopt active subscriptions already registered in Google Workspace Events API
+        try:
+            existing_subs = await self._client.list_workspace_events_subscriptions()
+            for sub in existing_subs:
+                sub_name = sub.get("name", "")
+                target_resource = sub.get("targetResource", "")
+                expire_time_str = sub.get("expireTime")
+                expires_at = self._parse_expire_time(expire_time_str)
+                if target_resource and "spaces/" in target_resource:
+                    space_name = "spaces/" + target_resource.split("spaces/")[-1]
+                    if expires_at > now:
+                        self._subscriptions[space_name] = WorkspaceEventsSubscription(
+                            space_name=space_name,
+                            subscription_name=sub_name,
+                            expires_at=expires_at,
+                        )
+                        logger.info(
+                            "Adopted existing Workspace Events subscription for %s: %s (expires in %ds)",
+                            space_name,
+                            sub_name,
+                            int(expires_at - now),
+                        )
+        except Exception as exc:
+            logger.debug(
+                "Could not list existing Workspace Events subscriptions: %s",
+                exc,
+            )
+
+        # 2. List spaces the bot is in and ensure an active subscription for each
+        try:
+            spaces = await self._client.list_spaces()
+            for space in spaces:
+                space_name = space.get("name")
+                if space_name:
+                    await self.ensure_space_subscription(space_name)
+        except Exception as exc:
+            logger.warning("Could not list spaces to reconcile subscriptions: %s", exc)
 
     async def renew_expiring_subscriptions(self) -> None:
         """Renew any active subscription nearing expiration."""
@@ -148,6 +226,17 @@ class WorkspaceEventsManager:
 
     async def _renewal_loop(self) -> None:
         """Periodic background renewal loop."""
+        # Initial reconciliation across active spaces and subscriptions on start
+        try:
+            await self.reconcile_subscriptions()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.error(
+                "Error in initial Workspace Events subscription reconciliation: %s",
+                exc,
+            )
+
         while self._running:
             try:
                 await self.renew_expiring_subscriptions()
