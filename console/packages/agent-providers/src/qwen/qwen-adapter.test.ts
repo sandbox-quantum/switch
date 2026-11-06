@@ -51,12 +51,14 @@ async function start(runtimeMode: RuntimeMode) {
   return servers.at(-1)!;
 }
 
+// Qwen's modes are fixed, so the mode is chosen without the advertised list:
+// an approval-required agent must never be left in Qwen's starting auto.
 it('puts each runtime mode in a mode Qwen advertises, never leaving its own auto', () => {
   const modes: Record<RuntimeMode, string | undefined> = {
-    'approval-required': qwenAcp.sessionMode?.('approval-required'),
-    'auto-accept-edits': qwenAcp.sessionMode?.('auto-accept-edits'),
-    auto: qwenAcp.sessionMode?.('auto'),
-    'full-access': qwenAcp.sessionMode?.('full-access'),
+    'approval-required': qwenAcp.sessionMode?.('approval-required', undefined),
+    'auto-accept-edits': qwenAcp.sessionMode?.('auto-accept-edits', undefined),
+    auto: qwenAcp.sessionMode?.('auto', undefined),
+    'full-access': qwenAcp.sessionMode?.('full-access', undefined),
   };
   expect(modes).toEqual({
     'approval-required': 'default',
@@ -98,8 +100,11 @@ it('answers sign-in from the key without starting the agent', async () => {
   const handshake = vi.fn(async () => {
     throw new Error('the sign-in check must not start the agent');
   });
+  const request = vi.fn(async () => {
+    throw new Error('the sign-in check must not ask the agent anything');
+  });
   const check = (env: Record<string, string>) =>
-    qwenAcp.checkSignIn!({ binaryPath: '/bin/qwen', cwd: '/work', env, handshake });
+    qwenAcp.checkSignIn!({ binaryPath: '/bin/qwen', cwd: '/work', env, handshake, request });
 
   await expect(check({ OPENAI_API_KEY: 'synthetic-key' })).resolves.toMatchObject({
     status: 'authenticated',
@@ -109,6 +114,7 @@ it('answers sign-in from the key without starting the agent', async () => {
     message: QWEN_SIGN_IN,
   });
   expect(handshake).not.toHaveBeenCalled();
+  expect(request).not.toHaveBeenCalled();
 });
 
 it('asks Qwen’s own questions through Switch and answers them by question index', async () => {
