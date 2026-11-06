@@ -44,6 +44,7 @@ const EXAMPLE: ConnectionCatalogEntry = {
   unavailable_code: null,
   pass_through: false,
   token_lifetime: null,
+  agent_access_note: null,
   loopback_ports: null,
   key: null,
   external_identity: null,
@@ -122,6 +123,28 @@ async function signIn(): Promise<void> {
   await act(async () => button(/^connect example/i, dialog())!.click());
   expect(switchServers.startServiceConnection).toHaveBeenCalledWith('server', 'example');
 }
+
+it('says what limits agent access before the sign-in starts', async () => {
+  await render(
+    <ServiceConnectStep
+      calls={serverServiceCalls('server')}
+      connection={{
+        ...EXAMPLE,
+        agent_access_note: 'Agents have Example for the hour after each sign-in.',
+      }}
+      onBack={() => {}}
+      onConnected={() => {}}
+    />
+  );
+
+  expect(dialog().textContent).toContain('Agents have Example for the hour after each sign-in.');
+});
+
+it('says nothing more for a service without such a limit', async () => {
+  await render(connectStep());
+
+  expect(dialog().textContent).not.toContain('hour after each sign-in');
+});
 
 it('connects through the sign-in as soon as the server has kept the account', async () => {
   switchServers.getServiceFlow.mockResolvedValue({

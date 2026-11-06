@@ -200,6 +200,11 @@ def test_the_shipped_sentry_entry_signs_in_as_its_mcp_server_requires():
         "pass_through",
         3600,
     )
+    # A renewed Sentry token outlives the cap, so agents have Sentry for the
+    # hour after each sign-in, and people are told so.
+    assert definition.token.note is not None
+    assert "hour after each sign-in" in definition.token.note
+    assert "hour after each sign-in" in definition.description
     assert definition.mcp is not None
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("sentry", "https://mcp.sentry.dev/mcp")

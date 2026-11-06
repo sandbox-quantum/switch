@@ -361,11 +361,18 @@ class TokenPolicy(BaseModel):
     null for a credential that never expires (a pasted key): Switch could
     neither take such a credential back nor wait for it to lapse, so it is
     never handed to an agent.
+
+    `note` is shown to people beside how long agent access lasts, for a
+    vendor that limits it further (Sentry's renewed tokens outlive the cap,
+    so agents have Sentry only for the hour after each sign-in).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     kind: Literal["minted", "pass_through"]
     max_lifetime: Annotated[int, Field(ge=300, le=7 * 24 * 3600)] | None
+    note: str | None = Field(
+        default=None, min_length=1, max_length=400, pattern=r"^[^\n]+$"
+    )
 
     @property
     def issued_to_agents(self) -> bool:
