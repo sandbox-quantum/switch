@@ -48,3 +48,36 @@ def test_lost_messages_are_never_good():
         line.state == r.LOOK and line.text.startswith("Errors:")
         for line in r.lines_for(day)
     )
+
+
+GRAPHS = r.featured_graphs("switch-core")
+NO_CHANGE = {graph.key: 0.0 for graph in GRAPHS}
+
+
+def test_the_graph_of_the_day_explains_the_first_line_to_look_at():
+    lines = r.lines_for({**FINE, "pool_ratio": 0.95, "loop_lag_max": 1500})
+    graph, reason = r.pick_graph(lines, GRAPHS, NO_CHANGE, day_number=0)
+    assert graph.key == "pool"
+    assert reason == "it's behind a line above"
+
+
+def test_on_a_good_day_the_graph_that_moved_most_is_featured():
+    change = {**NO_CHANGE, "traffic": 0.4, "api": -0.6}
+    graph, reason = r.pick_graph(r.lines_for(FINE), GRAPHS, change, day_number=0)
+    assert graph.key == "api"
+    assert reason == "it moved most since last week (down 60%)"
+
+
+def test_a_quiet_week_walks_through_every_graph():
+    picked = {
+        r.pick_graph(r.lines_for(FINE), GRAPHS, NO_CHANGE, day_number=day)[0].key
+        for day in range(len(GRAPHS))
+    }
+    assert picked == {graph.key for graph in GRAPHS}
+
+
+def test_every_graph_definition_is_valid_json():
+    import json
+
+    for graph in GRAPHS:
+        assert json.loads(r.graph_def(graph))["requests"]

@@ -1,26 +1,9 @@
 {
   "title": "Switch signal",
-  "description": "Pilot at a glance: the four golden signals plus agents and messaging apps. Kept in deploy/observability/signal-board.json; edit it there.",
+  "description": "Pilot at a glance. Tiles show the last hour; charts follow the time picker. Grey while normal; red, and a dashed red line, mark the limit an alert watches. Detail behind each section: Switch core: detail. Alerts post to Slack #switch-alert-hub. Kept in deploy/observability/signal-board.json; edit it there.",
   "layout_type": "ordered",
   "reflow_type": "fixed",
   "widgets": [
-    {
-      "definition": {
-        "type": "note",
-        "content": "**Pilot at a glance.** Each tile answers one question. Everything is grey while it's normal; a value turns red, and a dashed red line marks the limit an alert watches. Causes and detail: **Switch: core service health** and **core across pods**. Alerts post to Slack #switch-alert-hub.",
-        "background_color": "white",
-        "font_size": "14",
-        "text_align": "left",
-        "show_tick": false,
-        "has_padding": true
-      },
-      "layout": {
-        "x": 0,
-        "y": 0,
-        "width": 12,
-        "height": 1
-      }
-    },
     {
       "definition": {
         "type": "manage_status",
@@ -38,7 +21,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 1,
+        "y": 0,
         "width": 12,
         "height": 3
       }
@@ -87,7 +70,10 @@
                     }
                   ]
                 }
-              ]
+              ],
+              "time": {
+                "live_span": "1h"
+              }
             },
             "layout": {
               "x": 0,
@@ -99,7 +85,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "agent connections (an agent on two transports counts twice)",
+              "title": "agent connections, both pods together",
               "title_size": "13",
               "show_legend": false,
               "legend_layout": "horizontal",
@@ -149,9 +135,9 @@
       },
       "layout": {
         "x": 0,
-        "y": 4,
+        "y": 3,
         "width": 4,
-        "height": 6
+        "height": 7
       }
     },
     {
@@ -164,7 +150,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "bridges healthy (1 = all running)",
+              "title": "bridges healthy, last hour (1 = all running)",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
@@ -198,7 +184,10 @@
                     }
                   ]
                 }
-              ]
+              ],
+              "time": {
+                "live_span": "1h"
+              }
             },
             "layout": {
               "x": 0,
@@ -260,9 +249,9 @@
       },
       "layout": {
         "x": 4,
-        "y": 4,
+        "y": 3,
         "width": 4,
-        "height": 6
+        "height": 7
       }
     },
     {
@@ -275,10 +264,13 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "API p95, over the time shown",
+              "title": "API p95 ms, last hour",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
+              "time": {
+                "live_span": "1h"
+              },
               "requests": [
                 {
                   "formulas": [
@@ -290,7 +282,7 @@
                     {
                       "data_source": "metrics",
                       "name": "q",
-                      "query": "p95:switch.http.request.duration{service:switch-core}",
+                      "query": "p95:switch.http.request.duration{service:switch-core,!route:/gateway/chats/events,!route:/gateway/chats/activity/events}",
                       "aggregator": "avg"
                     }
                   ],
@@ -309,20 +301,68 @@
                     }
                   ]
                 }
-              ],
-              "custom_unit": "ms"
+              ]
             },
             "layout": {
               "x": 0,
               "y": 0,
-              "width": 4,
+              "width": 2,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "delivery p95 ms, last hour",
+              "title_size": "13",
+              "autoscale": true,
+              "precision": 0,
+              "time": {
+                "live_span": "1h"
+              },
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "p95:switch.messages.delivery_lag{service:switch-core}",
+                      "aggregator": "avg"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "conditional_formats": [
+                    {
+                      "comparator": ">",
+                      "value": 10000,
+                      "palette": "white_on_red"
+                    },
+                    {
+                      "comparator": "<=",
+                      "value": 10000,
+                      "palette": "custom_text",
+                      "custom_fg_color": "#5b6672"
+                    }
+                  ]
+                }
+              ]
+            },
+            "layout": {
+              "x": 2,
+              "y": 0,
+              "width": 2,
               "height": 2
             }
           },
           {
             "definition": {
               "type": "timeseries",
-              "title": "p95 in ms: API requests and message delivery",
+              "title": "API p95 ms (live streams left out)",
               "title_size": "13",
               "show_legend": true,
               "legend_layout": "horizontal",
@@ -343,7 +383,7 @@
                     {
                       "data_source": "metrics",
                       "name": "q",
-                      "query": "p95:switch.http.request.duration{service:switch-core}"
+                      "query": "p95:switch.http.request.duration{service:switch-core,!route:/gateway/chats/events,!route:/gateway/chats/activity/events}"
                     }
                   ],
                   "response_format": "timeseries",
@@ -353,7 +393,40 @@
                     "line_type": "solid",
                     "line_width": "normal"
                   }
-                },
+                }
+              ],
+              "markers": [
+                {
+                  "value": "y = 2000",
+                  "display_type": "error dashed",
+                  "label": "alert: 2 s"
+                }
+              ],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 2,
+              "width": 4,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "message delivery p95 ms",
+              "title_size": "13",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "avg",
+                "max",
+                "value"
+              ],
+              "requests": [
                 {
                   "formulas": [
                     {
@@ -372,16 +445,16 @@
                   "display_type": "line",
                   "style": {
                     "palette": "grey",
-                    "line_type": "dotted",
+                    "line_type": "solid",
                     "line_width": "normal"
                   }
                 }
               ],
               "markers": [
                 {
-                  "value": "y = 2000",
+                  "value": "y = 10000",
                   "display_type": "error dashed",
-                  "label": "API alert"
+                  "label": "alert: 10 s"
                 }
               ],
               "yaxis": {
@@ -391,18 +464,18 @@
             },
             "layout": {
               "x": 0,
-              "y": 2,
+              "y": 4,
               "width": 4,
-              "height": 3
+              "height": 2
             }
           }
         ]
       },
       "layout": {
         "x": 8,
-        "y": 4,
+        "y": 3,
         "width": 4,
-        "height": 6
+        "height": 7
       }
     },
     {
@@ -415,7 +488,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "requests per second, average over the time shown",
+              "title": "requests per second, last hour",
               "title_size": "13",
               "autoscale": true,
               "precision": 1,
@@ -444,7 +517,10 @@
                     }
                   ]
                 }
-              ]
+              ],
+              "time": {
+                "live_span": "1h"
+              }
             },
             "layout": {
               "x": 0,
@@ -523,7 +599,7 @@
           {
             "definition": {
               "type": "query_value",
-              "title": "server errors, over the time shown",
+              "title": "server errors, last hour",
               "title_size": "13",
               "autoscale": true,
               "precision": 0,
@@ -531,7 +607,7 @@
                 {
                   "formulas": [
                     {
-                      "formula": "q"
+                      "formula": "default_zero(q)"
                     }
                   ],
                   "queries": [
@@ -557,7 +633,10 @@
                     }
                   ]
                 }
-              ]
+              ],
+              "time": {
+                "live_span": "1h"
+              }
             },
             "layout": {
               "x": 0,

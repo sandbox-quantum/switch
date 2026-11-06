@@ -31,8 +31,9 @@ carry. That file is the reference; this directory is one view of it.
 (latency, traffic, errors, saturation) plus two questions only Switch has, "are
 agents connected?" and "are the messaging apps up?". Everything is grey while it
 is normal. A value turns red, and a dashed red line marks the limit an alert
-watches, so the exception is the only thing in colour. The other dashboards are
-where you go next, for causes.
+watches, so the exception is the only thing in colour. Tiles always show the
+last hour, whatever the time picker says, so a red tile means "now"; charts
+follow the time picker. The other dashboards are where you go next, for causes.
 
 Keep it that way when you edit it: one question per tile, at most five series
 per chart, a limit drawn on any chart an alert reads, and colour only for state.
@@ -59,8 +60,11 @@ would page on noise.
 
 `daily_report.py` posts once a day into a Switch room, as an agent in that room:
 a first line that says "all good" or how many things to look at, one line per
-signal for the last 24 hours, and three graphs (the pool per pod, API and
-delivery p95, agent connections). It covers what can wait for the morning, the
+signal for the last 24 hours, and one graph of the day with two sentences on
+what it shows and why it matters. The graph is the one behind the first line
+that needs a look; on a good day, the one that moved most against the same day
+last week; on a quiet day, the next in turn, so the team meets every signal
+over a week or two. It covers what can wait for the morning, the
 things the monitors deliberately don't post: a pool that came close to full,
 latency creeping up, agents still on the old connection, events dropped for
 agents that were away.
@@ -71,7 +75,7 @@ DD_API_KEY=... DD_APP_KEY=... SWITCH_URL=... SWITCH_AGENT_ID=... \
 ```
 
 Without the `SWITCH_*` settings it only prints the report. The application key
-needs read access to metrics. Its verdict logic is tested in
+needs read access to metrics. Its verdict and the choice of graph are tested in
 `test_daily_report.py`.
 
 ## Importing

@@ -201,7 +201,7 @@
   {
     "name": "[Switch] the API is slow",
     "type": "query alert",
-    "query": "avg(last_10m):p95:switch.http.request.duration{service:switch-core} > 2000",
+    "query": "avg(last_10m):p95:switch.http.request.duration{service:switch-core,!route:/gateway/chats/events,!route:/gateway/chats/activity/events} > 2000",
     "message": "{{#is_alert}}The slowest 5% of requests took over 2 seconds, for 10 minutes. Everything feels sluggish.\n\n**Check:** the database pool and event-loop lag on the Signal board; slowness usually starts there.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: the API is slow.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
