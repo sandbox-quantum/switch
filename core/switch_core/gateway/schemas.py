@@ -2057,16 +2057,19 @@ class ClaimantDetail(BaseModel):
 
 
 class PersonDetail(BaseModel):
-    """Someone seen in the workspace's rooms through a chat app.
+    """Someone seen in the workspace's rooms.
 
-    `kind` is `identity` for a person on a connected app, where `id` is their
-    platform identity, or `former` for a person on an app since disconnected,
-    where `id` is the transport id their messages carry and `bridge_name` is
-    null. Erase by passing `id` in the matching list of the request.
+    `kind` is `identity` for a person on a connected chat app, where `id` is
+    their platform identity; `former` for a person on an app since
+    disconnected, where `id` is the transport id their messages carry and
+    `bridge_name` is null; or `member` for a person taking part from Switch
+    Console, where `id` is their member client, `platform` is `switch` and
+    `bridge_name` is null (a deleted account's shows as "Former member").
+    Erase by passing `id` in the matching list of the request.
     """
 
     id: str
-    kind: Literal["identity", "former"]
+    kind: Literal["identity", "former", "member"]
     username: str
     platform: str
     bridge_name: str | None
@@ -2077,10 +2080,15 @@ class PersonDetail(BaseModel):
 class ErasureCreateRequest(BaseModel):
     external_user_ids: list[str] = Field(default_factory=list, max_length=50)
     former_sender_ids: list[str] = Field(default_factory=list, max_length=50)
+    member_client_ids: list[str] = Field(default_factory=list, max_length=50)
 
     @model_validator(mode="after")
     def _names_someone(self) -> ErasureCreateRequest:
-        if not self.external_user_ids and not self.former_sender_ids:
+        if (
+            not self.external_user_ids
+            and not self.former_sender_ids
+            and not self.member_client_ids
+        ):
             raise ValueError("name at least one person to erase")
         return self
 

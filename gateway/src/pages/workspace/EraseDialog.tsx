@@ -94,17 +94,34 @@ export default function EraseDialog({ tenantId, person, people, onClose, onQueue
       <DialogTitle>Erase {person.username}?</DialogTitle>
       <DialogContent>
         <Stack spacing={2}>
-          <DialogContentText>
-            This permanently deletes {plural(messages, "message")} they sent in every room of
-            this workspace, archived rooms included, with their files and their identity. It
-            cannot be undone.
-          </DialogContentText>
-          <DialogContentText>
-            What other people wrote, including replies that quote them, is kept. Copies in{" "}
-            {person.bridge_name ?? "the disconnected app"} and other chat apps are not
-            deleted; remove those in the app. Their Switch account and membership, if any, are
-            not affected.
-          </DialogContentText>
+          {person.kind === "member" ? (
+            <>
+              <DialogContentText>
+                This permanently deletes {plural(messages, "message")} they sent from Switch
+                Console in every room of this workspace, archived rooms included, with their
+                files. It cannot be undone.
+              </DialogContentText>
+              <DialogContentText>
+                What other people wrote, including replies that quote them, is kept. Copies a
+                chat app received are not deleted; remove those in the app. Their Switch account
+                and membership, if any, are not affected, and they can go on writing.
+              </DialogContentText>
+            </>
+          ) : (
+            <>
+              <DialogContentText>
+                This permanently deletes {plural(messages, "message")} they sent in every room
+                of this workspace, archived rooms included, with their files and their identity.
+                It cannot be undone.
+              </DialogContentText>
+              <DialogContentText>
+                What other people wrote, including replies that quote them, is kept. Copies in{" "}
+                {person.bridge_name ?? "the disconnected app"} and other chat apps are not
+                deleted; remove those in the app. Their Switch account and membership, if any,
+                are not affected.
+              </DialogContentText>
+            </>
+          )}
           {related.length > 0 && (
             <Stack spacing={0.5}>
               <Typography variant="subtitle2">

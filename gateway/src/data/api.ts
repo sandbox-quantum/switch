@@ -1535,10 +1535,12 @@ export interface PersonClaimant {
 
 /** `identity`: someone on a connected app, `id` is their platform identity.
  * `former`: someone on an app since disconnected, `id` is the sender id their
- * messages carry, and `bridge_name` is null. */
+ * messages carry, and `bridge_name` is null. `member`: someone taking part
+ * from Switch Console, `id` is their member client, `platform` is `switch` and
+ * `bridge_name` is null; a deleted account's is named "Former member". */
 export interface Person {
   id: string;
-  kind: "identity" | "former";
+  kind: "identity" | "former" | "member";
   username: string;
   platform: string;
   bridge_name: string | null;
@@ -1573,6 +1575,7 @@ export async function erasePeople(tenantId: string, people: Person[]): Promise<E
   return jsonRequest<Erasure>(`/tenants/${encodeURIComponent(tenantId)}/erasures`, "POST", {
     external_user_ids: people.filter((p) => p.kind === "identity").map((p) => p.id),
     former_sender_ids: people.filter((p) => p.kind === "former").map((p) => p.id),
+    member_client_ids: people.filter((p) => p.kind === "member").map((p) => p.id),
   });
 }
 

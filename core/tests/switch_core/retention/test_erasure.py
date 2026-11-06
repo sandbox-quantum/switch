@@ -193,6 +193,7 @@ async def _queue(
     session_factory: async_sessionmaker[AsyncSession],
     external_user_ids: list[str],
     former_sender_ids: list[str] | None = None,
+    member_client_ids: list[str] | None = None,
 ) -> str:
     async with session_factory() as session:
         owner = User(
@@ -206,6 +207,7 @@ async def _queue(
             session,
             external_user_ids=external_user_ids,
             former_sender_ids=former_sender_ids or [],
+            member_client_ids=member_client_ids or [],
             requested_by_user_id=owner.id,
         )
         await session.commit()
@@ -704,3 +706,108 @@ class TestFormerParticipants:
 
         with pytest.raises(UnknownIdentity):
             await _queue(session_factory, [], [live_sender])
+
+
+async def _member_client(session: AsyncSession, name: str, *, linked: bool) -> Client:
+    """A Switch Console member client, as `ChatService.member_actor` makes it;
+    unlinked, as a deleted account's is left."""
+    user = User(
+        name=name, email=f"{name}-{uuid.uuid4().hex[:6]}@example.invalid", role="user"
+    )
+    session.add(user)
+    await session.flush()
+    client = Client(
+        transport_user_id=f"@switch-member-{user.id}:test",
+        display_name=name if linked else "Former member",
+        type="member",
+        user_id=user.id if linked else None,
+    )
+    session.add(client)
+    await session.flush()
+    return client
+
+
+class TestMembers:
+    async def test_what_a_member_sent_goes_and_their_client_stays(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            cleo = await _member_client(session, "cleo", linked=True)
+            ana = await _person(session, await _bridge(session), "ana")
+            ana_client = await _client_of(session, ana)
+            agent = await _agent(session)
+            room = await _room(session, "r", archived=True)
+            await _blob(session, "mxc://test/cleo-only")
+            await _blob(session, "mxc://test/shared")
+            await _say(session, room, cleo, "$c1", "mxc://test/cleo-only")
+            await _say(session, room, cleo, "$c2", "mxc://test/shared")
+            await _say(session, room, ana_client, "$a1", "mxc://test/shared")
+            session.add(
+                ApprovalRequest(
+                    agent_id=agent.id,
+                    session_id="s",
+                    request_id="q",
+                    turn_id="t",
+                    kind="questions",
+                    title="t",
+                    options=[],
+                    questions=[],
+                    state="answered",
+                    answered_by=cleo.transport_user_id,
+                    answers=[{"question_id": "q1", "custom_text": "private"}],
+                )
+            )
+            await session.commit()
+            cleo_id = cleo.id
+        await _queue(session_factory, [], [], [cleo_id])
+
+        finished = await ErasureService(
+            session_factory, _Clients(), _Bridges()
+        ).work_once(datetime.now(UTC))
+
+        assert finished is not None
+        assert (finished.state, finished.error) == ("done", None)
+        assert (
+            finished.messages_deleted,
+            finished.files_deleted,
+            finished.identities_erased,
+        ) == (2, 1, 1)
+        async with session_factory() as session:
+            left = (await session.execute(select(Message.transport_event_id))).scalars()
+            blobs = (await session.execute(select(MediaBlob.uri))).scalars()
+            approval = (await session.execute(select(ApprovalRequest))).scalar_one()
+            client_after = await session.get(Client, cleo_id)
+        assert list(left) == ["$a1"]
+        assert list(blobs) == ["mxc://test/shared"]
+        assert approval.answered_by == ERASED_ANSWERER
+        assert approval.answers == [{"question_id": "q1"}]
+        assert client_after is not None and client_after.user_id is not None
+
+    async def test_members_are_listed_with_message_counts_deleted_accounts_too(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            cleo = await _member_client(session, "cleo", linked=True)
+            gone = await _member_client(session, "gone", linked=False)
+            room = await _room(session, "r")
+            await _say(session, room, gone, "$g1")
+            await _say(session, room, gone, "$g2")
+            await session.commit()
+            members = await ErasureStore().list_members(session)
+        assert [
+            (m.client_id, m.name, m.user_id is None, m.message_count) for m in members
+        ] == [
+            (cleo.id, "cleo", False, 0),
+            (gone.id, "Former member", True, 2),
+        ]
+
+    async def test_a_client_that_is_not_a_member_client_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            ana = await _person(session, await _bridge(session), "ana")
+            await session.commit()
+            ana_client_id = ana.client_id
+
+        with pytest.raises(UnknownIdentity):
+            await _queue(session_factory, [], [], [ana_client_id])

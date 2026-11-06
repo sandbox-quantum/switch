@@ -4115,10 +4115,12 @@ class PersonErasure(TenantScoped, Base):
     `external_user_ids` names the platform identities to erase: one row of
     `external_users` per platform the person was seen on. `former_sender_ids`
     names people from a chat app that has since been disconnected, by the
-    transport id their messages still carry. Erasing them deletes
-    every message they sent, the files those carried, their identity records
-    and the client standing in for each, and their name on approval answers
-    (`retention/erasure.py`). Queued here and worked by a background loop, so
+    transport id their messages still carry. `member_client_ids` names the
+    member clients through which people took part from Switch Console, a
+    current member or a deleted account's. Erasing any of them deletes every
+    message they sent, the files those carried, and their name on approval
+    answers; a platform identity's records and client go too, while a member
+    client stays, since its account may still be in use (`retention/erasure.py`). Queued here and worked by a background loop, so
     a person with years of history cannot time out the request that asked.
 
     Nothing here names the person once they are erased: the ids are internal
@@ -4139,6 +4141,10 @@ class PersonErasure(TenantScoped, Base):
     # Former participants: people seen on a chat app since disconnected, whose
     # identity rows went with it. Named by the transport id on their messages.
     former_sender_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    # Member clients: people in rooms through Switch Console, by client id.
+    member_client_ids: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
     state: Mapped[str] = mapped_column(Text, nullable=False, default="queued")

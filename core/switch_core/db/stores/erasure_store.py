@@ -3,8 +3,13 @@ that are not messages, for the bound tenant.
 
 A person in a room is a chat-platform identity: an `external_users` row on
 one bridge, standing behind a `clients` row that is the room participant.
-One person seen on two platforms is two identities. Message deletion itself
-is `MessageStore.delete_sent_by`, which keeps the room's numbering intact.
+One person seen on two platforms is two identities. Someone who takes part
+from Switch Console does so through a member client instead, one per account
+per workspace. Message deletion itself is `MessageStore.delete_sent_by`,
+which keeps the room's numbering intact.
+
+Also the renaming a deleted account's messages get (`FORMER_MEMBER_NAME`,
+used by `accounts/deletion.py`).
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from sqlalchemy import cast as cast_
 from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.db.models import (
     AgentEventRow,
     ApprovalRequest,
@@ -51,6 +57,13 @@ from switch_core.db.stores.retention_store import UNREFERENCED_BLOB
 ERASED_ANSWERER = "erased"
 #: What stands in for an erased person's name in a direct room's name.
 ERASED_NAME = "erased person"
+#: The name a deleted account's messages, and the member client that sent
+#: them, carry from then on.
+FORMER_MEMBER_NAME = "Former member"
+#: How Switch Console describes a chat it creates (`ChatService`): this,
+#: then the agents and people in it, joined by `CONSOLE_CHAT_SEPARATOR`.
+CONSOLE_CHAT_PREFIX = "Switch Console chat with "
+CONSOLE_CHAT_SEPARATOR = ", "
 
 ACTIVE_STATES = ("queued", "running")
 #: A `running` request whose progress has not moved for this long is taken to
@@ -111,6 +124,19 @@ class FormerParticipant:
     sender_id: str
     names: list[str]
     platform: str
+    message_count: int
+
+
+@dataclass(frozen=True)
+class Member:
+    """Someone who took part in rooms from Switch Console, through their
+    member client. `user_id` is None once their account has been deleted,
+    and `name` is then `FORMER_MEMBER_NAME`."""
+
+    client_id: str
+    transport_user_id: str
+    name: str
+    user_id: str | None
     message_count: int
 
 
@@ -259,12 +285,61 @@ class ErasureStore:
             )
         return former
 
+    async def list_members(self, session: AsyncSession) -> list[Member]:
+        """Every member client in the bound tenant."""
+        return await self._members(session, None)
+
+    async def members_with_ids(
+        self, session: AsyncSession, client_ids: Collection[str]
+    ) -> list[Member]:
+        """The named member clients that are in the bound tenant."""
+        return await self._members(session, list(client_ids))
+
+    async def _members(
+        self, session: AsyncSession, client_ids: list[str] | None
+    ) -> list[Member]:
+        tenant_id = require_tenant_id()
+        message_count = (
+            select(func.count())
+            .select_from(Message)
+            .where(
+                Message.tenant_id == tenant_id,
+                Message.sender_id == Client.transport_user_id,
+            )
+            .correlate(Client)
+            .scalar_subquery()
+        )
+        query = (
+            select(
+                Client.id,
+                Client.transport_user_id,
+                Client.display_name,
+                Client.user_id,
+                message_count,
+            )
+            .where(Client.tenant_id == tenant_id, Client.type == MEMBER_CLIENT_TYPE)
+            .order_by(func.lower(Client.display_name), Client.id)
+        )
+        if client_ids is not None:
+            query = query.where(Client.id.in_(client_ids))
+        return [
+            Member(
+                client_id=row[0],
+                transport_user_id=row[1],
+                name=row[2],
+                user_id=row[3],
+                message_count=int(row[4]),
+            )
+            for row in (await session.execute(query)).all()
+        ]
+
     async def queue(
         self,
         session: AsyncSession,
         *,
         external_user_ids: list[str],
         former_sender_ids: list[str],
+        member_client_ids: list[str],
         requested_by_user_id: str,
     ) -> PersonErasure:
         """Queue the erasure of these identities, or raise.
@@ -292,13 +367,21 @@ class ErasureStore:
                 f.sender_id
                 for f in await self.former_with_ids(session, former_sender_ids)
             }
-        unknown = (set(external_user_ids) | set(former_sender_ids)) - known
+        if member_client_ids:
+            known |= {
+                m.client_id
+                for m in await self.members_with_ids(session, member_client_ids)
+            }
+        unknown = (
+            set(external_user_ids) | set(former_sender_ids) | set(member_client_ids)
+        ) - known
         if unknown:
             raise UnknownIdentity(", ".join(sorted(unknown)))
         overlaps = []
         for column, ids in (
             (PersonErasure.external_user_ids, external_user_ids),
             (PersonErasure.former_sender_ids, former_sender_ids),
+            (PersonErasure.member_client_ids, member_client_ids),
         ):
             if ids:
                 overlaps.append(column.op("?|")(cast_(array(ids), ARRAY(Text))))
@@ -316,6 +399,7 @@ class ErasureStore:
         erasure = PersonErasure(
             external_user_ids=list(external_user_ids),
             former_sender_ids=list(former_sender_ids),
+            member_client_ids=list(member_client_ids),
             state="queued",
             requested_by_user_id=requested_by_user_id,
         )
@@ -537,3 +621,143 @@ class ErasureStore:
             {"t": require_tenant_id(), "uris": list(uris)},
         )
         return _rowcount(result)
+
+    async def member_client_of(
+        self, session: AsyncSession, user_id: str
+    ) -> Client | None:
+        """The member client through which `user_id` takes part in the bound
+        tenant's rooms from Switch Console, if they ever have."""
+        return (
+            await session.execute(
+                select(Client).where(
+                    Client.tenant_id == require_tenant_id(),
+                    Client.user_id == user_id,
+                    Client.type == MEMBER_CLIENT_TYPE,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def rename_sent_by(
+        self, session: AsyncSession, *, transport_user_id: str, name: str, limit: int
+    ) -> int:
+        """Give up to `limit` of this sender's messages `name` as their sender's
+        name, in the column and in the stored event (`sender_name`, and the
+        `user_name` a command carries), and return how many changed.
+
+        Rows already named so are skipped, so repeating this until it returns
+        less than `limit` renames every one. Only the sender's own rows
+        change: someone else quoting or mentioning them keeps their words.
+        """
+        result = await session.execute(
+            text(
+                """
+                UPDATE messages m SET
+                    sender_name = :name,
+                    content = CASE WHEN m.content ? 'user_name'
+                        THEN jsonb_set(named.content, '{user_name}', to_jsonb(CAST(:name AS text)))
+                        ELSE named.content END
+                FROM (
+                    SELECT id, CASE WHEN content ? 'sender_name'
+                        THEN jsonb_set(content, '{sender_name}', to_jsonb(CAST(:name AS text)))
+                        ELSE content END AS content
+                    FROM messages
+                    WHERE tenant_id = :t AND sender_id = :sender
+                      AND (sender_name IS DISTINCT FROM :name
+                           OR (content ? 'sender_name' AND content->>'sender_name' IS DISTINCT FROM :name)
+                           OR (content ? 'user_name' AND content->>'user_name' IS DISTINCT FROM :name))
+                    ORDER BY id
+                    LIMIT :limit
+                ) named
+                WHERE m.id = named.id
+                """
+            ),
+            {
+                "t": require_tenant_id(),
+                "sender": transport_user_id,
+                "name": name,
+                "limit": limit,
+            },
+        )
+        return _rowcount(result)
+
+    async def rename_agent_copies(
+        self, session: AsyncSession, *, transport_user_id: str, name: str
+    ) -> int:
+        """Give this participant `name` in the copies of events stored for
+        agents (`agent_events`): as the sender of a message, the issuer of a
+        command, or the member who joined."""
+        result = await session.execute(
+            text(
+                """
+                UPDATE agent_events SET payload = CASE
+                    WHEN payload->'payload'->>'sender' = :who
+                         AND payload->'payload' ? 'sender_name'
+                        THEN jsonb_set(payload, '{payload,sender_name}', to_jsonb(CAST(:name AS text)))
+                    WHEN payload->'payload'->>'user_id' = :who
+                         AND payload->'payload' ? 'user_name'
+                        THEN jsonb_set(payload, '{payload,user_name}', to_jsonb(CAST(:name AS text)))
+                    WHEN payload->'payload'->>'member' = :who
+                         AND payload->'payload' ? 'member_name'
+                        THEN jsonb_set(payload, '{payload,member_name}', to_jsonb(CAST(:name AS text)))
+                    ELSE payload END
+                WHERE tenant_id = :t
+                  AND (payload->'payload'->>'sender' = :who
+                       OR payload->'payload'->>'user_id' = :who
+                       OR payload->'payload'->>'member' = :who)
+                """
+            ),
+            {"t": require_tenant_id(), "who": transport_user_id, "name": name},
+        )
+        return _rowcount(result)
+
+    async def rename_in_console_chats(
+        self,
+        session: AsyncSession,
+        *,
+        client_id: str,
+        old_names: Collection[str],
+        name: str,
+    ) -> int:
+        """Replace `old_names` with `name` in the descriptions Switch Console
+        gave the chats this client is in, which list who was in each. Must
+        run while the client's room memberships still stand. A name is
+        replaced only as a whole entry of that list, never inside another
+        name or anything a person wrote."""
+        member_of = select(ClientRoom.room_id).where(
+            ClientRoom.tenant_id == require_tenant_id(),
+            ClientRoom.client_id == client_id,
+        )
+        rooms = (
+            await session.execute(
+                select(Room).where(
+                    Room.tenant_id == require_tenant_id(),
+                    Room.id.in_(member_of),
+                    Room.description.startswith(CONSOLE_CHAT_PREFIX, autoescape=True),
+                )
+            )
+        ).scalars()
+        replaced = set(old_names)
+        renamed = 0
+        for room in rooms:
+            entries = room.description.removeprefix(CONSOLE_CHAT_PREFIX).split(
+                CONSOLE_CHAT_SEPARATOR
+            )
+            updated = [name if entry in replaced else entry for entry in entries]
+            if updated != entries:
+                room.description = CONSOLE_CHAT_PREFIX + CONSOLE_CHAT_SEPARATOR.join(
+                    updated
+                )
+                renamed += 1
+        await session.flush()
+        return renamed
+
+    async def retire_member_client(
+        self, session: AsyncSession, client_id: str, name: str
+    ) -> None:
+        """Rename a deleted account's member client to `name` and unlink it
+        from the account. The client stays, as the sender its messages name."""
+        await session.execute(
+            update(Client)
+            .where(Client.tenant_id == require_tenant_id(), Client.id == client_id)
+            .values(display_name=name, user_id=None)
+        )

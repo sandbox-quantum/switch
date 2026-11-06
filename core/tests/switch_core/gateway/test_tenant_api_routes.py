@@ -2926,7 +2926,11 @@ class TestErasureRoutes:
         assert actions == [
             (
                 "person_erasure.requested",
-                {"external_user_ids": [person_id], "former_participants": 0},
+                {
+                    "external_user_ids": [person_id],
+                    "former_participants": 0,
+                    "member_client_ids": [],
+                },
             )
         ]
 
@@ -2973,6 +2977,35 @@ class TestErasureRoutes:
             for p in people.json()
         ] == [(sender_id, "former", "dee", None, 1)]
         assert empty.status_code == 422
+        assert queued.status_code == 202
+        assert queued.json()["identities"] == 1
+
+    async def test_a_switch_console_member_is_listed_and_erased(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        token = await self._member(session_factory, "erase-console", "admin")
+        async with tenant_session(session_factory, TENANT_A) as session:
+            member = Client(
+                transport_user_id=f"@switch-member-{uuid.uuid4()}:test",
+                display_name="Former member",
+                type="member",
+            )
+            session.add(member)
+            await session.commit()
+            member_id = member.id
+
+        async with _client(_app(session_factory), token) as client:
+            people = await client.get(f"/tenants/{TENANT_A}/people")
+            queued = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"member_client_ids": [member_id]},
+            )
+
+        assert [
+            (p["id"], p["kind"], p["username"], p["platform"], p["message_count"])
+            for p in people.json()
+        ] == [(member_id, "member", "Former member", "switch", 0)]
         assert queued.status_code == 202
         assert queued.json()["identities"] == 1
 

@@ -4,7 +4,11 @@ A workspace admin queues a request naming one or more platform identities
 (`ErasureStore.queue`), and any former participants: people from a chat app
 since disconnected, whose identity rows went with it. For those only their
 messages, files, approval answers and direct-room names are left to erase
-(`_erase_former`). `erasure_loop` works the queue: for each identity it
+(`_erase_former`). A request can also name member clients, through which
+people take part from Switch Console: what such a client sent is erased the
+same way, and the client stays, because its account may still be in use, or
+is a deleted account's, already renamed (`_erase_member`). `erasure_loop`
+works the queue: for each identity it
 
 1. deletes every message the identity sent, in every room, archived ones
    included, in batches with their attachments, bridge post mappings and the
@@ -40,6 +44,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.erasure_store import (
     ErasureStore,
     FormerParticipant,
+    Member,
     Person,
 )
 from switch_core.db.stores.message_store import MessageStore
@@ -109,6 +114,13 @@ class ErasureService:
                     )
                 for participant in former:
                     await self._erase_former(tenant_id, erasure.id, participant)
+            if erasure.member_client_ids:
+                async with tenant_session(self._sessions, tenant_id) as db:
+                    members = await self._erasures.members_with_ids(
+                        db, erasure.member_client_ids
+                    )
+                for member in members:
+                    await self._erase_member(tenant_id, erasure.id, member)
         except Exception as exc:
             logger.exception("Erasure %s in tenant %s failed", erasure.id, tenant_id)
             error = f"{type(exc).__name__}: {exc}"
@@ -237,6 +249,41 @@ class ErasureService:
                 "Erasure %s: could not delete a former participant's files; the "
                 "hourly sweep deletes them a day later",
                 erasure_id,
+                exc_info=True,
+            )
+
+    async def _erase_member(
+        self, tenant_id: str, erasure_id: str, member: Member
+    ) -> None:
+        """Erase what a member client sent: its messages, their files, and its
+        answers to approvals. The client and its room memberships stay; a
+        person whose account is still in use can go on writing."""
+        uris: set[str] = set()
+        room_ids: set[str] = set()
+        while True:
+            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+                count = await self._delete_batch(
+                    db, erasure_id, member.transport_user_id, uris, room_ids
+                )
+            if count < MESSAGE_BATCH:
+                break
+        async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+            await self._erasures.scrub_approval_answers(db, member.transport_user_id)
+            await self._erasures.add_progress(
+                db, erasure_id, messages=0, files=0, identities=1
+            )
+        try:
+            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+                files = await self._erasures.delete_unreferenced_media(db, uris)
+                await self._erasures.add_progress(
+                    db, erasure_id, messages=0, files=files, identities=0
+                )
+        except Exception:
+            logger.warning(
+                "Erasure %s: could not delete the files of member client %s; the "
+                "hourly sweep deletes them a day later",
+                erasure_id,
+                member.client_id,
                 exc_info=True,
             )
 

@@ -80,7 +80,11 @@ describe("EraseDialog", () => {
 
     await waitFor(() => expect(onQueued).toHaveBeenCalled());
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a"], former_sender_ids: [] });
+    expect(JSON.parse(String(init.body))).toEqual({
+      external_user_ids: ["a"],
+      former_sender_ids: [],
+      member_client_ids: [],
+    });
   });
 
   it("keeps what was ticked and typed when the people list refreshes", async () => {
@@ -97,7 +101,11 @@ describe("EraseDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Erase" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({ external_user_ids: ["a", "b"], former_sender_ids: [] });
+    expect(JSON.parse(String(init.body))).toEqual({
+      external_user_ids: ["a", "b"],
+      former_sender_ids: [],
+      member_client_ids: [],
+    });
   });
 
   it("erases a former participant by the sender id their messages carry", async () => {
@@ -130,6 +138,44 @@ describe("EraseDialog", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       external_user_ids: [],
       former_sender_ids: ["@switch-slack-x-dee:example.org"],
+      member_client_ids: [],
+    });
+  });
+
+  it("erases what a Switch Console member sent, keeping their account", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const member: Person = {
+      id: "client-1",
+      kind: "member",
+      username: "Former member",
+      platform: "switch",
+      bridge_name: null,
+      message_count: 7,
+      claimed_by: [],
+    };
+    render(
+      <EraseDialog
+        tenantId="t1"
+        person={member}
+        people={[member, ana]}
+        onClose={() => {}}
+        onQueued={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/7 messages they sent from Switch Console/)).toBeTruthy();
+    expect(screen.getByText(/they can go on writing/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Type Former member to confirm"), {
+      target: { value: "Former member" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Erase" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      external_user_ids: [],
+      former_sender_ids: [],
+      member_client_ids: ["client-1"],
     });
   });
 });

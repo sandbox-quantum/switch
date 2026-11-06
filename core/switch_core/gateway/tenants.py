@@ -913,11 +913,17 @@ async def clear_retention_policy(
     return _retention_response(None, None, None)
 
 
+#: The `platform` a person taking part from Switch Console is listed under.
+SWITCH_CONSOLE_PLATFORM = "switch"
+
+
 def _erasure_detail(erasure: PersonErasure) -> ErasureDetail:
     return ErasureDetail(
         id=erasure.id,
         state=erasure.state,  # type: ignore[arg-type]
-        identities=len(erasure.external_user_ids) + len(erasure.former_sender_ids),
+        identities=len(erasure.external_user_ids)
+        + len(erasure.former_sender_ids)
+        + len(erasure.member_client_ids),
         identities_erased=erasure.identities_erased,
         messages_deleted=erasure.messages_deleted,
         files_deleted=erasure.files_deleted,
@@ -948,10 +954,11 @@ async def list_people(
     user: Annotated[User, Depends(require_tenant_admin)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> list[PersonDetail]:
-    """Everyone seen in the bound tenant's rooms through a chat app, with how
+    """Everyone seen in the bound tenant's rooms: through a chat app, with how
     many messages each sent and which members claim them, including former
-    participants from apps since disconnected. Admins only, by their own admin
-    membership: this is the list a person is erased from."""
+    participants from apps since disconnected, and from Switch Console,
+    including deleted accounts. Admins only, by their own admin membership:
+    this is the list a person is erased from."""
     _require_bound_tenant(tenant_id)
     await _require_admin_membership(session, user_store, tenant_id, user)
     people = [
@@ -980,6 +987,18 @@ async def list_people(
             claimed_by=[],
         )
         for former in await erasure_store.list_former_participants(session)
+    ]
+    people += [
+        PersonDetail(
+            id=member.client_id,
+            kind="member",
+            username=member.name,
+            platform=SWITCH_CONSOLE_PLATFORM,
+            bridge_name=None,
+            message_count=member.message_count,
+            claimed_by=[],
+        )
+        for member in await erasure_store.list_members(session)
     ]
     return sorted(people, key=lambda p: (p.username.lower(), p.id))
 
@@ -1011,8 +1030,8 @@ async def create_erasure(
     user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> ErasureDetail:
     """Queue the erasure of one person: every message the named identities
-    sent, their files, and the identities themselves. Admins only, by their
-    own admin membership.
+    and member clients sent, their files, and the platform identities
+    themselves. Admins only, by their own admin membership.
 
     Answered once queued; the work runs in the background within seconds and
     `GET .../erasures` reports its progress. 404 names an identity that is not
@@ -1022,11 +1041,13 @@ async def create_erasure(
     await _require_admin_membership(session, user_store, tenant_id, user)
     ids = list(dict.fromkeys(body.external_user_ids))
     former_ids = list(dict.fromkeys(body.former_sender_ids))
+    member_ids = list(dict.fromkeys(body.member_client_ids))
     try:
         erasure = await erasure_store.queue(
             session,
             external_user_ids=ids,
             former_sender_ids=former_ids,
+            member_client_ids=member_ids,
             requested_by_user_id=user.id,
         )
     except UnknownIdentity as exc:
@@ -1044,7 +1065,11 @@ async def create_erasure(
         action=AuditAction.PERSON_ERASURE_REQUESTED,
         target_type="person_erasure",
         target_id=erasure.id,
-        details={"external_user_ids": ids, "former_participants": len(former_ids)},
+        details={
+            "external_user_ids": ids,
+            "former_participants": len(former_ids),
+            "member_client_ids": member_ids,
+        },
     )
     await session.commit()
     return _erasure_detail(erasure)

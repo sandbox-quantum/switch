@@ -64,6 +64,12 @@ def upgrade() -> None:
             server_default=sa.text("'[]'::jsonb"),
             nullable=False,
         ),
+        sa.Column(
+            "member_client_ids",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'[]'::jsonb"),
+            nullable=False,
+        ),
         sa.Column("state", sa.Text(), nullable=False),
         sa.Column("requested_by_user_id", sa.Text(), nullable=True),
         sa.Column(
