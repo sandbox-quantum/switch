@@ -7,6 +7,7 @@ import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-pro
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
 import { silentLogger } from './log';
+import type { LoginCheck, LoginVerdict } from './login-check';
 import type { RestState } from './rest';
 import { type AgentObservation, emptyObservation } from './runtime';
 import {
@@ -15,7 +16,7 @@ import {
   type SealedLoginResponse,
   statusReportSchema,
 } from './schemas';
-import { SealedLogins } from './sealed-logins';
+import { type GivenLogin, SealedLogins } from './sealed-logins';
 import {
   awakeSessions,
   mapAgentProcess,
@@ -479,10 +480,11 @@ describe('ProviderStatuses with logins given to the machine', () => {
     };
   }
 
-  function build(runtime: FakeRuntime) {
+  function build(runtime: FakeRuntime, checkLogin?: LoginCheck) {
     return new ProviderStatuses({
       locator: new FakeLocator(),
       runtime,
+      checkLogin,
       sealed: new SealedLogins({
         client: {
           sealedLogin: async () => {
@@ -546,6 +548,84 @@ describe('ProviderStatuses with logins given to the machine', () => {
       credential: vertexCredentialFixture(),
     });
     expect(runtime.loginProbes.map((login) => login.kind)).toEqual(['vertex']);
+  });
+
+  describe('a given Vertex AI login is checked with Google', () => {
+    function vertexBox(verdicts: LoginVerdict[]) {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer(vertexCredentialFixture(), 5, 'vertex');
+      const asked: GivenLogin[] = [];
+      const statuses = build(runtime, async (login) => {
+        asked.push(login);
+        return verdicts.shift() ?? 'ok';
+      });
+      return { statuses, asked };
+    }
+
+    it('is ok only once Google gives a token', async () => {
+      const { statuses, asked } = vertexBox(['ok']);
+      expect(await statuses.check('claude', { verify: true })).toMatchObject({
+        auth: 'ok',
+        auth_source: 'sealed',
+      });
+      expect(asked.map((login) => login.revision)).toEqual(['5']);
+      expect(await statuses.givenLogin('claude')).toMatchObject({ kind: 'vertex' });
+    });
+
+    it('reports a key Google refuses as rejected, in fixed words only', async () => {
+      const { statuses } = vertexBox(['rejected']);
+      const status = await statuses.check('claude', { verify: true });
+      expect(status).toMatchObject({
+        auth: 'expired',
+        auth_source: 'sealed',
+        reason: 'provider_login_expired',
+        auth_problem: "Google didn't accept this key.",
+      });
+      expect(statuses.loginProblem('claude')).toEqual({
+        code: 'login_rejected',
+        message: "Google didn't accept this key.",
+      });
+      expect(await statuses.givenLogin('claude')).toBeNull();
+      // Nothing of the key in what is reported.
+      const reported = JSON.stringify(status) + JSON.stringify(statuses.loginProblem('claude'));
+      expect(reported).not.toContain('PRIVATE KEY');
+      expect(reported).not.toContain('acme-ai');
+    });
+
+    it('says "not checked", never ok, when Google cannot be reached, and tries again', async () => {
+      const { statuses, asked } = vertexBox(['unreachable', 'ok']);
+      expect(await statuses.check('claude', { verify: true })).toMatchObject({
+        auth: 'unknown',
+        auth_source: 'sealed',
+        auth_problem: "Couldn't reach Google to check this key. It will be checked again.",
+      });
+      expect(statuses.loginProblem('claude')?.code).toBe('login_not_checked');
+      expect(statuses.hasUnchecked()).toBe(true);
+      // Not kept: the next use asks Google again, and only then uses the login.
+      expect(await statuses.givenLogin('claude')).toMatchObject({ kind: 'vertex' });
+      expect(asked).toHaveLength(2);
+    });
+
+    it('keeps an answer for its revision until a forced check asks again', async () => {
+      const { statuses, asked } = vertexBox(['ok', 'rejected']);
+      await statuses.check('claude', { verify: true });
+      expect((await statuses.check('claude')).auth).toBe('ok');
+      expect(asked).toHaveLength(1);
+      expect((await statuses.check('claude', { verify: true })).auth).toBe('expired');
+      expect(asked).toHaveLength(2);
+      // A rejected key stays rejected on an ordinary check, too.
+      expect((await statuses.check('claude')).auth).toBe('expired');
+      expect(asked).toHaveLength(2);
+    });
+
+    it('asks again for a new revision of the login', async () => {
+      const { statuses, asked } = vertexBox(['rejected', 'ok']);
+      await statuses.check('claude', { verify: true });
+      answer = sealedAnswer(vertexCredentialFixture(), 6, 'vertex');
+      expect((await statuses.check('claude')).auth).toBe('ok');
+      expect(asked.map((login) => login.revision)).toEqual(['5', '6']);
+    });
   });
 
   it('refuses a Vertex AI login given for another provider than Claude', async () => {

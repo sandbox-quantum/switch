@@ -11,6 +11,7 @@ import {
 } from '@switch-console/agent-providers-box';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
+import type { LoginCheck, LoginVerdict } from './login-check';
 import { type MeminfoReading, readMeminfo } from './meminfo';
 import type { BoxNote } from './memory-guard';
 import type { RestState } from './rest';
@@ -272,10 +273,17 @@ type ProviderEntry = {
   path: string | null;
   at: number;
   login: GivenLogin | null;
-  problem: LoginProblem | { code: 'provider_login_expired'; message: string } | null;
+  problem:
+    | LoginProblem
+    | { code: 'provider_login_expired' | 'login_rejected' | 'login_not_checked'; message: string }
+    | null;
   /** Which check this is, in the order they started. */
   sequence: number;
 };
+
+/** Fixed words: nothing Google said, and nothing of the key. */
+const LOGIN_REJECTED = "Google didn't accept this key.";
+const LOGIN_NOT_CHECKED = "Couldn't reach Google to check this key. It will be checked again.";
 
 /**
  * Each provider's installation and login, checked at most every ten minutes
@@ -289,6 +297,8 @@ type ProviderEntry = {
 export class ProviderStatuses {
   private readonly entries = new Map<Provider, ProviderEntry>();
   private refreshing: Promise<void> | null = null;
+  /** Each provider's given-login verdict, by revision (`loginVerdict`). */
+  private readonly verdicts = new Map<Provider, { revision: string; verdict: 'ok' | 'rejected' }>();
   private givenDisabled = false;
   private checks = 0;
 
@@ -305,6 +315,12 @@ export class ProviderStatuses {
       verify?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
       /** The logins Switch gives this machine; null when it cannot open any. */
       sealed: SealedLogins | null;
+      /**
+       * A given login's own check with its provider, after the CLI signs in
+       * with it (a Vertex AI login asks Google for a token). Absent: the CLI's
+       * check is the whole check.
+       */
+      checkLogin?: LoginCheck;
       probeCwd: string;
       now: () => number;
       log: Logger;
@@ -381,8 +397,24 @@ export class ProviderStatuses {
     ) {
       const given = await this.fetchGiven(provider);
       if (given && 'login' in given) {
-        const signedIn = await this.probe(provider, located.path, given.login);
+        let signedIn = await this.probe(provider, located.path, given.login);
+        let verdict: LoginVerdict = 'ok';
         if (signedIn?.status === 'authenticated') {
+          verdict = await this.loginVerdict(provider, given.login, options.verify === true);
+          if (verdict === 'unreachable')
+            // Nothing is known about the key: handled as a check that didn't run.
+            signedIn = { status: 'unknown', message: '', models: [] };
+        }
+        if (verdict === 'rejected') {
+          problem = { code: 'login_rejected', message: LOGIN_REJECTED };
+          status = {
+            ...status,
+            auth: 'expired',
+            auth_source: 'sealed',
+            reason: 'provider_login_expired',
+            auth_problem: LOGIN_REJECTED,
+          };
+        } else if (signedIn?.status === 'authenticated') {
           login = given.login;
           // What the machine's own check said is not about the login agents use now.
           status = {
@@ -409,6 +441,9 @@ export class ProviderStatuses {
               ? held.login
               : null;
           login = kept;
+          // A revision Google already accepted stays in use meanwhile.
+          if (verdict === 'unreachable' && !kept)
+            problem = { code: 'login_not_checked', message: LOGIN_NOT_CHECKED };
           status = kept
             ? {
                 ...status,
@@ -422,7 +457,10 @@ export class ProviderStatuses {
                 auth: 'unknown',
                 auth_source: 'sealed',
                 reason: undefined,
-                auth_problem: `The sign-in check of the ${provider} login given to this machine did not run.`,
+                auth_problem:
+                  verdict === 'unreachable'
+                    ? LOGIN_NOT_CHECKED
+                    : `The sign-in check of the ${provider} login given to this machine did not run.`,
               };
         } else {
           problem = {
@@ -510,6 +548,37 @@ export class ProviderStatuses {
   /** Why the login given to the machine for `provider` is not used, as last checked. */
   loginProblem(provider: Provider): ProviderEntry['problem'] {
     return this.entries.get(provider)?.problem ?? null;
+  }
+
+  /**
+   * The given login's own check. A forced check (`verify`, as when a login is
+   * given or rechecked) always asks again; otherwise an ok or rejected answer
+   * for the same revision stands. Unreachable is never kept.
+   */
+  private async loginVerdict(
+    provider: Provider,
+    login: GivenLogin,
+    verify: boolean
+  ): Promise<LoginVerdict> {
+    const check = this.deps.checkLogin;
+    if (!check) return 'ok';
+    const kept = this.verdicts.get(provider);
+    if (!verify && kept && kept.revision === login.revision) return kept.verdict;
+    let verdict: LoginVerdict;
+    try {
+      verdict = await check(login);
+    } catch {
+      verdict = 'unreachable';
+    }
+    if (verdict === 'unreachable') this.verdicts.delete(provider);
+    else this.verdicts.set(provider, { revision: login.revision, verdict });
+    // Only the verdict: never the key, nor anything Google said.
+    if (verdict !== 'ok')
+      this.deps.log.warn('A login given to this machine did not pass its check', {
+        provider,
+        verdict,
+      });
+    return verdict;
   }
 
   /** The test prompt's answer, or null when the provider has none or it could not run. */

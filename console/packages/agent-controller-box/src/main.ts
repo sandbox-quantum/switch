@@ -66,6 +66,7 @@ import {
   readLiveStatus,
 } from './live-status';
 import { createLogger, errorCode, errorMessage, type Logger } from './log';
+import { givenLoginCheck } from './login-check';
 import { loginShellPath, withUserBinDirs } from './login-path';
 import { guardLimitsFromEnv } from './memory-guard';
 import { type OwnerMarkers, openOwnerMarkers, processesOf, signalProven } from './owner-marker';
@@ -817,6 +818,9 @@ async function runCommand(args: string[]): Promise<number> {
         // a test prompt from the controller's user would not show.
         // Nor on a split box, where a provider's CLI never runs as the controller's user.
         verifyLogin: agentRuntime === 'default' && !split ? providerLoginTest(dataDir) : undefined,
+        // Claude's own check can't tell a good Vertex key from a made-up one
+        // here (the box buys Google's tokens itself), so the box asks Google.
+        checkGivenLogin: givenLoginCheck(),
         rechecks,
         refreshPath,
         providerSeed,

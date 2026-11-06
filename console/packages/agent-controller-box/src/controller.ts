@@ -42,6 +42,7 @@ import type { LauncherRunner } from './launcher-runner';
 import { LiveEvents, teeLogger } from './live-events';
 import { gatherLiveExtras, LiveStatusWriter } from './live-status';
 import { errorCode, errorMessage, type Logger } from './log';
+import type { LoginCheck } from './login-check';
 import {
   GuardStatus,
   type GuardLimits,
@@ -224,6 +225,12 @@ export type ControllerDeps = {
   ) => AgentRuntime;
   /** Tries a provider's own login with a test prompt; absent where agents run as other users. */
   verifyLogin?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
+  /**
+   * A login given to the machine, checked with its provider once the CLI signs
+   * in with it: a Vertex AI login asks Google for a token (`login-check.ts`).
+   * Absent: the CLI's sign-in check is the whole check.
+   */
+  checkGivenLogin?: LoginCheck;
   locator: ProviderLocator;
   /**
    * Requests to check every provider again now, served while the controller
@@ -837,6 +844,7 @@ export async function runController(
     sealed,
     probeCwd: deps.dataDir,
     verify: deps.verifyLogin,
+    checkLogin: deps.checkGivenLogin,
     now: deps.now,
     log,
     onChange: () => reporter?.request(),

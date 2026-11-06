@@ -31,6 +31,23 @@ export type TokenPost = (
   form: Record<string, string>
 ) => Promise<{ status: number; body: unknown }>;
 
+/** Google answered the token exchange with a refusal (`status` is its HTTP status). */
+export class TokenRefused extends Error {
+  constructor(readonly status: number) {
+    // Never the body: an error answer can echo what was sent.
+    super(`Google refused the Vertex token exchange (HTTP ${status}).`);
+    this.name = 'TokenRefused';
+  }
+}
+
+/** The token exchange never got an answer from Google (the network or the proxy). */
+export class TokenUnreachable extends Error {
+  constructor() {
+    super('Could not reach Google for a Vertex access token.');
+    this.name = 'TokenUnreachable';
+  }
+}
+
 export type VertexTokensDeps = {
   /** Posts the form to Google; through the box's proxy by default, replaced in tests. */
   post?: TokenPost;
@@ -101,11 +118,16 @@ export class VertexTokens {
             refresh_token: creds.refresh_token,
           };
     const started = this.now();
-    const answer = await this.post(uri, form);
+    let answer: Awaited<ReturnType<TokenPost>>;
+    try {
+      answer = await this.post(uri, form);
+    } catch {
+      // Not the error itself: it says nothing about the login, and is kept out of logs.
+      throw new TokenUnreachable();
+    }
     const body = (answer.body ?? {}) as { access_token?: unknown; expires_in?: unknown };
     if (answer.status !== 200 || typeof body.access_token !== 'string' || !body.access_token)
-      // Never the body: an error answer can echo what was sent.
-      throw new Error(`Google refused the Vertex token exchange (HTTP ${answer.status}).`);
+      throw new TokenRefused(answer.status);
     const lifetimeS =
       typeof body.expires_in === 'number' && body.expires_in > 0
         ? Math.min(body.expires_in, MAX_TOKEN_LIFETIME_S)
