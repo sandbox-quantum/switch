@@ -403,7 +403,58 @@ def _delivery(resource: str, event: str, **data: Any) -> dict[str, Any]:
     return {"resource": resource, "event": event, "data": data}
 
 
+def _tag(person: str, name: str, kind: str = "person") -> str:
+    """A mention as the live API returns it, in `markdown` and `html` alike."""
+    return (
+        f'<spark-mention data-object-type="{kind}" data-object-id="{person}">'
+        f"{name}</spark-mention>"
+    )
+
+
 class TestInbound:
+    @pytest.mark.parametrize(
+        ("markdown", "expected"),
+        [
+            (
+                f"{_tag(BOT_ID, 'Switch Bot')} why did it **fail**?",
+                "why did it **fail**?",
+            ),
+            (
+                f"{_tag(BOT_ID, 'Switch Bot')} ask {_tag('person-2', 'Grace Hopper')}",
+                "ask Grace Hopper",
+            ),
+            (
+                f"{_tag(BOT_ID, 'Switch Bot')} tell {_tag('all-1', 'All', 'groupMention')}",
+                "tell All",
+            ),
+        ],
+    )
+    async def test_mentions_in_markdown_arrive_as_plain_text(
+        self, webex: FakeWebex, markdown: str, expected: str
+    ) -> None:
+        adapter, received = await _started(webex)
+        _serve_message(webex, _message(markdown=markdown, html=f"<p>{markdown}</p>"))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload=_delivery("messages", "created", id="msg-1", personId="person-1"),
+        )
+        [message] = received.messages
+        assert message.content == expected
+
+    async def test_a_command_after_the_bots_mention_is_a_command(
+        self, webex: FakeWebex
+    ) -> None:
+        adapter, received = await _started(webex)
+        markdown = f"{_tag(BOT_ID, 'Switch Bot')} !invite-agent @claude"
+        _serve_message(webex, _message(markdown=markdown, html=f"<p>{markdown}</p>"))
+        await adapter.dispatch_event(
+            envelope_type="messages:created",
+            payload=_delivery("messages", "created", id="msg-1", personId="person-1"),
+        )
+        [command] = received.commands
+        assert command.command == "invite-agent"
+        assert not received.messages
+
     async def test_a_message_reaches_the_room_without_the_bots_mention(
         self, webex: FakeWebex
     ) -> None:

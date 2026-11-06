@@ -631,8 +631,16 @@ class WebexAdapter(PlatformAdapter):
         person said to the room. Other people mentioned keep their names."""
         body = str(message.get("markdown") or message.get("text") or "")
         rich = str(message.get("html") or "")
+
+        def said(match: re.Match[str]) -> str:
+            return "" if match.group("id") == self._bot_id else _mention_name(match)
+
+        # Webex's `markdown` carries mentions as the same tags as its `html`.
+        body, tags = _MENTION_HTML.subn(said, body)
+        if tags:
+            return self.translate_inbound(body.strip())
         bot_names = {
-            html.unescape(re.sub(r"<[^>]+>", "", match.group("name"))).strip()
+            _mention_name(match)
             for match in _MENTION_HTML.finditer(rich)
             if match.group("id") == self._bot_id
         }
@@ -1320,6 +1328,10 @@ class WebexAdapter(PlatformAdapter):
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _mention_name(match: re.Match[str]) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", match.group("name"))).strip()
 
 
 def _can_wait(content: RichContent) -> bool:
