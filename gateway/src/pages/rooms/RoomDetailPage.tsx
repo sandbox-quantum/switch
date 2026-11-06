@@ -539,6 +539,8 @@ function EditableFieldsSection({
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  // Owner or workspace admin: the only ones who may change its access and the
+  // tool detail switch.
   canManage: boolean;
   onSaved: () => void;
 }) {
@@ -546,6 +548,7 @@ function EditableFieldsSection({
   const [description, setDescription] = useState(room.description);
   const [instructions, setInstructions] = useState(room.instructions ?? "");
   const [access, setAccess] = useState<AccessLevel>(toAccessLevel(room));
+  const [showToolIo, setShowToolIo] = useState(room.show_tool_io);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -554,6 +557,7 @@ function EditableFieldsSection({
     setDescription(room.description);
     setInstructions(room.instructions ?? "");
     setAccess(toAccessLevel(room));
+    setShowToolIo(room.show_tool_io);
   }, [room]);
 
   const isBridged = !!room.bridge_id;
@@ -562,7 +566,8 @@ function EditableFieldsSection({
     name !== room.name ||
     description !== room.description ||
     instructions !== (room.instructions ?? "") ||
-    access !== toAccessLevel(room);
+    access !== toAccessLevel(room) ||
+    showToolIo !== room.show_tool_io;
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -575,6 +580,9 @@ function EditableFieldsSection({
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
         ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
+        ...(canManage && showToolIo !== room.show_tool_io
+          ? { show_tool_io: showToolIo }
+          : {}),
       });
       onSaved();
     } catch (err) {
@@ -582,7 +590,17 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
+  }, [
+    room,
+    name,
+    description,
+    instructions,
+    access,
+    showToolIo,
+    isBridged,
+    canManage,
+    onSaved,
+  ]);
 
   return (
     <Stack spacing={2}>
@@ -633,6 +651,22 @@ function EditableFieldsSection({
         optionLabels={ROOM_ACCESS_OPTION_LABELS}
         sx={{ maxWidth: 360 }}
       />
+      <Box>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={showToolIo}
+              onChange={(e) => setShowToolIo(e.target.checked)}
+              disabled={!canManage || saving}
+            />
+          }
+          label="Show tool input and output in chat"
+        />
+        <Typography variant="body2" sx={{ color: "text.secondary" }}>
+          Redacted input and output of finished tool calls, in this room only.
+          Off by default.
+        </Typography>
+      </Box>
       <Box>
         <Button
           variant="contained"

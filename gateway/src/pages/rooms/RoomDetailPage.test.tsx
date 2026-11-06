@@ -79,13 +79,17 @@ const room = {
   can_write: true,
   can_manage: false,
   can_unlink: false,
+  show_tool_io: false,
 } as RoomDetail;
 
 const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;
 
-function viewAs(can: { can_write: boolean; can_manage: boolean; can_unlink: boolean }) {
+function viewAs(
+  can: { can_write: boolean; can_manage: boolean; can_unlink: boolean },
+  overrides: Partial<RoomDetail> = {},
+) {
   vi.mocked(hooks.useRoom).mockReturnValue({
-    data: { ...room, ...can },
+    data: { ...room, ...can, ...overrides },
     loading: false,
     error: null,
     refetch: vi.fn(),
@@ -99,6 +103,12 @@ function accessSelect() {
 
 function nameField() {
   return screen.getByRole<HTMLInputElement>("textbox", { name: "Name" });
+}
+
+const TOOL_SWITCH_LABEL = "Show tool input and output in chat";
+
+function toolSwitch() {
+  return screen.getByRole<HTMLInputElement>("switch", { name: TOOL_SWITCH_LABEL });
 }
 
 function joinEventsSwitch() {
@@ -209,5 +219,42 @@ describe("RoomDetailPage permissions", () => {
 
     expect(screen.getByTestId("resources").dataset.canWrite).toBe("false");
     expect(screen.getByTestId("resources").dataset.canUnlink).toBe("true");
+  });
+
+  it("lets someone who may manage the room turn tool detail on, sending only that", async () => {
+    viewAs({ can_write: true, can_manage: true, can_unlink: false });
+
+    expect(toolSwitch().disabled).toBe(false);
+    expect(toolSwitch().checked).toBe(false);
+
+    fireEvent.click(toolSwitch());
+    expect(toolSwitch().checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
+    const [roomId, sent] = vi.mocked(api.updateRoom).mock.calls[0];
+    expect(roomId).toBe("r1");
+    // Unchanged fields are left out; only the switch goes to the server.
+    expect(JSON.parse(JSON.stringify(sent))).toEqual({ show_tool_io: true });
+  });
+
+  it("does not let someone who may write but not manage change tool detail", async () => {
+    viewAs({ can_write: true, can_manage: false, can_unlink: false });
+
+    expect(toolSwitch().disabled).toBe(true);
+    expect(nameField().disabled).toBe(false);
+
+    fireEvent.change(nameField(), { target: { value: "planning-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
+    const sent = vi.mocked(api.updateRoom).mock.calls[0][1];
+    expect(JSON.parse(JSON.stringify(sent))).toEqual({ name: "planning-2" });
+  });
+
+  it("starts the tool detail switch in the state the room has", () => {
+    viewAs({ can_write: true, can_manage: true, can_unlink: false }, { show_tool_io: true });
+
+    expect(toolSwitch().checked).toBe(true);
   });
 });

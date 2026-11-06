@@ -214,6 +214,9 @@ export interface RoomDetail extends RoomSummary {
   // Agent ids configured to receive room_join events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
+  // Whether chat shows the redacted input and output of finished tool calls
+  // in this room. Off by default; only the owner or a workspace admin changes it.
+  show_tool_io: boolean;
 }
 
 export interface CreateRoomInput {
@@ -247,6 +250,7 @@ export interface UpdateRoomInput {
   admin_mode?: boolean;
   read_visibility?: "public" | "private";
   write_visibility?: "public" | "private";
+  show_tool_io?: boolean;
 }
 
 /** A failed gateway call that keeps what the server said: the status, for
