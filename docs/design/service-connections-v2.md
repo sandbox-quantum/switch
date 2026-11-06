@@ -42,6 +42,8 @@ auth:
     #   include_granted_scopes)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
+    # revocation_by_bearer: true  # revoke with the access token as bearer and
+    #                             #   no body (Dropbox), not an RFC 7009 form
   identity:                   # the token's account; dotted paths in its JSON
     method: GET               # or POST, with an optional fixed JSON body;
                               #   a POST without one sends no body at all

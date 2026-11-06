@@ -640,6 +640,35 @@ def test_every_shipped_oauth_entry_names_its_identity_method():
             assert identity.method in ("GET", "POST")
 
 
+def test_takes_revocation_by_bearer_with_a_revocation_endpoint(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    remove_access: Remove Switch under Connected apps in Example.\n",
+            "    revocation_discovered: true\n    revocation_by_bearer: true\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None and oauth.revocation_by_bearer is True
+
+
+def test_rejects_revocation_by_bearer_without_a_revocation_endpoint(
+    catalog_copy,
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    remove_access: Remove Switch under Connected apps in Example.\n",
+            "    remove_access: Remove Switch under Connected apps in Example.\n"
+            "    revocation_by_bearer: true\n",
+        ),
+    )
+    with pytest.raises(
+        CatalogError, match="(?s)example is invalid.*revocation_by_bearer is for"
+    ):
+        load_catalog(catalog_copy)
+
+
 def test_takes_dropboxs_offline_parameter(catalog_copy):
     _write_example(
         catalog_copy,

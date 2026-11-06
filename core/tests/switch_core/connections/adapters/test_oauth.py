@@ -58,6 +58,12 @@ STATIC = OAUTH_ENTRY.replace(
     "    registration: dynamic\n",
     "    registration: static\n    client_settings: EXAMPLE\n",
 )
+BEARER = STATIC.replace(
+    "    client_settings: EXAMPLE\n",
+    "    client_settings: EXAMPLE\n"
+    "    revocation_discovered: true\n"
+    "    revocation_by_bearer: true\n",
+)
 STORE = ServiceConnectionStore()
 REDIRECT = "http://127.0.0.1:43123/callback"
 
@@ -467,6 +473,58 @@ class TestDisconnect:
         [revoked] = vendor.revoked
         assert revoked["token"] == secret.values["refresh_token"]
         assert secret.values["refresh_token"] not in vendor.live_refresh
+
+    async def test_revokes_by_bearer_where_the_vendor_takes_it_so(self, vendor) -> None:
+        vendor.metadata["revocation_endpoint"] = f"{ISSUER}/2/auth/token/revoke"
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.revoke_connection(secret)
+        assert vendor.bearer_revoked == [(secret.access_token, b"")]
+        assert vendor.revoked == []
+        assert vendor.live_refresh == {}
+
+    async def test_renews_an_expired_access_token_before_revoking_by_bearer(
+        self, vendor
+    ) -> None:
+        vendor.metadata["revocation_endpoint"] = f"{ISSUER}/2/auth/token/revoke"
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        expired = ConnectionSecret({**secret.values, "expires_at": time.time() - 5})
+        await adapter.revoke_connection(expired)
+        [(bearer, _)] = vendor.bearer_revoked
+        assert bearer != secret.access_token
+        assert vendor.token_requests[-1]["grant_type"] == "refresh_token"
+
+    async def test_renews_and_retries_once_when_the_bearer_is_refused(
+        self, vendor
+    ) -> None:
+        vendor.metadata["revocation_endpoint"] = f"{ISSUER}/2/auth/token/revoke"
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        vendor.live_access.pop(secret.access_token or "")
+        await adapter.revoke_connection(secret)
+        assert [bearer for bearer, _ in vendor.bearer_revoked][0] == secret.access_token
+        assert len(vendor.bearer_revoked) == 2
+        assert vendor.live_refresh == {}
+
+    async def test_a_sign_in_the_vendor_no_longer_renews_has_nothing_to_revoke(
+        self, vendor
+    ) -> None:
+        vendor.metadata["revocation_endpoint"] = f"{ISSUER}/2/auth/token/revoke"
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        vendor.live_refresh.clear()
+        expired = ConnectionSecret({**secret.values, "expires_at": time.time() - 5})
+        await adapter.revoke_connection(expired)
+        assert vendor.bearer_revoked == []
+
+    async def test_says_so_when_revocation_by_bearer_fails(self, vendor) -> None:
+        vendor.metadata["revocation_endpoint"] = f"{ISSUER}/2/auth/token/revoke"
+        adapter, _ = _adapter(vendor, BEARER)
+        secret = await _sign_in(adapter, vendor)
+        vendor.fail[f"{ISSUER}/2/auth/token/revoke"] = (400, {"error": "bad"})
+        with pytest.raises(ServiceAdapterError, match="refused to revoke"):
+            await adapter.revoke_connection(secret)
 
     async def test_says_so_where_the_advertised_endpoint_is_missing(
         self, vendor

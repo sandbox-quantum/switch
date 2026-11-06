@@ -86,6 +86,12 @@ class OAuthClient(BaseModel):
     themselves, and what the sign-in does until they do, said whenever Switch
     drops one it cannot revoke.
 
+    `revocation_by_bearer`: the revocation endpoint takes the sign-in's
+    access token as its bearer and no body, as Dropbox's
+    `auth/token/revoke` does, rather than an RFC 7009 form. That ends the
+    access token, its refresh token and every access token the refresh
+    token gave out.
+
     `revocation_ends_grant`: revoking any of an account's sign-ins through
     the client ends all of them, as Google's does. A reconnect to the same
     account through the same client then does not revoke the sign-in it
@@ -125,6 +131,7 @@ class OAuthClient(BaseModel):
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
+    revocation_by_bearer: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
@@ -162,6 +169,12 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
+            )
+        if self.revocation_by_bearer and (
+            self.revocation_url is None and not self.revocation_discovered
+        ):
+            raise ValueError(
+                "revocation_by_bearer is for a vendor Switch revokes sign-ins at"
             )
         if self.revocation_ends_grant and (
             self.revocation_url is None and not self.revocation_discovered
