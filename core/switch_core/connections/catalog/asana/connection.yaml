@@ -42,7 +42,7 @@ auth:
     # https://developers.asana.com/docs/mcp-tools-reference
     mcp_tool: get_user
     account_id: data.gid
-    label: data.name
+    label: data.email
 # Asana's access tokens live 60 minutes (documented, not measured).
 token: { kind: pass_through, max_lifetime: 3600 }
 mcp:

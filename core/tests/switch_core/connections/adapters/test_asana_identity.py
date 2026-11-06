@@ -70,7 +70,7 @@ async def test_asana_identity_uses_mcp_and_rejects_missing_account(
     def get_user(user: str | None = None) -> ToolResult:
         calls.append(user)
         # A membership list does not identify which workspace was selected.
-        data = {"name": "Synthetic account", "workspaces": [{"gid": "other"}]}
+        data = {"email": "synthetic@example.test", "workspaces": [{"gid": "other"}]}
         if account is not None:
             data["gid"] = account
         return ToolResult(content=[], structured_content={"data": data})
@@ -95,7 +95,7 @@ async def test_asana_identity_uses_mcp_and_rejects_missing_account(
             identity = await adapter.identify("synthetic-token")
             assert (identity.account_id, identity.label) == (
                 account,
-                "Synthetic account",
+                "synthetic@example.test",
             )
     assert calls == [None]
     assert transports == [

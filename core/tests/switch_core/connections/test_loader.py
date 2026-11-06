@@ -277,7 +277,7 @@ def test_the_shipped_asana_entry_signs_in_as_the_docs_say_it_must():
     assert (
         definition.auth.identity.account_id,
         definition.auth.identity.label,
-    ) == ("data.gid", "data.name")
+    ) == ("data.gid", "data.email")
 
 
 RESTRICTED_DRIVE = {
