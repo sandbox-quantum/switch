@@ -28,6 +28,7 @@ PLACEHOLDERS = {
 
 def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
+        "zendesk",
         "github",
         "airtable",
         "atlassian",

@@ -1776,3 +1776,21 @@ class TestReplacedClient:
         assert (await standing(broker, connection.service)).client_replaced(
             connection
         ) is False
+
+
+async def test_zendesk_stays_coming_soon_not_connectable_or_grantable(
+    broker: ServiceBroker,
+) -> None:
+    state = await standing(broker, "zendesk")
+    assert state.connectable is False
+    assert state.unavailable is not None
+    assert state.unavailable.code == "coming_soon"
+    with pytest.raises(ServiceError):
+        await broker.check_key(
+            "zendesk",
+            {
+                "subdomain": "example",
+                "email": "support@example.test",
+                "api_token": "SYNTHETIC-ZENDESK-TOKEN",
+            },
+        )

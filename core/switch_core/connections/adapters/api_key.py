@@ -150,7 +150,17 @@ class ApiKeyAdapter:
             json=identity.body,
         )
         try:
-            response = await self._http.send(request, follow_redirects=False)
+            if identity.basic_auth is None:
+                response = await self._http.send(request, follow_redirects=False)
+            else:
+                response = await self._http.send(
+                    request,
+                    follow_redirects=False,
+                    auth=httpx.BasicAuth(
+                        render(identity.basic_auth.username, values),
+                        render(identity.basic_auth.password, values),
+                    ),
+                )
         except httpx.HTTPError:
             raise ServiceUnavailableError(
                 f"{self._name} could not be reached to check the key. Please try again."
@@ -196,6 +206,12 @@ class ApiKeyAdapter:
                 found = str(found)
             if not isinstance(found, str) or not found:
                 raise InvalidKeyError(f"{self._name} did not name the key's account.")
+            if identity.account_id_pattern is not None and not matches_pattern(
+                identity.account_id_pattern, found
+            ):
+                raise InvalidKeyError(
+                    f"{self._name} did not name an authenticated account."
+                )
             account_id = found
         label: Any = (
             None if identity.label is None else _path_value(body, identity.label)

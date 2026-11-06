@@ -16,6 +16,7 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14.
 
 | File | Brand | Source | License / terms | Colour |
 |---|---|---|---|---|
+| `zendesk.svg` | Zendesk | [Simple Icons 16.33.0, `zendesk`](https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/zendesk.svg), fetched 2026-11-06 | CC0-1.0; brand guidelines https://brandland.zendesk.com | `#03363D`, white in dark theme |
 | `github.svg` | GitHub | [Simple Icons](https://simpleicons.org) 16.33.0, `github` | CC0-1.0 ([Simple Icons disclaimer](https://github.com/simple-icons/simple-icons/blob/develop/DISCLAIMER.md)); brand guidelines https://github.com/logos | theme foreground |
 | `atlassian.svg` | Jira, for the Atlassian connection (Jira only) | Simple Icons 16.33.0, `jira` | CC0-1.0; guidelines https://atlassian.design/foundations/logos/ | `#0052CC`, white in dark theme |
 | `bitbucket.svg` | Bitbucket | Simple Icons 16.33.0, `bitbucket` | CC0-1.0; guidelines https://atlassian.design/foundations/logos/ | `#0052CC`, white in dark theme |

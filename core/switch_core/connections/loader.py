@@ -332,6 +332,12 @@ class ApiKeyField(BaseModel):
         return self
 
 
+class ApiKeyBasicAuth(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    username: str = Field(min_length=1, max_length=1024)
+    password: str = Field(min_length=1, max_length=1024)
+
+
 class ApiKeyIdentity(BaseModel):
     """The call that checks a pasted key and says whose it is: `method` to
     `url`, with `headers` (and a JSON `body`, for a POST), each a template of
@@ -347,12 +353,24 @@ class ApiKeyIdentity(BaseModel):
     )
     body: dict[str, object] | None = None
     account_id: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
+    account_id_pattern: str | None = Field(default=None, min_length=3, max_length=256)
+    basic_auth: ApiKeyBasicAuth | None = None
     label: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
 
     @model_validator(mode="after")
     def _body_for_post(self) -> "ApiKeyIdentity":
         if (self.body is not None) != (self.method == "POST"):
             raise ValueError("a POST identity call sends a body, and only one does")
+        if self.basic_auth is not None and any(
+            name.lower() == "authorization" for name in self.headers
+        ):
+            raise ValueError(
+                "an identity call uses Basic auth or an Authorization header, not both"
+            )
+        if self.account_id_pattern is not None:
+            if self.account_id is None:
+                raise ValueError("account_id_pattern requires account_id")
+            _pattern_adapter(self.account_id_pattern)
         return self
 
 
@@ -375,7 +393,15 @@ class ApiKeySignIn(BaseModel):
         check_templates(
             self,
             urls=[self.identity.url],
-            values=list(self.identity.headers.values()),
+            values=list(self.identity.headers.values())
+            + (
+                []
+                if self.identity.basic_auth is None
+                else [
+                    self.identity.basic_auth.username,
+                    self.identity.basic_auth.password,
+                ]
+            ),
             where="the identity call",
         )
         return self
