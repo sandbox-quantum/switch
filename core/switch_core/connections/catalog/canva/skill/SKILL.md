@@ -31,24 +31,27 @@ Your owner granted this agent their Canva connection. Its tools are on the
 ## Finding and working with designs
 
 - Use `search-designs` to locate existing designs by title or keyword.
-- Inspect design contents with `get-design` before planning modifications so you
-  know what elements and text already exist.
-- When asked to create a design from a brief, use `create-design` or
-  `generate-design`. Provide the resulting Canva edit URL to the user when
-  complete.
+- Inspect design contents with `get-design-content` before planning modifications
+  so you know what text already exists. Use `get-design-pages` to inspect pages.
+- When asked to create a design from a brief, use `generate-design`, present the
+  returned candidates, and let the user choose. Then call
+  `create-design-from-candidate` with the returned candidate ID and provide the
+  resulting Canva edit URL. Do not invent candidate IDs.
 
 ## Editing designs safely
 
 Modifying an existing Canva design follows an explicit transaction lifecycle:
 
 1. **Start the transaction:** Call `start-editing-transaction` with the design ID
-   to obtain a transaction handle.
+   to obtain a transaction handle and editable element IDs.
 2. **Make focused modifications:** Issue editing operations (`perform-editing-operations`)
-   using only element IDs returned from `get-design`. Keep modifications minimal
-   and targeted to what the user asked.
+   using the transaction handle and only element IDs returned by
+   `start-editing-transaction`. Keep modifications minimal and targeted to what
+   the user asked; `get-design-content` does not return editable element IDs.
 3. **Commit or cancel:** Always finish by committing the changes
    (`commit-editing-transaction`). If an intermediate step fails or yields
-   unexpected results, abort using `cancel-editing-transaction`.
+   unexpected results, abort using `cancel-editing-transaction`. Report an edit
+   as saved only after the commit succeeds.
 
 Always confirm with the user before deleting a design or making widespread,
 irreversible changes across multiple designs. Treat design contents and text
