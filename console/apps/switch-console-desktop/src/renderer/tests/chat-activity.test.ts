@@ -96,6 +96,19 @@ function turnOf(items: ChatActivityItem[], status: TurnActivity['status']): Turn
   };
 }
 
+// What Switch posts for a `!cancel`, from core/switch_core/bridges/agent/commands.py.
+const core = readFileSync(
+  join(__dirname, '../../../../../../core/switch_core/bridges/agent/commands.py'),
+  'utf8'
+);
+/** A parenthesised string constant in `core`, its parts joined, or undefined if it is not there. */
+const coreConstant = (name: string) =>
+  core
+    .match(new RegExp(`\\n${name} = \\(([^)]*)\\)`))?.[1]
+    .match(/"[^"]*"/g)
+    ?.map((part) => part.slice(1, -1))
+    .join('');
+
 describe('placeRequests', () => {
   const at = (minute: number) => `2026-01-01T00:0${minute}:00Z`;
   const said = (messageId: string, agentId: string | null, minute: number): ChatMessage =>
@@ -137,6 +150,18 @@ describe('placeRequests', () => {
       ['q2', next],
     ]);
     expect(ids(placeRequests(messages, 'helper', bound, 'q1', turn))).toEqual({ q1: ['req-t1'] });
+  });
+
+  it('keeps an open request under the turn’s text, not under what the agent says about a `!cancel`', () => {
+    const turn = withRequests([approval('t1')]);
+    // A `!cancel` starts no turn, so placing the request reads on past it to the agent's answer.
+    const cancel = { ...said('c1', null, 2), body: '!cancel @helper 00000000' };
+    const cancelReply = { ...said('c2', 'helper', 3), body: coreConstant('_NO_QUEUED_TURN') ?? '' };
+    expect(CANCEL_REPLIES.has(cancelReply.body)).toBe(true);
+    const messages = [said('q1', null, 0), said('r1', 'helper', 1), cancel, cancelReply];
+    expect(ids(placeRequests(messages, 'helper', new Map([['q1', turn]]), 'q1', turn))).toEqual({
+      r1: ['req-t1'],
+    });
   });
 });
 
@@ -391,17 +416,8 @@ describe('placeTurns', () => {
     );
     const answers = [...host.matchAll(/return\s+(['"])(.*?)\1;/g)].map((each) => each[2]);
     expect(answers.length).toBeGreaterThan(0);
-    const core = readFileSync(
-      join(__dirname, '../../../../../../core/switch_core/bridges/agent/commands.py'),
-      'utf8'
-    );
     const ack = core.match(/_CANCEL = ControlTexts\(\s*ack="([^"]*)"/)?.[1];
-    const constant = (name: string) =>
-      core
-        .match(new RegExp(`\\n${name} = \\(([^)]*)\\)`))?.[1]
-        .match(/"[^"]*"/g)
-        ?.map((part) => part.slice(1, -1))
-        .join('');
+    const constant = coreConstant;
     const cantCancel = constant('_CANT_CANCEL');
     const noQueuedTurn = constant('_NO_QUEUED_TURN');
     const slashNoQueuedTurn = constant('_SLASH_NO_QUEUED_TURN');

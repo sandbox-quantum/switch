@@ -117,14 +117,18 @@ function firstStepAt(turn: TurnActivity): number | null {
   );
 }
 
-/** One of the agent's own messages in the room, not a host notice or a control acknowledgement. */
+/**
+ * One of the agent's own messages in the room, not a host notice, a control
+ * acknowledgement or what the agent says about a `!cancel`.
+ */
 function isAgentReply(message: ChatMessage, agentId: string): boolean {
   return (
     message.sender.kind === 'agent' &&
     message.sender.agentId === agentId &&
     !isSessionStartingNotice(message) &&
     !turnEndNotice(message) &&
-    !isControlAck(message)
+    !isControlAck(message) &&
+    !CANCEL_REPLIES.has(message.body.trim())
   );
 }
 
@@ -211,8 +215,7 @@ export function placeTurns(
 ): Map<string, TurnActivity[]> {
   const placed = new Map<string, TurnActivity[]>();
   let previous: number | null = null;
-  const shown = (each: ChatMessage) =>
-    isAgentReply(each, agentId) && !CANCEL_REPLIES.has(each.body.trim());
+  const shown = (each: ChatMessage) => isAgentReply(each, agentId);
   messages.forEach((message, at) => {
     const turn = bound.get(message.messageId);
     if (!turn) return;
