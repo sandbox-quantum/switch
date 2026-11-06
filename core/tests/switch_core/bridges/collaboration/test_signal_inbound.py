@@ -8,7 +8,9 @@ the stream side is fed `async for` lines, so no live daemon is needed.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -20,6 +22,7 @@ import pytest
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 from switch_core.bridges.collaboration.signal import inbound as sse_inbound
 from switch_core.bridges.collaboration.signal.adapter import (
+    REPLAY_WINDOW_SECONDS,
     SignalAdapter,
     SignalConnectionConfig,
 )
@@ -94,7 +97,22 @@ async def _drive(
     adapter._on_message = None
     adapter._on_command = None
     await adapter.start(on_message, on_command, on_join, on_join, on_join)
-    adapter._sse_task = None  # this test feeds events by hand, not over SSE
+    # This test feeds events by hand, not over SSE: the stream task the
+    # start opened goes to the real daemon and races its own backlog into
+    # these lists, so it is cancelled before the hand-feed.
+    task = adapter._sse_task
+    adapter._sse_task = None
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    # The fixture timestamps are capture-relative, not wall clock, so the
+    # relay-freshness window is pointed just after this event's own: the
+    # window gets its own dedicated test rather than racing every relay.
+    timestamp = event.envelope.get("timestamp")
+    adapter._relay_started_at = (
+        int(timestamp) / 1000 + 1 if isinstance(timestamp, int) else 0.0
+    )
     await adapter._dispatch(event)
     return messages, commands
 
@@ -463,6 +481,85 @@ async def test_a_quiet_pod_opens_no_stream() -> None:
 
 async def _none() -> None:
     return None
+
+
+# ── The replay-freshness window: first connect must not flood the room ──────
+
+
+async def _dispatch_at(
+    adapter: SignalAdapter, event: sse_inbound.InboundEvent, started_at: float
+) -> tuple[list[InboundMessage], list[InboundCommand]]:
+    """The same hand-feed as `_drive`, with the relay start pinned to
+    `started_at` — the only thing the window check depends on."""
+    messages: list[InboundMessage] = []
+    commands: list[InboundCommand] = []
+
+    async def on_message(message: InboundMessage) -> None:
+        messages.append(message)
+
+    async def on_command(command: InboundCommand) -> None:
+        commands.append(command)
+
+    adapter._on_message = on_message
+    adapter._on_command = on_command
+    adapter._relay_started_at = started_at
+    await adapter._dispatch(event)
+    return messages, commands
+
+
+def _event_at(
+    path: str, *, at_ts_ms: int, sse_id: str | None = None
+) -> sse_inbound.InboundEvent:
+    """A fixture event re-stamped to a chosen envelope timestamp."""
+    event = _event(path)
+    event.envelope["timestamp"] = at_ts_ms
+    if sse_id:
+        event.sse_id = sse_id
+    return event
+
+
+async def test_a_recent_replayed_event_is_still_relayed() -> None:
+    # An event an hour before the process started is within the window: a
+    # restart after a short gap must not lose it.
+    adapter, _ = _adapter()
+    event = _event("sse_dm.json")
+    started_at = int(event.envelope["timestamp"]) / 1000 + 3600
+    messages, _ = await _dispatch_at(adapter, event, started_at)
+    assert len(messages) == 1
+    assert messages[0].content == "probe dm in"
+
+
+async def test_a_first_connect_drops_the_backlog_and_keeps_the_recent() -> None:
+    # The daemon keeps a thousand events; a connection started days after
+    # them would, without the window, post the whole backlog into rooms and
+    # wake agents on stale conversations. It drops the old, keeps the new —
+    # and the drop decision is per event, from the event's own timestamp,
+    # so nothing about which events were seen is stored.
+    adapter, _ = _adapter()
+    old_ts = 1_000_000
+    started_at = old_ts / 1000 + REPLAY_WINDOW_SECONDS + 3600
+    old_event = _event_at("sse_dm.json", at_ts_ms=old_ts, sse_id="285-1")
+    new_ts = int(started_at * 1000) - 60_000  # a minute before start: inside
+    new_event = _event_at("sse_dm.json", at_ts_ms=new_ts, sse_id="285-2")
+
+    dropped, _ = await _dispatch_at(adapter, old_event, started_at)
+    assert dropped == []
+
+    kept, _ = await _dispatch_at(adapter, new_event, started_at)
+    assert len(kept) == 1
+    assert kept[0].content == "probe dm in"
+
+
+async def test_a_command_older_than_the_window_is_not_rerun() -> None:
+    # The window protects `!commands` too: a replayed `!restart-world` from a
+    # week ago is exactly the kind of stale write a restart must not run.
+    adapter, _ = _adapter()
+    old_ts = 1_000_000
+    started_at = old_ts / 1000 + REPLAY_WINDOW_SECONDS + 3600
+    event = _event_at("sse_dm.json", at_ts_ms=old_ts, sse_id="285-3")
+    event.envelope["dataMessage"]["message"] = "!help now"
+    _, commands = await _dispatch_at(adapter, event, started_at)
+    assert commands == []
 
 
 # ── Two pods, one replay: the ref is computed, not remembered ────────────────

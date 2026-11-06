@@ -18,6 +18,7 @@ import asyncio
 import base64
 import logging
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
@@ -58,6 +59,14 @@ _ACCOUNT_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 # protocol limit (100 MB); refusing above it early keeps the reason with the
 # operator rather than as a 100 MB upload that dies at the Signal server.
 MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
+
+# How far back a reconnected bridge relays. A fresh start or a long outage
+# makes the daemon replay up to a thousand kept events, some days old; those
+# are not still worth waking an agent over, so anything the phone said before
+# this window is dropped at the relay, not the source. The window is relative
+# to when the process started, so no state is stored — a restart simply
+# re-measures it.
+REPLAY_WINDOW_SECONDS = 24 * 60 * 60
 
 
 class SignalConnectionConfig(BridgeConnectionConfig):
@@ -135,6 +144,9 @@ class SignalAdapter(PlatformAdapter):
         self._sse_task: asyncio.Task[None] | None = None
         self._http: httpx.AsyncClient | None = None
         self._last_event_id: str | None = None
+        # Set in `start`; the wall-clock moment this process began relaying,
+        # the reference for the replay-freshness window. In memory only.
+        self._relay_started_at: float | None = None
 
     @classmethod
     def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
@@ -199,6 +211,10 @@ class SignalAdapter(PlatformAdapter):
         if not self._listening:
             logger.info("Signal bridge is quiet on this pod; no event stream opened")
             return
+        # The relay-freshness reference: only what the phone said since this
+        # moment is delivered, so the daemon's replay backlog — up to a
+        # thousand events, some days old — is skipped, not posted.
+        self._relay_started_at = time.time()
         self._sse_task = asyncio.create_task(self._run_sse_stream())
 
     async def _run_sse_stream(self) -> None:
@@ -258,6 +274,19 @@ class SignalAdapter(PlatformAdapter):
         """One received event to the room's side of the bridge."""
         if not sse_inbound.message_event(event):
             return
+        # A replayed event the phone sent before this process began is not
+        # still worth waking agents over: skip it. The check is against the
+        # event's own envelope timestamp and the start moment, so it costs no
+        # stored state, and it also trims the backlog a long outage rebuilt.
+        sent_at = event.envelope.get("timestamp")
+        if isinstance(sent_at, int) and self._relay_started_at is not None:
+            if sent_at / 1000 < self._relay_started_at - REPLAY_WINDOW_SECONDS:
+                logger.debug(
+                    "Skipping replayed Signal event from %s — older than the "
+                    "relay window",
+                    sent_at,
+                )
+                return
         data = event.envelope.get("dataMessage") or {}
         text = data.get("message") or ""
         markdown = sse_inbound.inbound_markdown(
