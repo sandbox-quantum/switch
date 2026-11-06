@@ -36,7 +36,6 @@ export const gooseAcp: AcpProviderHooks = {
     'GOOSE_MODEL',
     'GOOSE_FAST_MODEL',
     'GOOSE_PATH_ROOT',
-    'GOOSE_DISABLE_KEYRING',
     'GOOSE_ADDITIONAL_CONFIG_FILES',
     'XDG_CONFIG_HOME',
     'XDG_DATA_HOME',
@@ -87,14 +86,14 @@ export const gooseAcp: AcpProviderHooks = {
       (option) => option.kind === 'allow_once' || option.kind === 'reject_once'
     );
     const { toolCall, options } = request;
-    if (toolCall.kind === 'other' && toolCall._meta == null) {
-      const prefix = /^(shell|write|edit) · /.exec(toolCall.title ?? '')?.[1];
-      if (prefix) toolCall.kind = prefix === 'shell' ? 'execute' : 'edit';
+    const identity = toolIdentity(toolCall);
+    if (toolCall.kind === 'other' && identity?.extensionName === 'developer') {
+      if (identity.toolName === 'shell') toolCall.kind = 'execute';
+      if (identity.toolName === 'write' || identity.toolName === 'edit') toolCall.kind = 'edit';
     }
-    const name = toolIdentity(toolCall)?.toolName;
-    const todo =
-      name === 'todo__todo_write' || (name === undefined && toolCall.title === 'todo: todo write');
-    if (!todo) return undefined;
+    // The permission hook cannot look up earlier tool metadata; titles are not identity.
+    if (identity?.extensionName !== 'todo' || identity.toolName !== 'todo__todo_write')
+      return undefined;
     const once = options.find((option) => option.kind === 'allow_once');
     if (!once) return undefined;
     return Promise.resolve({ outcome: { outcome: 'selected', optionId: once.optionId } });

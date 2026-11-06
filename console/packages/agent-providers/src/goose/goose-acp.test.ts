@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { AcpToolCall } from '../acp/protocol';
+import type { RuntimeMode } from '../adapter';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
 
@@ -57,6 +58,7 @@ it('launches native stdio ACP with a safe initial mode and no interactive keyrin
     env: { ...env, GOOSE_MODE: 'approve', GOOSE_DISABLE_KEYRING: '1' },
   });
   expect(env.GOOSE_MODE).toBe('auto');
+  expect(gooseAcp.inheritEnv).not.toContain('GOOSE_DISABLE_KEYRING');
   expect(gooseAcp.loginCommand).toBe('goose configure');
   expect(gooseAcp.inheritEnv).toEqual(
     expect.arrayContaining([
@@ -64,7 +66,6 @@ it('launches native stdio ACP with a safe initial mode and no interactive keyrin
       'GOOSE_MODEL',
       'GOOSE_FAST_MODEL',
       'GOOSE_PATH_ROOT',
-      'GOOSE_DISABLE_KEYRING',
       'GOOSE_ADDITIONAL_CONFIG_FILES',
       'OLLAMA_HOST',
     ])
@@ -175,7 +176,7 @@ it('identifies MCP servers and activity from Goose metadata rather than display 
 it.each([
   ['todo__todo_write', 'todo: todo write', true, true],
   ['todo__todo_write', undefined, true, true],
-  [undefined, 'todo: todo write', true, true],
+  [undefined, 'todo: todo write', true, false],
   ['shell', 'shell', true, false],
   ['write', 'write', true, false],
   ['edit', 'edit', true, false],
@@ -205,7 +206,18 @@ it.each([
       const toolCall: AcpToolCall = {
         toolCallId: 'tool',
         ...(title === undefined ? {} : { title }),
-        ...(toolName === undefined ? {} : { _meta: { goose: { toolCall: { toolName } } } }),
+        ...(toolName === undefined
+          ? {}
+          : {
+              _meta: {
+                goose: {
+                  toolCall: {
+                    toolName,
+                    extensionName: toolName === 'todo__todo_write' ? 'todo' : 'developer',
+                  },
+                },
+              },
+            }),
       };
       server.send({
         id: 99,
@@ -358,43 +370,138 @@ it.each([
   }
 );
 
-it.each([
-  ['shell · cmd', 'command_execution_approval'],
-  ['write · path', 'file_change_approval'],
-  ['edit · path', 'file_change_approval'],
-] as const)(
-  'classifies permission with null metadata and kind other for %s',
-  async (title, requestType) => {
-    const adapter = createGooseAdapter();
-    const events: ProviderRuntimeEvent[] = [];
-    adapter.subscribe((event) => events.push(event));
-    try {
-      await adapter.startSession({
-        sessionId: 's',
-        cwd: process.cwd(),
-        env: {},
-        runtimeMode: 'approval-required',
-        mcpServers: {},
-        connectorMcpServers: [],
+// Goose 1.43.0 permission requests as observed on 2026-11-07: a bare title, kind
+// `other` and no `_meta`; the preceding tool_call carries `shell · ls` and the metadata.
+const observedShellPermission: AcpToolCall = {
+  toolCallId: '18c12b3d-a84d-4ec0-abea-2a825443808d',
+  kind: 'other',
+  status: 'pending',
+  title: 'shell',
+  rawInput: { command: 'ls' },
+};
+const observedWritePermission: AcpToolCall = {
+  toolCallId: '8abce35d-21e2-45fc-81ee-e7553946ac3f',
+  kind: 'other',
+  status: 'pending',
+  title: 'write',
+  rawInput: { content: 'hi', path: 'created.txt' },
+};
+
+async function openGoosePermission(
+  runtimeMode: RuntimeMode,
+  toolCall: Record<string, unknown>,
+  preceding?: Record<string, unknown>
+) {
+  const adapter = createGooseAdapter();
+  const events: ProviderRuntimeEvent[] = [];
+  adapter.subscribe((event) => events.push(event));
+  await adapter.startSession({
+    sessionId: 's',
+    cwd: process.cwd(),
+    env: {},
+    runtimeMode,
+    mcpServers: {},
+    connectorMcpServers: [],
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'Run the requested tool.' });
+  const server = servers.at(-1)!;
+  if (preceding)
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call', ...preceding },
+    });
+  server.send({
+    id: 99,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall,
+      options: [
+        { optionId: 'allow_always', kind: 'allow_always', name: 'allow_always' },
+        { optionId: 'allow_once', kind: 'allow_once', name: 'allow_once' },
+        { optionId: 'reject_once', kind: 'reject_once', name: 'reject_once' },
+        { optionId: 'reject_always', kind: 'reject_always', name: 'reject_always' },
+      ],
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  return { adapter, events, server };
+}
+
+// Only shell/write/todo identities and shapes are captured; edit and external
+// extension payloads below are synthetic adversarial cases with the same shape.
+it.each(['approval-required', 'auto-accept-edits'] as const)(
+  'keeps metadata-less requests manual in %s despite earlier tool metadata',
+  async (runtimeMode) => {
+    for (const [title, toolName, extensionName] of [
+      ['shell', 'shell', 'developer'],
+      ['write', 'write', 'developer'],
+      ['edit', 'edit', 'developer'],
+      ['todo: todo write', 'todo__todo_write', 'todo'],
+      ['write', 'write', 'external'],
+      ['edit', 'edit', 'external'],
+      ['todo: todo write', 'todo__todo_write', 'external'],
+    ]) {
+      const permission = {
+        ...(toolName === 'shell' ? observedShellPermission : observedWritePermission),
+        title,
+        _meta: null,
+      };
+      const { adapter, events, server } = await openGoosePermission(runtimeMode, permission, {
+        toolCallId: permission.toolCallId,
+        title,
+        _meta: { goose: { toolCall: { toolName, extensionName } } },
       });
-      await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'Run the requested tool.' });
-      servers[0]!.send({
-        id: 99,
-        method: 'session/request_permission',
-        params: {
-          sessionId: 'native',
-          toolCall: { toolCallId: 'tool', kind: 'other', title, _meta: null },
-          options: [
-            { optionId: 'allow', kind: 'allow_once', name: 'Allow once' },
-            { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
-          ],
-        },
+      try {
+        expect(events.find((event) => event.type === 'request.opened')).toMatchObject({
+          requestType: 'tool_approval',
+          title,
+        });
+        expect(server.received.find((message) => message.id === 99)).toBeUndefined();
+      } finally {
+        await adapter.stopAll();
+      }
+    }
+  }
+);
+
+it.each(['approval-required', 'auto-accept-edits'] as const)(
+  'checks extension and tool identity on the request in %s',
+  async (runtimeMode) => {
+    for (const [toolName, extensionName, requestType] of [
+      ['shell', 'developer', 'command_execution_approval'],
+      ['write', 'developer', 'file_change_approval'],
+      ['edit', 'developer', 'file_change_approval'],
+      ['todo__todo_write', 'todo', undefined],
+      ['write', 'external', 'tool_approval'],
+      ['edit', 'external', 'tool_approval'],
+      ['todo__todo_write', 'external', 'tool_approval'],
+    ] as const) {
+      const title = toolName === 'todo__todo_write' ? 'todo: todo write' : toolName;
+      const { adapter, events, server } = await openGoosePermission(runtimeMode, {
+        ...observedWritePermission,
+        title,
+        _meta: { goose: { toolCall: { toolName, extensionName } } },
       });
-      expect(events.find((event) => event.type === 'request.opened')).toMatchObject({
-        requestType,
-      });
-    } finally {
-      await adapter.stopAll();
+      try {
+        const autoAllow =
+          requestType === undefined ||
+          (runtimeMode === 'auto-accept-edits' && requestType === 'file_change_approval');
+        if (autoAllow) {
+          expect(events.filter((event) => event.type === 'request.opened')).toEqual([]);
+          expect(server.received.find((message) => message.id === 99)?.result).toEqual({
+            outcome: { outcome: 'selected', optionId: 'allow_once' },
+          });
+        } else {
+          expect(events.find((event) => event.type === 'request.opened')).toMatchObject({
+            requestType,
+            title,
+          });
+          expect(server.received.find((message) => message.id === 99)).toBeUndefined();
+        }
+      } finally {
+        await adapter.stopAll();
+      }
     }
   }
 );

@@ -139,10 +139,14 @@ validated. Readiness uses Goose 1.43.0's read-only
 creates a session or sends a prompt. Older versions without that endpoint
 cannot report readiness through this hook.
 
-Goose's `todo__todo_write` internal planning-note approvals are automatically
-allowed once (also recognized by the exact title `todo: todo write` when tool
-metadata is absent). Other tools retain the session mode's approval behavior;
-in `approval-required` mode they still require approval.
+Goose's internal planning-note approvals are automatically allowed once only when
+that permission request includes `extensionName: todo` and `toolName: todo__todo_write`
+in its Goose metadata. Developer permissions are classified only when their own
+metadata identifies the `developer` extension and the `shell`, `write` or `edit` tool.
+Goose 1.43.0's captured requests omit that metadata, even though an earlier tool
+update includes it. The current hooks cannot correlate that earlier identity within
+a session, so these requests stay manual in `approval-required` and
+`auto-accept-edits`, including todo. Display titles never grant permission.
 
 The session host sets `GOOSE_DISABLE_KEYRING=1` to avoid keyring prompts or
 hangs on headless machines. Supply model credentials through the host's
@@ -151,7 +155,8 @@ stored only in the OS keyring are unavailable. To configure file-backed credenti
 run `GOOSE_DISABLE_KEYRING=1 goose configure` on the execution host.
 `GOOSE_PROVIDER`, `GOOSE_MODEL`, `GOOSE_FAST_MODEL`,
 `GOOSE_PATH_ROOT`, `GOOSE_ADDITIONAL_CONFIG_FILES`, the XDG configuration/data/state
-directories and `OLLAMA_HOST` are inherited. Goose's initial mode is forced to
+directories and `OLLAMA_HOST` are inherited. `GOOSE_DISABLE_KEYRING` is forced to `1`,
+not inherited. Goose's initial mode is forced to
 `approve`, then every new or resumed session explicitly receives
 `session/set_mode`: `approval-required` → `approve`, `auto-accept-edits` and
 `auto` → `smart_approve`, `full-access` → `auto`. Goose describes `smart_approve`
