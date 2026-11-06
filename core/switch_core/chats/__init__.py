@@ -17,6 +17,13 @@ CHAT_OPERATION_ID_KEY = "chat_operation_id"
 
 
 def is_console_chat(room: Room) -> bool:
-    """Whether Switch Console created the room as a chat. Its people are the
-    members it added, not accounts on a messaging app."""
+    """Whether Switch Console created the room as a chat."""
     return CHAT_OPERATION_ID_KEY in (room.metadata_ or {})
+
+
+def people_are_members(room: Room) -> bool:
+    """Whether the room's people are the members Switch Console put in it: a
+    Console chat on no messaging app. A Console chat made a channel on one
+    (a Slack direct chat) counts the accounts in that channel, as any other
+    bridged room does."""
+    return is_console_chat(room) and room.bridge_id is None

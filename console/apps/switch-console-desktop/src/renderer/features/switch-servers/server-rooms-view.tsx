@@ -107,10 +107,11 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
 
   const toCard = (room: RemoteRoomSummary): RoomCardData => {
     const card = roomCard(room, { id: viewerId, listedIds });
-    // A server from before room lists counted a chat's members leaves it
-    // unknown; the chat list knows them.
+    // A chat's people are its members, which the chat list knows: for a chat
+    // made a channel on an app, whose count the server takes from the app, and
+    // on a server from before room lists counted a chat's members.
     const chat =
-      room.isConsoleChat && card.peopleCount === null
+      room.isConsoleChat && (card.peopleCount === null || room.bridgeType !== null)
         ? (chatsStore.chats.get(room.id) ?? chatsStore.archived.get(room.id))
         : undefined;
     return chat && chat.memberCount > 0 ? { ...card, peopleCount: chat.memberCount } : card;
