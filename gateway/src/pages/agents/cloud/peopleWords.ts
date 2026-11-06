@@ -66,6 +66,56 @@ export function setupChecklist(
   return lines.every((line) => line.done) ? null : lines;
 }
 
+/**
+ * The provider each agent type runs, from Core's provider list
+ * (`providers/registry.py`): an agent's `known_agent_type`, which the agents
+ * list already carries. Only Claude Code's type differs from its provider id.
+ */
+const PROVIDER_OF_TYPE: Readonly<Record<string, string>> = {
+  "claude-code": "claude",
+  codex: "codex",
+  opencode: "opencode",
+  antigravity: "antigravity",
+};
+
+/** The provider an agent runs, or null for a type Switch web doesn't know. */
+export function agentProvider(knownAgentType: string | null | undefined): string | null {
+  return knownAgentType && Object.hasOwn(PROVIDER_OF_TYPE, knownAgentType)
+    ? PROVIDER_OF_TYPE[knownAgentType]!
+    : null;
+}
+
+export interface LoginTick {
+  /** Whether "AI login set" is ticked. */
+  set: boolean;
+  /** The first provider an agent uses with no login ready: what Give login opens. */
+  missing: string | null;
+}
+
+/**
+ * The checklist's "AI login set" (PM and tech lead, both apps). With no
+ * agents, any ready login ticks it. With agents, every provider they use
+ * must be ready, and Give login opens the first that isn't. An agent on a
+ * provider the box takes no login for, or of a type not known here, is left
+ * out: no login would help it. If that leaves nothing, any ready login ticks.
+ *
+ * `agentProviders` is each of the box's agents' provider (null when unknown),
+ * in the agents list's order; `ready` the providers whose login the box has
+ * confirmed; `takes` the providers the box takes a login for.
+ */
+export function loginTick(
+  agentProviders: readonly (string | null)[],
+  ready: ReadonlySet<string>,
+  takes: ReadonlySet<string>,
+): LoginTick {
+  const needed = [
+    ...new Set(agentProviders.filter((p): p is string => p !== null && takes.has(p))),
+  ];
+  if (needed.length === 0) return { set: ready.size > 0, missing: null };
+  const missing = needed.find((provider) => !ready.has(provider)) ?? null;
+  return { set: missing === null, missing };
+}
+
 /** What a status line's next step does: its second part becomes a link that
  * goes there ("Can't reply right now · Check your AI login" opens the AI logins). */
 export type NextAction = "give_login";

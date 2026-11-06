@@ -12,7 +12,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type LoginStatus,
   listCloudLogins,
@@ -26,7 +26,7 @@ import type { CloudMachine } from "../../../data/hostedCloud";
 import { fetchProviders, type ProviderInfo } from "../../../data/management";
 import { cloudProviders } from "../cloudAgent";
 import CloudLoginDialog from "./CloudLoginDialog";
-import { EMPTY } from "./peopleWords";
+import { EMPTY, type LoginTick, loginTick } from "./peopleWords";
 
 /** Words for how a withdraw went: fixed here. */
 export const WITHDRAW_TEXT = {
@@ -59,6 +59,8 @@ export default function CloudLoginsSection({
   onCloudChanged,
   onLoginSet,
   onHurry,
+  agentProviders = [],
+  ask = null,
 }: {
   /** The box's controller, from hosted-machines' `controller_id`. */
   controllerId: string;
@@ -66,8 +68,13 @@ export default function CloudLoginsSection({
   machine: CloudMachine;
   /** Read the box again, after the dialog wakes it. */
   onCloudChanged: () => void;
-  /** Whether any login is set (confirmed by the box), or null when it couldn't be read. */
-  onLoginSet?: (set: boolean | null) => void;
+  /** The checklist's "AI login set" (`loginTick`), or null when the logins couldn't be read. */
+  onLoginSet?: (tick: LoginTick | null) => void;
+  /** The provider each of the box's agents runs (null when unknown), for `loginTick`. */
+  agentProviders?: readonly (string | null)[];
+  /** Open the login form for this provider: the checklist's Give login. A new
+   * object each press, so pressing again reopens it. */
+  ask?: { provider: string } | null;
   /** Passed to the login dialog: read the box faster while it waits. */
   onHurry?: () => () => void;
 }) {
@@ -91,8 +98,28 @@ export default function CloudLoginsSection({
     }
   }, [controllerId]);
 
-  const loginSet = statuses === null ? null : [...statuses.values()].includes("set");
-  useEffect(() => onLoginSet?.(loginSet), [loginSet, onLoginSet]);
+  // Worked out here, where the box's logins are read; the checklist only shows
+  // it. Keyed on the providers' text, so a parent's fresh array each render
+  // doesn't report again and again.
+  const agentsKey = JSON.stringify(agentProviders);
+  const tick = useMemo(
+    () =>
+      statuses === null
+        ? null
+        : loginTick(
+            JSON.parse(agentsKey) as (string | null)[],
+            new Set([...statuses].filter(([, status]) => status === "set").map(([id]) => id)),
+            new Set(providers.map((provider) => provider.id)),
+          ),
+    [agentsKey, statuses, providers],
+  );
+  useEffect(() => onLoginSet?.(tick), [tick, onLoginSet]);
+
+  // The checklist's Give login: the form for the first provider missing.
+  useEffect(() => {
+    const provider = ask && providers.find((p) => p.id === ask.provider);
+    if (provider) setGiving(provider);
+  }, [ask, providers]);
 
   // While a login waits for the box, read again until the box says how it went.
   const anyWaiting = statuses !== null && [...statuses.values()].includes("waiting");

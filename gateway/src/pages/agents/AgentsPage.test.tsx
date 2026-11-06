@@ -30,7 +30,25 @@ vi.mock("./RegisterAgentDialog", () => ({ default: () => null }));
 // It's drawn as an empty section, so a status line's link has somewhere to go.
 vi.mock("./cloud/CloudLoginsSection", () => ({
   AI_LOGINS_ID: "cloud-ai-logins",
-  default: () => <section id="cloud-ai-logins" tabIndex={-1} aria-label="AI logins on your cloud" />,
+  default: ({
+    agentProviders,
+    ask,
+    onLoginSet,
+  }: {
+    agentProviders?: (string | null)[];
+    ask?: { provider: string } | null;
+    onLoginSet?: (tick: { set: boolean; missing: string | null }) => void;
+  }) => (
+    <section
+      id="cloud-ai-logins"
+      tabIndex={-1}
+      aria-label="AI logins on your cloud"
+      data-providers={JSON.stringify(agentProviders ?? [])}
+      data-ask={ask?.provider ?? ""}
+    >
+      <button onClick={() => onLoginSet?.({ set: false, missing: "claude" })}>report Claude missing</button>
+    </section>
+  ),
 }));
 // The cloud delete has tests of its own; here it only shows which agent it opened for.
 vi.mock("./cloud/CloudDeleteDialog", () => ({
@@ -247,6 +265,29 @@ describe("AgentsPage with hosted agents v2", () => {
     });
     fireEvent.click(within(cell).getByRole("button", { name: "Check your AI login" }));
     expect(document.activeElement).toBe(screen.getByRole("region", { name: "AI logins on your cloud" }));
+  });
+
+  it("hands the logins each box agent's provider, and Give login asks for the one missing", async () => {
+    box = { ...resting, state: "ready", sleeping: false };
+    vi.mocked(hooks.useAgents).mockReturnValue({
+      data: [
+        { ...agent, known_agent_type: "claude-code" },
+        { ...agent, id: "a2", name: "coder", known_agent_type: "codex" },
+        { ...agent, id: "a3", name: "<b>local</b>", known_agent_type: "claude-code" },
+      ] as AgentSummary[],
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    const logins = await screen.findByRole("region", { name: "AI logins on your cloud" });
+    // Only the agents on the box (a1, a2), in the box's order.
+    expect(logins.getAttribute("data-providers")).toBe(JSON.stringify(["claude", "codex"]));
+    fireEvent.click(screen.getByRole("button", { name: "report Claude missing" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Give login" }));
+    expect(logins.getAttribute("data-ask")).toBe("claude");
+    expect(document.activeElement).toBe(logins);
   });
 
   it("while the flag is still loading, shows and asks nothing", async () => {

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { CloudMachine } from "../../../data/hostedCloud";
-import { EMPTY, RESTING_EXPLANATION, SETUP_WORDS, setupChecklist } from "./peopleWords";
+import {
+  EMPTY,
+  RESTING_EXPLANATION,
+  SETUP_WORDS,
+  agentProvider,
+  loginTick,
+  setupChecklist,
+} from "./peopleWords";
 
 function box(overrides: Partial<CloudMachine> = {}): CloudMachine {
   return {
@@ -81,5 +88,52 @@ describe("setupChecklist", () => {
       text: "Starting…",
       note: "Usually ready in about two minutes.",
     });
+  });
+});
+
+describe("agentProvider", () => {
+  it("maps each agent type to its provider, as Core's provider list does", () => {
+    expect(agentProvider("claude-code")).toBe("claude");
+    expect(agentProvider("codex")).toBe("codex");
+    expect(agentProvider("opencode")).toBe("opencode");
+    expect(agentProvider("antigravity")).toBe("antigravity");
+    expect(agentProvider("something-new")).toBeNull();
+    expect(agentProvider("toString")).toBeNull();
+    expect(agentProvider(null)).toBeNull();
+    expect(agentProvider(undefined)).toBeNull();
+  });
+});
+
+describe("loginTick", () => {
+  const takes = new Set(["claude", "codex"]);
+
+  it("with no agents, any ready login ticks it", () => {
+    expect(loginTick([], new Set(["codex"]), takes)).toEqual({ set: true, missing: null });
+    expect(loginTick([], new Set(), takes)).toEqual({ set: false, missing: null });
+  });
+
+  it("with agents, ticks once every provider they use is ready", () => {
+    expect(loginTick(["claude", "codex", "claude"], new Set(["claude", "codex"]), takes)).toEqual({
+      set: true,
+      missing: null,
+    });
+  });
+
+  it("with one provider missing, isn't ticked and Give login opens that one", () => {
+    // A Codex login alone doesn't help a Claude agent.
+    expect(loginTick(["claude"], new Set(["codex"]), takes)).toEqual({ set: false, missing: "claude" });
+    // The first agent's missing provider, in the list's order.
+    expect(loginTick(["claude", "codex"], new Set(), takes)).toEqual({ set: false, missing: "claude" });
+    expect(loginTick(["claude", "codex"], new Set(["claude"]), takes)).toEqual({ set: false, missing: "codex" });
+  });
+
+  it("leaves out an agent on an unknown provider, or one the box takes no login for", () => {
+    expect(loginTick([null, "opencode", "claude"], new Set(["claude"]), takes)).toEqual({
+      set: true,
+      missing: null,
+    });
+    // Nothing left: any ready login ticks it, as with no agents.
+    expect(loginTick([null, "opencode"], new Set(["codex"]), takes)).toEqual({ set: true, missing: null });
+    expect(loginTick([null], new Set(), takes)).toEqual({ set: false, missing: null });
   });
 });

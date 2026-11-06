@@ -34,7 +34,7 @@ import { type CloudPresentation, cloudStatusFor } from "./cloud/cloudAgentState"
 import { boxShowsStopped } from "./cloud/yourCloud";
 import CloudDeleteDialog from "./cloud/CloudDeleteDialog";
 import CloudLoginsSection, { AI_LOGINS_ID } from "./cloud/CloudLoginsSection";
-import type { NextAction } from "./cloud/peopleWords";
+import { type LoginTick, type NextAction, agentProvider } from "./cloud/peopleWords";
 import StateFade from "./cloud/StateFade";
 import YourCloudPanel from "./cloud/YourCloudPanel";
 import CloudAgentDialog from "./CloudAgentDialog";
@@ -65,10 +65,17 @@ export default function AgentsPage() {
   // same read as the panel (`available`).
   const [cloudOpen, setCloudOpen] = useState(false);
   const cloudAgents = hostedV2 && cloud.available;
-  // Whether the box has confirmed an AI login, from the logins section; a box
-  // with no controller yet can't have one.
-  const [loginRead, setLoginRead] = useState<boolean | null>(null);
-  const loginSet = cloud.machine?.controller_id ? loginRead : false;
+  // "AI login set", from the logins section (`loginTick`); a box with no
+  // controller yet can't have a login.
+  const [loginRead, setLoginRead] = useState<LoginTick | null>(null);
+  const loginSet = cloud.machine?.controller_id ? (loginRead?.set ?? null) : false;
+  // The provider each of the box's agents runs, from the agents list already read.
+  const agentProviders = useMemo(() => {
+    const byId = new Map((agents ?? []).map((agent) => [agent.id, agent]));
+    return (cloud.machine?.agents ?? []).map((id) => agentProvider(byId.get(id)?.known_agent_type));
+  }, [agents, cloud.machine?.agents]);
+  // The checklist's Give login opens the first missing provider's form.
+  const [askLogin, setAskLogin] = useState<{ provider: string } | null>(null);
   const [ownerFilter, setOwnerFilter] = useState<string>("");
   const [search, setSearch] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("");
@@ -370,7 +377,10 @@ export default function AgentsPage() {
           machine={cloud.machine}
           onChanged={cloud.refresh}
           loginSet={loginSet}
-          onGiveLogin={() => goToStep("give_login")}
+          onGiveLogin={() => {
+            goToStep("give_login");
+            if (loginRead?.missing) setAskLogin({ provider: loginRead.missing });
+          }}
           onAddAgent={cloudAgents ? () => setCloudOpen(true) : undefined}
         />
       )}
@@ -381,6 +391,8 @@ export default function AgentsPage() {
           onCloudChanged={cloud.refresh}
           onLoginSet={setLoginRead}
           onHurry={cloud.hurry}
+          agentProviders={agentProviders}
+          ask={askLogin}
         />
       )}
 
