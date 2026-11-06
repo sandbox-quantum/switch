@@ -1368,6 +1368,9 @@ class MessageRouter:
             (
                 await session.scalars(
                     select(AgentEventRow.agent_id).where(
+                        AgentEventRow.agent_id.in_(
+                            [recipient.agent.id for recipient in recipients]
+                        ),
                         AgentEventRow.room_id == reads.room_id,
                         AgentEventRow.message_key == key,
                         AgentEventRow.type == "message",
