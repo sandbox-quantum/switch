@@ -40,8 +40,14 @@ export interface CloudMachine {
   agents: string[];
   controller_id: string | null;
   backend?: "vm" | "box";
+  /** Memory: used of total (`mem_total_bytes - mem_free_bytes`). */
   room: { used_bytes: number; total_bytes: number } | null;
   awake: { running: number; max: number } | null;
+  /**
+   * The box's disk. `scope` says which disk was measured: only `"workspace"`
+   * is the agents' workspace volume; `"unknown"` or none (an older box) isn't.
+   */
+  disk?: { total_bytes: number; available_bytes: number; scope?: "workspace" | "unknown" } | null;
   ai_calls_today: { used: number; cap: number; capped: boolean; resets_at: string } | null;
 }
 
@@ -95,6 +101,23 @@ function readRoom(value: unknown): CloudMachine["room"] {
     : null;
 }
 
+const DISK_SCOPES = new Set<string>(["workspace", "unknown"]);
+
+function readDisk(value: unknown): CloudMachine["disk"] {
+  if (!isObject(value)) return null;
+  const { total_bytes: total, available_bytes: available, scope } = value;
+  if (typeof total !== "number" || total < 0 || typeof available !== "number" || available < 0)
+    return null;
+  return {
+    total_bytes: total,
+    available_bytes: available,
+    // Only the agreed values: anything else reads as not said.
+    ...(typeof scope === "string" && DISK_SCOPES.has(scope)
+      ? { scope: scope as "workspace" | "unknown" }
+      : {}),
+  };
+}
+
 function readAwake(value: unknown): CloudMachine["awake"] {
   if (!isObject(value)) return null;
   return isCount(value.running) && isCount(value.max)
@@ -137,6 +160,7 @@ export function readMachine(value: unknown): CloudMachine | null {
     backend: value.backend === "vm" || value.backend === "box" ? value.backend : undefined,
     room: readRoom(value.room),
     awake: readAwake(value.awake),
+    disk: readDisk(value.disk),
     ai_calls_today: readCalls(value.ai_calls_today),
   };
 }

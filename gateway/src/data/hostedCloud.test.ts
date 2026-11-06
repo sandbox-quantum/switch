@@ -57,6 +57,22 @@ describe("readMachine", () => {
     expect(readMachine(null)).toBeNull();
   });
 
+  it("reads the disk with only an agreed scope", () => {
+    const disk = { total_bytes: 100, available_bytes: 40 };
+    expect(readMachine({ ...summary, disk: { ...disk, scope: "workspace" } })?.disk).toEqual({
+      ...disk,
+      scope: "workspace",
+    });
+    expect(readMachine({ ...summary, disk: { ...disk, scope: "unknown" } })?.disk?.scope).toBe(
+      "unknown",
+    );
+    // Anything else reads as not said, so the disk isn't shown.
+    expect(readMachine({ ...summary, disk: { ...disk, scope: "system" } })?.disk).toEqual(disk);
+    expect(readMachine({ ...summary, disk })?.disk).toEqual(disk);
+    expect(readMachine({ ...summary, disk: null })?.disk).toBeNull();
+    expect(readMachine({ ...summary, disk: { total_bytes: -1, available_bytes: 0 } })?.disk).toBeNull();
+  });
+
   it("reads an out-of-shape figure as missing, not the whole box", () => {
     const machine = readMachine({
       ...summary,

@@ -15,6 +15,7 @@ import {
 import { pluralize } from "../../../theme/hootFormat";
 import { EMPTY, RESTING_EXPLANATION, type SetupLine, setupChecklist } from "./peopleWords";
 import StateFade from "./StateFade";
+import CapacityList from "./CapacityList";
 import { machineProblem, startBlocked, yourCloudView } from "./yourCloud";
 
 /** Read by screen readers, not shown (as MUI's `visuallyHidden`, which is not a direct dependency here). */
@@ -141,17 +142,7 @@ export default function YourCloudPanel({
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
               {cloud.heading}
             </Typography>
-            {cloud.room && (
-              // No bar: "Room to work" and the awake count already say it (PM review).
-              <Typography variant="body2" color="text.secondary">
-                Room to work: {cloud.room.label}
-              </Typography>
-            )}
-            {cloud.awake && (
-              <Typography variant="body2" color="text.secondary">
-                {cloud.awake.label}
-              </Typography>
-            )}
+            <CapacityList machine={machine} />
             {cloud.aiCalls && (
               <Typography
                 variant="body2"

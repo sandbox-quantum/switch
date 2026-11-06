@@ -10,6 +10,8 @@ vi.mock("../../../data/hostedCloud", async (importOriginal) => {
   return { ...actual, ensureCloudMachine: vi.fn(), startCloudMachine: vi.fn() };
 });
 
+const GB = 1024 ** 3;
+
 function box(overrides: Partial<CloudMachine> = {}): CloudMachine {
   return {
     machine_id: "m-1",
@@ -42,8 +44,9 @@ describe("YourCloudPanel", () => {
     expect(screen.getByText("Your cloud")).toBeTruthy();
     expect(screen.getByText("2 agents")).toBeTruthy();
     expect(screen.getByText("Ready")).toBeTruthy();
-    expect(screen.getByText("Room to work: Plenty of room")).toBeTruthy();
-    expect(screen.getByText("2 of 15 awake")).toBeTruthy();
+    expect(screen.getByText("Agents awake: 2 of 15")).toBeTruthy();
+    expect(screen.getByText("Disk: not available")).toBeTruthy();
+    expect(screen.queryByText(/Room to work/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
   });
 
@@ -80,10 +83,34 @@ describe("YourCloudPanel", () => {
     expect(hosted.startCloudMachine).not.toHaveBeenCalled();
   });
 
-  it("shows no unlabelled bar under Ready", () => {
-    render(<YourCloudPanel machine={box()} onChanged={vi.fn()} />);
-    expect(screen.getByText("Room to work: Plenty of room")).toBeTruthy();
-    expect(screen.queryByRole("progressbar")).toBeNull();
+  it("labels every bar with its figures", () => {
+    render(
+      <YourCloudPanel
+        machine={box({
+          room: { used_bytes: 2 * GB, total_bytes: 5 * GB },
+          disk: { total_bytes: 15 * GB, available_bytes: 12.9 * GB, scope: "workspace" },
+        })}
+        onChanged={vi.fn()}
+      />,
+    );
+    const bars = screen.getAllByRole("progressbar");
+    expect(bars.map((bar) => bar.getAttribute("aria-label"))).toEqual([
+      "Agents awake: 2 of 15",
+      "Memory: 2.0 GB of 5.0 GB",
+      "Disk: 2.1 GB of 15.0 GB",
+    ]);
+    for (const bar of bars) expect(bar.getAttribute("aria-valuetext")).toBe(bar.getAttribute("aria-label"));
+  });
+
+  it("warns at 80% and says the bar is full at 95%, in the PM's words", () => {
+    render(
+      <YourCloudPanel
+        machine={box({ awake: { running: 12, max: 12 }, room: { used_bytes: 8, total_bytes: 10 } })}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Full right now. New work waits until a place frees up.")).toBeTruthy();
+    expect(screen.getByText("Nearly full. Agents may slow down.")).toBeTruthy();
   });
 
   it("wakes a resting box with no agents", async () => {
