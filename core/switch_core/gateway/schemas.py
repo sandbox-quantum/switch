@@ -601,8 +601,22 @@ class RegisterAgentResponse(BaseModel):
 # ── API Keys ────────────────────────────────────────────────────────────────
 
 
+API_KEY_DEFAULT_LIFETIME_DAYS = 90
+API_KEY_MAX_LIFETIME_DAYS = 365
+
+
 class CreateApiKeyRequest(BaseModel):
     label: str
+    expires_in_days: (
+        Annotated[int, Field(ge=1, le=API_KEY_MAX_LIFETIME_DAYS)] | Literal["never"]
+    ) = Field(
+        default=API_KEY_DEFAULT_LIFETIME_DAYS,
+        description=(
+            "Days until the key stops working, at most "
+            f"{API_KEY_MAX_LIFETIME_DAYS}, or `never` for a key that does not "
+            "expire."
+        ),
+    )
 
 
 class ApiKeyDetail(BaseModel):
@@ -611,6 +625,7 @@ class ApiKeyDetail(BaseModel):
     type: str
     key_prefix: str
     created_at: str
+    expires_at: datetime | None
 
 
 class CreateApiKeyResponse(BaseModel):
@@ -618,6 +633,7 @@ class CreateApiKeyResponse(BaseModel):
     label: str
     key: str
     created_at: str
+    expires_at: datetime | None
 
 
 class RevealKeyResponse(BaseModel):

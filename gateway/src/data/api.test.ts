@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   addBridgeToTeam,
+  createApiKey,
   createUser,
   errorText,
   fetchSession,
@@ -238,5 +239,25 @@ describe("signOutEverywhere", () => {
   it("throws when the server refuses", async () => {
     respond(401, { detail: "Session ended" });
     await expect(signOutEverywhere()).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("createApiKey", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([[90], [365], ["never" as const]])("sends the chosen lifetime %s", async (lifetime) => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ id: "k", label: "l", key: "s", created_at: "c", expires_at: null }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createApiKey("l", lifetime);
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ label: "l", expires_in_days: lifetime });
   });
 });

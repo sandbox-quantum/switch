@@ -483,6 +483,15 @@ class ApiKey(TenantScoped, Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # NULL never expires: keys from before expiry existed, agent keys,
+    # the bootstrap key, controller credentials, and a key its owner asked
+    # to keep.
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    def expired(self, now: datetime) -> bool:
+        return self.expires_at is not None and self.expires_at <= now
 
 
 class ProviderConnection(TenantScoped, Base):

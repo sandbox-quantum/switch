@@ -764,6 +764,8 @@ export interface ApiKeyDetail {
   type: string;
   key_prefix: string;
   created_at: string;
+  /** `null` for a key that never expires. */
+  expires_at: string | null;
 }
 
 export interface CreateApiKeyResult {
@@ -771,18 +773,25 @@ export interface CreateApiKeyResult {
   label: string;
   key: string;
   created_at: string;
+  expires_at: string | null;
 }
+
+/** Days until a new key stops working, or `"never"`. The server allows 1–365. */
+export type ApiKeyLifetime = number | "never";
 
 export async function fetchApiKeys(): Promise<ApiKeyDetail[] | null> {
   return fetchJson<ApiKeyDetail[]>("/api-keys");
 }
 
-export async function createApiKey(label: string): Promise<CreateApiKeyResult> {
+export async function createApiKey(
+  label: string,
+  expiresInDays: ApiKeyLifetime,
+): Promise<CreateApiKeyResult> {
   const res = await fetch(`${BASE}/api-keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, expires_in_days: expiresInDays }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);

@@ -167,6 +167,8 @@ async def _resolve_registration_user_id(
     key = await api_key_store.get_by_hash(session, token_hash)
     if key is None or key.type not in REGISTRATION_KEY_TYPES:
         raise HTTPException(status_code=401, detail="Invalid registration token")
+    if key.expired(datetime.now(UTC)):
+        raise HTTPException(status_code=401, detail="Registration token has expired")
     # Which credential this was is worth keeping: a deployment bootstrapping
     # its first agents through the shared key and a user minting a key of
     # their own are different moments in adoption, and the key type is the

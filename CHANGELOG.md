@@ -91,6 +91,14 @@ version of their own to them without also giving them a release of their own.
   however active they are. A session still ends after 24 hours without a
   refresh. Sessions from before this release count from when their cookie
   was issued.
+- **Registration keys expire.** A registration key made under API keys
+  worked until someone deleted it. A new key now expires after 90 days by
+  default; when creating it you can choose 1 year instead, or **Never**,
+  which warns that the key keeps working if it leaks. `POST /api-keys`
+  takes `expires_in_days` (1 to 365, or `"never"`; 90 when left out), the
+  key list shows each key's expiry or **No expiry**, and an expired key is
+  refused with 401 wherever keys are accepted. Keys made before this release,
+  agents' own keys and the deployment's bootstrap key do not expire.
 - **Messages with files attached are checked by Switch Trust.** A message with
   a file used to skip the check entirely, typed text included, both from a
   person on a chat platform and from an agent sending files. Now the text is
