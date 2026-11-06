@@ -38,6 +38,8 @@ describeConformance('cline', {
     'user-input': "Cline's ACP mode gives the model no question tool (Cline 3.0.74, 2026-11-05).",
   },
   mcpServers: { echo: echoMcpServerSpec() },
+  // `CLINE_TEST_MODEL=nvidia/nemotron-3.5-lightning:free`, say; Cline's own default otherwise.
+  ...(process.env.CLINE_TEST_MODEL ? { model: { id: process.env.CLINE_TEST_MODEL } } : {}),
   env: Object.fromEntries(
     KEYS.filter((key) => process.env[key]).map((key) => [key, process.env[key]!])
   ),
