@@ -125,6 +125,40 @@ it('clips long input strings and long output, keeping the output’s head and ta
   expect(tool!.truncated).toBe(true);
   expect((tool!.input as { content: string }).content).toHaveLength(TOOL_INPUT_STRING_LIMIT + 1);
   expect(tool!.output).toBe(`${'h'.repeat(TOOL_OUTPUT_HEAD)}\n…\n${'t'.repeat(TOOL_OUTPUT_TAIL)}`);
+  // The list and the RPC carry no parts.
+  expect(Object.keys(tool!).sort()).toEqual(
+    ['exitCode', 'input', 'itemId', 'output', 'toolName', 'truncated', 'type'].sort()
+  );
+});
+
+it('reads one call alone with its kept parts and the buffer’s own flags', () => {
+  const buffer = new ToolDetailBuffer();
+  // A tool's own `\n…\n` in a whole output is not taken for a cut.
+  const ingest = (id: string, payload: Record<string, unknown>, text: string) =>
+    buffer.ingest(itemEvent('item.completed', 't', { id, payload, text }), 'epoch');
+  const read = (id: string) => buffer.detail('epoch', 't', JSON.stringify(['t', id]));
+  ingest('whole', { items: Array.from({ length: 100 }, () => 1) }, 'a\n…\nb');
+  expect(read('whole')).toMatchObject({
+    inputClipped: false,
+    head: 'a\n…\nb',
+    tail: '',
+    outputClipped: false,
+    hasOutput: true,
+    output: 'a\n…\nb',
+    truncated: false,
+  });
+  const output = `${'h'.repeat(TOOL_OUTPUT_HEAD)}${'m'.repeat(10)}${'t'.repeat(TOOL_OUTPUT_TAIL)}`;
+  ingest('cut', { items: Array.from({ length: 101 }, () => 1) }, output);
+  expect(read('cut')).toMatchObject({
+    inputClipped: true,
+    head: 'h'.repeat(TOOL_OUTPUT_HEAD),
+    tail: 't'.repeat(TOOL_OUTPUT_TAIL),
+    outputClipped: true,
+    hasOutput: true,
+    truncated: true,
+  });
+  buffer.ingest(itemEvent('item.started', 't', { id: 'none' }), 'epoch');
+  expect(read('none')).toMatchObject({ hasOutput: false, output: null, head: '', tail: '' });
 });
 
 it('drops everything on a new epoch and the oldest turns past its limit', () => {
@@ -154,4 +188,49 @@ it('keeps an answer bounded, newest turns first, listing what is left over bare'
   expect(turns.at(-1)!.turnId).toBe('turn-2');
   expect(turns.at(-1)!.tools[0]!.output).toBe(big);
   expect(turns.flatMap((turn) => turn.tools).some((tool) => tool.output === null)).toBe(true);
+});
+
+it('reads one call alone as the list gives it, and whole where the list would leave it bare', () => {
+  const buffer = new ToolDetailBuffer();
+  const big = 'o'.repeat(TOOL_OUTPUT_HEAD + TOOL_OUTPUT_TAIL);
+  for (let call = 0; call < 150; call += 1)
+    buffer.ingest(
+      itemEvent('item.completed', 'turn', { id: `c${call}`, payload: { n: call }, text: big }),
+      'epoch'
+    );
+  const listed = buffer.list('epoch', ['turn'])[0]!.tools;
+  const first = listed[0]!;
+  const last = listed.at(-1)!;
+  // Under the answer limit: the same detail.
+  const parts = { inputClipped: false, head: 'o'.repeat(TOOL_OUTPUT_HEAD), outputClipped: false };
+  expect(buffer.detail('epoch', 'turn', first.itemId)).toEqual({
+    ...first,
+    ...parts,
+    tail: 'o'.repeat(TOOL_OUTPUT_TAIL),
+    hasOutput: true,
+  });
+  // Past it the list gives the entry bare; read alone it is whole.
+  expect(last).toMatchObject({ input: null, output: null, truncated: true });
+  expect(buffer.detail('epoch', 'turn', last.itemId)).toEqual({
+    ...last,
+    input: { n: 149 },
+    output: big,
+    truncated: false,
+    ...parts,
+    tail: 'o'.repeat(TOOL_OUTPUT_TAIL),
+    hasOutput: true,
+  });
+});
+
+it('reads nothing for another epoch, turn or item, or an id that is not the projected one', () => {
+  const buffer = new ToolDetailBuffer();
+  buffer.ingest(itemEvent('item.completed', 'turn', { id: 'c', payload: {} }), 'epoch');
+  const itemId = JSON.stringify(['turn', 'c']);
+  expect(buffer.detail('epoch', 'turn', itemId)).toMatchObject({ itemId });
+  expect(buffer.detail('other', 'turn', itemId)).toBeNull();
+  expect(buffer.detail('epoch', 'gone', itemId)).toBeNull();
+  expect(buffer.detail('epoch', 'turn', JSON.stringify(['turn', 'd']))).toBeNull();
+  expect(buffer.detail('epoch', 'turn', JSON.stringify(['gone', 'c']))).toBeNull();
+  expect(buffer.detail('epoch', 'turn', `${itemId}:part:1`)).toBeNull();
+  expect(buffer.detail('epoch', 'turn', 'c')).toBeNull();
 });

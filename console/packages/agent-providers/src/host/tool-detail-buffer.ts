@@ -6,11 +6,13 @@ import type { ItemType, ProviderRuntimeEvent } from '../events';
  * by the session host beside the reasoning buffer and under the same rules.
  *
  * A session-v1 tool item carries only a title: raw tool input and output are
- * not a shared summary, so they are never published, journaled, snapshotted
- * or sent to Switch (whose renderers show an item's text in Slack and the
- * like). A Console on the same machine, or over SSH, reads them here to show
- * what a tool did. Every value is clipped as it is taken, so the buffer and an
- * answer stay bounded however large a file read or a command's output is.
+ * not a shared summary, so they are never published, journaled or
+ * snapshotted. A Console on the same machine, or over SSH, reads them here to
+ * show what a tool did. Beyond that, a redacted, bounded detail of a finished
+ * call (`tool-detail-text.ts`) is sent to the Switch server with its activity
+ * row, and kept there only for a room that turned the switch on. Every value
+ * is clipped as it is taken, so the buffer and an answer stay bounded however
+ * large a file read or a command's output is.
  */
 
 /** How many turns are kept; the oldest go first. */
@@ -55,6 +57,25 @@ export const hostToolTurnSchema = z.object({
   tools: z.array(hostToolDetailSchema),
 });
 export type HostToolTurn = z.infer<typeof hostToolTurnSchema>;
+
+/**
+ * One call read alone (`ToolDetailBuffer.detail`): the detail `list` gives,
+ * and the parts the buffer kept, so a clipped output's head and tail are
+ * each treated on their own and a clipped input is told by the buffer's own
+ * flag. Host-internal: not part of the Console RPC (`hostToolDetailSchema`).
+ */
+export type ToolDetailParts = HostToolDetail & {
+  /** Whether the buffer clipped the input. */
+  inputClipped: boolean;
+  /** The start of the output as kept; with `tail`, the whole output when not clipped. */
+  head: string;
+  /** The end of the output as kept. */
+  tail: string;
+  /** Whether the buffer dropped the middle of the output. */
+  outputClipped: boolean;
+  /** Whether any output was taken. */
+  hasOutput: boolean;
+};
 
 type ToolEntry = {
   itemId: string;
@@ -152,6 +173,17 @@ function detailOf(entry: ToolEntry): HostToolDetail {
   };
 }
 
+function partsOf(entry: ToolEntry): ToolDetailParts {
+  return {
+    ...detailOf(entry),
+    inputClipped: entry.inputClipped,
+    head: entry.head,
+    tail: entry.tail,
+    outputClipped: entry.outputClipped,
+    hasOutput: entry.hasOutput,
+  };
+}
+
 function sizeOf(detail: HostToolDetail): number {
   return (JSON.stringify(detail.input) ?? '').length + (detail.output?.length ?? 0) + 200;
 }
@@ -241,6 +273,29 @@ export class ToolDetailBuffer {
       picked.push({ turnId, tools: details });
     }
     return picked.reverse();
+  }
+
+  /**
+   * The one call projected as `itemId` (`JSON.stringify([turnId, item.id])`)
+   * in `turnId`, as `list` gives it to an answer under its limit: neither
+   * the turn's other calls nor the answer limit come into it, and with the
+   * parts the buffer kept (`ToolDetailParts`). A map lookup and the one
+   * entry's detail, so a report pays for its own call only.
+   */
+  detail(epoch: string, turnId: string, itemId: string): ToolDetailParts | null {
+    if (this.epoch !== epoch) return null;
+    const tools = this.turns.get(turnId);
+    if (!tools) return null;
+    let key: unknown;
+    try {
+      key = JSON.parse(itemId);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(key) || key.length !== 2 || key[0] !== turnId || typeof key[1] !== 'string')
+      return null;
+    const entry = tools.get(key[1]);
+    return entry && entry.itemId === itemId ? partsOf(entry) : null;
   }
 
   private turn(turnId: string): Map<string, ToolEntry> {
