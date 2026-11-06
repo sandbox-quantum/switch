@@ -97,12 +97,9 @@ import {
   type RemoteRoomSchedule,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
-<<<<<<< HEAD
   type RoomRoleInput,
   type RoomVisibility,
-=======
   type RoomScheduleDraft,
->>>>>>> 5f36e6b12 (Schedule messages to a room's agents (#771))
   type RetireOutcome,
   type SwitchApiKey,
   type CreatedRegistrationKey,
@@ -113,11 +110,8 @@ import {
   type TeamsTeam,
   type TeamsTeamsResult,
   type TrustSettings,
-<<<<<<< HEAD
   type UnconfirmedLink,
-=======
   type UpdateRoomScheduleChanges,
->>>>>>> 5f36e6b12 (Schedule messages to a room's agents (#771))
   type UpdateTrustSettingsParams,
   type LinkedRoom,
   type RoomDocumentContent,

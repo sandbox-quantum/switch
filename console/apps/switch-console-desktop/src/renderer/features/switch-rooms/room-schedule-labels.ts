@@ -66,13 +66,28 @@ export function nextRunLabel(
  * sent as written, with the timezone it is to be read in.
  */
 export function timingFromForm(
-  form: { repeat: boolean; cron: string; localDateTime: string; timezone: string },
+  form: {
+    repeat: boolean;
+    cron: string;
+    localDateTime: string;
+    timezone: string;
+    /** The date field holds a part-filled entry. A `datetime-local` reads as
+     * empty until every part, AM/PM included, is set, so an empty value alone
+     * cannot say whether the person chose nothing or stopped half way. */
+    incomplete?: boolean;
+  },
   now: Date
 ): { timing: RoomScheduleTiming } | { error: string } {
   if (form.repeat) {
     return { timing: { runAt: null, cron: form.cron, timezone: form.timezone } };
   }
-  if (form.localDateTime === '') return { error: 'Choose when to send it.' };
+  if (form.localDateTime === '') {
+    return {
+      error: form.incomplete
+        ? 'Fill in the date and the time, including AM or PM.'
+        : 'Choose when to send it.',
+    };
+  }
   const at = new Date(form.localDateTime);
   if (Number.isNaN(at.getTime())) return { error: 'That date and time could not be read.' };
   if (at <= now) return { error: 'Choose a time in the future.' };
@@ -87,4 +102,24 @@ export function toLocalDateTimeInput(iso: string): string {
     `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}` +
     `T${pad(at.getHours())}:${pad(at.getMinutes())}`
   );
+}
+
+/** The time a new one-off starts at: a couple of minutes ahead, so it can be saved as it is. */
+export function defaultOneOffInput(now: Date, minutesAhead = 2): string {
+  return toLocalDateTimeInput(new Date(now.getTime() + minutesAhead * 60_000).toISOString());
+}
+
+/**
+ * Whether `timing` is what `schedule` already holds, so an edit sends the
+ * timing only when it changed. A one-off is compared as an instant: the server
+ * writes `…:00Z` and the form `…:00.000Z`, so the strings differ for the same
+ * time, and resending a one-off that has already fired is refused as past.
+ */
+export function sameTiming(
+  timing: RoomScheduleTiming,
+  schedule: Pick<RemoteRoomSchedule, 'runAt' | 'cron' | 'timezone'>
+): boolean {
+  if (timing.cron !== schedule.cron || timing.timezone !== schedule.timezone) return false;
+  if (timing.runAt === null || schedule.runAt === null) return timing.runAt === schedule.runAt;
+  return new Date(timing.runAt).getTime() === new Date(schedule.runAt).getTime();
 }

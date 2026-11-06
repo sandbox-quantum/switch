@@ -1573,9 +1573,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 _room_schedule_loop(session_factory, room_scheduler)
             )
             connection_sweep_task = asyncio.create_task(
-                _room_schedule_loop(session_factory, room_scheduler)
-            )
-            connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
             service_token_task = asyncio.create_task(

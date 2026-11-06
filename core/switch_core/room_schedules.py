@@ -7,6 +7,11 @@ saving change. When it fires, Switch posts the text in the room as the
 platform, with the authority of the person who last edited the schedule, and
 mentions each agent, which then gets it like any other mention.
 
+**Only the agents a schedule names are addressed.** An ``@name`` written inside
+the text is made plain when the schedule fires (`neutralise_mentions`), since
+the router reads every mention in a post, and would otherwise wake an agent the
+schedule does not name, and hand it the text, with the author's authority.
+
 Every switch-core process runs the sweep (`RoomScheduler.fire_due`); a due
 schedule is claimed with `FOR UPDATE SKIP LOCKED` and moved to its next run in
 the transaction that claims it, so each run fires once however many processes
@@ -26,6 +31,7 @@ beside it.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,6 +43,7 @@ from sqlalchemy import func, select, update
 
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import AdminMessageType, OnBehalfOf
+from switch_core.clients.mentions import NAME_CHAR
 from switch_core.db.models import Agent, RoomSchedule, User
 from switch_core.db.session_scope import tenant_session
 
@@ -116,9 +123,28 @@ def first_run(
     return next_cron_run(check_cron(cron), timezone, now)
 
 
+# An `@` that would start a mention: the name may sit behind the emphasis
+# markers the router strips (`@*name*`), so they are looked through as well.
+_MENTION_AT = re.compile(rf"@(?=[*~]*{NAME_CHAR})")
+
+# Invisible, and not a name character, so `@<ZWSP>name` is no longer `@name`.
+ZERO_WIDTH_SPACE = "\u200b"
+
+
+def neutralise_mentions(text: str) -> str:
+    """`text` with every `@name` in it made plain.
+
+    The router reads every mention in a post, whoever wrote it, so text that
+    names another agent would wake it. A scheduled post addresses exactly the
+    agents its schedule names, which `scheduled_text` puts in front; anything
+    the author wrote after that is content.
+    """
+    return _MENTION_AT.sub("@" + ZERO_WIDTH_SPACE, text)
+
+
 def scheduled_text(body: str, agent_names: list[str], author_name: str) -> str:
     mentions = " ".join(f"@{name}" for name in agent_names)
-    return f"{mentions} {body}\n\n_Scheduled by {author_name}_"
+    return f"{mentions} {neutralise_mentions(body)}\n\n_Scheduled by {author_name}_"
 
 
 @dataclass(frozen=True)

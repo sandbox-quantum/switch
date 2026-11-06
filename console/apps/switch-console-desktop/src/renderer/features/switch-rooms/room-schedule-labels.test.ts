@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  defaultOneOffInput,
   describeRule,
   describeTiming,
   nextRunLabel,
+  sameTiming,
   timingFromForm,
   toLocalDateTimeInput,
 } from './room-schedule-labels';
@@ -67,5 +69,60 @@ describe('timingFromForm', () => {
     expect(timingFromForm({ ...form, localDateTime: past }, now)).toEqual({
       error: 'Choose a time in the future.',
     });
+  });
+});
+
+describe('timingFromForm when the Repeat switch is flipped', () => {
+  const now = new Date('2026-10-28T12:00:00Z');
+  const later = toLocalDateTimeInput('2026-10-29T10:15:00Z');
+  const stale = { cron: '0 9 * * 1', localDateTime: later, timezone: 'Europe/London' };
+
+  it('sends only the rule when Repeat is on, ignoring a one-off typed earlier', () => {
+    expect(timingFromForm({ ...stale, repeat: true }, now)).toEqual({
+      timing: { runAt: null, cron: '0 9 * * 1', timezone: 'Europe/London' },
+    });
+  });
+
+  it('sends only the one-off when Repeat is off, ignoring a rule chosen earlier', () => {
+    const result = timingFromForm({ ...stale, repeat: false, timezone: 'UTC' }, now);
+    expect(result).toEqual({
+      timing: { runAt: '2026-10-29T10:15:00.000Z', cron: null, timezone: 'UTC' },
+    });
+  });
+
+  it('says what is missing when the date is part-filled', () => {
+    const form = { repeat: false, cron: '0 9 * * 1', localDateTime: '', timezone: 'UTC' };
+    expect(timingFromForm(form, now)).toEqual({ error: 'Choose when to send it.' });
+    expect(timingFromForm({ ...form, incomplete: true }, now)).toEqual({
+      error: 'Fill in the date and the time, including AM or PM.',
+    });
+  });
+});
+
+describe('defaultOneOffInput', () => {
+  it('starts a one-off two minutes ahead, in the future', () => {
+    const now = new Date('2026-10-28T12:00:30Z');
+    const value = defaultOneOffInput(now);
+    expect(value).toBe(toLocalDateTimeInput('2026-10-28T12:02:30Z'));
+    expect(new Date(value).getTime()).toBeGreaterThan(now.getTime());
+  });
+});
+
+describe('sameTiming', () => {
+  const once = { runAt: '2026-10-29T10:15:00Z', cron: null, timezone: 'UTC' };
+
+  it('treats the same instant as the same one-off, whatever its spelling', () => {
+    expect(sameTiming({ ...once, runAt: '2026-10-29T10:15:00.000Z' }, once)).toBe(true);
+    expect(sameTiming({ ...once, runAt: '2026-10-29T15:45:00+05:30' }, once)).toBe(true);
+  });
+
+  it('notices a changed time, rule, timezone or kind', () => {
+    expect(sameTiming({ ...once, runAt: '2026-10-29T10:16:00.000Z' }, once)).toBe(false);
+    expect(sameTiming({ ...once, timezone: 'Europe/London' }, once)).toBe(false);
+    expect(sameTiming({ runAt: null, cron: '0 9 * * 1', timezone: 'UTC' }, once)).toBe(false);
+    const rule = { runAt: null, cron: '0 9 * * 1', timezone: 'UTC' };
+    expect(sameTiming(rule, rule)).toBe(true);
+    expect(sameTiming({ ...rule, cron: '0 10 * * 1' }, rule)).toBe(false);
+    expect(sameTiming(once, rule)).toBe(false);
   });
 });

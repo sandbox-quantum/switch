@@ -19,36 +19,18 @@ import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { cn } from '@renderer/utils/utils';
-<<<<<<< HEAD
 import { type ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { roomTitle } from './room-labels';
 import { roomDetailKey, useRoomDetail } from './room-participants';
+import { RoomSchedulesSection } from './room-schedules-section';
 import {
   AccessAndGroupFields,
   ArchiveRoomSection,
   RolesSection,
   RoomInfoSection,
 } from './room-settings-sections';
-=======
-import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
-import type {
-  RemoteAgentSummary,
-  RemoteRoomDetail,
-} from '@shared/core/switch-servers/switch-servers';
-import { agentNameFor, localAgentFor } from './room-agent-names';
-import { channelOnDeleteSummary } from './room-delete-wording';
-import { membershipSummary, roomTitle } from './room-labels';
-import { openRoomChannel } from './room-links';
-import { RoomSchedulesSection } from './room-schedules-section';
-
-/** Query key for one room's own settings — shared so a save can write the
- * server's answer straight back into what the page is reading. */
-function roomDetailKey(workspaceId: string, roomId: string) {
-  return ['remote-room-detail', workspaceId, roomId] as const;
-}
->>>>>>> 5f36e6b12 (Schedule messages to a room's agents (#771))
 
 /** One room read from its server; `workspaceId` is null until the room list has loaded. */
 function useRoomInWorkspace(roomId: string) {
@@ -184,7 +166,6 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
   const permissions = switchRoomsStore.roomPermissions(workspaceId, room);
   return (
     <div className="h-full overflow-y-auto">
-<<<<<<< HEAD
       <div className="mx-auto flex w-full max-w-[880px] gap-10 px-10 py-8">
         <div className="flex min-w-0 flex-1 flex-col gap-8">
           <RoomHeading serverId={switchRoomsStore.roomServerId(roomId)} room={room} />
@@ -215,6 +196,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             administersWorkspace={administersWorkspaceById(workspaceId)}
           />
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
+          {workspaceId ? <RoomSchedulesSection workspaceId={workspaceId} room={room} /> : null}
           <RoomInfoSection room={room} />
           <section
             id="room-settings-archive"
@@ -224,17 +206,6 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             <DeleteRoomSection workspaceId={workspaceId} room={room} />
           </section>
         </div>
-=======
-      <div className="mx-auto flex w-full max-w-[880px] flex-col gap-8 px-10 py-8">
-        <RoomHeading serverId={switchRoomsStore.roomServerId(roomId)} room={room} />
-        {/* Keyed on the room so the drafts below belong to the room on screen:
-            switching rooms starts a fresh form rather than carrying half-typed
-            text across. */}
-        <GeneralSection key={room.id} workspaceId={workspaceId} room={room} />
-        <ParticipantsSection workspaceId={workspaceId} room={room} />
-        <RoomSchedulesSection workspaceId={workspaceId} room={room} />
-        <DeleteRoomSection workspaceId={workspaceId} room={room} />
->>>>>>> 5f36e6b12 (Schedule messages to a room's agents (#771))
       </div>
     </div>
   );
@@ -562,41 +533,3 @@ function PanelNotice({
     </div>
   );
 }
-<<<<<<< HEAD
-=======
-
-/** An agent's own picture, beside the human participants' initials discs. */
-function AgentMark({
-  agentId,
-  workspaceId,
-  remoteById,
-}: {
-  agentId: string;
-  workspaceId: string;
-  remoteById: Map<string, RemoteAgentSummary>;
-}) {
-  const remote = remoteById.get(agentId) ?? null;
-  return (
-    <span className="flex size-7 shrink-0 items-center justify-center">
-      <AgentAvatar
-        name={agentNameFor(agentId, workspaceId, remoteById)}
-        iconUrl={remote?.iconUrl ?? null}
-        serverId={workspacesStore.serverIdFor(workspaceId)}
-        size={26}
-      />
-    </span>
-  );
-}
-
-/** What an agent runs, in words: this install's provider when it has one,
- * otherwise the type the server knows it by. */
-function agentKindFor(
-  switchAgentId: string,
-  workspaceId: string,
-  remoteById: Map<string, RemoteAgentSummary>
-): string {
-  const providerId = localAgentFor(switchAgentId, workspaceId)?.providerId ?? null;
-  const knownType = remoteById.get(switchAgentId)?.knownAgentType ?? null;
-  return providerDisplayName(providerId) ?? providerDisplayName(knownType) ?? 'agent';
-}
->>>>>>> 5f36e6b12 (Schedule messages to a room's agents (#771))

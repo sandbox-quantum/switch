@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { CalendarClock, Loader2, Pause, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { CronPicker } from '@renderer/lib/CronPicker';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -15,12 +15,13 @@ import { Textarea } from '@renderer/lib/ui/textarea';
 import type {
   RemoteRoomDetail,
   RemoteRoomSchedule,
-  RoomScheduleTiming,
 } from '@shared/core/switch-servers/switch-servers';
 import { agentNameFor } from './room-agent-names';
 import {
+  defaultOneOffInput,
   describeTiming,
   nextRunLabel,
+  sameTiming,
   timingFromForm,
   toLocalDateTimeInput,
 } from './room-schedule-labels';
@@ -249,10 +250,6 @@ const ScheduleCard = observer(function ScheduleCard({
   );
 });
 
-function sameTiming(a: RoomScheduleTiming, b: RemoteRoomSchedule): boolean {
-  return a.cron === b.cron && a.runAt === b.runAt && a.timezone === b.timezone;
-}
-
 /**
  * The form for a new schedule or an existing one. Only agents in the room can
  * be chosen, since only they would hear it; the server checks the same.
@@ -288,6 +285,7 @@ const ScheduleEditor = observer(function ScheduleEditor({
     schedule?.runAt ? toLocalDateTimeInput(schedule.runAt) : ''
   );
   const [timezone, setTimezone] = useState(schedule?.timezone ?? LOCAL_TIMEZONE);
+  const dateInput = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -295,7 +293,13 @@ const ScheduleEditor = observer(function ScheduleEditor({
     const parsed = timingFromForm(
       // A one-off is typed on this computer's clock, so it carries this
       // computer's timezone; only a rule is read in the one chosen.
-      { repeat, cron, localDateTime, timezone: repeat ? timezone : LOCAL_TIMEZONE },
+      {
+        repeat,
+        cron,
+        localDateTime,
+        timezone: repeat ? timezone : LOCAL_TIMEZONE,
+        incomplete: dateInput.current?.validity.badInput === true,
+      },
       new Date()
     );
     if ('error' in parsed) {
@@ -370,11 +374,23 @@ const ScheduleEditor = observer(function ScheduleEditor({
           value={body}
           onChange={(e) => setBody(e.target.value)}
         />
+        <span className="text-xs text-foreground-muted">
+          Only the agents chosen above are addressed. An @name in the message is posted as plain
+          text.
+        </span>
       </div>
 
       <div className="flex flex-col gap-2">
         <label className="flex items-center gap-2 text-sm text-foreground">
-          <Switch checked={repeat} onCheckedChange={setRepeat} />
+          <Switch
+            checked={repeat}
+            onCheckedChange={(next) => {
+              setRepeat(next);
+              setError(null);
+              // A one-off starts a couple of minutes ahead, so it can be saved as it is.
+              if (!next && localDateTime === '') setLocalDateTime(defaultOneOffInput(new Date()));
+            }}
+          />
           Repeat
         </label>
         {repeat ? (
@@ -397,6 +413,7 @@ const ScheduleEditor = observer(function ScheduleEditor({
           </div>
         ) : (
           <Input
+            ref={dateInput}
             type="datetime-local"
             className="h-8 max-w-64"
             value={localDateTime}

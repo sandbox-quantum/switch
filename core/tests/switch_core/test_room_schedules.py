@@ -6,9 +6,11 @@ import pytest
 from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import TENANT_ZERO_ID, Room, RoomSchedule, room_agents
 from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.room_schedules import (
+    ZERO_WIDTH_SPACE,
     ScheduleTimingError,
     check_cron,
     first_run,
@@ -76,6 +78,31 @@ class TestTiming:
                 now=datetime(2026, 10, 28, tzinfo=UTC),
             )
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "ask @drift",
+            "ask @Drift now",
+            "ask @*drift*",
+            "ask @~drift~",
+            "ask x@drift",
+            "@drift@jetfire",
+            "ask @claude-code.fix.ada",
+        ],
+    )
+    def test_text_never_mentions_an_agent_the_body_names(self, body: str) -> None:
+        text = scheduled_text(body, ["triage"], "Ada")
+        plain = strip_emphasis(text)
+        assert mention_regex("triage").search(plain) is not None
+        for name in ("drift", "jetfire", "claude-code.fix.ada"):
+            assert mention_regex(name).search(plain) is None
+
+    def test_text_keeps_the_words_of_the_body(self) -> None:
+        text = scheduled_text("email a@b.com about @drift", ["triage"], "Ada")
+        assert text.replace(ZERO_WIDTH_SPACE, "") == (
+            "@triage email a@b.com about @drift\n\n_Scheduled by Ada_"
+        )
+
     def test_text_mentions_each_agent_and_names_the_author(self) -> None:
         assert scheduled_text("Standup time", ["triage", "scribe"], "Ada") == (
             "@triage @scribe Standup time\n\n_Scheduled by Ada_"
@@ -87,9 +114,12 @@ async def _room_with_schedule(
     *,
     cron: str | None,
     due_ago: timedelta,
+    body: str = "Summarise new issues",
+    bystanders: tuple[str, ...] = (),
 ) -> tuple[Room, str, list[str]]:
     """A room with agents `triage` and `scribe` in it and a schedule for both
-    that fell due `due_ago`."""
+    that fell due `due_ago`. `bystanders` are agents in the room that the
+    schedule does not address."""
     async with session_factory() as session:
         author = await add_user(session, "Ada")
         room = await add_room(session, "standup", owner_id=author.id)
@@ -99,13 +129,15 @@ async def _room_with_schedule(
         ]
         for agent in agents:
             await put_in_room(session, room, agent)
+        for name in bystanders:
+            await put_in_room(session, room, await add_agent(session, name, owner=author))
         due = datetime.now(UTC) - due_ago
         schedule = await STORE.create(
             session,
             room_id=room.id,
             author_id=author.id,
             author_agent_id=None,
-            body="Summarise new issues",
+            body=body,
             run_at=None if cron else due,
             cron=cron,
             timezone="UTC",
@@ -138,6 +170,29 @@ class TestRoomScheduler:
         row = await reload_schedule(session_factory, schedule_id)
         assert row.next_run_at is not None and row.next_run_at > datetime.now(UTC)
         assert row.last_run_at is not None and row.last_error is None
+
+    async def test_a_body_that_names_another_agent_does_not_address_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # The router reads every mention in a post, so an `@name` left in the
+        # text would wake an agent the schedule does not name.
+        await _room_with_schedule(
+            session_factory,
+            cron=None,
+            due_ago=timedelta(seconds=30),
+            body="Ask @intruder, @*intruder* and @INTRUDER about it",
+            bystanders=("intruder",),
+        )
+        admin = FakeAdmin()
+        scheduler = make_scheduler(session_factory, admin)
+
+        assert await scheduler.fire_due(TENANT_ZERO_ID) == 1
+
+        [post] = admin.posted
+        plain = strip_emphasis(post["body"])
+        assert mention_regex("intruder").search(plain) is None
+        for name in ("triage", "scribe"):
+            assert mention_regex(name).search(plain) is not None
 
     async def test_a_one_off_fires_and_is_done(
         self, session_factory: async_sessionmaker[AsyncSession]

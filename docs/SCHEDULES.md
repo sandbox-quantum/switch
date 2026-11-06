@@ -35,6 +35,13 @@ mention of each agent and ending with who set the schedule:
 Scheduled by Ada
 ```
 
+Only the agents the schedule names are addressed. An `@name` written inside the
+message is posted as plain text, with an invisible character after the `@`, so it
+does not wake that agent. To reach another agent, add it to the schedule's
+agents. This keeps a schedule from addressing, and handing its text to, an agent
+its author did not choose. An email address in the text gets the same invisible
+character, which is harmless unless it is copied.
+
 The message carries the authority of the person who last set the schedule's
 text or agents. Each agent applies its own policy on who may address it to
 that person, exactly as if they had written the message themselves. Editing a
