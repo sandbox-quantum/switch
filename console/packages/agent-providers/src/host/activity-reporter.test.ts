@@ -353,3 +353,45 @@ it('remembers how far it reported across a restart', async () => {
   expect(again.fresh).toBe(false);
   expect(again.cursor).toBe(7);
 });
+
+it('reports child progress with stable placement and identity through journal replay', async () => {
+  const source = await reporter();
+  const item: Item = {
+    itemId: '["turn","subagent","child"]',
+    turnId: 'turn',
+    revision: 1,
+    kind: 'tool-activity',
+    subagent: true,
+    status: 'in-progress',
+    title: 'Reviewer: Check changes',
+    text: '',
+    attachments: [],
+    origin: null,
+  };
+  const first = event(1, { type: 'item.upsert', item });
+  const reports = source.reports(first, originOf, noUsage);
+  expect(reports).toMatchObject([
+    {
+      kind: 'activity',
+      row: {
+        kind: 'tool-activity',
+        subagent: true,
+        item_id: item.itemId,
+        revision: 1,
+        status: 'in-progress',
+        room_id: origin.roomId,
+        message_id: origin.messageId,
+      },
+    },
+  ]);
+  await source.advance(1);
+  const loaded = await ActivityReporter.load(roots.at(-1)!);
+  loaded.catchUp([first]);
+  expect(
+    loaded.reports(
+      event(2, { type: 'item.upsert', item: { ...item, revision: 2, status: 'failed' } }),
+      originOf,
+      noUsage
+    )
+  ).toMatchObject([{ row: { item_id: item.itemId, revision: 2, status: 'failed' } }]);
+});

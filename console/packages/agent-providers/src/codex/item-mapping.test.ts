@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mapCodexItem } from './item-mapping';
+import { mapCodexChildren, mapCodexItem } from './item-mapping';
 import type { CodexThreadItem } from './protocol';
 
 describe('mapCodexItem', () => {
@@ -37,7 +37,7 @@ describe('mapCodexItem', () => {
     expect(item).toMatchObject({ type: 'file_change', title: 'a.txt', status: 'completed' });
   });
 
-  it('maps both collab shapes onto subagent', () => {
+  it('separates delegation calls from child lifecycle activity', () => {
     const collab = mapCodexItem(
       {
         type: 'collabAgentToolCall',
@@ -50,7 +50,7 @@ describe('mapCodexItem', () => {
       },
       'started'
     );
-    expect(collab).toMatchObject({ type: 'subagent', status: 'in_progress', title: 'spawnAgent' });
+    expect(collab).toMatchObject({ type: 'tool_call', status: 'in_progress', title: 'spawnAgent' });
 
     const activity = mapCodexItem(
       {
@@ -64,7 +64,8 @@ describe('mapCodexItem', () => {
     );
     expect(activity).toMatchObject({
       type: 'subagent',
-      status: 'completed',
+      status: 'in_progress',
+      nativeChildId: 'child',
       title: '/root/read_readme',
     });
   });
@@ -110,4 +111,27 @@ describe('mapCodexItem', () => {
       toolName: 'post_message',
     });
   });
+});
+
+it('uses individual child states rather than the outcome of spawn or wait', () => {
+  const children = mapCodexChildren({
+    type: 'collabAgentToolCall',
+    id: 'wait',
+    tool: 'wait',
+    status: 'completed',
+    senderThreadId: 'parent',
+    receiverThreadIds: ['a', 'b', 'c'],
+    prompt: null,
+    agentsStates: {
+      a: { status: 'running' },
+      b: { status: 'completed' },
+      c: { status: 'errored' },
+    },
+  });
+  expect(children.map((item) => [item.nativeChildId, item.status])).toEqual([
+    ['a', 'in_progress'],
+    ['b', 'completed'],
+    ['c', 'failed'],
+  ]);
+  expect(children.every((item) => item.type === 'subagent' && item.text === undefined)).toBe(true);
 });

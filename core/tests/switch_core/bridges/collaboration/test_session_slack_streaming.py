@@ -1981,3 +1981,27 @@ async def test_a_stranded_stream_closed_but_not_redrawn_in_time_is_waited_out() 
     assert waiting.value.retry_after == 8
     assert len(client.stopped) == 1
     assert ref not in adapter._unredrawable
+
+
+async def test_child_progress_updates_the_same_stream_block_without_another_message() -> (
+    None
+):
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    child = _tool("child-a", "Reviewer: Check changes").model_copy(
+        update={"kind": "tool-activity", "subagent": True}
+    )
+    content = TurnActivity([child], _turn())
+    ref = await adapter.post_rich(CHANNEL, "Agent", content, THREAD)
+    assert "— running" in _drawn(client)["switch-subagents"]["text"]["text"]
+    before = len(client.appended)
+    await adapter.update_rich(CHANNEL, "Agent", ref, content, THREAD)
+    assert len(client.appended) == before
+    child = child.model_copy(update={"revision": 2, "status": "completed"})
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([child], _turn("completed")), THREAD
+    )
+    assert "— done" in _drawn(client)["switch-subagents"]["text"]["text"]
+    assert "— running" not in _drawn(client)["switch-subagents"]["text"]["text"]
+    assert len(client.started) == 1
+    assert client.posted == []

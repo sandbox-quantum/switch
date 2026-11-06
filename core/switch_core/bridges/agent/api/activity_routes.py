@@ -80,8 +80,13 @@ class ActivityReport(BaseModel):
     turn_id: _Id
     item_id: _Id
     kind: Literal[
-        "turn", "user-message", "assistant-message", "tool-activity", "notice"
+        "turn",
+        "user-message",
+        "assistant-message",
+        "tool-activity",
+        "notice",
     ]
+    subagent: bool = Field(default=False, strict=True)
     revision: int = Field(ge=0)
     status: str = Field(min_length=1, max_length=40)
     title: str = Field(max_length=MAX_TITLE_CHARS)
@@ -205,6 +210,7 @@ async def report_activity(
         turn_id=body.turn_id,
         item_id=body.item_id,
         kind=body.kind,
+        subagent=body.subagent,
         revision=body.revision,
         status=body.status,
         title=body.title,

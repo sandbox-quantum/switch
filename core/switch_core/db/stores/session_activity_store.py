@@ -269,6 +269,7 @@ class AgentSessionActivityStore:
             key: statement.excluded[key]
             for key in (
                 "kind",
+                "subagent",
                 "revision",
                 "status",
                 "title",
