@@ -45,6 +45,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **SMS through your own Twilio account.** Connect a Twilio phone number as a
+  messaging app: texts from the numbers you allow reach their own room, and
+  agents answer by text. Every incoming request is checked against Twilio's
+  signature, texts from any other number are dropped and never answered, long
+  replies are split into numbered parts and cut after a segment limit per reply
+  (and per number each hour) so cost stays bounded. SMS has no threads, edits,
+  reactions or channel creation; picture messages are reported rather than
+  relayed. See `docs/messaging-platforms/sms.md`.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
