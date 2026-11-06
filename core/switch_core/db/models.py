@@ -4183,6 +4183,12 @@ class PersonErasure(TenantScoped, Base):
     member_client_ids: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
+    # Files carried by messages already deleted, kept until the request's last
+    # step deletes those nothing refers to, so a request resumed after a
+    # restart still deletes the files of the batches before it.
+    pending_file_uris: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     state: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
     requested_by_user_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True

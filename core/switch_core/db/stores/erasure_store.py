@@ -30,10 +30,11 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    type_coerce,
     update,
 )
 from sqlalchemy import cast as cast_
-from sqlalchemy.dialects.postgresql import array
+from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.chats import MEMBER_CLIENT_TYPE
@@ -589,6 +590,66 @@ class ErasureStore:
                 ExternalUser.tenant_id == require_tenant_id(),
                 ExternalUser.id == external_user_id,
             )
+        )
+
+    async def remember_files(
+        self, session: AsyncSession, erasure_id: str, uris: Collection[str]
+    ) -> None:
+        """Keep `uris`, the files of messages this request just deleted, on the
+        request until `delete_remembered_files`, in the transaction that
+        deleted the messages."""
+        if not uris:
+            return
+        await session.execute(
+            update(PersonErasure)
+            .where(
+                PersonErasure.tenant_id == require_tenant_id(),
+                PersonErasure.id == erasure_id,
+            )
+            .values(
+                pending_file_uris=PersonErasure.pending_file_uris.op("||")(
+                    type_coerce(sorted(uris), JSONB)
+                )
+            )
+        )
+
+    async def delete_remembered_files(
+        self, session: AsyncSession, erasure_id: str
+    ) -> int:
+        """Delete the files the request remembered that nothing refers to now,
+        and forget them all. Returns how many were deleted."""
+        uris = await session.scalar(
+            select(PersonErasure.pending_file_uris).where(
+                PersonErasure.tenant_id == require_tenant_id(),
+                PersonErasure.id == erasure_id,
+            )
+        )
+        if not uris:
+            return 0
+        deleted = await self.delete_unreferenced_media(session, set(uris))
+        await session.execute(
+            update(PersonErasure)
+            .where(
+                PersonErasure.tenant_id == require_tenant_id(),
+                PersonErasure.id == erasure_id,
+            )
+            .values(pending_file_uris=type_coerce([], JSONB))
+        )
+        return deleted
+
+    async def rooms_sent_in(self, session: AsyncSession, sender_id: str) -> set[str]:
+        """The bound tenant's rooms holding a message from `sender_id`."""
+        return set(
+            (
+                await session.execute(
+                    select(Message.room_id)
+                    .where(
+                        Message.tenant_id == require_tenant_id(),
+                        Message.sender_id == sender_id,
+                    )
+                    .distinct()
+                )
+            ).scalars()
         )
 
     async def delete_unreferenced_media(

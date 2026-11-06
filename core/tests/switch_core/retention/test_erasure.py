@@ -629,6 +629,99 @@ class TestErasing:
         assert dm.description == "a dial for erased person"
 
 
+class _Killed(BaseException):
+    """The process stopping mid-request: not an error the request handles."""
+
+
+async def _killed_before_its_files(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Work the queued request until its last step, as a process that stops
+    there would, then leave the request as a restart finds it: running, and
+    stale."""
+
+    async def killed(self: ErasureService, tenant_id: str, erasure_id: str) -> None:
+        raise _Killed()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ErasureService, "_delete_files", killed)
+        with pytest.raises(_Killed):
+            await ErasureService(session_factory, _Clients(), _Bridges()).work_once(
+                datetime.now(UTC)
+            )
+    async with session_factory() as session:
+        await session.execute(
+            update(PersonErasure).values(updated_at=NOW - timedelta(hours=1))
+        )
+        await session.commit()
+
+
+class TestResuming:
+    async def test_a_request_stopped_after_the_identity_went_still_deletes_its_files(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async with session_factory() as session:
+            person = await _person(session, await _bridge(session), "ana")
+            client = await _client_of(session, person)
+            room = await _room(session, "files")
+            await _blob(session, "switch-media://ana-only")
+            await _say(session, room, client, "$ana", "switch-media://ana-only")
+            await session.commit()
+            person_id = person.id
+        await _queue(session_factory, [person_id])
+        await _killed_before_its_files(session_factory, monkeypatch)
+
+        finished = await ErasureService(
+            session_factory, _Clients(), _Bridges()
+        ).work_once(datetime.now(UTC))
+
+        async with session_factory() as session:
+            blobs = set((await session.execute(select(MediaBlob.uri))).scalars())
+        assert finished is not None and finished.state == "done"
+        assert finished.files_deleted == 1
+        assert finished.pending_file_uris == []
+        assert blobs == set()
+
+    async def test_a_former_participant_stopped_after_their_messages_is_still_erased(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async with session_factory() as session:
+            person = await _person(session, await _bridge(session), "ana")
+            client = await _client_of(session, person)
+            dm = Room(
+                transport_room_id=f"!dm-{uuid.uuid4().hex[:8]}:test",
+                name="Acme Slack: ana / helper",
+                description="Acme Slack DM — ana / helper",
+                channel_type="direct",
+            )
+            session.add(dm)
+            await session.flush()
+            await _blob(session, "switch-media://ana-only")
+            await _say(session, dm, client, "$ana", "switch-media://ana-only")
+            sender_id = await _disconnect(session, person)
+            await session.commit()
+            dm_id = dm.id
+        await _queue(session_factory, [], former_sender_ids=[sender_id])
+        await _killed_before_its_files(session_factory, monkeypatch)
+
+        finished = await ErasureService(
+            session_factory, _Clients(), _Bridges()
+        ).work_once(datetime.now(UTC))
+
+        async with session_factory() as session:
+            blobs = set((await session.execute(select(MediaBlob.uri))).scalars())
+            dm_after = await session.get(Room, dm_id)
+        assert finished is not None and finished.state == "done"
+        assert blobs == set()
+        assert dm_after is not None
+        assert dm_after.name == "Acme Slack: erased person / helper"
+
+
 class TestQueue:
     async def test_people_are_listed_with_their_message_counts_and_claimants(
         self, session_factory: async_sessionmaker[AsyncSession]

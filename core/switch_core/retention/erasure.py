@@ -12,19 +12,23 @@ works the queue: for each identity it
 
 1. deletes every message the identity sent, in every room, archived ones
    included, in batches with their attachments, bridge post mappings and the
-   copies stored as events for agents;
+   copies stored as events for agents, noting on the request the files those
+   messages carried;
 2. stops the client that stood in for them in rooms;
 3. in one transaction, scrubs their name and words from approval answers and
    their name from direct rooms' names, deletes their identity row (its
    claims go by cascade), their room memberships and their client, and then
    anything they sent meanwhile;
 4. tells the running bridge to forget them, so writing again provisions a
-   new identity;
-5. deletes the stored files that only their messages carried.
+   new identity.
+
+Last, the request deletes the files it noted that nothing refers to any more.
 
 Every step is safe to repeat, and a request is claimed before it is worked,
 so one interrupted by a restart is resumed by the next pass and two processes
-never work the same one. Kept: what other people wrote, including quotes and mentions of
+never work the same one. Whatever a step needs from an earlier one is on the
+request or still in the database, never only in memory, so a resumed request
+finishes what the interrupted one started. Kept: what other people wrote, including quotes and mentions of
 them; copies on the chat platforms; their Switch account and membership,
 which have their own actions. `docs/design/data-retention.md` covers why.
 """
@@ -124,6 +128,17 @@ class ErasureService:
         except Exception as exc:
             logger.exception("Erasure %s in tenant %s failed", erasure.id, tenant_id)
             error = f"{type(exc).__name__}: {exc}"
+        # Also after a failure: the messages already deleted are gone either
+        # way, and so should be the files only they carried.
+        try:
+            await self._delete_files(tenant_id, erasure.id)
+        except Exception as exc:
+            logger.exception(
+                "Erasure %s in tenant %s could not delete its files",
+                erasure.id,
+                tenant_id,
+            )
+            error = error or f"{type(exc).__name__}: {exc}"
 
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
             finished = await self._erasures.finish(db, erasure.id, error=error)
@@ -153,12 +168,10 @@ class ErasureService:
         return finished
 
     async def _erase(self, tenant_id: str, erasure_id: str, person: Person) -> None:
-        uris: set[str] = set()
-        room_ids: set[str] = set()
         while True:
             async with tenant_session(self._sessions, tenant_id) as db, db.begin():
                 count = await self._delete_batch(
-                    db, erasure_id, person.transport_user_id, uris, room_ids
+                    db, erasure_id, person.transport_user_id
                 )
             if count < MESSAGE_BATCH:
                 break
@@ -175,9 +188,7 @@ class ErasureService:
             await self._erasures.delete_identity(db, person.external_user_id)
             await self._clients.delete_record(db, person.client_id)
             while (
-                await self._delete_batch(
-                    db, erasure_id, person.transport_user_id, uris, room_ids
-                )
+                await self._delete_batch(db, erasure_id, person.transport_user_id)
                 == MESSAGE_BATCH
             ):
                 pass
@@ -185,9 +196,9 @@ class ErasureService:
                 db, erasure_id, messages=0, files=0, identities=1
             )
 
-        # The identity is gone from here on, so a failure below cannot be put
-        # right by queueing it again; it is logged rather than failing the
-        # request. Files missed here are taken by the hourly sweep a day later.
+        # Only this process's bridges are told; one in another process, or in
+        # this one after a restart, loads its people from the database when it
+        # starts, and the identity is no longer there.
         try:
             await self._bridges.forget_human(
                 person.bridge_id, person.external_user_id, person.transport_user_id
@@ -200,37 +211,19 @@ class ErasureService:
                 person.external_user_id,
                 exc_info=True,
             )
-        try:
-            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                files = await self._erasures.delete_unreferenced_media(db, uris)
-                await self._erasures.add_progress(
-                    db, erasure_id, messages=0, files=files, identities=0
-                )
-        except Exception:
-            logger.warning(
-                "Erasure %s: could not delete the files of identity %s; the "
-                "hourly sweep deletes them a day later",
-                erasure_id,
-                person.external_user_id,
-                exc_info=True,
-            )
 
     async def _erase_former(
         self, tenant_id: str, erasure_id: str, participant: FormerParticipant
     ) -> None:
         """Erase someone whose chat app was disconnected. Their identity, client
         and memberships went with the app; what is left is their messages,
-        their name on approval answers, and their name on direct rooms."""
-        uris: set[str] = set()
-        room_ids: set[str] = set()
-        while True:
-            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                count = await self._delete_batch(
-                    db, erasure_id, participant.sender_id, uris, room_ids
-                )
-            if count < MESSAGE_BATCH:
-                break
+        their name on approval answers, and their name on direct rooms.
+
+        Their messages are all that still finds them, so their names go first,
+        while the rooms they wrote in can still be read off those messages: a
+        request resumed after its last batch would not find them again."""
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+            room_ids = await self._erasures.rooms_sent_in(db, participant.sender_id)
             await self._erasures.scrub_approval_answers(db, participant.sender_id)
             await self._erasures.scrub_former_direct_rooms(
                 db, room_ids, participant.names
@@ -238,19 +231,11 @@ class ErasureService:
             await self._erasures.add_progress(
                 db, erasure_id, messages=0, files=0, identities=1
             )
-        try:
+        while True:
             async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                files = await self._erasures.delete_unreferenced_media(db, uris)
-                await self._erasures.add_progress(
-                    db, erasure_id, messages=0, files=files, identities=0
-                )
-        except Exception:
-            logger.warning(
-                "Erasure %s: could not delete a former participant's files; the "
-                "hourly sweep deletes them a day later",
-                erasure_id,
-                exc_info=True,
-            )
+                count = await self._delete_batch(db, erasure_id, participant.sender_id)
+            if count < MESSAGE_BATCH:
+                break
 
     async def _erase_member(
         self, tenant_id: str, erasure_id: str, member: Member
@@ -258,12 +243,10 @@ class ErasureService:
         """Erase what a member client sent: its messages, their files, and its
         answers to approvals. The client and its room memberships stay; a
         person whose account is still in use can go on writing."""
-        uris: set[str] = set()
-        room_ids: set[str] = set()
         while True:
             async with tenant_session(self._sessions, tenant_id) as db, db.begin():
                 count = await self._delete_batch(
-                    db, erasure_id, member.transport_user_id, uris, room_ids
+                    db, erasure_id, member.transport_user_id
                 )
             if count < MESSAGE_BATCH:
                 break
@@ -272,39 +255,26 @@ class ErasureService:
             await self._erasures.add_progress(
                 db, erasure_id, messages=0, files=0, identities=1
             )
-        try:
-            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-                files = await self._erasures.delete_unreferenced_media(db, uris)
-                await self._erasures.add_progress(
-                    db, erasure_id, messages=0, files=files, identities=0
-                )
-        except Exception:
-            logger.warning(
-                "Erasure %s: could not delete the files of member client %s; the "
-                "hourly sweep deletes them a day later",
-                erasure_id,
-                member.client_id,
-                exc_info=True,
+
+    async def _delete_files(self, tenant_id: str, erasure_id: str) -> None:
+        async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+            files = await self._erasures.delete_remembered_files(db, erasure_id)
+            await self._erasures.add_progress(
+                db, erasure_id, messages=0, files=files, identities=0
             )
 
     async def _delete_batch(
-        self,
-        db: AsyncSession,
-        erasure_id: str,
-        transport_user_id: str,
-        uris: set[str],
-        room_ids: set[str],
+        self, db: AsyncSession, erasure_id: str, transport_user_id: str
     ) -> int:
         deleted = await self._messages.delete_sent_by(
             db, transport_user_id=transport_user_id, limit=MESSAGE_BATCH
         )
         await self._retention.delete_bridge_mappings(db, deleted.event_ids)
         await self._retention.delete_agent_copies(db, deleted.message_keys)
+        await self._erasures.remember_files(db, erasure_id, deleted.uris)
         await self._erasures.add_progress(
             db, erasure_id, messages=len(deleted.event_ids), files=0, identities=0
         )
-        uris |= deleted.uris
-        room_ids |= deleted.room_ids
         return len(deleted.event_ids)
 
 
