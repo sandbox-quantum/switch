@@ -14,16 +14,21 @@ message (Signal identifies one by the author that sent it and when).
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 import re
-from collections.abc import Awaitable, Callable
-from typing import ClassVar
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
+import httpx
 from pydantic import Field, field_validator
 
 from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
 from switch_core.bridges.collaboration.models import (
+    Attachment,
+    AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
@@ -36,12 +41,15 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.signal import inbound as sse_inbound
 from switch_core.bridges.collaboration.signal.render import (
     chunk_markers,
     render_markdown,
     strip_markers,
 )
 from switch_core.bridges.collaboration.signal.rpc import SignalRpcClient
+
+logger = logging.getLogger(__name__)
 
 # The Signal number a connection acts as: E.164, 7 to 15 digits.
 _ACCOUNT_RE = re.compile(r"^\+[1-9]\d{6,14}$")
@@ -119,6 +127,14 @@ class SignalAdapter(PlatformAdapter):
         # with a `SignalRpcClient` on an `httpx.MockTransport` to drive the
         # outbound calls without a live daemon.
         self._rpc_client: SignalRpcClient | None = None
+        # The event stream's own state: one task, one shared HTTP client, and
+        # the last confirmed event id — a reconnect's `Last-Event-ID`. All
+        # in memory, all safe to lose: a pod that loses it starts again from
+        # `0` and the router's `message_ref` dedupe keeps the replay from
+        # doubling anything.
+        self._sse_task: asyncio.Task[None] | None = None
+        self._http: httpx.AsyncClient | None = None
+        self._last_event_id: str | None = None
 
     @classmethod
     def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
@@ -162,10 +178,230 @@ class SignalAdapter(PlatformAdapter):
         on_user_joined: Callable[[InboundUserJoin], Awaitable[None]],
         on_app_joined: Callable[[InboundAppJoin], Awaitable[None]],
     ) -> None:
-        raise NotImplementedError
+        """Open the daemon's event stream, if this process holds the bridge.
+
+        Quiet pods hold the bridge's quiet copy: they serve requests but
+        open nothing the platform delivers over, so the SSE stream — the
+        one long-lived connection this adapter has — is opened only on
+        the lease holder. The last confirmed event id stays in memory; a
+        reconnect replays what the daemon kept and the router dedupes it,
+        so nothing is lost while the daemon stays up, and nothing is
+        doubled if a redelivery reaches another pod.
+        """
+        self._on_message = on_message
+        self._on_command = on_command
+        # A Signal group is addressed by its id, not by who joined it, so
+        # the join hooks stay unused: rooms are created on first message.
+        self._on_agent_joined = on_agent_joined
+        self._on_user_joined = on_user_joined
+        self._on_app_joined = on_app_joined
+
+        if not self._listening:
+            logger.info("Signal bridge is quiet on this pod; no event stream opened")
+            return
+        self._sse_task = asyncio.create_task(self._run_sse_stream())
+
+    async def _run_sse_stream(self) -> None:
+        """The event stream: reconnect with backoff, events to callbacks."""
+        backoff = 1.0
+        try:
+            while True:
+                try:
+                    async for event in self._sse_events():
+                        backoff = 1.0
+                        if event.sse_id:
+                            self._last_event_id = event.sse_id
+                        await self._dispatch(event)
+                except (httpx.HTTPError, OSError) as exc:
+                    logger.warning(
+                        "Signal event stream interrupted (%s); reconnecting in %.1fs",
+                        type(exc).__name__,
+                        backoff,
+                    )
+                except Exception:
+                    # An event the dispatcher could not translate must not
+                    # take the stream down with it: the row is logged with
+                    # the stream, and the reconnect below moves on to what
+                    # comes next.
+                    logger.exception("Signal event dispatch failed; reconnecting")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+        finally:
+            self._sse_task = None
+
+    def _http_client(self) -> httpx.AsyncClient:
+        client = self._http
+        if client is None:
+            client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None))
+            self._http = client
+        return client
+
+    async def _sse_events(self) -> AsyncIterator[sse_inbound.InboundEvent]:
+        """One pass over the stream, from the last confirmed event id.
+
+        A fresh start sends `0` — the daemon's own word for "replay
+        everything kept", so a restart never misses what the phone said
+        while no client was attached (up to the daemon's replay cap).
+        """
+        client = self._http_client()
+        async with client.stream(
+            "GET",
+            self.config.daemon_url.rstrip("/") + "/api/v1/events",
+            headers={"Last-Event-ID": self._last_event_id or "0"},
+            timeout=httpx.Timeout(30.0, read=None),
+        ) as response:
+            response.raise_for_status()
+            async for event in sse_inbound.parse_sse_stream(response.aiter_lines()):
+                yield event
+
+    async def _dispatch(self, event: sse_inbound.InboundEvent) -> None:
+        """One received event to the room's side of the bridge."""
+        if not sse_inbound.message_event(event):
+            return
+        data = event.envelope.get("dataMessage") or {}
+        text = data.get("message") or ""
+        markdown = sse_inbound.inbound_markdown(
+            text,
+            data.get("textStyles") or [],
+            data.get("mentions") or [],
+        )
+        channel_id = sse_inbound.channel_id_of(event)
+        message_ref = sse_inbound.message_ref_of(event)
+        command = sse_inbound.parse_command(text)
+        if command is not None and self._on_command is not None:
+            name, args = command
+            await self._on_command(
+                InboundCommand(
+                    channel_id=channel_id,
+                    channel_type="direct" if channel_id.startswith("d:") else "group",
+                    sender_id=event.sender_id,
+                    sender_name=str(
+                        event.envelope.get("sourceName") or event.sender_id
+                    ),
+                    command=name,
+                    args=args,
+                    # The post's own ref, so a redelivery of this command is
+                    # the same write the router already has — never a second
+                    # run of it.
+                    message_ref=message_ref,
+                    root_id=sse_inbound.root_id_of(event),
+                    channel_name=self._group_name(event),
+                )
+            )
+            return
+        if self._on_message is None:
+            return
+        attachments, failures = await self._fetch_attachments(event, data)
+        if not markdown and not attachments and not failures:
+            # A body that is neither text nor a file is nothing to relay; a
+            # blank line in the room is not what someone said.
+            return
+        await self._on_message(
+            InboundMessage(
+                channel_id=channel_id,
+                channel_type="direct" if channel_id.startswith("d:") else "group",
+                sender_id=event.sender_id,
+                sender_name=str(event.envelope.get("sourceName") or event.sender_id),
+                content=markdown,
+                message_ref=message_ref,
+                root_id=sse_inbound.root_id_of(event),
+                channel_name=self._group_name(event),
+                attachments=attachments,
+                attachment_failures=failures,
+            )
+        )
+
+    async def _fetch_attachments(
+        self,
+        event: sse_inbound.InboundEvent,
+        data: dict[str, Any],
+    ) -> tuple[list[Attachment], list[AttachmentFailure]]:
+        """The event's files, through the daemon's download call.
+
+        A file above the bridge's media cap is refused before the download
+        — pulling 100 MB to throw it away is not disclosed degradation,
+        it is wasted bandwidth — and a download the daemon refuses is
+        named in the room rather than dropped.
+        """
+        attachments: list[Attachment] = []
+        failures: list[AttachmentFailure] = []
+        params = self._attachment_fetch_target(event, data)
+        if params is None:
+            return attachments, failures
+        for spec in data.get("attachments") or []:
+            if not isinstance(spec, dict):
+                continue
+            filename = str(spec.get("filename") or "attachment")
+            size = spec.get("size")
+            if isinstance(size, int) and size > self._max_attachment_bytes:
+                failures.append(
+                    AttachmentFailure(
+                        filename=filename,
+                        reason=(
+                            f"{filename} is {size:,} bytes, over this "
+                            "bridge's "
+                            f"{self._max_attachment_bytes:,}-byte media cap"
+                        ),
+                    )
+                )
+                continue
+            fetch_params = dict(params)
+            fetch_params["id"] = str(spec.get("id") or "")
+            try:
+                result = await self._rpc().call("getAttachment", **fetch_params)
+            except Exception as exc:
+                failures.append(
+                    AttachmentFailure(
+                        filename=filename,
+                        reason=f"{filename} could not be downloaded: {exc}",
+                    )
+                )
+                continue
+            payload = str((result or {}).get("data") or "")
+            attachments.append(
+                Attachment(
+                    filename=filename,
+                    mimetype=str(spec.get("contentType") or "application/octet-stream"),
+                    data=base64.b64decode(payload),
+                )
+            )
+        return attachments, failures
+
+    @staticmethod
+    def _attachment_fetch_target(
+        event: sse_inbound.InboundEvent, data: dict[str, Any]
+    ) -> dict[str, str] | None:
+        """The `getAttachment` addressing: the sender's number for a DM, the
+        group for a group message — the two the daemon accepts, and nothing
+        else addresses one."""
+        group = data.get("groupInfo")
+        if isinstance(group, dict) and group.get("groupId"):
+            return {"groupId": str(group["groupId"])}
+        source = event.envelope.get("sourceNumber") or event.envelope.get("sourceUuid")
+        if source:
+            return {"recipient": str(source)}
+        return None
+
+    def _group_name(self, event: sse_inbound.InboundEvent) -> str | None:
+        data = event.envelope.get("dataMessage") or {}
+        group = data.get("groupInfo")
+        if isinstance(group, dict) and group.get("groupId"):
+            return group.get("groupName")
+        return None
 
     async def stop(self) -> None:
-        raise NotImplementedError
+        """Close the stream; the pod loses the lease or the bridge is
+        retired, and neither leaves a connection to a dead pod's daemon."""
+        if self._sse_task is not None:
+            self._sse_task.cancel()
+            try:
+                await self._sse_task
+            except asyncio.CancelledError:
+                pass
+            self._sse_task = None
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     # ── Channel and message identifiers ─────────────────────────────────────
 
