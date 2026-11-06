@@ -103,21 +103,26 @@ function MemberSection({
   async function remove(member: LibraryItem) {
     setBusy(member.id);
     setError(null);
+    let removal;
     try {
-      const removal = await rpc.workspaces.removePackageMember({
+      removal = await rpc.workspaces.removePackageMember({
         workspaceId,
         packageId: pkg.id,
         kind,
         memberId: member.id,
       });
-      onRemoved(removalText(member.name, removal));
-      await refreshAfterChange(queryClient, workspaceId, pkg.id, kind);
     } catch (cause) {
       setError(failureText(cause, `Could not remove ${member.name} from the package.`));
-    } finally {
       setBusy(null);
       setArmed(null);
+      return;
     }
+    // Removed: only the removal speaks for itself. Refreshing what shows it
+    // comes after, so a refresh that fails cannot report the removal as failed.
+    onRemoved(removalText(member.name, removal));
+    setBusy(null);
+    setArmed(null);
+    await refreshAfterChange(queryClient, workspaceId, pkg.id, kind).catch(() => {});
   }
 
   return (
@@ -263,12 +268,14 @@ function AddMemberDialog({
         memberId: item.id,
       });
       setDone((current) => new Set(current).add(item.id));
-      await refreshAfterChange(queryClient, workspaceId, pkg.id, kind);
     } catch (cause) {
       setError(failureText(cause, `Could not add ${item.name} to the package.`));
+      return;
     } finally {
       setBusy(null);
     }
+    // As for removing: a refresh that fails does not make the add a failure.
+    await refreshAfterChange(queryClient, workspaceId, pkg.id, kind).catch(() => {});
   }
 
   return (
