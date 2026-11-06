@@ -2,7 +2,7 @@ import type * as fs from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
-import { parseDroidAuth } from './droid-acp';
+import { parseDroidAuth } from './droid-adapter';
 
 vi.mock('node:fs/promises', async (original) => ({
   ...(await original<typeof fs>()),
@@ -65,7 +65,8 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
-const { createDroidAdapter, droidAcp, DROID_LOGIN } = await import('./droid-acp');
+const { createDroidAdapter, droidAcp, DROID_LOGIN, hasFactoryAuth, droidHome } =
+  await import('./droid-adapter');
 
 beforeEach(() => {
   servers.length = 0;
@@ -124,9 +125,24 @@ describe('Factory Droid ACP Provider', () => {
     });
   });
 
-  it('declares FACTORY_API_KEY in inheritEnv', () => {
-    expect(droidAcp.inheritEnv).toContain('FACTORY_API_KEY');
+  it('declares expected provider capabilities and properties', () => {
+    expect(droidAcp.provider).toBe('droid');
+    expect(droidAcp.label).toBe('Factory Droid');
+    expect(droidAcp.defaultBinary).toBe('droid');
     expect(droidAcp.loginCommand).toBe(DROID_LOGIN);
+    expect(droidAcp.inheritEnv).toEqual(['FACTORY_API_KEY']);
+    expect(droidAcp.promptCapabilities?.image).toBe(true);
+    expect(droidAcp.capabilities).toEqual({
+      modelSwitchInSession: true,
+      steering: false,
+      resume: true,
+      approvals: true,
+      userInput: false,
+    });
+  });
+
+  it('resolves droidHome respecting FACTORY_HOME override', () => {
+    expect(droidHome({ FACTORY_HOME: '/custom/factory' })).toBe('/custom/factory');
   });
 
   describe('sign-in detection', () => {

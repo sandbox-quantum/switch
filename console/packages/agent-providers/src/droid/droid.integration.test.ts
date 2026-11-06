@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { describeConformance, echoMcpServerSpec } from '../testing/index';
-import { createDroidAdapter, hasFactoryAuth } from './droid-acp';
+import { createDroidAdapter, hasFactoryAuth } from './droid-adapter';
 
 describeConformance('droid', {
   createAdapter: async () => createDroidAdapter(),

@@ -5,10 +5,9 @@ export const plugin = definePlugin(
   {
     id: 'droid',
     name: 'Factory Droid',
-    description:
-      "Factory's autonomous coding agent CLI; provides native ACP support with permissions and project execution.",
-    websiteUrl: 'https://docs.factory.com/droid-exec/overview',
-    cliLabel: 'Factory Droid CLI',
+    description: "Factory's coding agent, built for autonomous multi-turn tasks.",
+    websiteUrl: 'https://docs.factory.ai/droid-exec/overview',
+    cliLabel: 'Droid CLI',
   },
   {
     autoApprove: {
@@ -22,6 +21,10 @@ export const plugin = definePlugin(
       binaryNames: ['droid'],
       installCommands: {
         macos: [
+          {
+            method: 'homebrew',
+            command: 'brew install --cask droid',
+          },
           {
             method: 'curl',
             command: 'curl -fsSL https://app.factory.ai/cli | sh',

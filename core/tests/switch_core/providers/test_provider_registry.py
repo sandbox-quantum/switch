@@ -71,7 +71,7 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "opencode": ("opencode", "OpenCode CLI"),
         "antigravity": ("antigravity", "Antigravity CLI"),
         "cursor": ("cursor", "Cursor CLI"),
-        "droid": ("droid", "Factory Droid"),
+        "droid": ("droid", "Droid CLI"),
     }
 
 
@@ -86,7 +86,7 @@ _CONSOLE_SIGN_IN = {
     "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
     "antigravity": ("antigravity/antigravity-adapter.ts", r"loginCommand: '([^']+)'"),
     "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
-    "droid": ("droid/droid-acp.ts", r"DROID_LOGIN = '([^']+)'"),
+    "droid": ("droid/droid-adapter.ts", r"DROID_LOGIN = '([^']+)'"),
 }
 
 

@@ -158,6 +158,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="droid",
         label="Factory Droid",
         sign_in_command="droid",
+        connector_type="Droid CLI",
     ),
 )
 
