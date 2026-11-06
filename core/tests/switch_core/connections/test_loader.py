@@ -244,7 +244,9 @@ def test_monday_candidate_stays_disabled_pending_live_verification():
     assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
     assert oauth.revocation_discovered is False
     assert oauth.authorization_url is None and oauth.revocation_url is None
-    assert oauth.remove_access == "Remove Switch in monday.com's connected apps settings."
+    assert (
+        oauth.remove_access == "Remove Switch in monday.com's connected apps settings."
+    )
     # Token lifetime is intentionally unspecified until vendor behavior is
     # measured; the candidate must not encode a guessed policy.
     assert definition.token is None
