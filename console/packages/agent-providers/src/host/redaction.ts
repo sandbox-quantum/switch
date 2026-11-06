@@ -1,5 +1,7 @@
 import type { FileHandle } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
+import { isSecretName, redactSecrets } from '@switch-console/shared';
+import type { McpServerSpec } from '../adapter';
 
 /**
  * Exact-value redaction of secrets: what a host scrubs from the logs, journals
@@ -86,9 +88,49 @@ const TOKEN_SHAPES = [
 
 const CUT_TAIL_MIN = 8;
 
+/**
+ * Shorter values are left alone: a secret-named flag set to `1` or `true` is
+ * no secret, and masking it would mask every `1` a tool prints.
+ */
+const LAUNCH_SECRET_MIN = 8;
+
+/**
+ * The credentials a host itself hands an agent: the values of its
+ * secret-named environment variables, and of the secret-named headers and
+ * environment variables of its MCP servers. Nothing issued them through this
+ * process, so no other source of redactions knows them, yet the agent can
+ * print any of them in a tool's output. A header's value counts with and
+ * without its scheme (`Bearer …`), as a tool may print either.
+ */
+export function launchSecrets(
+  env: Record<string, string>,
+  mcpServers: Record<string, McpServerSpec>
+): string[] {
+  const secrets = new Set<string>();
+  const take = (entries: Record<string, string> | undefined) => {
+    for (const [name, value] of Object.entries(entries ?? {})) {
+      if (!isSecretName(name)) continue;
+      const whole = value.trim();
+      const scheme = /^(?:bearer|bot|token|basic)\s+(\S+)$/i.exec(whole);
+      for (const secret of scheme ? [whole, scheme[1]] : [whole])
+        if (secret.length >= LAUNCH_SECRET_MIN) secrets.add(secret);
+    }
+  };
+  take(env);
+  for (const spec of Object.values(mcpServers))
+    take(spec.transport === 'http' ? spec.headers : spec.env);
+  return [...secrets];
+}
+
 function redactShapes(text: string): string {
   return TOKEN_SHAPES.reduce((output, shape) => output.replace(shape, '[REDACTED]'), text);
 }
+
+/**
+ * `scheme://user:password@`, as a connection string or a clone URL carries it.
+ * Kept in the local log as personal data, but not shown in a chat.
+ */
+const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@]+:)[^\s@/?#]+@/gi;
 
 /**
  * The service tokens a process has handed out, in every form, to scrub wherever
@@ -113,6 +155,15 @@ export class Redactions {
   text(input: string): string {
     if (!this.values.size) return redactShapes(input);
     return redactShapes(this.cutTail(redactText(input, this.list())));
+  }
+
+  /**
+   * A tool's input or output as a chat may show it: `text`'s redaction, then
+   * whatever is shaped like a credential. Run on the whole of it before it is
+   * cut short, so a cut never leaves half a secret that no shape still matches.
+   */
+  toolDetail(input: string): string {
+    return redactSecrets(this.text(input)).replace(URL_CREDENTIALS, '$1[REDACTED]@');
   }
 
   /**

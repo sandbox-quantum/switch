@@ -1606,6 +1606,7 @@ class TelegramAdapter(PlatformAdapter):
             markup=self.rich_markup(),
             elapsed_seconds=content.elapsed_seconds,
             heading=False,
+            detail=False,
         )
         if not log:
             return ""

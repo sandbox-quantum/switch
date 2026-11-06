@@ -495,7 +495,12 @@ async def _retry_refusal(
         if message is None:
             return "Could not retry: that message is not in this room."
         if message.sender_id != event.user_id and not await _manages_room(
-            client, session, room_id, event.user_id
+            client._addressing,
+            client.session_factory,
+            session,
+            room_id,
+            event.user_id,
+            "retry",
         ):
             return (
                 "Could not retry: only whoever sent that message, or someone who "
@@ -513,11 +518,16 @@ async def _retry_refusal(
 
 
 async def _manages_room(
-    client: AgentRecipient, session: AsyncSession, room_id: str, sender: str
+    addressing: AddressingResolver,
+    session_factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    room_id: str,
+    sender: str,
+    command: str,
 ) -> bool:
     """Whether the Switch user behind `sender` owns the room or administers
     the tenant."""
-    principal = await client._addressing.resolve_sender(session, sender)
+    principal = await addressing.resolve_sender(session, sender)
     if principal is None or principal.kind != "user":
         return False
     room = await session.get(Room, room_id)
@@ -528,12 +538,12 @@ async def _manages_room(
         user = await session.get(User, user_id)
         if user is not None and await administers_on_record(
             session,
-            client.session_factory,
+            session_factory,
             users,
             user,
             target_type="room",
             target_id=room_id,
-            details={"event": "chat_command", "command": "retry"},
+            details={"event": "chat_command", "command": command},
         ):
             return True
     return False
@@ -893,6 +903,65 @@ async def _cmd_follow_ups(
         enabled = await client._room_store.follow_ups_enabled(session, meta.room_id)
 
     await _reply(client, room, event, _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF)
+
+
+_TOOL_DETAIL_ON = (
+    "Tool detail is on in this room: an agent's steps show what each tool "
+    "was given and gave back, with secrets masked. Turn it off with "
+    "`!tool-detail off`."
+)
+_TOOL_DETAIL_OFF = (
+    "Tool detail is off in this room: an agent's steps show only what they "
+    "were. The room's owner or a workspace admin can turn it on with "
+    "`!tool-detail on`."
+)
+_TOOL_DETAIL_REFUSED = (
+    "Only the room's owner or a workspace admin can turn tool detail on or off."
+)
+
+
+async def _cmd_tool_detail(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    host = cast("CommandConsumer", client)
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    choice = event.args.strip().lower()
+    if choice not in ("", "on", "off"):
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!tool-detail on`, `!tool-detail off`, or `!tool-detail` to "
+            "see which it is.",
+        )
+        return
+
+    async with host.session_factory() as session:
+        if choice:
+            if not await _manages_room(
+                _admin_resolver(host),
+                host.session_factory,
+                session,
+                meta.room_id,
+                event.user_id,
+                "tool_detail",
+            ):
+                await _reply(client, room, event, _TOOL_DETAIL_REFUSED)
+                return
+            await host._room_store.update_fields(
+                session, meta.room_id, show_tool_detail=choice == "on"
+            )
+            await session.commit()
+        shown = await host._room_store.shows_tool_detail(session, meta.room_id)
+
+    await _reply(client, room, event, _TOOL_DETAIL_ON if shown else _TOOL_DETAIL_OFF)
 
 
 async def _cmd_assign_agent(
@@ -1300,6 +1369,18 @@ async def _cmd_remove_agent(
     await _reply(client, room, event, f"Removed **{_label(target)}** from this room.")
 
 
+def _admin_resolver(host: CommandConsumer) -> AddressingResolver:
+    """Who a command's sender is, as the admin client resolves it."""
+    return AddressingResolver(
+        room_store=host._room_store,
+        room_role_store=host._room_role_store,
+        client_store=host.client_store,
+        agent_store=host._agent_store,
+        external_user_store=host._external_user_store,
+        live_connection_ids=host._connections.live_connection_ids,
+    )
+
+
 async def _may_remove_agent(
     host: CommandConsumer,
     session: AsyncSession,
@@ -1312,14 +1393,7 @@ async def _may_remove_agent(
     Anyone the agent would take instructions from may; so may a workspace
     admin, and an agent that manages agents for the target's owner.
     """
-    resolver = AddressingResolver(
-        room_store=host._room_store,
-        room_role_store=host._room_role_store,
-        client_store=host.client_store,
-        agent_store=host._agent_store,
-        external_user_store=host._external_user_store,
-        live_connection_ids=host._connections.live_connection_ids,
-    )
+    resolver = _admin_resolver(host)
     decision = await resolver.permitted(
         session, agent=target, room_id=room_id, sender=event.user_id
     )
@@ -2276,6 +2350,16 @@ COMMANDS: list[Command] = [
         "thread, or the next message after an agent's answer, reaches it without "
         "an @. Usage: `!follow-ups on`, `!follow-ups off`, or `!follow-ups`.",
         _cmd_follow_ups,
+        args_spec=(CommandArg("state", "on or off", required=False),),
+        admin_owned=True,
+    ),
+    Command(
+        "tool-detail",
+        "Show or hide what agents' tools were given and gave back in this room, "
+        "with secrets masked. Only the room's owner or a workspace admin can "
+        "change it. Usage: `!tool-detail on`, `!tool-detail off`, or "
+        "`!tool-detail`.",
+        _cmd_tool_detail,
         args_spec=(CommandArg("state", "on or off", required=False),),
         admin_owned=True,
     ),

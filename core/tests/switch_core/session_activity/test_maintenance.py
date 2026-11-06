@@ -51,6 +51,7 @@ async def test_a_pass_expires_overdue_requests_and_prunes_only_when_asked(
         message_id=None,
         occurred_at=datetime.now(UTC),
         usage=[],
+        detail=None,
     )
     past = datetime.now(UTC) - timedelta(days=30)
     await _backdate(session_factory, ApprovalRequest, expires_at=past)

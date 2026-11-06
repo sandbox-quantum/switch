@@ -2,6 +2,7 @@ import type { FileHandle } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import {
+  launchSecrets,
   LogRedactor,
   pipeRedactedLogs,
   Redactions,
@@ -235,5 +236,91 @@ describe('tokens no exact value catches', () => {
     const redactions = new Redactions();
     redactions.add('synthetic-issued-token');
     expect(redactions.text('see the synth…')).toBe('see the synth…');
+  });
+});
+
+describe('tool detail shown in a chat', () => {
+  it('redacts credentials a command or its output names, keeping what they are', () => {
+    const redactions = new Redactions();
+    const output = [
+      'curl -H "Authorization: Bearer synthetic-bearer-value-0123"',
+      'export DATABASE_PASSWORD=synthetic-password-value',
+      '{"client_secret":"synthetic-secret-value"}',
+    ].join('\n');
+
+    expect(redactions.toolDetail(output)).toBe(
+      [
+        'curl -H "Authorization: [REDACTED]"',
+        'export DATABASE_PASSWORD=[REDACTED]',
+        '{"client_secret":"[REDACTED]"}',
+      ].join('\n')
+    );
+  });
+
+  it('redacts the password in a connection string, which the local log keeps', () => {
+    const redactions = new Redactions();
+    expect(redactions.toolDetail('psql postgres://app:synthetic-pass@db.example.com/app')).toBe(
+      'psql postgres://app:[REDACTED]@db.example.com/app'
+    );
+  });
+
+  it('redacts an issued token as text does, before the shapes run', () => {
+    const redactions = new Redactions();
+    const token = 'synthetic-issued-token-with-no-shape-0123456789';
+    redactions.add(token);
+    expect(redactions.toolDetail(`echo ${token}`)).toBe('echo [REDACTED]');
+  });
+
+  it('leaves output that only mentions secrets alone', () => {
+    const redactions = new Redactions();
+    const output = 'max_tokens: 4096\nrotate the token in Settings\n12 passed, 0 failed';
+    expect(redactions.toolDetail(output)).toBe(output);
+  });
+});
+
+describe('secrets the host itself passes to the agent', () => {
+  it('takes secret-named environment variables, MCP headers and MCP environment', () => {
+    const secrets = launchSecrets(
+      {
+        OPENAI_API_KEY: 'synthetic-openai-key',
+        SWITCH_SERVICE_BEARER: 'synthetic-bearer',
+        CONFIGURED: 'synthetic-not-a-secret',
+      },
+      {
+        vendor: {
+          transport: 'http',
+          url: 'http://127.0.0.1:4321/mcp',
+          headers: { Authorization: 'Bearer synthetic-mcp-token', Accept: 'application/json' },
+        },
+        local: {
+          transport: 'stdio',
+          command: 'echo-mcp',
+          args: [],
+          env: { ECHO_ACCESS_TOKEN: 'synthetic-stdio-token', ECHO_MODE: 'verbose-output' },
+        },
+      }
+    );
+    expect(secrets.sort()).toEqual(
+      [
+        'synthetic-openai-key',
+        'synthetic-bearer',
+        'Bearer synthetic-mcp-token',
+        'synthetic-mcp-token',
+        'synthetic-stdio-token',
+      ].sort()
+    );
+  });
+
+  it('leaves short values alone, so a secret-named flag does not mask every 1', () => {
+    expect(launchSecrets({ USE_TOKEN: '1', AUTH_TOKEN: 'true' }, {})).toEqual([]);
+  });
+
+  it('masks a passed secret in tool detail, where no shape would catch it', () => {
+    const redactions = new Redactions();
+    for (const secret of launchSecrets({ VENDOR_PASSWORD: 'plain-words-here' }, {}))
+      redactions.add(secret);
+    expect(redactions.toolDetail('cat ~/.netrc\nlogin me password-is plain-words-here')).toBe(
+      'cat ~/.netrc\nlogin me password-is [REDACTED]'
+    );
   });
 });

@@ -1,9 +1,9 @@
+import { redactSecrets } from '@switch-console/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearDiagnosticSections,
   getDiagnosticLogAttachment,
   redactDiagnosticLog,
-  redactSecrets,
   registerDiagnosticSection,
 } from './file-logger';
 
@@ -225,6 +225,11 @@ describe('redactSecrets (write path)', () => {
     ['anthropic key', 'sk-ant-aaaaaaaaaaaaaaaaaaaaaaaa', 'sk-ant-a'],
     ['jwt', 'eyJabcdefgh.eyJabcdefgh.signaturebits', 'signaturebits'],
     ['json password', JSON.stringify({ password: 'hunter2' }), 'hunter2'],
+    ['double-quoted assignment', 'DATABASE_PASSWORD="hunter2"', 'hunter2'],
+    ['single-quoted assignment', "export API_KEY='hunter2'", 'hunter2'],
+    ['quoted value with spaces', 'password = "alpha beta"', 'beta'],
+    ['quoted value with an escaped quote', 'token="alpha\\" beta"', 'beta'],
+    ['python dict password', "{'password': 'hunter2'}", 'hunter2'],
   ])('never lets %s reach disk', (_label, input, secret) => {
     const written = redactSecrets(input);
 

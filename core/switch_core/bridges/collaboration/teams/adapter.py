@@ -2199,6 +2199,7 @@ class TeamsAdapter(PlatformAdapter):
                 markup=self.rich_markup(),
                 elapsed_seconds=content.elapsed_seconds,
                 heading=False,
+                detail=False,
             )
         )
 

@@ -49,7 +49,11 @@ import {
 import { useAgents, useBridgeUsers, useRoom } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
-import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
+import {
+  type AccessLevel,
+  fromAccessLevel,
+  toAccessLevel,
+} from "../../data/visibility";
 import {
   EM_DASH,
   MONO_SX,
@@ -113,7 +117,11 @@ export default function RoomDetailPage() {
         {room.bridge_display_name && (
           <Chip label={room.bridge_display_name} size="small" />
         )}
-        <Button variant="outlined" size="small" onClick={() => setExportOpen(true)}>
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={() => setExportOpen(true)}
+        >
           Export to YAML
         </Button>
       </Stack>
@@ -137,7 +145,11 @@ export default function RoomDetailPage() {
           onSaved={refetch}
         />
         <Divider />
-        <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <ParticipantsSection
+          room={room}
+          canWrite={canWrite}
+          onChanged={refetch}
+        />
         <Divider />
         <RoomResourcesSection
           roomId={room.id}
@@ -191,7 +203,10 @@ export default function RoomDetailPage() {
 function RoomInfoSection({ room }: { room: RoomDetail }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+      <Typography
+        variant="overline"
+        sx={{ color: "text.secondary", display: "block" }}
+      >
         Room info
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
@@ -276,7 +291,10 @@ function RolesSection({
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+      <Typography
+        variant="overline"
+        sx={{ color: "text.secondary", display: "block" }}
+      >
         Roles
       </Typography>
       <Typography variant="caption" color="text.secondary">
@@ -475,7 +493,11 @@ function RoleRow({
           )}
           <Box sx={{ flexGrow: 1 }} />
           {canWrite && (
-            <Button size="small" onClick={() => setEditing(true)} disabled={busy}>
+            <Button
+              size="small"
+              onClick={() => setEditing(true)}
+              disabled={busy}
+            >
               Edit
             </Button>
           )}
@@ -539,6 +561,7 @@ function EditableFieldsSection({
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  /** Owner or admin: who may change the room's access and what its chat shows of agents' tools. */
   canManage: boolean;
   onSaved: () => void;
 }) {
@@ -546,6 +569,7 @@ function EditableFieldsSection({
   const [description, setDescription] = useState(room.description);
   const [instructions, setInstructions] = useState(room.instructions ?? "");
   const [access, setAccess] = useState<AccessLevel>(toAccessLevel(room));
+  const [showToolDetail, setShowToolDetail] = useState(room.show_tool_detail);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -554,6 +578,7 @@ function EditableFieldsSection({
     setDescription(room.description);
     setInstructions(room.instructions ?? "");
     setAccess(toAccessLevel(room));
+    setShowToolDetail(room.show_tool_detail);
   }, [room]);
 
   const isBridged = !!room.bridge_id;
@@ -562,7 +587,8 @@ function EditableFieldsSection({
     name !== room.name ||
     description !== room.description ||
     instructions !== (room.instructions ?? "") ||
-    access !== toAccessLevel(room);
+    access !== toAccessLevel(room) ||
+    showToolDetail !== room.show_tool_detail;
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -571,10 +597,18 @@ function EditableFieldsSection({
       await updateRoom(room.id, {
         name: name !== room.name ? name : undefined,
         description:
-          !isBridged && description !== room.description ? description : undefined,
+          !isBridged && description !== room.description
+            ? description
+            : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
-        ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
+        ...(canManage && access !== toAccessLevel(room)
+          ? fromAccessLevel(access)
+          : {}),
+        show_tool_detail:
+          canManage && showToolDetail !== room.show_tool_detail
+            ? showToolDetail
+            : undefined,
       });
       onSaved();
     } catch (err) {
@@ -582,11 +616,24 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
+  }, [
+    room,
+    name,
+    description,
+    instructions,
+    access,
+    showToolDetail,
+    isBridged,
+    canManage,
+    onSaved,
+  ]);
 
   return (
     <Stack spacing={2}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+      <Typography
+        variant="overline"
+        sx={{ color: "text.secondary", display: "block" }}
+      >
         Settings
       </Typography>
       {!canWrite && (
@@ -633,6 +680,22 @@ function EditableFieldsSection({
         optionLabels={ROOM_ACCESS_OPTION_LABELS}
         sx={{ maxWidth: 360 }}
       />
+      <Box>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={showToolDetail}
+              onChange={(e) => setShowToolDetail(e.target.checked)}
+              disabled={!canManage || saving}
+            />
+          }
+          label="Show tool detail in the chat"
+        />
+        <Typography variant="body2" color="text.secondary">
+          What agents' tools were given and gave back, with secrets masked. Only
+          the room's owner and admins can change this.
+        </Typography>
+      </Box>
       <Box>
         <Button
           variant="contained"
@@ -762,11 +825,15 @@ function ParticipantsSection({
     [room.id, onChanged],
   );
 
-  const isFixedMembership = room.channel_type === "group" || room.channel_type === "direct";
+  const isFixedMembership =
+    room.channel_type === "group" || room.channel_type === "direct";
 
   return (
     <Stack spacing={3}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+      <Typography
+        variant="overline"
+        sx={{ color: "text.secondary", display: "block" }}
+      >
         Participants
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
@@ -828,7 +895,8 @@ function ParticipantsSection({
         )}
         {isFixedMembership && (
           <Typography variant="caption" color="text.secondary">
-            Membership for {channelTypeLabel(room.channel_type)} rooms is managed from the messaging platform.
+            Membership for {channelTypeLabel(room.channel_type)} rooms is
+            managed from the messaging platform.
           </Typography>
         )}
       </Box>
@@ -1008,7 +1076,9 @@ function AgentRow({
               checked={receivesJoinEvents}
               disabled={!onToggleJoinEvents}
               onChange={(e) => onToggleJoinEvents?.(e.target.checked)}
-              slotProps={{ input: { "aria-label": `Notify ${name} when someone joins` } }}
+              slotProps={{
+                input: { "aria-label": `Notify ${name} when someone joins` },
+              }}
             />
           }
           label={
@@ -1044,7 +1114,10 @@ function AgentRow({
 function BridgeSection({ room }: { room: RoomDetail }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+      <Typography
+        variant="overline"
+        sx={{ color: "text.secondary", display: "block" }}
+      >
         Bridge
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap">
@@ -1092,7 +1165,9 @@ function ArchiveSection({
       }
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update archive state");
+      setError(
+        err instanceof Error ? err.message : "Failed to update archive state",
+      );
     } finally {
       setSaving(false);
     }
@@ -1100,7 +1175,10 @@ function ArchiveSection({
 
   return (
     <Stack spacing={2}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+      <Typography
+        variant="overline"
+        sx={{ color: "text.secondary", display: "block" }}
+      >
         Archive
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
@@ -1112,7 +1190,9 @@ function ArchiveSection({
       <Box>
         <Button
           variant="outlined"
-          startIcon={room.archived ? <UnarchiveOutlined /> : <ArchiveOutlined />}
+          startIcon={
+            room.archived ? <UnarchiveOutlined /> : <ArchiveOutlined />
+          }
           onClick={handleToggle}
           disabled={saving}
         >
@@ -1151,7 +1231,10 @@ function DangerSection({
 
   return (
     <Stack spacing={2}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+      <Typography
+        variant="overline"
+        sx={{ color: "text.secondary", display: "block" }}
+      >
         Danger zone
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
