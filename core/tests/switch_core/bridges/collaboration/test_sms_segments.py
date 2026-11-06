@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from switch_core.bridges.collaboration.sms.budget import HourlyBudget
 from switch_core.bridges.collaboration.sms.formatting import to_gsm_friendly, to_sms
 from switch_core.bridges.collaboration.sms.segments import (
     CUT_NOTICE,
@@ -112,23 +111,3 @@ def test_to_sms(markdown: str, plain: str) -> None:
 )
 def test_to_gsm_friendly(text: str, plain: str) -> None:
     assert to_gsm_friendly(text) == plain
-
-
-def test_budget_rolls_over_after_an_hour() -> None:
-    now = [0.0]
-    budget = HourlyBudget(10, clock=lambda: now[0])
-    budget.spend("+1", 4)
-    now[0] = 1800.0
-    budget.spend("+1", 3)
-    assert budget.remaining("+1") == 3
-    assert budget.remaining("+2") == 10
-    now[0] = 3601.0
-    assert budget.remaining("+1") == 7
-    now[0] = 5401.0
-    assert budget.remaining("+1") == 10
-
-
-def test_budget_never_goes_negative() -> None:
-    budget = HourlyBudget(2, clock=lambda: 0.0)
-    budget.spend("+1", 5)
-    assert budget.remaining("+1") == 0

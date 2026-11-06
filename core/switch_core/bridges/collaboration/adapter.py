@@ -72,6 +72,7 @@ from switch_core.ui_spec import UISpec
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from switch_core.bridges.collaboration.send_ledger import SendLedger
     from switch_core.db.models import Agent
 
 logger = logging.getLogger(__name__)
@@ -789,6 +790,8 @@ class PlatformAdapter(ABC):
         self._relay_to_holder: Callable[[dict[str, str]], None] | None = None
         # Set by the lifecycle (`set_gateway_public_url`).
         self._gateway_public_url: str | None = None
+        # Set by the lifecycle (`set_send_ledger`).
+        self._send_ledger: SendLedger | None = None
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
@@ -823,6 +826,19 @@ class PlatformAdapter(ABC):
         (`_hand_to_holder`), as this process holds the bridge. Nothing hands
         work to an adapter that does not override this."""
         logger.warning("Ignoring a relayed request this bridge has no use for")
+
+    def set_send_ledger(self, ledger: SendLedger) -> None:
+        """This bridge's per-recipient hourly send count, shared by every
+        process, for an adapter that limits what it sends each recipient."""
+        self._send_ledger = ledger
+
+    @property
+    def send_ledger(self) -> SendLedger:
+        if self._send_ledger is None:
+            raise RuntimeError(
+                f"{type(self).__name__} counted a send before its send ledger was set"
+            )
+        return self._send_ledger
 
     def set_third_party_avatars(self, enabled: bool) -> None:
         """Whether this adapter may hand platforms an icon drawn by an outside

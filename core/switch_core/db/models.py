@@ -2203,6 +2203,36 @@ class ServerConnector(TenantScoped, Base):
     )
 
 
+class BridgeHourlySend(TenantScoped, Base):
+    """What a bridge has sent one recipient in one clock hour, shared by every
+    switch-core process, so a per-recipient hourly limit holds however many
+    processes send and across restarts (`bridges/collaboration/send_ledger.py`).
+
+    `units` is whatever the bridge counts (SMS segments). `told_limit` is set
+    by the one process that tells the recipient the limit is reached. Rows from
+    earlier hours are deleted as the next one is spent.
+    """
+
+    __tablename__ = "bridge_hourly_sends"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "bridge_id", "recipient", "hour"),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_bridge_hourly_sends_bridge",
+            ondelete="CASCADE",
+        ),
+    )
+
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    recipient: Mapped[str] = mapped_column(Text, nullable=False)
+    hour: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    units: Mapped[int] = mapped_column(Integer, nullable=False)
+    told_limit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+
 # ── External Users ─────────────────────────────────────────────────────────────
 
 
