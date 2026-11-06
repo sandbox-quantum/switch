@@ -16,15 +16,20 @@ export function isSelectAllTarget(el: Element | null): boolean {
   return el instanceof HTMLElement && el.isContentEditable;
 }
 
+/** Monaco handles Cmd/Ctrl+A itself; selecting its hidden textarea would desync it. */
+function isInMonaco(el: Element | null): boolean {
+  return el?.closest('.monaco-editor') != null;
+}
+
 function isSelectAllShortcut(event: KeyboardEvent): boolean {
-  // Match the character, not the physical key: on AZERTY the KeyA position types Q,
-  // and claiming it would swallow Ctrl/Cmd+Q (Quit).
-  return (
-    (event.metaKey || event.ctrlKey) &&
-    !event.altKey &&
-    !event.shiftKey &&
-    event.key.toLowerCase() === 'a'
-  );
+  if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return false;
+  const key = event.key.toLowerCase();
+  if (key === 'a') return true;
+  // Chromium's own Ctrl+A goes by the physical key, so on Cyrillic, Greek,
+  // Hebrew or Arabic layouts (physical A types ф, α, ...) claim KeyA too. Only
+  // when the typed key is not a Latin letter: on AZERTY the KeyA position types
+  // Q, and claiming it would swallow Ctrl/Cmd+Q (Quit).
+  return event.code === 'KeyA' && !/^[a-z]$/.test(key);
 }
 
 /**
@@ -33,7 +38,7 @@ function isSelectAllShortcut(event: KeyboardEvent): boolean {
  */
 export function selectAllInFocusedField(doc: Document = document): boolean {
   const el = doc.activeElement;
-  if (!isSelectAllTarget(el)) return false;
+  if (!isSelectAllTarget(el) || isInMonaco(el)) return false;
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
     el.select();
   } else {

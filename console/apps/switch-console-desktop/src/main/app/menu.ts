@@ -1,4 +1,4 @@
-import { app, clipboard, Menu, shell, webContents } from 'electron';
+import { app, clipboard, Menu, shell } from 'electron';
 import { events } from '@main/lib/events';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import {
@@ -6,7 +6,6 @@ import {
   menuOpenSettingsChannel,
   menuQuitRequestedChannel,
   menuRedoChannel,
-  menuSelectAllChannel,
   menuUndoChannel,
 } from '@shared/events/appEvents';
 import {
@@ -14,6 +13,7 @@ import {
   SWITCH_CONSOLE_ISSUES_NEW_URL,
   SWITCH_CONSOLE_RELEASES_URL,
 } from '@shared/urls';
+import { selectAll } from './select-all';
 import { getMainWindow } from './window';
 
 function copyVersionInfo(): void {
@@ -23,21 +23,6 @@ function copyVersionInfo(): void {
     `Electron: ${process.versions.electron}`,
   ];
   clipboard.writeText(lines.join('\n'));
-}
-
-/**
- * Edit > Select All. In the app's own window the renderer decides, so it acts
- * only inside the focused text field rather than selecting the whole window
- * (CHOO-4120). Embedded web pages keep Chromium's select-all.
- */
-function selectAll(): void {
-  const focused = webContents.getFocusedWebContents();
-  const win = getMainWindow();
-  if (win && !win.isDestroyed() && (!focused || focused === win.webContents)) {
-    events.emit(menuSelectAllChannel, undefined);
-    return;
-  }
-  focused?.selectAll();
 }
 
 function requestQuit(): void {

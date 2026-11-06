@@ -91,6 +91,41 @@ it('Ctrl+Q on AZERTY (physical KeyA) is left alone so Quit still works', () => {
   expect(event.defaultPrevented).toBe(false);
 });
 
+function ctrlKeyDown(target: Element, key: string, code: string): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', {
+    key,
+    code,
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  target.dispatchEvent(event);
+  return event;
+}
+
+it('Ctrl+A on a Cyrillic layout (physical KeyA types ф) is claimed on a button', () => {
+  mount(CHROME);
+  const button = container.querySelector('button')!;
+  button.focus();
+  expect(ctrlKeyDown(button, 'ф', 'KeyA').defaultPrevented).toBe(true);
+});
+
+it('Ctrl+A on a Cyrillic layout is left to a focused text field', () => {
+  mount(CHROME + FIELDS);
+  const input = container.querySelector('input')!;
+  input.focus();
+  expect(ctrlKeyDown(input, 'ф', 'KeyA').defaultPrevented).toBe(false);
+});
+
+it('menu Select All leaves Monaco alone', () => {
+  mount('<div class="monaco-editor"><textarea>monaco hidden input</textarea></div>');
+  const textarea = container.querySelector('textarea')!;
+  textarea.focus();
+  textarea.setSelectionRange(3, 3);
+  menuSelectAll();
+  expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 3]);
+});
+
 it('menu Select All on a focused button selects nothing', () => {
   mount(CHROME);
   container.querySelector('button')!.focus();
