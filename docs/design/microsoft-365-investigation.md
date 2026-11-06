@@ -142,8 +142,14 @@ What would work, in order of preference:
    which can change). Both `oid` and `preferred_username` need the `profile`
    scope. Since the token comes straight from the token endpoint over TLS,
    OpenID Connect Core §3.1.3.7 allows TLS server validation instead of
-   checking its signature. Core needs an identity mode that reads named claims
-   from the ID token instead of calling a URL. This is the mode the maintainers
+   checking its signature. That waives only the signature: before it stores
+   `oid` and `tid` as the account, Core must still check that `aud` is this
+   client's id, that `exp` has not passed, that `iss` is
+   `https://login.microsoftonline.com/{tid}/v2.0` for the token's own `tid`
+   (the `organizations` authority accepts any tenant, so there is no single
+   issuer to compare with), and that `nonce` matches the sign-in's, if one was
+   sent. Core needs an identity mode that reads named claims from the ID token,
+   after those checks, instead of calling a URL. This is the mode the maintainers
    asked to see a report before building.
 2. **A second token for Graph.** Entra's refresh tokens are valid for every
    permission the client has consent for, so Core could redeem the refresh
