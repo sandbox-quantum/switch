@@ -79,13 +79,16 @@ export default function ConnectorCard({
         {onOpen ? (
           <ButtonBase
             onClick={onOpen}
+            disableRipple
             sx={{
               flex: 1,
               minWidth: 0,
               display: "block",
               textAlign: "left",
               borderRadius: "4px",
-              // The whole card is the hit area.
+              // The whole card is the hit area: the button is not positioned,
+              // so this stretches to the card rather than to the button.
+              position: "static",
               "&::after": { content: '""', position: "absolute", inset: 0, borderRadius: "10px" },
             }}
           >
