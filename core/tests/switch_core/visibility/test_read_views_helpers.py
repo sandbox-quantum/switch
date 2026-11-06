@@ -14,6 +14,7 @@ from switch_core.visibility.read_views import (
     AwakeCount,
     agent_bucket,
     box_awake,
+    box_disk,
     box_node,
     box_state,
     memory_band,
@@ -274,3 +275,42 @@ def test_awake_adds_up_each_controller_and_keeps_the_box_s_limit() -> None:
 )
 def test_awake_is_null_without_a_sound_report(reports) -> None:
     assert box_awake(reports, NOW) is None
+
+
+# --- each box's disk on the operator's overview ------------------------------------------------
+
+
+def _disk(**reading) -> SimpleNamespace:
+    return _box(heartbeat={"disk": reading})
+
+
+def test_disk_keeps_the_scope_the_box_sent() -> None:
+    disk = box_disk(
+        _disk(total_bytes=15 * GIB, available_bytes=12 * GIB, scope="workspace")
+    )
+    assert disk is not None
+    assert (disk.total_bytes, disk.available_bytes, disk.scope) == (
+        15 * GIB,
+        12 * GIB,
+        "workspace",
+    )
+    older = box_disk(_disk(total_bytes=8 * GIB, available_bytes=GIB))
+    assert older is not None and older.scope is None
+    odd = box_disk(_disk(total_bytes=8 * GIB, available_bytes=GIB, scope="<b>x</b>"))
+    assert odd is not None and odd.scope is None
+
+
+@pytest.mark.parametrize(
+    "heartbeat",
+    [
+        None,
+        {"disk": None},
+        {"disk": "full"},
+        {"disk": {"total_bytes": 0, "available_bytes": 0, "scope": "workspace"}},
+        {"disk": {"total_bytes": 10, "available_bytes": 11}},
+        {"disk": {"total_bytes": True, "available_bytes": 0}},
+        {"disk": {"available_bytes": 5}},
+    ],
+)
+def test_disk_is_null_for_a_reading_out_of_shape(heartbeat) -> None:
+    assert box_disk(_box(heartbeat=heartbeat)) is None

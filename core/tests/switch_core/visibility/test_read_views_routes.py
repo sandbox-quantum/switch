@@ -291,6 +291,8 @@ async def test_the_overview_shows_each_box_s_memory_awake_count_and_times(
     assert row["active_at"] == seen.isoformat()
     assert row["heartbeat_at"] == (seen + timedelta(minutes=5)).isoformat()
     assert row["running_observed_at"] == (seen - timedelta(hours=1)).isoformat()
+    # `_running`'s heartbeat has a disk reading with no scope: an older box.
+    assert row["disk"] == {"total_bytes": 100, "available_bytes": 50, "scope": None}
     _never_leaks(answer.text, controller_id, *agent_ids)
 
 

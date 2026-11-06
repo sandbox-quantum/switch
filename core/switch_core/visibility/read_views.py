@@ -306,6 +306,14 @@ class AwakeCount(BaseModel):
     max: int
 
 
+class DiskUsage(BaseModel):
+    total_bytes: int
+    available_bytes: int
+    # "workspace" (the agents' volume) or "unknown"; absent from older boxes.
+    # The apps show a disk figure only for "workspace".
+    scope: Literal["workspace", "unknown"] | None = None
+
+
 class OverviewBox(BaseModel):
     box: str
     user: str
@@ -325,6 +333,33 @@ class OverviewBox(BaseModel):
     running_observed_at: str | None = None
     # For a put-away box: when it goes for good. Null when not set.
     retain_until: str | None = None
+    # The disk the box last reported, with which disk it is. Null when not
+    # reported, out of shape, or 0 of 0 (a box that couldn't measure it).
+    disk: DiskUsage | None = None
+
+
+def _byte_count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def box_disk(machine: CloudMachine) -> DiskUsage | None:
+    """The box's disk reading from its heartbeat, as the owner's panel reads
+    it (`hosted_machines._usage`), but never raising on a reading out of shape."""
+    reading = (machine.heartbeat or {}).get("disk")
+    if not isinstance(reading, dict):
+        return None
+    total = _byte_count(reading.get("total_bytes"))
+    available = _byte_count(reading.get("available_bytes"))
+    if total is None or available is None or total == 0 or available > total:
+        return None
+    scope = reading.get("scope")
+    return DiskUsage(
+        total_bytes=total,
+        available_bytes=available,
+        scope=scope if scope in ("workspace", "unknown") else None,
+    )
 
 
 def memory_total_bytes(machine: CloudMachine) -> int | None:
@@ -456,6 +491,7 @@ async def shared_cloud_overview(
                 heartbeat_at=_iso(box.heartbeat_at),
                 running_observed_at=_iso(box.running_observed_at),
                 retain_until=_iso(box.retain_until),
+                disk=box_disk(box),
             )
         )
     # A paused user may have no box at all: they're still listed, as paused.
