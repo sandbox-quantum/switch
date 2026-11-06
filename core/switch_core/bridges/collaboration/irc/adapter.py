@@ -429,7 +429,9 @@ class IrcAdapter(PlatformAdapter):
     ) -> None:
         for channel, channel_type in channels:
             if is_channel(channel):
-                self._channel_types[self.canonical(channel)] = cast(ChannelType, channel_type)
+                self._channel_types[self.canonical(channel)] = cast(
+                    ChannelType, channel_type
+                )
                 if self.client:
                     await self.client.join(channel)
                     if channel_type == "channel_private":
