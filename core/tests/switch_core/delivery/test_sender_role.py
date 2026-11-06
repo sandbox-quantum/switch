@@ -6,6 +6,7 @@ else started."""
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -235,7 +236,7 @@ def test_ownership_rides_on_the_message_and_is_off_unless_said() -> None:
         sender_name="olivia",
     )
 
-    def built(**extra: bool) -> object:
+    def built(**extra: Any) -> object:
         return message_event(
             room_id="room-1",
             bridge_id=None,
