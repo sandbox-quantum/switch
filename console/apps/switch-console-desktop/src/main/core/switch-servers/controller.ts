@@ -37,6 +37,7 @@ import {
 import {
   normaliseServerUrl,
   type AddServerParams,
+  type ApiKeyLifetime,
   type BundledChatSignIn,
   type ClearTrustSettingsResult,
   type CreatedRegistrationKey,
@@ -709,9 +710,10 @@ export const switchServersController = createRPCController({
   createRegistrationKey: async (params: {
     serverId: string;
     label: string;
+    lifetime: ApiKeyLifetime;
   }): Promise<CreatedRegistrationKey> => {
     const server = await requireReachableServer(params.serverId);
-    return createRegistrationKey(server, params.label);
+    return createRegistrationKey(server, params.label, params.lifetime);
   },
 
   /** One of the signed-in person's keys in full, for copying. */
