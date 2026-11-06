@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_detail import agent_facing_summary
 from switch_core.db.models import Package, User
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.user_store import UserStore
@@ -33,6 +34,7 @@ _NO_DECISIONS = DecisionAvailability(
     enabled=False,
     server=ServerDefault(endpoint_url=None, api_key=None, bedrock_enabled=False),
     store=DecisionSettingsStore(),
+    controllers=AgentControllerStore(),
 )
 
 
