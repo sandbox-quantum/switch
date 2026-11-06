@@ -5143,6 +5143,9 @@ type ResourceJson = {
   created_by_agent_name?: string | null;
   can_remove?: boolean;
   content?: string;
+  owner_id?: string | null;
+  read_visibility?: string;
+  can_read?: boolean;
 };
 
 function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
@@ -5161,6 +5164,9 @@ function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
     packageIds: r.packages ?? [],
     ...(r.can_remove !== undefined ? { canRemove: r.can_remove } : {}),
     ...(kind === 'documents' && typeof r.content === 'string' ? { content: r.content } : {}),
+    ownerId: r.owner_id ?? null,
+    readVisibility: r.read_visibility === 'public' ? 'public' : 'private',
+    ...(r.can_read !== undefined ? { canRead: r.can_read } : {}),
   };
 }
 

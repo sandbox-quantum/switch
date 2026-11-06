@@ -311,6 +311,8 @@ describe('room resources', () => {
       roomScoped: false,
       createdByAgentName: null,
       packageIds: ['pkg-1'],
+      ownerId: null,
+      readVisibility: 'private',
     });
   });
 

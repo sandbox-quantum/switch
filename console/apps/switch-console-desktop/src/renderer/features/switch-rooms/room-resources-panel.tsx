@@ -5,6 +5,8 @@ import { type ReactNode, useState } from 'react';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -22,7 +24,7 @@ import { Input } from '@renderer/lib/ui/input';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type { RoomResource, RoomResourceKind } from '@shared/core/switch-servers/switch-servers';
 import { useRoomDetail } from './room-participants';
-import { attachableResources, resourcesByOrigin } from './room-resources';
+import { attachableResources, opensInResources, resourcesByOrigin } from './room-resources';
 
 const KIND_LABEL: Record<RoomResourceKind, { title: string; noun: string; none: string }> = {
   references: { title: 'References', noun: 'reference', none: 'No references attached.' },
@@ -119,6 +121,11 @@ const ResourceSection = observer(function ResourceSection({
   const queryClient = useQueryClient();
   const { navigate } = useNavigate();
   const serverId = workspacesStore.serverIdFor(workspaceId);
+  // Who is looking, to tell which attached items their Resources page opens for.
+  const viewer = {
+    id: serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null,
+    isAdmin: administersWorkspaceById(workspaceId),
+  };
   const key = roomResourcesKey(workspaceId, roomId, kind);
   const attached = useQuery({
     queryKey: key,
@@ -251,7 +258,7 @@ const ResourceSection = observer(function ResourceSection({
           document={reading}
           onClose={() => setReading(null)}
           onOpenInResources={
-            serverId !== null && !reading.roomScoped
+            serverId !== null && opensInResources(reading, viewer)
               ? () => {
                   setReading(null);
                   navigate('libraryItem', { serverId, kind: 'documents', itemId: reading.id });

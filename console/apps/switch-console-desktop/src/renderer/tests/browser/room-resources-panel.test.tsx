@@ -51,6 +51,12 @@ vi.mock('@renderer/lib/layout/navigation-provider', () => ({
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { serverIdFor: () => 'srv-1', activeId: 'ws-1' },
 }));
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { statusFor: () => ({ user: { id: 'me' } }) },
+}));
+vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
+  administersWorkspaceById: () => false,
+}));
 
 vi.mock('@renderer/lib/hooks/useTheme', () => ({
   useTheme: () => ({ effectiveTheme: 'emlight' }),
@@ -59,6 +65,8 @@ vi.mock('@renderer/lib/hooks/useTheme', () => ({
 import { RoomResourcesPanel } from '@renderer/features/switch-rooms/room-resources-panel';
 
 const base = {
+  ownerId: 'u-2',
+  readVisibility: 'public',
   description: '',
   typeLabel: null,
   urls: [],
@@ -248,5 +256,23 @@ describe('the Resources tab', () => {
       kind: 'documents',
       itemId: 'd-1',
     });
+  });
+
+  it('offers no Resources page for a document its owner keeps private', async () => {
+    listRoomResources.mockImplementation(async ({ kind }: { kind: keyof typeof RESOURCES }) =>
+      kind === 'documents'
+        ? [{ ...RESOURCES.documents[0], readVisibility: 'private', content: 'Secret plans' }]
+        : RESOURCES[kind]
+    );
+    const el = await renderPanel();
+    await act(async () =>
+      [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('Guide'))!.click()
+    );
+    for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+    const dialog = document.querySelector('[data-slot="dialog-content"]')!;
+    expect(dialog.textContent).toContain('Secret plans');
+    expect(
+      [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Open in Resources')
+    ).toBeUndefined();
   });
 });
