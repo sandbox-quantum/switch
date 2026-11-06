@@ -1,4 +1,5 @@
 import type {
+  PackageMemberRemoval,
   LibraryItem,
   LibraryKind,
   LibraryVisibility,
@@ -83,6 +84,12 @@ export const KIND_TEXT: Record<
     Noun: 'Document',
     none: 'No documents here yet. Write one to give your agents notes or instructions to share.',
   },
+  packages: {
+    title: 'Packages',
+    noun: 'package',
+    Noun: 'Package',
+    none: 'No packages here yet. Make one to attach a set of references and documents to a room in one go.',
+  },
 };
 
 export type LibraryFilter = {
@@ -156,6 +163,32 @@ export function hiddenRoomsText(count: number): string {
   return count === 1 ? '1 private room you can’t open' : `${count} private rooms you can’t open`;
 }
 
+/** "2 references · 1 document", or "Empty" for a package holding nothing. */
+export function packageContentsText(item: Pick<LibraryItem, 'referencesCount' | 'documentsCount'>) {
+  const parts = [
+    item.referencesCount > 0
+      ? `${item.referencesCount} ${item.referencesCount === 1 ? 'reference' : 'references'}`
+      : null,
+    item.documentsCount > 0
+      ? `${item.documentsCount} ${item.documentsCount === 1 ? 'document' : 'documents'}`
+      : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : 'Empty';
+}
+
 export function roomsText(count: number): string {
   return count === 0 ? 'In no rooms' : count === 1 ? 'In 1 room' : `In ${count} rooms`;
+}
+
+/** What removing an item cost, in words: the rooms that lost it, the private ones counted. */
+export function removalText(name: string, removal: PackageMemberRemoval): string {
+  const hidden = removal.hiddenAffectedRoomsCount;
+  const rooms = [
+    ...removal.affectedRoomNames,
+    ...(hidden > 0
+      ? [hidden === 1 ? '1 private room you can’t open' : `${hidden} private rooms you can’t open`]
+      : []),
+  ];
+  if (rooms.length === 0) return `Removed ${name}. No room had it only through this package.`;
+  return `Removed ${name}. These rooms had it only through this package, and no longer have it: ${rooms.join(', ')}.`;
 }

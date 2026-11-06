@@ -7,6 +7,8 @@ import {
   libraryPermissions,
   NO_LIBRARY_FILTER,
   offeredLibraryFilter,
+  packageContentsText,
+  removalText,
   parseUrls,
   typeOptions,
   visibilityOf,
@@ -28,6 +30,8 @@ function item(over: Partial<LibraryItem> = {}): LibraryItem {
     urls: ['https://github.com/acme/switch'],
     attachedRoomsCount: 0,
     packageIds: [],
+    referencesCount: 0,
+    documentsCount: 0,
     createdAt: '2026-11-01',
     ...over,
   };
@@ -172,5 +176,26 @@ describe('the form', () => {
     expect(
       changesOf('references', before, { ...before, urlsText: `${before.urlsText}\nhttps://b` })
     ).toEqual({ urls: ['https://github.com/acme/switch', 'https://b'] });
+  });
+});
+
+describe('a package', () => {
+  it('says what it holds in words', () => {
+    expect(packageContentsText({ referencesCount: 2, documentsCount: 1 })).toBe(
+      '2 references · 1 document'
+    );
+    expect(packageContentsText({ referencesCount: 1, documentsCount: 0 })).toBe('1 reference');
+    expect(packageContentsText({ referencesCount: 0, documentsCount: 0 })).toBe('Empty');
+  });
+
+  it('says which rooms lost an item taken out of it, counting the private ones', () => {
+    expect(removalText('Guide', { affectedRoomNames: [], hiddenAffectedRoomsCount: 0 })).toBe(
+      'Removed Guide. No room had it only through this package.'
+    );
+    expect(
+      removalText('Guide', { affectedRoomNames: ['design'], hiddenAffectedRoomsCount: 2 })
+    ).toBe(
+      'Removed Guide. These rooms had it only through this package, and no longer have it: design, 2 private rooms you can’t open.'
+    );
   });
 });

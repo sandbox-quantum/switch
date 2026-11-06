@@ -7,6 +7,8 @@ import type {
   LibraryItemRoom,
   LibraryKind,
   LibraryVisibility,
+  PackageMemberKind,
+  PackageMemberRemoval,
   ReferenceTypeOption,
 } from '@shared/core/switch-servers/library';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -30,6 +32,8 @@ type LibraryItemJson = {
   value?: { urls?: unknown };
   content?: string;
   attached_rooms_count?: number;
+  references_count?: number;
+  documents_count?: number;
   hidden_rooms_count?: number;
   packages?: string[];
   scope?: 'global' | 'room';
@@ -60,6 +64,8 @@ export function mapLibraryItem(kind: LibraryKind, r: LibraryItemJson): LibraryIt
     attachedRoomsCount: r.attached_rooms_count ?? 0,
     ...(r.hidden_rooms_count !== undefined ? { hiddenRoomsCount: r.hidden_rooms_count } : {}),
     packageIds: r.packages ?? [],
+    referencesCount: r.references_count ?? 0,
+    documentsCount: r.documents_count ?? 0,
     createdAt: r.created_at,
   };
 }
@@ -194,4 +200,55 @@ export async function fetchReferenceTypes(server: SwitchServer): Promise<Referen
       (a, b) =>
         Number(b.isBuiltin) - Number(a.isBuiltin) || a.displayName.localeCompare(b.displayName)
     );
+}
+
+/** The references or documents a package holds (`GET /packages/{id}/{kind}`). */
+export async function fetchPackageMembers(
+  server: SwitchServer,
+  packageId: string,
+  kind: PackageMemberKind
+): Promise<LibraryItem[]> {
+  const res = await gatewayFetch(server, `${itemPath('packages', packageId)}/${kind}`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as LibraryItemJson[]).map((r) => mapLibraryItem(kind, r));
+}
+
+/**
+ * Put a reference or document in a package. The server lets whoever may
+ * change the package do it, for an item the package's owner can read.
+ */
+export async function addPackageMember(
+  server: SwitchServer,
+  packageId: string,
+  kind: PackageMemberKind,
+  memberId: string
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `${itemPath('packages', packageId)}/${kind}/${encodeURIComponent(memberId)}`,
+    { authenticated: true, method: 'POST' }
+  );
+}
+
+/** Take a reference or document out of a package, saying which rooms lost it. */
+export async function removePackageMember(
+  server: SwitchServer,
+  packageId: string,
+  kind: PackageMemberKind,
+  memberId: string
+): Promise<PackageMemberRemoval> {
+  const res = await gatewayFetch(
+    server,
+    `${itemPath('packages', packageId)}/${kind}/${encodeURIComponent(memberId)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  const json = (await res.json()) as {
+    affected_room_names?: string[];
+    hidden_affected_rooms_count?: number;
+  };
+  return {
+    affectedRoomNames: json.affected_room_names ?? [],
+    hiddenAffectedRoomsCount: json.hidden_affected_rooms_count ?? 0,
+  };
 }

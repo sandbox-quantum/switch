@@ -1,4 +1,4 @@
-import { DoorOpen, FileText, Link2, MoreVertical, Trash2 } from 'lucide-react';
+import { DoorOpen, FileText, Link2, MoreVertical, Package, Trash2 } from 'lucide-react';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -14,6 +14,7 @@ import {
   accessOf,
   LIBRARY_ACCESS_OPTIONS,
   ownerText,
+  packageContentsText,
   roomsText,
 } from './library-model';
 
@@ -37,7 +38,9 @@ export function LibraryCard({
   /** Null when you may not delete it. */
   onDelete: (() => void) | null;
 }) {
-  const Icon = item.kind === 'references' ? Link2 : FileText;
+  const Icon = item.kind === 'references' ? Link2 : item.kind === 'packages' ? Package : FileText;
+  // What a package holds stands where a reference's type does.
+  const kindLine = item.kind === 'packages' ? packageContentsText(item) : item.typeLabel;
   const mine = viewerId !== null && item.ownerId === viewerId;
   const access = accessOf(item);
   const owner = ownerText(item, viewerId);
@@ -62,9 +65,9 @@ export function LibraryCard({
           {item.description || <span className="italic">No description.</span>}
         </p>
         <p className="flex min-w-0 items-center gap-1 text-xs text-foreground-muted">
-          {item.typeLabel && (
+          {kindLine && (
             <>
-              <span className="truncate">{item.typeLabel}</span>
+              <span className="truncate">{kindLine}</span>
               <span aria-hidden>·</span>
             </>
           )}

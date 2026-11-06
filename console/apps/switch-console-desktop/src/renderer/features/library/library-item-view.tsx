@@ -63,6 +63,7 @@ import {
   libraryRoomsKey,
   referenceTypesKey,
 } from './library-queries';
+import { PackageMembers } from './package-members';
 
 function useViewParams() {
   return useParams('libraryItem').params;
@@ -209,6 +210,14 @@ const LibraryItemPanel = observer(function LibraryItemPanel() {
         <ItemBody item={data} />
       )}
 
+      {data.kind === 'packages' && (
+        <PackageMembers
+          serverId={serverId}
+          workspaceId={workspaceId}
+          pkg={data}
+          canEdit={permissions.canEdit}
+        />
+      )}
       <RoomsSection workspaceId={workspaceId} item={data} />
       {data.packageIds.length > 0 && <PackagesLine workspaceId={workspaceId} item={data} />}
     </Page>
@@ -647,7 +656,7 @@ export const libraryItemView = {
     if (
       typeof p.serverId !== 'string' ||
       typeof p.itemId !== 'string' ||
-      (p.kind !== 'references' && p.kind !== 'documents')
+      (p.kind !== 'references' && p.kind !== 'documents' && p.kind !== 'packages')
     ) {
       return { ok: false, redirect: 'home', discardParams: true };
     }
