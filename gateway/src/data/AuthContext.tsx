@@ -6,6 +6,7 @@ import {
   fetchSession,
   login as apiLogin,
   logout as apiLogout,
+  signOutEverywhere,
   switchTenant,
 } from "./api";
 import { canAdminTenant as sessionCanAdminTenant, clearPendingInvite } from "./sessionState";
@@ -22,6 +23,7 @@ interface AuthState {
   refresh: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  logoutEverywhere: () => Promise<void>;
   switchTo: (tenantId: string) => Promise<void>;
 }
 
@@ -89,6 +91,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
   }, []);
 
+  const logoutEverywhere = useCallback(async () => {
+    clearPendingInvite();
+    await signOutEverywhere();
+    setSession(null);
+  }, []);
+
   // A full reload rather than a state update: every page holds data fetched
   // for the workspace it was opened in, and none of it is valid in the next.
   const switchTo = useCallback(async (tenantId: string) => {
@@ -106,6 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh,
     login,
     logout,
+    logoutEverywhere,
     switchTo,
   };
 

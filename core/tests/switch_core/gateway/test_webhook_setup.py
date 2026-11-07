@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from switch_core.bridges.collaboration.webhook.adapter import WebhookAdapter
 from switch_core.gateway.collaborations import create_bridge, list_bridges
 from switch_core.gateway.schemas import BridgeCreateRequest
@@ -12,8 +14,10 @@ from tests.switch_core.gateway.test_collaborations_authz import (
 from tests.switch_core.gateway.test_collaborations_preconfigured import _Lifecycle
 
 
+@pytest.mark.parametrize("is_admin", [True, False])
 async def test_generated_secrets_are_returned_only_when_the_admin_creates_the_bridge(
     session_factory,
+    is_admin,
 ):
     config = await WebhookAdapter.prepare_config(
         {"outbound_url": "https://chat.example/receive"}
@@ -39,6 +43,12 @@ async def test_generated_secrets_are_returned_only_when_the_admin_creates_the_br
             _admin(),
         )
     assert created.setup_values == WebhookAdapter.setup_values(config)
+    assert created.can_manage is True
+    assert created.can_delete is True
     async with session_factory() as db:
-        listed = await list_bridges(db, _BRIDGE_STORE, _ROOM_STORE, lifecycle, _admin())
+        listed = await list_bridges(
+            db, _BRIDGE_STORE, _ROOM_STORE, lifecycle, _admin(), is_admin
+        )
     assert all(item.setup_values is None for item in listed)
+    assert all(item.can_manage is is_admin for item in listed)
+    assert all(item.can_delete is is_admin for item in listed)
