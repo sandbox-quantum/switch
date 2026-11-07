@@ -77,9 +77,12 @@ export async function checkAcpSignIn(
   input: SignInCheckInput
 ): Promise<ProviderReadiness> {
   let client: StdioJsonRpcClient | undefined;
+  let release: (() => void | Promise<void>) | undefined;
   const handshake = async () => {
+    const launch = await hooks.launch(input);
+    release = launch.release;
     client = new StdioJsonRpcClient({
-      ...(await hooks.launch(input)),
+      ...launch,
       cwd: input.cwd,
       logger: noopLogger,
       onExit: () => {},
@@ -98,7 +101,11 @@ export async function checkAcpSignIn(
       `${hooks.label} started but has no sign-in check. If its sessions fail, sign in on the execution machine with ${loginCommandOf(hooks, input.binaryPath)}.`
     );
   } finally {
-    await client?.dispose();
+    try {
+      await client?.dispose();
+    } finally {
+      await release?.();
+    }
   }
 }
 
@@ -115,6 +122,7 @@ interface State {
   id: string;
   nativeId: string;
   client: StdioJsonRpcClient;
+  release?: () => void | Promise<void>;
   turn: string | null;
   queue: ProviderSendTurnInput[];
   items: Map<string, ProviderItem>;
@@ -186,17 +194,40 @@ export class AcpAdapter implements ProviderAdapter {
       binaryPath,
       cwd,
       env: input.env,
+      mcpServers: input.mcpServers,
     });
-    const client = new StdioJsonRpcClient({
-      ...launch,
-      cwd,
-      logger: this.logger,
-      onExit: (reason) => this.exited(input.sessionId, reason),
-    });
+    let releaseRan = false;
+    const runRelease = async () => {
+      if (releaseRan) return;
+      releaseRan = true;
+      try {
+        await launch.release?.();
+      } catch (error) {
+        this.logger.error(`${hooks.label} release failed`, { error: String(error) });
+      }
+    };
+    let client: StdioJsonRpcClient;
+    try {
+      client = new StdioJsonRpcClient({
+        ...launch,
+        cwd,
+        logger: this.logger,
+        onExit: (reason) => this.exited(input.sessionId, reason),
+      });
+    } catch (cause) {
+      await runRelease();
+      throw new ProviderSessionError(
+        hooks.provider,
+        input.sessionId,
+        `Could not start ${hooks.label}: ${String(cause)}`,
+        { cause }
+      );
+    }
     const state: State = {
       id: input.sessionId,
       nativeId: '',
       client,
+      release: runRelease,
       turn: null,
       queue: [],
       items: new Map(),
@@ -234,7 +265,9 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      if (!launch.mcpServersInLaunch) {
+        requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      }
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -255,7 +288,9 @@ export class AcpAdapter implements ProviderAdapter {
         }))
       )
         await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = launch.mcpServersInLaunch
+        ? []
+        : acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
       if (input.resume) {
         method = agent.loadSession
@@ -293,6 +328,7 @@ export class AcpAdapter implements ProviderAdapter {
     } catch (cause) {
       await client.dispose();
       this.sessions.delete(state.id);
+      await runRelease();
       if (cause instanceof ProviderConversationUnavailableError) throw cause;
       const details =
         cause instanceof JsonRpcError &&
@@ -784,6 +820,7 @@ export class AcpAdapter implements ProviderAdapter {
     this.sessions.delete(id);
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });
     this.emit(state, { type: 'session.exited', reason });
+    void state.release?.();
   }
   private require(id: string): State {
     const state = this.sessions.get(id);
