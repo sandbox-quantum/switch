@@ -40,6 +40,38 @@ const context = {
 };
 
 describe('chat projection', () => {
+  it('keeps a subagent tool row and its stable child id', () => {
+    const projector = new ChatProjector(session('claude'), null);
+    projector.bindTurn('turn', context);
+    const projected = projector.ingest(
+      {
+        provider: 'claude',
+        sessionId: 'session',
+        eventId: 'subagent-started',
+        createdAt: '2026-09-07T12:00:00Z',
+        turnId: 'turn',
+        type: 'item.started',
+        item: {
+          id: 'agent-tool',
+          type: 'subagent',
+          status: 'in_progress',
+          title: 'Find the config',
+          toolName: 'Explore',
+          nativeChildId: 'task-42',
+        },
+      },
+      0
+    )[0];
+    expect(projected).toMatchObject({
+      type: 'item.upsert',
+      item: {
+        kind: 'tool-activity',
+        status: 'in-progress',
+        subagent: { agent: 'Explore', taskId: 'task-42' },
+      },
+    });
+  });
+
   it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
     'projects %s text with bounded full replacements and immediate final state',
     (provider) => {

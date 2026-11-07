@@ -48,6 +48,9 @@ const item = z.strictObject({
   text: z.string(),
   attachments: z.array(attachmentSchema),
   origin: origin.nullable(),
+  subagent: z
+    .strictObject({ agent: z.string().min(1).max(100), taskId: id.max(100).nullable() })
+    .optional(),
 });
 const option = z.strictObject({
   optionId: id,

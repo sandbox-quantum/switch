@@ -1247,6 +1247,131 @@ describe('ClaudeAdapter background subagents', () => {
     await adapter.stopAll();
   });
 
+  it('keeps a background Agent activity open until its task notification', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-agent', text: 'delegate' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(
+      task('task_started', {
+        task_id: 'agent-42',
+        tool_use_id: 'tool-agent',
+        task_type: 'local_agent',
+        subagent_type: 'Explore',
+        description: 'Find the config',
+        is_backgrounded: true,
+      })
+    );
+    query.emit(
+      assistantMessage('agent-call', [
+        {
+          type: 'tool_use',
+          id: 'tool-agent',
+          name: 'Agent',
+          input: { subagent_type: 'Explore', description: 'Find the config' },
+        },
+      ])
+    );
+    const opened = await recorder.waitFor(
+      'item.started',
+      (event) => event.item.id === 'tool-agent',
+      1_000
+    );
+    expect(opened.item).toMatchObject({ type: 'subagent', nativeChildId: 'agent-42' });
+
+    query.emit({
+      type: 'user',
+      parent_tool_use_id: null,
+      uuid: 'user-tool-result',
+      session_id: 'native-1',
+      message: {
+        id: 'user-tool-result',
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool-agent', content: 'started' }],
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(recorder.ofType('item.completed').some((event) => event.item.id === 'tool-agent')).toBe(
+      false
+    );
+
+    query.emit(resultMessage([sent!.uuid!]));
+    await recorder.waitFor('turn.completed', (event) => event.turnId === 'turn-agent', 1_000);
+    query.emit(
+      task('task_updated', { task_id: 'agent-42', patch: { status: 'completed' } })
+    );
+    expect(recorder.ofType('item.completed').some((event) => event.item.id === 'tool-agent')).toBe(
+      false
+    );
+    query.emit(
+      task('task_notification', {
+        task_id: 'agent-42',
+        status: 'completed',
+        output_file: '',
+        summary: 'Found it',
+      })
+    );
+    const completed = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'tool-agent',
+      1_000
+    );
+    expect(completed.turnId).toBe('turn-agent');
+    expect(completed.item).toMatchObject({
+      type: 'subagent',
+      nativeChildId: 'agent-42',
+      status: 'completed',
+    });
+    await adapter.stopAll();
+  });
+
+  it.each([
+    ['failed', 'failed'],
+    ['stopped', 'failed'],
+  ] as const)('reports a %s subagent as %s', async (taskStatus, itemStatus) => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-failed-agent', text: 'delegate' });
+    const query = sdk.latest();
+    query.emit(
+      task('task_started', {
+        task_id: 'agent-failed',
+        tool_use_id: 'tool-failed-agent',
+        task_type: 'local_agent',
+        is_backgrounded: true,
+      })
+    );
+    query.emit(
+      assistantMessage('failed-agent-call', [
+        {
+          type: 'tool_use',
+          id: 'tool-failed-agent',
+          name: 'Agent',
+          input: { subagent_type: 'Explore', description: 'Find it' },
+        },
+      ])
+    );
+    await recorder.waitFor(
+      'item.started',
+      (event) => event.item.id === 'tool-failed-agent',
+      1_000
+    );
+    query.emit(
+      task('task_notification', {
+        task_id: 'agent-failed',
+        status: taskStatus,
+        output_file: '',
+        summary: 'did not complete',
+      })
+    );
+    const completed = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'tool-failed-agent',
+      1_000
+    );
+    expect(completed.item.status).toBe(itemStatus);
+    await adapter.stopAll();
+  });
+
   it('counts a foreground subagent only once it is moved to the background', async () => {
     const { sdk, adapter } = await startSession();
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
