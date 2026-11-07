@@ -80,6 +80,7 @@ from switch_core.gateway.schemas import (
     UpdateAgentDescriptionRequest,
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
+    UpdateAgentMidTurnDeliveryRequest,
     UpdateAgentOptionsRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
@@ -874,6 +875,31 @@ async def update_addressing_policy(
         connections=protocol.connections,
     )
     return await _detail_for_caller(session, detail, user, is_admin, config)
+
+
+@router.put("/{agent_id}/mid-turn-delivery")
+async def update_mid_turn_delivery(
+    agent_id: str,
+    req: UpdateAgentMidTurnDeliveryRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> dict[str, str]:
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.owner_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner can change mid-turn delivery",
+        )
+    await agent_store.update(
+        session,
+        agent_id,
+        metadata_={**(agent.metadata_ or {}), "mid_turn_delivery": req.delivery},
+    )
+    await session.commit()
+    return {"delivery": req.delivery}
 
 
 @router.put("/{agent_id}/can-manage-agents")

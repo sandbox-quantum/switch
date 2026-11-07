@@ -11,7 +11,7 @@ the same event whichever path produced it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -51,6 +51,8 @@ def message_event(
     attachments: list[AttachmentRef] | None = None,
     opening_message: str | None = None,
     sender_role: str | None = None,
+    sender_owns_agent: bool = False,
+    mid_turn_delivery: Literal["queue", "steer"] = "steer",
     switch_notice: str | None = None,
 ) -> AgentEvent:
     """Build the `message` event the agent receives, with any attached files.
@@ -86,6 +88,8 @@ def message_event(
             attachments=attachments or [],
             opening_message=opening_message,
             sender_role=sender_role,
+            sender_owns_agent=sender_owns_agent,
+            mid_turn_delivery=mid_turn_delivery,
             switch_notice=switch_notice,
         ),
     )

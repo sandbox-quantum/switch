@@ -155,3 +155,24 @@ async def test_an_organization_admin_without_a_membership_is_an_admin(
             == "admin"
         )
         await session.rollback()
+
+
+async def test_steering_owner_is_the_verified_agent_owner() -> None:
+    agent = SimpleNamespace(owner_id="owner")
+    for principal, expected in [
+        (SenderPrincipal("user", "client", ["owner"], None), True),
+        (SenderPrincipal("user", "client", ["workspace-owner"], None), False),
+        (SenderPrincipal("agent", "other-agent", [], "owner"), False),
+        (None, False),
+    ]:
+        recipient = _recipient(principal)
+        recipient.agent = agent
+        assert (
+            await AgentRecipient._sender_owns_agent(
+                recipient,
+                None,
+                "@sender:test",
+                {},  # type: ignore[arg-type]
+            )
+            is expected
+        )

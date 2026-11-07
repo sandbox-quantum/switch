@@ -332,6 +332,9 @@ async def assemble_agent_detail(
         **summary.model_dump(),
         agent_type=agent.agent_type,
         can_manage_agents=agent.can_manage_agents,
+        mid_turn_delivery="queue"
+        if (agent.metadata_ or {}).get("mid_turn_delivery") == "queue"
+        else "steer",
         integration_profile=agent.integration_profile
         if isinstance(agent.integration_profile, dict)
         else {},
