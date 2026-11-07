@@ -175,3 +175,68 @@ Expect the agent to start a session if necessary and reply **24.14.0** in the
 room. A startup notification alone is not the provider's answer: check its
 Console session for the matching prompt and file read. This proves more than
 an HTTP health check. Approve any legitimate read request in the session.
+
+## 5. Make your first change
+
+From the clone's root, create a branch and make one useful clarification in
+this guide, based on your walkthrough. Preview Markdown in your editor, then:
+
+```bash
+git switch -c docs/my-first-change
+# Edit docs/contributing/quickstart.md, then check only your intended change:
+git diff --check
+git diff -- docs/contributing/quickstart.md
+```
+
+For code contributions, choose the relevant tree:
+
+| Path | Responsibility and checks |
+| --- | --- |
+| `core/` | Python service and tests; from root: `just check`, `just typecheck`, `just test` (or `just test -k test_name`) |
+| `console/` | Desktop app in `apps/`, shared agent packages in `packages/`; from `console/`: `pnpm run format:check`, `pnpm run lint`, `pnpm run typecheck`, `pnpm run test` |
+| `gateway/` | Operator dashboard; from root: `just gateway-test`, `just gateway-build` (includes TypeScript checks) |
+| `docs/` | Contributor guides/designs; preview Markdown and check links. `official/` is generated; edit its source repository instead |
+
+Core database tests create a throwaway PostgreSQL through Testcontainers;
+Docker must be reachable, but do not point tests at your development database.
+Use the [contribution testing policy](../../CONTRIBUTING.md#testing) for the
+pre-PR checks. A documentation-only edit needs command/link verification,
+not thousands of unrelated code tests.
+
+Before opening a PR, review the diff for secrets/unrelated files, reference
+your issue, and fill in **What this changes** and **How it was tested** in the
+[PR template](../../.github/PULL_REQUEST_TEMPLATE.md). Name your OS and starting
+SHA; distinguish source checks from a real room reply. The CLA assistant asks
+first-time contributors to reply with:
+
+> I have read the CLA Document and I hereby sign the CLA
+
+See the [CLA instructions](../../CONTRIBUTING.md#contributor-license-agreement-required)
+for corporate contributions. Stop foreground processes with Ctrl+C, then
+`just down` from the Core clone's root; it preserves Docker volumes.
+
+## If a step fails
+
+- **Missing tool:** return to step 1; check `just`, bash and OpenSSL in the
+  same terminal used for `just init-env`. Docker must be reachable from WSL.
+- **Existing `.env` / missing `DB_OWNER_*`:** keep it and its database intact.
+  Compare with `.env.example` and the [two-role explanation](../old/LOCAL_DEVELOPMENT.md#two-database-roles-not-one).
+  Do not replace live secrets or wipe volumes to complete this walkthrough;
+  use a fresh clone only when the existing stack's ports are available.
+- **CRLF/frontmatter error:** preserve the old checkout and clone into a new
+  directory in WSL with `-c core.autocrlf=false` as above. The separate
+  [Windows LF fix](https://github.com/sandbox-quantum/switch/pull/1016) is not
+  part of this guide. `git add --renormalize .` stages files; it does not
+  rewrite the working-tree bytes the loader reads.
+- **Port conflict:** identify the existing service before stopping it. Core
+  can pass health checks while a bridge fails to bind `8081`; check its log.
+  Changing only `COLLABORATION_CALLBACK_PORT` leaves Mattermost's configured
+  callback URL pointing at `8081`, so it is not a complete recovery.
+- **Provider present, no reply:** keep Console running, confirm installation
+  *and* authentication/controller availability, the registered agent in the
+  room, its full mention, and the confirmed owner link. Check the agent's
+  session for approvals or provider errors. See the [smoke test](../official/getting-started/smoke-test.md).
+- **Sign-in accepted by Core but not Console:** check Console's error and the
+  desktop keychain/secret-service prompt. Launch from an interactive desktop
+  terminal; do not disable secure storage. [#1551](https://github.com/sandbox-quantum/switch/issues/1551)
+  records the detached macOS launch symptom; this is not a verified WSL fix.
