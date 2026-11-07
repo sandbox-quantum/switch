@@ -349,6 +349,10 @@ class ConnectorApps:
         """How this server reaches vendors, held to its outbound policy."""
         return self._http
 
+    @property
+    def catalog(self) -> dict[str, Connection]:
+        return self._catalog
+
     def definition(self, service: str) -> ConnectionDefinition:
         return self._catalog[service].definition
 
