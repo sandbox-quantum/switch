@@ -64,6 +64,12 @@ structured content or one JSON text block. Identity requests have time and
 response-size limits, refuse redirects, and report fixed failure codes rather
 than vendor diagnostics.
 
+`identity.account_id` can be a nonempty list of dotted paths when the account
+needs several stable identifiers. Each value must be a nonempty string or an
+integer. Switch percent-encodes each part and joins them with `:`, so a vendor
+value containing a colon cannot collide with a boundary. A single path keeps
+its existing account-id representation.
+
 For a vendor offering no OAuth scopes, `access.unscoped: true` explicitly permits
 empty `read.scopes` and `write.scopes`. Both levels are required and a connection
 is always recorded as write access. Vendors with scopes must keep the normal

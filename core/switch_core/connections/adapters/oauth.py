@@ -514,14 +514,21 @@ class OAuthAdapter:
                     f"(HTTP {response.status_code})."
                 )
             body = self._json(response, "account")
-        account_id = _path_value(body, self._identity.account_id)
-        label = _path_value(body, self._identity.label)
-        if type(account_id) is int:
-            account_id = str(account_id)
-        if not isinstance(account_id, str) or not account_id:
+        paths = self._identity.account_id
+        values = [
+            _path_value(body, path)
+            for path in (paths if isinstance(paths, list) else [paths])
+        ]
+        if any(type(value) not in (str, int) or value == "" for value in values):
             raise ServiceAdapterError(
                 "identity_account: did not name the account's id."
             )
+        account_id = (
+            ":".join(quote(str(value), safe="") for value in values)
+            if isinstance(paths, list)
+            else str(values[0])
+        )
+        label = _path_value(body, self._identity.label)
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )
