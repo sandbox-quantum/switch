@@ -1513,9 +1513,18 @@ export const workspacesController = createRPCController({
    * vendor, and this Console's listener takes the result back. Resolves to the
    * flow's id.
    */
-  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+  startServiceConnection: (params: {
+    workspaceId: string;
+    service: string;
+    fields?: Record<string, string>;
+  }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
-      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(
+        server,
+        params.service,
+        (url) => appService.openExternal(url),
+        params.fields
+      )
     ),
 
   getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>
