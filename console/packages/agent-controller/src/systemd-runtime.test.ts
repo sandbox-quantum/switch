@@ -230,6 +230,44 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     ).toMatchObject({ status: 'unconfigured' });
   });
 
+  // D-24: the check runs as an agent's unit would (`separate-users.ts` agentUnitTemplate).
+  it.each(['pi', 'claude', 'codex'] as const)(
+    'probes %s with the environment an agent user has, SWITCH_HOST_SHARED_GROUP=1 with it',
+    async (provider) => {
+      const bundle = join(dir, 'probe-bundle.mjs');
+      // Answers as the bundle's --probe does, telling what it was given.
+      writeFileSync(
+        bundle,
+        [
+          'const seen = {',
+          '  argv: process.argv.slice(2),',
+          '  shared: process.env.SWITCH_HOST_SHARED_GROUP ?? null,',
+          '  home: process.env.HOME,',
+          '  names: Object.keys(process.env).sort(),',
+          '};',
+          "console.log(JSON.stringify({ status: 'unknown', message: JSON.stringify(seen), models: [] }));",
+          '',
+        ].join('\n')
+      );
+      config = { ...config, bundle };
+      runtime = makeRuntime();
+      const answer = await runtime.probe(provider, '/usr/bin/fake-cli', dir, null);
+      const seen = JSON.parse(answer.message) as {
+        argv: string[];
+        shared: string | null;
+        home: string;
+        names: string[];
+      };
+      expect(seen.argv).toEqual(['--probe', provider, dir, '/usr/bin/fake-cli']);
+      expect(seen.shared).toBe('1');
+      expect(seen.home).toBe(join(config.dataDir, 'probe-home-local'));
+      // The controller's provider settings but those naming its home, as before.
+      expect(seen.names).toContain('ANTHROPIC_API_KEY');
+      expect(seen.names).not.toContain('CLAUDE_CONFIG_DIR');
+      expect(seen.names).not.toContain('UNRELATED');
+    }
+  );
+
   it('observes the agent host’s health, current only for the unit’s process', async () => {
     await start('agent-1');
     const health = join(config.agentsDir, '01', 'watcher', 'health.json');

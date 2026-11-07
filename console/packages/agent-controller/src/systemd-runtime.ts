@@ -8,6 +8,7 @@ import {
   CONTROL_FILE,
   clearTakenOver,
   type ProviderReadiness,
+  SHARED_GROUP_ENV,
   type SharedHostConfig,
   sharedConfigSchema,
   WATCH_FLAGS_FILE,
@@ -240,6 +241,10 @@ export class SystemdRuntime implements AgentRuntime {
       PATH: this.deps.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       HOME: probeHome,
       ...given,
+      // As the unit an agent runs in has it (`separate-users.ts` agentUnitTemplate), so a check that
+      // tells a user of its own by it says what it says there: Pi's, that /login does not
+      // help where only the controller's keys reach an agent (`pi/sign-in.ts`, D-24).
+      [SHARED_GROUP_ENV]: '1',
     });
   }
 
