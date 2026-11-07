@@ -13,7 +13,7 @@ auth:
     registration: dynamic
     # [DOCUMENTED] RFC 8252 loopback redirection on 127.0.0.1 for native/public desktop clients.
     redirect: [loopback]
-    # [DOCUMENTED] revocation_endpoint (https://mcp.notion.com/oauth/revoke) advertised at https://mcp.notion.com/.well-known/oauth-authorization-server.
+    # [DOCUMENTED] revocation_endpoint (https://mcp.notion.com/token) advertised at https://mcp.notion.com/.well-known/oauth-authorization-server.
     revocation_discovered: true
   identity:
     # [DOCUMENTED] RFC 7662 token introspection (POST https://mcp.notion.com/introspect) advertised as introspection_endpoint.
