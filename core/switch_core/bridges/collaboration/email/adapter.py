@@ -511,11 +511,9 @@ class EmailAdapter(PlatformAdapter):
         body, attachments, attachment_failures = self._extract_parts(msg)
 
         # Record thread info for outgoing replies
-        self._thread_recipients[msg_id] = sender_email
-        self._thread_subjects[msg_id] = subject
+        self._set_thread_metadata(msg_id, sender_email, subject)
         if root_id:
-            self._thread_recipients[root_id] = sender_email
-            self._thread_subjects[root_id] = subject
+            self._set_thread_metadata(root_id, sender_email, subject)
 
         # Command handling: !command or /command
         stripped_body = body.strip()
@@ -636,13 +634,129 @@ class EmailAdapter(PlatformAdapter):
             self._seen_message_ids.clear()
         self._seen_message_ids.add(msg_id)
 
+    def _set_thread_metadata(self, key: str, recipient: str, subject: str) -> None:
+        """Cache thread metadata in memory, bounding cache size to avoid leaks."""
+        clean_key = clean_message_id(key) or key
+        if len(self._thread_recipients) >= _SEEN_CACHE_SIZE:
+            self._thread_recipients.clear()
+            self._thread_subjects.clear()
+        self._thread_recipients[clean_key] = recipient
+        self._thread_subjects[clean_key] = subject
+
     # ── Outbound ──────────────────────────────────────────────────────────────
+
+    def _read_thread_from_mailbox(self, root_id: str) -> tuple[str | None, str | None]:
+        """Read recipient and original subject for a thread from the IMAP mailbox.
+
+        Enables stateless multi-pod horizontal scaling without relying on in-memory maps.
+        Runs synchronously in a worker thread via asyncio.to_thread.
+        """
+        clean_id = clean_message_id(root_id)
+        if not clean_id:
+            return None, None
+
+        imap: imaplib.IMAP4 | imaplib.IMAP4_SSL | None = None
+        try:
+            imap = self._create_imap_client()
+            status, _ = imap.select(self.config.imap_folder, readonly=True)
+            if status != "OK":
+                logger.warning(
+                    "Failed to select folder %s for reading thread %s",
+                    self.config.imap_folder,
+                    clean_id,
+                )
+                return None, None
+
+            # Search by Message-ID header or References header
+            search_query = f'(OR (HEADER Message-ID "{clean_id}") (HEADER References "{clean_id}"))'
+            status, data = imap.search(None, search_query)
+            if status != "OK" or not data or not data[0]:
+                status, data = imap.search(None, f'(HEADER Message-ID "{clean_id}")')
+                if status != "OK" or not data or not data[0]:
+                    return None, None
+
+            msg_nums = data[0].split()
+            if not msg_nums:
+                return None, None
+
+            recipient: str | None = None
+            subject: str | None = None
+            own_address = self.config.email_address.lower().strip()
+
+            for msg_num in msg_nums:
+                fetch_status, fetch_data = imap.fetch(msg_num, "(BODY.PEEK[HEADER])")
+                if fetch_status != "OK" or not fetch_data:
+                    fetch_status, fetch_data = imap.fetch(msg_num, "(RFC822.HEADER)")
+                    if fetch_status != "OK" or not fetch_data:
+                        continue
+
+                raw_headers: bytes | None = None
+                for part in fetch_data:
+                    if (
+                        isinstance(part, tuple)
+                        and len(part) > 1
+                        and isinstance(part[1], bytes)
+                    ):
+                        raw_headers = part[1]
+                        break
+
+                if not raw_headers:
+                    continue
+
+                header = BytesParser(policy=default_policy).parsebytes(
+                    raw_headers, headersonly=True
+                )
+
+                if not subject:
+                    raw_subject = header.get("Subject")
+                    if raw_subject:
+                        subject = decode_mime_header(raw_subject)
+
+                if not recipient:
+                    reply_to = header.get("Reply-To") or header.get("From")
+                    if reply_to:
+                        _, addr = parseaddr(decode_mime_header(reply_to))
+                        addr_clean = addr.lower().strip()
+                        if addr_clean and addr_clean != own_address:
+                            recipient = addr_clean
+
+                if not recipient:
+                    to_and_cc = (header.get_all("To") or []) + (
+                        header.get_all("Cc") or []
+                    )
+                    for to_field in to_and_cc:
+                        for _, addr in getaddresses([decode_mime_header(to_field)]):
+                            addr_clean = addr.lower().strip()
+                            if addr_clean and addr_clean != own_address:
+                                recipient = addr_clean
+                                break
+                        if recipient:
+                            break
+
+                if recipient and subject:
+                    break
+
+            return recipient, subject
+        except Exception as exc:
+            logger.warning("Could not read thread %s from mailbox: %s", clean_id, exc)
+            return None, None
+        finally:
+            if imap is not None:
+                try:
+                    imap.close()
+                except Exception:
+                    pass
+                try:
+                    imap.logout()
+                except Exception:
+                    pass
 
     def _resolve_recipient(
         self, channel_id: str, thread_root_id: str | None
     ) -> str | None:
-        if thread_root_id and thread_root_id in self._thread_recipients:
-            return self._thread_recipients[thread_root_id]
+        clean_root = clean_message_id(thread_root_id) if thread_root_id else None
+        if clean_root and clean_root in self._thread_recipients:
+            return self._thread_recipients[clean_root]
         if "@" in channel_id:
             return channel_id
         return self._thread_recipients.get(channel_id)
@@ -650,8 +764,9 @@ class EmailAdapter(PlatformAdapter):
     def _resolve_subject(
         self, channel_id: str, thread_root_id: str | None, sender_name: str
     ) -> str:
-        if thread_root_id and thread_root_id in self._thread_subjects:
-            orig = self._thread_subjects[thread_root_id]
+        clean_root = clean_message_id(thread_root_id) if thread_root_id else None
+        if clean_root and clean_root in self._thread_subjects:
+            orig = self._thread_subjects[clean_root]
             if orig:
                 return orig if orig.lower().startswith("re:") else f"Re: {orig}"
         if channel_id in self._thread_subjects:
@@ -659,6 +774,51 @@ class EmailAdapter(PlatformAdapter):
             if orig:
                 return orig if orig.lower().startswith("re:") else f"Re: {orig}"
         return f"Message from {sender_name} via Switch"
+
+    async def _resolve_audience(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        sender_name: str,
+    ) -> tuple[str | None, str]:
+        """Determine outbound recipient and subject without requiring in-memory state.
+
+        Supports multi-pod horizontal scaling: if thread metadata is not in memory,
+        it reads back from the IMAP mailbox.
+        """
+        clean_root = clean_message_id(thread_root_id) if thread_root_id else None
+
+        recipient = self._resolve_recipient(channel_id, clean_root)
+        subject_orig: str | None = None
+        if clean_root and clean_root in self._thread_subjects:
+            subject_orig = self._thread_subjects[clean_root]
+        elif channel_id in self._thread_subjects:
+            subject_orig = self._thread_subjects[channel_id]
+
+        # If either recipient or subject is missing and we have a thread root (or non-email channel_id),
+        # query the IMAP mailbox to restore context without memory.
+        target_root = clean_root or (channel_id if "@" not in channel_id else None)
+        if (not recipient or not subject_orig) and target_root:
+            mb_recipient, mb_subject = await asyncio.to_thread(
+                self._read_thread_from_mailbox, target_root
+            )
+            if not recipient and mb_recipient:
+                recipient = mb_recipient
+                self._set_thread_metadata(target_root, mb_recipient, mb_subject or "")
+            if not subject_orig and mb_subject:
+                subject_orig = mb_subject
+                self._thread_subjects[target_root] = mb_subject
+
+        if subject_orig:
+            subject = (
+                subject_orig
+                if subject_orig.lower().startswith("re:")
+                else f"Re: {subject_orig}"
+            )
+        else:
+            subject = f"Message from {sender_name} via Switch"
+
+        return recipient, subject
 
     async def send_message(
         self,
@@ -669,15 +829,18 @@ class EmailAdapter(PlatformAdapter):
         *,
         room_wide_mention: bool = False,
     ) -> str | None:
-        recipient = self._resolve_recipient(channel_id, thread_root_id)
+        recipient, subject = await self._resolve_audience(
+            channel_id, thread_root_id, sender_name
+        )
         if not recipient:
             logger.warning(
-                "Cannot dispatch email: no known recipient for channel_id %s",
+                "Cannot dispatch email: no known recipient for channel_id %s (thread_root_id=%s)",
                 channel_id,
+                thread_root_id,
             )
             return None
 
-        subject = self._resolve_subject(channel_id, thread_root_id, sender_name)
+        clean_root = clean_message_id(thread_root_id) if thread_root_id else None
         new_id = f"switch-{uuid.uuid4().hex}@{self._domain}"
 
         msg = EmailMessage()
@@ -686,9 +849,9 @@ class EmailAdapter(PlatformAdapter):
         msg["Subject"] = subject
         msg["Message-ID"] = f"<{new_id}>"
 
-        if thread_root_id:
-            msg["In-Reply-To"] = f"<{thread_root_id}>"
-            msg["References"] = f"<{thread_root_id}>"
+        if clean_root:
+            msg["In-Reply-To"] = f"<{clean_root}>"
+            msg["References"] = f"<{clean_root}>"
 
         msg.set_content(content)
 
@@ -705,11 +868,9 @@ class EmailAdapter(PlatformAdapter):
         await asyncio.to_thread(_send)
 
         self._record_seen_id(new_id)
-        self._thread_recipients[new_id] = recipient
-        self._thread_subjects[new_id] = subject
-        if thread_root_id:
-            self._thread_recipients[thread_root_id] = recipient
-            self._thread_subjects[thread_root_id] = subject
+        self._set_thread_metadata(new_id, recipient, subject)
+        if clean_root:
+            self._set_thread_metadata(clean_root, recipient, subject)
 
         return new_id
 

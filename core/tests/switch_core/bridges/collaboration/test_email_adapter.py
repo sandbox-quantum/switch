@@ -472,6 +472,151 @@ async def test_send_message_in_thread_sets_headers(
         assert sent_msg["References"] == "<root-123@example.com>"
 
 
+async def test_multi_pod_horizontal_scaling_reads_thread_from_mailbox(
+    valid_config: EmailConnectionConfig,
+) -> None:
+    """When a reply runs on a pod that did not poll IMAP, it must read from the mailbox
+
+    without memory, preventing 'no known recipient' failures across pods.
+    """
+    adapter = EmailAdapter(config=valid_config)
+    # Simulate a fresh/different pod where in-memory maps are completely empty
+    adapter._thread_recipients.clear()
+    adapter._thread_subjects.clear()
+
+    raw_header = (
+        b"From: Charlie <charlie@example.com>\r\n"
+        b"To: agent@switch.ai\r\n"
+        b"Subject: Multi-Pod Scaling Bug\r\n"
+        b"Message-ID: <incident-999@example.com>\r\n\r\n"
+    )
+
+    with (
+        patch.object(adapter, "_create_imap_client") as mock_create_imap,
+        patch.object(adapter, "_create_smtp_client") as mock_create_smtp,
+    ):
+        mock_imap = MagicMock()
+        mock_create_imap.return_value = mock_imap
+        mock_imap.select.return_value = ("OK", [b"10"])
+        mock_imap.search.return_value = ("OK", [b"42"])
+        mock_imap.fetch.return_value = (
+            "OK",
+            [(b"42 (BODY[HEADER] {120}", raw_header), b")"],
+        )
+
+        mock_smtp = MagicMock()
+        mock_create_smtp.return_value = mock_smtp
+
+        msg_id = await adapter.send_message(
+            channel_id="channel-room-public",
+            sender_name="Claude Agent",
+            content="Fixed the multi-pod issue.",
+            thread_root_id="<incident-999@example.com>",
+        )
+
+        assert msg_id is not None
+        mock_smtp.send_message.assert_called_once()
+        sent_msg = mock_smtp.send_message.call_args[0][0]
+
+        assert sent_msg["To"] == "charlie@example.com"
+        assert sent_msg["Subject"] == "Re: Multi-Pod Scaling Bug"
+        assert sent_msg["In-Reply-To"] == "<incident-999@example.com>"
+        assert sent_msg["References"] == "<incident-999@example.com>"
+
+
+async def test_multi_pod_reads_subject_from_mailbox_for_direct_channel(
+    valid_config: EmailConnectionConfig,
+) -> None:
+    """When replying in a thread for a 1-on-1 direct channel, original subject is restored
+
+    from the mailbox rather than falling back to generic 'Message from Agent'.
+    """
+    adapter = EmailAdapter(config=valid_config)
+    adapter._thread_recipients.clear()
+    adapter._thread_subjects.clear()
+
+    raw_header = (
+        b"From: alice@example.com\r\n"
+        b"To: agent@switch.ai\r\n"
+        b"Subject: Invoice #1234\r\n"
+        b"Message-ID: <invoice-1234@example.com>\r\n\r\n"
+    )
+
+    with (
+        patch.object(adapter, "_create_imap_client") as mock_create_imap,
+        patch.object(adapter, "_create_smtp_client") as mock_create_smtp,
+    ):
+        mock_imap = MagicMock()
+        mock_create_imap.return_value = mock_imap
+        mock_imap.select.return_value = ("OK", [b"1"])
+        mock_imap.search.return_value = ("OK", [b"15"])
+        mock_imap.fetch.return_value = (
+            "OK",
+            [(b"15 (BODY[HEADER] {120}", raw_header), b")"],
+        )
+
+        mock_smtp = MagicMock()
+        mock_create_smtp.return_value = mock_smtp
+
+        msg_id = await adapter.send_message(
+            channel_id="alice@example.com",
+            sender_name="Claude Agent",
+            content="Invoice is approved.",
+            thread_root_id="invoice-1234@example.com",
+        )
+
+        assert msg_id is not None
+        mock_smtp.send_message.assert_called_once()
+        sent_msg = mock_smtp.send_message.call_args[0][0]
+
+        assert sent_msg["To"] == "alice@example.com"
+        assert sent_msg["Subject"] == "Re: Invoice #1234"
+
+
+async def test_multi_pod_handles_mailbox_read_failure_gracefully(
+    valid_config: EmailConnectionConfig,
+) -> None:
+    adapter = EmailAdapter(config=valid_config)
+    adapter._thread_recipients.clear()
+    adapter._thread_subjects.clear()
+
+    with (
+        patch.object(adapter, "_create_imap_client") as mock_create_imap,
+        patch.object(adapter, "_create_smtp_client") as mock_create_smtp,
+    ):
+        mock_imap = MagicMock()
+        mock_create_imap.return_value = mock_imap
+        # IMAP search finds nothing
+        mock_imap.select.return_value = ("OK", [b"0"])
+        mock_imap.search.return_value = ("OK", [b""])
+
+        mock_smtp = MagicMock()
+        mock_create_smtp.return_value = mock_smtp
+
+        # If channel_id is not an email, cannot dispatch
+        res1 = await adapter.send_message(
+            channel_id="unknown-room",
+            sender_name="Agent",
+            content="Dropped message",
+            thread_root_id="missing@example.com",
+        )
+        assert res1 is None
+        mock_smtp.send_message.assert_not_called()
+
+        # If channel_id is an email, it falls back to channel_id as recipient
+        res2 = await adapter.send_message(
+            channel_id="user@example.com",
+            sender_name="Agent",
+            content="Fallback message",
+            thread_root_id="missing@example.com",
+        )
+        assert res2 is not None
+        mock_smtp.send_message.assert_called_once()
+        sent_msg = mock_smtp.send_message.call_args[0][0]
+        assert sent_msg["To"] == "user@example.com"
+        assert sent_msg["Subject"] == "Message from Agent via Switch"
+
+
 # ── Capabilities ──────────────────────────────────────────────────────────────
 
 
