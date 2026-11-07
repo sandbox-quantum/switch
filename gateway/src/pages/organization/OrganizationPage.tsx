@@ -1,7 +1,7 @@
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
-import { fetchCurrentOrganization } from "../../data/api";
+import { fetchCurrentOrganization, fetchFeatureFlags } from "../../data/api";
 import { administersOrganization } from "../../data/sessionState";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
@@ -18,6 +18,17 @@ export default function OrganizationPage() {
   const { session } = useAuth();
   const load = useCallback(() => fetchCurrentOrganization(), []);
   const { data: organization, error } = useLoad(load);
+  const isAdmin = session ? administersOrganization(session) : false;
+  // Only an org admin sees the sections the flags decide, so only they ask.
+  const loadFlags = useCallback(
+    () => (isAdmin ? fetchFeatureFlags() : Promise.resolve(null)),
+    [isAdmin],
+  );
+  const { data: flags } = useLoad(loadFlags);
+  // The server mounts the routes behind Services and Connectors only with
+  // both flags on; asking a server without them would only be refused.
+  const organizationApps =
+    flags?.service_connections === true && flags?.organization_connector_apps === true;
   // A change to the members can make an issue or settle one; the notice is
   // read again, from scratch, after each.
   const [membersChanged, setMembersChanged] = useState(0);
@@ -27,7 +38,6 @@ export default function OrganizationPage() {
   if (tenant.organization_id === null) {
     return <Alert severity="info">This workspace belongs to no organization.</Alert>;
   }
-  const isAdmin = administersOrganization(session);
 
   return (
     <Box>
@@ -57,8 +67,8 @@ export default function OrganizationPage() {
             onChanged={onMembersChanged}
           />
         )}
-        {isAdmin && <OrganizationServicesSection />}
-        {isAdmin && <OrganizationConnectorsSection />}
+        {isAdmin && organizationApps && <OrganizationServicesSection />}
+        {isAdmin && organizationApps && <OrganizationConnectorsSection />}
         {isAdmin && <OrganizationAuditSection />}
       </Stack>
     </Box>
