@@ -199,6 +199,10 @@ class InboundAgentJoin(BaseModel):
     channel_type: ChannelType
     agent_name: str
     channel_name: str | None = None
+    # Who added the account to the channel, as the platform's own user id,
+    # when the platform reports it. None means it did not say (or the account
+    # joined by itself).
+    added_by_external_user_id: str | None = None
 
 
 class InboundUserJoin(BaseModel):
@@ -207,6 +211,10 @@ class InboundUserJoin(BaseModel):
     external_user_id: str
     external_username: str
     channel_name: str | None = None
+    # Who added the account to the channel, as the platform's own user id,
+    # when the platform reports it. None means it did not say (or the account
+    # joined by itself).
+    added_by_external_user_id: str | None = None
 
 
 class InboundAppJoin(BaseModel):

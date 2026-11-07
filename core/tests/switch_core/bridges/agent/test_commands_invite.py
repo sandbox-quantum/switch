@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_invite
+from switch_core.invite_policy import Inviter, InviteRefused
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
 _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
@@ -16,12 +17,18 @@ class _Room(SimpleNamespace):
 
 
 def _build_client(
-    *, registry: dict[str, Any], room_agent_ids: list[str]
+    *,
+    registry: dict[str, Any],
+    room_agent_ids: list[str],
+    refuse: bool = False,
+    inviters: list[Inviter] | None = None,
 ) -> tuple[SimpleNamespace, list[str], list[tuple[str, list[str]]]]:
     """A fake admin client capturing replies and add_agents_to_room calls.
 
     `registry` maps a lowercased agent name to its agent record (mirrors the
-    case-insensitive `get_by_name_insensitive` lookup).
+    case-insensitive `get_by_name_insensitive` lookup). The sender resolves
+    to nobody; `inviters` collects who each call says is inviting, and
+    `refuse` makes the room service turn the invite down.
     """
     posted: list[str] = []
     added: list[tuple[str, list[str]]] = []
@@ -42,8 +49,15 @@ def _build_client(
     async def _get_agent_ids(_session, _room_id):  # type: ignore[no-untyped-def]
         return list(room_agent_ids)
 
-    async def _add_agents_to_room(room_id, agent_names=None, **_kw):  # type: ignore[no-untyped-def]
+    async def _add_agents_to_room(room_id, agent_names=None, invited_by=None, **_kw):  # type: ignore[no-untyped-def]
+        if inviters is not None:
+            inviters.append(invited_by)
+        if refuse:
+            raise InviteRefused(list(agent_names or []), "You can't invite it.")
         added.append((room_id, list(agent_names or [])))
+
+    async def _get_by_transport_user_id(_session, _user_id):  # type: ignore[no-untyped-def]
+        return None
 
     client = SimpleNamespace(
         session_factory=_session_factory,
@@ -52,12 +66,20 @@ def _build_client(
         _agent_store=SimpleNamespace(get_by_name_insensitive=_get_by_name_insensitive),
         _room_store=SimpleNamespace(get_agent_ids=_get_agent_ids),
         _room_service=SimpleNamespace(add_agents_to_room=_add_agents_to_room),
+        _room_role_store=SimpleNamespace(),
+        _external_user_store=SimpleNamespace(),
+        client_store=SimpleNamespace(
+            get_by_transport_user_id=_get_by_transport_user_id
+        ),
+        _connections=SimpleNamespace(live_connection_ids=set),
     )
     return client, posted, added
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, thread_id=None, user_id="@someone:test"
+    )
 
 
 def _agent(
@@ -104,6 +126,32 @@ class TestInviteCommand:
         await _cmd_invite(client, _Room(room_id="!m:x"), _event(""), False)
         assert added == []
         assert "Usage" in posted[0]
+
+
+class TestInviteCommandPolicy:
+    async def test_the_sender_is_who_invites(self) -> None:
+        inviters: list[Inviter] = []
+        client, _posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE},
+            room_agent_ids=[],
+            inviters=inviters,
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert added == [("room-1", ["claude-code.alice"])]
+        # An unresolvable sender: only an open agent would admit them.
+        assert inviters == [Inviter.from_sender(None)]
+
+    async def test_a_refused_invite_says_why_and_adds_nothing(self) -> None:
+        client, posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=[], refuse=True
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert added == []
+        assert posted == ["You can't invite it."]
 
 
 class TestInviteCommandDisplayNames:

@@ -55,6 +55,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
+from switch_core.invite_policy import Inviter, InviteRefused
 from switch_core.platform_access import administers_on_record
 from switch_core.transport import RoomRef
 
@@ -1231,15 +1232,30 @@ async def _cmd_invite(
                 f"**{agent_label_with_identifier(target.display_name, target.name)}** is already in this room.",
             )
             return
+        # `invite-agent` is admin-owned, so only the always-present admin
+        # client runs this handler; its stores live on CommandConsumer.
+        host = cast("CommandConsumer", client)
+        inviter = Inviter.from_sender(
+            await AddressingResolver(
+                room_store=host._room_store,
+                room_role_store=host._room_role_store,
+                client_store=host.client_store,
+                agent_store=host._agent_store,
+                external_user_store=host._external_user_store,
+                live_connection_ids=host._connections.live_connection_ids,
+            ).resolve_sender(session, event.user_id)
+        )
 
-    # `invite-agent` is admin-owned, so only the always-present admin client
-    # runs this handler — the `room_service` reference lives on CommandConsumer.
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
     # MCP tool) so the agent is invited to the room AND added to any bridged
-    # channel.
-    await cast("CommandConsumer", client)._room_service.add_agents_to_room(
-        meta.room_id, agent_names=[target.name]
-    )
+    # channel, after the same check of who may invite it.
+    try:
+        await host._room_service.add_agents_to_room(
+            meta.room_id, agent_names=[target.name], invited_by=inviter
+        )
+    except InviteRefused as refused:
+        await _reply(client, room, event, refused.message)
+        return
     await _reply(
         client,
         room,
