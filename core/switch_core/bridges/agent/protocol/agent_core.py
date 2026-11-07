@@ -853,8 +853,11 @@ class AgentCore:
                 ),
             )
 
+        tenant_id = existing.tenant_id
+        client_id = existing.client_id
         await session.commit()
         self.api_key_cache.invalidate_agent(existing.id)
+        await self.client_lifecycle.restore(tenant_id, client_id)
         if profile_changed:
             await self._agent_profile_changed(existing.id)
         return existing.id

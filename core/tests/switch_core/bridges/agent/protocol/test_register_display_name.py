@@ -132,3 +132,23 @@ class TestReregistrationKeepsWhatItWasNotTold:
         agent = await _agent(svc, session_factory, agent_id)
         assert agent.icon_url == other_icon
         assert agent.display_name == "Switch Reviewer"
+
+
+class TestReregistrationRestoresTheClient:
+    async def test_reregistering_restores_the_agents_client(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A process that lost the agent's client answered every operation
+        with "Agent client not running" until it restarted."""
+        svc = make_service(session_factory)
+        owner_id = await make_owner(session_factory)
+        agent_id = await register(svc, "restarted", owner_id)
+        lifecycle = svc.client_lifecycle
+        assert isinstance(lifecycle, FakeClientLifecycle)
+        assert lifecycle.restored == []
+
+        await register(svc, "restarted", owner_id, overwrite=True)
+
+        agent = await _agent(svc, session_factory, agent_id)
+        assert lifecycle.restored == [agent.client_id]
+        assert lifecycle.started == [agent.client_id]

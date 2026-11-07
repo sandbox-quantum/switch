@@ -187,6 +187,25 @@ class ClientLifecycleService:
         if self._signals is not None:
             self._signals.changed(tenant_id, client_ids)
 
+    async def restore(self, tenant_id: str, client_id: str) -> None:
+        """Run the client in every process that has no copy of it, including
+        one left stopped after a crash; a running copy is left alone.
+
+        What an agent re-registering on start-up asks for: every operation it
+        makes next needs its client running wherever the request lands.
+        """
+        if client_id not in self._clients:
+            self._left_stopped.pop(client_id, None)
+            await self.reconcile_clients(tenant_id, [client_id])
+        if self._signals is not None:
+            self._signals.restored(tenant_id, [client_id])
+
+    def allow_restart(self, client_ids: Collection[str]) -> None:
+        """Let the next re-read start these clients even if they were left
+        stopped here."""
+        for client_id in client_ids:
+            self._left_stopped.pop(client_id, None)
+
     @property
     def tenants_isolated(self) -> bool:
         """Whether a tenant beyond the first can be created on this deployment."""

@@ -66,8 +66,21 @@ class ClientSignals:
                 CLIENT_CHANGED_SIGNAL, tenant_id=tenant_id, client_ids=chunk
             )
 
+    def restored(self, tenant_id: str, client_ids: Collection[str]) -> None:
+        """Every other process starts its copy of these clients where it has
+        none, even one it left stopped after a crash."""
+        for chunk in payload_chunks(sorted(set(client_ids)), _SIGNAL_ENVELOPE_BYTES):
+            self._bus.publish(
+                CLIENT_CHANGED_SIGNAL,
+                tenant_id=tenant_id,
+                client_ids=chunk,
+                restore=True,
+            )
+
     def _on_changed(self, signal: dict[str, Any]) -> None:
         client_ids = signal.get("client_ids")
+        if signal.get("restore") is True and isinstance(client_ids, list):
+            self._lifecycle.allow_restart(client_ids)
         self._owe(
             signal["tenant_id"], client_ids if isinstance(client_ids, list) else None
         )

@@ -63,6 +63,9 @@ class _FakeClientLifecycle:
     def announce(self, tenant_id: str, client_ids: object = None) -> None:
         return None
 
+    async def restore(self, tenant_id: str, client_id: str) -> None:
+        return None
+
     async def stop(self, client_id: str) -> None:
         return None
 

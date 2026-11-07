@@ -792,6 +792,11 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **Re-registering an agent whose client had stopped now restarts it.** If a
+  server lost an agent's client, say after it crashed, the agent's operations
+  failed with "Agent client not running", and re-registering did not help.
+  Re-registering now starts the client again on every server that is missing
+  it. A client that is already running is left alone.
 - **Two organization admins demoting or removing each other at once** could
   leave the refused one without their keys and connections in the workspaces
   they reached as an organization admin: those were taken away before the

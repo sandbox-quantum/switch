@@ -365,6 +365,75 @@ class TestReconcile:
         assert lifecycle.get(agent.client_id) is None
 
 
+class TestRestore:
+    """What an agent re-registering asks for (`AgentCore._reregister_agent`)."""
+
+    async def test_a_running_client_is_left_alone(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        agent = await _register(session_factory)
+        assert agent.client_id is not None
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        running = lifecycle.get(agent.client_id)
+        assert running is not None
+
+        await lifecycle.restore(TENANT_ZERO_ID, agent.client_id)
+
+        assert lifecycle.get(agent.client_id) is running
+        await lifecycle.stop_all()
+
+    async def test_a_missing_client_is_started(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        agent = await _register(session_factory)
+        assert agent.client_id is not None
+        assert lifecycle.get(agent.client_id) is None
+
+        await lifecycle.restore(TENANT_ZERO_ID, agent.client_id)
+
+        assert lifecycle.get(agent.client_id) is not None
+        await lifecycle.stop_all()
+
+    async def test_a_client_left_stopped_is_started_again(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A crashed client stays stopped through every re-check; a
+        re-registration is the agent asking for it on purpose."""
+        agent = await _register(session_factory)
+        assert agent.client_id is not None
+        lifecycle = _lifecycle(session_factory)
+        await lifecycle.start_all()
+        await lifecycle.stop(agent.client_id)
+
+        await lifecycle.restore(TENANT_ZERO_ID, agent.client_id)
+
+        assert lifecycle.get(agent.client_id) is not None
+        await lifecycle.stop_all()
+
+    async def test_a_restore_reaches_a_client_left_stopped_in_another_process(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        two_processes: tuple[ClientLifecycleService, ClientLifecycleService],
+    ) -> None:
+        here, there = two_processes
+        agent = await _register(session_factory)
+        client_id = agent.client_id
+        assert client_id is not None
+        here.announce(TENANT_ZERO_ID, [client_id])
+        await _eventually(lambda: there.get(client_id) is not None)
+        await _eventually(lambda: here.get(client_id) is not None)
+        await there.stop(client_id)
+        running_here = here.get(client_id)
+
+        await here.restore(TENANT_ZERO_ID, client_id)
+
+        await _eventually(lambda: there.get(client_id) is not None)
+        assert here.get(client_id) is running_here
+
+
 class TestRecheck:
     """The periodic re-check, which every process runs every 30 seconds:
     a read of every client of every tenant, until it compared fingerprints

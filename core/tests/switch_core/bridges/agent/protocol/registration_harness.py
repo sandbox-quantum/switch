@@ -43,6 +43,7 @@ class FakeClientLifecycle:
         self._session_factory = session_factory
         self.requested_display_names: list[str] = []
         self.started: list[str] = []
+        self.restored: list[str] = []
 
     async def create_client(self, *, client_type: str, display_name: str) -> Client:
         self.requested_display_names.append(display_name)
@@ -61,6 +62,9 @@ class FakeClientLifecycle:
 
     def announce(self, tenant_id: str, client_ids: object = None) -> None:
         return None
+
+    async def restore(self, tenant_id: str, client_id: str) -> None:
+        self.restored.append(client_id)
 
 
 class NoBridges:
