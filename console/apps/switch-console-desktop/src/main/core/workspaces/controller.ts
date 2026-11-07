@@ -90,6 +90,10 @@ import {
   updateRoom,
   updateTemplate,
   addLinkedRoom,
+  createRoomSchedule,
+  deleteRoomSchedule,
+  fetchRoomSchedules,
+  updateRoomSchedule,
   fetchLibrary,
   fetchLinkedRooms,
   fetchRoomDocument,
@@ -212,6 +216,9 @@ import type {
   SyncRoomNameParams,
   UpdateRoomParams,
   LinkedRoom,
+  RoomSchedule,
+  RoomScheduleChanges,
+  RoomScheduleInput,
   RoomDocumentContent,
   RoomResource,
   RoomResourceKind,
@@ -1252,6 +1259,41 @@ export const workspacesController = createRPCController({
   }): Promise<void> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       removeLinkedRoom(server, params.roomId, params.targetRoomId)
+    ),
+
+  /** A room's scheduled messages. */
+  listRoomSchedules: (params: { workspaceId: string; roomId: string }): Promise<RoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  /** Schedule a message to some of a room's agents. */
+  createRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    input: RoomScheduleInput;
+  }): Promise<RoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params.input)
+    ),
+
+  /** Change, pause or resume a room's schedule. */
+  updateRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    changes: RoomScheduleChanges;
+  }): Promise<RoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params.changes)
+    ),
+
+  /** Delete a room's schedule. */
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
     ),
 
   /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */

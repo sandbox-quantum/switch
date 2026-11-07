@@ -1041,6 +1041,32 @@ are moderation tools — use them when setting a room up, not in passing.
   is meant to reach it now.
 - **`delete_role(name)`** — remove the role and any lease on it.
 
+## Scheduled messages
+
+A room can hold schedules: messages Switch posts to some of its agents at a set
+time, once or on a repeat ("every weekday at 09:00, ask the triage agent for a
+summary"). A firing arrives like any mention: Switch's admin account posts
+`@your-name <message>` in the room. All four tools act on the **connected
+room**; changing schedules requires that your owner owns the room or is a
+workspace admin (write access is not enough).
+
+- **`list_schedules()`** — the room's schedules with their `next_run_at`, and
+  `last_outcome` / `last_error` for the most recent firing.
+- **`create_schedule(agent_ids, message, schedule_type, timezone, cron_expression=None, run_at=None)`**
+  — `agent_ids` are agents in the room (`list_participants` gives the ids);
+  `schedule_type` is `once` (with `run_at`, an ISO 8601 time in the future) or
+  `cron` (with a five-field `cron_expression` such as `0 9 * * 1-5`);
+  `timezone` is an IANA name. Leave out the `@name`s, they are added. Confirm
+  wording and timing with the user first: it keeps firing until paused.
+- **`update_schedule(schedule_id, ...)`** — change only what you pass, or pause
+  and resume it with `enabled=false` / `enabled=true`.
+- **`delete_schedule(schedule_id)`** — remove it.
+
+A run missed while the server was down is posted once, late, when it is under
+24 hours overdue, and skipped after that. An agent removed from the room drops
+out of the audience; when none is left the schedule is paused. You may be the
+one addressed: treat a scheduled message as an ordinary request.
+
 ## Important rules
 
 Switch tools are approved automatically even when the agent's Bypass
@@ -1132,6 +1158,10 @@ Every Switch tool you call in normal operation, one line each.
 - `define_role` — add a role to the connected room.
 - `edit_role` — change a role's instructions or exclusivity.
 - `delete_role` — remove a role and any lease on it.
+- `list_schedules` — the connected room's scheduled messages and their next runs.
+- `create_schedule` — schedule a message to some of the room's agents, once or on a repeat.
+- `update_schedule` — change, pause or resume a schedule.
+- `delete_schedule` — remove a schedule.
 - `list_linked_rooms` — refresh this room's outbound pointers.
 - `list_all_rooms` — every room your owner can read, not just yours, a page at a time.
 - `get_room_detail` — one room's members, channel type, roles, aliases.

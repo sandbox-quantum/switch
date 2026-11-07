@@ -79,6 +79,7 @@ just test -k "test_name"         # run specific test
   - `stores/` — query methods and domain-specific data access
 - `migrations/` — Alembic migrations (`env.py`, `versions/`)
 - `room_service.py` / `rooms_yaml.py` — Room lifecycle, configuration, provisioning
+- `room_schedules.py` / `schedule_timing.py` — scheduled messages to a room's agents: the service that manages and fires them, and the cron and timezone arithmetic (`docs/SCHEDULES.md`)
 - `clients/` — room participants: `actor.py` (identity, membership, writes: `HumanActor`, `AgentActor`, `SystemActor`) and `consumer.py` (the `Consumer` delivery loop and hooks), subclassed by `CommandConsumer` (`command_consumer.py`) and `WorkspaceConsumer` (`workspace_consumer.py`)
 - `delivery/` decides who a row is for: `addressing.py` (the rules), `router.py` (`MessageRouter`, which decides every row for every agent in its room as the row is written, in the same transaction) and `recipient.py` (`AgentRecipient`, one agent's decisions and the replies posted on its behalf)
 - `bridges/` — External integrations

@@ -1,7 +1,7 @@
 import { makeAutoObservable } from 'mobx';
 
 /** The things a room page can show beside its participants. */
-export type RoomTab = 'chat' | 'resources' | 'configuration';
+export type RoomTab = 'chat' | 'resources' | 'schedules' | 'configuration';
 
 /**
  * What a room shown inside another page opens on: its conversation whenever it

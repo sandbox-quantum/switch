@@ -135,6 +135,7 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
+from switch_core.room_schedules import RoomScheduleService, schedule_to_dict
 from switch_core.room_service import require_membership_changeable_from_outside
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
@@ -423,6 +424,9 @@ class AgentCore:
     # Raises the ChatError `_member_adder` would refuse that person with:
     # (tenant_id, user_id). Wired with it.
     _member_join_check: Callable[[str, str], Awaitable[None]] | None = None
+    # The room schedules service, set by the process wiring; None only for the
+    # minimal instances tests assemble.
+    room_schedules: RoomScheduleService | None = None
 
     def __init__(
         self,
@@ -3457,6 +3461,22 @@ class AgentCore:
         require(Principal(owner_id, owner_is_admin), action, room)
         return room
 
+    async def _require_room_manager(
+        self, session: AsyncSession, agent_id: str, room_id: str
+    ) -> tuple[Room, str | None]:
+        """Authorize managing a room on the calling agent's behalf: its owner
+        must own the room or be a workspace admin, which publicly writable
+        rooms do not grant. Returns the room and the owner the agent acted as.
+        """
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        room = await self.room_store.get(session, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        require_manage(Principal(owner_id, owner_is_admin), room.owner_id)
+        return room, owner_id
+
     async def _require_room_roster_change(
         self, session: AsyncSession, agent_id: str, room_id: str
     ) -> Room:
@@ -3524,6 +3544,112 @@ class AgentCore:
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, room_id, "write")
             await self.room_role_store.delete_role(session, room_id, name)
+            await session.commit()
+
+    # ── Room schedules ──────────────────────────────────────────────────────
+
+    def _room_schedule_service(self) -> RoomScheduleService:
+        if self.room_schedules is None:
+            raise RuntimeError("Room schedules are not wired on this server")
+        return self.room_schedules
+
+    async def list_room_schedules(
+        self, agent_id: str, room_id: str
+    ) -> list[dict[str, Any]]:
+        """A room's schedules. Requires the caller to be a member of the room."""
+        await self.require_room_member(agent_id, room_id)
+        async with self.session_factory() as session:
+            schedules = await self._room_schedule_service().list_for_room(
+                session, room_id
+            )
+            return [schedule_to_dict(schedule) for schedule in schedules]
+
+    async def create_room_schedule(
+        self,
+        agent_id: str,
+        room_id: str,
+        *,
+        agent_ids: list[str],
+        message: str,
+        schedule_type: str,
+        cron_expression: str | None,
+        run_at: datetime | None,
+        timezone: str,
+    ) -> dict[str, Any]:
+        """Add a schedule to a room, speaking with the agent's owner's
+        authority. Requires the owner to own the room or be a workspace admin."""
+        async with self.session_factory() as session:
+            room, owner_id = await self._require_room_manager(
+                session, agent_id, room_id
+            )
+            schedule = await self._room_schedule_service().create(
+                session,
+                room,
+                agent_ids=agent_ids,
+                message=message,
+                schedule_type=schedule_type,
+                cron_expression=cron_expression,
+                run_at=run_at,
+                timezone=timezone,
+                acting_user_id=owner_id,
+            )
+            view = schedule_to_dict(schedule)
+            await session.commit()
+            return view
+
+    async def update_room_schedule(
+        self,
+        agent_id: str,
+        room_id: str,
+        schedule_id: str,
+        *,
+        agent_ids: list[str] | None,
+        message: str | None,
+        schedule_type: str | None,
+        cron_expression: str | None,
+        run_at: datetime | None,
+        timezone: str | None,
+        enabled: bool | None,
+    ) -> dict[str, Any]:
+        """Change a schedule; a field left None stays. Requires the owner to own
+        the room or be a workspace admin."""
+        async with self.session_factory() as session:
+            room, owner_id = await self._require_room_manager(
+                session, agent_id, room_id
+            )
+            try:
+                schedule = await self._room_schedule_service().update(
+                    session,
+                    room,
+                    schedule_id,
+                    agent_ids=agent_ids,
+                    message=message,
+                    schedule_type=schedule_type,
+                    cron_expression=cron_expression,
+                    run_at=run_at,
+                    timezone=timezone,
+                    enabled=enabled,
+                    acting_user_id=owner_id,
+                )
+            except LookupError as e:
+                raise ValueError(str(e)) from e
+            view = schedule_to_dict(schedule)
+            await session.commit()
+            return view
+
+    async def delete_room_schedule(
+        self, agent_id: str, room_id: str, schedule_id: str
+    ) -> None:
+        """Delete a schedule. Requires the owner to own the room or be a
+        workspace admin."""
+        async with self.session_factory() as session:
+            room, _owner_id = await self._require_room_manager(
+                session, agent_id, room_id
+            )
+            try:
+                await self._room_schedule_service().delete(session, room, schedule_id)
+            except LookupError as e:
+                raise ValueError(str(e)) from e
             await session.commit()
 
     async def _build_role_entries(

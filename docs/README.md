@@ -32,3 +32,7 @@ the one users act on.
   document that describes agents and rooms to create and the params a
   deployer fills in. The bundled Switch expert (`switch-expert/template.yaml`)
   is the worked example.
+- [`SCHEDULES.md`](SCHEDULES.md): scheduled messages to a room's agents, once
+  or on a repeat: what a firing posts, timezones and cron, what happens to a
+  missed run and to an agent that left the room, and who may change a
+  schedule.

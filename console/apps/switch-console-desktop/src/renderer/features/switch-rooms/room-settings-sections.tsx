@@ -435,7 +435,7 @@ function RoleForm({
 }
 
 /** A delete that asks once more before it acts: the first click arms it, the second deletes. */
-function ConfirmIconButton({
+export function ConfirmIconButton({
   label,
   onConfirm,
 }: {
