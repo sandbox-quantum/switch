@@ -329,6 +329,12 @@ version of their own to them without also giving them a release of their own.
   making someone Org Admin is done in WorkOS, and taking it away in Switch
   lasts only while WorkOS agrees. Adding someone new is done in WorkOS either
   way. Setup and limits: `docs/old/workos-directory.md`.
+- **The Snowflake connection.** A catalog entry and skill for Snowflake's
+  managed MCP servers and Cortex agents, on the `api_key` adapter. Connecting
+  takes an account identifier, target database, schema, MCP server name, and a
+  role-restricted personal access token (PAT). The loader requires
+  `max_lifetime: null` for key entries, so Switch does not hand credentials to
+  agents (`key_never_expires`).
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
@@ -2752,6 +2758,7 @@ version of their own to them without also giving them a release of their own.
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
 - **Airtable's logo on the Connections grid.**
+- **Snowflake's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks
   the operator to confirm the integration's support details are set, which no

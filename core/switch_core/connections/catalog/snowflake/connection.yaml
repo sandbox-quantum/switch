@@ -1,0 +1,74 @@
+slug: snowflake
+name: Snowflake
+category: Data
+description: Query Snowflake data and run Cortex agents and warehouse tools as you. It can also change data if your administrator's tools and role allow it.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: account
+        label: Account identifier
+        secret: false
+        help: Account identifier in lowercase with hyphens (e.g. orgname-accountname). Legacy region-style locators with dots are unsupported.
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+      - name: database
+        label: Database
+        secret: false
+        help: Snowflake database containing the MCP server.
+        pattern: "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+      - name: schema
+        label: Schema
+        secret: false
+        help: Snowflake schema containing the MCP server.
+        pattern: "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+      - name: mcp_server
+        label: MCP server
+        secret: false
+        help: Snowflake-managed MCP server object name.
+        pattern: "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+      - name: pat
+        label: Programmatic access token
+        secret: true
+        help: Snowflake programmatic access token with role restriction.
+    # Checks the token and grants by listing the server's tools in one JSON-RPC call.
+    # Leave account_id unset so it defaults to the SHA-256 hash of the PAT.
+    #
+    # Snowflake administrator setup and PAT requirements:
+    # - Snowflake documents PAT expiry: default 15 days, maximum 365, set at creation.
+    #   Switch cannot renew it, so after expiry the user reconnects with a new PAT.
+    # - A person user must be covered by a network policy (or an authentication policy
+    #   that waives it) to use a PAT, so Switch's egress must be allowed.
+    # - Target database, schema, and MCP server object (CREATE MCP SERVER ...).
+    # - USAGE on the MCP server does not grant access to the underlying tools; each
+    #   needs its own grant for the active role.
+    # - An administrator may configure read_only on the SQL tool.
+    # - Not yet measured: whether the X-Snowflake-Authorization-Token-Type header is required.
+    identity:
+      method: POST
+      url: "https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}/mcp-servers/{mcp_server}"
+      headers:
+        Authorization: "Bearer {pat}"
+        # Optional header per Snowflake documentation; not yet measured.
+        X-Snowflake-Authorization-Token-Type: "PROGRAMMATIC_ACCESS_TOKEN"
+      body:
+        jsonrpc: "2.0"
+        id: 1
+        method: "tools/list"
+        params: {}
+    help_url: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp
+# The loader requires max_lifetime: null for key entries, so the broker doesn't
+# hand the key to agents. A PAT does expire; see above.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: snowflake
+      url: "https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}/mcp-servers/{mcp_server}"
+      headers:
+        Authorization: "Bearer {pat}"
+        # Optional header per Snowflake documentation; not yet measured.
+        X-Snowflake-Authorization-Token-Type: "PROGRAMMATIC_ACCESS_TOKEN"
+# Tools pass through until classified; admin grants define read and write operations.
+tools: { mode: pass_through }

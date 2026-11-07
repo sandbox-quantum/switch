@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -212,12 +213,22 @@ def template_fields(template: str) -> list[str]:
     return names
 
 
+# A pattern may only contain plain characters and character classes of safe tokens.
+PATTERN_CLASS = re.compile(r"\[(?:a-z|A-Z|0-9|[_-])+\]")
+PATTERN_REST = re.compile(r"[A-Za-z0-9_\-(){},?*+|^$]*")
+
+
+def _pattern_is_plain(pattern: str) -> bool:
+    return PATTERN_REST.fullmatch(PATTERN_CLASS.sub("", pattern)) is not None
+
+
 class ApiKeyField(BaseModel):
     """One value a person pastes, or picks, to connect.
 
     A `secret` field is the key itself, typed freely and never shown again.
-    Any other field is a choice among `choices` (a site, a region), which
-    templates may put in a URL: never free text.
+    A non-secret field is a choice among `choices` (a site, a region) or a
+    value matching `pattern`, which templates may put in a URL: never free
+    text.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -230,18 +241,33 @@ class ApiKeyField(BaseModel):
     choices: list[Annotated[str, Field(pattern=CHOICE_PATTERN)]] | None = Field(
         default=None, min_length=1, max_length=20
     )
+    pattern: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
-    def _secret_or_choice(self) -> "ApiKeyField":
+    def _validate_field(self) -> "ApiKeyField":
         if self.name == TOKEN_PLACEHOLDER:
             raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
-        if self.secret == (self.choices is not None):
+        has_non_secret = (self.choices is not None) or (self.pattern is not None)
+        if self.secret == has_non_secret:
             raise ValueError(
-                f"field {self.name} is a secret typed freely, or a choice among "
-                "choices: one of the two"
+                f"field {self.name} is a secret typed freely, or non-secret "
+                "choices/pattern: one of the two"
             )
+        if self.choices is not None and self.pattern is not None:
+            raise ValueError(f"field {self.name} has choices and a pattern: choose one")
         if self.choices is not None and len(set(self.choices)) != len(self.choices):
             raise ValueError(f"field {self.name} lists a choice twice")
+        if self.pattern is not None:
+            if not _pattern_is_plain(self.pattern):
+                raise ValueError(
+                    f"field {self.name} has a disallowed regex pattern: {self.pattern!r}"
+                )
+            try:
+                re.compile(self.pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"field {self.name} has an invalid regex pattern: {exc}"
+                ) from exc
         return self
 
 
@@ -274,7 +300,7 @@ class ApiKeySignIn(BaseModel):
     call that checks them, and where they make the key (`help_url`)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    fields: list[ApiKeyField] = Field(min_length=1, max_length=4)
+    fields: list[ApiKeyField] = Field(min_length=1, max_length=5)
     identity: ApiKeyIdentity
     help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
 
@@ -297,21 +323,61 @@ class ApiKeySignIn(BaseModel):
         return {field.name for field in self.fields}
 
     def choice_names(self) -> set[str]:
-        return {field.name for field in self.fields if not field.secret}
+        return {
+            field.name
+            for field in self.fields
+            if not field.secret and field.choices is not None
+        }
+
+    def pattern_names(self) -> set[str]:
+        return {
+            field.name
+            for field in self.fields
+            if not field.secret and field.pattern is not None
+        }
+
+
+def _check_pattern_positions(url: str, names: set[str], where: str) -> None:
+    """A pattern field may only be a whole host label before a fixed domain
+    of at least two labels, or a whole path segment."""
+    tokens = {"{" + name + "}" for name in names}
+    if not any(t in url for t in tokens):
+        return
+    parts = urlsplit(url)
+    if parts.scheme != "https" or ":" in parts.netloc:
+        raise ValueError(f"{where}'s URL must be https, with no port")
+    if any(t in parts.query + parts.fragment for t in tokens):
+        raise ValueError(
+            f"{where}'s URL may not use a pattern field in its query or fragment"
+        )
+    labels = parts.netloc.split(".")
+    for i, label in enumerate(labels):
+        if any(t in label for t in tokens):
+            fixed = labels[i + 1 :]
+            if label not in tokens or len(fixed) < 2 or any("{" in x for x in fixed):
+                raise ValueError(
+                    f"{where}'s URL may use a pattern field only as a whole host label before a fixed domain"
+                )
+    for segment in parts.path.split("/"):
+        if any(t in segment for t in tokens) and segment not in tokens:
+            raise ValueError(
+                f"{where}'s URL may use a pattern field only as a whole path segment"
+            )
 
 
 def check_templates(
     sign_in: "ApiKeySignIn", *, urls: list[str], values: list[str], where: str
 ) -> None:
-    """Templates name only the sign-in's fields, and a URL only its choices."""
+    """Templates name only the sign-in's fields, and a URL only its choices or pattern fields."""
     known = sign_in.field_names()
-    choices = sign_in.choice_names()
+    allowed_in_url = sign_in.choice_names() | sign_in.pattern_names()
     for url in urls:
         for name in template_fields(url):
-            if name not in choices:
+            if name not in allowed_in_url:
                 raise ValueError(
-                    f"{where}'s URL may name only a choice field, not {name!r}"
+                    f"{where}'s URL may name only a choice or pattern field, not {name!r}"
                 )
+        _check_pattern_positions(url, sign_in.pattern_names(), where)
     for value in values:
         for name in template_fields(value):
             if name not in known:
