@@ -48,6 +48,10 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.bridges.collaboration.webex.adapter import (
+    WebexAdapter,
+    WebexConnectionConfig,
+)
 from switch_core.bridges.collaboration.whatsapp.adapter import (
     WhatsAppAdapter,
     WhatsAppConnectionConfig,
@@ -83,6 +87,7 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("signal", SignalAdapter, SignalConnectionConfig),
     PlatformRegistration("matrix", MatrixAdapter, MatrixConnectionConfig),
     PlatformRegistration("rocketchat", RocketChatAdapter, RocketChatConnectionConfig),
+    PlatformRegistration("webex", WebexAdapter, WebexConnectionConfig),
 )
 
 
