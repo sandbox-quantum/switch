@@ -52,7 +52,8 @@ auth:
     account_id: user_id
     label: email
 # JWT access tokens follow the org's session timeout (2 hours by default) or
-# the app's custom JWT timeout; not measured. An agent's copy may outlive its
+# the app's custom JWT timeout. Live Developer Edition QA observed a two-hour
+# issued access window; not a guarantee for other orgs. An agent's copy may outlive its
 # grant by that long; agents still ask again hourly.
 token: { kind: pass_through, max_lifetime: 7200 }
 mcp:

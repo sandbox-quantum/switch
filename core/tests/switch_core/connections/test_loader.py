@@ -1176,6 +1176,29 @@ def test_salesforce_uses_one_write_level_and_passes_vendor_tools_through():
         == "https://login.salesforce.com/services/oauth2/userinfo"
     )
     assert definition.token.max_lifetime == 7200
+    assert definition.auth.oauth.loopback_ports == [39251, 39252, 39253, 39254, 39255]
+    assert (
+        definition.auth.oauth.authorization_url
+        == "https://login.salesforce.com/services/oauth2/authorize"
+    )
+    assert (
+        definition.auth.oauth.token_url
+        == "https://login.salesforce.com/services/oauth2/token"
+    )
+    assert (
+        definition.auth.oauth.revocation_url
+        == "https://login.salesforce.com/services/oauth2/revoke"
+    )
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        (
+            "salesforce-reads",
+            "https://api.salesforce.com/platform/mcp/v1/platform/sobject-reads",
+        ),
+        (
+            "salesforce-mutations",
+            "https://api.salesforce.com/platform/mcp/v1/platform/sobject-mutations",
+        ),
+    ]
 
 
 def _rewrite_google(catalog_copy, old, new):

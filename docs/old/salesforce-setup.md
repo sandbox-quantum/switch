@@ -90,3 +90,28 @@ on for an agent is not approval for a particular record change.
 Disconnecting in Switch revokes the sign-in at Salesforce. People can also
 remove the app under their Salesforce account's connected-app settings; an
 admin can block it for the whole org in the External Client App's policies.
+
+## Local QA evidence and remaining checks
+
+Developer Edition live QA completed the client-ID-only PKCE sign-in and
+identified the connected account. A granted room agent completed
+`salesforce-reads.getUserInfo` and `getObjectSchema`; after its grant was
+removed, a fresh request reported the tool unavailable. These were read-side
+calls, not a record-write test. The connection remains honestly write-capable.
+
+Metadata-only inspection observed a two-hour issued access window. Natural
+expiry renewal and Disconnect are not yet verified. The timed grant-off video
+is still being recorded. No refresh-token value rotation is claimed.
+
+The existing org has SObject Reads and Mutations active, Deletes and All
+inactive. Salesforce's Developer Edition announcement states Hosted MCP is
+included at no cost; general production billing warnings still apply to
+other editions. No paid plan, hold or upgrade was used.
+
+Sources:
+- https://developer.salesforce.com/blogs/2026/04/new-developer-edition-agentforce-vibes-claude-mcp
+- https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/sobject-reads.html
+
+Console validates the exact loopback listener callback with either
+`127.0.0.1` or `localhost`, preserving its port, path, state, vendor HTTPS
+and Core-origin checks. Salesforce registers the latter name.
