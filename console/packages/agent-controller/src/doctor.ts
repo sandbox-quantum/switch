@@ -1,5 +1,6 @@
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { ControllerApiError } from './api';
+import { heading, mark, type Style } from './cli-output';
 import { errorMessage } from './log';
 import { PROVIDERS, type Provider } from './schemas';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
@@ -9,7 +10,8 @@ import type { Identity } from './store';
 import { type ControllerRelease, isNewer } from './update';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail';
-export type Check = { name: string; status: CheckStatus; detail: string };
+/** `fix` is what to do about a check that is not ok, kept apart from what was found. */
+export type Check = { name: string; status: CheckStatus; detail: string; fix?: string };
 
 /** The oldest Node the controller runs on: it needs the built-in `node:sqlite`. */
 export const MIN_NODE: readonly [number, number] = [22, 13];
@@ -41,9 +43,8 @@ function nodeCheck(nodeVersion: string): Check {
   return {
     name: 'Node',
     status: ok ? 'ok' : 'fail',
-    detail: ok
-      ? nodeVersion
-      : `${nodeVersion}; the controller needs ${MIN_NODE.join('.')} or later.`,
+    detail: ok ? nodeVersion : `${nodeVersion} is too old for the controller.`,
+    ...(ok ? {} : { fix: `Install Node ${MIN_NODE.join('.')} or later.` }),
   };
 }
 
@@ -53,7 +54,8 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
       {
         name: 'Enrollment',
         status: 'fail',
-        detail: `${inputs.dataDir} is not enrolled. Run: switch-agent-controller enroll --server <url> --code <code>, with a code from the Machines page.`,
+        detail: `${inputs.dataDir} is not enrolled.`,
+        fix: 'Run switch-agent-controller enroll --server <url> --code <code>, with a code from the Machines page.',
       },
     ];
   const { identity } = inputs;
@@ -62,8 +64,11 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
       name: 'Enrollment',
       status: inputs.revokedAt ? 'fail' : 'ok',
       detail: inputs.revokedAt
-        ? `Controller ${identity.controllerId} was revoked at ${inputs.revokedAt}; enroll this machine again.`
+        ? `Controller ${identity.controllerId} was revoked at ${inputs.revokedAt}.`
         : `Controller ${identity.controllerId} ("${identity.name}") on ${identity.server}`,
+      ...(inputs.revokedAt
+        ? { fix: 'Enroll this machine again, with a new code from the Machines page.' }
+        : {}),
     },
   ];
   if (inputs.revokedAt) return checks;
@@ -82,7 +87,8 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
     checks.push({
       name: 'Credential',
       status: 'fail',
-      detail: `Not in ${inputs.secrets.description}; enroll this machine again.`,
+      detail: `Not in ${inputs.secrets.description}.`,
+      fix: 'Enroll this machine again, with a new code from the Machines page.',
     });
     return checks;
   }
@@ -95,13 +101,23 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
       detail: `${identity.server} accepts this controller`,
     });
   } catch (error) {
-    const detail =
+    const check: Check =
       error instanceof ControllerApiError
         ? error.code === 'invalid_response' || error.code === 'unexpected_response'
-          ? `${identity.server} answered, but not as the Switch API (${error.message}). If Switch runs behind a proxy or ingress, it must send /v1 to switch-core.`
-          : `${error.code}: ${error.message}`
-        : `${identity.server} cannot be reached: ${errorMessage(error)}`;
-    checks.push({ name: 'Server', status: 'fail', detail });
+          ? {
+              name: 'Server',
+              status: 'fail',
+              detail: `${identity.server} answered, but not as the Switch API (${error.message}).`,
+              fix: 'If Switch runs behind a proxy or ingress, it must send /v1 to switch-core.',
+            }
+          : { name: 'Server', status: 'fail', detail: `${error.code}: ${error.message}` }
+        : {
+            name: 'Server',
+            status: 'fail',
+            detail: `${identity.server} cannot be reached: ${errorMessage(error)}`,
+            fix: 'Check the server address, and that this machine can reach it.',
+          };
+    checks.push(check);
   }
   return checks;
 }
@@ -142,7 +158,8 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
       name: 'Providers',
       status: 'fail',
       detail:
-        'No provider CLI is installed and signed in on PATH for this user, so no agent can run here. Install one (claude, codex, opencode, cursor or antigravity) and sign in, or set its API key in the --env-file the service runs with.',
+        'No provider CLI is installed and signed in on PATH for this user, so no agent can run here.',
+      fix: 'Install one (claude, codex, opencode, cursor or antigravity) and sign in, or set its API key in the --env-file the service runs with.',
     });
   return checks;
 }
@@ -154,9 +171,8 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   checks.push({
     name: 'Platform',
     status: supported ? 'ok' : 'fail',
-    detail: supported
-      ? inputs.platform
-      : `${inputs.platform} is not supported; use Linux, macOS or Windows.`,
+    detail: supported ? inputs.platform : `${inputs.platform} is not supported.`,
+    ...(supported ? {} : { fix: 'Use Linux, macOS or Windows.' }),
   });
   checks.push(...(await serverChecks(inputs)));
   let bundle: string | null = null;
@@ -192,16 +208,15 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
           ? {
               name: 'Service',
               status: 'warn',
-              detail: unit
-                ? `${unit} is not running: sudo systemctl start ${unit}`
-                : 'Installed, but not running',
+              detail: unit ? `${unit} is not running.` : 'Installed, but not running',
+              ...(unit ? { fix: `Run sudo systemctl start ${unit}` } : {}),
             }
           : service === 'not-installed'
             ? {
                 name: 'Service',
                 status: 'warn',
-                detail:
-                  'Not installed; run: switch-agent-controller install-service (or keep `run` going yourself)',
+                detail: 'Not installed.',
+                fix: 'Run switch-agent-controller install-service (or keep `run` going yourself)',
               }
             : { name: 'Service', status: 'warn', detail: `Cannot tell: ${service}` }
   );
@@ -218,7 +233,8 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
           ? {
               name: 'Version',
               status: 'warn',
-              detail: `${inputs.version}; ${latest.version} is available: switch-agent-controller update`,
+              detail: `${inputs.version}; ${latest.version} is available.`,
+              fix: 'Run switch-agent-controller update',
             }
           : { name: 'Version', status: 'ok', detail: `${inputs.version}, the latest` }
     );
@@ -232,11 +248,54 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   return checks;
 }
 
-const MARK: Record<CheckStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL' };
-
-export function formatChecks(checks: Check[]): string {
+/** One line per check, a problem's fix on the line under it, the details lined up. */
+export function formatChecks(checks: Check[], style: Style): string {
   const width = Math.max(...checks.map((check) => check.name.length));
+  const detailColumn = ' '.repeat(4 + 2 + width + 2);
   return checks
-    .map((check) => `${MARK[check.status]}  ${check.name.padEnd(width)}  ${check.detail}`)
+    .flatMap((check) => [
+      `${mark(style, check.status)}  ${check.name.padEnd(width)}  ${check.detail}`,
+      ...(check.fix ? [`${detailColumn}${style.bold('Fix:')} ${check.fix}`] : []),
+    ])
     .join('\n');
+}
+
+/** Counts what `doctor` found, and says whether this machine is ready. */
+export function summarizeChecks(checks: Check[], style: Style): string {
+  const failed = checks.filter((check) => check.status === 'fail').length;
+  const warned = checks.filter((check) => check.status === 'warn').length;
+  const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  if (failed > 0)
+    return style.red(
+      `${count(failed, 'problem')}${warned > 0 ? `, ${count(warned, 'warning')}` : ''}. Fix what is marked FAIL, then run doctor again.`
+    );
+  if (warned > 0) return style.yellow(`${count(warned, 'warning')}. This machine can run agents.`);
+  return style.green('All checks passed. This machine is ready to run agents.');
+}
+
+/** The whole report: a title, every check, and the summary. */
+export function formatReport(checks: Check[], style: Style): string {
+  return [
+    heading(style, 'switch-agent-controller doctor'),
+    '',
+    formatChecks(checks, style),
+    '',
+    summarizeChecks(checks, style),
+  ].join('\n');
+}
+
+/** The report for a script: every check by name, with its fix or null, and whether any failed. */
+export function checksJson(checks: Check[]): {
+  ok: boolean;
+  checks: { name: string; status: CheckStatus; detail: string; fix: string | null }[];
+} {
+  return {
+    ok: !checks.some((check) => check.status === 'fail'),
+    checks: checks.map((check) => ({
+      name: check.name,
+      status: check.status,
+      detail: check.detail,
+      fix: check.fix ?? null,
+    })),
+  };
 }

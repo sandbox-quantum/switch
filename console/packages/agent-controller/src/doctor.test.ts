@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
-import { type DoctorInputs, formatChecks, runDoctor } from './doctor';
+import { createStyle } from './cli-output';
+import {
+  type Check,
+  type DoctorInputs,
+  checksJson,
+  formatChecks,
+  formatReport,
+  runDoctor,
+  summarizeChecks,
+} from './doctor';
 import { MemorySecretStore } from './secrets';
 
 function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {
@@ -38,7 +47,7 @@ describe('doctor', () => {
   it('passes a machine that is ready', async () => {
     const checks = await runDoctor(inputs());
     expect(checks.filter((check) => check.status !== 'ok')).toEqual([]);
-    expect(formatChecks(checks)).toContain('ok    claude');
+    expect(formatChecks(checks, createStyle(false))).toContain('ok    claude');
   });
 
   it('passes a ready Windows machine, which Console runs rather than a service', async () => {
@@ -82,14 +91,17 @@ describe('doctor', () => {
         },
       })
     );
-    expect(checks.find((check) => check.name === 'Server')?.detail).toMatch(
-      /send \/v1 to switch-core/
-    );
+    const server = checks.find((check) => check.name === 'Server');
+    expect(server?.detail).toMatch(/not as the Switch API/);
+    expect(server?.fix).toMatch(/send \/v1 to switch-core/);
   });
 
   it('stops at enrollment when there is none, and says how to enroll', async () => {
     const checks = await runDoctor(inputs({ identity: null }));
     expect(status(checks, 'Enrollment')).toBe('fail');
+    expect(checks.find((check) => check.name === 'Enrollment')?.fix).toMatch(
+      /switch-agent-controller enroll --server <url> --code <code>/
+    );
     expect(checks.find((check) => check.name === 'Server')).toBeUndefined();
   });
 
@@ -113,5 +125,81 @@ describe('doctor', () => {
       })
     );
     expect(offline.find((check) => check.name === 'Version')?.detail).toMatch(/offline/);
+  });
+});
+
+describe('doctor output', () => {
+  const plain = createStyle(false);
+  const color = createStyle(true);
+  const checks: Check[] = [
+    { name: 'Node', status: 'ok', detail: 'v22.13.0' },
+    { name: 'Service', status: 'warn', detail: 'Not installed.', fix: 'Run: install-service' },
+    { name: 'Enrollment', status: 'fail', detail: '/data is not enrolled.', fix: 'Run: enroll' },
+  ];
+
+  it('puts a problem’s fix under it, lined up with the details', () => {
+    expect(formatChecks(checks, plain).split('\n')).toEqual([
+      'ok    Node        v22.13.0',
+      'warn  Service     Not installed.',
+      '                  Fix: Run: install-service',
+      'FAIL  Enrollment  /data is not enrolled.',
+      '                  Fix: Run: enroll',
+    ]);
+  });
+
+  it('writes no escape codes unless the style is in colour', () => {
+    expect(formatReport(checks, plain)).not.toContain(String.fromCharCode(27));
+    expect(formatReport(checks, color)).toContain(`${String.fromCharCode(27)}[31mFAIL`);
+  });
+
+  it('counts the problems and warnings, and says when the machine is ready', () => {
+    expect(summarizeChecks(checks, plain)).toBe(
+      '1 problem, 1 warning. Fix what is marked FAIL, then run doctor again.'
+    );
+    expect(summarizeChecks(checks.slice(0, 2), plain)).toBe(
+      '1 warning. This machine can run agents.'
+    );
+    expect(summarizeChecks(checks.slice(0, 1), plain)).toBe(
+      'All checks passed. This machine is ready to run agents.'
+    );
+    expect(summarizeChecks([...checks, ...checks], plain)).toMatch(/^2 problems, 2 warnings\./);
+  });
+
+  it('reports every check for a script, with a null where there is no fix', () => {
+    expect(checksJson(checks)).toEqual({
+      ok: false,
+      checks: [
+        { name: 'Node', status: 'ok', detail: 'v22.13.0', fix: null },
+        { name: 'Service', status: 'warn', detail: 'Not installed.', fix: 'Run: install-service' },
+        {
+          name: 'Enrollment',
+          status: 'fail',
+          detail: '/data is not enrolled.',
+          fix: 'Run: enroll',
+        },
+      ],
+    });
+    expect(checksJson(checks.slice(0, 2)).ok).toBe(true);
+  });
+
+  it('gives every problem doctor finds a fix of its own', async () => {
+    const failing = await runDoctor(
+      inputs({
+        nodeVersion: 'v22.12.0',
+        platform: 'freebsd',
+        identity: null,
+        locate: async () => null,
+        service: async () => 'not-installed',
+      })
+    );
+    const problems = failing.filter((check) => check.status !== 'ok');
+    expect(problems.map((check) => check.name)).toEqual([
+      'Node',
+      'Platform',
+      'Enrollment',
+      'Providers',
+      'Service',
+    ]);
+    for (const problem of problems) expect(problem.fix, problem.name).toBeTruthy();
   });
 });

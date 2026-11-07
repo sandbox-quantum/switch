@@ -12,21 +12,28 @@ import { ControllerStore } from './store';
 let dir: string;
 let bundle: string;
 let stderr: string[];
+let stdout: string[];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-main-'));
   bundle = join(dir, 'shared-host.mjs');
   writeFileSync(bundle, '');
   stderr = [];
+  stdout = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
     stderr.push(String(chunk));
     return true;
   });
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    stdout.push(String(chunk));
+    return true;
+  });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  Reflect.deleteProperty(process.stdout, 'isTTY');
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -380,5 +387,178 @@ describe.skipIf(process.platform === 'win32')('planServiceReleases', () => {
     await expect(planServiceReleases(cliIn(join(other, '0.31.0')), own)).rejects.toThrow(
       /releases directory of another setup/
     );
+  });
+});
+
+const ESC = String.fromCharCode(27);
+
+function enrolledStore(): ControllerStore {
+  const store = ControllerStore.open(join(dir, 'controller.db'));
+  store.saveIdentity({
+    controllerId: 'controller-1',
+    server: 'https://switch.example.invalid',
+    name: 'build-box',
+    enrolledAt: '2026-11-04T09:30:00.000Z',
+  });
+  return store;
+}
+
+function terminal(isTTY: boolean): void {
+  Object.defineProperty(process.stdout, 'isTTY', { value: isTTY, configurable: true });
+}
+
+describe('command output', () => {
+  it('enroll still says "Enrolled as controller <id>", which Switch Console reads', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ controller_id: 'controller-1', credential: 'swcc_test' }), {
+            status: 201,
+            headers: { 'Content-Type': 'application/json' },
+          })
+      )
+    );
+    const code = await main([
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--name',
+      'build-box',
+      '--data-dir',
+      dir,
+    ]);
+    vi.unstubAllGlobals();
+    expect(code).toBe(EXIT_OK);
+    const text = stdout.join('');
+    expect(/Enrolled as controller (\S+)/.exec(text)?.[1]).toBe('controller-1');
+    expect(text).toContain('As a service:');
+    expect(text).toContain(`install-service --data-dir ${dir}`);
+    expect(text).not.toContain(ESC);
+  });
+
+  it('status exits 1 and says how to enroll when there is no enrollment', async () => {
+    expect(await main(['status', '--data-dir', dir])).toBe(1);
+    const text = stdout.join('');
+    expect(text).toContain('Not enrolled.');
+    expect(text).toContain('switch-agent-controller enroll --server');
+  });
+
+  it('status --json writes one document, and keeps the exit code of the plain status', async () => {
+    expect(await main(['status', '--json', '--data-dir', dir])).toBe(1);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({ enrolled: false, controller: null });
+    stdout = [];
+    enrolledStore().close();
+    expect(await main(['status', '--json', '--data-dir', dir])).toBe(0);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({
+      enrolled: true,
+      controller: { id: 'controller-1', name: 'build-box', revokedAt: null },
+      assignment: { kind: 'none' },
+    });
+  });
+
+  it('status lists the agents assigned to this machine, and keeps "Revoked at:" for scripts', async () => {
+    const store = enrolledStore();
+    store.saveAssignment(
+      {
+        revision: 3,
+        agents: [
+          {
+            agent_id: 'agent-1',
+            revision: 3,
+            desired_state: 'stopped',
+            definition: {
+              name: 'docs-writer',
+              provider: 'claude',
+              model: null,
+              advanced_config: {},
+              instructions: '',
+              auto_approve: false,
+              auto_mode: false,
+              directory: null,
+              isolation: 'shared',
+            },
+          },
+        ],
+      },
+      null,
+      '2026-11-06T10:00:00.000Z'
+    );
+    store.recordApplied('agent-1', 3, '2026-11-06T10:00:00.000Z');
+    store.close();
+    expect(await main(['status', '--data-dir', dir])).toBe(0);
+    const text = stdout.join('');
+    expect(text).toContain('Agents (assignment revision 3)');
+    expect(text).toMatch(/docs-writer\s+claude\s+stopped\s+stopped\s+3\s+3/);
+    expect(text).not.toContain('Revoked at:');
+    stdout = [];
+    const revoked = ControllerStore.open(join(dir, 'controller.db'));
+    revoked.markRevoked('2026-11-07T00:00:00.000Z');
+    revoked.close();
+    expect(await main(['status', '--data-dir', dir])).toBe(0);
+    expect(stdout.join('')).toContain('Revoked at:');
+  });
+
+  it('doctor --json writes every check as one document, and exits 1 when one fails', async () => {
+    vi.stubEnv('PATH', dir);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('offline');
+      })
+    );
+    const code = await main([
+      'doctor',
+      '--json',
+      '--data-dir',
+      dir,
+      '--shared-host-bundle',
+      bundle,
+    ]);
+    vi.unstubAllGlobals();
+    expect(code).toBe(1);
+    const report = JSON.parse(stdout.join(''));
+    expect(report.ok).toBe(false);
+    expect(
+      report.checks.find((check: { name: string }) => check.name === 'Enrollment')
+    ).toMatchObject({ status: 'fail', fix: expect.stringContaining('enroll') });
+  });
+
+  it('help gives a summary of every command before the details, and the text is the same piped', async () => {
+    terminal(false);
+    expect(await main(['help'])).toBe(EXIT_OK);
+    const text = stdout.join('');
+    expect(text).toMatch(/^Usage: switch-agent-controller <command> \[options\]\n\nCommands:\n/);
+    for (const command of ['enroll', 'run', 'status', 'doctor', 'update', 'uninstall-service'])
+      expect(text).toMatch(new RegExp(`^  ${command}\\s+\\S`, 'm'));
+    expect(text).toContain('Details by command:');
+    expect(text).not.toContain(ESC);
+  });
+
+  it('writes colour only to a terminal that wants it', async () => {
+    terminal(true);
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('NO_COLOR', '');
+    expect(await main(['status', '--data-dir', dir])).toBe(1);
+    expect(stdout.join('')).toContain(`${ESC}[31mNot enrolled.`);
+    stdout = [];
+    vi.stubEnv('NO_COLOR', '1');
+    expect(await main(['status', '--data-dir', dir])).toBe(1);
+    expect(stdout.join('')).not.toContain(ESC);
+    stdout = [];
+    vi.stubEnv('NO_COLOR', '');
+    terminal(false);
+    expect(await main(['status', '--data-dir', dir])).toBe(1);
+    expect(stdout.join('')).not.toContain(ESC);
+  });
+
+  it('never puts escape codes in --json, even on a terminal', async () => {
+    terminal(true);
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('NO_COLOR', '');
+    expect(await main(['status', '--json', '--data-dir', dir])).toBe(1);
+    expect(stdout.join('')).not.toContain(ESC);
   });
 });
