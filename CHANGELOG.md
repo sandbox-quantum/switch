@@ -2784,6 +2784,16 @@ version of their own to them without also giving them a release of their own.
   copy of the one picked, so the terminal's own is never written to, and its
   transcript starts with what was said in it. A conversation still open in a
   terminal can't be picked. No earlier prompt is sent again.
+- **Mistral Vibe agents.** An agent can run Mistral Vibe (`vibe-acp`, tested
+  with 3.1.0) over ACP, in Console or on a headless agent controller, with
+  approvals, questions, model choice and resumable conversations, and
+  switch-core accepts `mistral-vibe` wherever it takes a provider. Its sign-in
+  is read from Vibe's own status call, which never opens a browser: sign in on
+  the execution machine with `vibe-acp --setup`, or set `MISTRAL_API_KEY`. On
+  Linux a key only the desktop keyring holds reads as signed out, as sessions
+  cannot reach it. Auto mode uses Vibe's Smart Approve where Vibe offers it,
+  and otherwise lets edits run and asks before commands and connector calls.
+  A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
 - **The Switch skill tells agents what to do when their message was

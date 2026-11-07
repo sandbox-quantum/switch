@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These six adapters are the only Console session runtime.
 
 ## Shape
 
@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `mistral-vibe` | `vibe-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume through `session/load`, model selection through a `model` config option, MCP registration, approvals, and questions as ACP form elicitations. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -68,13 +69,14 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| mistral-vibe (ACP) | vibe-acp 3.1.0 | 10/10 (2026-11-06) | Run on Vibe's default model, Mistral Medium 3.5 (`mistral-vibe-cli-latest`), with the key in `$VIBE_HOME/.env`. A key set as `MISTRAL_API_KEY` in the shell works too; the test passes it, and `VIBE_HOME`, through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
-covers the protocol and chooses behaviour from what the agent advertises in
-`initialize` and `session/new`:
+Cursor, Antigravity and Mistral Vibe run on one adapter,
+`src/acp/acp-adapter.ts`, which covers the protocol and chooses behaviour from
+what the agent advertises in `initialize` and `session/new`:
 
 - resume uses `session/load` when the agent advertises `loadSession`, else
   `session/resume` when it advertises `sessionCapabilities.resume`, else asks
@@ -86,7 +88,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/mistral-vibe/mistral-vibe-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -95,7 +98,7 @@ Permission requests follow one policy for every ACP agent. A tool on an MCP
 server the session registered is allowed once without asking, as is
 everything in `full-access` and edits in `auto-accept-edits`. Otherwise the
 person is offered allow once, allow for this session and reject; options
-naming a permanent or future policy are never offered.
+whose name or id names a permanent or future policy are never offered.
 
 **Cursor** extensions: `cursor/ask_question` (several questions, multi-select),
 `cursor/create_plan` (an approval with the plan as its detail),
@@ -127,3 +130,23 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**Mistral Vibe** signs in with a Mistral API key, read from `MISTRAL_API_KEY`,
+`$VIBE_HOME/.env` or the OS keyring. Its handshake offers browser sign-in
+either way, so its sign-in check asks Vibe's read-only `_auth/status` instead.
+Sessions are given no keyring bus and the check runs without one too, so on
+Linux a key saved to the Secret Service reads as signed out; use the variable
+or the `.env` file there. Vibe's modes are permission profiles:
+approval-required is `ask`, auto mode is `smart-approve` (Vibe's own reviewer,
+which runs the calls it rates safe and asks about the rest) where the session
+offers it and `accept-edits` where not, and full access is `auto-approve`.
+Vibe ignores a mode it does not offer, and its config can hide any of them, so
+a session that has to ask and is offered no mode that asks is refused. Its
+`ask_user_question` tool, which Vibe offers only to a client that answers form
+elicitations, asks through the same `elicitation/create` handling as `agy`
+(`src/acp/elicitation.ts`). An MCP tool is named `mcp_<server>.<tool>` with the
+server name normalised; that alias is mapped back to the one registered server
+it can name, and a call it cannot place asks a person. Choosing a model also
+saves it as Vibe's `active_model` in `$VIBE_HOME/config.toml`, which a later
+Vibe session given no model starts with. Its permission requests name only the
+tool call, which the `tool_call` announced before them describes.

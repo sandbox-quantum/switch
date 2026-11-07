@@ -250,6 +250,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity ad
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
 | Antigravity (`agy acp`) | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
+| Mistral Vibe | Yes | ACP model config option | Unavailable | Images as bytes; embedded file resources |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
@@ -381,7 +382,9 @@ resumes or attaches, including ones started automatically:
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
-  uses Smart Auto, and Antigravity approves edits and asks before commands.
+  uses Smart Auto, Mistral Vibe uses Smart Approve where Vibe offers it, and
+  Antigravity (and Mistral Vibe without Smart Approve) approves edits and asks
+  before commands.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 
@@ -414,7 +417,8 @@ missing login. Existing sessions are not stopped when a setup check fails.
 
 Claude uses its native auth status command. Codex uses app-server account status.
 Cursor uses its native account status output. Antigravity initializes an empty
-session without sending a prompt, and returns its native model list. OpenCode checks connected backends; a local or free backend may need no
+session without sending a prompt, and returns its native model list. Mistral
+Vibe uses its read-only `_auth/status` call after the ACP handshake. OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials
 can expire after a check. All model fields use the same editable picker: select a model from the host
 catalogue or enter an ID. Blank uses the provider default. Loading and failed
