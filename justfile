@@ -198,6 +198,17 @@ test *args:
 properties command="check":
     uv run --no-project --with 'pyyaml>=6,<7' --with 'pydantic>=2,<3' python properties/gate/gate.py {{ command }}
 
+# `just properties-model` has TLC search every state the Quint models in
+# properties/specs can reach in their bounds, and checks each invariant in all of
+# them (`--deep` adds the bounds that take minutes); `just properties-mutants`
+# checks that each invariant fails on the bug it is there for. Both need quint
+# (`npm install --global @informalsystems/quint`) and Java.
+properties-model *args:
+    python3 properties/specs/run.py verify {{ args }}
+
+properties-mutants:
+    python3 properties/specs/run.py mutants
+
 # ── End-to-end proof for "follow the conversation" ─────────────────────────────
 # Plays every journey as two people in a fresh local Mattermost against
 # switch-core from this checkout, then writes a report with the server's log

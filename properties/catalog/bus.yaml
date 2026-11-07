@@ -15,6 +15,9 @@ properties:
       `MessageStore._next_seq` takes `pg_advisory_xact_lock` on the room; a
       reader works from its own cursor, so a gap that fills in later would be
       skipped for good.
+    gaps:
+      code: the Hypothesis state machine is the next step of the first slice
+      system: the history checker is a later step of the first slice
   - id: bus.lost-wakeup-only-delays
     title: A lost announcement delays a read and nothing more
     statement: >

@@ -500,6 +500,43 @@ jobs:
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
 
+  properties-model:
+    name: Property models
+    # Quint models of the concurrent parts of Switch (properties/specs): TLC
+    # searches every state each model can reach in the bounds configs.qnt
+    # gives, and a second pass checks that each invariant fails on the bug it
+    # is there for. Needs only the models, so a change elsewhere does not run it.
+    needs: changes
+    if: ${{ needs.changes.outputs.properties == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: console/.nvmrc
+
+      - name: Set up Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Quint
+        run: npm install --global @informalsystems/quint@0.32.0
+
+      # Quint downloads the model checkers on first use.
+      - name: Cache the model checkers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.quint
+          key: quint-0.32.0
+
+      - name: Every invariant holds, and fails on its bug
+        run: python3 properties/specs/run.py
+
   chart:
     name: Helm chart
     # The release pins every first-party image in the chart by digest before

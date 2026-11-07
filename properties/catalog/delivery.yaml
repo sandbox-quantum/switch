@@ -3,14 +3,18 @@ properties:
     title: Who a row is for is decided when it is written
     statement: >
       Which agents a room row is for is decided by the room's state when the
-      row is written. A later membership or addressing change never adds or
-      removes own events for earlier rows.
+      row is written. A later membership or addressing change never adds an
+      own event for an earlier row; an event is removed only by retention, or
+      when its agent leaves the room.
     kind: safety
     formality: formal
     spec: delivery.qnt::DecidedAtWrite
     levels: [model, code, system]
     owner: platform
     status: proposed
+    gaps:
+      code: the Hypothesis state machine is the next step of the first slice
+      system: the history checker is a later step of the first slice
   - id: delivery.own-seq-contiguous
     title: An agent's own-event numbers never repeat and never skip
     statement: >
@@ -25,6 +29,9 @@ properties:
     notes: >
       Numbers come from `agent_event_heads`, not the highest stored row,
       because retention deletes old rows.
+    gaps:
+      code: the Hypothesis state machine is the next step of the first slice
+      system: the history checker is a later step of the first slice
   - id: delivery.addressed-exactly-once
     title: An addressed message reaches its agent exactly once
     statement: >
@@ -36,6 +43,9 @@ properties:
     levels: [model, code, system]
     owner: platform
     status: proposed
+    gaps:
+      code: the Hypothesis state machine is the next step of the first slice
+      system: the history checker is a later step of the first slice
   - id: delivery.no-silent-loss
     title: A resuming agent misses nothing without being told
     statement: >
@@ -52,6 +62,9 @@ properties:
       Retention deletes old rows (`agent_event_drops`) and a restarted server
       numbers from a new boot (`agent_event_heads.first_seq`); both must
       surface as a gap, never as silence.
+    gaps:
+      code: the Hypothesis state machine is the next step of the first slice
+      system: the history checker is a later step of the first slice
   - id: delivery.unaddressed-silent
     title: An unaddressed message notifies no one
     statement: A message not addressed to an agent produces no notification for it.
@@ -68,3 +81,21 @@ properties:
     levels: [model, system]
     owner: platform
     status: proposed
+  - id: delivery.no-events-after-leave
+    title: A member who has left has no events in the room
+    statement: >
+      An agent that is not in a room has no own events from it: removing it
+      deletes the ones it had, including one a transaction was storing as it
+      was removed, and none is stored for a row written after.
+    kind: safety
+    formality: formal
+    spec: delivery.qnt::NoEventsAfterLeave
+    levels: [model, code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      `EventBuffer.forget_room` locks the agent's head row before deleting, and
+      `store` reads membership after taking that lock.
+    gaps:
+      code: the Hypothesis state machine is the next step of the first slice
+      system: the history checker is a later step of the first slice
