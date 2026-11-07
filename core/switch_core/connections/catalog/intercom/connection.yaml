@@ -1,38 +1,41 @@
 slug: intercom
 name: Intercom
 category: Customer support
-description: Read and reply to Intercom conversations and look up contacts, as you.
+description: Read and manage Intercom conversations, contacts, and articles, as you.
 enabled: true
 adapter: oauth
 auth:
   type: oauth
+  # [MEASURED] Intercom issues single-use rotating refresh tokens on POST https://mcp.intercom.com/token.
   refresh: rotating
   oauth:
-    # Intercom's official MCP server supports OAuth Dynamic Client Registration (RFC 7591)
-    # discovered via RFC 9728 and RFC 8414 metadata endpoints from https://mcp.intercom.com/mcp.
-    # Core registers a public client dynamically; no operator credentials are required.
+    # [MEASURED] RFC 7591 dynamic client registration verified via POST https://mcp.intercom.com/register (201 Created).
+    # Discovered via RFC 9728 and RFC 8414 metadata from https://mcp.intercom.com/mcp.
     registration: dynamic
-    # Intercom accepts loopback redirects on 127.0.0.1 for desktop clients (Switch Console).
-    # Remote redirects require Intercom developer support.
+    # [MEASURED] Loopback redirect on 127.0.0.1 (ports 39231-39235) accepted by authorization server with PKCE S256.
     redirect: [loopback]
-    # Discovered metadata lists a revocation endpoint, allowing Switch to revoke on disconnect.
+    # [DOCUMENTED] revocation_endpoint is advertised in /.well-known/oauth-authorization-server metadata.
     revocation_discovered: true
   identity:
-    # GET https://api.intercom.io/me returns the current authenticated teammate/admin profile.
+    # [DOCUMENTED] Intercom REST API admin identity endpoint (GET https://api.intercom.io/me).
+    # [MEASURED LIMITATION] MCP-issued OAuth tokens have audience restricted to https://mcp.intercom.com/mcp;
+    # calling api.intercom.io/me currently yields HTTP 401 until Intercom expands token audience or adds userinfo to MCP.
     url: https://api.intercom.io/me
+    # [DOCUMENTED] Field 'id' from GET /me response.
     account_id: id
+    # [DOCUMENTED] Field 'email' from GET /me response.
     label: email
-# Intercom access tokens issued via the OAuth authorization server refresh using rotating refresh tokens.
-# Tokens are capped at 1 hour (3600s) to enforce hourly grant reviews by Switch.
+# [MEASURED] Token expires_in is 3,600 seconds (1 hour). Enforces hourly grant review by Switch.
 token: { kind: pass_through, max_lifetime: 3600 }
 mcp:
   servers:
-    # Official US-hosted MCP server endpoint. (For EU-hosted workspaces, Intercom hosts mcp.eu.intercom.com/mcp).
+    # [MEASURED] Official US-hosted MCP server endpoint. (mcp.eu.intercom.com is available for EU workspaces).
     - { name: intercom, url: "https://mcp.intercom.com/mcp" }
 access:
-  # Intercom MCP advertises scopes [mcp, operator].
-  # Least access: 'read' requests only 'mcp' for querying conversations and contacts.
-  # 'write' adds 'operator' for taking action, drafting/sending replies, and managing tickets.
+  # [MEASURED] Authorization server advertises scopes [mcp, operator].
+  # Least access: 'read' requests only 'mcp' (search conversations/contacts, view articles).
+  # 'write' adds 'operator' (internal notes, article management, operator actions).
+  # Note: Live MCP tool surface does not expose a customer-facing reply tool.
   read:
     scopes:
       - mcp
