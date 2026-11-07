@@ -1,5 +1,6 @@
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { ControllerApiError } from './api';
+import { checksOutput } from './cli-output';
 import { errorMessage } from './log';
 import { PROVIDERS, type Provider } from './schemas';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
@@ -232,11 +233,6 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   return checks;
 }
 
-const MARK: Record<CheckStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL' };
-
 export function formatChecks(checks: Check[]): string {
-  const width = Math.max(...checks.map((check) => check.name.length));
-  return checks
-    .map((check) => `${MARK[check.status]}  ${check.name.padEnd(width)}  ${check.detail}`)
-    .join('\n');
+  return checksOutput(checks, false);
 }
