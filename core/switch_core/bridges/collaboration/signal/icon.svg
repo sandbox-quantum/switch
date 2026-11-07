@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Signal">
+  <circle cx="32" cy="32" r="30" fill="#3A76F0"/>
+  <path d="M18 46l3-8a17 17 0 1 1 6 7l-9 1Z" fill="white"/>
+  <path d="M16 48l-4 1 2-4m-1-26 3 1m-6 5 4 1m-4 7 4-1m36-13-3 2m7 4-4 1m4 7-4-1m1 9-4-2M22 8l1 4m8-6v4m10-2-2 4" fill="none" stroke="#3A76F0" stroke-width="2" stroke-linecap="round"/>
+</svg>
