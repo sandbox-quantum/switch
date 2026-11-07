@@ -23,7 +23,17 @@ PLACEHOLDERS = {
     "box",
     "canva",
     "vercel",
+    "monday",
 }
+
+
+def test_the_shipped_monday_entry_is_cataloged_with_probe_results_and_disabled():
+    definition = CATALOG["monday"].definition
+    assert definition.slug == "monday"
+    assert definition.name == "Monday.com"
+    assert definition.enabled is False
+    assert definition.auth.type == "oauth"
+    assert not CATALOG["monday"].skill_files
 
 
 def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
