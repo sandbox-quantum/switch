@@ -1,0 +1,67 @@
+slug: azure-devops
+name: Azure DevOps
+category: Source control
+description: Read and update Azure DevOps work items, repos and pipelines with your own Azure DevOps permissions.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Entra refresh tokens rotate on use; the new one comes in the refresh
+  # response. Not measured; confirm at manual QA.
+  refresh: rotating
+  oauth:
+    # Entra offers no dynamic client registration for MCP: the operator
+    # registers a multi-tenant Entra app (Microsoft documents that
+    # single-tenant apps are rejected with AADSTS50194 at the organizations
+    # endpoint), grants it delegated Azure DevOps MCP permissions with admin
+    # consent, and stores its client. Setup: docs/old/azure-devops-setup.md.
+    registration: static
+    client_settings: AZURE_DEVOPS
+    # PKCE public client: accept the documented client ID without a secret.
+    public_client: true
+    # Keep OIDC/refresh requests separate from access-token resource scopes.
+    request_scopes: [offline_access, openid]
+    # Registered under the Mobile and desktop applications platform, which
+    # accepts a loopback redirect on any port (RFC 8252), so none are pinned.
+    redirect: [loopback, core]
+    # Multi-tenant sign-in goes through the organizations endpoint; personal
+    # Microsoft-account-only organizations cannot use this remote MCP server.
+    authorization_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize
+    token_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/token
+    # Entra has no token revocation endpoint; a refresh token dies with the
+    # session or an admin's conditional access policy.
+    remove_access: In your Microsoft account or your org's Entra admin center, remove the app's consent under Enterprise applications. Until you do, the sign-in can be refreshed for up to the app's refresh-token lifetime.
+  identity:
+    # Per the maintainers' #831 direction: GET the Azure DevOps profile API
+    # with the same token. Not yet verified with a live MCP token; if it is
+    # refused there, the fallback is identity from the OIDC ID token (a
+    # shared loader change, to be proposed then).
+    url: https://app.vssps.visualstudio.com/_apis/profile/profiles/me
+    account_id: id
+    label: displayName
+# Entra access tokens live about an hour (60-75 minutes, tenant policy
+# permitting); not measured. An agent's copy may outlive its grant by that
+# long; agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  # The root URL takes the organization per tool call, so people in several
+  # orgs need one connection (Microsoft documents guest users of an org
+  # cannot use the root URL; they connect with the per-organization URL
+  # instead, once #840's validated field lands for server URLs).
+  servers:
+    - { name: azure-devops, url: "https://mcp.dev.azure.com" }
+access:
+  # Provisional conservative shape: Microsoft documents Ado.Mcp.Tools, but
+  # granular read/write scope enforcement has not been verified. Offer only
+  # write-capable access; never promise a read-only token. No .default or
+  # host-set header workaround. See #831 issuecomment-6651444148.
+  # https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/configure-user-delegation
+  write:
+    scopes:
+      - api://2a72489c-aab2-4b65-b93a-a91edccf33b8/Ado.Mcp.Tools
+tools: { mode: pass_through }
+# The vendor's tools pass through. The base scope can expose write-capable
+# operations within the signed-in user's Azure DevOps permissions; the live
+# tenant's effective access has not been measured. Tool availability never
+# grants permission to change data. A read-only level needs verified
+# vendor-enforced scopes before it may be added.
