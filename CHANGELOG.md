@@ -80,8 +80,8 @@ version of their own to them without also giving them a release of their own.
   used. Every invite path now asks the same question message delivery asks,
   through one shared check in `RoomService`: the Gateway's room page and
   Switch Console, room creation with agents, `!invite-agent` and
-  `/invite-agent`, the `invite_agent_to_room` and `add_users_to_room` agent
-  tools, the agent-bridge API, and template runs. The check runs before
+  `/invite-agent`, the `invite_agent_to_room` agent tool, the agent-bridge
+  API, and template runs. The check runs before
   anything is provisioned and again inside the membership transaction, under
   row locks, so a policy tightened a moment earlier is obeyed and a refusal
   leaves no room, channel, membership or platform invite behind. Agents
