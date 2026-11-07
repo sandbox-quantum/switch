@@ -21,7 +21,8 @@ organization adapter, not real vendor credentials.
 Private validation: 544 bounded Core tests; 228 focused Node tests; 13
 Chromium admin tests; Console typecheck and focused mypy/ruff clean. These are
 synthetic tests, not an actual vendor sign-in or a native Console launch.
-No OAuth demo, refresh measurement or PR submission is claimed.
+At that preflight stage, no OAuth demo or refresh measurement was claimed.
+Later live QA is recorded in hubspot-setup.md; PR submission is separate.
 
 Maintainer clarification:
 https://github.com/sandbox-quantum/switch/issues/830#issuecomment-6678453089

@@ -118,3 +118,26 @@ availability before attempting a CRM read. Do not add user-profile scopes to
 fix an unneeded section.
 Use `search_crm_objects`' actual schema, limit the read, and keep record values,
 account IDs and emails out of a public demo.
+
+
+## Live validation, November 7, 2026
+
+The locally installed candidate completed HubSpot sign-in with required account
+metadata plus optional contact-read access. `get_user_details` with only
+`TOOL_INFORMATION` and a fresh `CONTACT` search succeeded, returning one record.
+No record values are included in the demo. The generic Switch read/write label
+is not evidence of vendor write permission; no write call was tested.
+
+The continuous grant-removal recording shows one agent becoming zero and a
+later fresh request reporting the tool unavailable about 42-43 seconds later.
+After regranting the same agent, a fresh contact search completed past the
+original access expiry without another sign-in. Metadata changed from revision
+1 to 3 with a later access expiry. This establishes renewal, not the number of
+refreshes or refresh-token value rotation.
+
+Local Disconnect removed the connection and grants. Its warning correctly says
+vendor authorization remains and previously issued access may work until its
+expiry. A fresh Switch call failed because the agent had no HubSpot grant.
+This does not establish vendor revocation. The connection segment is recorded
+separately from the earlier grant/read/removal sequence, not presented as one
+continuous OAuth lifecycle.

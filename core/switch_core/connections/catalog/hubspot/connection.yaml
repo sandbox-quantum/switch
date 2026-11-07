@@ -7,7 +7,8 @@ adapter: oauth
 auth:
   type: oauth
   # The issue states, and HubSpot's OAuth docs describe, rotating refresh
-  # tokens; not yet measured against a live connector. Confirm at manual QA.
+  # tokens. Live QA confirmed post-expiry renewal without another sign-in;
+  # revision changes do not establish refresh-token value rotation.
   refresh: rotating
   oauth:
     # HubSpot's MCP server offers no dynamic registration (its metadata has
@@ -37,7 +38,7 @@ auth:
     # several accounts. get_user_details is a read-only, no-argument tool
     # HubSpot documents for exactly this; its result carries user and account IDs. The initial catalog
     # assumed hubId, but the live result uses an account-id field. The list form of
-    # account_id is the shared implementation of that composite keying. An
+    # account_id is the shared implementation of that composite keying.
     # Live get_user_details returned root integer user/account IDs. The
     # adapter accepts only explicit spellings of those two names and rejects
     # ambiguity; no configured portal or other ID is used as a fallback.
@@ -45,7 +46,7 @@ auth:
     account_id: [userId, accountId]
     label: userId
 # HubSpot documents 30-minute OAuth access tokens; whether MCP-issued
-# tokens differ is not documented. Verify at manual QA.
+# tokens differ is not documented. Live QA observed a 30-minute access window.
 token: { kind: pass_through, max_lifetime: 1800 }
 mcp:
   servers:
@@ -56,9 +57,9 @@ access:
   # scopes_supported: [] and its MCP docs say an MCP connector's scopes are
   # not defined explicitly - they follow the server's tools and the
   # permissions granted at install - so there is no vendor scope parameter
-  # to send and no vendor-enforced read-only consent. The signed-in user's
-  # HubSpot permissions are the real boundary; the skill says read and write
-  # stay within them, and read-only via tools.mode: listed may follow.
+  # to send. Minimal contact-read install permissions worked during QA, but
+  # Switch does not claim a read/write enforcement boundary of its own.
+  # HubSpot's actual install and user permissions govern available calls.
   unscoped: true
   read: { scopes: [] }
   write: { scopes: [] }
