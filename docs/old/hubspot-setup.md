@@ -138,6 +138,6 @@ refreshes or refresh-token value rotation.
 Local Disconnect removed the connection and grants. Its warning correctly says
 vendor authorization remains and previously issued access may work until its
 expiry. A fresh Switch call failed because the agent had no HubSpot grant.
-This does not establish vendor revocation. The connection segment is recorded
-separately from the earlier grant/read/removal sequence, not presented as one
-continuous OAuth lifecycle.
+This does not establish vendor revocation. Any separately recorded connection
+segment must be labelled as separate from the earlier grant/read/removal sequence,
+not presented as one continuous OAuth lifecycle.
