@@ -67,6 +67,7 @@ def _reporter(
         version="1.0.0",
         telemetry_environment="prod",
         telemetry_internal=False,
+        deployment_kind="self_hosted",
         session_factory=session_factory,
         installed_at=INSTALLED,
     )

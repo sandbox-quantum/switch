@@ -199,7 +199,7 @@ class TestUnavailableReplyRouting:
             "claude-code": "claude auth login",
             "codex": "codex login",
             "opencode": "opencode auth login",
-            "antigravity": "antigravity-acp --login",
+            "antigravity": "agy acp --login",
             "cursor": "agent login",
             "qwen": "qwen",
         }

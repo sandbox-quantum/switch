@@ -282,6 +282,7 @@ class TestDefinitions:
                 controller_id=None,
                 desired_state="stopped",
                 definition={"provider": "claude", "model": "m"},
+                expected_revision=None,
             )
             assert updated.revision == 2
             assert updated.controller_id is None

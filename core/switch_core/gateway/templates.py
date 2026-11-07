@@ -145,6 +145,21 @@ def _official_or_none(
     return template
 
 
+async def readable_template(
+    template_id: str,
+    session: AsyncSession,
+    store: TemplateStore,
+    user: User,
+    is_admin: bool,
+    config: SwitchConfig,
+) -> Template | OfficialTemplate:
+    """A template the caller may read, official or saved; 404 otherwise."""
+    official = _official_or_none(template_id, config)
+    if official is not None:
+        return official
+    return await _load_for("read", session, store, template_id, user, is_admin)
+
+
 def _refuse_official(template_id: str) -> None:
     if is_official(template_id):
         raise HTTPException(

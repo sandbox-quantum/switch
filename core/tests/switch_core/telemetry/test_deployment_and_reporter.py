@@ -175,6 +175,7 @@ class TestEmitMilestone:
             version="1.0.0",
             telemetry_environment="prod",
             telemetry_internal=False,
+            deployment_kind="self_hosted",
             session_factory=session_factory,
             installed_at=installed_at,
         )
@@ -236,6 +237,7 @@ class TestTheSnapshotSchedule:
             version="1.0.0",
             telemetry_environment="prod",
             telemetry_internal=False,
+            deployment_kind="self_hosted",
             session_factory=session_factory,
             installed_at=datetime.now(UTC) - timedelta(days=1),
         )

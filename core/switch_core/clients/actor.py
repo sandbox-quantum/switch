@@ -281,6 +281,7 @@ class Actor[ConfigT: ClientConfig]:
         caption: str | None = None,
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
+        extra_content: dict[str, object] | None = None,
     ) -> str | None:
         """Send an m.image / m.file event pointing at an uploaded media URI.
 
@@ -309,6 +310,7 @@ class Actor[ConfigT: ClientConfig]:
                 caption=caption,
                 thread_root_id=thread_root_id,
                 group=group,
+                extra_content=extra_content,
             )
         except TransportError as exc:
             logger.error("Failed to send media to %s: %s", room_id, exc)
@@ -465,8 +467,10 @@ class SystemActor(Actor[ClientConfig]):
         message_type: AdminMessageType,
         thread_root_id: str | None,
         mentions: list[str] | None = None,
-    ) -> None:
-        await self.send_message(
+    ) -> str | None:
+        """Post an admin notice. Returns its event id, or None when the
+        transport refused it (logged by `send_message`)."""
+        return await self.send_message(
             room_id,
             body,
             format="markdown",

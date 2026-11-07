@@ -9,9 +9,17 @@ import { RenameChatModal } from '@renderer/features/chats/components/chat-modals
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
 import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
+import {
+  DeleteLibraryItemModal,
+  NewLibraryItemModal,
+} from '@renderer/features/library/library-modals';
+import { ReferenceTypeModal } from '@renderer/features/library/reference-types';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
+import { AddMachineModal } from '@renderer/features/machines/add-machine-modal';
+import { MoveAgentModal } from '@renderer/features/machines/move-agent-modal';
+import { RenameMachineModal } from '@renderer/features/machines/rename-machine-modal';
 import { AddHostModal } from '@renderer/features/remote-hosts/add-host-modal';
 import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-agent-config-modal';
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
@@ -32,6 +40,8 @@ import { DeleteAccountModal } from '@renderer/features/switch-servers/delete-acc
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
 import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/DisconnectMessagingAppModal';
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
+import { ReplaceTokenModal } from '@renderer/features/switch-servers/ReplaceTokenModal';
+import { RequireLinkConfirmationModal } from '@renderer/features/switch-servers/RequireLinkConfirmationModal';
 import { TeamsPlacementModal } from '@renderer/features/switch-servers/TeamsPlacementModal';
 import { SaveTemplateModal } from '@renderer/features/templates/save-template-modal';
 import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
@@ -68,8 +78,23 @@ export const modalRegistry = {
   commandPaletteModal: createModal(CommandPaletteModal, { size: 'md' }),
   sessionModal: createModal(CreateSessionModal, { dismissOnOutsideClick: false }),
   addAgentModal: createModal(AddAgentModal, { size: 'lg', dismissOnOutsideClick: false }),
+  addMachineModal: createModal(AddMachineModal, { size: 'lg' }),
+  moveAgentModal: createModal(MoveAgentModal, { size: 'md' }),
+  renameMachineModal: createModal(RenameMachineModal, {
+    size: 'sm',
+    dismissOnOutsideClick: false,
+  }),
   saveTemplateModal: createModal(SaveTemplateModal, { size: 'sm', dismissOnOutsideClick: false }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
+  newLibraryItemModal: createModal(NewLibraryItemModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
+  deleteLibraryItemModal: createModal(DeleteLibraryItemModal, { size: 'sm' }),
+  referenceTypeModal: createModal(ReferenceTypeModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),
   renameAgentModal: createModal(RenameAgentModal, { size: 'sm', dismissOnOutsideClick: false }),
   removeAgentConfigModal: createModal(RemoveAgentConfigModal, { size: 'sm' }),
@@ -121,8 +146,16 @@ export const modalRegistry = {
     size: 'md',
     dismissOnOutsideClick: false,
   }),
+  requireLinkConfirmationModal: createModal(RequireLinkConfirmationModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   bundledChatSignInModal: createModal(BundledChatSignInModal, { size: 'sm' }),
   disconnectMessagingAppModal: createModal(DisconnectMessagingAppModal, {
+    size: 'sm',
+    dismissOnOutsideClick: false,
+  }),
+  replaceTokenModal: createModal(ReplaceTokenModal, {
     size: 'sm',
     dismissOnOutsideClick: false,
   }),

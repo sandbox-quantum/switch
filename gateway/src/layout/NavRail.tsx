@@ -1,5 +1,7 @@
 import AddOutlined from "@mui/icons-material/AddOutlined";
 import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
+import ApartmentOutlined from "@mui/icons-material/ApartmentOutlined";
+import DnsOutlined from "@mui/icons-material/DnsOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
@@ -52,6 +54,11 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Workspace", path: "/workspace", icon: WorkspacesOutlined },
 ];
 
+// Shown when the current workspace belongs to an organization.
+const ORGANIZATION_ITEMS: NavItem[] = [
+  { label: "Organization", path: "/organization", icon: ApartmentOutlined },
+];
+
 // Shown only when the server runs with agent management enabled.
 const MANAGEMENT_ITEMS: NavItem[] = [
   { label: "Machines", path: "/machines", icon: ComputerOutlined },
@@ -62,6 +69,7 @@ const WORKSPACE_ADMIN_ITEMS: NavItem[] = [
 ];
 
 const ADMIN_ITEMS: NavItem[] = [
+  { label: "All workspaces", path: "/operator/workspaces", icon: DnsOutlined },
   { label: "Users", path: "/users", icon: PeopleOutlined },
   { label: "Connectors", path: "/connectors", icon: PowerOutlined },
 ];
@@ -127,7 +135,7 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
 
 export default memo(function NavRail() {
   const location = useLocation();
-  const { user, session, isOperator, logout, switchTo } = useAuth();
+  const { user, session, isOperator, logout, logoutEverywhere, switchTo } = useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -161,6 +169,7 @@ export default memo(function NavRail() {
 
   const items = [
     ...NAV_ITEMS,
+    ...(session?.tenant?.organization_id ? ORGANIZATION_ITEMS : []),
     ...(managementAvailable ? MANAGEMENT_ITEMS : []),
     ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
     ...(isOperator ? ADMIN_ITEMS : []),
@@ -286,7 +295,7 @@ export default memo(function NavRail() {
           </Typography>
           {isOperator && (
             <Typography variant="caption" sx={{ color: "text.secondary" }}>
-              Operator
+              Platform operator
             </Typography>
           )}
         </Box>
@@ -318,7 +327,7 @@ export default memo(function NavRail() {
             sx={{ gap: 1 }}
           >
             <AddOutlined sx={{ fontSize: 16 }} />
-            Create workspace
+            Create organization
           </MenuItem>
         )}
         <Divider sx={{ my: 0.5 }} />
@@ -349,10 +358,14 @@ export default memo(function NavRail() {
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out
         </MenuItem>
+        <MenuItem onClick={logoutEverywhere} sx={{ gap: 1 }}>
+          <LogoutOutlined sx={{ fontSize: 16 }} />
+          Sign out of all devices
+        </MenuItem>
       </Menu>
 
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>Create a workspace</DialogTitle>
+        <DialogTitle>Create an organization</DialogTitle>
         <DialogContent sx={{ pt: "8px !important" }}>
           <CreateWorkspaceForm onCancel={() => setCreateOpen(false)} />
         </DialogContent>

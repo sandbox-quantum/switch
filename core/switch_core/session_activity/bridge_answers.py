@@ -113,7 +113,7 @@ class ApprovalAnswers:
             return Refused(
                 reason="that control does not belong to this card",
                 handle=post.handle,
-                card_ref=post.external_post_id,
+                card_ref=_card_thread(post),
             )
         if row is None:
             return _gone(post)
@@ -182,7 +182,7 @@ class ApprovalAnswers:
     ) -> Answered | Refused:
         if isinstance(answer, Unanswerable):
             return Refused(
-                reason=answer.reason, handle=post.handle, card_ref=post.external_post_id
+                reason=answer.reason, handle=post.handle, card_ref=_card_thread(post)
             )
         mxid = await self._identify(actor)
         if mxid is None:
@@ -193,7 +193,7 @@ class ApprovalAnswers:
                 self._bridge_id,
             )
             return Refused(
-                reason=_NO_IDENTITY, handle=post.handle, card_ref=post.external_post_id
+                reason=_NO_IDENTITY, handle=post.handle, card_ref=_card_thread(post)
             )
         try:
             await self._service.answer_approval(
@@ -214,16 +214,23 @@ class ApprovalAnswers:
             return Refused(
                 reason=_as_reason(str(error)),
                 handle=post.handle,
-                card_ref=post.external_post_id,
+                card_ref=_card_thread(post),
             )
         return Answered(handle=post.handle)
+
+
+def _card_thread(post: ApprovalRequestPost) -> str | None:
+    """The thread a card is in: the root it was posted under, or the card itself
+    when it was posted at the top level. A platform threads a reply under a
+    root, not under another reply."""
+    return post.thread_ref or post.external_post_id
 
 
 def _gone(post: ApprovalRequestPost) -> Refused:
     return Refused(
         reason="its request no longer exists",
         handle=post.handle,
-        card_ref=post.external_post_id,
+        card_ref=_card_thread(post),
     )
 
 

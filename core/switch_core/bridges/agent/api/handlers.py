@@ -24,22 +24,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response, StreamingResponse
 
 from switch_core.bridges.agent.api.schemas import (
-    AgentInfo,
-    AgentListResponse,
     BulkRegisterResult,
     ConnectionBeatRequest,
     ConnectionPlacementsRequest,
     ConnectionRenewRequest,
     ConnectionSubscribeRequest,
-    CreateModerationRoomRequest,
-    CreateModerationRoomResponse,
     EventResponse,
     FeatureFlagInfo,
     FeatureFlagListResponse,
     HistoryMessage,
     HistoryResponse,
-    InviteAgentRequest,
-    ListBridgesResponse,
     ParticipantInfo,
     ParticipantsResponse,
     PostLlmResponseRequest,
@@ -56,9 +50,6 @@ from switch_core.bridges.agent.api.schemas import (
     RegisterKnownAgentBulkResponse,
     RegisterKnownAgentRequest,
     ReportEventsRequest,
-    RoomDetailResponse,
-    RoomInfo,
-    RoomListResponse,
     RuntimeStateRequest,
     SendMessageRequest,
     StatusRequest,
@@ -176,6 +167,8 @@ async def _resolve_registration_user_id(
     key = await api_key_store.get_by_hash(session, token_hash)
     if key is None or key.type not in REGISTRATION_KEY_TYPES:
         raise HTTPException(status_code=401, detail="Invalid registration token")
+    if key.expired(datetime.now(UTC)):
+        raise HTTPException(status_code=401, detail="Registration token has expired")
     # Which credential this was is worth keeping: a deployment bootstrapping
     # its first agents through the shared key and a user minting a key of
     # their own are different moments in adoption, and the key type is the
@@ -305,12 +298,36 @@ async def _register_known(
     return result.agent_id, result.api_key
 
 
+async def _require_own_parent(
+    session: AsyncSession, protocol: AgentCore, parent_agent_id: str, owner_id: str
+) -> Agent:
+    """Load the parent a registration names, refusing one the registering
+    user does not own: a child inherits its parent's name and settings, so
+    naming someone else's agent would read and impersonate it."""
+    parent = await protocol.agent_store.get(session, parent_agent_id)
+    if parent is None:
+        raise HTTPException(
+            status_code=404, detail=f"Parent agent not found: {parent_agent_id}"
+        )
+    if parent.owner_id != owner_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the parent agent's owner can register agents under it.",
+        )
+    return parent
+
+
 @router.post("/register-known")
 async def register_known_agent_endpoint(
     req: RegisterKnownAgentRequest,
     owner_id: Annotated[str, Depends(_resolve_registration_user_id)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> RegisterAgentResponse:
+    if req.parent_agent_id is not None:
+        await _require_own_parent(session, protocol, req.parent_agent_id, owner_id)
+        # Not held across registration, which opens its own session.
+        await session.commit()
     agent_id, api_key = await _register_known(
         agent_type=req.agent_type,
         name=req.name,
@@ -343,11 +360,7 @@ async def register_known_agents_bulk_endpoint(
     if not req.subagents:
         raise HTTPException(status_code=400, detail="No subagents provided")
 
-    parent = await protocol.agent_store.get(session, req.parent_agent_id)
-    if parent is None:
-        raise HTTPException(
-            status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
-        )
+    parent = await _require_own_parent(session, protocol, req.parent_agent_id, owner_id)
 
     # Subagents inherit the parent's operational settings unless the caller
     # overrides them: they should run in the same channels mode and use the
@@ -482,7 +495,7 @@ async def send_message(
 ) -> dict[str, object]:
     logger.debug("Recieved message from agent %s: %s", agent.name, req.content)
     try:
-        event_id = await protocol.send_message(agent.id, req.room_id, req.content)
+        sent = await protocol.send_message(agent.id, req.room_id, req.content)
     except BudgetExceeded as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     except GuardrailBlockedError as e:
@@ -492,7 +505,10 @@ async def send_message(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
-    return {"ok": True, "event_id": event_id}
+    result: dict[str, object] = {"ok": True, "event_id": sent.event_id}
+    if sent.trust is not None:
+        result["trust"] = sent.trust.to_result()
+    return result
 
 
 @router.get("/{agent_id}/rooms/{room_id}/media", response_model=None)
@@ -579,6 +595,8 @@ async def upload_media(
         )
     except BudgetExceeded as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
+    except GuardrailBlockedError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
@@ -675,18 +693,22 @@ async def update_status(
     req: StatusRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
+) -> dict[str, object]:
+    """Post a status line in the room. The result carries `trust` only when
+    Switch Trust changed or flagged it, as a sent message's does."""
+    result: dict[str, object] = {"ok": True}
     if req.detail:
         try:
-            await protocol.update_status(agent.id, req.room_id, req.detail)
+            feedback = await protocol.update_status(agent.id, req.room_id, req.detail)
         except GuardrailBlockedError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return {"ok": True}
+        if feedback is not None:
+            result["trust"] = feedback.to_result()
+    return result
 
 
 @router.post("/{agent_id}/runtime-state")
@@ -1567,9 +1589,12 @@ async def connection_placements(
     here after each change and on every (re)connect, so a restart of either
     side converges on what the watcher knows. A room another connection holds
     is taken over, as `connect_to_room` takes it, and that connection is sent
-    `room_released`. Every room must be one the agent belongs to, and every
-    session id at most `MAX_ID_LENGTH` characters; a request that breaks
-    either is refused whole and changes nothing.
+    `room_released`. A session placed in a room the agent does not belong to
+    (any more: the room was deleted, or the agent taken out) is left out and
+    named in `refused`; the rest are placed. A watcher stating the whole set
+    each time would otherwise have every placement refused, again and again,
+    for one room that has gone. A session id longer than `MAX_ID_LENGTH`
+    characters refuses the request whole and changes nothing.
     """
     if agent_id != agent.id:
         raise HTTPException(
@@ -1584,20 +1609,24 @@ async def connection_placements(
         )
     conn = await _admitted_connection(protocol, agent, req)
 
+    refused: dict[str, str] = {}
     for room_id in sorted(set(req.placements.values())):
         try:
             await protocol.require_room_member(agent.id, room_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (ValueError, PermissionError) as exc:
+            refused[room_id] = str(exc)
+    placements = {
+        session_id: room_id
+        for session_id, room_id in req.placements.items()
+        if room_id not in refused
+    }
 
     async with protocol.connections.slots(agent.id):
         async with protocol.connections.recorded(agent.id):
             conn = _current_connection(protocol, agent, req)
             before = protocol.connections.connection_placements(conn)
             try:
-                released = protocol.connections.replace_placements(conn, req.placements)
+                released = protocol.connections.replace_placements(conn, placements)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1605,7 +1634,7 @@ async def connection_placements(
         # recorded, so a move that fails hands nothing over, and before the
         # slots are let go, so a later claim of the room cannot have its count
         # overwritten by this one.
-        for session_id, room_id in req.placements.items():
+        for session_id, room_id in placements.items():
             if before.get(session_id) != room_id:
                 await protocol.event_buffer.hand_counting_to(
                     agent.tenant_id,
@@ -1635,6 +1664,11 @@ async def connection_placements(
                 "session_id": lost.session_id,
             }
             for lost in released
+        ],
+        "refused": [
+            {"session_id": session_id, "room_id": room_id, "reason": refused[room_id]}
+            for session_id, room_id in req.placements.items()
+            if room_id in refused
         ],
     }
 
@@ -1740,13 +1774,16 @@ async def get_room_history(
 @router.get("/rooms/{room_id}/participants")
 async def list_participants(
     room_id: str,
-    _agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
 ) -> ParticipantsResponse:
     try:
+        await protocol.require_room_member(agent.id, room_id)
         participants_desc = await protocol.list_participants(room_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
 
     participants = [
         ParticipantInfo(
@@ -1885,157 +1922,6 @@ async def post_llm_response(
         raise HTTPException(status_code=403, detail=str(e)) from e
 
     return PostLlmResponseResponse(verdict=result["verdict"])  # type: ignore[arg-type]
-
-
-# Moderation endpoints
-
-
-@router.post("/{agent_id}/moderation/rooms")
-async def create_room(
-    agent_id: str,
-    req: CreateModerationRoomRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> CreateModerationRoomResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.create_moderation_room(
-            agent_id=agent.id,
-            name=req.name,
-            description=req.description,
-            agent_names=req.agent_names,
-            include_subagents_for=req.include_subagents_for,
-            user_names=req.user_names,
-            channel_type=req.channel_type,
-            bridge_id=req.bridge_id,
-            internal_only=req.internal_only,
-            admin_mode=req.admin_mode,
-            security_config=req.security_config,
-            instructions=req.instructions,
-            reference_ids=req.reference_ids,
-            package_ids=req.package_ids,
-            linked_rooms=(
-                [lr.model_dump() for lr in req.linked_rooms]
-                if req.linked_rooms
-                else None
-            ),
-        )
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-
-    return CreateModerationRoomResponse(
-        id=result.room.id,
-        name=result.room.name,
-        transport_room_id=result.room.transport_room_id,
-        matrix_room_id=result.room.transport_room_id,
-        failed_attachments=result.failed_attachments,
-    )
-
-
-@router.post("/{agent_id}/moderation/rooms/{room_id}/invite")
-async def invite_agent(
-    agent_id: str,
-    room_id: str,
-    req: InviteAgentRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        await protocol.invite_agent_to_room(
-            agent.id, room_id, req.agent_name, include_subagents=req.include_subagents
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-    return {"ok": True}
-
-
-@router.get("/{agent_id}/moderation/rooms")
-async def list_rooms(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> RoomListResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    rooms = await protocol.list_all_rooms(agent.id)
-    return RoomListResponse(
-        rooms=[RoomInfo(id=r.id, name=r.name, description=r.description) for r in rooms]
-    )
-
-
-@router.get("/{agent_id}/moderation/rooms/{room_id}")
-async def get_room(
-    agent_id: str,
-    room_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> RoomDetailResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        room_detail = await protocol.get_room_detail(agent.id, room_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return RoomDetailResponse(
-        id=room_detail.id,
-        name=room_detail.name,
-        description=room_detail.description,
-        channel_type=room_detail.channel_type,
-        admin_mode=room_detail.admin_mode,
-        agent_names=room_detail.agent_names,
-    )
-
-
-@router.get("/{agent_id}/moderation/agents")
-async def list_agents(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> AgentListResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    agents = await protocol.list_all_agents(agent.id)
-    return AgentListResponse(
-        agents=[
-            AgentInfo(
-                id=a.id,
-                name=a.name,
-                description=a.description,
-                display_name=a.display_name,
-            )
-            for a in agents
-        ]
-    )
-
-
-@router.get("/{agent_id}/moderation/bridges")
-async def list_bridges(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> ListBridgesResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    bridges = await protocol.list_bridges()
-    return ListBridgesResponse(bridges=bridges)
 
 
 # Feature flag endpoints

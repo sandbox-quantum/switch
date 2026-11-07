@@ -1213,7 +1213,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         });
       }
       const first = result.rooms[0];
-      finish(first ? `Opening ${first.roomName}…` : 'Opening Your Rooms…', () =>
+      finish(first ? `Opening ${first.roomName}…` : 'Opening Rooms…', () =>
         first ? navigate('room', { roomId: first.roomId }) : navigate('serverRooms', { serverId })
       );
     }
@@ -1260,6 +1260,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         inputs,
         filled,
         templateName: loaded.name,
+        templateId: templateId ?? null,
         entryPoint: 'template',
       });
     } catch (e) {

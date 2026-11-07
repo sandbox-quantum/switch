@@ -62,10 +62,18 @@ peer still on it, and it can never be raised past what is running in the field.
 ## Cutting a release
 
 1. **Bump the version** in `core/pyproject.toml` (`[project].version`).
+   With it, **record the official templates' revisions**: `just
+   record-template-revisions` adds one for each template that comes with
+   Switch (switch-buddy, the Switch expert) whose files changed since the last
+   release. Agents those templates created are brought up to the new revision
+   when the released server starts; see "Installs and updates" in
+   `docs/TEMPLATES.md`. The workflow refuses the tag while a change is
+   unrecorded.
 2. **Update `CHANGELOG.md`**: under the `## switch-core` section, move the
    `### [Unreleased]` items under a new `### [X.Y.Z]` heading and note the date.
    (The desktop app has its own `## switch-console` section, versioned separately.)
-3. **Commit** the bump + changelog on a release branch and merge to `main`.
+3. **Commit** the bump, the revisions and the changelog on a release branch and
+   merge to `main`.
 4. **Tag and push**: the tag MUST be `switch-v<version>` and match
    `core/pyproject.toml` (the workflow verifies this and fails on mismatch):
    ```bash

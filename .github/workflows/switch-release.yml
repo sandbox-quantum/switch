@@ -184,6 +184,21 @@ jobs:
             echo "channel=$channel"
           } | tee -a "$GITHUB_OUTPUT"
 
+      - name: Set up uv
+        if: ${{ steps.version.outputs.channel == 'release' }}
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Refuse an official template change with no revision
+        # A release records a revision for each official template it changed
+        # (RELEASING.md); the agents an older revision created are brought up
+        # to it when the released server starts. Only on a release tag: an RC
+        # or a dev build serves a changed template under its last revision.
+        if: ${{ steps.version.outputs.channel == 'release' }}
+        run: uv run --project core python -m switch_core.official_templates.revisions check
+
       - name: List the images
         # scripts/pin_chart_images.py is the one list of first-party images; the
         # build matrix, the pin and the recorded pins all come from it.

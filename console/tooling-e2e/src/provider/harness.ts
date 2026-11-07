@@ -74,17 +74,17 @@ const ROLE_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
 // sentence: told merely to answer briefly, the agent declined the `interrupt`
 // scenario's task on the grounds that 200 messages would spam the room — a
 // refusal the scenario reads as a session that never started.
-const AGENT_INSTRUCTIONS =
+export const AGENT_INSTRUCTIONS =
   'You are a Switch end-to-end test agent. Do exactly what you are asked in the ' +
   'room, and post your answer back to the room you were addressed in. Never ' +
   'decline or shorten a task on the grounds that it is repetitive or long: the ' +
   'requests you get here are deliberate tests of exactly that.';
 
 /** Cheap on purpose: a run spends a real subscription. */
-const CLAUDE_MODEL = 'claude-sonnet-5';
+export const CLAUDE_MODEL = 'claude-sonnet-5';
 
 /** The management API's provider id for each harness agent type. */
-const PROVIDER_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
+export const PROVIDER_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   opencode: 'opencode',
   'claude-code': 'claude',
   codex: 'codex',
@@ -93,10 +93,10 @@ const PROVIDER_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
 };
 
 /** How long to keep asking a controller to take the agent while it comes up. */
-const PLACEMENT_DEADLINE_MS = 120_000;
+export const PLACEMENT_DEADLINE_MS = 120_000;
 
 /** The placement refusals that clear once the controller is up and signed in. */
-const NOT_READY_CODES = new Set([
+export const NOT_READY_CODES = new Set([
   'controller_offline',
   'provider_not_installed',
   'provider_login_missing',
