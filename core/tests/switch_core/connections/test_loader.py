@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "zendesk",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -46,6 +47,32 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+
+
+def test_zendesk_is_disabled_without_a_transport_or_skill():
+    entry = CATALOG["zendesk"]
+    definition = entry.definition
+    assert definition.enabled is False and definition.adapter == "api_key"
+    assert definition.mcp is None and definition.cli is None
+    assert definition.access is None and not entry.skill_files
+    assert definition.token is not None and definition.token.max_lifetime is None
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(field.name, field.secret) for field in sign_in.fields] == [
+        ("subdomain", False),
+        ("email", False),
+        ("api_token", True),
+    ]
+    identity = sign_in.identity
+    assert identity.method == "GET"
+    assert identity.url == "https://{subdomain}.zendesk.com/api/v2/users/me.json"
+    assert identity.basic is not None
+    assert (identity.basic.username, identity.basic.password) == (
+        "{email}/token",
+        "{api_token}",
+    )
+    assert (identity.account_id, identity.label) == ("user.id", "user.email")
+    assert identity.account_id_positive is True
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1099,7 +1126,7 @@ def test_loads_an_api_key_entry_whose_tool_is_a_cli(catalog_copy):
         (
             "        secret: false\n",
             "        secret: true\n",
-            "one of the two",
+            "exactly one",
         ),
         ("  refresh: none\n", "  refresh: rotating\n", "refresh is none"),
         (
