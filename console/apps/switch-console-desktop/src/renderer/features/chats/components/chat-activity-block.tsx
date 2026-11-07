@@ -137,6 +137,7 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     work.length > 0 ||
     isThinking(turn) ||
     turn.status === 'interrupted' ||
+    turn.status === 'cancelled' ||
     turn.status === 'error' ||
     turn.requests.length > 0 ||
     turnWarnings(turn).length > 0
@@ -174,7 +175,8 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const label = reasoningLabel(reasoning, running && reasoning !== null);
   const work = turnTools(turn);
   const thinking = isThinking(turn) && !(label && !reasoning?.completedAt);
-  const ended = turn.status === 'interrupted' || turn.status === 'error';
+  const ended =
+    turn.status === 'interrupted' || turn.status === 'cancelled' || turn.status === 'error';
   const requests = turn.requests;
   if (!turnShown(activity, turn)) return null;
   return (
@@ -207,7 +209,11 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
       {thinking && (
         <WorkLogRow
           icon={<ThinkingIcon />}
-          label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
+          label={
+            turn.status === 'queued'
+              ? `Queued… Cancel: !cancel @${agent.name} ${turn.turnId.slice(0, 8)}`
+              : 'Thinking…'
+          }
           active
         />
       )}
@@ -216,11 +222,15 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           <WorkLogRow
             icon={<FailedIcon />}
             label={turnEndLabel(
-              turn.status === 'interrupted' ? 'Stopped' : 'The turn ended with an error',
+              turn.status === 'cancelled'
+                ? 'Cancelled before starting'
+                : turn.status === 'interrupted'
+                  ? 'Stopped'
+                  : 'The turn ended with an error',
               endReason
             )}
             title={endReason ?? undefined}
-            tone="failed"
+            tone={turn.status === 'cancelled' ? 'passive' : 'failed'}
           />
           {turn.status === 'error' && turn.messageId && (
             <RetryTurn activity={activity} turn={turn} />

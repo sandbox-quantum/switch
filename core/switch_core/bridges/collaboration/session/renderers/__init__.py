@@ -41,6 +41,7 @@ TURN_STATE = {
     "running": "Working…",
     "completed": "Turn complete.",
     "interrupted": "Turn interrupted.",
+    "cancelled": "Message cancelled before the agent started.",
     "error": "Turn ended with an error.",
 }
 

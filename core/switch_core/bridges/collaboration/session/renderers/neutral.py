@@ -225,6 +225,7 @@ def turn_summary(
     *,
     escape: Callable[[str], str],
     limit: int,
+    cancel_command: str | None = None,
 ) -> str:
     """One or two lines: what the agent last said, and where the turn got to.
 
@@ -239,6 +240,10 @@ def turn_summary(
     still going.
     """
     state = turn_state(items, turn, tool_detail=True)
+    if turn.status == "queued" and cancel_command:
+        hint = f"\nCancel: {escape(cancel_command)}"
+        if len(state) + len(hint) <= limit:
+            state += hint
     said = [item for item in items if item.kind == "assistant-message"]
     if not said:
         return _truncate(state, limit)
@@ -267,6 +272,7 @@ def turn_status(
     mention: str | None = None,
     error_summary: str | None = None,
     tool_detail: bool,
+    cancel_command: str | None = None,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
 
@@ -308,6 +314,10 @@ def turn_status(
         items, turn, tool_detail=tool_detail, elapsed_seconds=elapsed_seconds
     )
     head = markup.bold(state)
+    if turn.status == "queued" and cancel_command:
+        hint = f"\nCancel: {markup.code(markup.literal(escape)(cancel_command))}"
+        if len(head) + len(hint) <= budget:
+            head += hint
 
     lines = [head]
     spent = len(head)

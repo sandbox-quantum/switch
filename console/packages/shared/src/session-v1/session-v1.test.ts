@@ -57,6 +57,26 @@ function transport() {
 }
 
 describe('session-v1 wire contract', () => {
+  it('validates a targeted cancellation and replays its terminal state', () => {
+    const command = commandSchema.parse({
+      ...examples.platformAnswer,
+      body: { type: 'turn.cancel', turnId: 'queued-turn' },
+    });
+    expect(command.body).toEqual({ type: 'turn.cancel', turnId: 'queued-turn' });
+    const replica = new SessionReplica(initial());
+    replica.apply(
+      event(11, {
+        type: 'turn.upsert',
+        turnId: 'queued-turn',
+        status: 'cancelled',
+        commandId: 'queued-turn',
+      })
+    );
+    expect(replica.snapshot().turns.find((turn) => turn.turnId === 'queued-turn')?.status).toBe(
+      'cancelled'
+    );
+    expect(() => commandSchema.parse({ ...command, body: { type: 'turn.cancel' } })).toThrow();
+  });
   it('accepts server approval expiry offsets in snapshots and events', () => {
     const expiresAt = '2026-09-11T15:30:00.123456+00:00';
     const snapshot = initial();

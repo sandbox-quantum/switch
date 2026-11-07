@@ -474,16 +474,35 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
-      console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
-      );
-      await send({ kind: 'activity', row });
-      return true;
+    // Older servers may reject usage, cancelled, or both. Retry each compatible
+    // representation without changing the journal or the host's cancelled state.
+    const sendCompatible = async (item: Report): Promise<void> => {
+      let report = item;
+      for (;;) {
+        try {
+          await send(report);
+          return;
+        } catch (error) {
+          if (
+            !(error instanceof RequestError) ||
+            error.status !== 422 ||
+            report.kind !== 'activity'
+          )
+            throw error;
+          if (report.row.usage) {
+            const { usage: _usage, ...row } = report.row;
+            console.warn(
+              `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+            );
+            report = { kind: 'activity', row };
+          } else if (report.row.kind === 'turn' && report.row.status === 'cancelled') {
+            console.warn(
+              `Switch does not accept cancelled turns; reporting ${report.row.turn_id} as interrupted.`
+            );
+            report = { kind: 'activity', row: { ...report.row, status: 'interrupted' } };
+          } else throw error;
+        }
+      }
     };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
@@ -500,11 +519,10 @@ export async function runSharedHost(
         );
         for (const item of reports) {
           try {
-            await send(item);
+            await sendCompatible(item);
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -758,6 +776,30 @@ export async function runSharedHost(
       const status = host!
         .snapshot()
         .commandStatuses.find((entry) => entry.commandId === command.commandId);
+      if (
+        command.body.type === 'turn.cancel' &&
+        command.origin.roomId &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection &&
+        status
+      ) {
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: command.origin.roomId,
+            threadId: command.origin.threadId,
+            body:
+              status.status === 'applied'
+                ? `Cancelled queued message ${command.body.turnId}. It was not sent to the agent.`
+                : `Could not cancel the queued message: ${status.message?.replace(/^Error: /, '') ?? 'the session refused it.'}`,
+          })
+          .catch((error: unknown) => {
+            console.warn(
+              `Could not report queued-message cancellation to its room: ${String(error)}`
+            );
+          });
+      }
       if (owed && status?.status === 'applied') await sendFollowup(owed);
       // Switch already told the room the control is under way; a refusal is answered there too.
       if (

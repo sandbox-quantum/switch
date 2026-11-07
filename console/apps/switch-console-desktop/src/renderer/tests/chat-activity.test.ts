@@ -27,6 +27,13 @@ const warn = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/utils/logger', () => ({ log: { warn } }));
 
 let clock = 0;
+
+it('keeps cancelled turns terminal rather than showing their unfinished tools as running', () => {
+  const turns = groupTurns([row('cancelled-turn', 'turn', { status: 'cancelled' })], []);
+  expect(turns[0]?.status).toBe('cancelled');
+  expect(isThinking(turns[0]!)).toBe(false);
+  expect(toolState({ status: 'in-progress' }, 'cancelled')).toBe('failed');
+});
 function row(
   turnId: string,
   itemId: string,

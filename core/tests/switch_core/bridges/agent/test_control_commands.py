@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -16,6 +17,131 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.bridges.agent.protocol.controller_presence import Binding
 from switch_core.bridges.agent.protocol.types import AgentStatus
 from switch_core.events import CommandEvent
+
+
+@pytest.mark.asyncio
+async def test_cancel_relays_the_exact_turn_and_verified_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def surface(*_args: Any) -> str:
+        return "slack"
+
+    monkeypatch.setattr(commands, "_room_surface", surface)
+    event = _event("cancel").model_copy(update={"args": "@cc queued-turn"})
+    await commands._cmd_cancel(
+        _client(
+            reply,
+            command_level="unsupported",
+            enqueue=[],
+            placed="session-1",
+            relayed=relayed,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        event,
+        False,
+    )
+    [frame] = relayed
+    assert frame["body"] == {"type": "turn.cancel", "turnId": "queued-turn"}
+    assert frame["origin"]["actorId"] == event.user_id
+    assert frame["origin"]["roomId"] == "room-1"
+    assert reply.bodies == ["Requesting cancellation of the queued message…"]
+
+
+@pytest.mark.parametrize(
+    ("matches", "expected"),
+    [
+        (["abcdef12-complete-turn"], None),
+        ([], "No queued message matches"),
+        (["abcdef12-first", "abcdef12-second"], "More than one queued message matches"),
+    ],
+)
+async def test_cancel_resolves_a_short_id_only_in_the_target_agents_room(
+    monkeypatch, matches, expected
+):
+    reply = _Reply()
+    relayed = []
+    lookup = AsyncMock(return_value=matches)
+    monkeypatch.setattr(commands, "_reply", reply)
+    monkeypatch.setattr(commands.AgentSessionActivityStore, "queued_turn_ids", lookup)
+    monkeypatch.setattr(commands, "_room_surface", AsyncMock(return_value="mattermost"))
+    await commands._cmd_cancel(
+        _client(
+            reply,
+            command_level="unsupported",
+            enqueue=[],
+            placed="session-1",
+            relayed=relayed,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event("cancel").model_copy(update={"args": "@cc abcdef12"}),
+        False,
+    )
+    assert lookup.await_args.args[1:] == ("agent-1", "room-1", "abcdef12")
+    if expected:
+        assert not relayed
+        assert expected in reply.bodies[0]
+    else:
+        assert relayed[0]["body"] == {"type": "turn.cancel", "turnId": matches[0]}
+
+
+async def test_cancel_full_id_does_not_require_a_still_queued_activity_row(monkeypatch):
+    reply = _Reply()
+    relayed = []
+    lookup = AsyncMock(side_effect=AssertionError("Full IDs go to the host"))
+    monkeypatch.setattr(commands, "_reply", reply)
+    monkeypatch.setattr(commands.AgentSessionActivityStore, "queued_turn_ids", lookup)
+    monkeypatch.setattr(commands, "_room_surface", AsyncMock(return_value="mattermost"))
+    await commands._cmd_cancel(
+        _client(
+            reply,
+            command_level="unsupported",
+            enqueue=[],
+            placed="session-1",
+            relayed=relayed,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event("cancel").model_copy(update={"args": "@cc abcdef12-complete-turn"}),
+        False,
+    )
+    lookup.assert_not_awaited()
+    assert relayed[0]["body"]["turnId"] == "abcdef12-complete-turn"
+
+
+@pytest.mark.parametrize(
+    "args", ["", "@cc", "queued-turn", "@cc queued-turn extra", "@cc @other"]
+)
+@pytest.mark.asyncio
+async def test_cancel_requires_an_explicit_target_and_turn_id(
+    monkeypatch: pytest.MonkeyPatch, args: str
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+    await commands._cmd_cancel(
+        _client(
+            reply,
+            command_level="unsupported",
+            enqueue=[],
+            placed="session-1",
+            relayed=relayed,
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event("cancel").model_copy(update={"args": args}),
+        False,
+    )
+    assert not relayed
+    assert reply.bodies == [commands._CANCEL_USAGE]
+
+
+@pytest.mark.asyncio
+async def test_bare_cancel_addresses_no_agents() -> None:
+    assert not await commands.COMMANDS_BY_NAME["cancel"].addressed(
+        SimpleNamespace(), "", "room-1"
+    )
 
 
 def _event(command: str = "reset") -> CommandEvent:
