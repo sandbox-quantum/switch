@@ -794,6 +794,10 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **A sign-in granted part of a service's write access is refused.** It was
+  recorded as read-only although it could write: a Grafana Editor's Read and
+  Query, or a Google Workspace sign-in with only some write scopes unticked.
+  Connecting again with all of them, or with only the read ones, works as before.
 - **Two organization admins demoting or removing each other at once** could
   leave the refused one without their keys and connections in the workspaces
   they reached as an organization admin: those were taken away before the

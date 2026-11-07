@@ -179,7 +179,9 @@ There is no confirm step: the person chose the account at the vendor. The
 flow then reads `connected` (with the account and any warning) or `failed`
 (with the reason), holding no token, until Console drops it or it expires.
 The consent recorded is what the vendor granted: write where every write
-scope was granted, else read. Flows are rows in `sign_in_flows`, so any
+scope was granted, read where none of the scopes only writing needs was, and a
+sign-in granted part of the write access is refused, so a connection that can
+write is never recorded as read-only. Flows are rows in `sign_in_flows`, so any
 process can take any step: ten minutes each, at most 256 per workspace, one
 per person.
 

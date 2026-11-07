@@ -358,7 +358,14 @@ class ServiceFlows:
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:
             return "write"
-        if set(details["read_scopes"]) <= granted:
+        read_scopes = set(details["read_scopes"])
+        # A connection that can write is never recorded as read-only.
+        if granted & (write_scopes - read_scopes):
+            raise FlowError(
+                f"{details['name']} granted part of the write access Switch asks for. "
+                "Connect again and allow all of it, or allow only read access."
+            )
+        if read_scopes <= granted:
             return "read"
         raise FlowError(
             f"{details['name']} granted less than Switch needs to read. Connect "
