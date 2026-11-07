@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import urllib.parse
 from collections.abc import Awaitable, Callable
@@ -199,6 +200,59 @@ class ZulipAdapter(PlatformAdapter):
             logger.warning("Exception registering Zulip event queue: %s", exc)
             return False
 
+    async def _relay_unread(self, client: httpx.AsyncClient) -> None:
+        """Relay unread messages that reached the bot while Switch was not listening."""
+        url = f"{self._base_api}/messages"
+        while True:
+            params = {
+                "anchor": "first_unread",
+                "num_before": "0",
+                "num_after": "100",
+                "apply_markdown": "false",
+                "narrow": json.dumps([{"operator": "is", "operand": "unread"}]),
+            }
+            try:
+                res = await client.get(
+                    url, params=params, auth=self._auth, timeout=30.0
+                )
+                if res.status_code != 200:
+                    logger.warning("Failed to fetch unread messages: %s", res.text)
+                    return
+                data = res.json()
+                messages = data.get("messages", [])
+                relayed_ids: list[int] = []
+                for msg in messages:
+                    await self._process_message(msg)
+                    mid = msg.get("id")
+                    if mid is not None:
+                        relayed_ids.append(int(mid))
+                if relayed_ids:
+                    await self._mark_read(client, relayed_ids)
+                if len(messages) < 100:
+                    return
+            except Exception as exc:
+                logger.warning("Exception catching up unread Zulip messages: %s", exc)
+                return
+
+    async def _mark_read(
+        self, client: httpx.AsyncClient, message_ids: list[int]
+    ) -> None:
+        """Mark processed messages read on Zulip so new pods do not replay them."""
+        if not message_ids:
+            return
+        url = f"{self._base_api}/messages/flags"
+        data = {
+            "messages": json.dumps(message_ids),
+            "op": "add",
+            "flag": "read",
+        }
+        try:
+            res = await client.post(url, data=data, auth=self._auth, timeout=20.0)
+            if res.status_code != 200:
+                logger.warning("Failed to mark messages as read on Zulip: %s", res.text)
+        except Exception as exc:
+            logger.warning("Exception marking messages as read on Zulip: %s", exc)
+
     async def _poll_loop(self) -> None:
         """Long poll the Zulip events endpoint."""
         client = self._http_client or httpx.AsyncClient(timeout=60.0)
@@ -209,6 +263,8 @@ class ZulipAdapter(PlatformAdapter):
                     if not ok:
                         await asyncio.sleep(5.0)
                         continue
+                    # Catch up on unread messages immediately after queue registration
+                    await self._relay_unread(client)
 
                 url = f"{self._base_api}/events"
                 params = {
@@ -226,11 +282,21 @@ class ZulipAdapter(PlatformAdapter):
                 if res.status_code == 200:
                     data = res.json()
                     events = data.get("events", [])
+                    relayed_ids: list[int] = []
                     for ev in events:
                         ev_id = ev.get("id")
                         if ev_id is not None and ev_id > self._last_event_id:
                             self._last_event_id = ev_id
-                        await self._process_event(ev)
+                        if ev.get("type") == "message":
+                            msg = ev.get("message", {})
+                            await self._process_message(msg)
+                            mid = msg.get("id")
+                            if mid is not None:
+                                relayed_ids.append(int(mid))
+                        else:
+                            await self._process_event(ev)
+                    if relayed_ids:
+                        await self._mark_read(client, relayed_ids)
                 else:
                     await asyncio.sleep(2.0)
             except asyncio.CancelledError:
@@ -242,53 +308,55 @@ class ZulipAdapter(PlatformAdapter):
     async def _process_event(self, ev: dict[str, Any]) -> None:
         ev_type = ev.get("type")
         if ev_type == "message":
-            msg = ev.get("message", {})
-            sender_email = msg.get("sender_email", "").lower()
-            if sender_email == self.config.bot_email.lower():
-                return  # Skip self-echoes
+            await self._process_message(ev.get("message", {}))
 
-            content = msg.get("content", "").strip()
-            stream_name = msg.get("display_recipient")
-            if not isinstance(stream_name, str):
-                # Direct message or group PM: fallback string
-                stream_name = "direct-messages"
+    async def _process_message(self, msg: dict[str, Any]) -> None:
+        sender_email = msg.get("sender_email", "").lower()
+        if sender_email == self.config.bot_email.lower():
+            return  # Skip self-echoes
 
-            topic = msg.get("subject", "").strip()
-            msg_id = str(msg.get("id", ""))
-            sender_id = str(msg.get("sender_id", ""))
-            sender_name = msg.get("sender_full_name") or sender_email
+        content = msg.get("content", "").strip()
+        stream_name = msg.get("display_recipient")
+        if not isinstance(stream_name, str):
+            # Direct message or group PM: fallback string
+            stream_name = "direct-messages"
 
-            if content.startswith("!"):
-                parts = content[1:].split(maxsplit=1)
-                cmd = parts[0]
-                args = parts[1] if len(parts) > 1 else ""
-                if self._on_command:
-                    await self._on_command(
-                        InboundCommand(
-                            channel_id=stream_name,
-                            channel_type="channel_public",
-                            sender_id=sender_id,
-                            sender_name=sender_name,
-                            command=cmd,
-                            args=args,
-                            message_ref=msg_id,
-                            root_id=topic if topic else None,
-                        )
-                    )
-                return
+        topic = msg.get("subject", "").strip()
+        msg_id = str(msg.get("id", ""))
+        sender_id = str(msg.get("sender_id", ""))
+        sender_name = msg.get("sender_full_name") or sender_email
 
-            if self._on_message:
-                await self._on_message(
-                    InboundMessage(
+        if content.startswith("!"):
+            parts = content[1:].split(maxsplit=1)
+            cmd = parts[0]
+            args = parts[1] if len(parts) > 1 else ""
+            if self._on_command:
+                await self._on_command(
+                    InboundCommand(
                         channel_id=stream_name,
                         channel_type="channel_public",
                         sender_id=sender_id,
                         sender_name=sender_name,
-                        content=content,
+                        command=cmd,
+                        args=args,
                         message_ref=msg_id,
                         root_id=topic if topic else None,
                     )
                 )
+            return
+
+        if self._on_message:
+            await self._on_message(
+                InboundMessage(
+                    channel_id=stream_name,
+                    channel_type="channel_public",
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    content=content,
+                    message_ref=msg_id,
+                    root_id=topic if topic else None,
+                )
+            )
 
     # ── Outbound Messaging ────────────────────────────────────────────────────
 

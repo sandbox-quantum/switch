@@ -259,3 +259,59 @@ async def test_send_message_dispatches_http_post() -> None:
     assert data["to"] == "engineering"
     assert data["topic"] == "backend-infra"
     assert "Testing Zulip outbound." in data["content"]
+
+
+# ── Unread Message Catch-Up & Read Marking ────────────────────────────────────
+
+
+async def test_relay_unread_and_mark_read() -> None:
+    adapter = ZulipAdapter(config=_make_config())
+    received: list[InboundMessage] = []
+
+    async def on_message(msg: InboundMessage) -> None:
+        received.append(msg)
+
+    await adapter.start(
+        on_message=on_message,
+        on_command=MagicMock(),
+        on_agent_joined=MagicMock(),
+        on_user_joined=MagicMock(),
+        on_app_joined=MagicMock(),
+    )
+
+    unread_resp = MagicMock()
+    unread_resp.status_code = 200
+    unread_resp.json.return_value = {
+        "messages": [
+            {
+                "id": 101,
+                "sender_id": 99,
+                "sender_email": "user@example.com",
+                "sender_full_name": "User",
+                "display_recipient": "general",
+                "subject": "Deploy",
+                "content": "Message arrived during pod transition",
+            }
+        ]
+    }
+
+    mark_resp = MagicMock()
+    mark_resp.status_code = 200
+
+    mock_client = MagicMock()
+    mock_client.get = AsyncMock(return_value=unread_resp)
+    mock_client.post = AsyncMock(return_value=mark_resp)
+
+    await adapter._relay_unread(mock_client)
+
+    assert len(received) == 1
+    assert received[0].message_ref == "101"
+    assert received[0].content == "Message arrived during pod transition"
+
+    # Verify marking read was requested
+    mock_client.post.assert_called_once()
+    post_args = mock_client.post.call_args
+    assert "/messages/flags" in post_args[0][0]
+    assert post_args[1]["data"]["messages"] == "[101]"
+    assert post_args[1]["data"]["op"] == "add"
+    assert post_args[1]["data"]["flag"] == "read"
