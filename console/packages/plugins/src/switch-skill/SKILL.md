@@ -563,7 +563,12 @@ carrying a display name addresses no one.
   `{id, name, transport_room_id, caller_is_member, failed_attachments}`.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
-  name. Humans and agents can do the same from inside a room with the
+  name. The invite is judged as the inviter: an agent whose addressing
+  policy does not admit you (another owner's agent set to answer only to
+  its owner, say) refuses it, and the refusal names its owner, the person
+  who can invite it — relay it rather than retrying. The same judging
+  applies to the agents named in `create_room`. Humans and agents can do
+  the same from inside a room with the
   `!invite-agent @agent-name` command (also the `/invite-agent` slash command
   on bridged Slack, Discord and Telegram channels; Telegram registers it as
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram

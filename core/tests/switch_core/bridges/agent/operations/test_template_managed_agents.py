@@ -37,6 +37,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
 )
 from switch_core.db.models import Agent, Room, Template
 from switch_core.db.stores.template_install_store import TemplateInstallStore
+from switch_core.invites import UserInviter
 from switch_core.official_templates import current_revision
 from switch_core.template_installs import fingerprint
 from switch_core.template_runs import AgentsNotCreated, RunUndone
@@ -625,10 +626,12 @@ def test_join_names_the_existing_rooms_to_add_the_agent_to():
 
 @pytest.mark.asyncio
 async def test_a_new_agent_joins_an_existing_room_or_the_run_is_refused(managed):
-    added: list[tuple[str, list[str]]] = []
+    added: list[tuple[str, list[str], Any]] = []
 
-    async def add_agents_to_room(room_id: str, agent_ids: list[str]) -> None:
-        added.append((room_id, agent_ids))
+    async def add_agents_to_room(
+        room_id: str, agent_ids: list[str], **kwargs: Any
+    ) -> None:
+        added.append((room_id, agent_ids, kwargs["invited_by"]))
 
     managed["protocol"].room_service.add_agents_to_room = add_agents_to_room
     async with managed["session_factory"]() as session:
@@ -638,6 +641,9 @@ async def test_a_new_agent_joins_an_existing_room_or_the_run_is_refused(managed)
             description="d",
             channel_type="channel_public",
             owner_id=managed["user_id"],
+            # The template runner is an agent. That is provenance about how
+            # the room was created, not the person who authorized this run.
+            created_by_agent_id=managed["agent_id"],
         )
         session.add(lobby)
         await session.commit()
@@ -660,7 +666,7 @@ agent:
     known = await _stored(managed, template.replace("JOIN", "lobby"), kind="agent")
     result = await _as(managed["agent_id"], run_template, template_id=known)
     (created,) = result["created_agents"]
-    assert added == [(lobby_id, [created["agent_id"]])]
+    assert added == [(lobby_id, [created["agent_id"]], UserInviter(managed["user_id"]))]
 
 
 @pytest.mark.asyncio
@@ -790,9 +796,9 @@ async def test_the_rooms_wait_until_the_new_agents_are_listening(managed):
     order: list[str] = []
     names: dict[str, str] = {}
 
-    async def create_room(config: Any) -> Any:
+    async def create_room(config: Any, **kwargs: Any) -> Any:
         order.append(f"room {config.name}")
-        return await original(config)
+        return await original(config, **kwargs)
 
     original = managed["protocol"].room_service.create_room
     managed["protocol"].room_service.create_room = create_room

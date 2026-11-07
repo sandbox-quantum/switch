@@ -962,6 +962,10 @@ async def create_room(
             calling agent is not a member unless listed here — include your
             own name if you should join (`caller_is_member` in the result
             says whether you did). Names must already exist in the registry.
+            Each agent is seated on your authority: an agent whose
+            addressing policy does not admit you (another owner's agent set
+            to answer only to its owner, say) refuses the room, and the
+            whole creation fails with its reason.
         user_names: Optional list of people to add, each named by their
             username on the room's messaging app, or by the e-mail address of
             their account there (not on Discord, which never shares e-mail
@@ -1437,6 +1441,11 @@ async def invite_agent_to_room(
     room_id: str, agent_name: str, include_subagents: bool = False
 ) -> dict[str, bool]:
     """Invite an agent into an existing room by name.
+
+    The invite is judged as you: an agent whose addressing policy does not
+    admit you — one set to answer only to its owner, when that owner is not
+    yours — refuses it, and the refusal (which names its owner, the person
+    who can invite it) is the result. Relay it rather than retrying.
 
     A direct or group conversation is refused: its platform fixes who is in
     it, and the people in it add agents with `!invite-agent` there.

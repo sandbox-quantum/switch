@@ -2690,11 +2690,17 @@ class TelegramAdapter(PlatformAdapter):
             return
         channel_id = str(chat.id)
         if self._on_app_joined is not None:
+            # The update names who changed the bot's membership — who added
+            # it, when that is what the change was.
+            actor = getattr(event, "from_user", None)
             await self._on_app_joined(
                 InboundAppJoin(
                     channel_id=channel_id,
                     channel_type=self._channel_type_of(chat),
                     channel_name=getattr(chat, "title", None),
+                    added_by_external_user_id=(
+                        str(actor.id) if actor is not None else None
+                    ),
                 )
             )
         # After provisioning, so the notice cannot arrive before the room it
@@ -2722,8 +2728,15 @@ class TelegramAdapter(PlatformAdapter):
 
         new_members = getattr(message, "new_chat_members", None) or []
         if new_members:
+            # The service message's sender is who added the new members (or
+            # a member who joined by link, adding themselves): who an agent
+            # join is judged as.
             await self._handle_new_members(
-                new_members, chat_id, channel_type, channel_name
+                new_members,
+                chat_id,
+                channel_type,
+                channel_name,
+                added_by=str(author.id) if author is not None else None,
             )
             return
 
@@ -2912,6 +2925,7 @@ class TelegramAdapter(PlatformAdapter):
         chat_id: str,
         channel_type: ChannelType,
         channel_name: str | None,
+        added_by: str | None = None,
     ) -> None:
         for member in members:
             if member.id == self._bot_user_id:
@@ -2921,6 +2935,7 @@ class TelegramAdapter(PlatformAdapter):
                             channel_id=chat_id,
                             channel_type=channel_type,
                             channel_name=channel_name,
+                            added_by_external_user_id=added_by,
                         )
                     )
                 continue
@@ -2933,6 +2948,7 @@ class TelegramAdapter(PlatformAdapter):
                     external_user_id=str(member.id),
                     external_username=self._display_name(member),
                     channel_name=channel_name,
+                    added_by_external_user_id=added_by,
                 )
             )
 

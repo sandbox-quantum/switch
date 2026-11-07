@@ -40,6 +40,21 @@ class AgentStore:
         result = await session.execute(select(Agent).where(Agent.id.in_(agent_ids)))
         return list(result.scalars().all())
 
+    async def get_many_for_update(
+        self, session: AsyncSession, agent_ids: Collection[str]
+    ) -> list[Agent]:
+        """Read agents in a stable order and lock policy rows through commit."""
+        if not agent_ids:
+            return []
+        result = await session.execute(
+            select(Agent)
+            .where(Agent.id.in_(agent_ids))
+            .order_by(Agent.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return list(result.scalars().all())
+
     async def get_by_name(self, session: AsyncSession, name: str) -> Agent | None:
         """Resolve an agent by name within the bound tenant.
 

@@ -14,6 +14,7 @@ import asyncio
 import pytest
 
 from switch_core.db.models import Agent, CollaborationBridge, Message, Room
+from switch_core.invites import UserInviter
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness, SessionEnv
 
@@ -70,7 +71,8 @@ async def test_agent_posts_greeting_on_join(
             name="e2e-greeting-room",
             description="integration self-join greeting test",
             agent_ids=[agent.agent_id],
-        )
+        ),
+        invited_by=UserInviter(harness.owner_id),
     )
     transport_room_id = result.room.transport_room_id
     await _wait_joined(client, transport_room_id)
@@ -102,7 +104,8 @@ async def test_no_greeting_when_the_bridge_has_them_disabled(
             name="e2e-quiet-room",
             description="integration greeting-toggle test",
             agent_ids=[host.agent_id],
-        )
+        ),
+        invited_by=UserInviter(harness.owner_id),
     )
     transport_room_id = result.room.transport_room_id
     await _wait_joined(harness.client_for(host.agent_id), transport_room_id)
@@ -127,7 +130,9 @@ async def test_no_greeting_when_the_bridge_has_them_disabled(
         await session.commit()
 
     await harness.room_service.add_agents_to_room(
-        result.room.id, agent_ids=[joiner.agent_id]
+        result.room.id,
+        agent_ids=[joiner.agent_id],
+        invited_by=UserInviter(harness.owner_id),
     )
     await _wait_joined(joiner_client, transport_room_id)
 

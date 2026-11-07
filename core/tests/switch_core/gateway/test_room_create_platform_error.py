@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.gateway.rooms import create_room
 from switch_core.gateway.schemas import RoomCreateRequest
+from switch_core.invites import InviteRefused
 
 _GRAPH_REFUSAL = (
     "create channel 'Switch Test Room' in team team-1 failed (403): "
@@ -34,7 +35,7 @@ class _RaisingRoomService:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
-    async def create_room(self, config: Any) -> Any:
+    async def create_room(self, config: Any, **kwargs: Any) -> Any:
         raise self._exc
 
 
@@ -83,6 +84,24 @@ async def test_switch_declining_is_still_a_400() -> None:
 
     assert exc.status_code == 400
     assert "turned off" in exc.detail
+
+
+async def test_an_invite_refusal_is_403_carrying_the_gates_words() -> None:
+    # The signed-in user may not invite one of the agents: the
+    # gate's message — why, and who can invite instead — is the detail.
+    exc = await _call(
+        InviteRefused(
+            "helper.bot doesn't take instructions from you, so it wasn't "
+            "added. Ask its owner (Olivia Owner) to invite it, or to "
+            "change who it takes instructions from.",
+            ["a1"],
+            ["helper.bot"],
+        )
+    )
+
+    assert exc.status_code == 403
+    assert "doesn't take instructions from you" in exc.detail
+    assert "Olivia Owner" in exc.detail
 
 
 async def test_an_ordinary_bug_is_not_dressed_up_as_a_platform_refusal() -> None:

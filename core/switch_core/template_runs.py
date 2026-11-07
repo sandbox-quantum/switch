@@ -37,6 +37,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
 from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceError
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
+from switch_core.invites import UserInviter
 from switch_core.room_service import FIXED_MEMBERSHIP
 
 if TYPE_CHECKING:
@@ -499,8 +500,13 @@ class TemplateAgents:
                 )
                 await self._finish(tenant_id, owner_id, result["agent_id"], agent)
                 for room_id in agent.join_room_ids:
+                    # Judged as the person running the template: the
+                    # new agent is theirs, so its owner-scoped policy admits
+                    # them by construction.
                     await self._protocol.room_service.add_agents_to_room(
-                        room_id, agent_ids=[result["agent_id"]]
+                        room_id,
+                        agent_ids=[result["agent_id"]],
+                        invited_by=UserInviter(owner_id),
                     )
             except Exception as error:
                 raise await self.undone(

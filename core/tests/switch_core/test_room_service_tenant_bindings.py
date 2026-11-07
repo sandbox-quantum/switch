@@ -65,6 +65,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.invites import UserInviter
 from switch_core.room_service import RoomService
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from tests.ownership import NeverOwned
@@ -669,7 +670,9 @@ class TestBindingsOnTheRoomsOwnTenant:
         )
 
         assert current_tenant_id() is None
-        await svc.add_agents_to_room("room-b", agent_ids=["agent-b"])
+        await svc.add_agents_to_room(
+            "room-b", agent_ids=["agent-b"], invited_by=UserInviter("tester")
+        )
 
         assert store.tenants_for("add_agents") == [TENANT_B]
         assert store.tenants_for("add_client") == [TENANT_B]

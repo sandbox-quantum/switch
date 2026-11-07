@@ -58,6 +58,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.invites import UserInviter
 from switch_core.room_service import RoomCreateConfig
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import TEST_KEYRING
@@ -434,7 +435,8 @@ async def test_a_room_cannot_be_bound_to_another_organisations_chat(
                 external_channel_id=str(chat_b["id"]),
                 created_by=admin_a,
                 owner_id=admin_a,
-            )
+            ),
+            invited_by=UserInviter(harness.owner_id),
         )
 
     assert str(chat_b["id"]) not in await _scoped(
@@ -451,7 +453,8 @@ async def test_a_room_cannot_be_bound_to_another_organisations_chat(
                 internal_only=True,
                 created_by=admin_a,
                 owner_id=admin_a,
-            )
+            ),
+            invited_by=UserInviter(harness.owner_id),
         )
         with pytest.raises(ValueError):
             await harness.room_service.change_bridge(
