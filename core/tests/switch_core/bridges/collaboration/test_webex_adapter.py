@@ -46,7 +46,13 @@ from switch_core.bridges.collaboration.webex.client import (
 )
 from switch_core.bridges.collaboration.webex.text import MAX_MESSAGE_BYTES
 
-from .session_fixtures import _item, _turn, open_request
+from .session_fixtures import (
+    EXAMPLES_PATH,
+    _item,
+    _turn,
+    open_request,
+    requests_through,
+)
 
 BOT_UUID = "b0b0b0b0-0000-4000-8000-000000000001"
 ADA_UUID = "ada0ada0-0000-4000-8000-000000000002"
@@ -674,6 +680,97 @@ async def test_a_post_webex_may_have_taken_is_not_called_a_refusal(
     webex.refuse("POST", "/messages", _json_response(502, {"message": "bad gateway"}))
     with pytest.raises(WebexApiError):
         await adapter.post_rich(ROOM, "coder", _card())
+
+
+def _answered(**kwargs: Any) -> RequestCard:
+    """The recorded demo request, answered from Webex."""
+    request = requests_through(EXAMPLES_PATH, "answerLifecycle", 13)["request-demo"]
+    assert request.decided_by is not None
+    request = request.model_copy(
+        update={
+            "decided_by": request.decided_by.model_copy(update={"surface": "webex"})
+        }
+    )
+    return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
+
+
+async def test_an_answered_card_is_posted_again_rather_than_edited(
+    webex: FakeWebex,
+) -> None:
+    # Webex refuses any edit to a message that carries a card ("editing messages
+    # with files via Developer APIs currently disabled"), so the card is posted
+    # again in its thread, without buttons, and the one it replaces is deleted.
+    adapter, _ = await _started(webex)
+    root = wid("MESSAGE", ADA_UUID)
+    ref = await adapter.post_rich(ROOM, "coder", _card(), root)
+    await adapter.update_rich(ROOM, "coder", ref, _answered(), root)
+    assert webex.edits() == []
+    _, again = webex.posts()
+    assert again["parentId"] == root
+    assert "actions" not in again["attachments"][0]["content"]
+    assert ("DELETE", f"/messages/{ref}", None) in webex.sent
+
+
+async def test_a_card_posted_again_is_the_one_redrawn_after(webex: FakeWebex) -> None:
+    adapter, _ = await _started(webex)
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    assert len(webex.posts()) == 2
+    await adapter.update_rich(
+        ROOM, "coder", ref, _answered(responder_external_id=ADA), None
+    )
+    # The second redraw deletes the copy the first one posted, not the original.
+    deleted = [path for method, path, _ in webex.sent if method == "DELETE"]
+    assert len(deleted) == 2
+    assert deleted[0] == f"/messages/{ref}"
+    assert deleted[1] != deleted[0]
+
+
+async def test_a_card_answered_on_webex_names_who_answered_as_webex_does(
+    webex: FakeWebex,
+) -> None:
+    # Elsewhere the answerer is a mention. Webex refuses a mention beside a card,
+    # so the name it shows for them stands in, not Switch's internal id.
+    adapter, _ = await _started(webex)
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    await adapter.update_rich(
+        ROOM, "coder", ref, _answered(responder_external_id=ADA), None
+    )
+    again = webex.posts()[1]
+    assert "Ada L from Webex" in again["markdown"]
+
+
+async def test_a_card_whose_old_copy_will_not_go_still_shows_the_answer(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    webex.refuse("DELETE", "/messages/", _json_response(403, {"message": "no"}))
+    await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    assert len(webex.posts()) == 2
+
+
+async def test_a_refused_replacement_card_is_a_rich_content_failure(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    webex.refuse("POST", "/messages", _json_response(400, {"message": "bad card"}))
+    with pytest.raises(RichContentFailed):
+        await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    assert not [path for method, path, _ in webex.sent if method == "DELETE"]
+
+
+async def test_a_threaded_status_redrawn_unchanged_spends_no_edit(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    root = wid("MESSAGE", ADA_UUID)
+    turn = TurnActivity([_item()], _turn("running"))
+    ref = await adapter.post_rich(ROOM, "coder", turn, root)
+    await adapter.update_rich(ROOM, "coder", ref, turn, root)
+    assert webex.edits() == []
 
 
 # ── Spaces and people ────────────────────────────────────────────────────────

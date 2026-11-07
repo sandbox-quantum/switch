@@ -280,6 +280,12 @@ class WebexAdapter(PlatformAdapter):
         self._seen: _Bounded = _Bounded()
         self._edits: _Bounded = _Bounded()
         self._drawn: _Bounded = _Bounded()
+        # A card's first message id -> the message showing it now. Webex will
+        # not edit a message that carries a card, so a card that changes is
+        # posted again (`_repost`) and the publisher keeps the id it was given.
+        self._reposted: _Bounded = _Bounded()
+        # person id -> the name Webex shows for them.
+        self._names: _Bounded = _Bounded()
         self._known_channels: set[str] = set()
         self._catching_up = asyncio.Lock()
 
@@ -966,7 +972,13 @@ class WebexAdapter(PlatformAdapter):
     def rich_fallback_text(self, content: RichContent) -> str:
         return self._draw(content, mention=None).text
 
-    def _draw(self, content: RichContent, *, mention: str | None) -> Drawn:
+    def _draw(
+        self,
+        content: RichContent,
+        *,
+        mention: str | None,
+        responder: str | None = None,
+    ) -> Drawn:
         escape = self._rich_escape
         limit = self.rich_fallback_limit()
         markup = self.rich_markup()
@@ -990,7 +1002,7 @@ class WebexAdapter(PlatformAdapter):
             escape=escape,
             limit=max(1, limit - len(tail)),
             markup=markup,
-            responder=None,
+            responder=responder,
             unavailable_reason=content.unavailable_reason,
             control_label_limit=None,
         )
@@ -1016,7 +1028,8 @@ class WebexAdapter(PlatformAdapter):
             drawn = self._draw(content, mention=mention(who) if who else None)
             text = self._clamp(heading + drawn.text)
             return {"roomId": channel_id, "markdown": text}, text
-        drawn = self._draw(content, mention=None)
+        responder = await self._name(content.responder_external_id)
+        drawn = self._draw(content, mention=None, responder=responder)
         text = self._clamp(heading + drawn.text)
         card = request_card(
             agent, drawn.text, content.reference.token, self._controls(content, drawn)
@@ -1029,6 +1042,27 @@ class WebexAdapter(PlatformAdapter):
             },
             text,
         )
+
+    async def _name(self, person_id: str | None) -> str | None:
+        """Who answered a card, by the name Webex shows beside their messages.
+
+        Elsewhere the answerer is a mention. Webex refuses a mention in a
+        message that carries a card, so their name stands in for one. None
+        where Webex won't say, and the card then names their Switch identity.
+        """
+        if not person_id:
+            return None
+        known = self._names.get(person_id)
+        if known:
+            return str(known)
+        try:
+            person = await self._client.person(person_id)
+        except WebexApiError as exc:
+            logger.info("Could not read Webex person %s: %s", person_id, exc)
+            return None
+        name = str(person.get("displayName") or "") or _handle_from(person, person_id)
+        self._names.remember(person_id, name)
+        return name
 
     def _controls(self, content: RequestCard, drawn: Drawn) -> list[Any]:
         """The buttons a card earns: none where a press could not land."""
@@ -1056,25 +1090,38 @@ class WebexAdapter(PlatformAdapter):
         body, text = await self._publication(
             channel_id, agent_name, content, notify=True
         )
-        if thread_root_id:
-            body["parentId"] = thread_root_id
-        try:
-            sent = await self._client.post_message(body, wait_out_throttle=False)
-        except WebexApiError as exc:
-            raise self._rich_failure(
-                exc, f"Webex refused the post in space {channel_id}", text
-            ) from exc
-        ref = str(sent.get("id") or "")
-        if not ref:
-            raise RichContentFailed(
-                f"Webex returned no id for the post in {channel_id}", text=text
-            )
-        self._edits.remember(ref, 0)
-        self._drawn.remember(ref, body)
+        ref = await self._send(
+            channel_id, body, text, thread_root_id, f"the post in space {channel_id}"
+        )
         if isinstance(content, RequestCard) and content.notify_external_id:
             await self._ping(
                 channel_id, agent_name, content.notify_external_id, thread_root_id
             )
+        return ref
+
+    async def _send(
+        self,
+        channel_id: str,
+        body: dict[str, Any],
+        text: str,
+        thread_root_id: str | None,
+        what: str,
+    ) -> str:
+        """Post a publication and remember what it shows, under its new id.
+
+        What is remembered leaves the thread out: a redraw is compared with it,
+        and a redraw is drawn without one.
+        """
+        sent_body = {**body, "parentId": thread_root_id} if thread_root_id else body
+        try:
+            sent = await self._client.post_message(sent_body, wait_out_throttle=False)
+        except WebexApiError as exc:
+            raise self._rich_failure(exc, f"Webex refused {what}", text) from exc
+        ref = str(sent.get("id") or "")
+        if not ref:
+            raise RichContentFailed(f"Webex returned no id for {what}", text=text)
+        self._edits.remember(ref, 0)
+        self._drawn.remember(ref, body)
         return ref
 
     async def _ping(
@@ -1122,7 +1169,11 @@ class WebexAdapter(PlatformAdapter):
             replace(content, notify_external_id=None),
             notify=False,
         )
+        message_ref = str(self._reposted.get(message_ref) or message_ref)
         if self._drawn.get(message_ref) == body:
+            return
+        if "attachments" in body:
+            await self._repost(channel_id, message_ref, body, text, thread_root_id)
             return
         edits = self._edits.get(message_ref, 0)
         final = (
@@ -1144,6 +1195,40 @@ class WebexAdapter(PlatformAdapter):
             ) from exc
         self._edits.remember(message_ref, edits + 1)
         self._drawn.remember(message_ref, body)
+
+    async def _repost(
+        self,
+        channel_id: str,
+        message_ref: str,
+        body: dict[str, Any],
+        text: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """Show a card's new state by posting it again and deleting the old one.
+
+        Webex refuses any edit to a message that carries a card: "Support for
+        editing messages with files via Developer APIs currently disabled".
+        The new card goes first, so a deletion Webex then refuses leaves the
+        old card above the right one rather than neither of them.
+        """
+        ref = await self._send(
+            channel_id, body, text, thread_root_id, f"the card replacing {message_ref}"
+        )
+        first = next(
+            (k for k, v in self._reposted.items() if v == message_ref), message_ref
+        )
+        self._reposted.remember(first, ref)
+        try:
+            await self._client.delete_message(message_ref)
+        except WebexApiError as exc:
+            if not exc.gone:
+                logger.warning(
+                    "Posted card %s in place of %s, but Webex would not delete "
+                    "the old one: %s",
+                    ref,
+                    message_ref,
+                    exc,
+                )
 
     # ── Spaces and people ───────────────────────────────────────────────────
 
