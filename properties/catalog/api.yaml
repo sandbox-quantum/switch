@@ -1,0 +1,9 @@
+properties:
+  - id: api.no-5xx
+    title: No input makes the server fail
+    statement: No request, however malformed, is answered with a 5xx.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed

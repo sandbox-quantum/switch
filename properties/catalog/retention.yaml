@@ -1,0 +1,9 @@
+properties:
+  - id: retention.erasure-complete
+    title: An erased person leaves nothing behind
+    statement: After a person is erased, no row names them.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed

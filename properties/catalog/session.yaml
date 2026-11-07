@@ -1,0 +1,11 @@
+properties:
+  - id: session.addressed-eventually-started
+    title: Addressing an agent with no session starts one
+    statement: >
+      Addressing an agent that has no live session, where auto-start is
+      configured, eventually starts one.
+    kind: liveness
+    formality: semi-formal
+    levels: [model, system]
+    owner: platform
+    status: proposed

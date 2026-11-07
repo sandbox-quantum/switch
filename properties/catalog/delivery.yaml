@@ -1,0 +1,70 @@
+properties:
+  - id: delivery.decided-at-write
+    title: Who a row is for is decided when it is written
+    statement: >
+      Which agents a room row is for is decided by the room's state when the
+      row is written. A later membership or addressing change never adds or
+      removes own events for earlier rows.
+    kind: safety
+    formality: formal
+    spec: delivery.qnt::DecidedAtWrite
+    levels: [model, code, system]
+    owner: platform
+    status: proposed
+  - id: delivery.own-seq-contiguous
+    title: An agent's own-event numbers never repeat and never skip
+    statement: >
+      An agent's own-event `seq` is contiguous and never reused, across
+      retention and server restarts.
+    kind: safety
+    formality: formal
+    spec: delivery.qnt::OwnSeqContiguous
+    levels: [model, code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      Numbers come from `agent_event_heads`, not the highest stored row,
+      because retention deletes old rows.
+  - id: delivery.addressed-exactly-once
+    title: An addressed message reaches its agent exactly once
+    statement: >
+      A message addressed to an agent in a room it belongs to produces
+      exactly one own event for that agent.
+    kind: safety
+    formality: formal
+    spec: delivery.qnt::AddressedExactlyOnce
+    levels: [model, code, system]
+    owner: platform
+    status: proposed
+  - id: delivery.no-silent-loss
+    title: A resuming agent misses nothing without being told
+    statement: >
+      A client that resumes an agent's event stream from position p receives
+      every one of the agent's own events after p, in order, or the stream
+      opens with a gap that names each room events were lost from.
+    kind: safety
+    formality: formal
+    spec: delivery.qnt::NoSilentLoss
+    levels: [model, code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      Retention deletes old rows (`agent_event_drops`) and a restarted server
+      numbers from a new boot (`agent_event_heads.first_seq`); both must
+      surface as a gap, never as silence.
+  - id: delivery.unaddressed-silent
+    title: An unaddressed message notifies no one
+    statement: A message not addressed to an agent produces no notification for it.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed
+  - id: delivery.per-room-order
+    title: An agent sees one room's events in the order they were written
+    statement: An agent's own events from one room arrive in `room_seq` order.
+    kind: safety
+    formality: semi-formal
+    levels: [model, system]
+    owner: platform
+    status: proposed
