@@ -241,6 +241,7 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
       answer: result,
     }),
     z.strictObject({ type: z.literal('turn.interrupt'), turnId: id }),
+    z.strictObject({ type: z.literal('turn.revise'), turnId: id, text: z.string() }),
     z.strictObject({ type: z.literal('session.stop') }),
     z.strictObject({ type: z.literal('session.reset') }),
     z.strictObject({ type: z.literal('session.compact') }),

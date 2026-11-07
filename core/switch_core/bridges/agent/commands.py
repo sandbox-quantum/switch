@@ -370,6 +370,60 @@ def stop_control_frame(
     )
 
 
+# What a corrected message is answered with, in the agent's own voice. The
+# turn is either still waiting, in which case the correction is all the agent
+# will ever see, or it is already the agent's, in which case nothing here
+# changes it.
+REVISED_QUEUED_REPLY = "Updated that message — I hadn't started it yet."
+
+
+def revise_started_reply(agent_name: str) -> str:
+    """What an edit is told when the turn it names is no longer the queue's."""
+    return (
+        "I'd already started that one — send a new message, or use "
+        f"`!interrupt @{agent_name}`."
+    )
+
+
+def revise_control_frame(
+    *,
+    agent_id: str,
+    session_id: str,
+    room_id: str,
+    turn_id: str,
+    text: str,
+    revision: str,
+    actor_id: str,
+    message_id: str,
+    thread_id: str | None,
+    surface: str,
+) -> dict[str, object]:
+    """The `session_command` frame a corrected room message is relayed as.
+
+    Keyed on the edit rather than on the message: `revision` is what the
+    platform calls this version of the post, so correcting the same message
+    twice is two commands. `room_control_frame` keys on the action instead,
+    which is right for a control that is pressed or typed once per message
+    and wrong here — a second edit would arrive under the first one's id and
+    be refused as an idempotency conflict.
+    """
+    return _control_frame(
+        command_id=str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"sdk-revise:{agent_id}:{room_id}:{message_id}:{revision}",
+            )
+        ),
+        session_id=session_id,
+        room_id=room_id,
+        actor_id=actor_id,
+        message_id=message_id,
+        thread_id=thread_id,
+        surface=surface,
+        body={"type": "turn.revise", "turnId": turn_id, "text": text},
+    )
+
+
 def _control_frame(
     *,
     command_id: str,

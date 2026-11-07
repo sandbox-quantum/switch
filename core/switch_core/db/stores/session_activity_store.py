@@ -344,6 +344,27 @@ class AgentSessionActivityStore:
         )
         return result.scalar_one_or_none()
 
+    async def turns_for_message(
+        self, session: AsyncSession, room_id: str, message_id: str
+    ) -> list[AgentSessionActivityItem]:
+        """Every turn `message_id` started in `room_id`, newest first.
+
+        `turn_for_message` answers for one agent. A platform edit names no
+        agent — it names a message, which may have put the same words to
+        several — so this answers for all of them and the caller decides what
+        to do with each.
+        """
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.message_id == message_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+            )
+            .order_by(AgentSessionActivityItem.created_at.desc())
+        )
+        return list(result.scalars())
+
     async def newest_running_turn(
         self, session: AsyncSession, agent_id: str
     ) -> AgentSessionActivityItem | None:

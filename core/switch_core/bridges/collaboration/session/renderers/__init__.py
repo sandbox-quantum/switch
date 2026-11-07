@@ -45,6 +45,14 @@ TURN_STATE = {
 }
 
 
+# A queued turn whose message was corrected before the agent picked it up.
+# The status is unchanged — it is the same turn, still waiting — so this is
+# the only place a reader learns that the words it will run are not the words
+# they first saw. The card never shows the prompt itself, which is why it has
+# to be said rather than shown.
+TURN_QUEUED_REVISED = "Queued (prompt updated). Waiting for the agent to start…"
+
+
 def turn_state(
     items: list[Item],
     turn: TurnUpsert,
@@ -82,6 +90,10 @@ def turn_state(
     reported wherever the turn is.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "queued" and any(
+        item.kind == "user-message" and item.revision > 1 for item in items
+    ):
+        state = TURN_QUEUED_REVISED
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
             return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
