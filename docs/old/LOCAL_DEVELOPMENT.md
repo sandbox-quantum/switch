@@ -1,8 +1,10 @@
 # Running Switch locally for development
 
 This covers the local-development path only: everything runs on your own
-machine, with hot-reload on the backend and the frontend. It's a different
-shape from the two paths the published docs cover —
+machine. The frontend hot-reloads; restart the backend after Python changes.
+For the first-run walkthrough, use the
+[contributor quickstart](../contributing/quickstart.md). It's a different shape
+from the two paths the published docs cover —
 [`standalone`](../official/deploy/self-host.md) (single Docker Compose stack,
 built images, no host toolchain) and the Helm chart — so don't reach for
 those commands here; `just standalone-up` runs a whole different set of
@@ -20,7 +22,7 @@ gateway frontend.
 
 ```bash
 just init-env            # first-time setup — generate .env with random secrets
-uv sync                  # install Python dependencies (core/)
+uv sync --project core   # install Python dependencies (core/)
 just gateway-install     # install gateway frontend deps (first time only)
 ```
 
@@ -81,7 +83,6 @@ boot instead, as a standing reminder that tenant isolation is not active.
 
 ```bash
 just up      # start the supporting services (Docker Compose)
-just migrate # apply database migrations
 just run     # run switch-core (:8000)
 just gateway-dev   # run the gateway frontend, in a separate terminal (:5173)
 ```
@@ -91,8 +92,9 @@ just gateway-dev   # run the gateway frontend, in a separate terminal (:5173)
 that provisions the Mattermost team/bot/admin accounts named by the
 `MATTERMOST_*` variables. It does **not** start switch-core and does **not**
 start the gateway frontend — you run both of those yourself, in their own
-terminals, so each gets hot-reload while you work. `just down` stops the
-stack; `just reset` also wipes its volumes (Postgres data included).
+terminals. Restart Core after Python changes; the gateway hot-reloads.
+`just down` stops the stack; `just reset` also wipes its volumes (Postgres
+data included).
 
 switch-core refuses to connect to a private address at a URL a bridge config
 names, unless `OUTBOUND_ALLOWED_PRIVATE_HOSTS` lists it. The `.env.example`
@@ -102,9 +104,10 @@ the Mattermost bridge then refuses to start with a message naming the variable:
 add the line from `.env.example`.
 
 `just migrate` runs `alembic upgrade head` against the Postgres started by
-`just up`. Run it once after the stack is up and again after pulling any
-change that adds a migration — `just run` does not apply migrations itself
-and will fail against a database that's behind.
+`just up`. It is not required for the normal first run: `just run` applies
+migrations and reissues the runtime role's grants before serving, with
+`DB_MIGRATE_ON_BOOT=true` by default. When using a separate deployment
+migration step, see `switch-migrate` in `core/pyproject.toml`.
 
 `just run` starts switch-core (`python -m switch_core.main`) on
 `SERVER_PORT` (`8000` by default). This one process is both the Agent Bridge

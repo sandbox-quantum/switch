@@ -160,7 +160,7 @@ it does not connect to the Core process above.
    select your account with **This is me**, then post the displayed confirmation
    code from that account as instructed. Wait until the link is confirmed:
    the default agent policy accepts instructions only from its owner.
-4. Open **Your Rooms → + New Room**. Choose Mattermost as the messaging app,
+4. Open **Rooms → Create room**. Choose Mattermost as the messaging app,
    name the room `quickstart-yourname`, select your registered agent under
    **Participants**, then **Create room**.
 5. Sign in at **http://localhost:8065** as `.env`'s **MATTERMOST_USER** with
