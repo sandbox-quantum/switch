@@ -78,6 +78,22 @@ def test_github_without_the_app_is_left_not_set_up() -> None:
     assert "github" not in adapters
 
 
+def test_disabled_monday_builds_no_adapter_even_with_a_core_callback() -> None:
+    adapters = build_adapters(
+        {"monday": CATALOG["monday"]},
+        github_app=None,
+        oauth_clients={},
+        http=HTTP,
+        registration=ClientRegistration(
+            session_factory=REG.session_factory,
+            keyring=REG.keyring,
+            public_url="https://switch.example.test",
+            server_name=REG.server_name,
+        ),
+    )
+    assert adapters == {}
+
+
 def test_a_key_service_needs_nothing_set_up_on_the_server() -> None:
     adapters = build_adapters(
         CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG

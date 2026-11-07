@@ -19,6 +19,7 @@ auth:
     prompt: consent
     revocation_discovered: true
   identity:
+    method: GET
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
