@@ -1,0 +1,36 @@
+slug: intercom
+name: Intercom
+category: Customer support
+description: Read and reply to Intercom conversations and look up contacts, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback, core]
+    loopback_ports: [39236, 39237, 39238, 39239, 39240]
+    prompt: consent
+  identity:
+    url: https://api.intercom.io/me
+    account_id: id
+    label: email
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: intercom, url: "https://mcp.intercom.com/mcp" }
+access:
+  read:
+    scopes:
+      - read:conversations
+      - read:contacts
+      - read:teams
+  write:
+    scopes:
+      - read:conversations
+      - write:conversations
+      - read:contacts
+      - write:contacts
+      - read:teams
+tools: { mode: pass_through }
