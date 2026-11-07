@@ -447,7 +447,8 @@ room:
 
 The same shape `POST /rooms/from-yaml` accepts and `GET /rooms/{id}/yaml`
 exports, so an exported room is a valid template once you add `params:`.
-`examples/room-templates/red-blue-workroom.template.yaml` documents every
+`examples/room-templates/red-blue-workroom.template.yaml` and
+`examples/room-templates/incident-warroom.template.yaml` document every
 field in place.
 
 `roles:` are hats the room's agents can assume, each

@@ -108,6 +108,64 @@ class TestTheCanonicalExample:
         assert "placeholder" in warning.message
 
 
+_INCIDENT_WARROOM_EXAMPLE = """\
+params:
+  service_name:
+    type: string
+    description: Short name for the crashing service or repository (used in the room name)
+  recon_agent:
+    type: agent
+    description: Forensics agent that parses stack traces, logs, and live AST on disk
+  forge_agent:
+    type: agent
+    description: Patch synthesis agent that generates minimal unified diffs and runs tests
+  guard_agent:
+    type: agent
+    description: Security and deployment gatekeeper agent that audits candidate diffs
+  incident_brief:
+    type: string
+    multiline: true
+    description: Incident summary, unhandled exception traceback, or alert payload
+room:
+  name: "Incident War-Room: {service_name}"
+  description: "Autonomous forensics, surgical patch synthesis, and human-gated hotfix deployment."
+  channel_type: channel_private
+  agents: ["{recon_agent}", "{forge_agent}", "{guard_agent}"]
+  users: ["{$creator}"]
+  instructions: |
+    This room manages an active incident affecting {service_name}.
+
+    Roles & Workflow Protocol:
+    1. {recon_agent} isolates the root cause from the incident brief and inspects the failing stack frames on disk.
+    2. {forge_agent} synthesizes the smallest unified git diff fixing the failure and executes regression tests.
+    3. {guard_agent} audits the candidate patch against safety guardrails (syntax, forbidden dynamic calls, secrets DLP, blast radius).
+    4. Only {$creator}'s explicit confirmation ('ship it' or approval card) gates the hotfix deployment and transaction replay.
+
+    Incident Brief:
+    {incident_brief}
+kickoff: |
+  @{recon_agent} @{forge_agent} @{guard_agent} — incident declared for {service_name}.
+
+  @{recon_agent}: inspect the incident brief in the room instructions, locate the failing frame on disk, and post your root-cause diagnosis.
+
+  @{forge_agent}: once the root cause is diagnosed, synthesize a surgical patch and verify it against the test suite in an isolated sandbox.
+
+  @{guard_agent}: audit candidate diffs against safety guardrails, then ping {$creator} to review and approve deployment.
+"""
+
+
+class TestIncidentWarroomExample:
+    """The incident war-room example template in examples/room-templates/."""
+
+    def test_it_raises_no_errors(self) -> None:
+        result = lint_template(_INCIDENT_WARROOM_EXAMPLE)
+        assert result.ok, [f.message for f in result.errors]
+
+    def test_every_parameter_is_used(self) -> None:
+        result = lint_template(_INCIDENT_WARROOM_EXAMPLE)
+        assert "unused_param" not in _codes(result.warnings)
+
+
 class TestWhatBarsTheDoor:
     """Which findings refuse an upload, and — more importantly — which do not.
 

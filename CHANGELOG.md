@@ -45,6 +45,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Incident war-room example room template.** Added
+  `examples/room-templates/incident-warroom.template.yaml` demonstrating multi-agent
+  forensics, surgical patch synthesis, and human-in-the-loop deployment gating for
+  DevOps and SRE incident response workflows.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
