@@ -1,5 +1,6 @@
-import { makeAutoObservable, runInAction } from 'mobx';
+import { makeAutoObservable, observable, runInAction } from 'mobx';
 import {
+  type ChatMentionSpan,
   type ChatMessage,
   type ChatMessagesPage,
   type ChatUpload,
@@ -41,6 +42,9 @@ export type PendingSend = {
   requestId: string;
   body: string;
   threadRootId: string | null;
+  mentionAgentIds: string[];
+  mentionUserIds: string[];
+  mentionSpans: ChatMentionSpan[];
   files: PendingFile[];
   state: 'sending' | 'failed' | 'conflict';
   error: string | null;
@@ -53,11 +57,25 @@ export type PendingSend = {
 export type SendInput = {
   body: string;
   threadRootId: string | null;
+  /** The agents picked as mentions; the server adds `@name` for any the body does not name. */
+  mentionAgentIds: string[];
+  /** The people picked as mentions; they are told, and no agent is addressed by them. */
+  mentionUserIds: string[];
+  /** Each picked or matched mention's stretch of the body and whom it names. */
+  mentionSpans: ChatMentionSpan[];
   files: ChatFile[];
+  /** The request id an earlier send of this same message used, when it may have landed; null for a new one. */
+  requestId: string | null;
 };
 
 export type TimelineApi = {
   messages: (roomId: string, beforeSeq: number | null, limit: number) => Promise<ChatMessagesPage>;
+  threadMessages: (
+    roomId: string,
+    rootId: string,
+    beforeSeq: number | null,
+    limit: number
+  ) => Promise<ChatMessage[]>;
   upload: (
     roomId: string,
     file: { uploadId: string; name: string; mimeType: string; data: string }
@@ -69,6 +87,9 @@ export type TimelineApi = {
       body: string;
       threadRootId: string | null;
       uploadIds: string[];
+      mentionAgentIds?: string[];
+      mentionUserIds?: string[];
+      mentionSpans?: ChatMentionSpan[];
     }
   ) => Promise<ChatMessage[]>;
   newId: () => string;
@@ -81,13 +102,22 @@ export class ChatTimeline {
   loaded = false;
   loading = false;
   loadError: string | null = null;
+  /** The failure in {@link loadError} was loading earlier messages, not the newest. */
+  olderFailed = false;
+  /** A load was asked for while another was in flight; it runs once that one ends. */
+  private reloadQueued = false;
+  /** History is held without gaps through this sequence: the newest a successful load read. */
+  private completeThrough: number | null = null;
   /** The person is not a member of the room. */
   notMember = false;
   /** The person was a member and lost access while the chat was known. */
   accessLost = false;
+  /** Thread reply counts by root message id, tracked from live events even if root not loaded. */
+  threadReplyCounts = new Map<string, number>();
 
   constructor(
-    readonly roomId: string,
+    /** Changes once, from an unsaved chat's id to its room's when the room is made. */
+    public roomId: string,
     private readonly api: TimelineApi
   ) {
     makeAutoObservable<ChatTimeline, 'api'>(this, { api: false, roomId: false });
@@ -101,6 +131,28 @@ export class ChatTimeline {
     return this.messages.find((message) => message.messageId === messageId);
   }
 
+  /** Thread reply count: server baseline + distinct live replies since, or null if root not loaded. */
+  threadReplyCount(rootId: string): number | null {
+    const root = this.byId(rootId);
+    if (!root) return null;
+    const serverCount = root.threadReplyCount ?? 0;
+    const lastReplySeq = root.threadLastReplySeq ?? -1;
+    const newReplies = this.messages.filter(
+      (msg) => msg.threadRootId === rootId && msg.seq > lastReplySeq
+    );
+    const uniqueNewReplies = new Set(newReplies.map((m) => m.messageId)).size;
+    return serverCount + uniqueNewReplies;
+  }
+
+  /** Load thread messages for a root. */
+  async loadThread(rootId: string, beforeSeq: number | null = null): Promise<ChatMessage[]> {
+    try {
+      return await this.api.threadMessages(this.roomId, rootId, beforeSeq, PAGE_SIZE);
+    } catch (error) {
+      throw chatFailure(error);
+    }
+  }
+
   /** Merge a message from the room: by sequence, once, retiring the send it echoes. */
   apply(message: ChatMessage): void {
     if (message.roomId !== this.roomId) return;
@@ -110,17 +162,39 @@ export class ChatTimeline {
     const at = this.messages.findIndex((each) => each.seq > message.seq);
     if (at === -1) this.messages.push(message);
     else this.messages.splice(at, 0, message);
+    if (message.threadRootId) {
+      const current = this.threadReplyCounts.get(message.threadRootId) ?? 0;
+      this.threadReplyCounts.set(message.threadRootId, current + 1);
+    }
   }
 
   async load(): Promise<void> {
-    if (this.loading) return;
+    if (this.loading) {
+      this.reloadQueued = true;
+      return;
+    }
     this.loading = true;
     this.loadError = null;
+    this.olderFailed = false;
+    const held = this.completeThrough;
     try {
-      const page = await this.api.messages(this.roomId, null, PAGE_SIZE);
+      let page = await this.api.messages(this.roomId, null, PAGE_SIZE);
+      const fetched = [...page.messages];
+      const newest = page.messages.length
+        ? Math.max(...page.messages.map((message) => message.seq))
+        : (held ?? 0);
+      // Page back to the history already complete, so a gap since the last load is not skipped.
+      let oldest = Math.min(...page.messages.map((message) => message.seq));
+      while (held !== null && page.hasMore && page.messages.length && oldest > held) {
+        page = await this.api.messages(this.roomId, oldest, PAGE_SIZE);
+        fetched.push(...page.messages);
+        oldest = Math.min(oldest, ...page.messages.map((message) => message.seq));
+      }
       runInAction(() => {
-        for (const message of page.messages) this.apply(message);
-        if (!this.loaded) this.hasMore = page.hasMore;
+        for (const message of fetched) this.apply(message);
+        // A catch-up that stopped short of what was held left earlier messages to load.
+        if (!this.loaded || (held !== null && oldest > held)) this.hasMore = page.hasMore;
+        this.completeThrough = newest;
         this.loaded = true;
         this.notMember = false;
       });
@@ -134,6 +208,10 @@ export class ChatTimeline {
       runInAction(() => {
         this.loading = false;
       });
+      if (this.reloadQueued) {
+        this.reloadQueued = false;
+        void this.load();
+      }
     }
   }
 
@@ -146,24 +224,39 @@ export class ChatTimeline {
       runInAction(() => {
         for (const message of page.messages) this.apply(message);
         this.hasMore = page.hasMore;
+        this.loadError = null;
+        this.olderFailed = false;
       });
     } catch (error) {
       runInAction(() => {
         this.loadError = chatFailure(error).message;
+        this.olderFailed = true;
       });
     } finally {
       runInAction(() => {
         this.loading = false;
       });
+      if (this.reloadQueued) {
+        this.reloadQueued = false;
+        void this.load();
+      }
     }
+  }
+
+  /** Ask again for what last failed to load. */
+  retryLoad(): void {
+    void (this.olderFailed ? this.loadOlder() : this.load());
   }
 
   /** Send a message; returns its request id. */
   send(input: SendInput): string {
     const send: PendingSend = {
-      requestId: this.api.newId(),
+      requestId: input.requestId ?? this.api.newId(),
       body: input.body,
       threadRootId: input.threadRootId,
+      mentionAgentIds: input.mentionAgentIds,
+      mentionUserIds: input.mentionUserIds,
+      mentionSpans: input.mentionSpans,
       files: input.files.map((file) => ({
         id: this.api.newId(),
         uploadId: this.api.newId(),
@@ -207,6 +300,7 @@ export class ChatTimeline {
   revoke(): void {
     this.accessLost = true;
     this.messages = [];
+    this.completeThrough = null;
     this.pending = [];
   }
 
@@ -278,6 +372,10 @@ export class ChatTimeline {
         requestId,
         body: send.body,
         threadRootId: send.threadRootId,
+        // A copy: IPC cannot clone a MobX array.
+        mentionAgentIds: [...send.mentionAgentIds],
+        mentionUserIds: [...send.mentionUserIds],
+        mentionSpans: send.mentionSpans.map((span) => ({ ...span })),
         uploadIds: send.files.map((file) => file.uploadId),
       });
       runInAction(() => {
@@ -306,6 +404,13 @@ export class ChatTimeline {
  */
 export class ChatTimelines {
   private readonly timelines = new Map<string, ChatTimeline>();
+  /**
+   * The keys opened, observable, so what reads a room's messages through
+   * {@link peek} follows a timeline opened later. Told after the call that opened
+   * it, which is a view rendering: changing what other views observe while one
+   * renders is what React refuses.
+   */
+  private readonly opened = observable.set<string>();
 
   constructor(private readonly api: (serverId: string) => TimelineApi) {}
 
@@ -315,23 +420,72 @@ export class ChatTimelines {
     if (!timeline) {
       timeline = new ChatTimeline(roomId, this.api(serverId));
       this.timelines.set(key, timeline);
+      queueMicrotask(() => runInAction(() => this.opened.add(key)));
     }
     return timeline;
   }
 
-  peek(serverId: string, roomId: string): ChatTimeline | undefined {
-    return this.timelines.get(`${serverId}\u0000${roomId}`);
+  /**
+   * The timeline of a chat whose room does not exist yet: nothing to load, and
+   * its first upload or send makes the room through `create` before going to it.
+   */
+  unsaved(serverId: string, roomId: string, create: () => Promise<string>): ChatTimeline {
+    const api = this.api(serverId);
+    const room = (id: string) => (id === roomId ? create() : Promise.resolve(id));
+    const key = `${serverId}\u0000${roomId}`;
+    const timeline = new ChatTimeline(roomId, {
+      ...api,
+      messages: (id, beforeSeq, limit) =>
+        id === roomId
+          ? Promise.resolve({ messages: [], headSeq: 0, hasMore: false })
+          : api.messages(id, beforeSeq, limit),
+      upload: async (id, file) => api.upload(await room(id), file),
+      send: async (id, input) => api.send(await room(id), input),
+    });
+    runInAction(() => {
+      timeline.loaded = true;
+    });
+    this.timelines.set(key, timeline);
+    queueMicrotask(() => runInAction(() => this.opened.add(key)));
+    return timeline;
   }
 
-  /** Load again each of the server's timelines whose last load failed. */
-  reloadFailed(serverId: string): void {
+  /** The unsaved chat's room was made: its timeline, sends in flight and all, is that room's now. */
+  rekey(serverId: string, from: string, to: string): void {
+    const timeline = this.timelines.get(`${serverId}\u0000${from}`);
+    if (!timeline) return;
+    this.timelines.delete(`${serverId}\u0000${from}`);
+    timeline.roomId = to;
+    this.timelines.set(`${serverId}\u0000${to}`, timeline);
+    runInAction(() => {
+      this.opened.delete(`${serverId}\u0000${from}`);
+      this.opened.add(`${serverId}\u0000${to}`);
+    });
+  }
+
+  peek(serverId: string, roomId: string): ChatTimeline | undefined {
+    const key = `${serverId}\u0000${roomId}`;
+    this.opened.has(key);
+    return this.timelines.get(key);
+  }
+
+  /** Load again each of the server's timelines that loaded, is loading or failed to, catching up to the live feed. */
+  reload(serverId: string): void {
     for (const [key, timeline] of this.timelines)
-      if (key.startsWith(`${serverId}\u0000`) && timeline.loadError) void timeline.load();
+      if (
+        key.startsWith(`${serverId}\u0000`) &&
+        (timeline.loaded || timeline.loading || timeline.loadError)
+      )
+        void timeline.load();
   }
 
   /** Forget everything held for a server: signed out, or the tenant changed. */
   dropServer(serverId: string): void {
     for (const key of [...this.timelines.keys()])
       if (key.startsWith(`${serverId}\u0000`)) this.timelines.delete(key);
+    runInAction(() => {
+      for (const key of [...this.opened])
+        if (key.startsWith(`${serverId}\u0000`)) this.opened.delete(key);
+    });
   }
 }

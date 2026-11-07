@@ -96,13 +96,13 @@ describe('DeleteAccountModal', () => {
 
   it("shows the server's reason when it refuses", async () => {
     deleteAccount.mockRejectedValueOnce(
-      new Error("You're the only owner of Acme, which has other members.")
+      new Error("You're the only admin of Acme, which has other members.")
     );
     await render();
     await type('ada@example.test');
     await act(async () => button('Delete my account').click());
     expect(document.querySelector('[role="alert"]')?.textContent).toBe(
-      "You're the only owner of Acme, which has other members."
+      "You're the only admin of Acme, which has other members."
     );
   });
 

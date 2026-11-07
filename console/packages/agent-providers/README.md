@@ -27,7 +27,7 @@ protocols. These five adapters are the only Console session runtime.
 | `opencode` | `opencode serve` spawned per session, driven with `@opencode-ai/sdk` over HTTP + SSE | Sessions are server-side; permissions and questions are answerable over the API. One server per session because OpenCode stores MCP registrations per directory and Switch registers an MCP server per session. |
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` in streaming-input mode, one long-lived query per session | Mid-turn messages queue into the live loop; `canUseTool` carries both approvals and `AskUserQuestion`; sessions share the CLI's transcript files so `--resume` interoperates. |
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
-| `antigravity` | `antigravity-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection through a `model` config option, MCP registration, approvals and questions. |
+| `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
 | `pi` | `pi --mode rpc`, Pi's own JSONL over stdio, with a Switch extension loaded by `-e` | Pi speaks no ACP, and `pi-acp` drops a session's MCP servers and has no approval path. The extension registers the session's MCP servers for that session alone and gates tool calls through Pi's extension UI, which RPC mode forwards to the adapter. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
@@ -67,7 +67,8 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | claude | 2.1.260 | 10/10 | `AskUserQuestion` is offered to a session **only while a `canUseTool` callback is registered** — in `default` and `bypassPermissions` alike — so the adapter registers one in every mode and filters the SDK's `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning rather than obeying it. A mid-turn message is queued after the running turn, not folded into it; the adapter keeps the turn open until every queued send is answered. |
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | pi | 1.4.0 | 8/10 (2026-10-28) | Pi has no tool that asks the user a question and no subagents, so `user-input` and `subagent` are skipped. Pi has no automatic review of its own: auto mode asks as approval-required does and says so in a `runtime.warning`. `steer` joins the running turn. Project-local `.pi` resources are not loaded (`--no-approve`). |
-| antigravity (ACP) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
+| antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
+| antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
@@ -104,9 +105,27 @@ naming a permanent or future policy are never offered.
 prefix. The CLI and default model used for verification did not expose its
 AskQuestion tool, so `user-input` is skipped in its conformance run.
 
-**Antigravity** runs in its own profile directory (`GEMINI_HOME`), set up for
-OAuth on first use. Its questions arrive as permission requests whose tool
-call id starts with `interaction_`. Native session ids are stored with an
-`acp:` prefix; a conversation saved by the retired `agy` runtime starts fresh.
-Its sign-in check reads `authMethods` from the handshake and never calls
-`authenticate`, which would open a browser.
+**Antigravity** runs Google's `agy` as `agy acp`, with the user's own profile
+and sign-in (the OS keychain), so the launch sets nothing up. `agy` signs
+itself in when it starts, and refuses `session/list` with `Authentication
+required` when it could not. The sign-in check asks exactly that and never
+calls `authenticate`: Google's methods open a browser, and `agy` keeps the
+method it is sent, so even the API key method would move a user signed in
+with Google onto the key for good. A session start sends `authenticate` with
+`gemini-api-key` only when the environment has `GEMINI_API_KEY` and
+`session/list` was refused. Questions arrive as ACP form elicitations
+(`elicitation/create`), which the adapter announces it can answer: each field
+with offered answers is a question, the `<field>_other` text `agy` adds beside
+it is that question's typed answer, and any other text field is a question
+answered by typing. `agy`'s modes are `default`, `accept-edits` and `plan`:
+auto mode is `accept-edits`, and full access is `default` with every request
+approved by the adapter. A session that advertises no modes is left in its
+own. A hosted Antigravity login (the token file of the legacy runtime) is
+refused for an `agy` target with an error saying how to sign in there,
+rather than written where `agy` never reads it.
+A legacy `antigravity-acp` install still runs in its own profile directory
+(`GEMINI_HOME`) with its `auto_edit` and `yolo` modes, questions as permission
+requests whose tool call id starts with `interaction_`, and its old sign-in
+check; its sign-in command is `antigravity-acp --login`, and Update installs
+`agy` over it. Native session ids are stored with an `acp:` prefix; a
+conversation saved by the retired CLI runtime starts fresh.

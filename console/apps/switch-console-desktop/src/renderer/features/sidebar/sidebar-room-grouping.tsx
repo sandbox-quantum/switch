@@ -1,4 +1,5 @@
 import { ChevronRight, DoorOpen, ExternalLink, MoreVertical, Plus, Trash2 } from 'lucide-react';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { openRoomChannel } from '@renderer/features/switch-rooms/room-links';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
@@ -25,7 +26,7 @@ export function sessionRoomId(session: SessionStore): string | null {
 
 export function roomLabel(roomKey: string): string {
   if (roomKey === UNASSIGNED_ROOM_KEY) return 'Unassigned';
-  return switchRoomsStore.roomNameById(roomKey) ?? `Room ${roomKey.slice(0, 8)}`;
+  return roomName(roomKey) ?? `Room ${roomKey.slice(0, 8)}`;
 }
 
 /**
@@ -39,7 +40,12 @@ export function roomLabel(roomKey: string): string {
  */
 export function isRoomNameKnown(roomKey: string): boolean {
   if (roomKey === UNASSIGNED_ROOM_KEY) return true;
-  return switchRoomsStore.roomNameById(roomKey) !== null;
+  return roomName(roomKey) !== null;
+}
+
+/** From the room list, else from the chats list, which holds the chats you were invited to. */
+function roomName(roomKey: string): string | null {
+  return switchRoomsStore.roomNameById(roomKey) ?? chatsStore.chat(roomKey)?.name ?? null;
 }
 
 /**
@@ -62,6 +68,19 @@ export function deleteRoomAction(
   if (!workspaceId || !room) return null;
   if (!switchRoomsStore.canDeleteRoom(workspaceId, room)) return null;
   return () => showDeleteRoomModal({ workspaceId, roomId: roomKey, roomName: room.name });
+}
+
+/**
+ * Whether the user may add agents to a room and take them out: what the
+ * server says of a room it listed. A direct or group conversation's platform
+ * fixes who is in it. A Console chat follows its own rules, and a room not
+ * listed here is left to the server to answer.
+ */
+export function mayChangeRoomMembers(roomKey: string): boolean {
+  const workspaceId = switchRoomsStore.roomWorkspaceId(roomKey);
+  const room = switchRoomsStore.roomSummaryById(roomKey);
+  if (!workspaceId || !room || room.isConsoleChat) return true;
+  return switchRoomsStore.roomPermissions(workspaceId, room).canChangeMembers;
 }
 
 /** Show a room's conversation in the main panel (no-op for Unassigned, which
@@ -149,6 +168,7 @@ export function RoomRow({
   bridgeType = null,
   nameKnown = true,
   nameBlockedBySignIn = false,
+  badge = null,
 }: {
   label: string;
   /** Whether there is anything under this room to unfold. */
@@ -178,6 +198,8 @@ export function RoomRow({
   depth?: number;
   /** Bridge platform type (`slack`, `mattermost`, …) when the room is bridged. */
   bridgeType?: string | null;
+  /** Beside the name, such as how many messages wait to be read. */
+  badge?: React.ReactNode;
 }) {
   // Offered wherever the room has a channel to open, whether or not its
   // platform has a logo: the link is what makes the action work, not the icon.
@@ -223,6 +245,7 @@ export function RoomRow({
           </TooltipContent>
         </Tooltip>
       )}
+      {badge}
       {hasRoomActions && (
         <DropdownMenu>
           <DropdownMenuTrigger

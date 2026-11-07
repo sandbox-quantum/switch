@@ -2,19 +2,18 @@
 
 A pooled connection the server closed while it sat in the pool is the case
 the pre-ping exists for: a database restart closes every connection the pool
-holds. With the pre-ping off, the first query on one of them fails, and
-SQLAlchemy then treats every connection the pool held at that moment as
-stale and replaces it on its next checkout. So a restart costs one failed
-query, not one per pooled connection, which is the trade the default makes.
+holds. When the server says so as it goes, as a restart does, asyncpg marks
+the connection closed and the engine's checkout check swaps it for a fresh one
+with no round trip, so no query fails with the pre-ping off either. What the
+ping still catches is a peer that vanished without closing the socket, which
+is `db_tcp_keepalive_*`'s job as much as the ping's.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from switch_core.config import SwitchConfig
@@ -76,18 +75,11 @@ def test_the_pre_ping_is_off_by_default() -> None:
     assert SwitchConfig.model_fields["db_pool_pre_ping"].default is False
 
 
-async def test_without_the_pre_ping_a_restart_costs_one_failed_query(
+async def test_without_the_pre_ping_a_restart_costs_no_failed_query(
     postgres_url: str,
 ) -> None:
     engine, closed = await _fill_and_close_pool(postgres_url, pre_ping=False)
     try:
-        with pytest.raises(DBAPIError) as failed:
-            async with engine.connect() as conn:
-                await _pid(conn)
-        assert failed.value.connection_invalidated
-
-        # Every connection after it is a new one, though two more of the
-        # closed ones were still in the pool when the first query failed.
         for _ in range(POOLED):
             async with engine.connect() as conn:
                 assert await _pid(conn) not in closed

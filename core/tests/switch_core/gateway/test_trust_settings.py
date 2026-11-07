@@ -7,6 +7,7 @@ is never echoed back, and a PUT that omits it leaves the stored one alone.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -65,7 +66,13 @@ async def _add_user(
 def _cookies_for(user: User) -> dict[str, str]:
     return {
         "switch_auth": create_jwt(
-            user.id, user.email, user.role, TEST_KEYRING, TENANT_ZERO_ID
+            user.id,
+            user.email,
+            user.role,
+            TEST_KEYRING,
+            TENANT_ZERO_ID,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
     }
 
@@ -159,6 +166,29 @@ async def test_delete_turns_it_off(
     assert delete_resp.status_code == 200
     assert delete_resp.json()["enabled"] is False
     assert get_resp.json()["enabled"] is False
+
+
+async def test_saving_and_clearing_tell_every_process(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every process keeps the settings it read until told they changed
+    (`trust/signals.py`), and a refused change tells nobody."""
+    told: list[str] = []
+    monkeypatch.setitem(
+        gw_deps._state, "trust_settings_changed", lambda: told.append("changed")
+    )
+    mallory = await _add_user(session_factory, name="mallory", role="user")
+    async with _client(session_factory, mallory) as client:
+        await client.put("/trust-settings", json=_CONFIGURED_BODY)
+    assert told == []
+
+    admin = await _add_user(session_factory, name="op", role="admin")
+    async with _client(session_factory, admin) as client:
+        await client.put("/trust-settings", json=_CONFIGURED_BODY)
+        await client.delete("/trust-settings")
+
+    assert told == ["changed", "changed"]
 
 
 def test_a_blank_policy_id_is_treated_as_unset() -> None:

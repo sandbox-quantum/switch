@@ -39,6 +39,11 @@ export interface ProviderRuntime {
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /**
+   * The sign-in command for the executable at `binaryPath`, where it is not
+   * `loginCommand` for every one. Read it through `loginCommandOf`.
+   */
+  loginCommandFor?(binaryPath: string): string;
+  /**
    * Environment variables the CLI reads (credentials, endpoints) that a
    * session host passes through from the machine's environment.
    */
@@ -55,6 +60,7 @@ export function acpProviderRuntime(hooks: AcpProviderHooks): ProviderRuntime {
   return {
     id: hooks.provider,
     loginCommand: hooks.loginCommand,
+    ...(hooks.loginCommandFor ? { loginCommandFor: hooks.loginCommandFor } : {}),
     inheritEnv: hooks.inheritEnv ?? [],
     unsupportedPlatforms: hooks.unsupportedPlatforms ?? {},
     createAdapter: ({ binaryPath, logger }) => createAcpAdapter(hooks, { binaryPath, logger }),

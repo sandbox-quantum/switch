@@ -9,12 +9,20 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.accounts.deletion import AccountDeletion, Workspace
+from switch_core.accounts.deletion import (
+    AccountDeletion,
+    AccountDeletionIncomplete,
+    AccountDeletionRefused,
+    Workspace,
+    is_server_administrator,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.chats.member_names import rename_member_clients
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
+from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import TENANT_ZERO_ID, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -25,6 +33,7 @@ from switch_core.db.stores.hosted_machine_store import (
     claim_conflict,
     owner_stopped,
 )
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import (
@@ -33,21 +42,27 @@ from switch_core.gateway.auth import (
     describe_session_state,
     get_authenticated_caller,
     get_authenticated_session,
+    get_authenticated_user_id,
     get_current_user,
     hash_password_off_loop,
     initial_tenant_claim,
     list_tenant_memberships,
+    operator_entered_workspace,
     require_admin,
+    session_auth_time,
     set_session_cookie,
+    tenants_bindable_by,
     verify_password_off_loop,
 )
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_agent_store,
     get_api_key_store,
     get_bridge_store,
     get_client_lifecycle,
     get_config,
     get_external_user_store,
+    get_organization_store,
     get_protocol,
     get_resource_service,
     get_room_service,
@@ -70,16 +85,19 @@ from switch_core.gateway.schemas import (
     LinkedIdentity,
     LoginRequest,
     OidcLoginOptionView,
+    OperatorUserResponse,
+    PendingIdentity,
     ServerDeclaration,
     SessionStateResponse,
     SessionUserResponse,
     SignupMachine,
     SignupRequest,
     SignupResponse,
-    UserResponse,
+    UpdateMeRequest,
 )
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
+from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
 
@@ -108,6 +126,7 @@ def _session_response(user: User) -> SessionUserResponse:
         email=user.email,
         role=user.role,
         created_at=str(user.created_at),
+        has_password=user.password_hash is not None,
         server=_gateway_declaration(),
     )
 
@@ -161,6 +180,7 @@ async def login(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return _session_response(user)
 
@@ -204,6 +224,7 @@ async def _refuse_signup(
             config.gateway_signup_max_per_hour,
         )
         await session.rollback()
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "rate_limited"})
         raise HTTPException(
             status_code=429,
             detail="Too many sign-ups on this server in the last hour. Try again later.",
@@ -211,6 +232,7 @@ async def _refuse_signup(
         )
     if await user_store.get_by_email(session, email) is not None:
         await session.rollback()
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "email_taken"})
         raise HTTPException(status_code=409, detail="Email already registered")
 
 
@@ -234,6 +256,7 @@ async def signup(
     fails the sign-up: the response says why instead.
     """
     if not config.gateway_signup_open:
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "disabled"})
         raise HTTPException(
             status_code=403, detail="Sign-up is disabled on this server"
         )
@@ -263,11 +286,15 @@ async def signup(
             if not email_taken(err):
                 raise
             await session.rollback()
+            emit_safely(
+                current_telemetry(), "signup_refused", {"reason": "email_taken"}
+            )
             raise HTTPException(
                 status_code=409, detail="Email already registered"
             ) from None
         await session.commit()
         logger.info("Signed up user: %s (%s)", user.email, user.id)
+        emit_safely(current_telemetry(), "account_created", {"method": "signup"})
 
         set_session_cookie(
             response,
@@ -275,6 +302,7 @@ async def signup(
             config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
+            datetime.now(UTC),
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -304,12 +332,42 @@ async def refresh(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
+        session_auth_time(request),
     )
     return _session_response(user)
 
 
 @router.post("/auth/logout")
 async def logout(response: Response) -> dict[str, bool]:
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+@router.post("/auth/sessions/revoke")
+async def end_my_sessions(
+    response: Response,
+    user_id: Annotated[str, Depends(get_authenticated_user_id)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, bool]:
+    """Sign out of all devices, this one included.
+
+    `/auth/logout` clears only this browser's cookie, so a copy of it, or a
+    session left open elsewhere, stays valid until it expires. This moves the
+    account's session version on, which every cookie minted before it fails
+    against. Needs no workspace selected, like `/tenants/{id}/switch`, so a
+    person with several can always reach it.
+    """
+    await user_store.end_sessions(session, user_id)
+    await record_server_audit_event(
+        session,
+        actor_user_id=user_id,
+        action=ServerAuditAction.USER_SESSIONS_ENDED,
+        target_type="user",
+        target_id=user_id,
+        details=None,
+    )
+    await session.commit()
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -360,8 +418,16 @@ async def session_state(
     # One connection at a time: release this one before the lookup opens its own.
     await session.commit()
     tenants = await list_tenant_memberships(session_factory, user_store, user.id)
+    entered = await operator_entered_workspace(
+        session_factory, user, auth.tenant_claim, tenants
+    )
     return describe_session_state(
-        config, user, auth.tenant_claim, tenants, client_lifecycle.tenants_isolated
+        config,
+        user,
+        auth.tenant_claim,
+        tenants,
+        entered,
+        client_lifecycle.tenants_isolated,
     )
 
 
@@ -383,11 +449,12 @@ async def my_identities(
 
     An owner-only agent is only reachable by its owner over a bridge that
     appears in this list, so Switch Console reads it to warn when an agent has
-    been sealed on a platform where its owner cannot be recognised.
+    been sealed on a platform where its owner cannot be recognised. A link
+    still waiting for the account to confirm it is not one of them: see
+    `my_pending_identities`.
     """
-    identities = await external_user_store.get_by_user(session, user.id)
     linked: list[LinkedIdentity] = []
-    for identity in identities:
+    for identity, claim in await external_user_store.claims_of_user(session, user.id):
         bridge = await bridge_store.get(session, identity.bridge_id)
         if bridge is None:
             continue
@@ -399,9 +466,48 @@ async def my_identities(
                 bridge_type=bridge.type,
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
+                verified=claim.verified_at is not None,
             )
         )
     return linked
+
+
+@router.get("/auth/me/identities/pending")
+async def my_pending_identities(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> list[PendingIdentity]:
+    """The messaging-app accounts waiting to confirm a link to this user
+    (CHOO-3881), which count for nothing until they do."""
+    pending: list[PendingIdentity] = []
+    for identity, request in await external_user_store.link_requests_of_user(
+        session, user.id
+    ):
+        bridge = await bridge_store.get(session, identity.bridge_id)
+        if bridge is None:
+            continue
+        requested_by = request.requested_by_user_id
+        requester = (
+            await user_store.get(session, requested_by)
+            if requested_by is not None and requested_by != user.id
+            else None
+        )
+        pending.append(
+            PendingIdentity(
+                id=identity.id,
+                bridge_id=identity.bridge_id,
+                bridge_display_name=bridge.display_name,
+                bridge_type=bridge.type,
+                external_user_id=identity.external_user_id,
+                external_username=identity.external_username,
+                requested_by_name=requester.name if requester is not None else None,
+                code_expires_at=request.code_expires_at,
+            )
+        )
+    return pending
 
 
 @router.delete("/auth/me")
@@ -415,6 +521,7 @@ async def delete_my_account(
     ],
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     template_store: Annotated[TemplateStore, Depends(get_template_store)],
@@ -422,6 +529,7 @@ async def delete_my_account(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_service: Annotated[RoomService, Depends(get_room_service)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
     """Delete the caller's own account, everywhere on this server.
@@ -440,11 +548,51 @@ async def delete_my_account(
         raise HTTPException(
             status_code=400, detail="That email doesn't match this account."
         )
-    workspaces = [
-        Workspace(id=m.id, name=m.name, role=m.role)
-        for m in await list_tenant_memberships(session_factory, user_store, user.id)
-    ]
-    deletion = AccountDeletion(
+    deletion = _account_deletion(
+        request,
+        session_factory,
+        protocol,
+        broker,
+        resource_service,
+        room_service,
+        user_store,
+        organization_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        client_lifecycle,
+        config,
+    )
+    workspaces = await _workspaces_to_delete(
+        deletion, session_factory, user_store, user.id
+    )
+    reason = await deletion.refusal(session, user, workspaces)
+    if reason is not None:
+        raise HTTPException(status_code=409, detail=reason)
+    try:
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
+    except AccountDeletionRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused)) from None
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+def _account_deletion(
+    request: Request,
+    session_factory: async_sessionmaker[AsyncSession],
+    protocol: AgentCore,
+    broker: ServiceBroker,
+    resource_service: ResourceService,
+    room_service: RoomService,
+    user_store: UserStore,
+    organization_store: OrganizationStore,
+    agent_store: AgentStore,
+    api_key_store: ApiKeyStore,
+    template_store: TemplateStore,
+    client_lifecycle: ClientLifecycleService,
+    config: SwitchConfig,
+) -> AccountDeletion:
+    return AccountDeletion(
         session_factory=session_factory,
         protocol=protocol,
         # Set by the wiring when agent management runs (`switch_core.main`).
@@ -454,30 +602,87 @@ async def delete_my_account(
         rooms=room_service,
         sign_in_flows=request.app.state.sign_in_flows,
         users=user_store,
+        organizations=organization_store,
         agents=agent_store,
         api_keys=api_key_store,
         templates=template_store,
+        clients=client_lifecycle,
         admin_email=config.gateway_admin_email,
     )
-    reason = await deletion.refusal(session, user, workspaces)
-    if reason is not None:
-        raise HTTPException(status_code=409, detail=reason)
-    await deletion.delete(session, user, workspaces)
-    response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+
+
+async def _workspaces_to_delete(
+    deletion: AccountDeletion,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> list[Workspace]:
+    memberships = [
+        Workspace(id=m.id, name=m.name, role=m.role)
+        for m in await list_tenant_memberships(session_factory, user_store, user_id)
+    ]
+    return await deletion.with_former_workspaces(user_id, memberships)
+
+
+@router.patch("/auth/me")
+async def update_me(
+    req: UpdateMeRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user: Annotated[User, Depends(get_current_user)],
+) -> SessionUserResponse:
+    """Change the signed-in person's display name.
+
+    Like the password change, this writes the `User` that `get_current_user`
+    handed over and commits the session `get_session` handed over, which are
+    the same object within a request.
+    """
+    user.name = req.name
+    await session.commit()
+    # The name other members see beside what this person writes in a
+    # Console chat is their member client's, copied when it was made.
+    await rename_member_clients(
+        session_factory,
+        await tenants_bindable_by(session_factory, user.id),
+        user.id,
+        req.name,
+    )
+    return _session_response(user)
 
 
 @router.put("/auth/me/password")
 async def change_password(
     req: ChangePasswordRequest,
+    request: Request,
+    response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
+    """Change the signed-in person's password, signing them out everywhere
+    else.
+
+    The database ends every session on a password change
+    (`db/session_version_ddl.py`), this one included, so the cookie is
+    minted again from the row as it now stands: whoever changed the password
+    stays signed in here, and every other copy of the old cookie is refused.
+    """
     if not await verify_password_off_loop(req.current_password, user.password_hash):
         raise HTTPException(status_code=403, detail="Current password is incorrect")
 
     user.password_hash = await hash_password_off_loop(req.new_password)
     await session.commit()
+    await session.refresh(user)
+    set_session_cookie(
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        request.state.tenant_id,
+        session_auth_time(request),
+    )
     return {"ok": True}
 
 
@@ -485,16 +690,20 @@ async def change_password(
 async def list_users(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _admin: Annotated[User, Depends(require_admin)],
-) -> list[UserResponse]:
+    admin: Annotated[User, Depends(require_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> list[OperatorUserResponse]:
+    admin_id = admin.id
     users = await user_store.get_all(session)
     return [
-        UserResponse(
+        OperatorUserResponse(
             id=u.id,
             name=u.name,
             email=u.email,
             role=u.role,
             created_at=str(u.created_at),
+            can_delete=u.id != admin_id
+            and not is_server_administrator(u, config.gateway_admin_email),
         )
         for u in users
     ]
@@ -506,7 +715,8 @@ async def create_user(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     _admin: Annotated[User, Depends(require_admin)],
-) -> UserResponse:
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> OperatorUserResponse:
     existing = await user_store.get_by_email(session, req.email)
     if existing is not None:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -535,10 +745,163 @@ async def create_user(
     await session.commit()
 
     logger.info("Created user: %s (%s)", user.email, user.id)
-    return UserResponse(
+    emit_safely(current_telemetry(), "account_created", {"method": "admin"})
+    return OperatorUserResponse(
         id=user.id,
         name=user.name,
         email=user.email,
         role=user.role,
         created_at=str(user.created_at),
+        can_delete=not is_server_administrator(user, config.gateway_admin_email),
     )
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    admin: Annotated[User, Depends(require_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, bool]:
+    """The deployment operator deletes someone's whole account.
+
+    The same deletion, and the same refusals, as `DELETE /auth/me`: this only
+    changes who asks. The operator's own account is refused, so that leaving
+    the server is always the person's own act. Whether it went ahead, was
+    refused or failed partway lands in the server's audit log, since an
+    account spans every workspace and no one workspace's history is the place
+    for it.
+
+    `session` is bound to the operator's own workspace, like the other user
+    routes, but carries only rows that belong to no workspace: the `users`
+    row, its sign-in identities and the audit event. Each workspace the
+    account is in is left in a `tenant_session` of its own.
+    """
+    if user_id == admin.id:
+        detail = (
+            "That's your own account. Delete it from your account settings instead."
+        )
+        await _record_refusal(session, admin.id, user_id, detail)
+        raise HTTPException(status_code=409, detail=detail)
+    target = await user_store.get(session, user_id)
+    if target is None:
+        await _record_refusal(session, admin.id, user_id, "User not found")
+        raise HTTPException(status_code=404, detail="User not found")
+    deletion = _account_deletion(
+        request,
+        session_factory,
+        protocol,
+        broker,
+        resource_service,
+        room_service,
+        user_store,
+        organization_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        client_lifecycle,
+        config,
+    )
+    workspaces = await _workspaces_to_delete(
+        deletion, session_factory, user_store, target.id
+    )
+    reason = await deletion.refusal(session, target, workspaces)
+    if reason is not None:
+        await _record_refusal(session, admin.id, target.id, reason)
+        raise HTTPException(status_code=409, detail=reason)
+    await record_server_audit_event(
+        session,
+        actor_user_id=admin.id,
+        action=ServerAuditAction.USER_DELETED,
+        target_type="user",
+        target_id=target.id,
+        details={"outcome": "deleted", "workspaces": len(workspaces)},
+    )
+    # The event commits with the `users` row, so it never records a deletion
+    # that did not finish. The ids outlive the rollback that expires the rows.
+    operator_id, target_id = admin.id, target.id
+    try:
+        await deletion.delete(session, target, workspaces, actor_id=admin.id)
+    except AccountDeletionRefused as refused:
+        # An organization's last admin check failed under its lock, before
+        # anything changed; the deletion event above goes with the rollback.
+        await session.rollback()
+        await _record_refusal(session, operator_id, target_id, str(refused))
+        raise HTTPException(status_code=409, detail=str(refused)) from None
+    except AccountDeletionIncomplete as error:
+        # The workspaces already left stay left, so the attempt is recorded on
+        # its own, in a transaction after the one that just rolled back.
+        await session.rollback()
+        await record_server_audit_event(
+            session,
+            actor_user_id=operator_id,
+            action=ServerAuditAction.USER_DELETION_FAILED,
+            target_type="user",
+            target_id=target_id,
+            details={
+                "outcome": "failed",
+                "workspaces": len(workspaces),
+                "workspaces_completed": [w.id for w in error.completed],
+                "error": type(error.__cause__).__name__,
+            },
+        )
+        await session.commit()
+        raise
+    logger.info("Operator %s deleted the account of user %s", operator_id, target_id)
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/sessions/revoke")
+async def end_user_sessions(
+    user_id: str,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, bool]:
+    """The deployment operator signs someone out of all their devices, for a
+    lost laptop or an account that looks taken over. Recorded in the server's
+    audit log, like the operator deleting an account."""
+    if await user_store.session_version(session, user_id) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await user_store.end_sessions(session, user_id)
+    await record_server_audit_event(
+        session,
+        actor_user_id=admin.id,
+        action=ServerAuditAction.USER_SESSIONS_ENDED,
+        target_type="user",
+        target_id=user_id,
+        details=None,
+    )
+    await session.commit()
+    if user_id == admin.id:
+        response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+async def _record_refusal(
+    session: AsyncSession, operator_id: str, target_id: str, reason: str
+) -> None:
+    await record_server_audit_event(
+        session,
+        actor_user_id=operator_id,
+        action=ServerAuditAction.USER_DELETION_REFUSED,
+        target_type="user",
+        target_id=target_id,
+        details={"outcome": "refused", "reason": reason},
+    )
+    await session.commit()

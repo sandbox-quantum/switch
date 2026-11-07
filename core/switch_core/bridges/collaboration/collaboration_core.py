@@ -7,7 +7,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -18,11 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.bridges.agent.commands import stop_control_frame
+from switch_core.bridges.agent.commands import link_account_reply, stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
     PlatformAdapter,
+    PrivateNoticeRefused,
     SupportsSharedConnection,
     agent_identity,
 )
@@ -53,7 +54,11 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import (
+    LINKED_CHANNEL_NAME_KEY,
+    RoomStore,
+)
+from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
@@ -90,11 +95,14 @@ from switch_core.transport import (
     TransportError,
     writes_derived_from,
 )
+from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
 from switch_core.trust.client import (
     NullTrustClient,
+    TrustCheckResult,
     TrustClient,
     check_message,
     trust_annotation,
+    trust_is_active,
     trust_redaction_notice,
 )
 
@@ -317,10 +325,18 @@ class CollaborationCore:
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
         # Agents given an identity by this copy of the bridge, so one deleted
-        # by another process is let go of here too; and whether the agents
-        # changed while a provisioning run was going.
+        # by another process is let go of here too.
         self._provisioned_agents: dict[str, AgentIdentity] = {}
+        # The tenant's agents as this copy last read them, by agent id, and
+        # which agent each client is, kept up to date by reading only the
+        # agents a change names (`_update_agent_identities`). None until a
+        # run has read them all.
+        self._agent_view: dict[str, AgentIdentity] | None = None
+        self._agent_of_client: dict[str, str] = {}
+        # Whether every agent has to be read again, and the clients whose
+        # agents do, for the provisioning run going or the next one.
         self._identities_stale = False
+        self._identities_owed: set[str] = set()
         self._channel_type_refresh_task: asyncio.Task[None] | None = None
         # Turns and request cards from the tables the host reports to, pushed
         # as they change. Only where the platform draws session activity.
@@ -494,6 +510,7 @@ class CollaborationCore:
         await self._load_existing_human_actors()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_channel_type_handler(self._record_channel_type)
+        self._adapter.set_channel_rename_handler(self._handle_channel_named)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         # A bridge on a shared connection that started before the connection
         # was up is attached later (when it comes up, or on its first event).
@@ -548,14 +565,18 @@ class CollaborationCore:
         """Whether this process holds the bridge and listens for it."""
         return self._active
 
-    def agents_changed(self) -> None:
-        """Agents were registered or deleted in this bridge's tenant, maybe by
-        another process: give the new ones their platform identities here and
-        let go of the deleted ones'. A run already going reads the agents
-        again once it is done, in case it read them before the change."""
-        self._identities_stale = True
+    def agents_changed(self, client_ids: Collection[str] | None = None) -> None:
+        """Agents were registered, renamed or deleted in this bridge's tenant,
+        maybe by another process: give the new ones their platform identities
+        here and let go of the deleted ones'. Only the agents of `client_ids`
+        are read again, or every agent when None. A run already going reads
+        them once it is done, in case it read them before the change."""
+        if client_ids is None or self._agent_view is None:
+            self._identities_stale = True
+        else:
+            self._identities_owed.update(client_ids)
         if not self._awaiting_shared_connection():
-            self._provision_identities_on_attach()
+            self._start_identity_run()
 
     def _awaiting_shared_connection(self) -> bool:
         """Whether the bridge waits to be attached to its platform's shared
@@ -678,6 +699,10 @@ class CollaborationCore:
         against the connection as it is by then; one that has finished is
         replaced.
         """
+        self._identities_stale = True
+        self._start_identity_run()
+
+    def _start_identity_run(self) -> None:
         if self._identity_task is not None and not self._identity_task.done():
             return
         self._identity_task = asyncio.create_task(self._run_agent_identities())
@@ -698,9 +723,19 @@ class CollaborationCore:
     async def _run_agent_identities_unbound(self) -> None:
         try:
             while True:
-                self._identities_stale = False
-                await self._create_agent_identities()
-                if not self._identities_stale:
+                if self._identities_stale:
+                    self._identities_stale = False
+                    self._identities_owed = set()
+                    await self._create_agent_identities()
+                elif self._identities_owed:
+                    owed, self._identities_owed = self._identities_owed, set()
+                    try:
+                        await self._update_agent_identities(owed)
+                    except BaseException:
+                        # Read again by the next run, whatever starts it.
+                        self._identities_owed |= owed
+                        raise
+                else:
                     break
         except asyncio.CancelledError:
             logger.info(
@@ -718,12 +753,54 @@ class CollaborationCore:
             self._session_factory, self._bridge_tenant_id
         ) as session:
             agents = await self._agent_store.get_all(session)
+        current = {agent.id: agent_identity(agent) for agent in agents}
+        self._agent_view = current
+        self._agent_of_client = {agent.client_id: agent.id for agent in agents}
+        await self._sync_agent_identities(current, sorted(self._provisioned_agents))
 
+    async def _update_agent_identities(self, client_ids: set[str]) -> None:
+        """`_create_agent_identities` for the agents of `client_ids` only:
+        their rows are read and the rest of the tenant's agents are taken as
+        this copy last read them, which with thousands of agents is the
+        difference between reading one row per change and every row."""
+        if self._agent_view is None:
+            await self._create_agent_identities()
+            return
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            agents = await self._agent_store.get_by_client_ids(
+                session, sorted(client_ids)
+            )
+        found = {agent.client_id: agent for agent in agents}
+        view = self._agent_view
+        changed: set[str] = set()
+        for client_id in client_ids:
+            agent = found.get(client_id)
+            known = self._agent_of_client.pop(client_id, None)
+            if known is not None:
+                view.pop(known, None)
+                changed.add(known)
+            if agent is not None:
+                self._agent_of_client[client_id] = agent.id
+                view[agent.id] = agent_identity(agent)
+                changed.add(agent.id)
+        await self._sync_agent_identities(
+            view, sorted(changed & self._provisioned_agents.keys())
+        )
+
+    async def _sync_agent_identities(
+        self, current: dict[str, AgentIdentity], compared: list[str]
+    ) -> None:
+        """Bring the platform in line with `current`, the tenant's agents:
+        the agents of `compared` this copy gave an identity to are renamed,
+        relabelled or let go of to match it, then every agent's identity is
+        provisioned."""
         # Deleted, renamed or relabelled since the last run here, wherever that
         # was served: a change served by another process reaches this copy of
-        # the bridge only through this re-read.
-        current = {agent.id: agent_identity(agent) for agent in agents}
-        for agent_id, before in sorted(self._provisioned_agents.items()):
+        # the bridge only through a re-read.
+        for agent_id in compared:
+            before = self._provisioned_agents[agent_id]
             after = current.get(agent_id)
             try:
                 if after is None:
@@ -763,14 +840,14 @@ class CollaborationCore:
             logger.warning(
                 "Provisioned %s identities for %d agents; %d failed",
                 self._bridge_type,
-                len(agents),
+                len(current),
                 len(failures),
             )
         else:
             logger.info(
                 "Provisioned %s identities for %d agents",
                 self._bridge_type,
-                len(agents),
+                len(current),
             )
 
     async def _ensure_channel_captures(self) -> None:
@@ -853,6 +930,34 @@ class CollaborationCore:
                 channel_id,
                 channel_type,
             )
+
+    async def _handle_channel_named(
+        self, channel_id: str, old_name: str, new_name: str
+    ) -> None:
+        """The platform reports this channel's name (renamed from `old_name`,
+        or unchanged). The room linked to it follows when it is named after
+        the channel (`NAME_SOURCE_KEY` "channel"), or, from before that was
+        kept, when its name is exactly the one it was made with from the old
+        channel name. Any other room keeps its name, and the channel's is
+        recorded for whoever wants to take it (`/rooms/{id}/sync-name`)."""
+        bridge_name = self._bridge_display_name
+        name = f"{bridge_name}: {new_name}"
+        with tenant_scope(self._bridge_tenant_id):
+            async with tenant_session(
+                self._session_factory, self._bridge_tenant_id
+            ) as session:
+                room = await self._room_store.get_by_external_channel(
+                    session, bridge_id=self._bridge_id, external_channel_id=channel_id
+                )
+            if room is None:
+                return
+            metadata = room.metadata_ or {}
+            if room.name != name and await self._room_service.follow_channel_name(
+                room.id, name, new_name, f"{bridge_name}: {old_name}"
+            ):
+                return
+            if metadata.get(LINKED_CHANNEL_NAME_KEY) != new_name:
+                await self._room_service.record_channel_name(room.id, new_name)
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
 
@@ -1166,6 +1271,73 @@ class CollaborationCore:
             )
             return
 
+        # A message with files is checked as a whole before anything is
+        # uploaded: the typed text exactly as above, and each file through the
+        # text it carries (`trust/attachments.py`), so a refusal of either
+        # leaves nothing of the message in the room.
+        caption_check: TrustCheckResult | None = None
+        files_check = AttachmentsVerdict()
+        if await trust_is_active(self._trust_client):
+            files = [(a.data, a.filename, a.mimetype) for a in msg.attachments]
+            files_check_task = check_attachments(
+                self._trust_client, role="user", files=files, room_id=room_id
+            )
+            if content.strip():
+                caption_check, files_check = await asyncio.gather(
+                    check_message(
+                        self._trust_client,
+                        role="user",
+                        content=content,
+                        room_id=room_id,
+                    ),
+                    files_check_task,
+                )
+            else:
+                files_check = await files_check_task
+        caption_refused = caption_check is not None and (
+            caption_check.blocked
+            or (
+                caption_check.outcome == "redacted"
+                and caption_check.redacted_content is None
+            )
+        )
+        if caption_refused or files_check.blocked:
+            logger.warning(
+                "[BRIDGE-IN] message with %d attachment(s) from %s not relayed: "
+                "Switch Trust text outcome=%s, files: %s, room %s",
+                len(msg.attachments),
+                msg.sender_name,
+                caption_check.outcome if caption_check is not None else "unchecked",
+                "; ".join(files_check.block_reasons) or "not blocked",
+                transport_room_id,
+            )
+            if files_check.blocked:
+                notice = (
+                    "🚫 Your message was blocked by Switch Trust and was not "
+                    f"delivered to the room: {'; '.join(files_check.block_reasons)}. "
+                    "You can still see it, but agents can't access it."
+                )
+            else:
+                notice = (
+                    "🚫 Your message was blocked by Switch Trust and was not "
+                    "delivered to the room. You can still see it, but agents "
+                    "can't access it."
+                )
+            await self._post_trust_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
+            return
+        if caption_check is not None and caption_check.redacted_content is not None:
+            content = caption_check.redacted_content
+        caption_annotation = (
+            trust_annotation(caption_check) if caption_check is not None else None
+        )
+        trust_notes = [
+            *([caption_annotation] if caption_annotation is not None else []),
+            *files_check.notes,
+        ]
+        if trust_notes:
+            notes_text = "\n".join(trust_notes)
+            content = f"{content}\n\n{notes_text}" if content.strip() else notes_text
+
         # Caption convention: the text rides as the caption on the first
         # attachment so "text + one image" reaches the agent as a single event;
         # remaining attachments are sent as bare media events. The first media
@@ -1206,6 +1378,9 @@ class CollaborationCore:
                         else None
                     ),
                     metered=True,
+                    extra_content=(
+                        {SENDER_IS_APP_MARKER: True} if msg.sender_is_app else None
+                    ),
                 )
             if event_id is None:
                 logger.error(
@@ -1218,6 +1393,25 @@ class CollaborationCore:
                 first_event_id = event_id
 
         if first_event_id is not None:
+            # As for a text-only message, the sender hears what Switch Trust
+            # did only once the message is confirmed in the room.
+            if caption_check is not None and caption_check.redacted_content is not None:
+                redaction_notice = trust_redaction_notice(caption_check)
+                if redaction_notice is not None:
+                    await self._post_trust_notice(
+                        msg, redaction_notice, AdminMessageType.TRUST_REDACTED
+                    )
+            if trust_notes:
+                flagged = files_check.flagged or (
+                    caption_check is not None and caption_check.outcome == "alerted"
+                )
+                await self._post_trust_notice(
+                    msg,
+                    "\n".join(trust_notes),
+                    AdminMessageType.TRUST_ALERTED
+                    if flagged
+                    else AdminMessageType.TRUST_ERRORED,
+                )
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
                 transport_event_id=first_event_id,
@@ -1227,10 +1421,79 @@ class CollaborationCore:
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
     ) -> None:
-        """Tell the sender's platform what Switch Trust did with their message
-        — blocked, redacted, alerted, or errored. Never lets a failed notice
-        take the inbound message down with it — mirrors
+        """Tell the sender, and only the sender, what Switch Trust did with
+        their message: blocked, redacted, flagged, or not fully checked.
+
+        Each of these is about what one person wrote, so it goes to them the
+        way the platform allows (`private_notice_delivery`). Where it has no
+        private route, or the private one fails, the notice is posted in the
+        channel and a warning says everyone there saw it: a sender left not
+        knowing their message was blocked is worse than a notice others can
+        read. In a direct conversation the channel is already private. An
+        app's post, or one from an account many people share (Telegram's
+        stand-in for anonymous admins), has no one person to reach, so its
+        notice goes straight to the channel. Never lets a failed notice take
+        the inbound message down with it, which mirrors
         `AgentCore._post_trust_blocked_notice`."""
+        delivery = self._adapter.private_notice_delivery
+        no_one_to_reach = (
+            msg.sender_is_app
+            or self._adapter.unlinkable_account_reason(msg.sender_id) is not None
+        )
+        if msg.channel_type != "direct":
+            if no_one_to_reach:
+                logger.info(
+                    "The Switch Trust %s notice for %s goes in channel %s: an "
+                    "app or a shared account has no one person to tell",
+                    message_type.value,
+                    msg.sender_name,
+                    msg.channel_id,
+                )
+            elif delivery == "in_channel":
+                logger.warning(
+                    "%s has no way to reach one person privately: posting the "
+                    "Switch Trust %s notice for %s in channel %s, where "
+                    "everyone in it sees it",
+                    self._adapter.platform_name,
+                    message_type.value,
+                    msg.sender_name,
+                    msg.channel_id,
+                )
+            else:
+                try:
+                    await self._adapter.notify_privately(
+                        channel_id=msg.channel_id,
+                        channel_name=msg.channel_name,
+                        user_id=msg.sender_id,
+                        content=body,
+                        # Where the sender is looking: their thread, or the
+                        # channel itself for a top-level message, since a
+                        # private notice opens no thread anyone would see.
+                        thread_root_id=msg.root_id,
+                    )
+                    return
+                except PrivateNoticeRefused as refused:
+                    logger.warning(
+                        "%s would not let the bot reach %s privately (%s): "
+                        "posting the Switch Trust %s notice in channel %s "
+                        "instead, where everyone in it sees it",
+                        self._adapter.platform_name,
+                        msg.sender_name,
+                        refused,
+                        message_type.value,
+                        msg.channel_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not send the Switch Trust %s notice to %s by %s: "
+                        "posting it in channel %s instead, where everyone in it "
+                        "sees it",
+                        message_type.value,
+                        msg.sender_name,
+                        delivery,
+                        msg.channel_id,
+                        exc_info=True,
+                    )
         try:
             await self._adapter.admin_message(
                 msg.channel_id,
@@ -1247,6 +1510,11 @@ class CollaborationCore:
 
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
         room_ids = self._channel_to_room.get(cmd.channel_id)
+        if room_ids is None and cmd.command == "link-account":
+            # Linking an account is about the person, not the channel: answer
+            # it here so a channel that isn't a Switch room doesn't become one.
+            await self._link_account_outside_room(cmd)
+            return
         if room_ids is None:
             lock = self._channel_locks.setdefault(cmd.channel_id, asyncio.Lock())
             async with lock:
@@ -1340,6 +1608,21 @@ class CollaborationCore:
                 )
             finally:
                 self._pending_message_maps.pop(event_id, None)
+
+    async def _link_account_outside_room(self, cmd: InboundCommand) -> None:
+        account = await self.ensure_external_user(
+            external_user_id=cmd.sender_id, external_username=cmd.sender_name
+        )
+        reply = await link_account_reply(
+            self._session_factory,
+            self._external_user_store,
+            UserStore(),
+            account,
+            cmd.args,
+        )
+        await self._adapter.admin_message(
+            cmd.channel_id, reply, cmd.root_id or cmd.message_ref
+        )
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
@@ -1531,6 +1814,9 @@ class CollaborationCore:
             # Adopted from a channel that appeared on the platform, not asked
             # for by anyone in Switch.
             created_by_kind="system",
+            named_after_channel=(
+                channel_name if channel_type != "direct" and channel_name else None
+            ),
         )
 
         try:
@@ -1674,7 +1960,19 @@ class CollaborationCore:
         (the resolver logs them); the on_user_joined callback or the inbound
         message path picks them up later."""
         resolved = await self.resolve_external_user_id_map(user_names)
-        for ext_id in resolved.values():
+        await self.ensure_external_users_in_room(
+            room_id, transport_room_id, list(resolved.values())
+        )
+
+    async def ensure_external_users_in_room(
+        self,
+        room_id: str,
+        transport_room_id: str,
+        external_user_ids: list[str],
+    ) -> None:
+        """`ensure_users_in_room` for accounts already known by id, as for a
+        linked identity: no name is resolved, since two accounts can share one."""
+        for ext_id in external_user_ids:
             async with self._session_factory() as session:
                 ext_user = await self._external_user_store.get_by_external_id(
                     session, self._bridge_id, ext_id
@@ -2052,6 +2350,18 @@ class CollaborationCore:
                 f"{self._bridge_id} was created without an ExternalUser record"
             )
         return created
+
+    async def forget_human(self, external_user_id: str, transport_user_id: str) -> None:
+        """Drop what this bridge remembers about a person whose identity was erased.
+
+        Called once their rows are gone and their client is stopped. If they
+        write again they are provisioned afresh, as someone never seen before.
+        """
+        lock = self._human_actor_locks.setdefault(external_user_id, asyncio.Lock())
+        async with lock:
+            self._human_actors.pop(external_user_id, None)
+            self._names_known_good.discard(external_user_id)
+            self._human_user_ids.discard(transport_user_id)
 
     async def _create_human_actor(
         self, external_user_id: str, external_username: str

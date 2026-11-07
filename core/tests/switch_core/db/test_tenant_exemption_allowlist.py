@@ -71,6 +71,14 @@ _ALLOWED_MODULES = {
     # workspace: enumerate, then read each one's connections under its own
     # policy, the same shape as service-token upkeep above.
     "switch_core.gateway.connector_apps",
+    # Data retention deletes what each workspace no longer keeps, hourly:
+    # enumerate, then bind each tenant and work under its own policy, the same
+    # shape as session-activity upkeep.
+    "switch_core.retention.service",
+    # The erasure loop works every tenant's queue of person erasures:
+    # enumerate, then bind each tenant and work under its own policy, the
+    # same shape as session-activity upkeep.
+    "switch_core.retention.erasure",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time.
     "switch_core.bridges.agent.protocol.agent_core",
@@ -87,6 +95,10 @@ _ALLOWED_MODULES = {
     # resolution shape as the line above, through the same `tenant_of_api_key`,
     # with the row then read scoped to the tenant it produced.
     "switch_core.management.auth",
+    # The boot-time re-encryption sweep visits every organization, including
+    # one with no workspace to reach it through, binding each in turn
+    # (`organization_session`) to rewrite its connector apps' secrets.
+    "switch_core.db.key_rotation",
     # Core keeps which controller runs each agent in memory, so at startup
     # every tenant's placed definitions are read back into it: enumerate the
     # tenants, then read each one's definitions under its own policy, the same
@@ -108,6 +120,11 @@ _ALLOWED_MODULES = {
     # `tenants_of_cloud_machine`, and each one's row on the machine is then
     # read with that workspace bound.
     "switch_core.db.stores.hosted_machine_store",
+    # Deleting an account also clears the workspaces the person was removed
+    # from, where nothing binds them any more: enumerate the tenants, then
+    # look for their rows in each under its own policy, the same fan-out as
+    # the boot work.
+    "switch_core.accounts.deletion",
     # Enumerating tenants at boot, and starting one bridge by id from a
     # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
@@ -128,6 +145,16 @@ _ALLOWED_MODULES = {
     # the flow's tenant, and the flow is then read scoped to it, so a wrong
     # answer is a missing flow rather than a cross-tenant read.
     "switch_core.connections.sign_in_flows",
+    # A WorkOS sign-in names the WorkOS organizations the person belongs to;
+    # which Switch organizations follow them has to be read before any is
+    # bound, and the membership is then written with that organization bound,
+    # so a wrong answer is a missing row rather than a write into another
+    # organization.
+    "switch_core.organization_mirror",
+    # The WorkOS mirror acts for no tenant and no person: which organizations
+    # are linked is read before any is bound, and each is then read and
+    # written with it bound.
+    "switch_core.workos_mirror",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of
@@ -171,7 +198,6 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
     "switch_core.delivery.recipient",
-    "switch_core.clients.command_consumer",
     "switch_core.clients.client_lifecycle_service",
     "switch_core.provisioning.postgres",
     "switch_core.room_service",
@@ -185,10 +211,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     # table here would be the one check that passes in development and raises
     # under the restricted runtime role in production.
     "switch_core.observability.health",
-    # ── The signal sender, which calls `pg_notify` and reads no table. A
-    # signal is for every process regardless of tenant, so there is no tenant
-    # to bind.
-    "switch_core.signals",
+    # ── The announcer, which sends this process's signals and its router's
+    # announcements with `pg_notify` and reads no table. They are for every
+    # process regardless of tenant, so there is no tenant to bind.
+    "switch_core.announcer",
     # `switch_core.transport.postgres` and `switch_core.bridges.agent.auth`
     # came off this list with the runtime role: the transport learned its own
     # tenant from its client row and the middleware learned a credential's
@@ -229,6 +255,15 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
     # deployment, so there is no tenant for a policy to narrow on.
     "switch_core.trust.client",
+    # The operator's account linking reads `users` and writes
+    # `oidc_identities`, both global (`rls_ddl.GLOBAL_TABLES`): a person and
+    # their sign-in identities belong to no tenant. Its organization linking
+    # binds the organization (`organization_session`).
+    "switch_core.workos_linking",
+    # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
+    # and reads `oidc_identities` to match people, both global
+    # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.
+    "switch_core.workos_mirror",
     #
     # ── The OAuth client Core registers for itself at a vendor that offers
     # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The

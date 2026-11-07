@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,16 +20,20 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.erasure_store import ErasureStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.invite_mail import InviteMailer
+from switch_core.organization_directory import OrganizationDirectory
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 from switch_core.telemetry import TelemetryService
@@ -54,6 +58,8 @@ def init_dependencies(
     api_key_store: ApiKeyStore,
     invitation_store: InvitationStore,
     join_domain_store: JoinDomainStore,
+    organization_store: OrganizationStore,
+    organization_directory: OrganizationDirectory,
     template_store: TemplateStore,
     usage_store: UsageStore,
     budget_store: BudgetStore,
@@ -63,6 +69,7 @@ def init_dependencies(
     invite_mailer: InviteMailer | None,
     user_changes: LocalUserChanges,
     config: SwitchConfig,
+    trust_settings_changed: Callable[[], None] | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
     _state["room_store"] = room_store
@@ -78,6 +85,8 @@ def init_dependencies(
     _state["api_key_store"] = api_key_store
     _state["invitation_store"] = invitation_store
     _state["join_domain_store"] = join_domain_store
+    _state["organization_store"] = organization_store
+    _state["organization_directory"] = organization_directory
     _state["template_store"] = template_store
     _state["usage_store"] = usage_store
     _state["budget_store"] = budget_store
@@ -87,6 +96,7 @@ def init_dependencies(
     _state["invite_mailer"] = invite_mailer
     _state["user_changes"] = user_changes
     _state["config"] = config
+    _state["trust_settings_changed"] = trust_settings_changed
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -205,12 +215,28 @@ def get_join_domain_store() -> JoinDomainStore:
     return _state["join_domain_store"]  # type: ignore[no-any-return]
 
 
+def get_organization_store() -> OrganizationStore:
+    return _state["organization_store"]  # type: ignore[no-any-return]
+
+
+def get_organization_directory() -> OrganizationDirectory:
+    return _state["organization_directory"]  # type: ignore[no-any-return]
+
+
 def get_usage_store() -> UsageStore:
     return _state["usage_store"]  # type: ignore[no-any-return]
 
 
 def get_budget_store() -> BudgetStore:
     return _state["budget_store"]  # type: ignore[no-any-return]
+
+
+def get_retention_store() -> RetentionStore:
+    return RetentionStore()
+
+
+def get_erasure_store() -> ErasureStore:
+    return ErasureStore()
 
 
 def get_template_store() -> TemplateStore:
@@ -223,6 +249,15 @@ def get_user_changes() -> LocalUserChanges:
 
 def get_config() -> SwitchConfig:
     return _state["config"]  # type: ignore[no-any-return]
+
+
+def trust_settings_changed() -> None:
+    """Tell every process the Switch Trust settings changed, once the change
+    has committed (`trust/signals.py`). Nothing is wired to hear it in a route
+    test."""
+    changed = _state.get("trust_settings_changed")
+    if changed is not None:
+        changed()
 
 
 def get_protocol() -> AgentCore:

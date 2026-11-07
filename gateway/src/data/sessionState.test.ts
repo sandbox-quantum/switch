@@ -1,18 +1,25 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Session, TenantMembership } from "./api";
 import {
+  administersOrganization,
   appView,
   canAdminTenant,
   clearPendingInvite,
   deliveryNotice,
   inviteTokenFrom,
   inviteUrl,
-  ownsTenant,
   readPendingInvite,
   storePendingInvite,
 } from "./sessionState";
 
-const acme: TenantMembership = { id: "t1", slug: "acme", name: "Acme", role: "member" };
+const acme: TenantMembership = {
+  id: "t1",
+  slug: "acme",
+  name: "Acme",
+  role: "member",
+  organization_role: "member",
+  organization_id: "o1",
+};
 
 function session(overrides: Partial<Session> = {}): Session {
   return {
@@ -21,6 +28,7 @@ function session(overrides: Partial<Session> = {}): Session {
     tenants: [acme],
     state: "ready",
     can_create_workspace: true,
+    can_add_workspace: false,
     invite_email_enabled: false,
     ...overrides,
   };
@@ -49,26 +57,21 @@ describe("appView", () => {
   });
 });
 
-describe("canAdminTenant and ownsTenant", () => {
+describe("canAdminTenant", () => {
   it("follows the workspace role", () => {
     expect(canAdminTenant(session())).toBe(false);
     expect(canAdminTenant(session({ tenant: { ...acme, role: "admin" } }))).toBe(true);
-    expect(canAdminTenant(session({ tenant: { ...acme, role: "owner" } }))).toBe(true);
-    expect(ownsTenant(session({ tenant: { ...acme, role: "admin" } }))).toBe(false);
-    expect(ownsTenant(session({ tenant: { ...acme, role: "owner" } }))).toBe(true);
   });
 
-  it("grants both to an operator whatever the role", () => {
+  it("is granted to an operator whatever the role", () => {
     const operator = session({
       user: { id: "u1", name: "Op", email: "op@example.com", is_operator: true },
     });
     expect(canAdminTenant(operator)).toBe(true);
-    expect(ownsTenant(operator)).toBe(true);
   });
 
-  it("grants neither with no session or no workspace", () => {
+  it("is not granted with no session or no workspace", () => {
     expect(canAdminTenant(null)).toBe(false);
-    expect(ownsTenant(null)).toBe(false);
     expect(canAdminTenant(session({ tenant: null, state: "needs_workspace" }))).toBe(false);
   });
 });
@@ -125,5 +128,19 @@ describe("deliveryNotice", () => {
     const notice = deliveryNotice("not_requested", null);
     expect(notice.severity).toBe("success");
     expect(notice.text).not.toContain("null");
+  });
+});
+
+describe("administersOrganization", () => {
+  it("follows the organization role, not the operator bit", () => {
+    expect(administersOrganization(session())).toBe(false);
+    expect(
+      administersOrganization(session({ tenant: { ...acme, organization_role: "org_admin" } })),
+    ).toBe(true);
+    expect(
+      administersOrganization(
+        session({ user: { id: "u1", name: "Ada", email: "a@example.com", is_operator: true } }),
+      ),
+    ).toBe(false);
   });
 });
