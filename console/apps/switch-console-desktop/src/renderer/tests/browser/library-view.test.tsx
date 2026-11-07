@@ -616,6 +616,20 @@ describe('a package', () => {
     expect(container.textContent).toContain('design, 1 private room you can’t open');
   });
 
+  it('names an item you may not open without a link to its page', async () => {
+    rpcMock.listPackageMembers.mockImplementation(async ({ kind }: { kind: string }) =>
+      kind === 'references'
+        ? [{ ...(state.items.references[0] as object), name: 'Secret repo', canRead: false }]
+        : []
+    );
+    await render(libraryItemView.MainPanel);
+    const section = container.querySelector('[aria-label="References"]')!;
+    expect(section.textContent).toContain('Secret repo');
+    expect(
+      [...section.querySelectorAll('button')].some((b) => b.textContent?.includes('Secret repo'))
+    ).toBe(false);
+  });
+
   it('offers no adding or removing to someone who may not change it', async () => {
     state.item = { ...(state.items.packages[0] as object), ownerId: 'bob' };
     await render(libraryItemView.MainPanel);

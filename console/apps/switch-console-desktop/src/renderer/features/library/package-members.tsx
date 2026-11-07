@@ -15,7 +15,7 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Input } from '@renderer/lib/ui/input';
 import type { LibraryItem, PackageMemberKind } from '@shared/core/switch-servers/library';
-import { KIND_TEXT, removalText } from './library-model';
+import { KIND_TEXT, libraryItemOpens, removalText, type Viewer } from './library-model';
 import { invalidateLibrary, libraryItemsKey } from './library-queries';
 
 export const packageMembersKey = (
@@ -26,7 +26,7 @@ export const packageMembersKey = (
 
 /**
  * What a package holds: its references and documents, each opening its own
- * page. Whoever may change the package adds and removes them; taking one out
+ * page for whoever may open it. Whoever may change the package adds and removes them; taking one out
  * says which rooms lost it.
  */
 export function PackageMembers({
@@ -34,11 +34,13 @@ export function PackageMembers({
   workspaceId,
   pkg,
   canEdit,
+  viewer,
 }: {
   serverId: string;
   workspaceId: string;
   pkg: LibraryItem;
   canEdit: boolean;
+  viewer: Viewer;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
   return (
@@ -66,6 +68,7 @@ export function PackageMembers({
           pkg={pkg}
           kind={kind}
           canEdit={canEdit}
+          viewer={viewer}
           onRemoved={setNotice}
         />
       ))}
@@ -79,6 +82,7 @@ function MemberSection({
   pkg,
   kind,
   canEdit,
+  viewer,
   onRemoved,
 }: {
   serverId: string;
@@ -86,6 +90,7 @@ function MemberSection({
   pkg: LibraryItem;
   kind: PackageMemberKind;
   canEdit: boolean;
+  viewer: Viewer;
   onRemoved: (notice: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -148,25 +153,15 @@ function MemberSection({
         <List>
           {members.data.map((member) => (
             <div key={member.id} className="flex items-center gap-2 px-3.5 py-2.5">
-              <button
-                type="button"
-                className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
-                onClick={() => navigate('libraryItem', { serverId, kind, itemId: member.id })}
-              >
-                {kind === 'references' ? (
-                  <Link2 className="size-4 shrink-0 text-foreground-muted" />
-                ) : (
-                  <FileText className="size-4 shrink-0 text-foreground-muted" />
-                )}
-                <span className="flex min-w-0 flex-col">
-                  <span className="truncate text-sm text-foreground">{member.name}</span>
-                  {(member.typeLabel || member.description) && (
-                    <span className="truncate text-xs text-foreground-muted">
-                      {[member.typeLabel, member.description].filter(Boolean).join(' · ')}
-                    </span>
-                  )}
-                </span>
-              </button>
+              <MemberRow
+                member={member}
+                kind={kind}
+                onOpen={
+                  libraryItemOpens(member, viewer)
+                    ? () => navigate('libraryItem', { serverId, kind, itemId: member.id })
+                    : null
+                }
+              />
               {canEdit && armed === member.id ? (
                 <span className="flex shrink-0 items-center gap-1">
                   <span className="text-xs text-foreground-muted">
@@ -367,5 +362,57 @@ function List({ children }: { children: ReactNode }) {
     <div className="divide-y divide-border overflow-hidden rounded-[10px] border border-border">
       {children}
     </div>
+  );
+}
+
+/**
+ * One thing a package holds. It opens its page for whoever may open it; for
+ * anyone else, an item its owner keeps private, it is named without a link,
+ * since its page would refuse them.
+ */
+function MemberRow({
+  member,
+  kind,
+  onOpen,
+}: {
+  member: LibraryItem;
+  kind: PackageMemberKind;
+  onOpen: (() => void) | null;
+}) {
+  const content = (
+    <>
+      {kind === 'references' ? (
+        <Link2 className="size-4 shrink-0 text-foreground-muted" />
+      ) : (
+        <FileText className="size-4 shrink-0 text-foreground-muted" />
+      )}
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate text-sm text-foreground">{member.name}</span>
+        {(member.typeLabel || member.description) && (
+          <span className="truncate text-xs text-foreground-muted">
+            {[member.typeLabel, member.description].filter(Boolean).join(' · ')}
+          </span>
+        )}
+      </span>
+    </>
+  );
+  if (onOpen === null) {
+    return (
+      <span
+        className="flex min-w-0 flex-1 items-center gap-3"
+        title="Private to its owner, so you can't open it."
+      >
+        {content}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+      onClick={onOpen}
+    >
+      {content}
+    </button>
   );
 }

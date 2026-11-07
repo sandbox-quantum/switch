@@ -50,22 +50,41 @@ export function visibilityOf(access: LibraryAccess): {
 export type Viewer = { id: string | null; isAdmin: boolean };
 
 /**
- * What the viewer may do with an item, by the server's rule: its owner and
- * admins change and delete it; anyone changes an open one. The server sends no
- * answer of its own, so this mirrors it to keep from offering what it would
- * refuse; the server still checks every change.
+ * What the viewer may do with an item, as the server says. A server too old to
+ * say leaves it to the server's rule, mirrored here: its owner and admins
+ * change and delete it, and anyone changes an open one. The server still
+ * checks every change.
  */
 export function libraryPermissions(
-  item: Pick<LibraryItem, 'ownerId' | 'writeVisibility'>,
+  item: Pick<LibraryItem, 'ownerId' | 'writeVisibility' | 'canEdit' | 'canManage'>,
   viewer: Viewer
 ): { canEdit: boolean; canDelete: boolean; canChangeAccess: boolean } {
   const owns = viewer.isAdmin || (viewer.id !== null && item.ownerId === viewer.id);
+  const manage = item.canManage ?? owns;
   return {
-    canEdit: owns || (viewer.id !== null && item.writeVisibility === 'public'),
-    canDelete: owns,
+    canEdit: item.canEdit ?? (owns || (viewer.id !== null && item.writeVisibility === 'public')),
+    canDelete: manage,
     // Access decides who else may change it, so it stays with the owner and admins.
-    canChangeAccess: owns,
+    canChangeAccess: manage,
   };
+}
+
+/**
+ * Whether the viewer may open an item's own page. A package lists everything
+ * in it to whoever may read the package, including an item its owner keeps
+ * private, whose page would refuse them. A server too old to say leaves it to
+ * the rule: its owner, an admin, or anyone when it is open to read.
+ */
+export function libraryItemOpens(
+  item: Pick<LibraryItem, 'ownerId' | 'readVisibility' | 'canRead'>,
+  viewer: Viewer
+): boolean {
+  if (item.canRead !== undefined) return item.canRead;
+  return (
+    viewer.isAdmin ||
+    item.readVisibility === 'public' ||
+    (viewer.id !== null && item.ownerId === viewer.id)
+  );
 }
 
 export const KIND_TEXT: Record<
