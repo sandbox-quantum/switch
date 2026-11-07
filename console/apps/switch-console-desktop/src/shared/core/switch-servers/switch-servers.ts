@@ -367,7 +367,12 @@ export type RemoteRoomSummary = {
    * by the rules its routes enforce. Absent from a server that does not say,
    * where Console works it out the same way (`roomPermissionsFor`).
    */
-  serverPermissions?: { canWrite: boolean; canManage: boolean; canUnlink: boolean };
+  serverPermissions?: {
+    canWrite: boolean;
+    canChangeMembers: boolean;
+    canManage: boolean;
+    canUnlink: boolean;
+  };
   /** The messaging app connection it is on, when the server says (the list does). Unlike
    * the display name, it tells two connections to the same platform apart. */
   bridgeId?: string | null;
@@ -1383,6 +1388,14 @@ export type RoomResource = {
   canRemove?: boolean;
   /** A document's content, when the listing carried it (a room's documents do). */
   content?: string;
+  /** Who owns it, and whether everyone may read it, for working out if the viewer may open its own page. */
+  ownerId: string | null;
+  readVisibility: 'public' | 'private';
+  /**
+   * Whether the viewer may open it, when the server says (a room's packages:
+   * one its owner attached privately is still listed to every reader).
+   */
+  canRead?: boolean;
 };
 
 /** A document read in full, through the room it is attached to. */

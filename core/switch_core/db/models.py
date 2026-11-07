@@ -70,6 +70,11 @@ from switch_core.db.session_activity_notify_ddl import (
     CREATE_APPROVAL_STATE_TRIGGER,
     CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION,
 )
+from switch_core.db.session_version_ddl import (
+    CREATE_SESSION_VERSION_FUNCTION,
+    CREATE_SESSION_VERSION_TRIGGER,
+    DROP_SESSION_VERSION_TRIGGER,
+)
 from switch_core.db.tenant_lookup import attach_tenant_lookups
 from switch_core.tenant_context import current_organization_id, current_tenant_id
 
@@ -374,6 +379,28 @@ class User(Base):
     workspaces_created: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
+    # Every session cookie carries the value it was minted with, and one that
+    # no longer matches is refused, so incrementing it signs the person out
+    # everywhere. `db/session_version_ddl.py` increments it on a password or
+    # server-admin change; "Sign out of all devices" does it directly.
+    session_version: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
+    )
+
+
+# Changing a password or losing the server-admin role ends every session. As
+# for the triggers below, `create_all` builds it for the tests and real
+# databases get it from a migration. The SQL lives in
+# `db/session_version_ddl.py`.
+for _ddl in (CREATE_SESSION_VERSION_FUNCTION, CREATE_SESSION_VERSION_TRIGGER):
+    event.listen(
+        User.__table__, "after_create", DDL(_ddl).execute_if(dialect="postgresql")
+    )
+event.listen(
+    User.__table__,
+    "before_drop",
+    DDL(DROP_SESSION_VERSION_TRIGGER).execute_if(dialect="postgresql"),
+)
 
 
 # An OIDC login matches an account on email case-insensitively (CHOO-2624):
@@ -456,6 +483,15 @@ class ApiKey(TenantScoped, Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # NULL never expires: keys from before expiry existed, agent keys,
+    # the bootstrap key, controller credentials, and a key its owner asked
+    # to keep.
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    def expired(self, now: datetime) -> bool:
+        return self.expires_at is not None and self.expires_at <= now
 
 
 class ProviderConnection(TenantScoped, Base):
@@ -1213,6 +1249,12 @@ class Room(TenantScoped, Base):
     # Archiving is metadata-only and reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # The highest live `seq` retention has deleted from this room. Numbering
+    # continues above it, so a room emptied by retention never hands out a
+    # position a cursor has already passed. See `MessageStore._next_seq`.
+    seq_floor: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
     )
 
 
@@ -2486,6 +2528,12 @@ class BridgeMessageMap(TenantScoped, Base):
     __tablename__ = "bridge_message_map"
     __table_args__ = (
         Index("ix_bridge_message_map_tenant_id", "tenant_id"),
+        # Retention forgets the mappings of the messages it deletes, by event id.
+        Index(
+            "ix_bridge_message_map_tenant_event",
+            "tenant_id",
+            "transport_event_id",
+        ),
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
         ForeignKeyConstraint(
@@ -2732,11 +2780,11 @@ class TrustSettings(Base):
 class Message(TenantScoped, Base):
     """A message as it was sent into a room.
 
-    Written alongside the send to the message bus, which remains the source of
-    truth for history until the read path moves here. Rows are therefore a
-    parallel record, not yet an authoritative one: a write that fails after a
-    successful send leaves a gap, by design, so that a database problem cannot
-    make messaging less reliable.
+    This table is the message bus: a send is an insert here, and `seq` is the
+    position every delivery cursor reads from. It is also the room's history,
+    and the only copy Switch keeps, so deleting a row (data retention, erasing
+    a person) deletes the message for every reader. `rooms.seq_floor` keeps
+    numbering intact when the deleted rows were a room's newest.
 
     Every participant in a room is a Switch-owned client, so recording each
     send captures the whole room exactly once — including messages a human
@@ -2766,6 +2814,8 @@ class Message(TenantScoped, Base):
             "seq",
             postgresql_where=text("event_type = 'com.switch.command'"),
         ),
+        # Erasing a person and counting what they sent both ask by sender.
+        Index("ix_messages_tenant_sender", "tenant_id", "sender_id"),
         Index(
             "ix_messages_thread_root",
             "room_id",
@@ -2847,6 +2897,9 @@ class MessageAttachment(TenantScoped, Base):
     __tablename__ = "message_attachments"
     __table_args__ = (
         Index("ix_message_attachments_tenant_id", "tenant_id"),
+        # The file sweep asks, for every stored file, whether any attachment
+        # still names it.
+        Index("ix_message_attachments_tenant_uri", "tenant_id", "uri"),
         Index("ix_message_attachments_message", "message_id"),
         ForeignKeyConstraint(
             ["tenant_id", "message_id"],
@@ -4080,6 +4133,117 @@ class UsageBudget(TenantScoped, Base):
     period_hours: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ── Data retention ────────────────────────────────────────────────────────────
+
+#: The longest message-retention window a workspace may set, ten years.
+MAX_MESSAGE_RETENTION_DAYS = 3650
+
+
+class TenantRetentionPolicy(TenantScoped, Base):
+    """How long a workspace keeps its room messages.
+
+    At most one row per tenant. No row means messages are kept forever, which
+    is every workspace's starting point: deletion is something an owner or
+    admin turns on, never something a deployment does to them by default.
+
+    With a row, messages older than `message_retention_days` are deleted from
+    every room in the workspace, archived rooms included, along with their
+    attachments (`retention/service.py`).
+    """
+
+    __tablename__ = "tenant_retention_policies"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id"),
+        CheckConstraint(
+            f"message_retention_days >= 1 AND message_retention_days <= {MAX_MESSAGE_RETENTION_DAYS}",
+            name="ck_tenant_retention_policies_days",
+        ),
+    )
+
+    message_retention_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class PersonErasure(TenantScoped, Base):
+    """A workspace owner's request to erase one person from the workspace.
+
+    `external_user_ids` names the platform identities to erase: one row of
+    `external_users` per platform the person was seen on. `former_sender_ids`
+    names people from a chat app that has since been disconnected, by the
+    transport id their messages still carry. `member_client_ids` names the
+    member clients through which people took part from Switch Console, a
+    current member or a deleted account's. Erasing any of them deletes every
+    message they sent, the files those carried, and their name on approval
+    answers; a platform identity's records and client go too, while a member
+    client stays, since its account may still be in use (`retention/erasure.py`). Queued here and worked by a background loop, so
+    a person with years of history cannot time out the request that asked.
+
+    Nothing here names the person once they are erased: the ids are internal
+    and point at rows that no longer exist, and the counts are counts.
+    """
+
+    __tablename__ = "person_erasures"
+    __table_args__ = (
+        Index("ix_person_erasures_tenant_id", "tenant_id"),
+        CheckConstraint(
+            "state IN ('queued', 'running', 'done', 'failed')",
+            name="ck_person_erasures_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    external_user_ids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    # Former participants: people seen on a chat app since disconnected, whose
+    # identity rows went with it. Named by the transport id on their messages.
+    former_sender_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    # Member clients: people in rooms through Switch Console, by client id.
+    member_client_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    # Files carried by messages already deleted, kept until the request's last
+    # step deletes those nothing refers to, so a request resumed after a
+    # restart still deletes the files of the batches before it.
+    pending_file_uris: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    messages_deleted: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    files_deleted: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    identities_erased: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 

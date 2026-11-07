@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const listRoomResources = vi.hoisted(() => vi.fn());
 const setRoomResourceAttached = vi.hoisted(() => vi.fn());
 const listLinkedRooms = vi.hoisted(() => vi.fn());
+const navigate = vi.hoisted(() => vi.fn());
 const permissions = vi.hoisted(() => ({
   value: { canWrite: true, canManage: false, canUnlink: true },
 }));
@@ -44,9 +45,28 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   },
 }));
 
+vi.mock('@renderer/lib/layout/navigation-provider', () => ({
+  useNavigate: () => ({ navigate }),
+}));
+vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
+  workspacesStore: { serverIdFor: () => 'srv-1', activeId: 'ws-1' },
+}));
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { statusFor: () => ({ user: { id: 'me' } }) },
+}));
+vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
+  administersWorkspaceById: () => false,
+}));
+
+vi.mock('@renderer/lib/hooks/useTheme', () => ({
+  useTheme: () => ({ effectiveTheme: 'emlight' }),
+}));
+
 import { RoomResourcesPanel } from '@renderer/features/switch-rooms/room-resources-panel';
 
 const base = {
+  ownerId: 'u-2',
+  readVisibility: 'public',
   description: '',
   typeLabel: null,
   urls: [],
@@ -155,9 +175,8 @@ describe('the Resources tab', () => {
     const open = [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('Guide'))!;
     await act(async () => open.click());
     for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
-    expect(document.querySelector('[data-slot="dialog-content"]')?.textContent).toContain(
-      'Read **this** first.'
-    );
+    // Rendered as markdown, from what the listing carried.
+    expect(document.querySelector('[data-slot="dialog-content"] strong')?.textContent).toBe('this');
   });
 
   it('offers attaching, detaching, deleting and linking to someone who may change the room', async () => {
@@ -217,5 +236,81 @@ describe('the Resources tab', () => {
     expect(el.textContent).not.toContain('Link a room');
     expect(el.querySelector('[aria-label^="Detach"]')).toBeNull();
     expect(el.querySelector('[aria-label^="Delete"]')).toBeNull();
+  });
+
+  it('opens a document from Resources on its page there from the reader, not one written in the room', async () => {
+    const el = await renderPanel();
+    expect(el.querySelector('[aria-label$=" in Resources"]')).toBeNull();
+    const open = (name: string) =>
+      act(async () =>
+        [...el.querySelectorAll('button')].find((b) => b.textContent?.includes(name))!.click()
+      );
+    await open('Guide');
+    for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+    const goTo = [...document.querySelectorAll('[data-slot="dialog-content"] button')].find(
+      (b) => b.textContent === 'Open in Resources'
+    ) as HTMLButtonElement;
+    await act(async () => goTo.click());
+    expect(navigate).toHaveBeenCalledWith('libraryItem', {
+      serverId: 'srv-1',
+      kind: 'documents',
+      itemId: 'd-1',
+    });
+  });
+
+  it('offers no Resources page for a document its owner keeps private', async () => {
+    listRoomResources.mockImplementation(async ({ kind }: { kind: keyof typeof RESOURCES }) =>
+      kind === 'documents'
+        ? [{ ...RESOURCES.documents[0], readVisibility: 'private', content: 'Secret plans' }]
+        : RESOURCES[kind]
+    );
+    const el = await renderPanel();
+    await act(async () =>
+      [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('Guide'))!.click()
+    );
+    for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+    const dialog = document.querySelector('[data-slot="dialog-content"]')!;
+    expect(dialog.textContent).toContain('Secret plans');
+    expect(
+      [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Open in Resources')
+    ).toBeUndefined();
+  });
+
+  it('opens a package on its page in Resources when clicked', async () => {
+    const el = await renderPanel();
+    await act(async () =>
+      [...el.querySelectorAll<HTMLButtonElement>('[aria-label="Packages"] button')]
+        .find((b) => b.textContent?.includes('Onboarding'))!
+        .click()
+    );
+    expect(navigate).toHaveBeenCalledWith('libraryItem', {
+      serverId: 'srv-1',
+      kind: 'packages',
+      itemId: 'pkg-1',
+    });
+  });
+
+  it('opens nothing for a reference with no link, rather than taking it for a package', async () => {
+    listRoomResources.mockImplementation(async ({ kind }: { kind: keyof typeof RESOURCES }) =>
+      kind === 'references' ? [{ ...RESOURCES.references[0], urls: [] }] : RESOURCES[kind]
+    );
+    const el = await renderPanel();
+    const row = [...el.querySelectorAll('[aria-label="References"] button')].find((b) =>
+      b.textContent?.includes('Repo')
+    );
+    expect(row).toBeUndefined();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('opens no page for a package its owner keeps private', async () => {
+    listRoomResources.mockImplementation(async ({ kind }: { kind: keyof typeof RESOURCES }) =>
+      kind === 'packages' ? [{ ...RESOURCES.packages[0], canRead: false }] : RESOURCES[kind]
+    );
+    const el = await renderPanel();
+    const row = [...el.querySelectorAll('[aria-label="Packages"] button')].find((b) =>
+      b.textContent?.includes('Onboarding')
+    );
+    expect(row).toBeUndefined();
+    expect(el.querySelector('[aria-label="Packages"]')?.textContent).toContain('Onboarding');
   });
 });
