@@ -59,6 +59,8 @@ written out as the equivalent `fill` attributes and its ids removed.
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
 
+## ClickUp
+
 - **ClickUp** (`clickup.svg`): official monochrome symbol from
   https://clickup.com/assets/brand/v4/Logomark-dark.svg, linked from
   https://clickup.com/brand, fetched 2026-11-08. Drawing paths and viewBox are

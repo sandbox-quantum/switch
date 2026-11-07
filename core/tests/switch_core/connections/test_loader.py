@@ -65,7 +65,9 @@ def test_clickup_is_disabled_without_credentials_or_tools():
 def test_clickup_cannot_be_enabled_without_complete_configuration(catalog_copy):
     path = catalog_copy / "clickup" / "connection.yaml"
     path.write_text(path.read_text().replace("enabled: false", "enabled: true"))
-    with pytest.raises(CatalogError, match="(?s)clickup is invalid.*an enabled entry needs"):
+    with pytest.raises(
+        CatalogError, match="(?s)clickup is invalid.*an enabled entry needs"
+    ):
         load_catalog(catalog_copy)
 
 
