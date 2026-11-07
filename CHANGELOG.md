@@ -45,6 +45,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Bitbucket Cloud service connection.** People can connect their Bitbucket
+  Cloud account in Switch Console (itbucket, on Atlassian's remote MCP
+  server https://mcp.atlassian.com/v2/mcp with dynamic OAuth registration and
+  Bitbucket-only 
+ead:bitbucket:agent-interface and
+  write:bitbucket:agent-interface scopes) and grant their agents read-only or
+  read-write access to Bitbucket repositories and pull requests.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
