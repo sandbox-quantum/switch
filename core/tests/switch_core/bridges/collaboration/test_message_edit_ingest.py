@@ -110,6 +110,7 @@ def test_slack_message_changed_becomes_an_edit() -> None:
         InboundEdit(
             channel_id="C123",
             sender_id="U1",
+            sender_name="U1",
             message_ref="C123:100.000100",
             content="Decline",
             revision=300_000_200,
@@ -216,6 +217,7 @@ def test_mattermost_post_edited_becomes_the_same_edit() -> None:
         InboundEdit(
             channel_id="chan-1",
             sender_id="person",
+            sender_name="person",
             message_ref="post-1",
             content="Decline",
             revision=1_700_000_000_123,
@@ -287,8 +289,26 @@ class _Human:
 
 
 class _Adapter:
+    platform_name = "sample"
+    private_notice_delivery = "in_channel"
+
     def __init__(self) -> None:
         self.notices: list[str] = []
+        self.private: list[tuple[str, str]] = []
+
+    def unlinkable_account_reason(self, _sender_id: str) -> str | None:
+        return None
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        self.private.append((user_id, content))
 
     def translate_inbound(self, content: str) -> str:
         return content
@@ -406,6 +426,16 @@ async def test_switch_trust_still_blocks_what_an_edit_says() -> None:
     assert trust.checked == ["Decline"]
     assert human.sent == []
     assert len(adapter.notices) == 1
+
+
+async def test_a_blocked_edit_is_told_to_its_sender_alone() -> None:
+    """Where the platform can reach one person, the room does not hear of it."""
+    bridge, human, adapter = _bridge(trust=_Trust(outcome="blocked"))
+    adapter.private_notice_delivery = "ephemeral"  # type: ignore[assignment]
+    await CollaborationCore._handle_inbound_edit(bridge, _EDIT)  # type: ignore[arg-type]
+    assert human.sent == []
+    assert adapter.notices == []
+    assert [user for user, _ in adapter.private] == [_EDIT.sender_id]
 
 
 async def test_switch_trust_redacts_what_an_edit_says() -> None:

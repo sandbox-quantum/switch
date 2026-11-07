@@ -3577,6 +3577,7 @@ class SlackAdapter(PlatformAdapter):
             InboundEdit(
                 channel_id=channel_id,
                 sender_id=author,
+                sender_name=author,
                 message_ref=f"{channel_id}:{message_ts}",
                 content=text,
                 revision=int(seconds) * 1_000_000 + micros,

@@ -2975,6 +2975,7 @@ class MattermostAdapter(PlatformAdapter):
                 InboundEdit(
                     channel_id=channel_id,
                     sender_id=user_id,
+                    sender_name=user_id,
                     message_ref=post_id,
                     content=post.get("message", ""),
                     revision=edit_at,

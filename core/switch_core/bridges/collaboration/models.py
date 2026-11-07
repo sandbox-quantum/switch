@@ -168,6 +168,16 @@ class InboundEdit(BaseModel):
     revision: int
     # When it was made, in epoch milliseconds.
     timestamp: int
+    # What a Switch Trust notice about this edit asks of its sender, which it
+    # shares with `InboundMessage`. An edit event does not say whether its
+    # channel is a direct one, and a direct channel is private either way, so
+    # the notice goes the private route first. Adapters give the id as the name:
+    # it appears only in logs.
+    channel_type: ChannelType = "channel_public"
+    sender_name: str = ""
+    channel_name: str | None = None
+    root_id: str | None = None
+    sender_is_app: bool = False
 
 
 class InboundCommand(BaseModel):
