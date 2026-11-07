@@ -1,7 +1,7 @@
 """The operator's connector-app routes, against Postgres and fake vendors.
 
-Only the server's operator reaches them; a save is checked with the vendor
-and stored only when the vendor accepts it; it is in use at once; and no
+Only the server's operator reaches them; a save is checked when the vendor
+can check it, then is in use at once; and no
 secret leaves in a response, an audit row or a log line beyond its last four
 characters.
 """
@@ -66,6 +66,7 @@ HTTP_PUBLIC = "http://switch.example.com"
 APPS = "/gateway/connector-apps"
 GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
+ASANA = "asana"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
 AIRTABLE_SECRET = "example-airtable-secret-0000"
 GITHUB_CLIENT_ID = "example-github-client-id"
@@ -178,6 +179,57 @@ class FakeAirtable:
         return httpx.Response(404)
 
 
+class FakeAsana:
+    """Asana discovers OAuth on V2 but cannot check a client before sign-in."""
+
+    MCP = "https://mcp.asana.com/v2/mcp"
+    RESOURCE = "https://mcp.asana.com/.well-known/oauth-protected-resource/v2"
+    ISSUER = "https://app.asana.com"
+
+    def __init__(self) -> None:
+        self.token_requests: list[dict[str, str]] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        url = f"{request.url.scheme}://{request.url.host}{request.url.path}"
+        if url == self.MCP:
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": f'Bearer resource_metadata="{self.RESOURCE}"'
+                },
+            )
+        if url == self.RESOURCE:
+            return httpx.Response(
+                200,
+                json={
+                    "resource": self.MCP,
+                    "authorization_servers": [self.ISSUER],
+                    "scopes_supported": ["default"],
+                },
+            )
+        if url == f"{self.ISSUER}/.well-known/oauth-authorization-server":
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": self.ISSUER,
+                    "authorization_endpoint": f"{self.ISSUER}/-/oauth_authorize",
+                    "token_endpoint": f"{self.ISSUER}/-/oauth_token",
+                    "revocation_endpoint": f"{self.ISSUER}/-/oauth_revoke",
+                    "code_challenge_methods_supported": ["plain", "S256"],
+                    "token_endpoint_auth_methods_supported": [
+                        "client_secret_post",
+                        "client_secret_basic",
+                    ],
+                },
+            )
+        if url == f"{self.ISSUER}/-/oauth_token":
+            self.token_requests.append(
+                {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+            )
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        return httpx.Response(404)
+
+
 class World:
     def __init__(
         self, session_factory: async_sessionmaker[AsyncSession], public_url: str | None
@@ -185,6 +237,7 @@ class World:
         self.google = FakeGoogle()
         self.github = FakeGitHub()
         self.airtable = FakeAirtable()
+        self.asana = FakeAsana()
         self.unreachable = False
         self.vendor_calls: list[str] = []
         self.public_url = public_url
@@ -203,6 +256,8 @@ class World:
             return self.github.handle(request)
         if request.url.host in ("mcp.airtable.com", "airtable.com"):
             return self.airtable.handle(request)
+        if request.url.host in ("mcp.asana.com", "app.asana.com"):
+            return self.asana.handle(request)
         return self.google.handle(request)
 
     async def install(self, environ: dict[str, str] | None = None) -> ConnectorApps:
@@ -367,7 +422,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, ASANA}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -391,6 +446,11 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
+        assert apps[ASANA]["redirect_uris"] == [
+            f"http://127.0.0.1:{port}/switch-services/callback"
+            for port in (39231, 39232, 39233, 39234, 39235)
+        ]
+        assert apps[ASANA]["needs_public_url"] is False
         assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
     async def test_an_unknown_service_is_not_found(
@@ -770,6 +830,26 @@ class TestAirtable:
         assert refused.status_code == 422, refused.text
         assert refused.json()["field"] == "client_secret"
         assert await _rows(session_factory) == []
+
+
+class TestAsana:
+    async def test_asana_is_saved_unchecked_and_says_so(
+        self, world: World, operator, session_factory
+    ) -> None:
+        await world.install()
+        async with world.harness.client() as client:
+            saved = await client.put(
+                f"{APPS}/{ASANA}",
+                json=_google_body(),
+                cookies=cookies_for(operator),
+            )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["source"] == "saved"
+        [check] = saved.json()["checks"]
+        assert check["message"].startswith("Saved without checking")
+        assert check["note"] == CATALOG[ASANA].definition.auth.oauth.unchecked
+        assert world.asana.token_requests == []
+        assert len(await _rows(session_factory)) == 1
 
 
 class TestImportAndRemove:

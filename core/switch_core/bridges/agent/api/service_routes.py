@@ -110,4 +110,5 @@ async def service_token(
         "use_until": token.use_until.isoformat(),
         "resources": token.resources,
         "grant_revision": token.grant_revision,
+        "grant_id": token.grant_id,
     }

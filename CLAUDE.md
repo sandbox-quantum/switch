@@ -187,6 +187,9 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   registering and publishing the Airtable OAuth integration, its redirect
   URL and scopes, saving it under Connector apps or in
   `AIRTABLE_CLIENT_CONFIG_PATH`, and switching it off
+- `docs/old/asana-setup.md` — offering Asana on a self-hosted server:
+  registering the Asana MCP app, its redirect URLs and distribution, saving
+  it under Connector apps or in `ASANA_CLIENT_CONFIG_PATH`, and switching it off
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
   OIDC browser sign-in (variables, redirect URI, WorkOS Connect setup)
 - `docs/old/workos-directory.md` — keeping organizations in WorkOS

@@ -86,10 +86,11 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     # A Console this older route serves connects GitHub alone, whatever else
     # is enabled.
     assert result.pop("airtable") == "not_connected"
+    assert result.pop("asana") == "not_connected"
     assert result.pop("atlassian") == "not_connected"
     assert result.pop("google-workspace") == "not_connected"
     assert result.pop("datadog") == "not_connected"
-    assert len(result) == 11
+    assert len(result) == 10
     assert set(result.values()) == {"coming_soon"}
     github = next(
         entry for entry in response.json()["connections"] if entry["slug"] == "github"

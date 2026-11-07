@@ -207,7 +207,7 @@ class TestWhoMayCall:
 
 
 class TestRequests:
-    @pytest.mark.parametrize("service", ["nowhere", "asana"])
+    @pytest.mark.parametrize("service", ["nowhere", "box"])
     async def test_an_unknown_or_placeholder_service_is_not_found(
         self, harness: Harness, service: str
     ) -> None:
@@ -241,6 +241,7 @@ class TestResults:
         services = _by_slug(await _get(harness, admin))
         assert set(services) == {
             "airtable",
+            "asana",
             "atlassian",
             "datadog",
             "github",

@@ -156,6 +156,7 @@ class TestIssuing:
         [grant] = grants.json()["grants"]
         assert isinstance(token.json()["grant_revision"], int)
         assert token.json()["grant_revision"] == grant["revision"]
+        assert token.json()["grant_id"] == grant["grant_id"]
 
 
 class TestRefusals:

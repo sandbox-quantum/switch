@@ -297,8 +297,9 @@ class TestIssue:
         assert record.principal == "agent_key"
 
     async def test_two_issues_on_an_expiring_secret_refresh_it_once(
-        self, broker, session_factory, vendor
+        self, broker, session_factory, vendor, caplog
     ) -> None:
+        caplog.set_level(logging.INFO, logger="switch_core.connections.broker")
         world = await _world(session_factory, expires_in=60)
         first, second = await asyncio.gather(
             _issue(broker, session_factory, world.agent.id),
@@ -316,6 +317,23 @@ class TestIssue:
             "ghr_refresh_1",
         )
         assert stored["login"] == "ada-gh"
+        renewals = [
+            record
+            for record in caplog.records
+            if record.name == "switch_core.connections.broker"
+            and record.levelno == logging.INFO
+            and "Renewed" in record.getMessage()
+        ]
+        assert len(renewals) == 1
+        assert renewals[0].getMessage() == "Renewed access token for github connection"
+        assert renewals[0].args == ("github",)
+        for secret in (
+            "gho_access_0",
+            "gho_access_1",
+            "ghr_refresh_0",
+            "ghr_refresh_1",
+        ):
+            assert secret not in caplog.text
 
     async def test_issues_at_once_share_one_fetch_rather_than_queue_on_the_lock(
         self, broker, session_factory, vendor, monkeypatch
@@ -340,8 +358,9 @@ class TestIssue:
         assert locked == 1 + 6
 
     async def test_a_refused_refresh_needs_reauthorization_with_the_fix(
-        self, broker, session_factory, vendor
+        self, broker, session_factory, vendor, caplog
     ) -> None:
+        caplog.set_level(logging.INFO, logger="switch_core.connections.broker")
         world = await _world(session_factory, expires_in=60)
         vendor.refresh_error = ReauthorizationRequiredError(
             "GitHub refused the sign-in."
@@ -361,6 +380,7 @@ class TestIssue:
         assert "Settings, Connections" in again.message
         assert vendor.refreshes == 1
         assert vendor.issued == []
+        assert not any("Renewed" in record.getMessage() for record in caplog.records)
 
     async def test_a_token_valid_for_two_hours_is_refused_and_revoked(
         self, broker, session_factory, vendor
@@ -764,7 +784,7 @@ class TestConnectOnly:
         assert unavailable is not None and unavailable.code == "not_fully_set_up"
         assert (await standing(broker, "github")).server_setup_needed is False
         assert await connectable(broker, "github") is True
-        assert await connectable(broker, "asana") is False
+        assert await connectable(broker, "box") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
             503,
@@ -1506,6 +1526,322 @@ ENTRY_POINTS = {
     "connect_github": (_connect_github, "github", "GitHub"),
     "relink_oauth": (_relink_oauth, "example", "Example"),
 }
+
+
+async def _workspace_bound(
+    session_factory: async_sessionmaker[AsyncSession], root: Path, *, prior: str | None
+) -> tuple[ServiceBroker, FakeVendor, World]:
+    entry = OAUTH_ENTRY.replace(
+        "    redirect: [loopback, core]\n",
+        "    redirect: [loopback, core]\n"
+        "    revocation_discovered: true\n"
+        "    revocation_ends_grant: true\n"
+        "    grant_context_path: data.authorized_workspace\n",
+    )
+    vendor = FakeVendor()
+    vendor.pass_through = True
+    vendor.revocable = False
+    vendor.client_id = "example-client"
+    broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=pass_through_catalog(root, entry=entry),
+        adapters={"example": vendor},
+        organization_apps=None,
+        disabled={},
+        store=STORE,
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=None,
+    )
+    async with session_factory() as session:
+        owner = await _user(session, "ada")
+        agent = await add_agent(session, name="builder", owner_id=owner.id)
+        values = {**NEW_EXAMPLE_SIGN_IN, "access_token": "owner_access_0"}
+        if prior is not None:
+            values["grant_context"] = prior
+        await STORE.save_connection(
+            session,
+            user_id=owner.id,
+            service="example",
+            consent="write",
+            granted_scopes=["read:items", "write:items"],
+            account_id="acct-1",
+            external_identity="ada@example.test",
+            encrypted_secret=TEST_KEYRING.encrypt(json.dumps(values)),
+            oauth_client_id="example-client",
+        )
+        grant = await STORE.save_grant(
+            session,
+            agent_id=agent.id,
+            owner_id=owner.id,
+            service="example",
+            access="write",
+            tool_mode="deny",
+            tools=[],
+            resources={},
+            account_id="acct-1",
+            created_by=owner.id,
+        )
+        await session.commit()
+    return broker, vendor, World(owner, agent, grant)
+
+
+async def _reconnect_workspace(
+    broker: ServiceBroker,
+    session_factory: async_sessionmaker[AsyncSession],
+    owner_id: str,
+    workspace: str,
+) -> str | None:
+    async with session_factory() as session:
+        return await broker.connect(
+            session,
+            user_id=owner_id,
+            service="example",
+            consent="write",
+            granted_scopes=["read:items", "write:items"],
+            account_id="acct-1",
+            external_identity="ada@example.test",
+            secret=ConnectionSecret(
+                {**NEW_EXAMPLE_SIGN_IN, "grant_context": workspace}
+            ),
+            oauth_client_id="example-client",
+        )
+
+
+class TestWorkspaceBoundGrants:
+    async def test_relinking_the_same_workspace_moves_a_retained_grant_on(
+        self, session_factory, tmp_path
+    ) -> None:
+        broker, _, world = await _workspace_bound(
+            session_factory, tmp_path / "relink", prior="workspace-a"
+        )
+
+        await _reconnect_workspace(
+            broker, session_factory, world.owner.id, "workspace-a"
+        )
+
+        async with session_factory() as session:
+            grant = await STORE.get_grant(session, world.agent.id, "example")
+        assert grant is not None
+        assert grant.id == world.grant.id
+        assert grant.revision == world.grant.revision + 1
+
+    async def test_grant_validation_accepts_its_own_token_refresh(
+        self, session_factory, tmp_path
+    ) -> None:
+        broker, vendor, world = await _workspace_bound(
+            session_factory, tmp_path / "refresh", prior="workspace-a"
+        )
+        async with session_factory() as session:
+            connection = await STORE.get_connection(session, world.owner.id, "example")
+            assert connection is not None
+            secret = json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))
+            secret["expires_at"] = time.time() + 60
+            await STORE.replace_secret(
+                session,
+                world.owner.id,
+                "example",
+                revision=connection.secret_revision,
+                encrypted_secret=TEST_KEYRING.encrypt(json.dumps(secret)),
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            grant, warning = await broker.set_grant(
+                session,
+                agent=agent,
+                actor_id=world.owner.id,
+                service="example",
+                access=None,
+                tool_mode=None,
+                tools=None,
+                resources={},
+            )
+        assert grant.id == world.grant.id
+        assert warning is None
+        assert vendor.refreshes == 1
+        assert vendor.checked == [("gho_access_1", {})]
+
+    async def test_reconnecting_same_workspace_preserves_grant(
+        self, session_factory, tmp_path
+    ) -> None:
+        broker, vendor, world = await _workspace_bound(
+            session_factory, tmp_path / "same", prior="workspace-a"
+        )
+        warning = await _reconnect_workspace(
+            broker, session_factory, world.owner.id, "workspace-a"
+        )
+        async with session_factory() as session:
+            grant = await STORE.get_grant(session, world.agent.id, "example")
+        assert grant is not None and grant.id == world.grant.id
+        assert warning is None
+        assert vendor.connections_revoked == []
+        assert (
+            await _issue(broker, session_factory, world.agent.id, service="example")
+        ).token == "owner_access_new"
+
+    async def test_changing_workspace_clears_only_that_owners_service_grants(
+        self, session_factory, tmp_path
+    ) -> None:
+        broker, vendor, world = await _workspace_bound(
+            session_factory, tmp_path / "different", prior="workspace-a"
+        )
+        await _issue(broker, session_factory, world.agent.id, service="example")
+        async with session_factory() as session:
+            other = await _user(session, "bob")
+            other_agent = await add_agent(session, name="other", owner_id=other.id)
+            await STORE.save_connection(
+                session,
+                user_id=other.id,
+                service="example",
+                consent="write",
+                granted_scopes=["read:items", "write:items"],
+                account_id="acct-2",
+                external_identity="bob@example.test",
+                encrypted_secret=TEST_KEYRING.encrypt(
+                    json.dumps({**NEW_EXAMPLE_SIGN_IN, "grant_context": "workspace-a"})
+                ),
+                oauth_client_id="example-client",
+            )
+            other_grant = await STORE.save_grant(
+                session,
+                agent_id=other_agent.id,
+                owner_id=other.id,
+                service="example",
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id="acct-2",
+                created_by=other.id,
+            )
+            await _connect(session, world.owner.id)
+            github_grant = await STORE.save_grant(
+                session,
+                agent_id=world.agent.id,
+                owner_id=world.owner.id,
+                service="github",
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources=RESOURCES,
+                account_id="1001",
+                created_by=world.owner.id,
+            )
+            await session.commit()
+        warning = await _reconnect_workspace(
+            broker, session_factory, world.owner.id, "workspace-b"
+        )
+        async with session_factory() as session:
+            assert await STORE.get_grant(session, world.agent.id, "example") is None
+            assert (
+                await STORE.get_grant(session, other_agent.id, "example")
+            ).id == other_grant.id
+            assert (
+                await STORE.get_grant(session, world.agent.id, "github")
+            ).id == github_grant.id
+            connection = await STORE.get_connection(session, world.owner.id, "example")
+        assert connection is not None
+        assert (
+            json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))[
+                "grant_context"
+            ]
+            == "workspace-b"
+        )
+        assert warning is not None and "grant" in warning.lower()
+        assert vendor.connections_revoked == []
+        [issuance] = await _issuances(session_factory)
+        assert issuance.revoke_requested
+        refused = await _refused(
+            broker, session_factory, world.agent.id, service="example"
+        )
+        assert refused.code == "grant_missing"
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            await broker.set_grant(
+                session,
+                agent=agent,
+                actor_id=world.owner.id,
+                service="example",
+                access=None,
+                tool_mode=None,
+                tools=None,
+                resources={},
+            )
+        assert (
+            await _issue(broker, session_factory, world.agent.id, service="example")
+        ).token == "owner_access_new"
+
+    async def test_legacy_connection_without_workspace_clears_grant(
+        self, session_factory, tmp_path
+    ) -> None:
+        broker, _, world = await _workspace_bound(
+            session_factory, tmp_path / "legacy", prior=None
+        )
+        warning = await _reconnect_workspace(
+            broker, session_factory, world.owner.id, "workspace-a"
+        )
+        async with session_factory() as session:
+            assert await STORE.get_grant(session, world.agent.id, "example") is None
+        assert warning is not None and "grant" in warning.lower()
+
+    @pytest.mark.parametrize("roundtrip", [False, True])
+    async def test_grant_checked_before_workspace_change_cannot_be_saved_after_it(
+        self, session_factory, tmp_path, roundtrip
+    ) -> None:
+        broker, vendor, world = await _workspace_bound(
+            session_factory, tmp_path / "race", prior="workspace-a"
+        )
+        checked = asyncio.Event()
+        resume = asyncio.Event()
+        original_check = vendor.check_grant
+
+        async def pausing_check(access_token, request):
+            result = await original_check(access_token, request)
+            checked.set()
+            await resume.wait()
+            return result
+
+        vendor.check_grant = pausing_check  # type: ignore[method-assign]
+
+        async def set_stale_grant() -> None:
+            async with session_factory() as session:
+                agent = await session.get(Agent, world.agent.id)
+                assert agent is not None
+                await broker.set_grant(
+                    session,
+                    agent=agent,
+                    actor_id=world.owner.id,
+                    service="example",
+                    access=None,
+                    tool_mode=None,
+                    tools=None,
+                    resources={},
+                )
+
+        task = asyncio.create_task(set_stale_grant())
+        await asyncio.wait_for(checked.wait(), 5)
+        await _reconnect_workspace(
+            broker, session_factory, world.owner.id, "workspace-b"
+        )
+        if roundtrip:
+            await _reconnect_workspace(
+                broker, session_factory, world.owner.id, "workspace-a"
+            )
+        resume.set()
+        with pytest.raises(ServiceError) as caught:
+            await task
+        assert (caught.value.status_code, caught.value.code) == (
+            409,
+            CONNECTOR_REVOKED,
+        )
+        async with session_factory() as session:
+            assert await STORE.get_grant(session, world.agent.id, "example") is None
 
 
 class TestWorkspaceSwitch:

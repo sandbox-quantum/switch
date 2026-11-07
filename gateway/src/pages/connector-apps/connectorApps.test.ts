@@ -306,6 +306,18 @@ const AIRTABLE = app({
   workspaces: 0,
 });
 
+const ASANA_APP = app({
+  ...AIRTABLE,
+  slug: "asana",
+  name: "Asana",
+  kind: "oauth_client",
+  configuration_variables: ["ASANA_CLIENT_CONFIG_PATH"],
+  redirect_uri: LOOPBACK_REDIRECTS[0]!,
+  redirect_uris: LOOPBACK_REDIRECTS,
+  needs_public_url: false,
+  scopes: [],
+});
+
 /** An app whose sign-ins return to Switch Console, on one of several ports. */
 const LOOPBACK = app({
   ...AIRTABLE,
@@ -357,6 +369,31 @@ describe("Airtable, and an app that sends people back to Switch Console", () => 
     const steps = setupInstructions(LOOPBACK, "internal", null);
     expect(steps[0]!.text).toBe("Register an OAuth client for Switch at Example, with these redirect URIs:");
     expect(steps.flatMap((s) => s.copy)).toEqual(LOOPBACK_REDIRECTS);
+  });
+});
+
+describe("Asana setup", () => {
+  it("walks Asana's developer console, with its five redirect URLs to paste", () => {
+    const steps = setupInstructions(ASANA_APP, "internal", null);
+    expect(steps[0]!.link).toEqual({
+      label: "Open the developer console",
+      href: "https://app.asana.com/0/my-apps",
+    });
+    expect(steps.flatMap((step) => step.copy)).toEqual(LOOPBACK_REDIRECTS);
+    expect(steps.some((step) => step.text.includes("Asana MCP"))).toBe(true);
+    expect(steps.some((step) => step.text.includes("Manage distribution"))).toBe(true);
+  });
+
+  it("asks the operator to confirm the app type and distribution", () => {
+    expect(confirmBeforeCheck(ASANA_APP)?.label).toBe(
+      "I chose Asana MCP as its type, and its workspaces under Manage distribution.",
+    );
+  });
+
+  it("names Asana's Helm value when moving off configuration", () => {
+    expect(moveChecklist(app({ ...ASANA_APP, source: "configuration" }))[1]!.text).toBe(
+      "Remove ASANA_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.asanaClientSecret.",
+    );
   });
 });
 

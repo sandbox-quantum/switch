@@ -43,7 +43,7 @@ export class AgentServiceTokens {
   private readonly issuing = new Map<string, Promise<IssuedServiceToken | ServiceRefusal>>();
   private readonly replacedAt = new Map<string, number>();
   private readonly checkedAt = new Map<string, number>();
-  private checking: Promise<Map<string, number | undefined>> | null = null;
+  private checking: Promise<Map<string, { revision?: number; grantId?: string }>> | null = null;
 
   constructor(
     private readonly deps: {
@@ -112,9 +112,9 @@ export class AgentServiceTokens {
     if (token.grantRevision === null) return true;
     const checked = this.checkedAt.get(service);
     if (checked !== undefined && now - checked < GRANT_CHECK_MS) return true;
-    let revisions: Map<string, number | undefined>;
+    let grants: Map<string, { revision?: number; grantId?: string }>;
     try {
-      revisions = await this.readRevisions();
+      grants = await this.readGrantState();
     } catch (error) {
       console.warn(
         `Switch could not be reached to check this agent's ${service} grant (${error instanceof Error ? error.message : String(error)}); handing out the current token, which expires at ${new Date(token.expiresAt).toISOString()}.`
@@ -122,14 +122,26 @@ export class AgentServiceTokens {
       return true;
     }
     this.checkedAt.set(service, this.deps.now());
-    return revisions.get(service) === token.grantRevision;
+    const grant = grants.get(service);
+    return (
+      grant?.revision === token.grantRevision &&
+      (grant?.grantId ?? null) === (token.grantId ?? null)
+    );
   }
 
   /** One read of the grants at a time; services asking meanwhile share it. */
-  private readRevisions(): Promise<Map<string, number | undefined>> {
+  private readGrantState(): Promise<Map<string, { revision?: number; grantId?: string }>> {
     this.checking ??= this.deps
       .readGrants(this.deps.endpoint)
-      .then((grants) => new Map(grants.map((grant) => [grant.service, grant.revision])))
+      .then(
+        (grants) =>
+          new Map(
+            grants.map((grant) => [
+              grant.service,
+              { revision: grant.revision, grantId: grant.grant_id },
+            ])
+          )
+      )
       .finally(() => {
         this.checking = null;
       });

@@ -17,6 +17,9 @@ request it must refuse, and reads which refusal it chose.
   (Google and Airtable compare the redirect URI only with a real code, and
   Airtable says nothing of whether the integration is published) is the
   entry's `unchecked`, said with the result.
+  A vendor that answers every made-up code alike, whatever the client
+  (Asana), is not asked: its entry's `client_check: none` saves the client
+  unchecked, saying so.
 
 What a check cannot prove (an App's permissions, a Google app's user type,
 which APIs are switched on) is left to the vendor's own pages.
@@ -227,6 +230,21 @@ async def check_oauth_client(
         ).endpoints()
     except ServiceAdapterError as refused:
         raise VendorUnreachableError(str(refused)) from None
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    if oauth.client_check == "none":
+        return CheckResult(
+            [
+                Check(
+                    "client",
+                    True,
+                    f"Saved without checking the client ID and secret: {name} doesn't answer anything about a client until someone signs in.",
+                    None,
+                    oauth.unchecked,
+                )
+            ],
+            settings={},
+        )
     identifying, headers = client_fields(endpoints, client)
     response = await _send(
         http,
@@ -246,8 +264,6 @@ async def check_oauth_client(
     )
     error = _body(response).get("error")
     if error == "invalid_grant":
-        oauth = definition.auth.oauth
-        assert oauth is not None
         return CheckResult(
             [
                 Check(

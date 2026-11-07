@@ -135,13 +135,13 @@ class TestConnections:
         assert github["connectable"] is True
         assert (github["pass_through"], github["token_lifetime"]) == (False, 3600)
         assert github["loopback_ports"] is None
-        asana = entries["asana"]
-        assert (asana["pass_through"], asana["token_lifetime"]) == (False, None)
-        assert asana["configured"] is False
-        assert asana["unavailable_code"] == "coming_soon"
-        assert asana["enabled"] is False
-        assert asana["connectable"] is False
-        assert asana["status"] == "not_connected"
+        box = entries["box"]
+        assert (box["pass_through"], box["token_lifetime"]) == (False, None)
+        assert box["configured"] is False
+        assert box["unavailable_code"] == "coming_soon"
+        assert box["enabled"] is False
+        assert box["connectable"] is False
+        assert box["status"] == "not_connected"
         atlassian = entries["atlassian"]
         assert (atlassian["pass_through"], atlassian["token_lifetime"]) == (
             True,
@@ -150,7 +150,7 @@ class TestConnections:
         assert atlassian["loopback_ports"] == [39231, 39232, 39233, 39234, 39235]
         # Their own connection is theirs to disconnect; there is nothing to
         # disconnect where they have none.
-        assert (github["can_revoke"], asana["can_revoke"]) == (True, False)
+        assert (github["can_revoke"], box["can_revoke"]) == (True, False)
 
     async def test_disconnecting_deletes_grants_and_revokes_the_sign_in(
         self, harness: Harness, vendor: FakeVendor
@@ -312,11 +312,11 @@ class TestGrants:
         owner = await add_member(harness.session_factory, "ada")
         agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
 
-        asana = await _put(harness, owner, agent_id, {"resources": {}}, "asana")
+        box = await _put(harness, owner, agent_id, {"resources": {}}, "box")
         unknown = await _put(harness, owner, agent_id, {"resources": {}}, "nowhere")
 
-        assert asana.status_code == 422
-        assert asana.json()["detail"] == "Not available yet."
+        assert box.status_code == 422
+        assert box.json()["detail"] == "Not available yet."
         assert unknown.status_code == 404
 
     async def test_tools_and_resources_outside_the_grant(
@@ -659,7 +659,7 @@ class TestYourAgents:
         response = await _agents(harness, member)
         assert (response.status_code, response.json()) == (200, [])
 
-    @pytest.mark.parametrize("service", ["nowhere", "asana"])
+    @pytest.mark.parametrize("service", ["nowhere", "box"])
     async def test_an_unknown_or_placeholder_service_is_not_found(
         self, harness: Harness, service: str
     ) -> None:

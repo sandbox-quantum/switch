@@ -7,12 +7,12 @@ from switch_core.connections.loader import (
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
     CatalogError,
+    ConnectionDefinition,
     load_catalog,
     with_access_profiles,
 )
 
 PLACEHOLDERS = {
-    "asana",
     "gitlab",
     "bitbucket",
     "microsoft-365",
@@ -26,16 +26,18 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_its_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
+        "asana",
         "atlassian",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
+        "asana",
         "atlassian",
         "datadog",
         "github",
@@ -44,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
+    assert "SKILL.md" in CATALOG["asana"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
@@ -176,6 +179,62 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_asana_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["asana"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "ASANA",
+    )
+    assert (oauth.redirect, oauth.loopback_ports) == (
+        ["loopback"],
+        [39231, 39232, 39233, 39234, 39235],
+    )
+    assert (oauth.authorization_url, oauth.token_url, oauth.revocation_url) == (
+        None,
+        None,
+        None,
+    )
+    assert oauth.revocation_discovered is True
+    # Asana ends every sign-in of a person through the app when one is revoked.
+    assert oauth.revocation_ends_grant is True
+    assert oauth.client_check == "none"
+    assert oauth.unchecked is not None and "distribution" in oauth.unchecked
+    assert (oauth.prompt, oauth.authorization_params) == (None, {})
+    assert oauth.grant_context_path == "data.authorized_workspace"
+    assert definition.auth.refresh == "reusable"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("asana", "https://mcp.asana.com/v2/mcp")
+    ]
+    assert definition.access is not None and definition.access.unscoped is True
+    assert (definition.access.read.scopes, definition.access.write.scopes) == (
+        [],
+        [],
+    )
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.mcp_tool, identity.account_id, identity.label) == (
+        None,
+        "get_me",
+        "data.gid",
+        "data.email",
+    )
+    assert definition.tools.mode == "pass_through"
+
+
+def test_the_asana_entry_cites_why_it_is_unscoped():
+    text = (CATALOG_ROOT / "asana" / "connection.yaml").read_text()
+    assert "scopes_supported" in text and "developers.asana.com" in text
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -321,28 +380,28 @@ def catalog_copy(tmp_path):
 
 
 def test_rejects_unknown_keys(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "box" / "connection.yaml"
     path.write_text(path.read_text() + "icon: jira.svg\n")
-    with pytest.raises(CatalogError, match="asana is invalid"):
+    with pytest.raises(CatalogError, match="box is invalid"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_invalid_yaml(catalog_copy):
-    (catalog_copy / "asana" / "connection.yaml").write_text("slug: [asana\n")
-    with pytest.raises(CatalogError, match="asana is invalid"):
+    (catalog_copy / "box" / "connection.yaml").write_text("slug: [box\n")
+    with pytest.raises(CatalogError, match="box is invalid"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_unknown_auth_type(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "box" / "connection.yaml"
     path.write_text(path.read_text().replace("type: oauth", "type: password"))
-    with pytest.raises(CatalogError, match="asana is invalid"):
+    with pytest.raises(CatalogError, match="box is invalid"):
         load_catalog(catalog_copy)
 
 
 def test_rejects_a_slug_that_differs_from_its_directory(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
-    path.write_text(path.read_text().replace("slug: asana", "slug: jira"))
+    path = catalog_copy / "box" / "connection.yaml"
+    path.write_text(path.read_text().replace("slug: box", "slug: jira"))
     with pytest.raises(CatalogError, match="different slug"):
         load_catalog(catalog_copy)
 
@@ -361,7 +420,7 @@ def test_rejects_a_skill_whose_name_differs_from_the_slug(catalog_copy):
 
 
 def test_rejects_a_placeholder_that_ships_a_skill(catalog_copy):
-    shutil.copytree(catalog_copy / "github" / "skill", catalog_copy / "asana" / "skill")
+    shutil.copytree(catalog_copy / "github" / "skill", catalog_copy / "box" / "skill")
     with pytest.raises(CatalogError, match="must not ship a skill"):
         load_catalog(catalog_copy)
 
@@ -382,7 +441,7 @@ def test_rejects_a_symlink_in_a_skill(catalog_copy, tmp_path):
 
 
 def test_rejects_unexpected_files_beside_the_definition(catalog_copy):
-    (catalog_copy / "asana" / "icon.svg").write_text("<svg/>")
+    (catalog_copy / "box" / "icon.svg").write_text("<svg/>")
     with pytest.raises(CatalogError, match="unexpected files"):
         load_catalog(catalog_copy)
 
@@ -481,13 +540,13 @@ def test_rejects_write_without_read(catalog_copy):
 
 
 def test_a_placeholder_may_describe_its_levels(catalog_copy):
-    path = catalog_copy / "asana" / "connection.yaml"
+    path = catalog_copy / "box" / "connection.yaml"
     path.write_text(
         path.read_text()
         + "access:\n  read: { scopes: [read:jira-work] }\n"
         + "tools:\n  mode: listed\n  read: [search_issues]\n  write: []\n"
     )
-    definition = load_catalog(catalog_copy)["asana"].definition
+    definition = load_catalog(catalog_copy)["box"].definition
     assert definition.level_tools("read") == ["search_issues"]
 
 
@@ -580,6 +639,7 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.auth.oauth is not None
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
+    assert definition.auth.oauth.grant_context_path is None
     assert definition.auth.identity is not None
     assert definition.auth.identity.account_id == "account.id"
     assert definition.token is not None
@@ -587,6 +647,77 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_rejects_empty_oauth_scopes_without_an_explicit_opt_in(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace('read: { scopes: ["read:items"] }', "read: { scopes: [] }"),
+    )
+    with pytest.raises(CatalogError, match="needs at least one scope"):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_unscoped_consent_when_either_level_names_scopes(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("access:\n", "access:\n  unscoped: true\n").replace(
+            'read: { scopes: ["read:items"] }', "read: { scopes: [] }"
+        ),
+    )
+    with pytest.raises(CatalogError, match="unscoped access needs empty"):
+        load_catalog(catalog_copy)
+
+
+def test_oauth_identity_must_choose_rest_or_mcp(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    url: https://api.example.test/me\n",
+            "    url: https://api.example.test/me\n    mcp_tool: get_me\n",
+        ),
+    )
+    with pytest.raises(CatalogError, match="identity names exactly one"):
+        load_catalog(catalog_copy)
+
+
+def test_unscoped_access_profile_requires_an_oauth_mcp_entry():
+    definition = CATALOG["google-workspace"].definition.model_dump()
+    definition["access_profiles"]["drive-file"]["access"] = {
+        "unscoped": True,
+        "read": {"scopes": []},
+        "write": {"scopes": []},
+    }
+    with pytest.raises(
+        ValueError, match="unscoped consent is only for an OAuth MCP entry"
+    ):
+        ConnectionDefinition.model_validate(definition)
+
+
+def test_loads_an_oauth_grant_context_path(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    grant_context_path: data.authorized_workspace\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None and oauth.grant_context_path == "data.authorized_workspace"
+
+
+@pytest.mark.parametrize("path", ["", ".data", "data.", "data[0]", "data..gid"])
+def test_rejects_invalid_oauth_grant_context_path(catalog_copy, path):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            f"    redirect: [loopback, core]\n    grant_context_path: '{path}'\n",
+        ),
+    )
+    with pytest.raises(CatalogError, match="example is invalid"):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -617,6 +748,47 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     assert oauth is not None
     assert oauth.client_settings == "EXAMPLE"
     assert oauth.revocation_url == "https://auth.example.test/revoke"
+
+
+@pytest.mark.parametrize("registration", ["dynamic", "static"])
+def test_client_check_none_needs_a_static_client_and_what_is_unchecked(
+    catalog_copy, registration
+):
+    oauth_fields = f"    registration: {registration}\n    client_check: none\n"
+    if registration == "static":
+        oauth_fields += "    client_settings: BOX\n"
+    entry = (
+        OAUTH_ENTRY.replace("slug: example", "slug: box")
+        .replace("name: Example", "name: Box")
+        .replace("enabled: true", "enabled: false")
+        .replace("name: example,", "name: box,")
+        .replace("    registration: dynamic\n", oauth_fields)
+    )
+    (catalog_copy / "box" / "connection.yaml").write_text(entry)
+    with pytest.raises(
+        CatalogError,
+        match="client_check: none is for a static client whose unchecked says what the first connection confirms",
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_client_check_none_loads_with_a_static_client_and_unchecked(catalog_copy):
+    entry = (
+        OAUTH_ENTRY.replace("slug: example", "slug: box")
+        .replace("name: Example", "name: Box")
+        .replace("enabled: true", "enabled: false")
+        .replace("name: example,", "name: box,")
+        .replace(
+            "    registration: dynamic\n",
+            "    registration: static\n"
+            "    client_settings: BOX\n"
+            "    client_check: none\n"
+            "    unchecked: The first connection confirms this client.\n",
+        )
+    )
+    (catalog_copy / "box" / "connection.yaml").write_text(entry)
+    oauth = load_catalog(catalog_copy)["box"].definition.auth.oauth
+    assert oauth is not None and oauth.client_check == "none"
 
 
 @pytest.mark.parametrize(
