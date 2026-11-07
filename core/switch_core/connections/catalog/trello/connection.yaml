@@ -1,0 +1,27 @@
+slug: trello
+name: Trello
+enabled: true
+description: "Manage Trello boards, lists, cards, and team workflows directly in chat."
+adapter: api_key
+auth:
+  type: api_key
+  fields:
+    - name: api_key
+      label: "API Key"
+      required: true
+      secret: true
+      description: "Your Trello Developer API Key from https://trello.com/app-key"
+    - name: token
+      label: "API Token"
+      required: true
+      secret: true
+      description: "Your Trello Member Token generated with read/write access"
+mcp:
+  server:
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-trello"
+    env:
+      TRELLO_API_KEY: "{{api_key}}"
+      TRELLO_TOKEN: "{{token}}"
