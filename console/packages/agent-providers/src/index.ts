@@ -51,6 +51,7 @@ export type {
   AcpSignInInput,
 } from './acp/hooks';
 export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
+export { auggieAcp, createAuggieAdapter } from './auggie/auggie-acp';
 export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
