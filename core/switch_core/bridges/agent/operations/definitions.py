@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 
 from switch_core.agent_refusals import AgentRefused, record_refusal
@@ -1826,6 +1827,10 @@ async def _provision_as_agent(
             []
             if creator is None
             else await creator.create(tenant_id, owner.id, checked)
+        )
+        origin = replace(
+            origin,
+            created_agent_ids=frozenset(agent.agent_id for agent in created),
         )
         try:
             if isinstance(parsed.spec, GroupSpec):

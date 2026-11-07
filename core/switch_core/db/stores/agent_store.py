@@ -32,12 +32,15 @@ class AgentStore:
         return await session.get(Agent, agent_id)
 
     async def get_many(
-        self, session: AsyncSession, agent_ids: Collection[str]
+        self, session: AsyncSession, agent_ids: Collection[str], *, lock: bool = False
     ) -> list[Agent]:
         """`get` for many agents in one query; an id with no agent is left out."""
         if not agent_ids:
             return []
-        result = await session.execute(select(Agent).where(Agent.id.in_(agent_ids)))
+        stmt = select(Agent).where(Agent.id.in_(agent_ids))
+        if lock:
+            stmt = stmt.order_by(Agent.id).with_for_update(read=True)
+        result = await session.execute(stmt)
         return list(result.scalars().all())
 
     async def get_by_name(self, session: AsyncSession, name: str) -> Agent | None:

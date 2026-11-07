@@ -13,7 +13,8 @@ is no.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from switch_core.addressing import parse_policy
@@ -42,6 +43,9 @@ class Inviter:
     kind: InviterKind
     subject: str = ""
     bridge_id: str = ""
+    vouched_for: frozenset[str] = frozenset()
+    # When set, the only agents this inviter is known to have brought.
+    speaks_for: frozenset[str] | None = None
 
     @classmethod
     def person(cls, user_id: str) -> Inviter:
@@ -49,10 +53,17 @@ class Inviter:
         return cls("person", user_id)
 
     @classmethod
-    def agent(cls, agent_id: str) -> Inviter:
+    def agent(
+        cls, agent_id: str, *, created_for_this_run: frozenset[str] = frozenset()
+    ) -> Inviter:
         """An agent acting on its own authority, never its owner's. An agent
-        gets in through its owner's `owner_agents` rule, not by borrowing them."""
-        return cls("agent", agent_id)
+        gets in through its owner's `owner_agents` rule, not by borrowing them.
+
+        `created_for_this_run` are agents a template it is running has just made.
+        They belong to the person it runs for, so a team of private agents can
+        still be put in the room the same template describes.
+        """
+        return cls("agent", agent_id, vouched_for=created_for_this_run)
 
     @classmethod
     def sender(cls, transport_user_id: str) -> Inviter:
@@ -82,6 +93,14 @@ class Inviter:
         an owner's choice should have to explain itself.
         """
         return cls("switch", reason)
+
+    def only_for(self, agent_ids: Collection[str]) -> Inviter:
+        """This inviter, for these agents alone.
+
+        A platform names who added one bot. Other bots found in the same channel
+        got there some other way, so that person shouldn't answer for them.
+        """
+        return replace(self, speaks_for=frozenset(agent_ids))
 
     @property
     def is_judged(self) -> bool:
@@ -213,9 +232,13 @@ class InviteGate:
         room_id: str,
         group_id: str | None,
     ) -> bool:
+        if inviter.speaks_for is not None and agent.id not in inviter.speaks_for:
+            return True
         # An agent making a room for its own work has to be able to be in it,
         # whoever its owner lets talk to it.
-        if inviter.kind == "agent" and inviter.subject == agent.id:
+        if inviter.kind == "agent" and (
+            inviter.subject == agent.id or agent.id in inviter.vouched_for
+        ):
             return True
         # Nobody we can name: an agent open to everyone still admits them, and a
         # restricted one does not, which is what being restricted means.

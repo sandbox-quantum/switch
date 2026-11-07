@@ -260,6 +260,23 @@ async def test_a_failed_notice_does_not_undo_the_join(
 
     assert bridge._room_service.added == [("helper", Inviter.unknown_adder())]
     assert "Could not disclose the unverified join" in caplog.text
+    assert len(bridge._room_service.told_owner) == 1
+
+
+async def test_a_failed_lookup_does_not_undo_the_join(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bridge = _bridge(mapped=True)
+
+    async def broken(*_args: object, **_kw: object) -> list[SimpleNamespace]:
+        raise RuntimeError("the database is down")
+
+    bridge._agent_store.get_many = broken
+
+    await _joined(bridge, _join("helper", None))
+
+    assert bridge._room_service.added == [("helper", Inviter.unknown_adder())]
+    assert "Could not look up who to tell" in caplog.text
 
 
 async def test_a_refused_join_makes_the_room_without_that_agent() -> None:

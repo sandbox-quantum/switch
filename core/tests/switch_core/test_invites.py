@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -25,6 +26,7 @@ from switch_core.addressing import (
     owner_and_owner_agents_policy,
     owner_only_policy,
 )
+from switch_core.bridges.collaboration.adapter import RetireOutcome
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.db.models import (
     Agent,
@@ -292,6 +294,28 @@ async def test_an_agent_is_judged_as_itself_and_never_as_its_owner(
     assert [agent.id for agent in refused] == [world.target.id]
 
 
+async def test_a_template_run_can_seat_the_private_agents_it_just_created(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        world = await _world(session)
+        world.target.addressing_policy = owner_only_policy([]).model_dump()
+        world.other_agent.addressing_policy = owner_only_policy([]).model_dump()
+        await session.flush()
+        refused = await _gate().refused(
+            session,
+            Inviter.agent(
+                world.own_agent.id,
+                created_for_this_run=frozenset({world.target.id}),
+            ),
+            [world.target, world.other_agent],
+            room_id=world.room.id,
+            group_id=None,
+        )
+    # Only what the run made. Anyone else's private agent still refuses it.
+    assert [agent.id for agent in refused] == [world.other_agent.id]
+
+
 async def test_an_agent_can_always_bring_itself_along(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -422,6 +446,13 @@ def test_only_a_restricted_agent_needs_its_unverified_join_disclosed() -> None:
     assert "its owner can remove it" in unverified_join_notice(_agent(), None)
 
 
+def _async_returning(value: Any) -> Callable[..., Any]:
+    async def call(*_args: Any, **_kw: Any) -> Any:
+        return value
+
+    return call
+
+
 class _NeverProvisioned:
     def __getattr__(self, name: str) -> Any:
         raise AssertionError(f"reached past the invite check: {name}")
@@ -467,6 +498,113 @@ async def test_a_refused_new_room_is_stopped_before_anything_exists(
         assert len((await session.execute(select(Room))).scalars().all()) == before
 
 
+async def test_a_policy_change_after_preflight_rolls_back_room_creation(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        world = await _world(session)
+        world.target.addressing_policy = AddressingPolicy().model_dump()
+        await session.commit()
+
+    async def provision(_name: str, _description: str) -> str:
+        async with session_factory() as session:
+            target = await session.get(Agent, world.target.id)
+            assert target is not None
+            target.addressing_policy = owner_only_policy([]).model_dump()
+            await session.commit()
+        return "!late-refusal:test"
+
+    service = _service(session_factory)
+    monkeypatch.setattr(
+        service, "_provisioning", SimpleNamespace(create_room=provision)
+    )
+    with pytest.raises(InviteRefused):
+        await service.create_room(
+            RoomCreateConfig(
+                name="late refusal",
+                description="d",
+                internal_only=True,
+                agent_ids=[world.target.id],
+            ),
+            invited_by=Inviter.person(world.stranger.id),
+        )
+
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(Room.id).where(Room.name == "late refusal"))
+            is None
+        )
+
+
+async def test_a_late_refusal_retires_the_channel_switch_just_made(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The gate is asked twice: before anything is made, and again in the
+    transaction. A policy tightened between them must not strand a new channel."""
+    async with session_factory() as session:
+        world = await _world(session)
+        world.target.addressing_policy = AddressingPolicy().model_dump()
+        await session.commit()
+
+    retired: list[str] = []
+    calls = 0
+
+    class _Adapter:
+        async def get_channel_type(self, _channel_id: str) -> str:
+            return "channel_public"
+
+        async def create_channel(self, *_args: Any, **_kw: Any) -> str:
+            return "C-NEW"
+
+        async def retire_channel(self, channel_id: str) -> RetireOutcome:
+            retired.append(channel_id)
+            return RetireOutcome(outcome="archived")
+
+    core = SimpleNamespace(
+        adapter=_Adapter(),
+        begin_provisioning=lambda _channel_id: None,
+        end_provisioning=lambda _channel_id: None,
+    )
+    service = _service(session_factory)
+    service._collab_lifecycle = SimpleNamespace(get=lambda _bridge_id: core)  # type: ignore[assignment]
+    service._provisioning = SimpleNamespace(  # type: ignore[assignment]
+        create_room=_async_returning("!new:test")
+    )
+    service._require_tenant_bridge = _async_returning(None)  # type: ignore[method-assign]
+    service._require_channel_creation = _async_returning(None)  # type: ignore[method-assign]
+    service._resolve_bridge_id = _async_returning(world.bridge.id)  # type: ignore[method-assign]
+
+    real_refused = service._invites.refused
+
+    async def tightens_after_the_first_check(*args: Any, **kw: Any) -> list[Agent]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return []
+        return await real_refused(*args, **kw)
+
+    service._invites.refused = tightens_after_the_first_check  # type: ignore[method-assign]
+    async with session_factory() as session:
+        agent = await session.get(Agent, world.target.id)
+        assert agent is not None
+        agent.addressing_policy = owner_only_policy([]).model_dump()
+        await session.commit()
+
+    with pytest.raises(InviteRefused):
+        await service.create_room(
+            RoomCreateConfig(
+                name="made",
+                description="d",
+                agent_ids=[world.target.id],
+                bridge_id=world.bridge.id,
+                channel_type="channel_public",
+            ),
+            invited_by=Inviter.person(world.stranger.id),
+        )
+
+    assert retired == ["C-NEW"]
+
+
 async def test_a_refused_invite_changes_nothing_in_the_room(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -477,6 +615,43 @@ async def test_a_refused_invite_changes_nothing_in_the_room(
 
     with pytest.raises(InviteRefused):
         await _service(session_factory).add_agents_to_room(
+            world.room.id,
+            agent_ids=[world.target.id],
+            invited_by=Inviter.person(world.stranger.id),
+        )
+
+    async with session_factory() as session:
+        assert await RoomStore().get_agent_ids(session, world.room.id) == []
+
+
+async def test_a_group_change_after_loading_the_room_cannot_allow_an_invite(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        world = await _world(session)
+        world.target.addressing_policy = _POLICIES["everyone_in_this_group"](
+            world
+        ).model_dump()
+        await session.commit()
+
+    service = _service(session_factory)
+    service._client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
+        get_by_agent_id=lambda _agent_id: SimpleNamespace(
+            client_id="c1", transport_user_id="@target:test"
+        )
+    )
+    get_room = service._room_store.get
+
+    async def read_then_move(session: AsyncSession, room_id: str) -> Room | None:
+        room = await get_room(session, room_id)
+        async with session_factory() as other:
+            await RoomStore().set_group(other, room_id, None, acting_is_admin=True)
+            await other.commit()
+        return room
+
+    monkeypatch.setattr(service._room_store, "get", read_then_move)
+    with pytest.raises(InviteRefused):
+        await service.add_agents_to_room(
             world.room.id,
             agent_ids=[world.target.id],
             invited_by=Inviter.person(world.stranger.id),
@@ -556,21 +731,26 @@ async def test_the_picker_question_lists_only_agents_this_person_could_invite(
     async with session_factory() as session:
         world = await _world(session)
         world.target.addressing_policy = owner_only_policy([]).model_dump()
-        world.own_agent.addressing_policy = AddressingPolicy().model_dump()
+        world.own_agent.addressing_policy = _POLICIES["everyone_in_this_group"](
+            world
+        ).model_dump()
         world.other_agent.addressing_policy = _POLICIES["everyone_in_this_room"](
             world
         ).model_dump()
         await session.commit()
 
-        async def invitable(user: User, room_id: str | None) -> set[str]:
+        async def invitable(
+            user: User, room_id: str | None, group_id: str | None = None
+        ) -> set[str]:
             answer = await invitable_agents(
                 session=session,
                 room_service=_service(session_factory),
                 room_store=RoomStore(),
                 agent_store=AgentStore(),
                 user=user,
-                is_admin=False,
+                is_admin=group_id is not None,
                 room_id=room_id,
+                group_id=group_id,
             )
             return set(answer.agent_ids)
 
@@ -581,8 +761,11 @@ async def test_the_picker_question_lists_only_agents_this_person_could_invite(
 
         # A rule naming a room says nothing about a room not made yet.
         new_room = await invitable(world.stranger, None)
-        assert world.own_agent.id in new_room
+        assert world.own_agent.id not in new_room
         assert world.other_agent.id not in new_room
+        assert world.own_agent.id in await invitable(
+            world.stranger, None, world.group_id
+        )
 
         assert world.target.id in await invitable(world.owner, world.room.id)
 
@@ -599,7 +782,8 @@ _EXPECTED_INVITERS = {
     "chats/service.py": {"Inviter.person(actor.id)", "Inviter.person(user.id)"},
     "gateway/rooms.py": {"Inviter.person(user.id)"},
     "rooms_yaml.py": {
-        "Inviter.agent(origin.agent_id) if origin else Inviter.person(user_id)"
+        "Inviter.agent(origin.agent_id, created_for_this_run=origin.created_agent_ids)"
+        " if origin else Inviter.person(user_id)"
     },
     "template_runs.py": {"Inviter.person(owner_id)"},
 }

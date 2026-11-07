@@ -269,6 +269,11 @@ async def test_a_team_template_creates_its_agents_then_the_room(managed):
 
     assert result["room_name"] == "red-room"
     assert [a["name"] for a in result["created_agents"]] == ["red-lead", "red-helper"]
+    # The agent running it is the inviter, and vouches only for what it just made.
+    invited_by = managed["protocol"].room_service.invited_by
+    assert invited_by.kind == "agent"
+    assert invited_by.subject == managed["agent_id"]
+    assert invited_by.vouched_for == {a["agent_id"] for a in result["created_agents"]}
     assert all(a["machine"]["name"] == "laptop" for a in result["created_agents"])
     lead, helper = managed["management"].created
     # `$first` is the first online machine that can run the provider; the

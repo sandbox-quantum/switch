@@ -39,7 +39,6 @@ type ChannelSource = "existing" | "new";
 export default function RoomCreateFormBody() {
   const navigate = useNavigate();
   const { data: agents } = useAgents();
-  const { data: invitableAgentIds } = useInvitableAgentIds();
   const { data: bridges } = useBridges();
   const { data: groups } = useRoomGroups();
   // Only a workspace admin may put a room in a group.
@@ -61,6 +60,11 @@ export default function RoomCreateFormBody() {
   const [userNames, setUserNames] = useState<string[]>([]);
   const [access, setAccess] = useState<AccessLevel>("public");
   const [groupId, setGroupId] = useState("");
+  const {
+    data: invitableAgentIds,
+    loading: eligibilityLoading,
+    error: eligibilityError,
+  } = useInvitableAgentIds(undefined, groupId || undefined);
   const [roles, setRoles] = useState<RoomRoleSpec[]>([]);
 
   const { data: bridgeUsers } = useBridgeUsers(bridgeId || undefined);
@@ -120,10 +124,17 @@ export default function RoomCreateFormBody() {
   const eligibleAgents = useMemo(
     () =>
       (agents ?? []).filter(
-        (a) => !invitableAgentIds || invitableAgentIds.includes(a.id),
+        (a) => invitableAgentIds?.includes(a.id),
       ),
     [agents, invitableAgentIds],
   );
+
+  useEffect(() => {
+    if (!invitableAgentIds) return;
+    setAgentIds((ids) => ids.filter((id) => invitableAgentIds.includes(id)));
+    setIncludeSubagentsFor((ids) => ids.filter((id) => invitableAgentIds.includes(id)));
+    setJoinEventListeners((ids) => ids.filter((id) => invitableAgentIds.includes(id)));
+  }, [invitableAgentIds]);
 
   const agentNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -149,13 +160,14 @@ export default function RoomCreateFormBody() {
 
   const canSubmit = useMemo(() => {
     if (!name.trim() || !description.trim()) return false;
+    if (agentIds.some((id) => !invitableAgentIds?.includes(id))) return false;
     if (hasBridge) {
       if (noChannelSource) return false;
       if (channelSource === "existing" && !externalChannelId.trim()) return false;
       return true;
     }
     return agentIds.length >= 1;
-  }, [name, description, hasBridge, noChannelSource, channelSource, externalChannelId, agentIds]);
+  }, [name, description, hasBridge, noChannelSource, channelSource, externalChannelId, agentIds, invitableAgentIds]);
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -428,6 +440,9 @@ export default function RoomCreateFormBody() {
         multiple
         disableCloseOnSelect
         options={eligibleAgents}
+        loading={eligibilityLoading}
+        loadingText="Checking invite permissions…"
+        noOptionsText={eligibilityError ? "Could not check invite permissions" : "No eligible agents"}
         value={eligibleAgents.filter((a) => agentIds.includes(a.id))}
         onChange={(_e, selected) => {
           const ids = selected.map((a) => a.id);

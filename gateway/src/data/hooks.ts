@@ -135,9 +135,26 @@ export function useRoom(roomId: string | undefined): UseQueryResult<RoomDetail> 
  * The agents this person could bring into a room, so pickers offer only what
  * will work. `null` until known, and the server still decides either way.
  */
-export function useInvitableAgentIds(roomId?: string): UseQueryResult<string[]> {
-  const fetcher = useCallback(() => fetchInvitableAgentIds(roomId), [roomId]);
-  return useQuery(fetcher);
+export function useInvitableAgentIds(
+  roomId?: string,
+  groupId?: string,
+  enabled = true,
+): UseQueryResult<string[]> {
+  const fetcher = useCallback(async () => {
+    if (!enabled) return null;
+    const ids = await fetchInvitableAgentIds(roomId, groupId);
+    return ids === null ? null : { roomId, groupId, ids };
+  }, [roomId, groupId, enabled]);
+  const query = useQuery(fetcher);
+  const result = query.data;
+  return {
+    ...query,
+    data:
+      !query.loading && !query.error && result &&
+      result.roomId === roomId && result.groupId === groupId
+        ? result.ids
+        : null,
+  };
 }
 
 export function useAgents(): UseQueryResult<AgentSummary[]> {

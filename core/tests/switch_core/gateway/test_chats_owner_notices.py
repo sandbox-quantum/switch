@@ -12,8 +12,9 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from switch_core.db.models import Room
-from switch_core.invites import Inviter
+from switch_core.chats.service import ChatError
+from switch_core.db.models import Client, Room
+from switch_core.invites import Inviter, InviteRefused
 from tests.switch_core.gateway.conftest import _Harness
 
 
@@ -32,6 +33,7 @@ async def test_an_owner_is_told_in_a_private_chat_of_their_own(
     chats: _Harness, posted: list[tuple[str, str]]
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
+    chats.service.group_chats_enabled = False
 
     await chats.service.tell_owner(agent, "something you should know")
 
@@ -123,3 +125,152 @@ async def test_a_chat_with_an_agent_you_may_not_use_is_still_refused_first(
         )
         == []
     )
+
+
+async def _real_admin(chats: _Harness) -> list[str]:
+    """An admin client with a real row, so the chat is made as it is in production,
+    with only the sending itself recorded."""
+    sent: list[str] = []
+    async with chats.factory() as session:
+        client = Client(
+            transport_user_id="@admin:test", display_name="Switch", type="admin"
+        )
+        session.add(client)
+        await session.commit()
+        client_id = client.id
+
+    async def send_message(_room_id: str, body: str, **_kw: Any) -> str:
+        sent.append(body)
+        return "$event"
+
+    admin = SimpleNamespace(
+        client_id=client_id,
+        transport_user_id="@admin:test",
+        send_message=send_message,
+    )
+    chats.lifecycle.get_by_type = (  # type: ignore[method-assign]
+        lambda kind, _tenant: [admin] if kind == "admin" else []
+    )
+    return sent
+
+
+async def _listed(chats: _Harness) -> list[str]:
+    response = await chats.client.get("/chats", headers=chats.as_user(chats.alice))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    rows = body["chats"] if isinstance(body, dict) else body
+    return [row["name"] for row in rows]
+
+
+async def _notices_room(chats: _Harness) -> Room:
+    async with chats.factory() as session:
+        return (
+            await session.execute(select(Room).where(Room.name == "Switch notices"))
+        ).scalar_one()
+
+
+async def test_the_owner_can_see_the_notices_chat_even_with_group_chats_off(
+    chats: _Harness,
+) -> None:
+    sent = await _real_admin(chats)
+    agent = await chats.agent("helper", owner=chats.alice)
+    chats.service.group_chats_enabled = False
+
+    await chats.service.tell_owner(agent, "one")
+
+    assert sent == ["one"]
+    assert await _listed(chats) == ["Switch notices"]
+
+
+async def test_a_notice_brings_an_archived_notices_chat_back(chats: _Harness) -> None:
+    sent = await _real_admin(chats)
+    agent = await chats.agent("helper", owner=chats.alice)
+    await chats.service.tell_owner(agent, "one")
+    room = await _notices_room(chats)
+    await chats.service.archive(room.tenant_id, chats.alice, room.id)
+    assert await _listed(chats) == []
+
+    await chats.service.tell_owner(agent, "two")
+
+    assert sent == ["one", "two"]
+    assert await _listed(chats) == ["Switch notices"]
+    assert (await _notices_room(chats)).id == room.id
+
+
+async def test_a_notice_reaches_an_owner_who_left_the_notices_chat(
+    chats: _Harness,
+) -> None:
+    sent = await _real_admin(chats)
+    agent = await chats.agent("helper", owner=chats.alice)
+    await chats.service.tell_owner(agent, "one")
+    room = await _notices_room(chats)
+    left = await chats.client.delete(
+        f"/chats/{room.id}/members/{chats.alice.id}",
+        headers=chats.as_user(chats.alice),
+    )
+    assert left.status_code == 204
+
+    await chats.service.tell_owner(agent, "two")
+
+    assert sent == ["one", "two"]
+    assert await _listed(chats) == ["Switch notices"]
+
+
+async def test_someone_who_left_the_workspace_is_not_put_back(chats: _Harness) -> None:
+    await _real_admin(chats)
+    agent = await chats.agent("helper", owner=chats.carol)
+
+    with pytest.raises(ChatError, match="not in this workspace"):
+        await chats.service.tell_owner(agent, "one")
+
+
+@pytest.mark.parametrize(
+    ("raised", "status", "code"),
+    [
+        (
+            lambda agent: InviteRefused([agent], Inviter.person("u")),
+            403,
+            "AGENT_NOT_ALLOWED",
+        ),
+        (lambda _agent: ValueError("gone"), 422, "AGENT_NOT_ADDED"),
+    ],
+    ids=["refused", "gone"],
+)
+async def test_a_late_failure_adding_to_a_chat_is_an_answer_not_a_crash(
+    chats: _Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Any,
+    status: int,
+    code: str,
+) -> None:
+    helper = await chats.agent("helper", owner=chats.alice)
+    other = await chats.agent("other", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, helper, "late")
+
+    async def fail(*_args: Any, **_kw: Any) -> None:
+        raise raised(other)
+
+    monkeypatch.setattr(chats.room_service, "add_agents_to_room", fail)
+    response = await chats.client.post(
+        f"/chats/{room_id}/agents",
+        json={"agentId": other.id},
+        headers=chats.as_user(chats.alice),
+    )
+
+    assert response.status_code == status
+    assert response.json()["detail"]["code"] == code
+
+
+async def test_a_late_refusal_creating_a_chat_is_an_answer_not_a_crash(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = await chats.agent("helper", owner=chats.alice)
+
+    async def fail(*_args: Any, **_kw: Any) -> None:
+        raise InviteRefused([helper], Inviter.person("u"))
+
+    monkeypatch.setattr(chats.room_service, "create_room", fail)
+    response = await chats.create_chat(chats.alice, helper, "late-create")
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "AGENT_NOT_ALLOWED"

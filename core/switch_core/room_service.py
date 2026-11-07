@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable, Collection
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_format, validate_alias_map
@@ -650,10 +651,21 @@ class RoomService:
         *,
         room_id: str,
         group_id: str | None,
+        session: AsyncSession | None = None,
     ) -> None:
-        refused = await self.refused_agents(
-            inviter, agent_ids, room_id=room_id, group_id=group_id
-        )
+        if not agent_ids or not inviter.is_judged:
+            return
+        if session is None:
+            refused = await self.refused_agents(
+                inviter, agent_ids, room_id=room_id, group_id=group_id
+            )
+        else:
+            agents = await self._agent_store.get_many(session, agent_ids, lock=True)
+            if {agent.id for agent in agents} != set(agent_ids):
+                raise ValueError("An invited agent is no longer available.")
+            refused = await self._invites.refused(
+                session, inviter, agents, room_id=room_id, group_id=group_id
+            )
         if refused:
             raise InviteRefused(refused, inviter)
 
@@ -833,6 +845,13 @@ class RoomService:
                         acting_is_admin=config.acting_is_admin,
                     )
                 if agent_ids:
+                    await self._require_can_invite(
+                        invited_by,
+                        agent_ids,
+                        room_id="",
+                        group_id=room.group_id,
+                        session=session,
+                    )
                     await self._room_store.add_agents(
                         session,
                         room.id,
@@ -858,6 +877,18 @@ class RoomService:
                 )
             if bridge_id and external_channel_id:
                 self._collab_lifecycle.rooms_changed(bridge_id)
+        except InviteRefused:
+            # An owner tightened a policy after the first check and the channel
+            # already exists. It was made only for this room, so it goes too. A
+            # channel someone brought along, or a direct message, stays.
+            if (
+                bridge_id
+                and external_channel_id
+                and config.external_channel_id is None
+                and channel_type != "direct"
+            ):
+                await self._retire_channel(room.id, bridge_id, external_channel_id)
+            raise
         finally:
             if collaboration_core and external_channel_id:
                 collaboration_core.end_provisioning(external_channel_id)
@@ -1207,6 +1238,27 @@ class RoomService:
                 )
                 if with_agents is not None:
                     await with_agents(session)
+                # Asked again last, holding the room and the agents until commit,
+                # so an owner who tightened a policy a moment ago is still obeyed.
+                # Last because `with_agents` takes the same room lock: taken any
+                # earlier, concurrent adds would wait on each other.
+                if invited_by.is_judged:
+                    current = await session.scalar(
+                        select(Room)
+                        .where(Room.id == room_id)
+                        .with_for_update(key_share=True)
+                        .execution_options(populate_existing=True)
+                    )
+                    if current is None:
+                        raise ValueError(f"Room not found: {room_id}")
+                    room = current
+                    await self._require_can_invite(
+                        invited_by,
+                        new_agent_ids,
+                        room_id=room.id,
+                        group_id=room.group_id,
+                        session=session,
+                    )
                 await session.commit()
 
             await self._invite_clients(room.transport_room_id, agent_clients)

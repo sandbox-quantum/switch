@@ -450,16 +450,23 @@ async def invitable_agents(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     room_id: Annotated[str | None, Query()] = None,
+    group_id: Annotated[str | None, Query()] = None,
 ) -> InvitableAgents:
     """The agents this person could bring into a room, so a picker offers only
     what will work and nobody has to hit a refusal to find out. Without `room_id`,
     for a room not made yet."""
-    group_id = None
     if room_id is not None:
         room = await _require_room_released(
-            session, room_store, room_id, Principal(user.id, is_admin), "read"
+            session, room_store, room_id, Principal(user.id, is_admin), "write"
         )
         group_id = room.group_id
+    elif group_id is not None:
+        if not is_admin:
+            raise HTTPException(
+                status_code=403, detail="Only admins can file rooms in groups."
+            )
+        if await session.get(RoomGroup, group_id) is None:
+            raise HTTPException(status_code=404, detail="Room group not found")
     agent_ids = [agent.id for agent in await agent_store.get_all(session)]
     await session.commit()
     refused = await room_service.refused_agents(

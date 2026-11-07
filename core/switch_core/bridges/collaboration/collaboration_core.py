@@ -1699,6 +1699,7 @@ class CollaborationCore:
             channel_name=join.channel_name,
             keep_out=keep_out,
             vouched_for=[agent.id] if adder.kind != "unknown" else [],
+            adder=adder,
         )
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
@@ -1815,14 +1816,17 @@ class CollaborationCore:
         channel_name: str | None = None,
         keep_out: Collection[str] = (),
         vouched_for: Collection[str] = (),
+        adder: Inviter | None = None,
     ) -> tuple[str, str] | None:
         """A room for a channel that appeared on the platform.
 
-        Agents already in the channel come along. `keep_out` are those an adder
-        was refused for, and `vouched_for` those an adder was judged for. Nobody
-        can say who added the rest, so they are disclosed. A direct chat is not an
-        invite: delivery still judges every message in it, which is how a stranger
-        gets the agent's own explanation of why it won't act.
+        Agents already in the channel come along. `keep_out` are those `adder` was
+        refused for, and `vouched_for` those it was judged for, which it answers
+        for again when the room is written: an owner may have changed their mind
+        in between. Nobody can say who added the rest, so they are disclosed. A
+        direct chat is not an invite: delivery still judges every message in it,
+        which is how a stranger gets the agent's own explanation of why it won't
+        act.
         """
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -1849,10 +1853,15 @@ class CollaborationCore:
             )
             if agent_id not in keep_out
         ]
-        invited_by = (
+        unverified = (
             Inviter.switch("a direct chat is not an invite; each message is judged")
             if channel_type in ("direct", "lobby")
             else Inviter.unknown_adder()
+        )
+        invited_by = (
+            adder.only_for(vouched_for)
+            if adder is not None and vouched_for and unverified.kind == "unknown"
+            else unverified
         )
 
         bridge_name = self._bridge_display_name
@@ -1881,8 +1890,25 @@ class CollaborationCore:
             ),
         )
 
+        late_refusal: str | None = None
         try:
-            result = await self._room_service.create_room(config, invited_by=invited_by)
+            try:
+                result = await self._room_service.create_room(
+                    config, invited_by=invited_by
+                )
+            except InviteRefused as refused:
+                # Their owner tightened a policy after the check above. The channel
+                # is real either way, so it still gets a room, without them.
+                late_refusal = str(refused)
+                agent_ids = [
+                    agent_id
+                    for agent_id in agent_ids
+                    if agent_id not in refused.agent_ids
+                ]
+                result = await self._room_service.create_room(
+                    config.model_copy(update={"agent_ids": agent_ids}),
+                    invited_by=invited_by,
+                )
         except IntegrityError:
             # Backstop: the (bridge_id, external_channel_id) unique index
             # rejected a concurrent duplicate. Adopt the room that won the race.
@@ -1907,11 +1933,18 @@ class CollaborationCore:
         self.add_room_mapping(
             room.id, room.transport_room_id, channel_id, room.tenant_id
         )
+        if late_refusal is not None:
+            try:
+                await self._adapter.admin_message(channel_id, late_refusal)
+            except Exception:
+                logger.exception(
+                    "Could not post a late invite refusal in channel %s", channel_id
+                )
         await self._disclose_unverified_joins(
             channel_id,
             channel_name,
             [agent_id for agent_id in agent_ids if agent_id not in vouched_for],
-            invited_by,
+            unverified,
         )
         logger.info(
             "Auto-created %s room %s for %s channel %s",
@@ -1953,11 +1986,19 @@ class CollaborationCore:
         """
         if inviter.kind != "unknown" or not agent_ids:
             return
-        async with self._session_factory() as session:
-            agents = await self._agent_store.get_many(session, agent_ids)
-            handles = {
-                agent.id: await self._owner_handle(session, agent) for agent in agents
-            }
+        try:
+            async with self._session_factory() as session:
+                agents = await self._agent_store.get_many(session, agent_ids)
+                handles = {
+                    agent.id: await self._owner_handle(session, agent)
+                    for agent in agents
+                }
+        except Exception:
+            logger.exception(
+                "Could not look up who to tell about an unverified join in channel %s",
+                channel_id,
+            )
+            return
         for agent in filter(needs_disclosure, agents):
             logger.warning(
                 "Agent %s joined channel %s and the platform did not report who "
@@ -1966,10 +2007,18 @@ class CollaborationCore:
                 channel_id,
             )
             try:
-                await self._adapter.admin_message(
+                posted = await self._adapter.admin_message(
                     channel_id, unverified_join_notice(agent, handles[agent.id])
                 )
-                if handles[agent.id] is None and agent.owner_id is not None:
+            except Exception:
+                posted = None
+                logger.exception(
+                    "Could not disclose the unverified join of %s in channel %s",
+                    agent.name,
+                    channel_id,
+                )
+            if agent.owner_id is not None and (handles[agent.id] is None or not posted):
+                try:
                     await self._room_service.tell_owner(
                         agent,
                         unverified_join_owner_notice(
@@ -1978,12 +2027,8 @@ class CollaborationCore:
                             channel_name or channel_id,
                         ),
                     )
-            except Exception:
-                logger.exception(
-                    "Could not disclose the unverified join of %s in channel %s",
-                    agent.name,
-                    channel_id,
-                )
+                except Exception:
+                    logger.exception("Could not tell the owner of %s", agent.name)
 
     async def _owner_handle(self, session: AsyncSession, agent: Agent) -> str | None:
         """The owner's account on this platform, for mentioning them. Sorted, so a

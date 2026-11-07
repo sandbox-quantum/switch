@@ -1103,7 +1103,11 @@ class RoomYamlService:
         result = await self._rooms.create_room(
             config,
             invited_by=(
-                Inviter.agent(origin.agent_id) if origin else Inviter.person(user_id)
+                Inviter.agent(
+                    origin.agent_id, created_for_this_run=origin.created_agent_ids
+                )
+                if origin
+                else Inviter.person(user_id)
             ),
         )
         room_id = result.room.id
