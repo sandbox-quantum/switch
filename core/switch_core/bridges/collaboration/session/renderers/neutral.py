@@ -38,6 +38,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from switch_core.bridges.collaboration.session.redaction import redact_secrets
 from switch_core.sessions.contract import (
     TURN_ENDED,
     ApprovalContent,
@@ -388,7 +389,12 @@ def in_activity_log(item: Item) -> bool:
     return item.kind == "assistant-message" and bool(item.text)
 
 
-def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
+def _log_line(
+    item: Item,
+    *,
+    escape: Callable[[str], str],
+    show_tool_details: bool = True,
+) -> str:
     """One item as the single line the log gives it.
 
     What the agent said is folded onto one line like everything else in here,
@@ -400,8 +406,9 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
         return f"{SAID_MARKER} {said}"
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
     line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
-    if item.text:
-        line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
+    if item.text and show_tool_details:
+        redacted = redact_secrets(item.text)
+        line += f" — {_fit(redacted, _LOG_DETAIL, escape=escape)}"
     return line
 
 
@@ -413,6 +420,7 @@ def activity_log(
     limit: int,
     markup: Markup,
     elapsed_seconds: float | None,
+    show_tool_details: bool = True,
     heading: bool,
 ) -> str:
     """What a turn did and what it said, one to a line, oldest cut first.
@@ -457,7 +465,7 @@ def activity_log(
     lines: list[str] = []
     omitted = 0
     for position, item in enumerate(reversed(shown), start=1):
-        line = _log_line(item, escape=escape)
+        line = _log_line(item, escape=escape, show_tool_details=show_tool_details)
         if spent + len(line) + 1 > limit:
             omitted = len(shown) - position + 1
             break
