@@ -1009,6 +1009,37 @@ class TestPassThrough:
         assert grant["cli_tools"] == []
         assert grant["skill"]["name"] == "example"
 
+    @pytest.mark.parametrize(
+        ("access", "url"),
+        [
+            ("read", "https://mcp.example.test/v1/mcp?read_only=true"),
+            ("write", "https://mcp.example.test/v1/mcp"),
+        ],
+    )
+    async def test_a_read_grant_calls_the_servers_read_only_url(
+        self, session_factory, tmp_path, access, url
+    ) -> None:
+        entry = OAUTH_ENTRY.replace(
+            '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
+            '    - { name: example, url: "https://mcp.example.test/v1/mcp", '
+            'read_url: "https://mcp.example.test/v1/mcp?read_only=true" }\n',
+        )
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=entry
+        )
+        async with session_factory() as session:
+            await session.execute(
+                update(ServiceGrant)
+                .where(ServiceGrant.id == pt.world.grant.id)
+                .values(access=access)
+            )
+            await session.commit()
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            [grant] = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        assert grant["access"] == access
+        assert [server["url"] for server in grant["mcp_servers"]] == [url]
+
     async def test_the_grant_names_the_vendors_cli_as_the_catalog_has_it(
         self, session_factory, tmp_path
     ) -> None:

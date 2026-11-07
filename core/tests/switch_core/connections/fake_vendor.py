@@ -368,6 +368,8 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        # What the account endpoint answers in place of `{"account": account}`.
+        self.identity_answer: Any = None
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -444,6 +446,8 @@ class FakeOAuthServer:
         if where == IDENTITY_URL and request.method == "GET":
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
+            if self.identity_answer is not None:
+                return _json(200, self.identity_answer)
             return _json(200, {"account": self.account})
         if where == MCP_URL:
             return self._mcp(request)

@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -181,12 +182,27 @@ class OAuthClient(BaseModel):
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
     token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    people recognise (an email, a login).
+
+    A `0` in a path indexes a list, for a vendor that answers with the one
+    account a sign-in reaches inside a list (Supabase's organizations). The
+    list must hold exactly that one entry, or the sign-in fails.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _a_list_holds_one_account(self) -> "ConnectionIdentity":
+        for path in (self.account_id, self.label):
+            if any(part.isdigit() and part != "0" for part in path.split(".")):
+                raise ValueError(
+                    f"identity path {path} indexes a list, which must hold "
+                    "exactly one entry, so it indexes it with 0"
+                )
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -364,14 +380,44 @@ class TokenPolicy(BaseModel):
 
 class McpServer(BaseModel):
     """One vendor MCP server. `headers` are an api_key entry's, templates of
-    its fields; an OAuth entry's server takes the token as a bearer."""
+    its fields; an OAuth entry's server takes the token as a bearer.
+
+    `read_url` is the same server in the vendor's own read-only mode, which a
+    read grant is given in place of `url`: for a vendor whose tools both read
+    and write (a SQL tool), where listing tools by level cannot hold a grant
+    to reading. It differs from `url` only in its query.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     name: str = Field(pattern=SLUG_PATTERN)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    read_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] | None = (
         Field(default=None, min_length=1)
     )
+
+    @model_validator(mode="after")
+    def _read_url_is_the_same_server(self) -> "McpServer":
+        if self.read_url is None:
+            return self
+        url, read = urlsplit(self.url), urlsplit(self.read_url)
+        if (read.scheme, read.netloc, read.path) != (url.scheme, url.netloc, url.path):
+            raise ValueError(
+                f"MCP server {self.name}'s read_url is the same server as its url, "
+                "differing only in the query"
+            )
+        if not read.query or read.query == url.query:
+            raise ValueError(
+                f"MCP server {self.name}'s read_url names the read-only mode in "
+                "its query"
+            )
+        return self
+
+    def url_for(self, access: str) -> str:
+        """Where a grant at `access` calls the server."""
+        if access == "read" and self.read_url is not None:
+            return self.read_url
+        return self.url
 
 
 class ConnectionMcp(BaseModel):
@@ -663,6 +709,8 @@ class ConnectionDefinition(BaseModel):
             )
         if self.access is not None:
             raise ValueError("a key reaches whatever its vendor let it: no access")
+        if self.mcp is not None and any(s.read_url for s in self.mcp.servers):
+            raise ValueError("a key has no read level, so no read_url")
         if self.tools is not None and self.tools.mode != "pass_through":
             raise ValueError("an api_key entry's tools pass through")
         sign_in = self.auth.api_key
@@ -746,6 +794,15 @@ class ConnectionDefinition(BaseModel):
             raise ValueError("an OAuth access token expires: name its max_lifetime")
         if self.tools is not None and self.tools.mode != "pass_through":
             raise ValueError("an oauth entry's tools pass through until classified")
+        if (
+            self.mcp is not None
+            and any(server.read_url for server in self.mcp.servers)
+            and (self.access is None or self.access.write is None)
+        ):
+            raise ValueError(
+                "read_url is what a read grant is given in place of url, for an "
+                "entry that also has a write level"
+            )
         if self.access is not None and any(
             level is not None and level.scopes is None
             for level in (self.access.read, self.access.write)
