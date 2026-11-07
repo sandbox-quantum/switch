@@ -134,6 +134,8 @@ class RoomDetail(RoomSummary):
     # when it has not seen one. A room not named after its channel can take
     # it with `POST /rooms/{id}/sync-name`.
     linked_channel_name: str | None = None
+    # Whether the room may see what its agents' tool calls were given and gave back.
+    show_tool_detail: bool = False
 
 
 class RoomCreateRequest(BaseModel):
@@ -167,6 +169,9 @@ class RoomUpdateRequest(BaseModel):
     admin_mode: bool | None = None
     read_visibility: str | None = None
     write_visibility: str | None = None
+    # Whether the room may see what its agents' tool calls were given and gave
+    # back. Changed only by the room's owner or an admin.
+    show_tool_detail: bool | None = None
 
 
 class RoomSetGroupRequest(BaseModel):

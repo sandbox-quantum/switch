@@ -1215,6 +1215,7 @@ class RoomService:
         admin_mode: bool | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
+        show_tool_detail: bool | None = None,
     ) -> None:
         if name is not None:
             name = name.strip()
@@ -1235,6 +1236,10 @@ class RoomService:
                     write_visibility
                     if write_visibility is not None
                     else room.write_visibility,
+                )
+            if show_tool_detail is not None:
+                await self._room_store.set_tool_detail_enabled(
+                    session, room_id, show_tool_detail
                 )
             await self._room_store.update_fields(
                 session,

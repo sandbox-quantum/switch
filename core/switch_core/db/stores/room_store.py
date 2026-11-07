@@ -46,6 +46,8 @@ LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
 # the settings existed need no backfill.
 # `!follow-ups off`:
 FOLLOW_UPS_OFF_KEY = "follow_ups_off"
+# `!tool-detail off`: whether tool input/output details are shown in the room
+TOOL_DETAIL_OFF_KEY = "tool_detail_off"
 # `!assign-agent @name`: the agent id every message in the room goes to.
 MAIN_AGENT_KEY = "main_agent_id"
 
@@ -53,6 +55,11 @@ MAIN_AGENT_KEY = "main_agent_id"
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
     """Whether a room's metadata leaves follow-ups on."""
     return (metadata or {}).get(FOLLOW_UPS_OFF_KEY) is not True
+
+
+def tool_detail_enabled_in(metadata: dict | None) -> bool:
+    """Whether a room's metadata allows tool detail disclosure."""
+    return (metadata or {}).get(TOOL_DETAIL_OFF_KEY) is not True
 
 
 def main_agent_in(metadata: dict | None) -> str | None:
@@ -94,6 +101,21 @@ class RoomStore:
         that does not exist."""
         await self._set_metadata_key(
             session, room_id, FOLLOW_UPS_OFF_KEY, None if enabled else True
+        )
+
+    async def tool_detail_enabled(self, session: AsyncSession, room_id: str) -> bool:
+        """Whether safe tool details are enabled in this room."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            return False
+        return tool_detail_enabled_in(room.metadata_)
+
+    async def set_tool_detail_enabled(
+        self, session: AsyncSession, room_id: str, enabled: bool
+    ) -> None:
+        """Turn safe tool detail disclosure on or off for a room."""
+        await self._set_metadata_key(
+            session, room_id, TOOL_DETAIL_OFF_KEY, None if enabled else True
         )
 
     async def main_agent_id(self, session: AsyncSession, room_id: str) -> str | None:

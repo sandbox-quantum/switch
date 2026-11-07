@@ -38,6 +38,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from switch_core.bridges.collaboration.session.redaction import redact_secrets
 from switch_core.sessions.contract import (
     TURN_ENDED,
     ApprovalContent,
@@ -57,6 +58,7 @@ from . import (
     CLOSED,
     NO_OPTIONS,
     Drawn,
+    MARKDOWN,
     Markup,
     RequestReference,
     example_value,
@@ -99,6 +101,7 @@ _OUTCOME = {
 # log is body text.
 _LOG_TITLE = 200
 _LOG_DETAIL = 120
+_LOG_TOOL_DETAIL = 2000
 
 _LOG_UNTITLED = "(untitled)"
 _LOG_EMPTY = "No activity."
@@ -388,7 +391,13 @@ def in_activity_log(item: Item) -> bool:
     return item.kind == "assistant-message" and bool(item.text)
 
 
-def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
+def _log_line(
+    item: Item,
+    *,
+    escape: Callable[[str], str],
+    markup: Markup = MARKDOWN,
+    show_tool_details: bool = True,
+) -> str:
     """One item as the single line the log gives it.
 
     What the agent said is folded onto one line like everything else in here,
@@ -400,8 +409,13 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
         return f"{SAID_MARKER} {said}"
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
     line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
-    if item.text:
-        line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
+    if item.text and show_tool_details:
+        redacted = redact_secrets(item.text)
+        if "\n" not in redacted and len(redacted) <= _LOG_DETAIL:
+            line += f" — {_fit(redacted, _LOG_DETAIL, escape=escape)}"
+        else:
+            detail = _fit(redacted, _LOG_TOOL_DETAIL, escape=markup.literal(escape))
+            line += f"\n{markup.block(detail)}"
     return line
 
 
@@ -413,6 +427,7 @@ def activity_log(
     limit: int,
     markup: Markup,
     elapsed_seconds: float | None,
+    show_tool_details: bool = True,
     heading: bool,
 ) -> str:
     """What a turn did and what it said, one to a line, oldest cut first.
@@ -457,7 +472,12 @@ def activity_log(
     lines: list[str] = []
     omitted = 0
     for position, item in enumerate(reversed(shown), start=1):
-        line = _log_line(item, escape=escape)
+        line = _log_line(
+            item,
+            escape=escape,
+            markup=markup,
+            show_tool_details=show_tool_details,
+        )
         if spent + len(line) + 1 > limit:
             omitted = len(shown) - position + 1
             break

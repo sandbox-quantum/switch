@@ -486,6 +486,7 @@ class SlackAdapter(PlatformAdapter):
 
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
+    shows_tool_detail: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"
     #: `chat.postEphemeral`: in the channel, to one member alone.
     private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"
