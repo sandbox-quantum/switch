@@ -219,6 +219,13 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **A Telegram connection can hide tool calls.** Under each finished turn,
+  Telegram chats list every tool the agent called, such as
+  `mcp__switch__read_context`. That's useful to the people building an agent,
+  but noise in a chat with people who only need the agents' messages. The new
+  **Show tool calls** setting (default on, so existing connections are
+  unchanged) leaves the turn's status line and approval cards in place and
+  drops the list.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
