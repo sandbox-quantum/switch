@@ -694,26 +694,67 @@ def _answered(**kwargs: Any) -> RequestCard:
     return RequestCard(request, RequestReference(token="tok-1", handle="R7"), **kwargs)
 
 
-async def test_an_answered_card_is_posted_again_rather_than_edited(
+def _refuse_card_edits(webex: FakeWebex) -> None:
+    # What an organisation that won't edit a message carrying a card answers.
+    webex.refuse(
+        "PUT",
+        "/messages/",
+        _json_response(
+            400,
+            {
+                "message": "Support for editing messages with files via "
+                "Developer APIs currently disabled"
+            },
+        ),
+    )
+
+
+async def test_an_answered_card_is_redrawn_in_place_where_webex_allows(
     webex: FakeWebex,
 ) -> None:
-    # Webex refuses any edit to a message that carries a card ("editing messages
-    # with files via Developer APIs currently disabled"), so the card is posted
-    # again in its thread, without buttons, and the one it replaces is deleted.
+    adapter, _ = await _started(webex)
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    [(edited, body)] = webex.edits()
+    assert edited == ref
+    assert "actions" not in body["attachments"][0]["content"]
+    assert len(webex.posts()) == 1
+
+
+async def test_a_card_webex_wont_edit_is_posted_again_and_the_old_one_deleted(
+    webex: FakeWebex,
+) -> None:
+    # Found live: some organisations refuse any edit to a message that carries
+    # a card. The card is posted again in its thread, without buttons, and the
+    # one it replaces is deleted.
     adapter, _ = await _started(webex)
     root = wid("MESSAGE", ADA_UUID)
     ref = await adapter.post_rich(ROOM, "coder", _card(), root)
+    _refuse_card_edits(webex)
     await adapter.update_rich(ROOM, "coder", ref, _answered(), root)
-    assert webex.edits() == []
     _, again = webex.posts()
     assert again["parentId"] == root
     assert "actions" not in again["attachments"][0]["content"]
     assert ("DELETE", f"/messages/{ref}", None) in webex.sent
 
 
+async def test_once_webex_has_refused_a_card_edit_cards_are_not_edited(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    first = await adapter.post_rich(ROOM, "coder", _card())
+    second = await adapter.post_rich(ROOM, "coder", _card())
+    _refuse_card_edits(webex)
+    await adapter.update_rich(ROOM, "coder", first, _answered(), None)
+    await adapter.update_rich(ROOM, "coder", second, _answered(), None)
+    assert len(webex.edits()) == 1
+    assert len(webex.posts()) == 4
+
+
 async def test_a_card_posted_again_is_the_one_redrawn_after(webex: FakeWebex) -> None:
     adapter, _ = await _started(webex)
     ref = await adapter.post_rich(ROOM, "coder", _card())
+    _refuse_card_edits(webex)
     await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
     await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
     assert len(webex.posts()) == 2
@@ -727,6 +768,19 @@ async def test_a_card_posted_again_is_the_one_redrawn_after(webex: FakeWebex) ->
     assert deleted[1] != deleted[0]
 
 
+async def test_a_card_out_of_edits_is_posted_again(webex: FakeWebex) -> None:
+    adapter, _ = await _started(webex)
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    for n in range(10):
+        await adapter.update_rich(
+            ROOM, "coder", ref, _card(unavailable_reason=f"Offline {n}."), None
+        )
+    assert len(webex.edits()) == 10
+    await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    assert len(webex.edits()) == 10
+    assert len(webex.posts()) == 2
+
+
 async def test_a_card_answered_on_webex_names_who_answered_as_webex_does(
     webex: FakeWebex,
 ) -> None:
@@ -737,8 +791,8 @@ async def test_a_card_answered_on_webex_names_who_answered_as_webex_does(
     await adapter.update_rich(
         ROOM, "coder", ref, _answered(responder_external_id=ADA), None
     )
-    again = webex.posts()[1]
-    assert "Ada L from Webex" in again["markdown"]
+    [(_, body)] = webex.edits()
+    assert "Ada L from Webex" in body["markdown"]
 
 
 async def test_a_card_whose_old_copy_will_not_go_still_shows_the_answer(
@@ -746,6 +800,7 @@ async def test_a_card_whose_old_copy_will_not_go_still_shows_the_answer(
 ) -> None:
     adapter, _ = await _started(webex)
     ref = await adapter.post_rich(ROOM, "coder", _card())
+    _refuse_card_edits(webex)
     webex.refuse("DELETE", "/messages/", _json_response(403, {"message": "no"}))
     await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
     assert len(webex.posts()) == 2
@@ -756,6 +811,7 @@ async def test_a_refused_replacement_card_is_a_rich_content_failure(
 ) -> None:
     adapter, _ = await _started(webex)
     ref = await adapter.post_rich(ROOM, "coder", _card())
+    _refuse_card_edits(webex)
     webex.refuse("POST", "/messages", _json_response(400, {"message": "bad card"}))
     with pytest.raises(RichContentFailed):
         await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
