@@ -1,0 +1,40 @@
+slug: stripe
+name: Stripe
+category: Payments
+description: Inspect customers, charges, subscriptions and invoices in Stripe, as you (test mode recommended).
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Stripe rotates the refresh token on each use; previous access tokens
+  # and refresh tokens are invalidated upon renewal.
+  refresh: rotating
+  oauth:
+    # Stripe's official remote MCP server supports dynamic client registration (RFC 7591):
+    # Core registers its client on first connect and stores it.
+    registration: dynamic
+    # Stripe matches loopback redirect ports strictly, registered dynamically.
+    redirect: [loopback]
+    loopback_ports: [39261, 39262, 39263, 39264, 39265]
+    prompt: consent
+    # Stripe supports RFC 7009 token revocation.
+    revocation_discovered: true
+  identity:
+    url: https://api.stripe.com/v1/account
+    account_id: id
+    label: email
+# Stripe OAuth access tokens live one hour; Core refreshes automatically.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: stripe, url: "https://mcp.stripe.com" }
+access:
+  # Sensitive financial operations default to read-only access.
+  # Write scope enables managing customers, creating payment intents, and issuing refunds.
+  read:
+    scopes:
+      - read_only
+  write:
+    scopes:
+      - read_write
+tools: { mode: pass_through }
