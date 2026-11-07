@@ -613,6 +613,39 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## Notion
+
+Built from sign-in runs against a Notion workspace through Notion's hosted MCP
+server, with a dynamically registered public client:
+
+- Notion offers dynamic registration and takes the loopback redirect on any
+  port, so Core registers its client and Notion connects through Switch
+  Console. Its consent screen asks the person to tick that they trust the
+  loopback address before they can continue.
+- A Notion MCP token reaches neither Notion's REST API (`/v1/users/me`
+  answers 401) nor the MCP server's `/userinfo` (403, `insufficient_scope`).
+  Notion's authorization server advertises an `introspection_endpoint` that
+  takes a public client's id alone, and its answer for a live token has
+  `active: true`, our `client_id`, `workspace_id` and `user_id`. The account
+  is the two ids, so the same person in two workspaces is two connections.
+  The answer names neither by name, so the connection is labelled with the
+  workspace's id. The token response carries the same ids, but it is never
+  read for identity, since nothing checks it against the token later.
+- Notion has one scope, `default`, and its consent screen picks a workspace,
+  not scopes or pages, so every connection is granted the write level and
+  reaches what the person can reach in that workspace.
+- Access tokens live 8 hours; each refresh returns a new refresh token.
+  Revocation is at the token endpoint, as the metadata advertises; revoking
+  the refresh token makes the access token inactive at once.
+- The server listed 77 tools, read-only and destructive ones annotated as
+  such; they pass through. Some (Notion's own agents, suggested edits) need a
+  paid plan or Notion AI and say so when refused. The skill keeps the agent to reading, editing with
+  confirmation, and deleting only what the user named.
+
+To connect: Settings, Connections in Switch Console, then Notion. Nothing
+needs configuring on the server. To roll back, add `notion` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
