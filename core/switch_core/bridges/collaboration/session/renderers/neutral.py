@@ -58,6 +58,7 @@ from . import (
     CLOSED,
     NO_OPTIONS,
     Drawn,
+    MARKDOWN,
     Markup,
     RequestReference,
     example_value,
@@ -100,6 +101,7 @@ _OUTCOME = {
 # log is body text.
 _LOG_TITLE = 200
 _LOG_DETAIL = 120
+_LOG_TOOL_DETAIL = 2000
 
 _LOG_UNTITLED = "(untitled)"
 _LOG_EMPTY = "No activity."
@@ -393,6 +395,7 @@ def _log_line(
     item: Item,
     *,
     escape: Callable[[str], str],
+    markup: Markup = MARKDOWN,
     show_tool_details: bool = True,
 ) -> str:
     """One item as the single line the log gives it.
@@ -408,7 +411,11 @@ def _log_line(
     line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
     if item.text and show_tool_details:
         redacted = redact_secrets(item.text)
-        line += f" — {_fit(redacted, _LOG_DETAIL, escape=escape)}"
+        if "\n" not in redacted and len(redacted) <= _LOG_DETAIL:
+            line += f" — {_fit(redacted, _LOG_DETAIL, escape=escape)}"
+        else:
+            detail = _fit(redacted, _LOG_TOOL_DETAIL, escape=markup.literal(escape))
+            line += f"\n{markup.block(detail)}"
     return line
 
 
@@ -465,7 +472,12 @@ def activity_log(
     lines: list[str] = []
     omitted = 0
     for position, item in enumerate(reversed(shown), start=1):
-        line = _log_line(item, escape=escape, show_tool_details=show_tool_details)
+        line = _log_line(
+            item,
+            escape=escape,
+            markup=markup,
+            show_tool_details=show_tool_details,
+        )
         if spent + len(line) + 1 > limit:
             omitted = len(shown) - position + 1
             break

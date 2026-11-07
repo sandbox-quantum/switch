@@ -115,6 +115,27 @@ def test_neutral_log_line_respects_tool_detail_toggle() -> None:
     assert "12 tests passed" in line_on
 
 
+def test_neutral_multiline_block_rendering() -> None:
+    item = Item.model_validate(
+        {
+            "item_id": "item_5",
+            "turn_id": "turn_123",
+            "revision": 1,
+            "kind": "tool-activity",
+            "status": "completed",
+            "title": "Run build script",
+            "text": "Line 1\nLine 2 with secret sk-ant-api03-12345678901234567890",
+            "attachments": [],
+            "origin": None,
+        }
+    )
+    line = _log_line(item, escape=lambda s: s, show_tool_details=True)
+    assert "```" in line
+    assert "Line 1\nLine 2" in line
+    assert "sk-ant-api03" not in line
+    assert "[REDACTED: ANTHROPIC KEY]" in line
+
+
 def test_room_store_tool_detail_toggle() -> None:
     # Default is enabled (absent key)
     assert tool_detail_enabled_in(None) is True
