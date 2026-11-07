@@ -372,6 +372,7 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["shell", "read_file", "write", "str_replace", "grep", "glob"],
             [],
         ),
+        ("pi", "Pi", ["read", "bash", "edit", "write"], []),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(

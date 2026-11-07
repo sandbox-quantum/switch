@@ -294,6 +294,9 @@ version of their own to them without also giving them a release of their own.
   history is kept, and the deletion is recorded in the server audit log. The
   server's default workspace can't be deleted. Deleting your account now also
   deletes a workspace you leave empty.
+- **Pi is a provider.** Agent definitions, the gateway's provider list and
+  advanced configuration accept `pi`, whose owner is told to sign it in by
+  running `pi`.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -2746,6 +2749,17 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on
+  any model provider Pi is signed in to, with the model chosen in Switch.
+  Each session loads a Switch extension with `-e`, written to a directory of
+  the session's own: it registers the session's MCP servers and asks the
+  session host before every tool call, which Pi itself never does, so
+  approvals follow the runtime mode (auto mode approves edits and asks before
+  commands). Nothing is written to Pi's own configuration. A session is
+  refused when the user's Pi `mcp.json` defines a server Pi would take for one
+  of the session's, or when nothing in Pi connects MCP servers (its built-in
+  MCP support turned off or replaced). On Linux, Console installs Pi under
+  `$HOME/.local`, which needs no root.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

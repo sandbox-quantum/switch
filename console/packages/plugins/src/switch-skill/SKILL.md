@@ -339,7 +339,7 @@ card's handle and an answer to every question in one reply, as the card shows.
 Wait for the tool to return before acting on the answers.
 
 Approvals reach the room on every host. Native question forms do not: Claude
-Code, OpenCode and Antigravity have them, while Codex and Cursor sessions
+Code, OpenCode and Antigravity have them, while Codex, Cursor and Pi sessions
 generally do not. Without one, when you genuinely need a decision, ask in the
 room with `send_targeted_message` and wait for the reply as an ordinary event.
 
@@ -862,9 +862,9 @@ does not manage agents, so say so rather than looking for another way.
   setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
-  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`), and
-  optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
-  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
+  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`, `pi`),
+  and optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys
+  from `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
   default: the provider's automatic review runs safe actions and asks before
   risky ones), `auto_approve` (bypass: skips every permission check and
   overrides `auto_mode`; off by default and unsafe, so set it only when the
