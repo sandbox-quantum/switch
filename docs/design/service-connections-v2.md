@@ -42,7 +42,8 @@ auth:
     #   include_granted_scopes)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
-  identity:                   # GET with the token; dotted paths in its JSON
+  identity:
+    method: GET               # or POST, with a JSON body
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
@@ -602,6 +603,24 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `enabled: false`, or remove its client (under Connectors, or by unsetting
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
+
+## Linear
+
+Built for Linear's remote MCP server at `https://mcp.linear.app/mcp`:
+
+- Linear offers dynamic client registration (RFC 7591) via discovery.
+- Connects through Switch Console in loopback mode (`redirect: [loopback]`).
+- Identity requires a GraphQL `POST` request to `https://api.linear.app/graphql`
+  with a `{ query: "{ viewer { id email name } }" }` JSON payload.
+  The user's account ID comes from `data.viewer.id` and the label from
+  `data.viewer.email`.
+- Access tokens live 24 hours (86,400 s); refresh tokens rotate.
+- Linear scopes: `read` for read access, and `read`, `write` for write access.
+- Tools pass through from the remote MCP server.
+
+To connect: Settings, Connections in Switch Console, then Linear. Nothing
+needs configuring on the server. To roll back, add `linear` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
 ## Not yet
 

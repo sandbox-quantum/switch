@@ -1,12 +1,14 @@
 import shutil
 
 import pytest
+from pydantic import ValidationError
 
 from switch_core.connections.loader import (
     CATALOG,
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
     CatalogError,
+    ConnectionIdentity,
     load_catalog,
     with_access_profiles,
 )
@@ -18,7 +20,6 @@ PLACEHOLDERS = {
     "microsoft-365",
     "new-relic",
     "notion",
-    "linear",
     "salesforce",
     "box",
     "canva",
@@ -26,13 +27,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_linear():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "linear",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +42,92 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "linear",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["linear"].skill_files
+
+
+def test_connection_identity_accepts_post_with_a_static_json_body():
+    identity = ConnectionIdentity(
+        method="POST",
+        url="https://api.linear.app/graphql",
+        body={"query": "{ viewer { id email name } }"},
+        account_id="data.viewer.id",
+        label="data.viewer.email",
+    )
+    assert identity.method == "POST"
+    assert identity.body == {"query": "{ viewer { id email name } }"}
+
+
+@pytest.mark.parametrize("body", [{}, {"query": "{ viewer { id } }"}])
+def test_connection_identity_rejects_a_body_for_get(body):
+    with pytest.raises(ValidationError, match="only a POST identity call sends a body"):
+        ConnectionIdentity.model_validate(
+            {
+                "method": "GET",
+                "url": "https://api.example.test/me",
+                "body": body,
+                "account_id": "id",
+                "label": "email",
+            }
+        )
+
+
+def test_connection_identity_requires_method():
+    with pytest.raises(ValidationError, match="Field required"):
+        ConnectionIdentity.model_validate(
+            {
+                "url": "https://api.example.test/me",
+                "account_id": "id",
+                "label": "email",
+            }
+        )
+
+
+def test_the_shipped_linear_entry_uses_dynamic_oauth_and_graphql_identity():
+    definition = CATALOG["linear"].definition
+    assert definition.enabled is True
+    assert definition.adapter == "oauth"
+    assert (definition.auth.type, definition.auth.refresh) == ("oauth", "rotating")
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (oauth.registration, oauth.redirect) == ("dynamic", ["loopback"])
+    assert oauth.client_settings is None
+    assert (oauth.authorization_url, oauth.token_url, oauth.revocation_url) == (
+        None,
+        None,
+        None,
+    )
+    assert oauth.revocation_discovered is True
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url) == (
+        "POST",
+        "https://api.linear.app/graphql",
+    )
+    assert identity.body == {"query": "{ viewer { id email name } }"}
+    assert (identity.account_id, identity.label) == (
+        "data.viewer.id",
+        "data.viewer.email",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86400,
+    )
+    assert definition.mcp is not None and definition.cli is None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("linear", "https://mcp.linear.app/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["read"]
+    assert definition.access.write.scopes == ["read", "write"]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -547,6 +629,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -581,6 +664,8 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
     assert definition.auth.identity is not None
+    assert definition.auth.identity.method == "GET"
+    assert definition.auth.identity.body is None
     assert definition.auth.identity.account_id == "account.id"
     assert definition.token is not None
     assert definition.token.kind == "pass_through"
@@ -629,7 +714,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",

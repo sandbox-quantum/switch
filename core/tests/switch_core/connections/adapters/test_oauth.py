@@ -37,7 +37,7 @@ from switch_core.connections.adapters.oauth import (
     StaticClient,
 )
 from switch_core.connections.broker import Principal, ServiceBroker
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
@@ -212,6 +212,91 @@ class TestSignIn:
         secret = await _sign_in(adapter, vendor)
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+
+    async def test_get_identity_sends_no_body(self) -> None:
+        def identify(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            assert str(request.url) == IDENTITY_URL
+            assert request.headers["Authorization"] == "Bearer SYNTHETIC"
+            assert request.headers["Accept"] == "application/json"
+            assert request.content == b""
+            assert "Content-Type" not in request.headers
+            return httpx.Response(
+                200, json={"account": {"id": "acct-1", "email": "ada@example.test"}}
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(identify)) as http:
+            adapter = OAuthAdapter(
+                _definition(),
+                StaticClient(OAuthClientCredentials("c", None, authentication=None)),
+                http,
+            )
+            identity = await adapter.identify("SYNTHETIC")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+
+    async def test_post_identity_sends_json_body_and_content_type(self) -> None:
+        def identify(request: httpx.Request) -> httpx.Response:
+            assert request.method == "POST"
+            assert str(request.url) == IDENTITY_URL
+            assert request.headers["Authorization"] == "Bearer SYNTHETIC"
+            assert request.headers["Content-Type"] == "application/json"
+            assert request.headers["Accept"] == "application/json"
+            assert json.loads(request.content) == {"query": "{ viewer { id } }"}
+            return httpx.Response(
+                200, json={"viewer": {"id": "acct-1", "email": "ada@example.test"}}
+            )
+
+        definition = _definition().model_dump()
+        definition["auth"]["identity"] = {
+            "method": "POST",
+            "url": IDENTITY_URL,
+            "body": {"query": "{ viewer { id } }"},
+            "account_id": "viewer.id",
+            "label": "viewer.email",
+        }
+        async with httpx.AsyncClient(transport=httpx.MockTransport(identify)) as http:
+            adapter = OAuthAdapter(
+                ConnectionDefinition.model_validate(definition),
+                StaticClient(OAuthClientCredentials("c", None, authentication=None)),
+                http,
+            )
+            identity = await adapter.identify("SYNTHETIC")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+
+    async def test_linear_posts_the_graphql_query_and_reads_the_viewer(self) -> None:
+        def identify(request: httpx.Request) -> httpx.Response:
+            assert request.method == "POST"
+            assert str(request.url) == "https://api.linear.app/graphql"
+            assert request.headers["Authorization"] == "Bearer SYNTHETIC"
+            assert request.headers["Content-Type"] == "application/json"
+            assert request.headers["Accept"] == "application/json"
+            assert json.loads(request.content) == {
+                "query": "{ viewer { id email name } }"
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "viewer": {
+                            "id": "linear-user-1",
+                            "email": "ada@example.test",
+                            "name": "Ada",
+                        }
+                    }
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(identify)) as http:
+            adapter = OAuthAdapter(
+                CATALOG["linear"].definition,
+                StaticClient(OAuthClientCredentials("c", None, authentication=None)),
+                http,
+            )
+            identity = await adapter.identify("SYNTHETIC")
+        assert (identity.account_id, identity.label) == (
+            "linear-user-1",
+            "ada@example.test",
+        )
 
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
