@@ -1,0 +1,48 @@
+slug: sentry
+name: Sentry
+category: Observability
+description: Inspect and debug issues, errors, traces and releases in Sentry, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Sentry rotates the refresh token on each use; the previous access token
+  # and refresh token are invalidated upon refresh.
+  refresh: rotating
+  oauth:
+    # Sentry's remote MCP server supports dynamic client registration (RFC 7591):
+    # Core registers its own client on first connection and reuses it.
+    registration: dynamic
+    # Sentry matches loopback redirect ports strictly, registered dynamically.
+    redirect: [loopback]
+    loopback_ports: [39251, 39252, 39253, 39254, 39255]
+    prompt: consent
+    # Sentry supports RFC 7009 token revocation.
+    revocation_discovered: true
+  identity:
+    url: https://sentry.io/api/0/users/me/
+    account_id: id
+    label: email
+# Sentry OAuth access tokens live one hour; Core refreshes automatically.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: sentry, url: "https://mcp.sentry.dev/mcp" }
+access:
+  # The write level permits updating issue statuses (resolving/ignoring) and
+  # creating comments. The read level restricts to querying issues and stack traces.
+  read:
+    scopes:
+      - org:read
+      - project:read
+      - team:read
+      - event:read
+  write:
+    scopes:
+      - org:read
+      - project:read
+      - project:write
+      - team:read
+      - event:read
+      - event:write
+tools: { mode: pass_through }
