@@ -53,6 +53,10 @@ describeConformance('copilot', {
       : 'Copilot CLI is not signed in (run copilot login, or set COPILOT_GITHUB_TOKEN to a token with the Copilot Requests permission)';
   },
   timeoutMs: 300_000,
+  skip: {
+    'user-input':
+      'Copilot CLI 1.0.107 has no ask-the-user tool over ACP: it writes the question as prose and ends the turn, with no request or elicitation to answer.',
+  },
   mcpServers: {
     echo: { transport: 'http', url: echo.url, headers: { Authorization: `Bearer ${token}` } },
   },

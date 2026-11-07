@@ -121,6 +121,13 @@ export const copilotAcp: AcpProviderHooks = {
   // Copilot's ACP server takes MCP servers over HTTP and SSE only; a stdio
   // server in `session/new` is dropped with a log line and nothing else.
   mcpServerOf: copilotMcpServerOf,
+  // Copilot's `task` tool reaches ACP as a plain `other` call; its input names
+  // the agent it starts (`agent_type`) and the prompt it hands that agent.
+  itemType: (toolCall) =>
+    typeof toolCall.rawInput?.agent_type === 'string' &&
+    typeof toolCall.rawInput?.prompt === 'string'
+      ? 'subagent'
+      : undefined,
   launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['--acp', '--stdio'], env }),
   loginCommand: COPILOT_LOGIN,
   // Copilot's own token, its home, and its bring-your-own-key provider. GH_TOKEN

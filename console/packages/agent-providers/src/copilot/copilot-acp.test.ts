@@ -200,6 +200,20 @@ it('runs the session’s own MCP tools without asking, matching the call to its 
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
 });
 
+it('treats a task call, which names its agent and prompt, as a subagent', () => {
+  expect(
+    copilotAcp.itemType?.({
+      toolCallId: 'task-1',
+      title: 'Read README first line',
+      kind: 'other',
+      rawInput: { agent_type: 'explore', mode: 'sync', prompt: 'Read README.md' },
+    })
+  ).toBe('subagent');
+  expect(
+    copilotAcp.itemType?.({ toolCallId: 'read-1', kind: 'read', rawInput: { path: 'README.md' } })
+  ).toBeUndefined();
+});
+
 it('reads the sign-in from the environment first: a model provider, then Copilot’s own token', () => {
   expect(copilotEnvSignIn({})).toBeUndefined();
   expect(
