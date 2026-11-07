@@ -167,6 +167,17 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     });
   });
 
+  it('passes registered Droid environment settings without the controller’s profile directory', async () => {
+    env.FACTORY_API_KEY = 'provider-setting-placeholder';
+    env.FACTORY_DISABLE_KEYRING = '1';
+    env.FACTORY_HOME_OVERRIDE = '/home/controller/.factory';
+    await start('agent-1');
+    const environment = readFileSync(join(config.dataDir, 'units', '01', 'environment'), 'utf8');
+    expect(environment).toContain("FACTORY_API_KEY='provider-setting-placeholder'");
+    expect(environment).toContain("FACTORY_DISABLE_KEYRING='1'");
+    expect(environment).not.toContain('FACTORY_HOME_OVERRIDE');
+  });
+
   it('hands a running agent host its new configuration without restarting it', async () => {
     await start('agent-1');
     const before = JSON.parse(

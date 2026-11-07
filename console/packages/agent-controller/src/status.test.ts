@@ -15,6 +15,7 @@ import {
   type AgentAssignment,
   type ProviderStatus,
   type SealedLoginResponse,
+  PROVIDERS,
   statusReportSchema,
 } from './schemas';
 import { SealedLogins } from './sealed-logins';
@@ -312,19 +313,19 @@ describe('ProviderStatuses', () => {
     });
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(PROVIDERS.length - 1);
+    expect(changes).toBe(PROVIDERS.length);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(PROVIDERS.length - 1);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(2 * (PROVIDERS.length - 1));
+    expect(changes).toBe(PROVIDERS.length);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(PROVIDERS.length + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -429,7 +430,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(PROVIDERS.length - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 
@@ -678,6 +679,19 @@ describe('PathProviderLocator', () => {
       version: '1.5.1',
       versionProblem: null,
     });
+  });
+
+  it('discovers Factory Droid through the shared plugin on a headless machine', async () => {
+    const locator = new PathProviderLocator(() => dir, join(dir, 'probe-home'));
+    expect(await locator.locate('droid')).toBeNull();
+    const script = await writeNodeCli(dir, 'droid', 'console.log("1.4.1")');
+    expect(await locator.locate('droid')).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(script)}$`, 'i')),
+      version: '1.4.1',
+      versionProblem: null,
+    });
+    expect(providerUnsupportedReason('droid', 'linux')).toBeNull();
+    expect(providerUnsupportedReason('droid', 'win32')).toBeNull();
   });
 
   it('reads the version of a CLI that writes in its home first, with a home of its own', async () => {

@@ -417,6 +417,8 @@ export class AcpAdapter implements ProviderAdapter {
   async setModel(id: string, model: ModelSelection): Promise<void> {
     const state = this.require(id);
     if (!modelConfigOption(state.configOptions)) {
+      if (state.models.length && !state.models.some((choice) => choice.id === model.id))
+        throw new ProviderSessionError(this.provider, id, `Unavailable model: ${model.id}`);
       await state.client.request('session/set_model', {
         sessionId: state.nativeId,
         modelId: model.id,
@@ -429,7 +431,16 @@ export class AcpAdapter implements ProviderAdapter {
       'session/set_config_option',
       { sessionId: state.nativeId, configId: 'model', value: model.id }
     );
-    if (result.configOptions) this.applyConfigOptions(state, result.configOptions);
+    if (result.configOptions) {
+      this.applyConfigOptions(state, result.configOptions);
+      const selected = modelConfigOption(result.configOptions)?.currentValue;
+      if (selected !== model.id)
+        throw new ProviderSessionError(
+          this.provider,
+          id,
+          `Provider did not select requested model: ${model.id}`
+        );
+    }
   }
 
   async respondToRequest(id: string, requestId: string, decision: ApprovalDecision): Promise<void> {
@@ -530,8 +541,9 @@ export class AcpAdapter implements ProviderAdapter {
       return ACP_CANCELLED;
     const vendor = this.hooks.permission?.(context, request);
     if (vendor) return await vendor;
+    const permissionOptions = this.hooks.permissionOptions?.(request.options) ?? request.options;
     const { toolCall } = request;
-    const once = request.options.find((option) => option.kind === 'allow_once');
+    const once = permissionOptions.find((option) => option.kind === 'allow_once');
     const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
@@ -543,7 +555,7 @@ export class AcpAdapter implements ProviderAdapter {
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
-    for (const option of request.options) {
+    for (const option of permissionOptions) {
       const decision =
         option.kind === 'allow_once'
           ? 'accept'
@@ -591,7 +603,7 @@ export class AcpAdapter implements ProviderAdapter {
       this.applyConfigOptions(state, update.configOptions);
       return;
     }
-    if (!state.turn) return;
+    if (!state.turn || state.interrupted) return;
     if (
       update.sessionUpdate === 'agent_message_chunk' &&
       update.content &&
