@@ -115,6 +115,9 @@ class Registry:
         url = str(request.url)
         if request.method == "GET" and url == f"{WDM_URL}/devices":
             self.listed += 1
+            if not self.devices:
+                # What Webex answers for an account that has never had one.
+                return httpx.Response(404, json={"message": "No devices found"})
             return httpx.Response(200, json={"devices": self.devices})
         if request.method == "POST" and url == f"{WDM_URL}/devices":
             self.registered += 1
@@ -260,3 +263,15 @@ async def test_withdrawing_removes_the_bots_device() -> None:
     stream = _stream(registry, heard)
     await stream.forget_device()
     assert registry.deleted == [DEVICE_URL]
+
+
+async def test_a_bot_with_no_device_yet_registers_one(server: Server) -> None:
+    server.scripts = [_hold]
+    registry, heard = Registry(server.url, existing=False), Heard()
+    stream = _stream(registry, heard)
+    stream.start()
+    try:
+        await _until(lambda: heard.opened == [None])
+    finally:
+        await stream.stop()
+    assert registry.registered == 1

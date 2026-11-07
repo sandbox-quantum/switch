@@ -210,7 +210,8 @@ class WebexEventStream:
                     backoff = _BACKOFF_FIRST
                     async for frame in socket:
                         await self._receive(socket, frame)
-                logger.warning("Webex closed the event socket; reconnecting")
+                if not self._stopping.is_set():
+                    logger.warning("Webex closed the event socket; reconnecting")
             except asyncio.CancelledError:
                 raise
             except InvalidStatus as exc:
