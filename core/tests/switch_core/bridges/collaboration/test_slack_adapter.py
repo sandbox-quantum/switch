@@ -492,6 +492,20 @@ def test_translate_inbound_converts_slack_links() -> None:
         adapter.translate_inbound("bare <https://example.com>")
         == "bare https://example.com"
     )
+    assert adapter.translate_inbound("see <#C0123ABCD|general>") == "see #general"
+
+
+def test_translate_inbound_decodes_slack_entities_without_reparsing_user_text() -> None:
+    adapter = _adapter()
+    assert (
+        adapter.translate_inbound(
+            "if a &lt; b &amp;&amp; b &gt; c; R&amp;D; List&lt;String&gt;"
+        )
+        == "if a < b && b > c; R&D; List<String>"
+    )
+    # Decode after interpreting Slack syntax: encoded user-authored markup must
+    # remain literal text rather than becoming a mention or link.
+    assert adapter.translate_inbound("&lt;@U012ABCDEF&gt;") == "<@U012ABCDEF>"
 
 
 def test_own_bot_message_is_skipped() -> None:

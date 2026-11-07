@@ -3221,10 +3221,17 @@ class SlackAdapter(PlatformAdapter):
         return escape_mrkdwn(super().escape_label_for_body(label))
 
     def translate_inbound(self, raw_message: str) -> str:
-        return self._translate_links_to_markdown(
+        translated = self._translate_links_to_markdown(
             self._translate_mass_mentions_to_markdown(
                 self._translate_mentions_to_markdown(raw_message)
             )
+        )
+        # Slack escapes these three characters in message text. Decode only
+        # after interpreting Slack's own mention/link syntax so user-authored
+        # escaped markup stays literal instead of becoming active syntax.
+        entities = {"&amp;": "&", "&lt;": "<", "&gt;": ">"}
+        return re.sub(
+            r"&(?:amp|lt|gt);", lambda match: entities[match.group()], translated
         )
 
     @staticmethod
@@ -3244,7 +3251,12 @@ class SlackAdapter(PlatformAdapter):
 
     @staticmethod
     def _translate_links_to_markdown(message: str) -> str:
-        """Convert Slack link syntax `<url|label>` / `<url>` to markdown."""
+        """Convert Slack channel links and `<url|label>` links to readable text."""
+        message = re.sub(
+            r"<#([A-Z0-9]+)(?:\|([^>]+))?>",
+            lambda match: f"#{match.group(2) or match.group(1)}",
+            message,
+        )
         message = re.sub(r"<(https?://[^|>]+)\|([^>]+)>", r"[\2](\1)", message)
         return re.sub(r"<(https?://[^>]+)>", r"\1", message)
 
