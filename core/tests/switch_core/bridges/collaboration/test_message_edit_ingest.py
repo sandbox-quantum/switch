@@ -428,6 +428,14 @@ async def test_switch_trust_still_blocks_what_an_edit_says() -> None:
     assert len(adapter.notices) == 1
 
 
+async def test_a_notice_in_the_channel_never_repeats_what_the_edit_said() -> None:
+    """The block keeps these words out of the room, the notice included."""
+    bridge, _, adapter = _bridge(trust=_Trust(outcome="blocked"))
+    await CollaborationCore._handle_inbound_edit(bridge, _EDIT)  # type: ignore[arg-type]
+    assert len(adapter.notices) == 1
+    assert _EDIT.content not in adapter.notices[0]
+
+
 async def test_a_blocked_edit_is_told_to_its_sender_alone() -> None:
     """Where the platform can reach one person, the room does not hear of it."""
     bridge, human, adapter = _bridge(trust=_Trust(outcome="blocked"))
