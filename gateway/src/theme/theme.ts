@@ -209,9 +209,16 @@ export const APP_THEME = () =>
                 props: { variant: "filled", color: "success" },
                 style: { backgroundColor: hootVar("success-muted"), color: hootVar("success") },
               },
+              // Amber text on its own wash is unreadable (under 2:1), so a
+              // warning chip takes ink on the wash with an amber hairline,
+              // as Hoot's amber badge does.
               {
                 props: { variant: "filled", color: "warning" },
-                style: { backgroundColor: hootVar("warning-muted"), color: hootVar("warning") },
+                style: {
+                  backgroundColor: hootVar("warning-muted"),
+                  color: hootVar("foreground"),
+                  boxShadow: `inset 0 0 0 1px color-mix(in oklch, ${hootVar("warning")} 40%, transparent)`,
+                },
               },
               {
                 props: { variant: "filled", color: "error" },
