@@ -195,8 +195,13 @@ later.
 ### UI: Bombadil
 
 The explore lane stays as it is and becomes the `ui` level: its seven
-properties enter the catalog as `ui.*`. Today it only runs when dispatched;
-it moves to the nightly schedule. Later properties tie the UI to the server:
+properties are in the catalog as `ui.*` (`properties/catalog/ui.yaml`), each
+tagged on its export in the spec, and it runs on the nightly schedule for 30
+minutes (`e2e-scheduled.yml`; a dispatch still takes any limit). The first
+nightly-length runs are where its flakes show: a locally run lane stalled when
+Chromium's connection reset, and a one-minute run reported `staysSignedIn`
+because the explorer clicked "Sign out of all devices", which the spec's list of
+session-ending entries lacked. Later properties tie the UI to the server:
 the rooms list shows what the API returns; an agent renamed in one tab reads
 renamed in another.
 
@@ -347,7 +352,7 @@ platform is in place before it is widened.
    reaches none of the `sometimes` yet, so it requires none; the state machine
    and the explore lane are where they should be reached.
 6. **Explore lane** on the nightly schedule, with its properties in the
-   catalog.
+   catalog (done: `ui.*`, 30 minutes nightly, reported with the provider lane).
 
 The slice is done when:
 

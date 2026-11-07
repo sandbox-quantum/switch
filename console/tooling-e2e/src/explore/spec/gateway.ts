@@ -30,11 +30,28 @@ import {
 // the run; the copy in the repository is an empty placeholder.
 import credentials from './credentials.json';
 
-export {
-  noConsoleErrors,
-  noUncaughtExceptions,
-  noUnhandledPromiseRejections,
-} from '@antithesishq/bombadil/browser/defaults/properties';
+import * as defaults from '@antithesishq/bombadil/browser/defaults/properties';
+
+/**
+ * No page logs an error to the console.
+ *
+ * @property ui.no-console-errors
+ */
+export const noConsoleErrors = defaults.noConsoleErrors;
+
+/**
+ * No page throws an exception nothing caught.
+ *
+ * @property ui.no-uncaught-exceptions
+ */
+export const noUncaughtExceptions = defaults.noUncaughtExceptions;
+
+/**
+ * No page leaves a rejected promise unhandled.
+ *
+ * @property ui.no-unhandled-rejections
+ */
+export const noUnhandledPromiseRejections = defaults.noUnhandledPromiseRejections;
 
 /** The pages in the navigation rail, and the form for a new room. */
 const ROUTES = [
@@ -55,7 +72,7 @@ const ROUTES = [
  * to it, and the menu shifts while it settles, so a click aimed there can land
  * on Sign out: the explorer clicks neither.
  */
-const SESSION_ENDING = ['Sign out', 'Change password'];
+const SESSION_ENDING = ['Sign out', 'Sign out of all devices', 'Change password'];
 
 const path = extract((state) => state.window.location.pathname);
 
@@ -161,12 +178,18 @@ const serverErrors = extract((state) => {
   return [...page.switchExploreServerErrors];
 });
 
-/** The explorer signs in from the login page it starts on. */
+/**
+ * The explorer signs in from the login page it starts on.
+ *
+ * @property ui.signs-in
+ */
 export const signsIn = eventually(() => signedIn.current).within(30, 'seconds');
 
 /**
  * Once signed in, the explorer stays signed in. It cannot sign out (see
  * `SESSION_ENDING`), so the login page again means the session was lost.
+ *
+ * @property ui.stays-signed-in
  */
 export const staysSignedIn = always(
   now(() => signedIn.current).implies(always(() => !onLoginPage.current))
@@ -181,6 +204,8 @@ const noBanner = () => errorBanners.current.length === 0;
  * dismissed, so only a banner that appears as a page opens counts: in the
  * state the page opened in, or the one after, once the explorer has waited for
  * what the page fetches (see `settling`).
+ *
+ * @property ui.no-error-banner
  */
 export const noErrorBanner = always(
   now(noBanner).implies(
@@ -188,7 +213,11 @@ export const noErrorBanner = always(
   )
 );
 
-/** The server answered no `/gateway` request with a 5xx. */
+/**
+ * The server answered no `/gateway` request with a 5xx.
+ *
+ * @property ui.no-server-errors
+ */
 export const noServerErrors = always(() => serverErrors.current.length === 0);
 
 /**
