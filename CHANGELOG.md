@@ -415,6 +415,13 @@ version of their own to them without also giving them a release of their own.
   and carries nothing else. Notices travel between replicas on the signal bus,
   so a change made through one pod reaches a Console connected to another
   (#717).
+- **The Linear connection.** A person connects Linear from Switch Console,
+  authorizing access to issues and projects, and a granted agent reads,
+  searches, comments on and updates them, as that person, through Linear's
+  remote MCP server (`https://mcp.linear.app/mcp`). Linear uses dynamic client
+  registration (RFC 7591) and authenticates through loopback or core redirect.
+  Access tokens live 24 hours (86,400 s) and refresh tokens rotate. Identity is
+  resolved and cryptographically verified from the signed OIDC id_token (#770).
 - **The Airtable connection.** A person connects Airtable from Switch Console,
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that
