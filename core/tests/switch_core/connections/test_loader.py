@@ -757,6 +757,74 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
         load_catalog(catalog_copy)
 
 
+MCP_SERVER_LINE = '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n'
+
+
+def _with_read_url(read_url: str) -> str:
+    return OAUTH_ENTRY.replace(
+        MCP_SERVER_LINE,
+        '    - { name: example, url: "https://mcp.example.test/v1/mcp", '
+        f'read_url: "{read_url}" }}\n',
+    )
+
+
+def test_loads_a_read_url_for_read_grants(catalog_copy):
+    _write_example(
+        catalog_copy, _with_read_url("https://mcp.example.test/v1/mcp?read_only=true")
+    )
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url_for("read") == "https://mcp.example.test/v1/mcp?read_only=true"
+    assert server.url_for("write") == "https://mcp.example.test/v1/mcp"
+
+
+def test_a_server_without_a_read_url_is_called_alike_at_both_levels(catalog_copy):
+    _write_example(catalog_copy)
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url_for("read") == server.url_for("write") == server.url
+
+
+@pytest.mark.parametrize(
+    ("read_url", "message"),
+    [
+        ("https://other.example.test/v1/mcp?read_only=true", "same server"),
+        ("https://mcp.example.test/v2/mcp?read_only=true", "same server"),
+        ("https://mcp.example.test:8443/v1/mcp?read_only=true", "same server"),
+        ("https://mcp.example.test/v1/mcp", "names the read-only mode"),
+        ("http://mcp.example.test/v1/mcp?read_only=true", "read_url"),
+    ],
+)
+def test_rejects_a_read_url_that_is_not_the_same_server(
+    catalog_copy, read_url, message
+):
+    _write_example(catalog_copy, _with_read_url(read_url))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+def test_a_read_url_needs_a_write_level_to_stand_beside(catalog_copy):
+    entry = _with_read_url("https://mcp.example.test/v1/mcp?read_only=true").replace(
+        '  write: { scopes: ["read:items", "write:items"] }\n', ""
+    )
+    _write_example(catalog_copy, entry)
+    with pytest.raises(CatalogError, match="also has a write level"):
+        load_catalog(catalog_copy)
+
+
+def test_a_key_entry_has_no_read_url(catalog_copy):
+    entry = API_KEY_ENTRY.replace(
+        '      url: "https://mcp.{region}/mcp"\n',
+        '      url: "https://mcp.{region}/mcp"\n'
+        '      read_url: "https://mcp.{region}/mcp?read_only=true"\n',
+    )
+    _write_example(catalog_copy, entry)
+    with pytest.raises(CatalogError, match="no read_url"):
+        load_catalog(catalog_copy)
+
+
 def test_placeholders_keep_their_short_form():
     for slug in PLACEHOLDERS:
         definition = CATALOG[slug].definition
