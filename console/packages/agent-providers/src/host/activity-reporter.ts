@@ -73,7 +73,7 @@ export type Report =
 
 type Placement = Pick<ActivityRow, 'room_id' | 'thread_id' | 'message_id'>;
 
-const ENDED = new Set(['completed', 'interrupted', 'error']);
+const ENDED = new Set(['completed', 'interrupted', 'cancelled', 'error']);
 
 const cursorSchema = z.strictObject({ through: z.number().int().nonnegative() });
 
