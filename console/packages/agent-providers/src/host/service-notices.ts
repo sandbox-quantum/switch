@@ -71,6 +71,7 @@ export function serviceName(service: string): string {
     atlassian: 'Atlassian',
     datadog: 'Datadog',
     github: 'GitHub',
+    sentry: 'Sentry',
     'google-workspace': 'Google Workspace',
   };
   return names[service] ?? service;

@@ -179,12 +179,15 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Read a stable account id by HTTPS GET, or a configured MCP identity tool.
+
+    An MCP tool must use one of this entry's servers and return structured
+    content. The paths name fields in that object, never free-form tool text.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
 
@@ -526,8 +529,14 @@ class LevelAccess(BaseModel):
 
 class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    read: LevelAccess
+    read: LevelAccess | None = None
     write: LevelAccess | None = None
+
+    @model_validator(mode="after")
+    def _has_level(self) -> "ConnectionAccess":
+        if self.read is None and self.write is None:
+            raise ValueError("access needs at least one level")
+        return self
 
 
 class AccessProfile(BaseModel):
@@ -691,6 +700,8 @@ class ConnectionDefinition(BaseModel):
             )
 
     def _check_github(self) -> None:
+        if self.access is not None and self.access.read is None:
+            raise ValueError("the github adapter needs a read access level")
         if self.auth.oauth is not None or self.auth.identity is not None:
             raise ValueError(
                 "the github adapter takes its client from the GitHub App settings"
@@ -712,6 +723,12 @@ class ConnectionDefinition(BaseModel):
             )
         if self.cli is not None and self.cli.token_env is None:
             raise ValueError("an oauth entry's tool takes its token in token_env")
+        identity = self.auth.identity
+        if identity is not None and identity.mcp_tool is not None:
+            if self.mcp is None or identity.url not in {
+                server.url for server in self.mcp.servers
+            }:
+                raise ValueError("an MCP identity tool must use a catalog MCP server")
         if self.enabled:
             missing = [
                 name

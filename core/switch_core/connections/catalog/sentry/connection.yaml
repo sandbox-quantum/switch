@@ -1,0 +1,49 @@
+slug: sentry
+name: Sentry
+category: Observability
+description: Investigate errors, events, stack traces and releases, and update Sentry issues and projects, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Official hosted MCP supports dynamic registration and PKCE S256:
+    # https://mcp.sentry.dev/.well-known/oauth-authorization-server
+    # No operator app is needed. Sentry Cloud only; self-hosted is out of scope.
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39251, 39252, 39253, 39254, 39255]
+    revocation_discovered: true
+  identity:
+    # MCP tokens are distinct from upstream Sentry API tokens. Never send
+    # them to sentry.io/api/0/users/me/. whoami returns structured user data:
+    # https://github.com/getsentry/sentry-mcp/blob/main/packages/mcp-core/src/tools/catalog/whoami.ts
+    url: https://mcp.sentry.dev/mcp
+    mcp_tool: whoami
+    account_id: user.id
+    label: user.email
+# One hour is the Cloudflare OAuth provider's default initial MCP lifetime,
+# not a measurement with a live Sentry account. Keep the limit fail-closed:
+# Sentry's refresh callback can return the remaining upstream lifetime,
+# potentially longer than this cap. Such tokens are refused, never truncated.
+# Live connect/refresh/revoke verification is still required; see the design doc.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: sentry, url: "https://mcp.sentry.dev/mcp" }
+access:
+  # OAuth consent selects skills; scope names alone do not enforce Inspect-only
+  # access. Do not advertise a read level or rely on ?skills=inspect for OAuth.
+  # project:write/team:write permit project/team changes; event:write permits
+  # issue triage. The vendor's consented skills and user role further constrain
+  # tools. These are MCP's advertised non-alert scopes; it advertises no finer
+  # project/team/event read scopes. org:read supports organization discovery.
+  # No admin/delete scopes or alerts:write are requested.
+  write:
+    scopes:
+      - org:read
+      - project:write
+      - team:write
+      - event:write
+tools: { mode: pass_through }

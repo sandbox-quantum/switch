@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_supported_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "sentry",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,15 +41,28 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "sentry",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["sentry"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
+
+
+def test_shipped_sentry_loads_with_mcp_identity_and_no_read_level():
+    entry = load_catalog(CATALOG_ROOT)["sentry"]
+    definition = entry.definition
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.mcp_tool == "whoami"
+    assert definition.access is not None
+    assert definition.access.read is None
+    assert definition.access.write is not None
+    assert "SKILL.md" in entry.skill_files
 
 
 def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_must():
