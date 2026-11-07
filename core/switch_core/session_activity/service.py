@@ -35,7 +35,11 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import RoomStore, tool_details_shown
+from switch_core.db.stores.room_store import (
+    RoomStore,
+    tool_details_in,
+    tool_details_shown,
+)
 from switch_core.db.stores.session_activity_store import (
     TURN_ITEM_ID,
     AgentSessionActivityStore,
@@ -239,10 +243,20 @@ class AgentSessionActivityService:
             )
         tenant_id = require_tenant_id()
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-            if room_id is not None:
+            shown: bool | None = (
                 await self._require_member(db, agent_id, room_id)
+                if room_id is not None
+                else None
+            )
             if kind == "tool-activity" and text:
-                text = await self._shown_tool_text(db, agent_id, room_id, text)
+                if shown is None:
+                    shown = tool_details_shown(
+                        None,
+                        await db.scalar(
+                            select(Agent.tool_details).where(Agent.id == agent_id)
+                        ),
+                    )
+                text = redact_secrets(text) if shown else ""
             prior_status = (
                 await self._activity.status_for_update(
                     db, agent_id, session_id, turn_id, item_id
@@ -276,19 +290,6 @@ class AgentSessionActivityService:
                 if status in TURN_ENDED and prior_status not in TURN_ENDED:
                     await self._meter_tokens(db, tenant_id, agent_id, usage)
             return moved
-
-    async def _shown_tool_text(
-        self, db: AsyncSession, agent_id: str, room_id: str | None, text: str
-    ) -> str:
-        """A tool call's input and output as the room may read them, masked,
-        or nothing where neither the room nor the agent has switched them on."""
-        room = (
-            await self._rooms.tool_details_setting(db, room_id)
-            if room_id is not None
-            else None
-        )
-        agent = await db.scalar(select(Agent.tool_details).where(Agent.id == agent_id))
-        return redact_secrets(text) if tool_details_shown(room, agent) else ""
 
     async def _meter_turn(
         self, db: AsyncSession, tenant_id: str, agent_id: str
@@ -606,12 +607,17 @@ class AgentSessionActivityService:
 
     async def _require_member(
         self, db: AsyncSession, agent_id: str, room_id: str
-    ) -> None:
-        found = await self._rooms.get_with_membership(db, room_id, agent_id)
+    ) -> bool:
+        """Require `agent_id` in `room_id`, returning whether tool details show there."""
+        found = await self._rooms.get_with_membership_and_tool_details(
+            db, room_id, agent_id
+        )
         if found is None:
             raise SessionError("NOT_FOUND", f"Room not found: {room_id}")
-        if not found[1]:
+        room, member, agent_tool_details = found
+        if not member:
             raise SessionError("NOT_AUTHORIZED", "Agent is not a member of this room.")
+        return tool_details_shown(tool_details_in(room.metadata_), agent_tool_details)
 
     async def _require_may_address(
         self,

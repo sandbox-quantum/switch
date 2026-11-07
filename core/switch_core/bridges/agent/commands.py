@@ -911,6 +911,18 @@ def _tool_details_word(value: bool | None) -> str:
     return "not set" if value is None else "**on**" if value else "**off**"
 
 
+async def _scrub_hidden_tool_text(
+    session: AsyncSession, *, room_id: str | None, agent_id: str | None
+) -> None:
+    """Empty hidden tool text in bounded commits so each transaction fires at
+    most `SCRUB_BATCH_SIZE` row-level NOTIFYs."""
+    store = AgentSessionActivityStore()
+    while await store.scrub_hidden_tool_text(
+        session, room_id=room_id, agent_id=agent_id
+    ):
+        await session.commit()
+
+
 async def _cmd_tool_details(
     client: AgentRecipient,
     room: RoomRef,
@@ -953,19 +965,15 @@ async def _cmd_tool_details(
                 await client._agent_store.update(
                     session, target.id, tool_details=_TOOL_DETAILS_STATES[choice]
                 )
-                await AgentSessionActivityStore().scrub_hidden_tool_text(
-                    session, room_id=None, agent_id=target.id
-                )
                 await session.commit()
+                await _scrub_hidden_tool_text(session, room_id=None, agent_id=target.id)
                 await session.refresh(target)
         elif choice:
             await client._room_store.set_tool_details(
                 session, meta.room_id, _TOOL_DETAILS_STATES[choice]
             )
-            await AgentSessionActivityStore().scrub_hidden_tool_text(
-                session, room_id=meta.room_id, agent_id=None
-            )
             await session.commit()
+            await _scrub_hidden_tool_text(session, room_id=meta.room_id, agent_id=None)
         room_setting = await client._room_store.tool_details_setting(
             session, meta.room_id
         )

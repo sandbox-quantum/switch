@@ -166,19 +166,32 @@ class RoomStore:
         come back in one statement — the pair is the single most frequent
         authorization question in the bridge.
         """
+        found = await self.get_with_membership_and_tool_details(
+            session, room_id, agent_id
+        )
+        if found is None:
+            return None
+        return found[0], found[1]
+
+    async def get_with_membership_and_tool_details(
+        self, session: AsyncSession, room_id: str, agent_id: str
+    ) -> tuple[Room, bool, bool | None] | None:
+        """The room, whether `agent_id` is a member, and `agent.tool_details`,
+        in one statement."""
         result = await session.execute(
-            select(Room, room_agents.c.agent_id)
+            select(Room, room_agents.c.agent_id, Agent.tool_details)
             .outerjoin(
                 room_agents,
                 (Room.id == room_agents.c.room_id)
                 & (room_agents.c.agent_id == agent_id),
             )
+            .outerjoin(Agent, Agent.id == agent_id)
             .where(Room.id == room_id)
         )
         row = result.one_or_none()
         if row is None:
             return None
-        return row[0], row[1] is not None
+        return row[0], row[1] is not None, row[2]
 
     async def get_by_transport_room_id(
         self, session: AsyncSession, transport_room_id: str

@@ -950,3 +950,42 @@ async def test_clearing_the_rooms_setting_leaves_text_the_agent_still_shows(
         )
     [step] = await service.turn_items(AGENT, SESSION, "turn-1")
     assert step.text == ""
+
+
+async def test_scrub_hidden_tool_text_empties_in_bounded_batches(
+    service, session_factory
+):
+    room = await _new_room(session_factory)
+    await _set(session_factory, room=room, room_value=True)
+    for _ in range(5):
+        assert await _tool_text(service, room) != ""
+
+    async with session_factory() as db, db.begin():
+        await RoomStore().set_tool_details(db, room, False)
+        assert (
+            await AgentSessionActivityStore().scrub_hidden_tool_text(
+                db, room_id=room, agent_id=None, batch_size=2
+            )
+            == 2
+        )
+        assert (
+            await AgentSessionActivityStore().scrub_hidden_tool_text(
+                db, room_id=room, agent_id=None, batch_size=2
+            )
+            == 2
+        )
+        assert (
+            await AgentSessionActivityStore().scrub_hidden_tool_text(
+                db, room_id=room, agent_id=None, batch_size=2
+            )
+            == 1
+        )
+        assert (
+            await AgentSessionActivityStore().scrub_hidden_tool_text(
+                db, room_id=room, agent_id=None, batch_size=2
+            )
+            == 0
+        )
+
+    steps = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert all(step.text == "" for step in steps)
