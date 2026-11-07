@@ -1204,6 +1204,18 @@ class MattermostAdapter(PlatformAdapter):
             logger.error("Failed to send Mattermost message to %s: %s", channel_id, e)
             return None
 
+    async def _resolve_root_id(self, driver: Driver, post_id: str) -> str | None:
+        """Resolve a post id to its thread root id if it is a reply."""
+        loop = self._main_loop
+        if loop is None:
+            return None
+        try:
+            ref_post = await loop.run_in_executor(None, driver.posts.get_post, post_id)
+            root = ref_post.get("root_id")
+            return root or None
+        except Exception:
+            return None
+
     async def _post_or_raise(
         self,
         driver: Driver,
@@ -1227,7 +1239,20 @@ class MattermostAdapter(PlatformAdapter):
             post["root_id"] = thread_root_id
         if props:
             post["props"] = props
-        result = await loop.run_in_executor(None, driver.posts.create_post, post)
+        try:
+            result = await loop.run_in_executor(None, driver.posts.create_post, post)
+        except Exception as e:
+            if thread_root_id and "Invalid RootId parameter" in str(e):
+                actual_root = await self._resolve_root_id(driver, thread_root_id)
+                if actual_root:
+                    post["root_id"] = actual_root
+                    result = await loop.run_in_executor(
+                        None, driver.posts.create_post, post
+                    )
+                else:
+                    raise
+            else:
+                raise
         post_id: str = result.get("id", "")
         if not post_id:
             raise RuntimeError("Mattermost accepted the post but returned no id.")
