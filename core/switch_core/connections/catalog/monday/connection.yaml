@@ -1,0 +1,30 @@
+slug: monday
+name: Monday.com
+category: Project management
+description: Read and update Monday.com boards and items, as you.
+# Candidate only. See docs/old/monday-setup.md for evidence and enablement gates.
+enabled: false
+adapter: oauth
+auth:
+  type: oauth
+  oauth:
+    # Public discovery checked 2026-11-07: DCR, S256, refresh_token and
+    # revocation are advertised at auth.monday.com/oauth_ms/oauth/*.
+    # Discovery does not prove the authenticated token response or lifetime.
+    registration: dynamic
+    redirect: [loopback]
+    # A bounded callback list for the account admin to approve. These are
+    # Switch's existing ports, not a claim of vendor-tested port matching.
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    revocation_discovered: true
+  # Identity needs the POST/static-body extension approved in #839:
+  # POST https://api.monday.com/v2, {"query": "{ me { id name } }"},
+  # account_id: data.me.id, label: data.me.name. Do not substitute a GET.
+# No token or refresh policy until actual MCP-issued expiry/renewal is known.
+# The newer OAuth guide uses JWT exp, whereas Switch requires expires_in.
+# Neither current discovery document lists scopes. Hosted DCR inherits user
+# permissions; do not import a custom app's scopes or promise read-only access.
+mcp:
+  servers:
+    - { name: monday, url: "https://mcp.monday.com/mcp" }
+tools: { mode: pass_through }
