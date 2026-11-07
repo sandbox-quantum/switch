@@ -434,6 +434,20 @@ version of their own to them without also giving them a release of their own.
   and widens their next connection. Disconnecting or reconnecting says so and
   where in Airtable to remove it, as any OAuth service without revocation now
   does rather than reporting a failed revoke.
+- **The GitLab connection.** A person connects their GitLab.com account from
+  Switch Console, and a granted agent works with issues, merge requests and
+  pipelines, as that person, through GitLab's MCP server. Each server's
+  operator registers a confidential GitLab OAuth application with the scopes
+  `mcp` and `read_user` and saves it under Connector apps, or names it in
+  `GITLAB_CLIENT_CONFIG_PATH` (Helm: `switchCore.gitlabClientSecret`); see
+  `docs/old/gitlab-setup.md`. Without it, GitLab is listed as not set up.
+  Like Airtable, it needs `GATEWAY_PUBLIC_URL`. GitLab's consent page has
+  nothing to untick, so every connection can write; `api` is not asked for.
+  The entry names GitLab's OAuth endpoints rather than discovering them from
+  the MCP server: GitLab narrows a token requested for its MCP server to
+  `mcp` alone, which cannot read the account. Disconnecting revokes the
+  sign-in at GitLab. The dashboard's Connectors page walks GitLab's
+  Applications page, with the redirect URI to copy and the scopes to tick.
 - **Connector apps set up Airtable.** An app's entry in `GET /connector-apps`
   gains `redirect_uris` (every address to register), `needs_public_url` and
   `scopes`. The dashboard's Connectors page walks Airtable's Builder Hub, with
@@ -2752,6 +2766,9 @@ version of their own to them without also giving them a release of their own.
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
 - **Airtable's logo on the Connections grid.**
+- **Admin → Connector apps sets up GitLab.** Its dialog walks GitLab's
+  Applications page with the redirect URI to copy, Confidential kept ticked,
+  and the two scopes to tick; moving off configuration names its Helm value.
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks
   the operator to confirm the integration's support details are set, which no
