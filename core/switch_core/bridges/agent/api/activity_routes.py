@@ -75,6 +75,12 @@ class TokenUsageIn(BaseModel):
     cache_write_tokens: int = Field(ge=0, le=MAX_TOKENS)
 
 
+class SubagentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", alias_generator=to_camel)
+    agent: str = Field(min_length=1, max_length=100)
+    task_id: _Id | None
+
+
 class ActivityReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     turn_id: _Id
@@ -95,6 +101,7 @@ class ActivityReport(BaseModel):
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
     )
+    subagent: SubagentIn | None = None
 
 
 class OptionIn(BaseModel):
@@ -224,6 +231,7 @@ async def report_activity(
             )
             for u in body.usage
         ],
+        subagent=body.subagent.model_dump(by_alias=True) if body.subagent else None,
     )
     return ActivityReceipt(recorded=recorded)
 

@@ -112,6 +112,11 @@ class Attachment(_Model):
     sha256: str | None = None
 
 
+class Subagent(_Model):
+    agent: str = Field(min_length=1, max_length=100)
+    task_id: Id | None = Field(max_length=100)
+
+
 class Item(_Model):
     item_id: Id
     turn_id: Id
@@ -122,6 +127,7 @@ class Item(_Model):
     text: str
     attachments: list[Attachment]
     origin: Origin | None
+    subagent: Subagent | None = None
 
 
 class ApprovalOption(_Model):

@@ -199,6 +199,7 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        subagent: dict[str, str | None] | None = None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
@@ -230,6 +231,18 @@ class AgentSessionActivityService:
             raise SessionError(
                 "INVALID_EVENT", "Only an ended turn's own row carries its usage."
             )
+        if subagent is not None:
+            if kind != "tool-activity":
+                raise SessionError("INVALID_EVENT", "Only tool activity can be a subagent.")
+            agent = subagent.get("agent")
+            task_id = subagent.get("taskId")
+            if (
+                not isinstance(agent, str)
+                or not agent.strip()
+                or len(agent) > 100
+                or (task_id is not None and (not isinstance(task_id, str) or len(task_id) > 100))
+            ):
+                raise SessionError("INVALID_EVENT", "Invalid subagent activity details.")
         if len(title) > MAX_TITLE_CHARS or len(text) > MAX_TEXT_CHARS:
             raise SessionError(
                 "INVALID_EVENT",
@@ -265,6 +278,7 @@ class AgentSessionActivityService:
                     thread_id=thread_id,
                     message_id=message_id,
                     occurred_at=occurred_at,
+                    subagent=subagent,
                 ),
             )
             if moved and kind == "turn":

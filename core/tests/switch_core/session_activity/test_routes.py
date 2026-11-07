@@ -85,6 +85,16 @@ async def test_a_step_is_recorded_and_only_a_newer_revision_moves_it(client):
     assert older.json() == {"recorded": False}
 
 
+async def test_a_subagent_label_is_recorded_on_its_tool_activity(client, service):
+    response = await client.post(
+        f"/agent-sessions/{SESSION}/activity",
+        json=_activity(subagent={"agent": "Explore", "taskId": "task-42"}),
+    )
+    assert response.status_code == 200
+    [item] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert item.subagent == {"agent": "Explore", "taskId": "task-42"}
+
+
 async def test_a_status_that_is_not_the_kinds_is_a_422_with_its_code(client):
     response = await client.post(
         f"/agent-sessions/{SESSION}/activity", json=_activity(status="running")
