@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Minimal stdio MCP server with one tool, `switch_echo`, for conformance
+// Minimal stdio MCP server with switch_echo and get_env tools for conformance
 // tests. Plain JSON-RPC over newline-delimited stdin/stdout, no dependencies.
 import { createInterface } from 'node:readline';
 
@@ -11,6 +11,15 @@ const TOOLS = [
       type: 'object',
       properties: { text: { type: 'string' } },
       required: ['text'],
+    },
+  },
+  {
+    name: 'get_env',
+    description: 'Returns an environment variable value for conformance tests.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string' } },
+      required: ['name'],
     },
   },
 ];
@@ -49,6 +58,13 @@ rl.on('line', (line) => {
       send({ jsonrpc: '2.0', id, result: { tools: TOOLS } });
       break;
     case 'tools/call': {
+      const toolName = params?.name;
+      if (toolName === 'get_env') {
+        const varName = String(params?.arguments?.name ?? '');
+        const val = process.env[varName] ?? '';
+        send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: val }] } });
+        break;
+      }
       const text = String(params?.arguments?.text ?? '');
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
       break;

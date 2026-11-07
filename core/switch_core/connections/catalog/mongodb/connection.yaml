@@ -1,0 +1,9 @@
+slug: mongodb
+name: MongoDB
+category: Databases
+description: Official MongoDB Model Context Protocol Server for document database querying.
+enabled: false
+auth:
+  type: api_key
+
+

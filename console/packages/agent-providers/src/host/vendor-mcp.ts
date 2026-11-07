@@ -10,10 +10,13 @@ import {
   type ToolResult,
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import type { HttpMcpServerSpec } from '../adapter';
+import { SupervisedStdioTransport } from '../transport/supervised-stdio';
 import type { Redactions } from './redaction';
 import { type ServiceGrant, serviceTokenAnswerSchema } from './service-access';
 import { redactServiceToken, type ServiceCredential } from './service-credential';
 import type { HostAsk } from './session-channel';
+import { resolveStdioServerExecutable } from './stdio-resolver';
+import { ToolCallQueue } from './tool-queue';
 
 /** How long a vendor has to list its tools before the session goes on without them. */
 export const LIST_TIMEOUT_MS = 20_000;
@@ -24,28 +27,82 @@ export type VendorServers = {
   /** By MCP server name, as the coding tool is given them. */
   specs: Record<string, HttpMcpServerSpec>;
   close: () => Promise<void>;
+  /** Revoke an active service grant immediately, terminating processes and rejecting queue. */
+  revokeService?: (service: string) => Promise<void>;
+  /** Retrieve active child PIDs by service name for health inspection and testing. */
+  getPids?: (service?: string) => number[];
 };
 
 class VendorRefusedToken extends Error {}
 
 type VendorMcpServer = ServiceGrant['mcp_servers'][number];
 
+const PASSED_THROUGH_ENV = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+  'NO_PROXY',
+  'no_proxy',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+];
+
+/**
+ * Sanitizes the host environment before passing to an audited stdio MCP server.
+ * Retains system essentials, network proxy settings, and credential envs.
+ * Strips host session secrets and credentials from inheritance.
+ */
+export function buildSanitizedStdioEnv(
+  hostEnv: NodeJS.ProcessEnv,
+  credentialEnv: Record<string, string>,
+  platform: NodeJS.Platform = process.platform
+): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  const path = hostEnv.PATH ?? hostEnv.Path;
+  if (path) env.PATH = path;
+
+  if (platform === 'win32') {
+    const pathExt = hostEnv.PATHEXT;
+    if (pathExt) env.PATHEXT = pathExt;
+    const systemRoot = hostEnv.SystemRoot ?? hostEnv.SYSTEMROOT;
+    if (systemRoot) env.SystemRoot = systemRoot;
+    const comSpec = hostEnv.ComSpec ?? hostEnv.COMSPEC;
+    if (comSpec) env.COMSPEC = comSpec;
+    const windir = hostEnv.windir ?? hostEnv.WINDIR;
+    if (windir) env.windir = windir;
+    if (hostEnv.TEMP) env.TEMP = hostEnv.TEMP;
+    if (hostEnv.TMP) env.TMP = hostEnv.TMP;
+    if (hostEnv.USERPROFILE) env.USERPROFILE = hostEnv.USERPROFILE;
+  } else {
+    if (hostEnv.HOME) env.HOME = hostEnv.HOME;
+    if (hostEnv.TMPDIR) env.TMPDIR = hostEnv.TMPDIR;
+  }
+
+  for (const name of PASSED_THROUGH_ENV) {
+    const value = hostEnv[name];
+    if (value) env[name] = value;
+  }
+
+  for (const [key, val] of Object.entries(credentialEnv)) {
+    if (val !== undefined && val !== null) {
+      env[key] = val;
+    }
+  }
+
+  return env;
+}
+
 /**
  * A granted vendor's MCP servers, served to this session's CLI on loopback.
  *
+ * Supports both remote HTTPS MCP servers and local stdio MCP servers.
  * One loopback server per vendor server, each behind a bearer minted for this
  * run, so a slow or failing vendor is one failed server and the Switch tools
- * keep working. The vendor's token never reaches the CLI: every list and call
- * asks the agent host for it over the pipe, adds it (and each secret field of
- * a key) to this session's redactions, and calls the vendor from here, over
- * HTTPS, with redirects refused. The server's URL and headers are templates
- * of the token, so the address is known only once a token is: it is rendered
- * on every connection and refused unless HTTPS. A 401 asks again, naming the
- * refused token, and retries once.
- *
- * Tools pass through as the vendor lists them, until they are classified by
- * access level. Only text reaches the CLI: anything else a tool answers is
- * replaced by a line saying what was left out.
+ * keep working.
  */
 export async function startVendorServers(input: {
   grants: ServiceGrant[];
@@ -55,20 +112,44 @@ export async function startVendorServers(input: {
   callTimeoutMs: number;
   /** How the vendor is reached: `fetch`, but for tests. */
   fetch: typeof fetch;
+  cwd?: string;
 }): Promise<VendorServers> {
   const specs: Record<string, HttpMcpServerSpec> = {};
   const closers: (() => Promise<void>)[] = [];
+  const stdioServersByService = new Map<string, StdioVendorServer[]>();
+
   try {
     for (const grant of input.grants) {
       for (const server of grant.mcp_servers) {
-        if (new URL(server.url).protocol !== 'https:')
-          throw new Error(`${grant.service}'s MCP server ${server.name} is not served over HTTPS.`);
-        const vendor = new VendorServer(grant.service, server, input);
+        let listTools: () => Promise<ToolDefinition[]>;
+        let callTool: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
+
+        if ('transport' in server && server.transport === 'stdio') {
+          const stdio = new StdioVendorServer(grant.service, server, input);
+          listTools = () => stdio.listTools();
+          callTool = (name, args) => stdio.callTool(name, args);
+          closers.push(() => stdio.close());
+
+          const current = stdioServersByService.get(grant.service) ?? [];
+          current.push(stdio);
+          stdioServersByService.set(grant.service, current);
+        } else {
+          const urlStr = 'url' in server ? server.url : '';
+          if (new URL(urlStr).protocol !== 'https:')
+            throw new Error(
+              `${grant.service}'s MCP server ${server.name} is not served over HTTPS.`
+            );
+          const vendor = new VendorServer(
+            grant.service,
+            server as { name: string; url: string; headers: Record<string, string> },
+            input
+          );
+          listTools = () => vendor.listTools();
+          callTool = (name, args) => vendor.callTool(name, args);
+        }
+
         const bearer = randomBytes(32).toString('hex');
-        const served = await serveMcpOverHttp(bearer, {
-          listTools: () => vendor.listTools(),
-          callTool: (name, args) => vendor.callTool(name, args),
-        });
+        const served = await serveMcpOverHttp(bearer, { listTools, callTool });
         closers.push(served.close);
         specs[server.name] = {
           transport: 'http',
@@ -81,13 +162,44 @@ export async function startVendorServers(input: {
     await Promise.all(closers.map((close) => close()));
     throw error;
   }
-  return { specs, close: async () => void (await Promise.all(closers.map((close) => close()))) };
+
+  const revokeService = async (service: string): Promise<void> => {
+    const servers = stdioServersByService.get(service);
+    if (!servers) return;
+    await Promise.all(
+      servers.map(async (s) => {
+        await s.queue.terminateAll(new Error(`Service grant ${service} was revoked`));
+        await s.close();
+      })
+    );
+  };
+
+  const getPids = (service?: string): number[] => {
+    if (service) {
+      const servers = stdioServersByService.get(service) ?? [];
+      return servers.map((s) => s.pid).filter((p): p is number => p !== null);
+    }
+    const pids: number[] = [];
+    for (const servers of stdioServersByService.values()) {
+      for (const s of servers) {
+        if (s.pid !== null) pids.push(s.pid);
+      }
+    }
+    return pids;
+  };
+
+  return {
+    specs,
+    close: async () => void (await Promise.all(closers.map((close) => close()))),
+    revokeService,
+    getPids,
+  };
 }
 
 class VendorServer {
   constructor(
     private readonly service: string,
-    private readonly server: VendorMcpServer,
+    private readonly server: { name: string; url: string; headers: Record<string, string> },
     private readonly deps: {
       ask: (ask: HostAsk) => Promise<unknown>;
       redactions: Redactions;
@@ -193,6 +305,128 @@ class VendorServer {
       throw error;
     } finally {
       await client.close().catch(() => {});
+    }
+  }
+}
+
+class StdioVendorServer {
+  readonly queue: ToolCallQueue;
+  private client: Client | null = null;
+  private transport: SupervisedStdioTransport | null = null;
+  private isConnecting = false;
+
+  constructor(
+    private readonly service: string,
+    private readonly server: {
+      name: string;
+      command: string;
+      args: string[];
+      env: Record<string, string> | null;
+    },
+    private readonly deps: {
+      ask: (ask: HostAsk) => Promise<unknown>;
+      redactions: Redactions;
+      listTimeoutMs: number;
+      callTimeoutMs: number;
+      cwd?: string;
+    }
+  ) {
+    this.queue = new ToolCallQueue({
+      executionTimeoutMs: this.deps.callTimeoutMs,
+      cancelGraceMs: 5_000,
+      onCancelRequested: async (id) => {
+        if (this.transport) {
+          await this.transport.send({
+            jsonrpc: '2.0',
+            method: 'notifications/cancelled',
+            params: { requestId: id, reason: 'Tool execution timed out' },
+          });
+        }
+      },
+      onQuarantineProcess: async () => {
+        await this.close();
+      },
+    });
+  }
+
+  get pid(): number | null {
+    return this.transport?.pid ?? null;
+  }
+
+  private async ensureClient(): Promise<Client> {
+    if (this.client && this.transport?.isRunning) return this.client;
+    if (this.isConnecting) {
+      while (this.isConnecting) await new Promise((r) => setTimeout(r, 20));
+      if (this.client && this.transport?.isRunning) return this.client;
+    }
+    this.isConnecting = true;
+    try {
+      // 1. Resolve credentials/env
+      const answer = serviceTokenAnswerSchema.parse(
+        await this.deps.ask({ type: 'service-token', service: this.service, rejected: null })
+      );
+      let credentialEnv: Record<string, string> = {};
+      if (answer.kind === 'token') {
+        const cred = redactServiceToken(this.deps.redactions, answer.token);
+        if (this.server.env) {
+          credentialEnv = Object.fromEntries(
+            Object.entries(this.server.env).map(([k, template]) => [k, cred.render(template)])
+          );
+        }
+      }
+
+      // 2. Resolve executable securely (forbid shells, traversals, symlink escapes)
+      const baseDir = this.deps.cwd ?? process.cwd();
+      const resolved = resolveStdioServerExecutable(this.server.command, baseDir);
+
+      // 3. Build sanitized environment (no host secrets leakage)
+      const sanitizedEnv = buildSanitizedStdioEnv(process.env, credentialEnv);
+
+      this.transport = new SupervisedStdioTransport({
+        command: resolved.executable,
+        args: this.server.args,
+        env: sanitizedEnv,
+        cwd: baseDir,
+      });
+
+      const client = new Client({ name: 'switch-stdio-session', version: '1.0.0' });
+      await client.connect(this.transport);
+      this.client = client;
+      return client;
+    } finally {
+      this.isConnecting = false;
+    }
+  }
+
+  async listTools(): Promise<ToolDefinition[]> {
+    const client = await this.ensureClient();
+    const page = await client.listTools();
+    return page.tools.map((t) => ({
+      name: t.name,
+      description: t.description ?? '',
+      inputSchema: t.inputSchema as Record<string, unknown>,
+    }));
+  }
+
+  async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    return this.queue.enqueue(name, async () => {
+      const client = await this.ensureClient();
+      const raw = await client.callTool({ name, arguments: args });
+      return textResult(this.service, raw);
+    });
+  }
+
+  async close(): Promise<void> {
+    await this.queue
+      .terminateAll(new Error('Session closed; transport shutting down'))
+      .catch(() => {});
+    if (this.client) {
+      await this.client.close().catch(() => {});
+      this.client = null;
+    }
+    if (this.transport) {
+      await this.transport.close().catch(() => {});
+      this.transport = null;
     }
   }
 }

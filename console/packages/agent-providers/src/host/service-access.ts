@@ -85,20 +85,27 @@ export const serviceGrantSchema = z.object({
   skill: z.object({ name: z.string().regex(SLUG), content: z.string() }).nullable(),
   /**
    * The vendor's MCP servers a session calls for this service, each under its
-   * own name. Empty for a service whose tools are not MCP (GitHub's are git
-   * and gh), and from a Switch that predates them. `url` and each header's
-   * value are templates of the token (`service-credential.ts`); a Switch from
-   * before header templates sends none, meaning the token as a bearer.
+   * own name. Can be a remote HTTPS MCP server, or a local stdio MCP server.
    */
   mcp_servers: z
     .array(
-      z.object({
-        name: z.string().regex(SLUG),
-        url: z.string().url(),
-        headers: z
-          .record(z.string().regex(HEADER_NAME), z.string())
-          .default({ Authorization: 'Bearer {token}' }),
-      })
+      z.union([
+        z.object({
+          transport: z.literal('http').optional(),
+          name: z.string().regex(SLUG),
+          url: z.string().url(),
+          headers: z
+            .record(z.string().regex(HEADER_NAME), z.string())
+            .default({ Authorization: 'Bearer {token}' }),
+        }),
+        z.object({
+          transport: z.literal('stdio'),
+          name: z.string().regex(SLUG),
+          command: z.string().regex(COMMAND),
+          args: z.array(z.string()).default([]),
+          env: z.record(z.string().regex(ENV_NAME), z.string()).nullable().default(null),
+        }),
+      ])
     )
     .default([]),
   /**

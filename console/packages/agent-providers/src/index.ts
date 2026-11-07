@@ -206,3 +206,7 @@ export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './hos
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
+
+export { SupervisedStdioTransport, type StdioTransportOptions } from './transport/supervised-stdio';
+
+export { ToolCallQueue, type ToolCallQueueOptions, type TaskState } from './host/tool-queue';
