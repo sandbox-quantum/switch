@@ -102,6 +102,7 @@ export const factoryDroidAcp: AcpProviderHooks = {
   },
   sessionMode: (runtimeMode) => DROID_MODES[runtimeMode],
   itemType: (toolCall) => (isDroidSubagent(toolCall) ? 'subagent' : undefined),
+  backgroundSubagents: true,
   // Droid exposes AskUser through ACP form elicitation.
   clientCapabilities: { elicitation: { form: {} } },
   extensions: (context, on) => {

@@ -52,6 +52,8 @@ export interface AcpSelectedAnswer {
  * interrupted, so an extension never has to check that itself.
  */
 export interface AcpSessionContext {
+  /** The ACP provider's native session ID, for validating vendor requests. */
+  readonly nativeSessionId: string;
   /** The running turn, or null when there is none or it was interrupted. */
   readonly turnId: string | null;
   /** Names of the MCP servers this session registered. */
@@ -159,6 +161,8 @@ export interface AcpProviderHooks {
   mcpServerOf?(toolCall: AcpToolCall): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
+  /** Subagent calls can complete after ACP reports the turn's end. */
+  backgroundSubagents?: boolean;
   /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.

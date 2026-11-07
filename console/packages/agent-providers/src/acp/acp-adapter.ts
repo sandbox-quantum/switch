@@ -118,6 +118,10 @@ interface State {
   turn: string | null;
   queue: ProviderSendTurnInput[];
   items: Map<string, ProviderItem>;
+  /** Subagents which outlived the turn that started them. */
+  backgroundItems: Map<string, { turnId: string; item: ProviderItem }>;
+  /** Ignore duplicate late updates, including while a subsequent turn is running. */
+  finishedBackgroundItems: Set<string>;
   decisions: Map<string, PendingDecision>;
   questions: Map<string, PendingQuestion>;
   messageId: string;
@@ -168,6 +172,9 @@ export class AcpAdapter implements ProviderAdapter {
   hasSession(id: string): boolean {
     return this.sessions.has(id);
   }
+  hasBackgroundWork(id: string): boolean {
+    return (this.sessions.get(id)?.backgroundItems.size ?? 0) > 0;
+  }
 
   async startSession(input: ProviderSessionStartInput) {
     const { hooks } = this;
@@ -200,6 +207,8 @@ export class AcpAdapter implements ProviderAdapter {
       turn: null,
       queue: [],
       items: new Map(),
+      backgroundItems: new Map(),
+      finishedBackgroundItems: new Set(),
       decisions: new Map(),
       questions: new Map(),
       messageId: '',
@@ -480,6 +489,9 @@ export class AcpAdapter implements ProviderAdapter {
   private context(state: State): AcpSessionContext {
     const active = () => (state.turn && !state.interrupted ? state.turn : null);
     return {
+      get nativeSessionId() {
+        return state.nativeId;
+      },
       get turnId() {
         return active();
       },
@@ -591,6 +603,29 @@ export class AcpAdapter implements ProviderAdapter {
       this.applyConfigOptions(state, update.configOptions);
       return;
     }
+    if (
+      (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') &&
+      update.toolCallId
+    ) {
+      const background = state.backgroundItems.get(update.toolCallId);
+      if (background) {
+        this.toolUpdate(
+          state,
+          background.turnId,
+          {
+            ...update,
+            toolCallId: update.toolCallId,
+            content: Array.isArray(update.content) ? update.content : [],
+          },
+          true
+        );
+        return;
+      }
+      if (state.finishedBackgroundItems.has(update.toolCallId)) {
+        if (update.sessionUpdate !== 'tool_call' || !state.turn) return;
+        state.finishedBackgroundItems.delete(update.toolCallId);
+      }
+    }
     if (!state.turn) return;
     if (
       update.sessionUpdate === 'agent_message_chunk' &&
@@ -630,8 +665,10 @@ export class AcpAdapter implements ProviderAdapter {
       });
   }
 
-  private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
-    const old = state.items.get(update.toolCallId);
+  private toolUpdate(state: State, turnId: string, update: AcpToolCall, background = false): void {
+    const old = background
+      ? state.backgroundItems.get(update.toolCallId)?.item
+      : state.items.get(update.toolCallId);
     const server = this.hooks.mcpServerOf?.(update);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
     const text = (update.content ?? [])
@@ -670,7 +707,12 @@ export class AcpAdapter implements ProviderAdapter {
             : (old?.status ?? 'in_progress'),
       ...(toolText || old?.text ? { text: toolText || old?.text } : {}),
     };
-    state.items.set(item.id, item);
+    if (background) {
+      if (item.status === 'completed' || item.status === 'failed') {
+        state.backgroundItems.delete(item.id);
+        this.rememberFinishedBackground(state, item.id);
+      } else state.backgroundItems.set(item.id, { turnId, item });
+    } else state.items.set(item.id, item);
     this.emit(state, {
       type:
         item.status === 'completed' || item.status === 'failed'
@@ -681,8 +723,10 @@ export class AcpAdapter implements ProviderAdapter {
       turnId,
       item,
     });
-    this.finishMessage(state, 'completed');
-    state.messageId = randomUUID();
+    if (!background) {
+      this.finishMessage(state, 'completed');
+      state.messageId = randomUUID();
+    }
   }
 
   private finishMessage(state: State, status: 'completed' | 'failed'): void {
@@ -709,12 +753,25 @@ export class AcpAdapter implements ProviderAdapter {
     if (!state.turn) return;
     const turnId = state.turn;
     this.finishMessage(state, outcome === 'completed' ? 'completed' : 'failed');
+    if (
+      outcome === 'completed' &&
+      [...state.items.values()].some(
+        (item) =>
+          item.status === 'in_progress' &&
+          !(this.hooks.backgroundSubagents && item.type === 'subagent')
+      )
+    ) {
+      outcome = 'error';
+      message = `${this.hooks.label} ended the turn without confirming a pending tool result.`;
+    }
     for (const item of state.items.values())
       if (item.status === 'in_progress') {
-        if (outcome === 'completed') {
-          outcome = 'error';
-          message = `${this.hooks.label} ended the turn without confirming a pending tool result.`;
+        if (outcome === 'completed' && this.hooks.backgroundSubagents && item.type === 'subagent') {
+          state.backgroundItems.set(item.id, { turnId, item });
+          continue;
         }
+        if (this.hooks.backgroundSubagents && item.type === 'subagent')
+          this.rememberFinishedBackground(state, item.id);
         this.emit(state, {
           type: 'item.completed',
           turnId,
@@ -740,6 +797,12 @@ export class AcpAdapter implements ProviderAdapter {
         status: state.stopping ? 'stopped' : outcome === 'error' ? 'error' : 'ready',
       });
     this.drain(state);
+  }
+
+  private rememberFinishedBackground(state: State, id: string): void {
+    state.finishedBackgroundItems.add(id);
+    if (state.finishedBackgroundItems.size > 1024)
+      state.finishedBackgroundItems.delete(state.finishedBackgroundItems.values().next().value!);
   }
 
   private cancelPending(state: State): void {
@@ -772,6 +835,13 @@ export class AcpAdapter implements ProviderAdapter {
     const stopping = state.stopping;
     state.stopping = true;
     this.complete(state, stopping ? 'interrupted' : 'error', reason);
+    for (const { turnId, item } of state.backgroundItems.values())
+      this.emit(state, {
+        type: 'item.completed',
+        turnId,
+        item: { ...item, status: 'failed', text: [item.text, reason].filter(Boolean).join('\n') },
+      });
+    state.backgroundItems.clear();
     this.cancelPending(state);
     for (const input of state.queue.splice(0))
       this.emit(state, {
