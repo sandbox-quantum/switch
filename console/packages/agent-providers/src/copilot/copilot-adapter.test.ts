@@ -92,6 +92,17 @@ it('pre-approves only session-owned MCP servers with unambiguous Copilot permiss
   }
 });
 
+it('rejects unsupported stdio MCP servers before starting a session without its tools', () => {
+  expect(() =>
+    copilotAcp.launch({
+      binaryPath: 'copilot',
+      cwd: '/work',
+      env: {},
+      mcpServers: { echo: { transport: 'stdio', command: 'node', args: [] } },
+    })
+  ).toThrow('HTTP only');
+});
+
 it('does not restart OAuth when the CLI has a saved login', async () => {
   const home = await copilotHome('{"loggedInUsers":[{"login":"octo"}]}');
   const { server } = await setup({ COPILOT_HOME: home });

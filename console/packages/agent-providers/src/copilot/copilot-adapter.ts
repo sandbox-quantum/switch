@@ -72,9 +72,14 @@ export const copilotAcp: AcpProviderHooks = {
     approvals: true,
     userInput: false,
   },
-  launch: ({ binaryPath, env, autoApprovedMcpNames = [] }) => {
+  launch: ({ binaryPath, env, autoApprovedMcpNames = [], mcpServers = {} }) => {
+    if (Object.values(mcpServers).some((server) => server.transport !== 'http'))
+      throw new Error('GitHub Copilot CLI accepts session MCP servers over HTTP only.');
     for (const name of autoApprovedMcpNames) {
-      if (!/^[\w.-]+$/.test(name) || ['shell', 'write', 'read', 'memory', 'url'].includes(name))
+      if (
+        !/^[\w.-]+$/.test(name) ||
+        ['shell', 'write', 'read', 'memory', 'url'].includes(name.toLowerCase())
+      )
         throw new Error(
           `Copilot cannot safely pre-approve the MCP server name ${JSON.stringify(name)}.`
         );

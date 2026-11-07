@@ -190,6 +190,7 @@ export class AcpAdapter implements ProviderAdapter {
       cwd,
       env: input.env,
       autoApprovedMcpNames,
+      mcpServers: input.mcpServers,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
