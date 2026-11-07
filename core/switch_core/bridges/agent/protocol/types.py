@@ -229,6 +229,7 @@ class RoomDetailDescriptor(BaseModel):
 
 EventType = Literal[
     "message",
+    "message_edit",
     "command",
     "room_join",
 ]
@@ -278,6 +279,21 @@ class MessagePayload(BaseModel):
     switch_notice: str | None = None
 
 
+class MessageEditPayload(BaseModel):
+    """Someone edited a message this agent received. `message_id` is the
+    message as the agent received it (`MessagePayload.message_id`), `body` its
+    whole new text, and `edit_id` the room event that carries the edit.
+    Several edits of one message arrive in order, and the last one wins."""
+
+    message_id: str
+    edit_id: str
+    body: str
+    sender: str
+    sender_name: str
+    timestamp: int
+    thread_id: str | None = None
+
+
 class CommandPayload(BaseModel):
     command: str
     args: str = ""
@@ -302,10 +318,11 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-Payload = MessagePayload | CommandPayload | RoomJoinPayload
+Payload = MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
+    "message_edit": MessageEditPayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
 }
