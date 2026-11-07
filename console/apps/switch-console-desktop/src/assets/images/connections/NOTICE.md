@@ -58,3 +58,10 @@ written out as the equivalent `fill` attributes and its ids removed.
   Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
+
+- **Dropbox** (`dropbox.svg`): official Dropbox glyph extracted from the navigation logo at
+  https://brand.dropbox.com/logo, fetched 2026-11-07. Only the viewBox and
+  unchanged path geometry are retained, rendered in currentColor. Integration
+  identification permitted by the Developer branding guide:
+  https://docs.dropboxapi.com/dropbox-api/docs/developer-resources/branding-guide .
+  Trademark of Dropbox; no endorsement implied.
