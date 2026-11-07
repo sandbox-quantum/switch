@@ -919,23 +919,10 @@ def _second_process(chats: _Harness) -> ChatService:
 
 
 async def test_one_create_on_two_processes_makes_one_room(
-    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+    chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     other = _second_process(chats)
-    both_looked = asyncio.Barrier(2)
-    for service in (chats.service, other):
-        look = service._room_of_operation
-
-        async def look_then_wait(
-            session: AsyncSession, operation_id: str, look=look
-        ) -> Room | None:
-            found = await look(session, operation_id)
-            if found is None:
-                await both_looked.wait()
-            return found
-
-        monkeypatch.setattr(service, "_room_of_operation", look_then_wait)
 
     def create(service: ChatService) -> Any:
         return service.create_chat(
@@ -947,6 +934,8 @@ async def test_one_create_on_two_processes_makes_one_room(
             name=None,
             request_id="c1",
             greeting=None,
+            bridge_id=None,
+            resume_only=False,
         )
 
     first, second = await asyncio.gather(create(chats.service), create(other))
@@ -1223,6 +1212,8 @@ async def test_one_request_id_with_two_payloads_on_two_processes_is_one_request(
                 name=None,
                 request_id="c1",
                 greeting=None,
+                bridge_id=None,
+                resume_only=False,
             )
         except ChatError as refused:
             return refused
@@ -1398,7 +1389,9 @@ async def test_renaming_an_agent_in_many_rooms_reads_them_in_one_query(
 async def test_only_a_manager_renames_a_group_and_everyone_sees_it(
     chats: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def detail(_session: AsyncSession, room: Room, *_args: Any) -> str:
+    async def detail(
+        _session: AsyncSession, room: Room, *_args: Any, **_kwargs: Any
+    ) -> str:
         return room.name
 
     monkeypatch.setattr(rooms_module, "_build_room_detail", detail)

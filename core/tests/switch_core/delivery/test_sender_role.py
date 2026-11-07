@@ -8,7 +8,14 @@ from types import SimpleNamespace
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.message_events import message_event
-from switch_core.db.models import TENANT_ZERO_ID, TenantMember, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    Organization,
+    OrganizationMember,
+    Tenant,
+    TenantMember,
+    User,
+)
 from switch_core.delivery.addressing import SenderPrincipal
 from switch_core.delivery.recipient import AgentRecipient
 from switch_core.transport.types import InboundMessage
@@ -25,7 +32,7 @@ class _Addressing:
 
 
 def _recipient(principal: SenderPrincipal | None) -> SimpleNamespace:
-    return SimpleNamespace(_addressing=_Addressing(principal))
+    return SimpleNamespace(_addressing=_Addressing(principal), tenant_id=TENANT_ZERO_ID)
 
 
 async def _member(session: AsyncSession, name: str, role: str) -> User:
@@ -41,7 +48,7 @@ async def test_a_person_is_named_by_their_role_now(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_factory() as session:
-        olivia = await _member(session, "olivia", "owner")
+        olivia = await _member(session, "olivia", "admin")
         person = SenderPrincipal("user", "client-1", [olivia.id], None)
 
         assert (
@@ -51,7 +58,7 @@ async def test_a_person_is_named_by_their_role_now(
                 "@olivia:test",
                 {},
             )
-            == "owner"
+            == "admin"
         )
 
         membership = await session.get(TenantMember, (TENANT_ZERO_ID, olivia.id))
@@ -181,3 +188,40 @@ def test_sender_owns_agent_rides_on_the_message() -> None:
     )
 
     assert event.payload.sender_owns_agent is True  # type: ignore[union-attr]
+
+
+async def test_an_organization_admin_without_a_membership_is_an_admin(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """They administer the workspace through its organization, and agents
+    are told so rather than that they hold no role."""
+    async with session_factory() as session:
+        organization = Organization(
+            id="org-sender-role", slug="org-sender-role", name="O"
+        )
+        session.add(organization)
+        await session.flush()
+        tenant = await session.get(Tenant, TENANT_ZERO_ID)
+        assert tenant is not None
+        tenant.organization_id = organization.id
+        oscar = User(name="oscar", email="oscar@example.test", role="user")
+        session.add(oscar)
+        await session.flush()
+        session.add(
+            OrganizationMember(
+                organization_id=organization.id, user_id=oscar.id, role="org_admin"
+            )
+        )
+        await session.flush()
+        person = SenderPrincipal("user", "client-2", [oscar.id], None)
+
+        assert (
+            await AgentRecipient._sender_role(
+                _recipient(person),  # type: ignore[arg-type]
+                session,
+                "@oscar:test",
+                {},
+            )
+            == "admin"
+        )
+        await session.rollback()

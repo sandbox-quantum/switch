@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -97,6 +99,45 @@ def verify_access_token(token: str, *, secret: str) -> AccessTokenClaims:
         AccessTokenInvalid: anything else — not a controller access token, a
             bad signature, the wrong audience, or a missing claim.
     """
+    return _verify(token, secret=secret)[0]
+
+
+class VerifiedTokens:
+    """`verify_access_token`, remembering the tokens that verified until
+    each expires.
+
+    A controller sends the same token with every request for an hour, and
+    verifying it each time cost more than the rest of authenticating it:
+    PyJWT checks every character of the token in Python. Only a token that
+    verified is kept, by its sha256 like a stored secret, so a token that was
+    altered or forged never matches one; its expiry is checked on every use,
+    and an expired one is verified again, which refuses it as expired.
+    Revocation is not this class's to check: the caller reads the controller.
+    """
+
+    def __init__(self, *, secret: str, max_entries: int = 4096) -> None:
+        self._secret = secret
+        self._max_entries = max_entries
+        self._verified: OrderedDict[str, tuple[int, AccessTokenClaims]] = OrderedDict()
+
+    def verify(self, token: str) -> AccessTokenClaims:
+        digest = hash_secret(token)
+        kept = self._verified.get(digest)
+        if kept is not None:
+            expires_at, claims = kept
+            if time.time() < expires_at:
+                self._verified.move_to_end(digest)
+                return claims
+            del self._verified[digest]
+        claims, expires_at = _verify(token, secret=self._secret)
+        self._verified[digest] = (expires_at, claims)
+        while len(self._verified) > self._max_entries:
+            self._verified.popitem(last=False)
+        return claims
+
+
+def _verify(token: str, *, secret: str) -> tuple[AccessTokenClaims, int]:
+    """The claims of a token that verified, and its `exp`."""
     if not token.startswith(ACCESS_TOKEN_PREFIX):
         raise AccessTokenInvalid("not a controller access token")
     try:
@@ -114,6 +155,11 @@ def verify_access_token(token: str, *, secret: str) -> AccessTokenClaims:
     values = (claims.get("cid"), claims.get("tid"), claims.get("oid"))
     if not all(isinstance(value, str) and value for value in values):
         raise AccessTokenInvalid("access token claims are malformed")
-    return AccessTokenClaims(
-        controller_id=claims["cid"], tenant_id=claims["tid"], owner_id=claims["oid"]
+    return (
+        AccessTokenClaims(
+            controller_id=claims["cid"],
+            tenant_id=claims["tid"],
+            owner_id=claims["oid"],
+        ),
+        int(claims["exp"]),
     )

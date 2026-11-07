@@ -16,14 +16,19 @@ room Switch has no record of it being in.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_format, validate_alias_map
-from switch_core.authz import Principal, can, validate_visibility_pair
+from switch_core.authz import (
+    Principal,
+    can,
+    require_group_filing,
+    validate_visibility_pair,
+)
 from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelType,
@@ -64,6 +69,10 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_CLIENT_TYPES = ("observe", "admin")
 
+# Rooms whose memberships `reconcile_room_clients` reads in one query, kept
+# well under Postgres' limit on bound parameters.
+RECONCILE_BATCH_SIZE = 1000
+
 
 class LinkedRoomSpec(BaseModel):
     target_room_id: str
@@ -90,6 +99,10 @@ class RoomCreateConfig(BaseModel):
     # Agents not listed keep the default (off).
     join_event_listeners: list[str] | None = None
     user_names: list[str] | None = None
+    # A direct room's one user, as their account id on the bridge, when the
+    # caller already knows it (a linked identity). Used instead of resolving
+    # `user_names[0]`, a name two accounts can share after a rename.
+    user_external_id: str | None = None
     channel_type: ChannelType | None = None
     bridge_id: str | None = None
     # Opt out of the instance default bridge and create a room with no external
@@ -166,6 +179,31 @@ class RoomCreateResult(BaseModel):
 
 
 ROOM_NAME_MAX = 200
+
+
+# The channel types whose members their platform fixes.
+FIXED_MEMBERSHIP = ("direct", "group")
+
+
+class MembershipFixed(ValueError):
+    """Who is in a direct or group conversation is not changed from outside it."""
+
+
+def require_membership_changeable_from_outside(room: Room) -> None:
+    """Raise `MembershipFixed` for a direct or group conversation.
+
+    Its platform fixes who is in it, and a direct one is one person and one
+    agent by rule, so its agents and people are changed only from inside it:
+    by its platform, by the commands its own participants post in it, and for
+    a Switch Console chat through the chat's own routes. The Gateway's room
+    routes, the agent tools and a template's `join:` act from outside, and
+    refuse it."""
+    if room.channel_type in FIXED_MEMBERSHIP:
+        raise MembershipFixed(
+            f"This is a {room.channel_type} conversation: who is in it is fixed "
+            "by its platform, so its agents and people can't be changed from "
+            "outside it."
+        )
 
 
 class RoomService:
@@ -348,6 +386,13 @@ class RoomService:
                 target = await self._room_store.get(session, link.target_room_id)
                 if target is None:
                     raise ValueError(f"Linked room not found: {link.target_room_id}")
+                # A link shows its target's name and description in the new
+                # room, so linking needs read access to the target.
+                if not can(principal, "read", target):
+                    raise PermissionError(
+                        f"User {config.acting_user_id} cannot link to room "
+                        f"{link.target_room_id}"
+                    )
                 if not link.label.strip():
                     raise ValueError("Linked room label must not be empty")
 
@@ -544,8 +589,10 @@ class RoomService:
         for alias in (config.aliases or {}).values():
             validate_alias_format(alias)
         # Validate the group up front so a bad id fails before we provision a
-        # room / external channel.
+        # room / external channel. Filing a room in a group needs a workspace
+        # admin; checked first, so a refusal does not reveal which groups exist.
         if config.group_id is not None:
+            require_group_filing(config.acting_is_admin)
             async with self._session_factory() as session:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
@@ -591,16 +638,25 @@ class RoomService:
         )
         if is_dm:
             self._validate_dm_room(config, agent_ids)
+        elif config.user_external_id is not None:
+            raise ValueError("user_external_id is only for a direct room on a bridge.")
 
+        user_external_id = config.user_external_id
         if collaboration_core and external_channel_id is None:
             await self._require_channel_creation(bridge_id)  # type: ignore[arg-type]
             if is_dm:
                 user_name = (config.user_names or [])[0]
-                agent_name = (await self._resolve_ids_to_names(agent_ids))[0]
-                ext_id_map = await collaboration_core.resolve_external_user_id_map(
-                    [user_name]
-                )
-                user_external_id = ext_id_map.get(user_name)
+                async with self._session_factory() as session:
+                    agent = await self._agent_store.get(session, agent_ids[0])
+                if agent is None:
+                    raise ValueError(f"Unknown agent ID: {agent_ids[0]}")
+                # The channel is named for people, so by the name they read.
+                agent_name = agent.display_name or agent.name
+                if user_external_id is None:
+                    ext_id_map = await collaboration_core.resolve_external_user_id_map(
+                        [user_name]
+                    )
+                    user_external_id = ext_id_map.get(user_name)
                 if user_external_id is None:
                     raise ValueError(
                         f"Cannot create DM room: no user '{user_name}' is known on "
@@ -662,6 +718,11 @@ class RoomService:
                         else {}
                     ),
                     **(
+                        {"user_external_id": config.user_external_id}
+                        if config.user_external_id is not None
+                        else {}
+                    ),
+                    **(
                         {"agent_greeting": config.agent_greeting}
                         if config.agent_greeting is not None
                         else {}
@@ -680,7 +741,12 @@ class RoomService:
             async with self._session_factory() as session:
                 await self._room_store.create(session, room)
                 if config.group_id is not None:
-                    await self._room_store.set_group(session, room.id, config.group_id)
+                    await self._room_store.set_group(
+                        session,
+                        room.id,
+                        config.group_id,
+                        acting_is_admin=config.acting_is_admin,
+                    )
                 if agent_ids:
                     await self._room_store.add_agents(
                         session,
@@ -788,9 +854,9 @@ class RoomService:
                     room.id, transport_room_id, config.user_names
                 )
 
-        if collaboration_core and external_channel_id and is_dm and config.user_names:
-            await collaboration_core.ensure_users_in_room(
-                room.id, transport_room_id, config.user_names
+        if collaboration_core and external_channel_id and is_dm and user_external_id:
+            await collaboration_core.ensure_external_users_in_room(
+                room.id, transport_room_id, [user_external_id]
             )
 
         agent_clients = self._resolve_agent_clients(agent_ids)
@@ -1660,30 +1726,56 @@ class RoomService:
         tenant, because of one room belonging to one of them. The failures are
         counted and reported at `error`, so a contained one is still an
         operator's problem rather than a silent one.
+
+        The memberships are read for `RECONCILE_BATCH_SIZE` rooms at a time,
+        and only a room missing a client is written to. This runs under the
+        boot lock, so every process that starts waits for it: read room by
+        room, a deployment with tens of thousands of rooms took longer than
+        the liveness probe allows, and processes starting together were
+        restarted while they waited.
         """
         # Which tenants exist is the one read that spans them (the exemption,
         # `db/tenant_lookup.py`); each tenant's rooms are then an ordinary
         # scoped read, and each room's own tenant is bound again around
-        # reconciling that one room.
-        rooms: list[Room] = []
+        # repairing that one room.
+        missing_by_room: list[tuple[Room, dict[str, str]]] = []
+        room_count = 0
         for tenant_id in await all_tenant_ids(self._session_factory):
+            system_clients = self._resolve_system_clients(tenant_id)
             async with tenant_session(self._session_factory, tenant_id) as session:
                 # Filtered on the row's own tenant, not left to the policy: on an
                 # owner connection no policy narrows this read, and the fan-out
                 # would act on every tenant's rows once per tenant. See
                 # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
-                rooms.extend(
+                rooms = [
                     room
                     for room in await self._room_store.get_all(
                         session, include_archived=True
                     )
                     if room.tenant_id == tenant_id
-                )
+                ]
+                room_count += len(rooms)
+                for start in range(0, len(rooms), RECONCILE_BATCH_SIZE):
+                    batch = rooms[start : start + RECONCILE_BATCH_SIZE]
+                    room_ids = [room.id for room in batch]
+                    existing = await self._room_store.client_ids_by_room(
+                        session, room_ids
+                    )
+                    agents = await self._room_store.member_agent_clients_by_room(
+                        session, room_ids
+                    )
+                    for room in batch:
+                        missing = _missing_clients(
+                            existing.get(room.id, []),
+                            {**agents.get(room.id, {}), **system_clients},
+                        )
+                        if missing:
+                            missing_by_room.append((room, missing))
 
         failures: list[str] = []
-        for room in rooms:
+        for room, missing in missing_by_room:
             try:
-                await self._reconcile_one_room(room)
+                await self._add_missing_clients(room, missing)
             except Exception:
                 logger.exception("Failed to reconcile clients into room %s", room.id)
                 failures.append(room.id)
@@ -1693,38 +1785,58 @@ class RoomService:
                 "rooms are missing system or agent clients until this is fixed "
                 "and the service restarted.",
                 len(failures),
-                len(rooms),
+                room_count,
                 ", ".join(failures),
             )
 
-    async def reconcile_room(self, room: Room) -> None:
+    async def reconcile_room(self, room: Room, external_user_ids: list[str]) -> None:
         """Put the room's agent and system clients in it where they are missing.
 
         For a caller repairing one room whose creation may have stopped after
-        the room row committed and before its clients joined.
+        the room row committed and before its clients joined. A room on a
+        bridge also gets the bridge client and the actors of
+        `external_user_ids` (account ids on that bridge), ahead of the agents
+        as in `create_room`.
         """
+        if room.bridge_id is not None and room.external_channel_id is not None:
+            collaboration_core = self._collab_lifecycle.get(room.bridge_id)
+            if collaboration_core is None:
+                raise ValueError(f"Bridge not running: {room.bridge_id}")
+            await self._provisioning.invite_to_room(
+                room.transport_room_id,
+                collaboration_core._workspace_consumer_transport_user_id,
+            )
+            await collaboration_core.ensure_external_users_in_room(
+                room.id, room.transport_room_id, external_user_ids
+            )
         await self._reconcile_one_room(room)
 
     async def _reconcile_one_room(self, room: Room) -> None:
         with tenant_scope(room.tenant_id):
             async with self._session_factory() as session:
-                existing = set(await self._room_store.get_client_ids(session, room.id))
-                expected = await self._room_store.get_member_agent_clients(
+                existing = await self._room_store.get_client_ids(session, room.id)
+                agents = await self._room_store.get_member_agent_clients(
                     session, room.id
                 )
-            # Resolved per room rather than once for the fan-out: the system
-            # clients belong to a tenant, and which ones are this room's
-            # depends on the room.
-            expected.update(self._resolve_system_clients(room.tenant_id))
-            missing = {cid: uid for cid, uid in expected.items() if cid not in existing}
-            if not missing:
-                return
+        # Resolved per room rather than once for the fan-out: the system
+        # clients belong to a tenant, and which ones are this room's depends
+        # on the room.
+        missing = _missing_clients(
+            existing, {**agents, **self._resolve_system_clients(room.tenant_id)}
+        )
+        if missing:
+            await self._add_missing_clients(room, missing)
+
+    async def _add_missing_clients(self, room: Room, missing: dict[str, str]) -> None:
+        """Invite `missing` (`{client_id: transport_user_id}`) into the room and
+        record their memberships, as the room's own tenant."""
+        with tenant_scope(room.tenant_id):
             await self._invite_clients(room.transport_room_id, missing)
             async with self._session_factory() as session:
                 for client_id in missing:
                     await self._room_store.add_client(session, client_id, room.id)
                 await session.commit()
-            logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
+        logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
 
     async def resolve_bridge_users(
         self, bridge_id: str, names: list[str]
@@ -1770,3 +1882,12 @@ class RoomService:
                 async with self._session_factory() as session:
                     await self._room_store.add_client(session, client_id, room_id)
                     await session.commit()
+
+
+def _missing_clients(
+    existing: Collection[str], expected: dict[str, str]
+) -> dict[str, str]:
+    """The entries of `expected` (`{client_id: transport_user_id}`) whose
+    client is not among the room's `existing` client ids."""
+    present = set(existing)
+    return {cid: uid for cid, uid in expected.items() if cid not in present}

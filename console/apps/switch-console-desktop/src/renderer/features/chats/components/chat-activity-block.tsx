@@ -8,14 +8,10 @@ import type { ChatActivityItem, ChatApproval } from '@shared/core/chats/activity
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
 import { isThinking, toolState, type TurnActivity, turnTools } from '../activity-join';
 import type { AgentActivity } from '../stores/chat-activity-store';
-import { presentTool, summarizeTools } from '../tool-presentation';
 import { Reasoning } from '../ui/reasoning';
 import { FailedIcon, ThinkingIcon, ToolKindIcon, WorkLogDetails, WorkLogRow } from '../ui/work-log';
 import { ChatApprovalCard } from './chat-approval-card';
 import { ToolRow } from './tool-row';
-
-/** A settled turn with at least this many tool calls folds them behind one summary line. */
-const GROUP_AT = 2;
 
 function ToolRows({
   items,
@@ -41,9 +37,9 @@ function ToolRows({
 }
 
 /**
- * A finished turn's tool calls as one line ("Ran 2 commands and read 3
- * files"), opening to the calls themselves. A failure is named on the line so
- * it is not hidden by the fold.
+ * The turn's earlier tool calls as one line ("12 tool calls"), opening to the
+ * calls themselves. A failure is named on the line so it is not hidden by the
+ * fold.
  */
 function ToolGroup({
   items,
@@ -55,17 +51,14 @@ function ToolGroup({
   activity: AgentActivity;
 }) {
   const [open, setOpen] = useState(false);
-  const summary = summarizeTools(
-    items.map((item) => presentTool(item, activity.toolDetails.get(item.itemId) ?? null).kind)
-  );
   const failed = items.filter((item) => toolState(item, turn.status) === 'failed').length;
   return (
     <WorkLogRow
-      icon={<ToolKindIcon kind={summary.kind} />}
-      label={summary.label}
+      icon={<ToolKindIcon kind="other" />}
+      label={`${items.length} ${items.length === 1 ? 'tool call' : 'tool calls'}`}
       trailing={
         failed > 0 ? (
-          <span className="shrink-0 text-xs text-foreground-destructive">{failed} failed</span>
+          <span className="shrink-0 text-xs text-foreground-destructive">· {failed} failed</span>
         ) : null
       }
       open={open}
@@ -207,11 +200,9 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           label="Steered mid-turn message into running turn"
         />
       )}
-      {!running && work.length >= GROUP_AT ? (
-        <ToolGroup items={work} turn={turn} activity={activity} />
-      ) : (
-        <ToolRows items={work} turn={turn} activity={activity} />
-      )}
+      {/* Only the latest call gets a full line; the ones before it fold into one. */}
+      {work.length > 1 && <ToolGroup items={work.slice(0, -1)} turn={turn} activity={activity} />}
+      <ToolRows items={work.slice(-1)} turn={turn} activity={activity} />
       {turnWarnings(turn).map((notice) => (
         <WorkLogRow
           key={notice.itemId}

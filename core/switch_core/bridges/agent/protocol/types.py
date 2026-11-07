@@ -138,9 +138,42 @@ class RoomWideMentionStatus(StrEnum):
     BRIDGE_UNAVAILABLE = "bridge_unavailable"
 
 
+class TrustFeedback(BaseModel):
+    """What Switch Trust did to a message an agent sent, for the agent that
+    sent it. Only made when it did something: a message it let through
+    untouched carries none.
+
+    `outcome` is `redacted` when Switch Trust redacted the message, with what
+    the room received in `delivered` (which can match what was sent when
+    there was nothing it could cut); otherwise `alerted` (flagged and
+    delivered as sent) or `errored` (delivered as sent, not fully checked).
+    A redacted message can also have been flagged or not fully checked, say a
+    caption redacted beside a file that was flagged: `alert` then says which,
+    so the redaction does not hide it. `note` is the notice posted in the
+    room under the message, when one was posted. When a notice was due but
+    could not be posted, `note` is unset and `notice_error` says why, so the
+    agent is not told the room was warned when it was not."""
+
+    outcome: Literal["redacted", "alerted", "errored"]
+    delivered: str | None
+    alert: Literal["alerted", "errored"] | None = None
+    note: str | None
+    notice_error: str | None
+
+    def to_result(self) -> dict[str, str]:
+        """The tool-result form: the fields that are set, and no others."""
+        return self.model_dump(exclude_none=True)
+
+
+class SentMessage(BaseModel):
+    event_id: str
+    trust: TrustFeedback | None
+
+
 class SendTargetedResult(BaseModel):
     event_id: str
     target_statuses: dict[str, AgentStatus | RoomWideMentionStatus]
+    trust: TrustFeedback | None
 
 
 class ParticipantDescriptor(BaseModel):
@@ -236,7 +269,7 @@ class MessagePayload(BaseModel):
     # it said; None everywhere else.
     opening_message: str | None = None
     # The sending person's role in the room's workspace when the message
-    # arrived: "owner", "admin" or "member". None for an agent, the platform,
+    # arrived: "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
     # Whether the sending person owns this agent.

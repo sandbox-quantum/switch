@@ -4,6 +4,7 @@ import {
   foldTurnEndNotices,
   groupTurns,
   isThinking,
+  placeRequests,
   placeTurns,
   toolState,
   type TurnActivity,
@@ -88,6 +89,50 @@ function turnOf(items: ChatActivityItem[], status: TurnActivity['status']): Turn
   };
 }
 
+describe('placeRequests', () => {
+  const at = (minute: number) => `2026-01-01T00:0${minute}:00Z`;
+  const said = (messageId: string, agentId: string | null, minute: number): ChatMessage =>
+    ({
+      messageId,
+      body: messageId,
+      sentAt: at(minute),
+      sender: { kind: agentId ? 'agent' : 'human', agentId, clientId: agentId ?? 'me' },
+    }) as unknown as ChatMessage;
+  const withRequests = (requests: ChatApproval[]): TurnActivity => ({
+    ...turnOf([], 'running'),
+    requests,
+  });
+  const ids = (placed: Map<string, ChatApproval[]>) =>
+    Object.fromEntries([...placed].map(([key, list]) => [key, list.map((r) => r.requestId)]));
+
+  it('shows an open request after the text its turn has posted so far', () => {
+    const turn = withRequests([approval('t1')]);
+    const messages = [said('q1', null, 0), said('r1', 'helper', 1), said('r2', 'helper', 2)];
+    expect(ids(placeRequests(messages, 'helper', new Map([['q1', turn]]), 'q1', turn))).toEqual({
+      r2: ['req-t1'],
+    });
+  });
+
+  it('keeps an answered request above the text posted after the answer', () => {
+    const turn = withRequests([approval('t1', { state: 'answered', answeredAt: at(2) })]);
+    const messages = [said('q1', null, 0), said('r1', 'helper', 1), said('r2', 'helper', 3)];
+    expect(ids(placeRequests(messages, 'helper', new Map([['q1', turn]]), 'q1', turn))).toEqual({
+      r1: ['req-t1'],
+    });
+  });
+
+  it('stops at the message that starts the agent’s next turn', () => {
+    const turn = withRequests([approval('t1')]);
+    const next = { ...withRequests([]), turnId: 't2' };
+    const messages = [said('q1', null, 0), said('q2', null, 1), said('r2', 'helper', 2)];
+    const bound = new Map([
+      ['q1', turn],
+      ['q2', next],
+    ]);
+    expect(ids(placeRequests(messages, 'helper', bound, 'q1', turn))).toEqual({ q1: ['req-t1'] });
+  });
+});
+
 describe('placeTurns', () => {
   const said = (messageId: string, agentId: string | null): ChatMessage =>
     ({
@@ -161,7 +206,7 @@ describe('placeTurns', () => {
     ];
     const started = {
       ...turn('t1'),
-      items: [row('t1', 'tool', { createdAt: at(3) })],
+      items: [row('t1', 'tool', { occurredAt: at(3), createdAt: at(3) })],
     };
     expect(ids(placeTurns(messages, 'helper', new Map([['q1', started]])))).toEqual({
       ack: ['t1'],
@@ -173,6 +218,27 @@ describe('placeTurns', () => {
     expect(ids(placeTurns(messages, 'reviewer', new Map([['q1', started]])))).toEqual({
       q1: ['t1'],
     });
+  });
+
+  it('stays above the reply when its steps were reported after it', () => {
+    const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
+    const messages = [
+      { ...said('q1', null), sentAt: at(0) },
+      { ...said('ack', 'helper'), sentAt: at(1) },
+      { ...said('r1', 'helper'), sentAt: at(5) },
+    ] as ChatMessage[];
+    const late = {
+      ...turn('t1'),
+      items: [
+        row('t1', 'read', { occurredAt: at(3), createdAt: at(9) }),
+        row('t1', 'post', { occurredAt: at(6), createdAt: at(2) }),
+      ],
+    };
+    expect(ids(placeTurns(messages, 'helper', new Map([['q1', late]])))).toEqual({
+      ack: ['t1'],
+    });
+    const noAck = messages.filter((each) => each.messageId !== 'ack');
+    expect(ids(placeTurns(noAck, 'helper', new Map([['q1', late]])))).toEqual({ q1: ['t1'] });
   });
 
   it('never shows a turn under a Retry’s acknowledgement, which the chat leaves out', () => {

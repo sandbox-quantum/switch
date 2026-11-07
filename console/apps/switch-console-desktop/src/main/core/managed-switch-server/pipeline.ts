@@ -546,7 +546,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     log.error(`managed-switch-server: refusing to start the stack on ${host.label}`, {
       reason: plan.message,
     });
-    return { kind: 'error', message: plan.message };
+    return { kind: 'error', message: plan.message, failure: 'start_refused' };
   }
 
   // Before anything reads the working dir: another account may have changed
@@ -652,7 +652,11 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
 
   onMessage('Waiting for the server to become healthy…');
   if ((await unansweredAddress(settings.ports, signal)) !== null) {
-    return { kind: 'error', message: 'The server did not become healthy in time.' };
+    return {
+      kind: 'error',
+      message: 'The server did not become healthy in time.',
+      failure: 'health_timeout',
+    };
   }
 
   const serverId = await registerAndSignIn(ref, serverName, settings, activate, onMessage);
