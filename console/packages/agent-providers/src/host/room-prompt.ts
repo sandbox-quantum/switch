@@ -10,6 +10,38 @@ import { ATTACHMENT_MIME_TYPES, MAX_ATTACHMENT_BYTES } from './attachments';
  * account of the message.
  */
 
+export const roomEditSchema = z.object({
+  type: z.literal('message_edit'),
+  payload: z.object({
+    message_id: z.string().min(1),
+    edit_id: z.string().min(1),
+    revision: z.number().int().positive().safe(),
+    body: z.string(),
+  }),
+});
+
+/** Replace only the untrusted message body, retaining the original prompt's context. */
+export function amendedRoomText(text: string, body: string): string {
+  const ending =
+    /\nEND SWITCH MESSAGE ([a-f0-9]{16})\nEverything between those markers is the sender's message\./g;
+  const ends = [...text.matchAll(ending)];
+  const closing = ends.at(-1);
+  if (!closing || closing.index === undefined)
+    throw new Error('Room prompt has no closing boundary.');
+  const opening = `BEGIN SWITCH MESSAGE ${closing[1]}\n`;
+  const startIndex = text.indexOf(opening);
+  if (startIndex < 0 || startIndex >= closing.index)
+    throw new Error('Room prompt has no opening boundary.');
+  const end = `\nEND SWITCH MESSAGE ${closing[1]}\n`;
+  const endIndex = closing.index;
+  const marker = randomBytes(8).toString('hex');
+  return (
+    text.slice(0, startIndex) +
+    `BEGIN SWITCH MESSAGE ${marker}\n${body}\nEND SWITCH MESSAGE ${marker}\n` +
+    text.slice(endIndex + end.length)
+  );
+}
+
 const MAX_ATTACHMENTS = 8;
 
 /** The part of a room message event a prompt is built from. */
