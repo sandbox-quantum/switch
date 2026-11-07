@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Session } from '@switch-console/shared/session-v1';
 import { describe, expect, it } from 'vitest';
-import type { ProviderRuntimeEvent } from '../events';
+import type { ProviderItem, ProviderRuntimeEvent } from '../events';
 import { Redactions } from '../host/redaction';
 import { ChatProjector } from './chat-projector';
 import { EventOutbox } from './event-outbox';
@@ -159,6 +159,40 @@ describe('chat projection', () => {
         0
       )
     ).toThrow('identity');
+  });
+  it('names the agent a call started, and only on that call', () => {
+    const projector = new ChatProjector(session('claude'), null);
+    projector.bindTurn('turn', context);
+    const started = (id: string, item: ProviderItem) =>
+      projector.ingest(
+        {
+          provider: 'claude',
+          sessionId: 'session',
+          eventId: `event-${id}`,
+          createdAt: '2026-09-07T12:00:00Z',
+          turnId: 'turn',
+          type: 'item.started',
+          item,
+        },
+        0
+      )[0];
+    expect(
+      started('agent', {
+        id: 'agent',
+        type: 'subagent',
+        status: 'in_progress',
+        title: 'Find the retry setting',
+        toolName: 'Explore',
+      })
+    ).toMatchObject({
+      item: { kind: 'tool-activity', title: 'Find the retry setting', subagent: 'Explore' },
+    });
+    expect(
+      started('nameless', { id: 'nameless', type: 'subagent', status: 'in_progress', title: 'x' })
+    ).toMatchObject({ item: { subagent: 'Subagent' } });
+    expect(
+      started('tool', { id: 'tool', type: 'command_execution', status: 'in_progress', title: 'ls' })
+    ).not.toHaveProperty('item.subagent');
   });
 });
 

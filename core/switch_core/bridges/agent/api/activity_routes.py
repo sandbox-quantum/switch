@@ -29,6 +29,7 @@ from switch_core.session_activity.service import (
     MAX_OPTIONS,
     MAX_QUESTION_OPTIONS,
     MAX_QUESTIONS,
+    MAX_SUBAGENT_CHARS,
     MAX_TEXT_CHARS,
     MAX_TITLE_CHARS,
     MAX_TOKENS,
@@ -94,6 +95,10 @@ class ActivityReport(BaseModel):
     # Hosts that predate usage reporting do not send it.
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
+    )
+    # Hosts that predate subagent reporting do not send one.
+    subagent: str | None = Field(
+        default=None, min_length=1, max_length=MAX_SUBAGENT_CHARS
     )
 
 
@@ -224,6 +229,7 @@ async def report_activity(
             )
             for u in body.usage
         ],
+        subagent=body.subagent,
     )
     return ActivityReceipt(recorded=recorded)
 

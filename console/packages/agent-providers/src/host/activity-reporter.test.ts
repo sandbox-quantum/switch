@@ -172,6 +172,18 @@ it('reports every message and tool item, streamed parts included, as its own row
   expect(reported[0]).toMatchObject({ turn_id: 'turn', command_id: null, ...placed });
 });
 
+it('names the agent on the row of the call that started it, and nowhere else', async () => {
+  const lines = await reporter();
+  const [agent, tool] = rows(
+    [
+      event(1, item({ itemId: 'agent', title: 'Find the retry setting', subagent: 'Explore' })),
+      event(2, item({ itemId: 'tool' })),
+    ].flatMap((e) => lines.reports(e, originOf, noUsage))
+  );
+  expect(agent).toMatchObject({ kind: 'tool-activity', subagent: 'Explore' });
+  expect(tool).not.toHaveProperty('subagent');
+});
+
 it('truncates long titles and texts', async () => {
   const lines = await reporter();
   const [row] = rows(

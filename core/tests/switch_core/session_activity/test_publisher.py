@@ -178,6 +178,7 @@ async def _step(
     title="",
     text="",
     message_id=ASKED,
+    subagent=None,
 ):
     await service.report_item(
         AGENT,
@@ -195,6 +196,7 @@ async def _step(
         message_id=message_id,
         occurred_at=datetime.now(UTC),
         usage=[],
+        subagent=subagent,
     )
 
 
@@ -659,6 +661,51 @@ async def test_a_stuck_turn_gets_a_message_of_its_own_until_it_clears(
         )
     )
     assert platform.drawn[-1].content.error_summary is None
+
+
+async def test_a_subagent_that_outlives_its_turn_redraws_the_turn_when_it_ends(
+    service, publisher, platform, bridged
+):
+    """A background agent goes on after the turn that started it, and its host
+    closes its call only when the agent itself ends. The turn's message has to
+    move then too, or it says "still running" over an agent long finished."""
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_for(1)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="agent-1",
+        kind="tool-activity",
+        status="in-progress",
+        revision=1,
+        title="Find the retry setting",
+        subagent="Explore",
+    )
+    await _turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(
+        lambda: _turns(platform)[-1].content.turn.status == "completed"
+    )
+    ended = len(_turns(platform))
+    assert [(i.subagent, i.status) for i in _turns(platform)[-1].content.items] == [
+        ("Explore", "in-progress")
+    ]
+
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="agent-1",
+        kind="tool-activity",
+        status="completed",
+        revision=4,
+        title="Find the retry setting",
+        subagent="Explore",
+    )
+    await platform.wait_until(lambda: len(_turns(platform)) > ended)
+    last = _turns(platform)[-1]
+    assert last.call == "update_rich"
+    assert [(i.subagent, i.status) for i in last.content.items] == [
+        ("Explore", "completed")
+    ]
 
 
 async def test_a_turn_that_failed_says_so(service, publisher, platform, bridged):

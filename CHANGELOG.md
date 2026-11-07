@@ -388,6 +388,15 @@ version of their own to them without also giving them a release of their own.
   Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
   `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
   nothing changes.
+- **Activity cards show the agents a turn started.** A tool call that started
+  another agent (a Claude Code, Codex, OpenCode or Cursor subagent) is drawn as
+  that agent, by name and task, with how it is going: on Slack as a card with
+  its own icon, and elsewhere as a line of its own under the turn's status,
+  which lists each one while there is work to watch. The turn says how many are
+  running, and one sent to the background stays running on the card after its
+  turn ends, until it finishes. `POST /agent-sessions/{session_id}/activity`
+  takes an optional `subagent` on a tool call's row, and the chats activity
+  API returns it (#802).
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -2751,6 +2760,15 @@ version of their own to them without also giving them a release of their own.
   connection's menu on the server page. The connection restarts with it and
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
+- **A subagent's call names the agent.** The session host reports the agent a
+  tool call started on that call's activity row, so messaging platforms draw
+  it as the subagent it is. A Claude Code subagent sent to the background stays
+  running until the agent itself ends, rather than reading as done the moment
+  it is launched. A Switch server that predates this takes the row without the
+  name (#802).
+- **A room's chat names the agents a turn started.** The work log shows a
+  subagent as the agent it is, "Running agent: Explore: Find the retry
+  setting", from the room's activity (#802).
 - **Airtable's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks

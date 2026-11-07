@@ -213,6 +213,7 @@ class ActivityItemView(CamelModel):
     status: str
     title: str
     text: str
+    subagent: str | None
     command_id: str | None
     room_id: str | None
     thread_id: str | None
@@ -233,6 +234,7 @@ class ActivityItemView(CamelModel):
             status=row.status,
             title=row.title,
             text=row.text,
+            subagent=row.subagent,
             command_id=row.command_id,
             room_id=row.room_id,
             thread_id=row.thread_id,

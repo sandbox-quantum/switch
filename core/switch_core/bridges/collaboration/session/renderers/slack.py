@@ -58,6 +58,7 @@ from . import (
     NO_OPTIONS,
     RequestReference,
     example_value,
+    step_title,
     surface_label,
     turn_state,
     unanswerable,
@@ -257,6 +258,7 @@ _TASK_STATUS = {
 # prompt would ideally be.
 _SAID_ICON = "comment"
 _TOOL_ICON = "code"
+_SUBAGENT_ICON = "bot"
 
 _DANGEROUS = {"decline", "cancel"}
 
@@ -1166,7 +1168,8 @@ def _activity_lines(items: list[Item]) -> list[str]:
     lines: list[str] = []
     spent = 0
     for position, item in enumerate(reversed(items), start=1):
-        title = _fit(item.title, _MAX_ACTIVITY_TITLE) if item.title else "_(untitled)_"
+        named = step_title(item)
+        title = _fit(named, _MAX_ACTIVITY_TITLE) if named else "_(untitled)_"
         line = f"{_ACTIVITY[item.status]} {title}"
         if item.text:
             line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
@@ -1513,8 +1516,14 @@ def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, An
     fills it token by token, so it is routinely still in progress when the turn
     stops — marking that "Unfinished" would put the word on the one line of the
     turn where nothing was left undone.
+
+    Nor about a subagent still open. One sent to the background goes on after
+    the turn that started it, and its host closes it when it ends, so it keeps
+    spinning: the message is redrawn when it finishes.
     """
     if item.kind == "assistant-message":
+        return task
+    if item.subagent is not None and item.status == "in-progress":
         return task
     if item.status != "in-progress" or turn.status in TURN_ENDED:
         task["status"] = "complete"
@@ -1580,7 +1589,8 @@ def _running(drawn: list[Item], turn: TurnUpsert) -> tuple[int, str] | None:
     )
     index = calls[-1] if current is None else current
     label = "Last" if current is None else "Running"
-    title = plain_text(drawn[index].title) if drawn[index].title else "Tool"
+    named = step_title(drawn[index])
+    title = plain_text(named) if named else "Tool"
     return index, f"{label}: {title}"
 
 
@@ -1649,6 +1659,8 @@ def _plan_task(item: Item) -> dict[str, Any]:
     say something worse — so a remark carries a `comment` glyph and a call
     carries `code`, which is what the glyph column does on every other platform.
     The marker stays in the title behind it as the same distinction in text.
+    A call that started another agent carries `bot`, and that agent's name
+    leads its title.
 
     A remark is drawn as its detail rather than as its title: the title is
     hidden, and the prose sits at the top of the card where a reader meets it
@@ -1671,13 +1683,15 @@ def _plan_task(item: Item) -> dict[str, Any]:
             "status": "complete",
             "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
-    title = plain_text(item.title) if item.title else ""
+    named = step_title(item)
+    title = plain_text(named) if named else ""
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
+    icon = _TOOL_ICON if item.subagent is None else _SUBAGENT_ICON
     task: dict[str, Any] = {
         "task_id": _task_id(item.item_id),
         "title": _truncate(title, _MAX_PLAN_TASK_TITLE) or "(untitled)",
-        "icon": {"type": "icon", "name": _TOOL_ICON},
+        "icon": {"type": "icon", "name": icon},
         "status": _TASK_STATUS[item.status],
     }
     details = plain_text(item.text) if item.text else ""

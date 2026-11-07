@@ -1005,6 +1005,48 @@ it('reports what an ended turn spent on its row, and the row alone to a server t
   }
 }, 20000);
 
+it('names a subagent on its row, and sends the plain row to a server that predates it', async () => {
+  const host = await start({ rooms: true });
+  const subagentRows = () =>
+    host.switchCore.calls.filter(
+      (c) =>
+        c.path.endsWith('/activity') &&
+        (c.body as { title: string }).title.startsWith('Find the retry setting')
+    );
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Fan out') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const turnId = host.turns[0]!.turnId;
+    const spawn = (id: string) =>
+      host.emit({
+        type: 'item.started',
+        turnId,
+        item: {
+          id,
+          type: 'subagent',
+          status: 'in_progress',
+          title: `Find the retry setting ${id}`,
+          toolName: 'Explore',
+        },
+      });
+    spawn('one');
+    await until(() => expect(subagentRows()).toHaveLength(1));
+    expect(subagentRows()[0]!.body).toMatchObject({ kind: 'tool-activity', subagent: 'Explore' });
+
+    host.switchCore.state.refusesSubagents = true;
+    spawn('two');
+    await until(() => expect(subagentRows()).toHaveLength(3));
+    expect(subagentRows()[1]!.body).toHaveProperty('subagent');
+    expect(subagentRows()[2]!.body).not.toHaveProperty('subagent');
+    expect(subagentRows()[2]!.body).toMatchObject({
+      kind: 'tool-activity',
+      title: 'Find the retry setting two',
+    });
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
 it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
   const host = await start({ resettable: true });
   try {

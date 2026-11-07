@@ -36,6 +36,11 @@ export type ActivityRow = {
    * there is nothing to say, so a server that predates it takes the row.
    */
   usage?: UsageRow[];
+  /**
+   * The agent a tool call started, on that call's row. Left out on every
+   * other row, so a server that predates it takes them.
+   */
+  subagent?: string;
 };
 
 export type UsageRow = {
@@ -167,6 +172,9 @@ export class ActivityReporter {
               command_id: null,
               ...place(item.turnId),
               occurred_at: event.occurredAt,
+              ...(item.subagent !== undefined
+                ? { subagent: truncate(item.subagent, MAX_LABEL) }
+                : {}),
             },
           },
         ];

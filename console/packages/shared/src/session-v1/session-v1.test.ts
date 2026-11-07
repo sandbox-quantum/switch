@@ -113,6 +113,16 @@ describe('session-v1 wire contract', () => {
       })
     ).toThrow('PAYLOAD_TOO_LARGE');
   });
+  it('accepts a call naming the agent it started, and items journaled before that existed', () => {
+    const call: Item = { ...item(1, ''), kind: 'tool-activity', title: 'Search' };
+    const upsert = (body: Item) =>
+      serverEventSchema.parse(event(11, { type: 'item.upsert', item: body }));
+    expect(upsert({ ...call, subagent: 'Explore' }).body).toMatchObject({
+      item: { subagent: 'Explore' },
+    });
+    expect(upsert(call).body).not.toHaveProperty('item.subagent');
+    expect(() => upsert({ ...call, subagent: '' })).toThrow();
+  });
   it('replaces text, ignores replay and accepts permission-filtered sequence gaps', () => {
     const replica = new SessionReplica(initial());
     replica.apply(event(12, { type: 'item.upsert', item: item(1, 'Hello') }));

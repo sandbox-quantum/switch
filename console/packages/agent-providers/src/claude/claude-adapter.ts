@@ -205,7 +205,12 @@ interface SessionState {
   turn: ActiveTurn | null;
   pendingApprovals: Map<string, PendingApproval>;
   pendingUserInputs: Map<string, PendingUserInput>;
-  toolItems: Map<string, ProviderItem>;
+  /**
+   * Tool calls not yet answered, with the turn each started in. A background
+   * subagent's own calls are answered after that turn has ended, and close
+   * against it, not against whatever turn is running then.
+   */
+  toolItems: Map<string, { item: ProviderItem; turnId: string }>;
   streamedMessageIds: Set<string>;
   textBlocks: Map<number, TextBlockState>;
   streamMessageId: string | null;
@@ -219,11 +224,19 @@ interface SessionState {
   usage: CumulativeUsage;
   unreportedUsage: TokenUsage[];
   /**
-   * Subagent tasks the CLI is running, by task id, and whether each runs in
-   * the background. A background one outlives the turn that started it, so
-   * the session is still at work after the turn ends.
+   * Subagent tasks the CLI is running, by task id: whether each runs in the
+   * background, and the tool call that started it. A background one outlives
+   * the turn that started it, so the session is still at work after the turn
+   * ends.
    */
-  subagentTasks: Map<string, { backgrounded: boolean }>;
+  subagentTasks: Map<string, { backgrounded: boolean; toolUseId: string | null }>;
+  /**
+   * Subagent calls whose agent runs in the background, by task id. The CLI
+   * answers such a call as soon as the agent is launched, so its item is held
+   * open until the agent itself ends, and closed against the turn that
+   * started it.
+   */
+  backgroundSubagents: Map<string, { turnId: string; item: ProviderItem }>;
 }
 
 /** Task types that are agents doing work, rather than shells or tool calls. */
@@ -239,6 +252,24 @@ function isSubagentTask(task: {
   return task.task_type !== undefined
     ? SUBAGENT_TASK_TYPES.has(task.task_type)
     : task.subagent_type !== undefined;
+}
+
+/** The task a subagent call sent to the background, while its agent is still running. */
+function backgroundTaskOf(session: SessionState, toolUseId: string): string | null {
+  for (const [taskId, task] of session.subagentTasks)
+    if (task.toolUseId === toolUseId && task.backgrounded) return taskId;
+  return null;
+}
+
+/**
+ * How a subagent's call ended, from how the CLI says its task ended. One that
+ * was stopped or killed ended on purpose rather than by failing: it is
+ * declined.
+ */
+function subagentOutcome(
+  status: 'completed' | 'failed' | 'stopped' | 'killed'
+): Exclude<ItemStatus, 'in_progress'> {
+  return status === 'stopped' || status === 'killed' ? 'declined' : status;
 }
 
 /** An async iterable the adapter pushes into for the life of the session. */
@@ -553,6 +584,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       usage: new CumulativeUsage(),
       unreportedUsage: [],
       subagentTasks: new Map(),
+      backgroundSubagents: new Map(),
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -891,32 +923,57 @@ export class ClaudeAdapter implements ProviderAdapter {
     switch (message.subtype) {
       case 'task_started':
         if (isSubagentTask(message))
-          tasks.set(message.task_id, { backgrounded: message.is_backgrounded !== false });
+          tasks.set(message.task_id, {
+            backgrounded: message.is_backgrounded !== false,
+            toolUseId: message.tool_use_id ?? null,
+          });
         return;
       case 'task_updated': {
         const task = tasks.get(message.task_id);
         if (!task) return;
         const status = message.patch.status;
-        if (status === 'completed' || status === 'failed' || status === 'killed')
+        if (status === 'completed' || status === 'failed' || status === 'killed') {
           tasks.delete(message.task_id);
-        else if (message.patch.is_backgrounded !== undefined)
+          this.settleBackgroundSubagent(session, message.task_id, subagentOutcome(status));
+        } else if (message.patch.is_backgrounded !== undefined)
           task.backgrounded = message.patch.is_backgrounded;
         return;
       }
       case 'task_notification':
         tasks.delete(message.task_id);
+        this.settleBackgroundSubagent(session, message.task_id, subagentOutcome(message.status));
         return;
       case 'background_tasks_changed': {
-        const foreground = [...tasks].filter(([, task]) => !task.backgrounded);
+        const known = new Map(tasks);
         tasks.clear();
-        for (const [taskId, task] of foreground) tasks.set(taskId, task);
+        for (const [taskId, task] of known) if (!task.backgrounded) tasks.set(taskId, task);
         for (const task of message.tasks)
-          if (isSubagentTask(task)) tasks.set(task.task_id, { backgrounded: true });
+          if (isSubagentTask(task))
+            tasks.set(task.task_id, {
+              backgrounded: true,
+              toolUseId: known.get(task.task_id)?.toolUseId ?? null,
+            });
         return;
       }
       default:
         return;
     }
+  }
+
+  /** Close a background subagent's call, now that its agent has ended. */
+  private settleBackgroundSubagent(
+    session: SessionState,
+    taskId: string,
+    status: ItemStatus
+  ): void {
+    const held = session.backgroundSubagents.get(taskId);
+    if (!held) return;
+    session.backgroundSubagents.delete(taskId);
+    this.emit(session, {
+      type: 'item.completed',
+      turnId: held.turnId,
+      item: { ...held.item, status },
+    });
   }
 
   private handleStreamEvent(
@@ -1039,7 +1096,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         toolName: toolNameForItem(name, toolInput),
         payload: toolInput,
       };
-      session.toolItems.set(id, item);
+      session.toolItems.set(id, { item, turnId });
       this.emit(session, {
         type: 'item.started',
         turnId,
@@ -1050,16 +1107,24 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleToolResults(session: SessionState, content: unknown): void {
-    const turnId = session.turn?.turnId;
-    if (turnId === undefined || !Array.isArray(content)) return;
+    if (!Array.isArray(content)) return;
 
     for (const block of content) {
       if (!isRecord(block) || block.type !== 'tool_result') continue;
       const toolUseId = block.tool_use_id;
       if (typeof toolUseId !== 'string') continue;
-      const started = session.toolItems.get(toolUseId);
-      if (!started) continue;
+      const open = session.toolItems.get(toolUseId);
+      if (!open) continue;
       session.toolItems.delete(toolUseId);
+      const { item: started, turnId } = open;
+      const background =
+        started.type === 'subagent' && block.is_error !== true
+          ? backgroundTaskOf(session, toolUseId)
+          : null;
+      if (background !== null) {
+        session.backgroundSubagents.set(background, { turnId, item: started });
+        continue;
+      }
       const status: ItemStatus = block.is_error === true ? 'failed' : 'completed';
       const text = textFromToolResultContent(block.content);
       this.emit(session, {
@@ -1289,6 +1354,10 @@ export class ClaudeAdapter implements ProviderAdapter {
         usage: this.takeUsage(session),
       });
     }
+
+    // An agent still running in the background ends with the session, unfinished.
+    for (const taskId of [...session.backgroundSubagents.keys()])
+      this.settleBackgroundSubagent(session, taskId, 'failed');
 
     session.input.close();
     session.query.close();

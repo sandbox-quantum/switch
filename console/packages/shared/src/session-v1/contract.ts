@@ -44,6 +44,11 @@ export type Item = {
   text: string;
   attachments: Attachment[];
   origin: Origin | null;
+  /**
+   * The agent a tool call started, by name, for a call that started one. Left
+   * out on every other item, and on items journaled before it existed.
+   */
+  subagent?: string;
 };
 export type ApprovalOption = {
   optionId: Id;
