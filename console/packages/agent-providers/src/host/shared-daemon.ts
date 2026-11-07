@@ -14,6 +14,7 @@ import { dirMode } from './host-permissions';
 import { materializeHostedProvider } from './hosted-provider';
 import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import { runMcpBridge } from './mcp-bridge';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
@@ -251,7 +252,8 @@ async function main(): Promise<void> {
           config.start.provider,
           config.execution?.binaryPath,
           config.execution?.skill ?? '',
-          grantedSkills(services.grants)
+          grantedSkills(services.grants),
+          { command: process.execPath, args: [process.argv[1]!, '--mcp-bridge'] }
         ),
         services,
         servicesChange,
@@ -315,7 +317,8 @@ function isCliConversationMode(value: string): value is CliConversationMode {
   return (CLI_CONVERSATION_MODES as readonly string[]).includes(value);
 }
 
-if (root === '--git-credential' || root === '--github-cli') await helper();
+if (root === '--mcp-bridge') await runMcpBridge(process.argv[3]);
+else if (root === '--git-credential' || root === '--github-cli') await helper();
 else
   try {
     await main();

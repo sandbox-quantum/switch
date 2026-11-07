@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, RuntimeMode } from '../adapter';
+import type { McpServerSpec, ProviderCapabilities, RuntimeMode } from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -34,6 +34,12 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+}
+
+/** A host-owned process entry point for adapting an MCP transport. */
+export interface AcpMcpBridge {
+  command: string;
+  args: string[];
 }
 
 /**
@@ -101,6 +107,14 @@ export interface AcpProviderHooks {
   capabilities: ProviderCapabilities;
   /** The command, arguments and environment to run the agent with. May prepare the host first. */
   launch(input: AcpLaunchInput): Promise<AcpLaunch> | AcpLaunch;
+  /** Adapt MCP server specs for a provider before converting them to ACP. */
+  prepareMcpServers?(
+    servers: Record<string, McpServerSpec>,
+    env: Record<string, string>,
+    bridge: AcpMcpBridge | undefined
+  ): Record<string, McpServerSpec>;
+  /** Maximum UTF-8 bytes of a request line the provider can read. */
+  maxRequestBytes?: number;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /**
@@ -192,4 +206,5 @@ export interface AcpSignInInput extends SignInCheckInput {
 export interface AcpAdapterOptions {
   binaryPath?: string;
   logger?: ProviderLogger;
+  mcpBridge?: AcpMcpBridge;
 }

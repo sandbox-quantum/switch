@@ -6,6 +6,24 @@ afterEach(async () => {
   await client?.dispose();
   client = null;
 });
+it('rejects an oversized UTF-8 request before sending it and keeps the process usable', async () => {
+  client = new StdioJsonRpcClient({
+    command: process.execPath,
+    args: [
+      '-e',
+      `require('node:readline').createInterface({input:process.stdin}).on('line', line => { const req=JSON.parse(line); process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:req.id,result:'ok'})+'\\n'); });`,
+    ],
+    cwd: process.cwd(),
+    env: {},
+    logger: noopLogger,
+    onExit: () => {},
+    maxRequestBytes: 128,
+  });
+  await expect(client.request('session/prompt', { text: 'é'.repeat(80) })).rejects.toThrow(
+    'exceeds the input limit and was not sent'
+  );
+  await expect(client.request('initialize', {})).resolves.toBe('ok');
+});
 it('times out an unacknowledged startup request without resending it', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   client = new StdioJsonRpcClient({
