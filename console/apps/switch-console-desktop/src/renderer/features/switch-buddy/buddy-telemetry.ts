@@ -12,6 +12,7 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'opencode',
   'cursor',
   'antigravity',
+  'kimi',
 ];
 
 /** A provider id as telemetry may carry it: one of the five, else `none`. */
