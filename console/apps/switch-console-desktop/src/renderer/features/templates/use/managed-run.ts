@@ -80,7 +80,7 @@ export function machineProblem(
   const entry = machine.providers.find((p) => p.provider === provider);
   if (!entry) return `${provider} is not installed on ${machine.name}.`;
   if (!entry.ready)
-    return `${provider} on ${machine.name} is not ready${entry.problem ? `: ${entry.problem}` : ''}.`;
+    return `${provider} on ${machine.name} is not ready${entry.problem ? `: ${entry.problem}` : ''}.${entry.detail ? ` ${entry.detail}` : ''}`;
   return null;
 }
 

@@ -228,6 +228,18 @@ switchCore:
   imagePullPolicy: ""
   logLevel: INFO
 
+  # The ServiceAccount switch-core runs as: one of its own, never the
+  # namespace's `default`, which every pod that names no account shares.
+  # Anything outside the cluster that trusts switch-core's identity — the
+  # distributed Teams app's federated credential (teamsApp.credential:
+  # federated) above all — then trusts switch-core alone. Empty name means
+  # <release>-switch-core. Set create: false to run as an account made
+  # elsewhere (by terraform, say), and name it.
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
   # Logging. "text" is for reading in a terminal; "json" is what a log pipeline
   # wants, and the only format that carries the context fields as fields — the
   # tenant, and the request, agent and user a line belongs to — rather than
@@ -438,9 +450,22 @@ switchCore:
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
   # hosted_agents, service_connections, agent_chats, follow_the_conversation,
-  # switch_buddy.
+  # switch_buddy, buddy_slack_handoff.
   featureFlags:
     enabled: []
+  # Catalog services turned off on this server, each with the reason people
+  # see (DISABLED_SERVICES), e.g. {"google-workspace": "Paused while we review
+  # access."}. An empty reason shows "Switched off on this server." People
+  # cannot connect, grant or issue a turned-off service, but they can
+  # disconnect it. An unknown slug stops switch-core at startup.
+  disabledServices: {}
+  # Services that ask for less access than their full scopes
+  # (SERVICE_ACCESS_PROFILES), e.g. {"google-workspace": "drive-file"}. Only
+  # google-workspace has a profile now: drive-file asks for drive.file in place
+  # of Google's restricted drive and drive.readonly scopes. If you change it,
+  # people must reconnect. An unknown service or profile stops switch-core at
+  # startup. Empty: full scopes.
+  serviceAccessProfiles: {}
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
   # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
   # anything that speaks SMTP). Off, the invitation is still created and the
@@ -463,7 +488,7 @@ switchCore:
     # The From address, e.g. "Switch <invites@your-domain>".
     from: ""
     # Addressed invitations one workspace may send per 24 hours. With sign-up
-    # open anyone can own a workspace, so this keeps the relay from being used
+    # open anyone can create a workspace, so this keeps the relay from being used
     # to mail arbitrary addresses. Operators are exempt.
     emailsPerDayPerWorkspace: 50
   # Public origin every distributed messaging app (Slack, Discord, Teams,
@@ -530,7 +555,9 @@ switchCore:
     # (secrets.teamsAppClientSecret), certificate
     # (secrets.teamsAppCertificate + secrets.teamsAppCertificatePrivateKey), or
     # federated — a projected service-account token the app registration
-    # trusts as a federated credential, so no secret exists at all.
+    # trusts as a federated credential, so no secret exists at all. The
+    # credential's subject is switch-core's own account (serviceAccount
+    # above): system:serviceaccount:<namespace>:<release>-switch-core.
     credential: secret
     # Shown to the admin approving the app, and required in its package.
     privacyUrl: ""
@@ -700,6 +727,15 @@ switchCore:
     maxSkew: 1
     topologyKey: kubernetes.io/hostname
     whenUnsatisfiable: ScheduleAnyway
+  # Which nodes the switch-core pods may run on. Empty, they go wherever the
+  # cluster has room. To keep them to nodes of their own, label and taint those
+  # nodes and match both here, e.g. a load test on a node group that carries
+  # `workload: loadtest` and the taint `loadtest=true:NoSchedule`:
+  #   nodeSelector: {workload: loadtest}
+  #   tolerations:
+  #     - {key: loadtest, operator: Equal, value: "true", effect: NoSchedule}
+  nodeSelector: {}
+  tolerations: []
   # How long the kubelet waits after SIGTERM before killing the pod. On SIGTERM
   # switch-core hands the bridges and readers it owns to the other
   # pods (up to 10s), releases its lease (up to 1s), keeps serving for 5s while

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
-import type { TelemetryEventMap } from '@main/core/telemetry/events';
+import type { TelemetryServerKind } from '@main/core/telemetry/events';
 import { forgetSessionAccount, recordSessionAccount } from '@main/core/telemetry/internal-account';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { forgetServerSession } from '@main/core/workspaces/workspace-session';
@@ -29,6 +29,7 @@ import {
 } from '@shared/core/switch-servers/switch-servers';
 import { workspaceUnavailability } from '@shared/core/workspaces/workspaces';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
+import { switchCloudEndpoint } from './switch-cloud';
 
 // Keyed to the server, not the workspace: one gateway session cookie covers
 // every workspace on a server.
@@ -259,6 +260,7 @@ export async function ensureManagedServer(
     trackEvent('server_added', {
       server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
       outcome: 'success',
+      failure_reason: 'none',
     });
   }
   return server;
@@ -435,11 +437,25 @@ export async function removeServer(id: string): Promise<void> {
 }
 
 /** The reported kind of a server, in the same terms `server_added` uses. */
-export function serverKindOf(
-  server: SwitchServer
-): TelemetryEventMap['server_added']['server_kind'] {
-  if (!server.managed) return 'external';
-  return server.managementKind === 'remote' ? 'remote_managed' : 'local';
+export function serverKindOf(server: SwitchServer): TelemetryServerKind {
+  if (server.managed) return server.managementKind === 'remote' ? 'remote_managed' : 'local';
+  return isSwitchCloud(server.url) ? 'cloud' : 'external';
+}
+
+/**
+ * Whether `url` is Switch Cloud's, as this build or run names it. A build that
+ * names no Cloud, or names one it cannot parse, has no Cloud server to count:
+ * the misconfiguration surfaces where the Cloud is offered, not here, where it
+ * would fail whatever is being reported on.
+ */
+function isSwitchCloud(url: string): boolean {
+  let cloud: ReturnType<typeof switchCloudEndpoint>;
+  try {
+    cloud = switchCloudEndpoint();
+  } catch {
+    return false;
+  }
+  return cloud !== null && normaliseUrl(cloud.url) === normaliseUrl(url);
 }
 
 /**

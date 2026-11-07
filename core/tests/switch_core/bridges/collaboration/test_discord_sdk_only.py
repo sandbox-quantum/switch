@@ -97,6 +97,11 @@ class _Message:
         self.edits: list[dict[str, Any]] = []
         self.deleted = False
 
+    @property
+    def clean_content(self) -> str:
+        # Discord's text with mentions resolved; these fakes carry none.
+        return self.content
+
     async def edit(self, *, content: str, **kwargs: Any) -> None:
         self.edited = content
         self.edits.append({"content": content, **kwargs})

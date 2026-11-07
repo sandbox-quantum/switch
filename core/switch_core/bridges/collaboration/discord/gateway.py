@@ -88,6 +88,8 @@ class DiscordGatewayClient:
         self._task: asyncio.Task[None] | None = None
         # The socket as owned work, once `own` has registered it.
         self._owned: OwnedKind | None = None
+        # Channels whose update has been routed since this process started.
+        self._channel_names_seen: set[int] = set()
         # command_guild_id=None → commands register globally, once for the
         # application across every guild (decision #7); guild-scoped registration
         # is the self-registered adapter's, which serves one guild.
@@ -144,6 +146,7 @@ class DiscordGatewayClient:
         # (guard G4).
         self._connection.set_guild_message_handler(self._on_guild_message)
         self._connection.set_interaction_handler(self._on_interaction)
+        self._connection.set_channel_update_handler(self._on_channel_update)
         self._connection.set_guild_lifecycle_handlers(
             on_remove=self._on_guild_remove,
             on_join=self._on_guild_join,
@@ -311,6 +314,29 @@ class DiscordGatewayClient:
             # handling and outbound posting run against the one socket.
             adapter.attach_shared_connection(self._connection)
             await adapter.dispatch_inbound(message)
+
+    async def _on_channel_update(
+        self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel
+    ) -> None:
+        """Route a guild channel's change to the bridge its guild resolves to,
+        fresh and with no tenant bound, as a message is (G1). A guild with no
+        install is dropped. Only a rename, or a channel's first update since
+        this process started, is resolved; the adapter makes the same cut."""
+        if before.name == after.name and after.id in self._channel_names_seen:
+            return
+        self._channel_names_seen.add(after.id)
+        with no_tenant():
+            try:
+                target = await self._install_service.resolve_by_workspace(
+                    platform=_PLATFORM, workspace_id=str(after.guild.id)
+                )
+            except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable):
+                return
+            adapter = target.adapter
+            if not isinstance(adapter, DiscordAdapter):
+                return
+            adapter.attach_shared_connection(self._connection)
+            await adapter.dispatch_channel_update(before, after)
 
     async def _on_slash(
         self,

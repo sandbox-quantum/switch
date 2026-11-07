@@ -7,11 +7,13 @@ const SWITCH_CONSOLE_RELEASES_API_URL =
 
 /**
  * The desktop app shares its repo with switch-core, so its release tags are
- * namespaced `switch-console-v<version>` — see .github/workflows/switch-console-release.yml,
- * which only triggers on that prefix. A bare `v<version>` tag belongs to nothing.
+ * namespaced `switch-console-v<version>` — see .github/workflows/switch-console-release.yml.
+ * Canaries are the exception: they are tagged bare `v<version>`, because
+ * electron-updater skips any prerelease tag that is not plain semver.
  */
 export function switchConsoleReleaseTag(version: string): string {
-  return `switch-console-v${version.replace(/^v/, '')}`;
+  const bare = version.replace(/^v/, '');
+  return bare.includes('-canary.') ? `v${bare}` : `switch-console-v${bare}`;
 }
 
 /**
@@ -41,3 +43,6 @@ export const SWITCH_DOCS_ROOMS_URL = `${SWITCH_DOCS_BASE}/using/work-in-a-room`;
 
 export const SWITCH_CONSOLE_ISSUES_URL = `${SWITCH_CONSOLE_REPO_URL}/issues`;
 export const SWITCH_CONSOLE_ISSUES_NEW_URL = `${SWITCH_CONSOLE_REPO_URL}/issues/new/choose`;
+
+/** Switch Trust, the guardrails service, linked from the top bar for everyone. */
+export const SWITCH_TRUST_URL = 'https://app.switchagents.ai/';

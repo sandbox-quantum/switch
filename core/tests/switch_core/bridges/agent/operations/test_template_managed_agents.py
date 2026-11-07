@@ -36,6 +36,9 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.db.models import Agent, Room, Template
+from switch_core.db.stores.template_install_store import TemplateInstallStore
+from switch_core.official_templates import current_revision
+from switch_core.template_installs import fingerprint
 from switch_core.template_runs import AgentsNotCreated, RunUndone
 from tests.switch_core.bridges.agent.operations.conftest import _make_agent
 
@@ -660,6 +663,47 @@ agent:
     assert added == [(lobby_id, [created["agent_id"]])]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_type", ["direct", "group"])
+async def test_a_new_agent_never_joins_a_direct_or_group_conversation(
+    managed, channel_type
+):
+    """Its platform fixes who is in it, however writable its room is: a DM the
+    bridge adopted is writable by every member of the workspace."""
+    added: list[tuple[str, list[str]]] = []
+
+    async def add_agents_to_room(room_id: str, agent_ids: list[str]) -> None:
+        added.append((room_id, agent_ids))
+
+    managed["protocol"].room_service.add_agents_to_room = add_agents_to_room
+    async with managed["session_factory"]() as session:
+        session.add(
+            Room(
+                transport_room_id="!someones-dm:test.local",
+                name="someones-dm",
+                description="d",
+                channel_type=channel_type,
+                write_visibility="public",
+            )
+        )
+        await session.commit()
+    template = """\
+agent:
+  name: joiner
+  instructions: Join.
+  provider: claude
+  machine: laptop
+  directory: /srv/joiner
+  join: [someones-dm]
+"""
+    stored = await _stored(managed, template, kind="agent")
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=stored)
+    assert {p.code for p in e.value.problems} == {"join_fixed_membership"}
+    assert managed["management"].created == []
+    assert added == []
+
+
 def test_a_provider_chain_takes_the_first_ready_on_the_machine():
     template = """\
 params:
@@ -880,3 +924,51 @@ async def test_users_with_no_messaging_app_are_refused_before_any_agent(managed)
     with pytest.raises(ValueError, match="on no messaging app"):
         await _as(managed["agent_id"], run_template, template_id=template_id)
     assert managed["management"].created == []
+
+
+async def _install_of(env: dict[str, Any], template_id: str) -> Any:
+    store = TemplateInstallStore()
+    async with env["session_factory"]() as session:
+        installs = await store.of_template(session, template_id)
+        return [(i, await store.resources(session, i.id)) for i in installs]
+
+
+@pytest.mark.asyncio
+async def test_switch_buddy_run_by_an_agent_is_recorded_as_its_install(managed):
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id="official:switch-buddy",
+        inputs={"agent_name": "switch-buddy-max"},
+    )
+
+    ((install, (resource,)),) = await _install_of(managed, "official:switch-buddy")
+    assert (install.source, install.owner_id, install.revision) == (
+        "official",
+        managed["user_id"],
+        current_revision("switch-buddy"),
+    )
+    assert resource.key == "buddy"
+    assert resource.agent_id == result["created_agents"][0]["agent_id"]
+
+
+@pytest.mark.asyncio
+async def test_a_saved_template_run_by_an_agent_is_recorded_at_its_version(managed):
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: helper\n"
+        "  description: Helps.\n"
+        "  instructions: Help.\n"
+        "  provider: claude\n"
+        "  machine: laptop\n"
+        "  directory: /srv/helper\n",
+        kind="agent",
+    )
+
+    await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    ((install, (resource,)),) = await _install_of(managed, template_id)
+    assert (install.source, install.revision) == ("saved", 1)
+    assert resource.key == "helper"
+    assert resource.fingerprints["instructions"] == fingerprint("Help.")

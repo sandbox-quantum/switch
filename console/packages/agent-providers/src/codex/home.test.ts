@@ -1,9 +1,14 @@
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
 import { afterEach, describe, expect, it } from 'vitest';
-import { prepareCodexSessionHome, withManagedCodexSandbox } from './home';
+import {
+  codexHomeNotAbsolute,
+  codexSourceHome,
+  prepareCodexSessionHome,
+  withManagedCodexSandbox,
+} from './home';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -102,6 +107,20 @@ it('links the user’s own Codex skills into a session home that has no skills f
     config: '',
   });
   expect(await readFile(join(home, 'skills', '.system', 'SKILL.md'), 'utf8')).toBe('system skill');
+});
+
+describe('codexSourceHome', () => {
+  it('takes CODEX_HOME, else ~/.codex', () => {
+    expect(codexSourceHome({ CODEX_HOME: '/srv/codex' })).toBe('/srv/codex');
+    expect(codexSourceHome({})).toBe(join(homedir(), '.codex'));
+  });
+
+  it('refuses a relative CODEX_HOME rather than guess which directory it is from', () => {
+    expect(() => codexSourceHome({ CODEX_HOME: '.codex-work' })).toThrow(
+      codexHomeNotAbsolute('.codex-work')
+    );
+    expect(() => codexSourceHome({ CODEX_HOME: '~/.codex' })).toThrow('absolute path');
+  });
 });
 
 describe('withManagedCodexSandbox', () => {

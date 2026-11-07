@@ -130,6 +130,13 @@ artifacts:
 artifacts-check:
     uv run --project core python scripts/gen_artifacts.py --check
 
+# ── Record the official templates' revisions, at release time ─────────────────
+# Adds a revision to revisions.json for each official template (switch-buddy,
+# the Switch expert) whose files changed since its last one; commit it with the
+# version bump. The release workflow refuses a release tag while any changed.
+record-template-revisions:
+    uv run --project core python -m switch_core.official_templates.revisions record-all
+
 # ── Build the Teams app package an operator uploads ───────────────────────────
 # Every route into a tenant wants a .zip — Developer Portal Import app, Upload a
 # custom app, the admin centre — and none takes a bare manifest.json. Pass the
@@ -182,6 +189,14 @@ e2e-provider *args:
 # run). Screenshots of failed pages: build/e2e/ephemeral/screenshots.
 e2e-browser *args:
     SWITCH_E2E_LANE=browser console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
+
+# ── End-to-end harness, explore lane, on a throwaway stack ─────────────────────
+# As e2e-browser, but Bombadil drives the gateway UI at random for
+# SWITCH_E2E_EXPLORE_TIME_LIMIT (default 5m), checking the properties in
+# console/tooling-e2e/src/explore/spec/gateway.ts in every state. Its trace:
+# build/e2e/ephemeral/explore, read with `bombadil browser inspect`.
+e2e-explore *args:
+    SWITCH_E2E_LANE=explore console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
 
 # ── End-to-end harness, agentic lane, on a throwaway stack ─────────────────────
 # As e2e-provider, then the scenario files in console/tooling-e2e/agentic: a

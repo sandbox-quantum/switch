@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from typing import Annotated, Any
 
@@ -53,7 +54,7 @@ from switch_core.bridges.agent.protocol.controller_stream import (
 )
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_INTERVAL_SECONDS
 from switch_core.db.session_scope import tenant_session
-from switch_core.management import reason_codes
+from switch_core.management import reason_codes, socket_calls
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.dependencies import (
     get_authenticator,
@@ -444,6 +445,8 @@ async def attach_stream(
         "connection_id": conn.id,
         "generation": conn.generation,
         "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
+        # The socket takes its agents' operations as calls (`socket_calls`).
+        "calls": socket_calls.calls_offered(),
     }
     return controller_event_stream(
         conn=conn,
@@ -527,6 +530,7 @@ async def connection_socket(
     controller_id: str,
     management: Management,
     protocol: Protocol,
+    authenticator: Annotated[ManagementAuthenticator, Depends(get_authenticator)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_management_session_factory)
     ],
@@ -534,14 +538,16 @@ async def connection_socket(
     generation: int,
 ) -> None:
     """The controller's one connection: its agents' events and the management
-    nudges down, its heartbeat up, on one WebSocket.
+    nudges down, its heartbeat and its agents' calls up, on one WebSocket.
 
     Attaches to a connection opened with `POST .../connection`. Frames are
     JSON `{"event", "data"}`, the events the stream carries. The server sends
     `{"event": "ping"}` every heartbeat interval and the controller answers
-    `{"type": "pong", "cursors": {agent_id: n}}`, which is its beat. A refused
-    attach is a `refused` frame, then a close with 4000 plus the status; a
-    refused beat is an `evicted` frame naming why, then a close.
+    `{"type": "pong", "cursors": {agent_id: n}}`, which is its beat. A
+    `{"type": "call", ...}` runs one of its agents' operations and is answered
+    with a `call.result` frame (`socket_calls`). A refused attach is a
+    `refused` frame, then a close with 4000 plus the status; a refused beat is
+    an `evicted` frame naming why, then a close.
     """
     await websocket.accept()
     try:
@@ -559,18 +565,26 @@ async def connection_socket(
         await websocket.close(code=4000 + error.status_code)
         return
 
-    outbox: asyncio.Queue[ControllerFrame] = asyncio.Queue(maxsize=_SOCKET_OUTBOX)
+    outbox = _Outbox(_SOCKET_OUTBOX)
     pump = asyncio.create_task(_pump(frames, outbox))
-    pongs = asyncio.create_task(
-        _receive_pongs(websocket, principal, protocol, connection_id, generation)
+    receiver = asyncio.create_task(
+        _receive(
+            websocket,
+            principal=principal,
+            protocol=protocol,
+            authenticator=authenticator,
+            connection_id=connection_id,
+            generation=generation,
+            outbox=outbox,
+        )
     )
     loop = asyncio.get_running_loop()
     next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
     try:
-        # One writer: frames and pings both go out from this loop.
+        # One writer: frames, call answers and pings all go out from this loop.
         while not pump.done() or not outbox.empty():
-            if pongs.done():
-                refusal = pongs.result()
+            if receiver.done():
+                refusal = receiver.result()
                 if refusal is not None:
                     await websocket.send_json(
                         {
@@ -579,12 +593,7 @@ async def connection_socket(
                         }
                     )
                 return
-            try:
-                frame = await asyncio.wait_for(
-                    outbox.get(), timeout=max(0.0, next_ping - loop.time())
-                )
-            except TimeoutError:
-                frame = None
+            frame = await outbox.get(timeout=max(0.0, next_ping - loop.time()))
             if frame is not None and frame is not IDLE:
                 await websocket.send_json(frame)
             if loop.time() >= next_ping:
@@ -597,7 +606,7 @@ async def connection_socket(
         return
     finally:
         pump.cancel()
-        pongs.cancel()
+        receiver.cancel()
         failure = pump.exception() if pump.done() and not pump.cancelled() else None
         if failure is not None:
             logger.error(
@@ -616,6 +625,53 @@ async def connection_socket(
 _SOCKET_OUTBOX = 64
 
 
+class _Outbox:
+    """What the socket's one writer sends next.
+
+    The stream's frames wait here, at most `size` of them, so the stream is
+    read only as fast as the socket takes them. A call's answer never waits
+    for room, as there are no more of them than calls in flight, and goes out
+    before any frame still waiting, so a backlog of events does not hold a
+    call up.
+    """
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+        self._frames: deque[ControllerFrame] = deque()
+        self._answers: deque[ControllerFrame] = deque()
+        self._waiting = asyncio.Event()
+        self._room = asyncio.Event()
+        self._room.set()
+
+    def empty(self) -> bool:
+        return not self._frames and not self._answers
+
+    async def put_frame(self, frame: ControllerFrame) -> None:
+        while len(self._frames) >= self._size:
+            self._room.clear()
+            await self._room.wait()
+        self._frames.append(frame)
+        self._waiting.set()
+
+    def put_answer(self, answer: ControllerFrame) -> None:
+        self._answers.append(answer)
+        self._waiting.set()
+
+    async def get(self, timeout: float) -> ControllerFrame | None:
+        """The next frame to send, or None once `timeout` passes with none."""
+        if self.empty():
+            self._waiting.clear()
+            try:
+                await asyncio.wait_for(self._waiting.wait(), timeout)
+            except TimeoutError:
+                return None
+        if self._answers:
+            return self._answers.popleft()
+        frame = self._frames.popleft()
+        self._room.set()
+        return frame
+
+
 def _socket_principal(websocket: WebSocket, controller_id: str) -> ControllerPrincipal:
     """The controller the bearer middleware authenticated, checked against the
     path and the protocol it declares, as the HTTP routes check theirs."""
@@ -630,34 +686,50 @@ def _socket_principal(websocket: WebSocket, controller_id: str) -> ControllerPri
     return require_controller(controller_id, get_controller_principal(websocket))
 
 
-async def _pump(
-    frames: AsyncGenerator[ControllerFrame], outbox: asyncio.Queue[ControllerFrame]
-) -> None:
+async def _pump(frames: AsyncGenerator[ControllerFrame], outbox: _Outbox) -> None:
     # Closed here: cancelled while waiting on the outbox, the stream would
     # otherwise detach only when the generator is garbage collected.
     try:
         async for frame in frames:
-            await outbox.put(frame)
+            await outbox.put_frame(frame)
     finally:
         await frames.aclose()
 
 
-async def _receive_pongs(
+async def _receive(
     websocket: WebSocket,
+    *,
     principal: ControllerPrincipal,
     protocol: AgentCore,
+    authenticator: ManagementAuthenticator,
     connection_id: str,
     generation: int,
+    outbox: _Outbox,
 ) -> ControllerConnectionError | None:
-    """Turn each pong into a beat, until the controller goes or a beat is
-    refused. Returns the refusal, so the socket can say which before it
-    closes; None when the controller simply went away."""
+    """Turn each pong into a beat and start answering each call, until the
+    controller goes or a beat is refused. Returns the refusal, so the socket
+    can say which before it closes; None when the controller simply went
+    away."""
+    in_flight: set[asyncio.Task[None]] = set()
     while True:
         try:
             message = await websocket.receive_json()
         except (WebSocketDisconnect, ValueError, RuntimeError):
             return None
-        if not isinstance(message, dict) or message.get("type") != "pong":
+        if not isinstance(message, dict):
+            continue
+        kind = message.get("type")
+        if kind == socket_calls.CALL:
+            _start_call(
+                message,
+                in_flight=in_flight,
+                outbox=outbox,
+                principal=principal,
+                protocol=protocol,
+                authenticator=authenticator,
+            )
+            continue
+        if kind != "pong":
             continue
         try:
             await record_beat(
@@ -669,3 +741,48 @@ async def _receive_pongs(
             )
         except ControllerConnectionError as refusal:
             return refusal
+
+
+# Every call still running, whatever socket it came on. The event loop keeps
+# only a weak reference to a task, and a call outlives its socket when the
+# controller goes before it is answered.
+_running_calls: set[asyncio.Task[None]] = set()
+
+
+def _start_call(
+    message: dict[str, Any],
+    *,
+    in_flight: set[asyncio.Task[None]],
+    outbox: _Outbox,
+    principal: ControllerPrincipal,
+    protocol: AgentCore,
+    authenticator: ManagementAuthenticator,
+) -> None:
+    """Answer a call from a task of its own, so that a slow call holds up
+    neither the others nor the beat."""
+    id_ = socket_calls.call_id(message)
+    if id_ is None:
+        logger.warning(
+            "Controller %s sent a call with no id to answer it by; dropped it",
+            principal.controller_id,
+        )
+        return
+    if len(in_flight) >= socket_calls.MAX_CALLS_IN_FLIGHT:
+        outbox.put_answer(socket_calls.capacity_exceeded(id_))
+        return
+
+    async def run() -> None:
+        outbox.put_answer(
+            await socket_calls.answer(
+                message,
+                id_,
+                principal=principal,
+                protocol=protocol,
+                authenticator=authenticator,
+            )
+        )
+
+    task = asyncio.create_task(run())
+    for tasks in (in_flight, _running_calls):
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)

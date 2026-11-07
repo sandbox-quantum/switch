@@ -16,9 +16,11 @@ from typing import Any
 import pytest
 import pytest_asyncio
 import yaml
+from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.authz import Principal
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
@@ -59,6 +61,7 @@ from switch_core.rooms_yaml import (
     ExistingReferenceById,
     GroupSpec,
     ParamSpec,
+    RoomReader,
     RoomYamlService,
     interpolate,
     resolve_params,
@@ -229,6 +232,11 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
 
 def _svc(env) -> RoomYamlService:
     return env["svc"]
+
+
+def _reader(env) -> RoomReader:
+    """Alice, a member, running a template herself."""
+    return RoomReader(Principal(env["user_id"], False))
 
 
 def test_parse_minimal(env):
@@ -1809,14 +1817,18 @@ async def test_resolve_defaults_walks_each_chain_in_order(env):
         )
     svc = _svc(env)
 
-    filled = await svc.resolve_defaults(CHAIN_TEXT, None)
+    filled = await svc.resolve_defaults(CHAIN_TEXT, None, reader=_reader(env))
     assert filled == {"bridge": "Slack", "helper": "claude-code.alice"}
 
-    kept = await svc.resolve_defaults(CHAIN_TEXT, {"bridge": "Mattermost"})
+    kept = await svc.resolve_defaults(
+        CHAIN_TEXT, {"bridge": "Mattermost"}, reader=_reader(env)
+    )
     assert kept == {"bridge": "Mattermost", "helper": "claude-code.alice"}
 
     named = CHAIN_TEXT.replace("[Teams, $first]", "[Mattermost, $first]")
-    assert (await svc.resolve_defaults(named, None))["bridge"] == "Mattermost"
+    assert (await svc.resolve_defaults(named, None, reader=_reader(env)))[
+        "bridge"
+    ] == "Mattermost"
 
 
 async def test_a_chain_with_no_hit_is_reported_as_missing(env):
@@ -1825,7 +1837,7 @@ async def test_a_chain_with_no_hit_is_reported_as_missing(env):
         'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
     )
     svc = _svc(env)
-    assert await svc.resolve_defaults(text, None) is None
+    assert await svc.resolve_defaults(text, None, reader=_reader(env)) is None
     with pytest.raises(ValueError, match="none of the candidates listed for bridge"):
         svc.parse_template(text)
 
@@ -1874,7 +1886,7 @@ async def test_an_unset_optional_entity_param_passes_the_entity_check(env):
         'room:\n  name: n\n  description: d\n  bridge: "{bridge}"\n'
     )
     assert "bridge" not in parsed.values
-    await svc.check_entity_params(parsed)
+    await svc.check_entity_params(parsed, reader=_reader(env))
 
 
 async def test_a_chain_resolves_over_an_input_sent_as_null(env):
@@ -1889,7 +1901,9 @@ async def test_a_chain_resolves_over_an_input_sent_as_null(env):
         "params:\n  app:\n    type: bridge\n    default: [Slack, $first]\n"
         'room:\n  name: n\n  description: d\n  bridge: "{app}"\n'
     )
-    assert await _svc(env).resolve_defaults(text, {"app": None}) == {"app": "Slack"}
+    assert await _svc(env).resolve_defaults(
+        text, {"app": None}, reader=_reader(env)
+    ) == {"app": "Slack"}
 
 
 def test_an_optional_bridge_left_empty_lands_on_the_default_app(env):
@@ -2010,11 +2024,11 @@ async def test_check_entity_params_agent_must_exist(env):
     ok = svc.parse_template(
         _entity_template("agent"), inputs={"pick": "claude-code.alice"}
     )
-    await svc.check_entity_params(ok)
+    await svc.check_entity_params(ok, reader=_reader(env))
 
     bad = svc.parse_template(_entity_template("agent"), inputs={"pick": "nobody"})
     with pytest.raises(ValueError, match=r"param 'pick': no agent named 'nobody'"):
-        await svc.check_entity_params(bad)
+        await svc.check_entity_params(bad, reader=_reader(env))
 
 
 @pytest.mark.asyncio
@@ -2028,13 +2042,13 @@ async def test_check_entity_params_bridge_must_exist_and_run(env):
         external_username="someone",
     )
     ok = svc.parse_template(_entity_template("bridge"), inputs={"pick": "Slack"})
-    await svc.check_entity_params(ok)
+    await svc.check_entity_params(ok, reader=_reader(env))
 
     bad = svc.parse_template(_entity_template("bridge"), inputs={"pick": "Teams"})
     with pytest.raises(
         ValueError, match=r"param 'pick': no messaging app named 'Teams'"
     ):
-        await svc.check_entity_params(bad)
+        await svc.check_entity_params(bad, reader=_reader(env))
 
     async with env["session_factory"]() as session:
         bridge = (await session.execute(select(CollaborationBridge))).scalar_one()
@@ -2044,7 +2058,7 @@ async def test_check_entity_params_bridge_must_exist_and_run(env):
     with pytest.raises(
         ValueError, match=r"param 'pick': messaging app 'Slack' is not running"
     ):
-        await svc.check_entity_params(stopped)
+        await svc.check_entity_params(stopped, reader=_reader(env))
 
 
 @pytest.mark.asyncio
@@ -2054,11 +2068,11 @@ async def test_check_entity_params_room_must_exist(env):
     await svc.provision(spec, user_id=env["user_id"], is_admin=False)
 
     ok = svc.parse_template(_entity_template("room"), inputs={"pick": "ops"})
-    await svc.check_entity_params(ok)
+    await svc.check_entity_params(ok, reader=_reader(env))
 
     bad = svc.parse_template(_entity_template("room"), inputs={"pick": "nowhere"})
     with pytest.raises(ValueError, match=r"param 'pick': no room named 'nowhere'"):
-        await svc.check_entity_params(bad)
+        await svc.check_entity_params(bad, reader=_reader(env))
 
 
 @pytest.mark.asyncio
@@ -2075,12 +2089,12 @@ async def test_check_entity_params_user_resolves_on_the_rooms_bridge(env):
     text = _entity_template("user", extra_room='  bridge: "Slack"\n')
 
     ok = svc.parse_template(text, inputs={"pick": "bob"})
-    await svc.check_entity_params(ok)
+    await svc.check_entity_params(ok, reader=_reader(env))
     assert env["rooms"].bridge_user_lookups == [(bridge_id, ["bob"])]
 
     bad = svc.parse_template(text, inputs={"pick": "eve"})
     with pytest.raises(ValueError, match=r"param 'pick': no user named 'eve'"):
-        await svc.check_entity_params(bad)
+        await svc.check_entity_params(bad, reader=_reader(env))
 
 
 @pytest.mark.asyncio
@@ -2089,7 +2103,7 @@ async def test_check_entity_params_user_needs_a_bridge(env):
     svc = _svc(env)
     parsed = svc.parse_template(_entity_template("user"), inputs={"pick": "bob"})
     with pytest.raises(ValueError, match=r"param 'pick': a user can only be looked up"):
-        await svc.check_entity_params(parsed)
+        await svc.check_entity_params(parsed, reader=_reader(env))
 
 
 @pytest.mark.asyncio
@@ -2100,7 +2114,7 @@ async def test_check_entity_params_ignores_plain_params(env):
         "params:\n  label:\n    type: string\nroom:\n  name: '{label}'\n  description: d\n",
         inputs={"label": "anything"},
     )
-    await svc.check_entity_params(parsed)
+    await svc.check_entity_params(parsed, reader=_reader(env))
 
 
 # ── group parse ─────────────────────────────────────────────────────────────
@@ -2281,7 +2295,7 @@ async def test_provision_group_two_rooms_linked(env):
     svc = _svc(env)
     spec = _group(env, GROUP_TEMPLATE, {"newcomer": "dana"})
 
-    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=True)
 
     assert result.group_name == "Onboarding"
     assert [r.room_name for r in result.rooms] == ["dana lobby", "dana workroom"]
@@ -2300,6 +2314,18 @@ async def test_provision_group_two_rooms_linked(env):
         )
         assert link is not None
         assert link.label == "workroom"
+
+
+@pytest.mark.asyncio
+async def test_provision_group_needs_a_workspace_admin(env):
+    svc = _svc(env)
+    spec = _group(env, GROUP_TEMPLATE, {"newcomer": "dana"})
+
+    with pytest.raises(PermissionError, match="workspace admin"):
+        await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+
+    async with env["session_factory"]() as session:
+        assert (await session.execute(select(RoomGroup))).scalars().all() == []
 
 
 @pytest.mark.asyncio
@@ -2323,7 +2349,7 @@ links:
     label: next
 """,
     )
-    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=True)
 
     assert [r.room_name for r in result.rooms] == ["safe room"]
     assert result.errors[0]["room_name"] == "boom room"
@@ -2357,7 +2383,7 @@ rooms:
 """,
     )
     await svc.provision_group(
-        spec, user_id=env["user_id"], is_admin=False, creator_name="alice"
+        spec, user_id=env["user_id"], is_admin=True, creator_name="alice"
     )
     assert posted == [("A", "start A")]
 
@@ -2381,12 +2407,12 @@ rooms:
         inputs={"pick": "nobody"},
     )
     with pytest.raises(ValueError, match="param 'pick': no agent named 'nobody'"):
-        await svc.check_entity_params(parsed)
+        await svc.check_entity_params(parsed, reader=_reader(env))
 
 
 @pytest.mark.asyncio
 async def test_endpoint_json_body_group(env):
-    """The /from-yaml endpoint provisions a group document."""
+    """The /from-yaml endpoint provisions a group document, for an admin."""
     import json
     from unittest.mock import AsyncMock
 
@@ -2402,7 +2428,10 @@ async def test_endpoint_json_body_group(env):
     ).encode()
 
     async with env["session_factory"]() as session:
-        result = await create_room_from_yaml(request, session, svc, user, False)
+        with pytest.raises(HTTPException) as refused:
+            await create_room_from_yaml(request, session, svc, user, False)
+        assert refused.value.status_code == 403
+        result = await create_room_from_yaml(request, session, svc, user, True)
     assert result.group_name == "Onboarding"
     assert [r.room_name for r in result.rooms] == ["frank lobby", "frank workroom"]
 
@@ -2423,7 +2452,7 @@ rooms:
       claude-code.alice: greeter
 """,
     )
-    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=True)
     room_id = result.rooms[0].room_id
     # FakeRoomService does not seed aliases; write the row the real one would.
     async with env["session_factory"]() as session:
@@ -2508,3 +2537,116 @@ async def test_export_parameterize_round_trip(env):
 
     reparsed_default, _ = _svc(env).parse(parameterized)
     assert reparsed_default.name == "Capture me"
+
+
+# ── room params name only rooms the runner can see ──────────────────────────
+
+
+async def _seed_room(
+    session_factory: async_sessionmaker[AsyncSession],
+    name: str,
+    *,
+    owner_id: str | None = None,
+    public: bool = False,
+    agent_id: str | None = None,
+) -> str:
+    """A room owned by `owner_id`, or by a new user bob when absent."""
+    visibility = "public" if public else "private"
+    async with session_factory() as session:
+        if owner_id is None:
+            tag = uuid.uuid4().hex[:6]
+            bob = User(name=f"bob-{tag}", email=f"bob-{tag}@example.com", role="member")
+            session.add(bob)
+            await session.flush()
+            owner_id = bob.id
+        room = Room(
+            transport_room_id=f"!{uuid.uuid4().hex}:test.local",
+            name=name,
+            description="d",
+            channel_type="channel_public" if public else "channel_private",
+            owner_id=owner_id,
+            read_visibility=visibility,
+            write_visibility=visibility,
+        )
+        session.add(room)
+        await session.flush()
+        if agent_id is not None:
+            await session.execute(
+                insert(room_agents).values(room_id=room.id, agent_id=agent_id)
+            )
+        await session.commit()
+        return room.id
+
+
+ROOM_CHAIN = (
+    "params:\n  target:\n    type: room\n    default: [{chain}]\n"
+    "room:\n  name: n\n  description: 'about {{target}}'\n"
+)
+
+
+async def test_first_room_skips_rooms_the_runner_cannot_read(env):
+    """`$first` would otherwise hand alice the name of bob's private room,
+    which sorts first, and write it into her new room."""
+    await _seed_room(env["session_factory"], "AAA Acquisition")
+    await _seed_room(env["session_factory"], "Mine", owner_id=env["user_id"])
+    text = ROOM_CHAIN.format(chain="$first")
+
+    filled = await _svc(env).resolve_defaults(text, None, reader=_reader(env))
+
+    assert filled == {"target": "Mine"}
+
+
+async def test_a_room_chain_skips_a_name_the_runner_cannot_read(env):
+    """A chain must not confirm a private room exists by settling on it."""
+    await _seed_room(env["session_factory"], "Layoffs Q1")
+    await _seed_room(env["session_factory"], "Town hall", public=True)
+    text = ROOM_CHAIN.format(chain="Layoffs Q1, Town hall")
+
+    filled = await _svc(env).resolve_defaults(text, None, reader=_reader(env))
+
+    assert filled == {"target": "Town hall"}
+
+
+async def test_someone_elses_private_room_reads_as_missing(env):
+    """The refusal is word for word the one for a room that does not exist,
+    so a guessed name confirms nothing."""
+    await _seed_room(env["session_factory"], "Layoffs Q1")
+    svc = _svc(env)
+    messages = []
+    for name in ("Layoffs Q1", "Layoffs Q2"):
+        parsed = svc.parse_template(_entity_template("room"), inputs={"pick": name})
+        with pytest.raises(ValueError) as refused:
+            await svc.check_entity_params(parsed, reader=_reader(env))
+        messages.append(str(refused.value).replace(name, "<name>"))
+
+    assert messages[0] == messages[1]
+
+
+async def test_an_admin_may_name_any_room(env):
+    await _seed_room(env["session_factory"], "Layoffs Q1")
+    svc = _svc(env)
+    parsed = svc.parse_template(_entity_template("room"), inputs={"pick": "Layoffs Q1"})
+
+    await svc.check_entity_params(
+        parsed, reader=RoomReader(Principal(env["user_id"], True))
+    )
+
+
+async def test_an_agent_may_name_a_private_room_it_is_in(env):
+    """An agent runs a template as its owner, and also sees its own rooms,
+    as `list_all_rooms` does."""
+    async with env["session_factory"]() as session:
+        agent = (
+            await session.execute(
+                select(Agent).where(Agent.name == "claude-code.alice")
+            )
+        ).scalar_one()
+    await _seed_room(env["session_factory"], "Ops", agent_id=agent.id)
+    svc = _svc(env)
+    parsed = svc.parse_template(_entity_template("room"), inputs={"pick": "Ops"})
+
+    with pytest.raises(ValueError, match="no room named 'Ops'"):
+        await svc.check_entity_params(parsed, reader=_reader(env))
+    await svc.check_entity_params(
+        parsed, reader=RoomReader(Principal(env["user_id"], False), agent_id=agent.id)
+    )

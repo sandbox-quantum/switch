@@ -21,7 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 from switch_core.gateway import changes
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import SocketCaller
-from switch_core.user_changes import MACHINE, MANAGED_AGENT, LocalUserChanges
+from switch_core.user_changes import MACHINE, MANAGED_AGENT, ROOM, LocalUserChanges
 
 
 def _app(feed: LocalUserChanges) -> FastAPI:
@@ -46,14 +46,24 @@ def feed() -> LocalUserChanges:
 
 
 def _signed_in(
-    monkeypatch: pytest.MonkeyPatch, user_id: str = "ada", expires_in: float = 3600
+    monkeypatch: pytest.MonkeyPatch,
+    user_id: str = "ada",
+    expires_in: float = 3600,
+    sessions_ended: bool = False,
 ) -> None:
     async def _authenticate(*_: Any) -> SocketCaller:
         return SocketCaller(
-            user_id=user_id, tenant_id="t1", expires_at=time.time() + expires_in
+            user_id=user_id,
+            tenant_id="t1",
+            expires_at=time.time() + expires_in,
+            session_version=0,
         )
 
+    async def _current(*_: Any) -> bool:
+        return not sessions_ended
+
     monkeypatch.setattr(changes, "authenticate_socket", _authenticate)
+    monkeypatch.setattr(changes, "session_is_current", _current)
 
 
 @pytest.fixture
@@ -69,7 +79,7 @@ def test_opens_with_hello_naming_the_kinds_it_sends(
     with client.websocket_connect("/changes/ws") as ws:
         hello = ws.receive_json()
     assert hello["event"] == "hello"
-    assert set(hello["data"]["kinds"]) == {MANAGED_AGENT, MACHINE}
+    assert set(hello["data"]["kinds"]) == {MANAGED_AGENT, MACHINE, ROOM}
     assert hello["data"]["ping_interval_s"] == changes.PING_INTERVAL_SECONDS
 
 
@@ -148,6 +158,18 @@ def test_closes_with_4401_when_the_session_cookie_expires(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _signed_in(monkeypatch, expires_in=0.05)
+    with client.websocket_connect("/changes/ws") as ws:
+        ws.receive_json()
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+    assert closed.value.code == 4401
+
+
+def test_closes_with_4401_at_the_next_ping_once_the_sessions_are_ended(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(changes, "PING_INTERVAL_SECONDS", 0.02)
+    _signed_in(monkeypatch, sessions_ended=True)
     with client.websocket_connect("/changes/ws") as ws:
         ws.receive_json()
         with pytest.raises(WebSocketDisconnect) as closed:

@@ -249,28 +249,14 @@ async function click(element: HTMLElement): Promise<void> {
   await act(async () => element.click());
 }
 
-describe('in the Admin menu', () => {
-  function menuGroup(label: string): Element | null {
-    return container?.querySelector(`nav [role="group"][aria-label="${label}"]`) ?? null;
-  }
-
-  it('is the Status entry under Server, with its dot, for whoever runs it', async () => {
-    await render();
-
-    const server = menuGroup('Server')!;
-    expect(server.textContent).toContain('Server · Local dev');
-    expect(server.querySelector('[aria-current="page"]')!.textContent).toContain('Status');
-    expect(server.querySelector('[aria-current="page"] [role="img"]')).not.toBeNull();
-    expect(menuGroup('Workspace')).toBeNull();
-  });
-
-  it('sits beside the connector sections for an admin where service connections are on', async () => {
+describe('its own page', () => {
+  it('stands alone, with no Admin menu beside it, whatever the person administers', async () => {
     state.serviceConnections = true;
     state.administers = true;
     await render();
 
-    expect(menuGroup('Workspace')!.textContent).toContain('Connectors');
-    expect(menuGroup('Server')!.textContent).toContain('StatusConnector apps');
+    expect(container?.querySelector('nav [role="group"]')).toBeNull();
+    expect(container?.textContent).toContain('Local dev');
   });
 });
 

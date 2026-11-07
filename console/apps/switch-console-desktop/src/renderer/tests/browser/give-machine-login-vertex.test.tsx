@@ -144,11 +144,12 @@ describe('giving a machine a Claude login through Vertex AI', () => {
     );
     expect(el.textContent).toContain('roles/aiplatform.user');
     expect(el.textContent).not.toContain('all of your Google Cloud access');
-    expect(byLabel<HTMLInputElement>(el, 'Google Cloud project').value).toBe('cg-vertexai');
+    expect(byLabel<HTMLInputElement>(el, 'Google Cloud project').value).toBe('');
     expect(byLabel<HTMLInputElement>(el, 'Region').value).toBe('global');
     expect(button(el, 'Give login').disabled).toBe(true);
 
     await type(byLabel<HTMLTextAreaElement>(el, 'Service account key'), KEY);
+    await type(byLabel<HTMLInputElement>(el, 'Google Cloud project'), 'acme-ai');
     await type(byLabel<HTMLInputElement>(el, 'Region'), 'us-east5');
     await click(button(el, 'Give login'));
 
@@ -158,7 +159,7 @@ describe('giving a machine a Claude login through Vertex AI', () => {
       provider: 'claude',
       login: {
         source: 'vertex',
-        project: 'cg-vertexai',
+        project: 'acme-ai',
         region: 'us-east5',
         credentials: { from: 'key', json: KEY },
       },
@@ -182,6 +183,7 @@ describe('giving a machine a Claude login through Vertex AI', () => {
       expect(byLabel<HTMLTextAreaElement>(el, 'Service account key').value).toBe(KEY);
     });
     expect(el.textContent).toContain('Read vertex-sa.json');
+    await type(byLabel<HTMLInputElement>(el, 'Google Cloud project'), 'acme-ai');
     await click(button(el, 'Give login'));
     expect(giveMachineLogin.mock.calls[0]![0].login.credentials).toEqual({
       from: 'key',
@@ -198,12 +200,13 @@ describe('giving a machine a Claude login through Vertex AI', () => {
       'This gives cloud-box all of your Google Cloud access'
     );
     expect(el.querySelector('[aria-label="Service account key"]')).toBeNull();
+    await type(byLabel<HTMLInputElement>(el, 'Google Cloud project'), 'acme-ai');
     expect(button(el, 'Give login').disabled).toBe(false);
 
     await click(button(el, 'Give login'));
     expect(giveMachineLogin.mock.calls[0]![0].login).toEqual({
       source: 'vertex',
-      project: 'cg-vertexai',
+      project: 'acme-ai',
       region: 'global',
       credentials: { from: 'this-computer' },
     });
@@ -218,6 +221,7 @@ describe('giving a machine a Claude login through Vertex AI', () => {
     const el = await render();
     await chooseVertex(el);
     await click(byLabel(el, "This computer's Google sign-in"));
+    await type(byLabel<HTMLInputElement>(el, 'Google Cloud project'), 'acme-ai');
     await click(button(el, 'Give login'));
 
     expect(el.querySelector('[role="alert"]')?.textContent).toContain(
@@ -230,6 +234,10 @@ describe('giving a machine a Claude login through Vertex AI', () => {
     const el = await render();
     await chooseVertex(el);
     await click(byLabel(el, "This computer's Google sign-in"));
+    expect(byLabel<HTMLInputElement>(el, 'Google Cloud project').placeholder).toBe(
+      'my-gcp-project'
+    );
+    expect(button(el, 'Give login').disabled).toBe(true);
     await type(byLabel<HTMLInputElement>(el, 'Google Cloud project'), ' ');
     expect(button(el, 'Give login').disabled).toBe(true);
   });

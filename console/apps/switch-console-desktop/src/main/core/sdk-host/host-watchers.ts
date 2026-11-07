@@ -1,3 +1,4 @@
+import { watcherHealthFileSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { READ_JSON } from './remote-json';
@@ -137,4 +138,32 @@ export function watcherIsCurrent(
   if (!status.running) return false;
   if (!status.build || status.build.split('/').pop() !== want.bundleFile) return false;
   return status.enabled === want.enabled && status.spawn === want.spawn;
+}
+
+/**
+ * Whether a watcher runs the shared-host bundle `bundle` names, so the session
+ * configurations it is handed are read by that build. Its own process says
+ * which bundle it loaded, in its health file, taken only from the process
+ * alive now; a record from that process that names none comes from a build
+ * too old to say, which is some other build. While that process is down, its
+ * supervisor, which starts it again from the same file, says which file that
+ * is.
+ *
+ * Null when no watcher is running, and when which bundle it runs cannot be
+ * told: its process has written no record of its own yet (one just started,
+ * or the file is its predecessor's), or its supervisor did not say which file
+ * it starts. Only a watcher that says it runs another build is false.
+ */
+export function watcherRunsBundle(
+  status: HostWatcherStatus | undefined,
+  bundle: { identity: string; file: string }
+): boolean | null {
+  if (!status || (!status.workerAlive && !status.running)) return null;
+  if (status.workerAlive) {
+    const written = watcherHealthFileSchema.safeParse(status.health);
+    if (!written.success || written.data.pid !== status.workerPid) return null;
+    return written.data.bundle === bundle.identity;
+  }
+  const file = status.build?.split('/').pop();
+  return file ? file === bundle.file : null;
 }

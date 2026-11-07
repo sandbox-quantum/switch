@@ -40,6 +40,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
     WebhookDeliveryUnsupported,
 )
@@ -223,6 +224,11 @@ class RequestCard:
     # nobody is not the same as a redraw of one already asked, and only the
     # first is worth saying out loud.
     notify_unreachable: bool = False
+    # The request's turn was asked at the channel root, so a card threaded
+    # under that message is somewhere the channel does not look. Set on the
+    # first post only; an adapter that can also show a thread reply in the
+    # channel (Slack's `reply_broadcast`) does.
+    asked_at_root: bool = False
 
 
 RichContent = TurnActivity | RequestCard
@@ -249,6 +255,13 @@ class RichContentFailed(Exception):
     def __init__(self, message: str, *, text: str) -> None:
         super().__init__(message)
         self.text = text
+
+
+class PrivateNoticeRefused(Exception):
+    """The platform would not let the bot reach this person privately, as it
+    refuses for someone who never opened a chat with the bot, blocked it, or
+    takes no direct messages. Expected on those platforms, so the caller logs
+    it without a traceback and posts the notice in the channel instead."""
 
 
 class ChannelNotBindable(ValueError):
@@ -309,6 +322,37 @@ class RichContentThrottled(RichContentFailed):
 
     def __init__(self, *, retry_after: float, text: str) -> None:
         super().__init__("Platform updates are rate limited.", text=text)
+        self.retry_after = retry_after
+
+
+class RichContentFailedAfterPost(RichContentFailed):
+    """The message was posted, but what goes in it could not be drawn.
+
+    Slack opens a turn's stream and then takes its content in a separate call,
+    and the second can fail after the first has made the message. `ref` names
+    that message, so the caller keeps it and draws into it later rather than
+    posting again, which would leave a second message in the thread and the
+    first one empty.
+    """
+
+    def __init__(self, message: str, *, ref: str, text: str) -> None:
+        super().__init__(message, text=text)
+        self.ref = ref
+
+
+class RichContentThrottledAfterPost(RichContentThrottled, RichContentFailedAfterPost):
+    """The message was posted, and the platform asked for a wait before what
+    goes in it could be drawn.
+
+    A `RichContentThrottled` as well, so the wait is the one asked for.
+    """
+
+    def __init__(self, *, ref: str, retry_after: float, text: str) -> None:
+        # Not through `RichContentThrottled.__init__`: its `super()` call
+        # reaches `RichContentFailedAfterPost` here, which needs the ref.
+        RichContentFailedAfterPost.__init__(
+            self, "Platform updates are rate limited.", ref=ref, text=text
+        )
         self.retry_after = retry_after
 
 
@@ -598,6 +642,15 @@ class PlatformAdapter(ABC):
     #: because the base leaves the channel alone.
     channel_on_delete: ClassVar[ChannelRetirement] = "kept"
 
+    #: How `notify_privately` reaches one person about their own message.
+    #:
+    #: A Switch Trust notice about what a person posted (blocked, redacted,
+    #: flagged, not fully checked) is theirs alone, and posting it in the
+    #: channel tells everyone there what they tried to say. `in_channel` here
+    #: because the base has no private route: the caller posts the notice in
+    #: the channel instead and logs a warning saying so.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "in_channel"
+
     def __init__(self) -> None:
         # Whether this process holds the bridge: see
         # `keeps_quiet_unless_listening`. Set by the lifecycle before `start`.
@@ -626,6 +679,10 @@ class PlatformAdapter(ABC):
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
+        # Set by set_channel_rename_handler. Called with (channel_id, old_name,
+        # new_name) when the platform reports a change to a channel (the two
+        # names are the same when it was not a rename).
+        self._on_channel_named: Callable[[str, str, str], Awaitable[None]] | None = None
         # Set by set_channel_type_handler. Called with (channel_id, type) when
         # the adapter learns a channel's type from the platform.
         self._on_channel_type_learned: (
@@ -835,6 +892,54 @@ class PlatformAdapter(ABC):
         that are safe to change; an edit to any other is refused.
         """
         return None
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        """How to post a link code from a chat account here, in Markdown
+        (CHOO-3881).
+
+        Per-platform because Switch does not hear every message everywhere:
+        some platforms deliver a channel message only when it mentions the
+        bot, or deliver no message text at all, and the instruction must name
+        a way that actually reaches Switch. A class method because Console asks
+        while showing the code, with or without a running adapter.
+        """
+        return f"Post `!link-account {code}` from that account in any channel Switch is in."
+
+    @classmethod
+    def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
+        """Why this account cannot be linked to anyone, or None if it can.
+
+        For the platform's stand-in accounts, which several real people post
+        as. Linking one would recognise all of them as the same Switch user.
+        """
+        return None
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        """Why this account cannot be linked to anyone, asking the platform
+        where the id alone cannot tell, or None if it can be.
+
+        A bot or an integration's account is one whoever runs it posts as, so
+        linking it would recognise all of them as one Switch user. Some
+        platforms say so in the id (`unlinkable_account_reason`); others only
+        when asked. Raise `LookupError` when the platform has no such account,
+        and `RuntimeError` when it cannot be asked.
+        """
+        return self.unlinkable_account_reason(external_user_id)
+
+    async def account_id_for_session(self, token: str) -> str:
+        """The platform id of the account a session token belongs to.
+
+        Proves control of an account without posting from it, for the bundled
+        deployment's setup, which provisions both the account and its Switch
+        user before any channel has an agent to hear a code. Raise
+        `NotImplementedError` where the platform has no such check.
+        """
+        raise NotImplementedError(
+            f"{self.display_name} cannot confirm an account from a session token"
+        )
 
     @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
@@ -1389,6 +1494,26 @@ class PlatformAdapter(ABC):
         `supports_queue_reaction` is never asked for the queued one.
         """
 
+    def activity_closes_in(self, message_ref: str) -> float | None:
+        """Seconds until the platform closes this message to further streaming
+        on its own, or None where it never will.
+
+        Closing it rewrites what it shows (Slack marks the steps still running
+        as failed), so a redraw is owed just after, whatever the clock says.
+        Asked once, as the message is posted.
+        """
+        return None
+
+    def rich_updates_held_for(self) -> float:
+        """Seconds before this adapter will try another edit to rich content.
+
+        Nonzero while it is holding edits back after a rate limit. Asked before
+        work that can wait, such as redrawing a running turn's clock, so that
+        work is not queued only to be refused. Only an adapter that
+        `redraws_for_elapsed_time` is asked.
+        """
+        return 0.0
+
     async def notify_working(
         self, channel_id: str, agent_name: str, thread_root_id: str | None
     ) -> None:
@@ -1863,6 +1988,14 @@ class PlatformAdapter(ABC):
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
 
+    def set_channel_rename_handler(
+        self, handler: Callable[[str, str, str], Awaitable[None]]
+    ) -> None:
+        """Install the callback an adapter calls with a channel's name when the
+        platform reports a change to it, so the room linked to it can follow.
+        Used by the adapters whose platform reports it (Discord)."""
+        self._on_channel_named = handler
+
     def set_channel_type_handler(
         self, handler: Callable[[str, ChannelType], Awaitable[None]]
     ) -> None:
@@ -1989,6 +2122,36 @@ class PlatformAdapter(ABC):
                 e,
                 text,
             )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """Say `content` to `user_id` alone, about a message they posted in
+        `channel_id`, the way `private_notice_delivery` declares.
+
+        `content` is Switch Markdown, rendered here as `admin_message` renders
+        its body. `thread_root_id` is where the message sits, for a notice
+        shown in the channel; `channel_name` names the channel in a notice
+        that arrives somewhere else, so the reader can tell which message it
+        is about.
+
+        Raises when the notice cannot be delivered privately, so the caller
+        can post it in the channel instead and say so: `PrivateNoticeRefused`
+        when the platform refuses to reach this person, which is expected,
+        anything else when it failed. A long `content` is split as
+        `admin_message` splits it, so its length never costs the private
+        route. The base has no private
+        route and is never called for one: `private_notice_delivery` is
+        `in_channel` here."""
+        raise NotImplementedError(
+            f"{self.platform_name} has no way to say something to one person privately"
+        )
 
     def set_agent_presentation_resolver(
         self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]

@@ -46,6 +46,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    PrivateNoticeDelivery,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_QUEUED_NOTE,
@@ -769,6 +770,11 @@ class TeamsAdapter(PlatformAdapter):
     # Switch is not granted Channel.Delete.All, so a deleted room's channel
     # stays for someone to remove in Teams.
     channel_on_delete = "kept"
+    #: A Teams bot cannot show a channel message to one member alone, and
+    #: opening a 1:1 chat needs the app installed for that person, which
+    #: Switch does not arrange, so a notice about someone's message is posted
+    #: in the channel where everyone sees it.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "in_channel"
     docs_slug: ClassVar[str | None] = "microsoft-teams"
     # Graph delivers a channel's messages to every subscription made for it,
     # so only the process holding the bridge makes, adopts and renews them.
@@ -2976,6 +2982,17 @@ class TeamsAdapter(PlatformAdapter):
         # not the operator has declared it, and reaches the same dispatcher.
         return (
             "`/invite-agent @agent-name` — the same thing, if you prefer the slash form"
+        )
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Teams hands the bot a channel message only when it is mentioned, and
+        # a bare command name counts once it is.
+        return (
+            "From that account, @mention the Switch app in a channel or chat it "
+            f"is in and add `link-account {code}`."
         )
 
     def is_placeholder_username(self, username: str) -> bool:

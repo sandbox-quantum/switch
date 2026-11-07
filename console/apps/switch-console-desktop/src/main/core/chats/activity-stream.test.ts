@@ -83,4 +83,32 @@ describe('ChatActivityStream', () => {
     await vi.waitFor(() => expect(opened).toBe(2));
     stream.stop();
   });
+
+  it('reconnects at once when started while waiting to retry', async () => {
+    let opened = 0;
+    const timers: { cancelled: boolean }[] = [];
+    const stream = new ChatActivityStream({
+      open: async () => {
+        opened++;
+        return new Response('Bad Gateway', { status: 502 });
+      },
+      isUnauthorized: () => false,
+      backoffMs: () => 30_000,
+      setTimer: () => {
+        const timer = { cancelled: false };
+        timers.push(timer);
+        return () => {
+          timer.cancelled = true;
+        };
+      },
+      sink: { activity: () => {}, approval: () => {}, resync: () => {}, state: () => {} },
+    });
+    stream.start();
+    await vi.waitFor(() => expect(timers).toHaveLength(2));
+    stream.start();
+    await vi.waitFor(() => expect(opened).toBe(2));
+    expect(timers[1]!.cancelled).toBe(true);
+    stream.stop();
+    expect(timers.every((each) => each.cancelled)).toBe(true);
+  });
 });

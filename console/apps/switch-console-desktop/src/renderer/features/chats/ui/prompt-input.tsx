@@ -73,7 +73,8 @@ export function PromptInputTextarea({
     onKeyDown?.(event);
     if (event.defaultPrevented) return;
     if (event.key !== 'Enter' || event.shiftKey) return;
-    if (composing || event.nativeEvent.isComposing) return;
+    // keyCode 229: a key the IME is handling, which some IMEs send with isComposing false.
+    if (composing || event.nativeEvent.isComposing || event.keyCode === 229) return;
     event.preventDefault();
     const form = event.currentTarget.form;
     const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]');

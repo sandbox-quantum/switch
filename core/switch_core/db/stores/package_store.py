@@ -1,4 +1,7 @@
-from sqlalchemy import delete, func, insert, or_, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import (
@@ -10,6 +13,7 @@ from switch_core.db.models import (
     room_packages,
     room_references,
 )
+from switch_core.db.stores.room_store import AttachedRooms, readable_by
 
 
 class PackageStore:
@@ -20,6 +24,19 @@ class PackageStore:
 
     async def get(self, session: AsyncSession, package_id: str) -> Package | None:
         return await session.get(Package, package_id)
+
+    async def get_for_update(
+        self, session: AsyncSession, package_id: str
+    ) -> Package | None:
+        """Load the row locked until the transaction ends, for a caller that
+        checks it and then writes it.
+
+        ``populate_existing`` refreshes a copy already in the session, so the
+        check sees the committed row rather than an earlier read of it.
+        """
+        return await session.get(
+            Package, package_id, with_for_update=True, populate_existing=True
+        )
 
     async def list_for_user(self, session: AsyncSession, user_id: str) -> list[Package]:
         result = await session.execute(
@@ -87,11 +104,18 @@ class PackageStore:
 
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, package_id: str
-    ) -> None:
-        await session.execute(
-            insert(room_packages).values(room_id=room_id, package_id=package_id)
+    ) -> bool:
+        """Attach a package to a room, saying whether it was attached now.
+        Idempotent, as attaching a reference is."""
+        result = await session.execute(
+            pg_insert(room_packages)
+            .values(room_id=room_id, package_id=package_id)
+            .on_conflict_do_nothing(
+                index_elements=[room_packages.c.room_id, room_packages.c.package_id]
+            )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, package_id: str
@@ -124,20 +148,34 @@ class PackageStore:
         return result.scalar_one_or_none() is not None
 
     async def get_attached_counts(
-        self, session: AsyncSession, package_ids: list[str]
-    ) -> dict[str, int]:
+        self,
+        session: AsyncSession,
+        package_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
+    ) -> dict[str, AttachedRooms]:
+        """How many rooms each is attached to: every one, and those the reader
+        may read."""
         if not package_ids:
             return {}
         result = await session.execute(
             select(
                 room_packages.c.package_id,
                 func.count(room_packages.c.room_id),
+                func.count(room_packages.c.room_id).filter(
+                    readable_by(reader_id, is_admin=reader_is_admin)
+                ),
             )
+            .join(Room, Room.id == room_packages.c.room_id)
             .where(room_packages.c.package_id.in_(package_ids))
             .group_by(room_packages.c.package_id)
         )
-        counts = {pid: int(c) for pid, c in result.all()}
-        return {pid: counts.get(pid, 0) for pid in package_ids}
+        counts = {
+            rid: AttachedRooms(every=int(every), readable=int(readable))
+            for rid, every, readable in result.all()
+        }
+        return {rid: counts.get(rid, AttachedRooms(0, 0)) for rid in package_ids}
 
     async def get_reference_counts(
         self, session: AsyncSession, package_ids: list[str]
@@ -172,12 +210,19 @@ class PackageStore:
         return {pid: counts.get(pid, 0) for pid in package_ids}
 
     async def list_rooms_for_package(
-        self, session: AsyncSession, package_id: str
+        self,
+        session: AsyncSession,
+        package_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[tuple[str, str]]:
+        """The rooms it is attached to, of those the reader may read."""
         result = await session.execute(
             select(Room.id, Room.name)
             .join(room_packages, Room.id == room_packages.c.room_id)
             .where(room_packages.c.package_id == package_id)
+            .where(readable_by(reader_id, is_admin=reader_is_admin))
         )
         return [(rid, name) for rid, name in result.all()]
 
@@ -186,9 +231,15 @@ class PackageStore:
     async def add_reference(
         self, session: AsyncSession, package_id: str, reference_id: str
     ) -> None:
+        """Idempotent: adding a reference the package holds is a no-op."""
         await session.execute(
-            insert(package_references).values(
-                package_id=package_id, reference_id=reference_id
+            pg_insert(package_references)
+            .values(package_id=package_id, reference_id=reference_id)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    package_references.c.package_id,
+                    package_references.c.reference_id,
+                ]
             )
         )
         await session.flush()
@@ -207,9 +258,15 @@ class PackageStore:
     async def add_document(
         self, session: AsyncSession, package_id: str, document_id: str
     ) -> None:
+        """Idempotent: adding a document the package holds is a no-op."""
         await session.execute(
-            insert(package_documents).values(
-                package_id=package_id, document_id=document_id
+            pg_insert(package_documents)
+            .values(package_id=package_id, document_id=document_id)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    package_documents.c.package_id,
+                    package_documents.c.document_id,
+                ]
             )
         )
         await session.flush()
