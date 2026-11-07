@@ -23,6 +23,7 @@ PLACEHOLDERS = {
     "box",
     "canva",
     "vercel",
+    "servicenow",
 }
 
 
@@ -46,6 +47,16 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+
+
+def test_servicenow_stays_a_placeholder_until_instance_aware_mcp_is_validated():
+    connection = CATALOG["servicenow"]
+
+    assert not connection.definition.enabled
+    assert connection.definition.adapter is None
+    assert connection.definition.auth.oauth is None
+    assert connection.definition.auth.identity is None
+    assert not connection.skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
