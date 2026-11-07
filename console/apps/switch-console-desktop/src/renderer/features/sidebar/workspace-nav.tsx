@@ -3,6 +3,7 @@ import {
   DoorOpen,
   FileText,
   House,
+  Library,
   type LucideIcon,
   Plug,
   Settings,
@@ -40,6 +41,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: roomsParams } = useParams('serverRooms');
   const { params: connectorsParams } = useParams('connectors');
   const { params: templatesParams } = useParams('templates');
+  const { params: libraryParams } = useParams('library');
   const { params: adminParams } = useParams('admin');
   const active = switchServersStore.activeServer;
   const health = useRoomHealth(active?.id ?? null);
@@ -56,6 +58,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     server: { icon: House, label: 'Home', params: homeParams },
     serverAgents: { icon: Bot, label: 'Your Agents', params: agentsParams },
     serverRooms: { icon: DoorOpen, label: 'Rooms', params: roomsParams },
+    library: { icon: Library, label: 'Resources', params: libraryParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
     admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },

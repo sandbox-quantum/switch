@@ -2,6 +2,7 @@ export type WorkspaceNavView =
   | 'server'
   | 'serverAgents'
   | 'serverRooms'
+  | 'library'
   | 'templates'
   | 'connectors'
   | 'admin';
@@ -21,6 +22,7 @@ export function workspaceNavViews(server: {
     'server',
     'serverAgents',
     'serverRooms',
+    'library',
     'templates',
     ...(server.serviceConnections ? (['connectors'] as const) : []),
     ...(server.admin ? (['admin'] as const) : []),
