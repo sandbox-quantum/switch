@@ -50,7 +50,12 @@ export default function RowActionsMenu({ label, actions }: { label: string; acti
         onKeyDown={(event) => event.stopPropagation()}
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "right" }}
-        slotProps={{ list: { "aria-labelledby": triggerId }, paper: { sx: { width: 280 } } }}
+        // MUI's arrow-key navigation skips aria-disabled items unless told
+        // otherwise, which would make a disabled action's reason unreachable.
+        slotProps={{
+          list: { "aria-labelledby": triggerId, disabledItemsFocusable: true },
+          paper: { sx: { width: 280 } },
+        }}
       >
         {actions.map((action) => {
           const disabled = action.disabledReason !== undefined;

@@ -3,6 +3,18 @@ import { Box, InputAdornment, Stack, TextField, Typography } from "@mui/material
 import { type ReactNode, useMemo } from "react";
 import type { CatalogueConnector } from "./ConnectorCard";
 
+const SCREEN_READER_ONLY = {
+  position: "absolute",
+  width: "1px",
+  height: "1px",
+  margin: "-1px",
+  padding: 0,
+  overflow: "hidden",
+  clip: "rect(0 0 0 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+} as const;
+
 /**
  * A search box, the page's own controls beside it, and the connectors two
  * to a row. The page narrows the list first (its own tabs or toggles) and
@@ -55,11 +67,18 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
           }}
         />
       </Stack>
-      {visible.length === 0 ? (
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 4 }}>
-          {emptyMessage}
-        </Typography>
-      ) : (
+      {/* Announced as the search narrows the list, since the results change
+          away from the field being typed in. */}
+      <Box role="status" aria-live="polite">
+        {visible.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 4 }}>
+            {emptyMessage}
+          </Typography>
+        ) : (
+          <Box sx={SCREEN_READER_ONLY}>{`${visible.length} of ${connectors.length} connectors`}</Box>
+        )}
+      </Box>
+      {visible.length > 0 && (
         <Box sx={{ mt: 2.5, display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", lg: "1fr 1fr" } }}>
           {visible.map(renderCard)}
         </Box>

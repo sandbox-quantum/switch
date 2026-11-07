@@ -41,6 +41,24 @@ describe("RowActionsMenu", () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
+  it("lets the arrow keys reach a disabled action, so its reason can be read", () => {
+    render(
+      <RowActionsMenu
+        label="Actions for Dana"
+        actions={[
+          { label: "Rename", onClick: () => {} },
+          { label: "Make admin", onClick: () => {}, disabledReason: "Dana is already a workspace admin." },
+        ]}
+      />,
+    );
+    open();
+    const rename = screen.getByRole("menuitem", { name: "Rename" });
+    rename.focus();
+    fireEvent.keyDown(rename, { key: "ArrowDown" });
+
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /Make admin/ }));
+  });
+
   it("keeps its clicks from reaching the row", () => {
     const rowClick = vi.fn();
     render(

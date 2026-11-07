@@ -13,7 +13,7 @@ const svgBySlug = new Map(
 /** The logo's markup, sized to fill its box, or undefined for a slug this
  *  build has no logo for. Bundled assets, not user input. */
 export function brandSvg(slug: string): string | undefined {
-  return svgBySlug.get(slug)?.replace("<svg ", '<svg width="100%" height="100%" ');
+  return svgBySlug.get(slug)?.replace(/<svg(?=[\s>])/, '<svg width="100%" height="100%"');
 }
 
 const FOREGROUND = "var(--hoot-foreground)";

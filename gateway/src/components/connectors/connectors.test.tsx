@@ -36,6 +36,12 @@ describe("brand logos", () => {
     expect(byFile(gatewayLogos)).toEqual(byFile(consoleLogos));
   });
 
+  it("are sized to their tile whatever their root tag looks like", () => {
+    for (const slug of catalogSlugs) {
+      expect(brandSvg(slug), slug).toMatch(/^<svg width="100%" height="100%"[\s>]/);
+    }
+  });
+
   it("fall back to initials for a service this build has no logo for", () => {
     expect(brandSvg("some-future-service")).toBeUndefined();
     expect(monogram("New Relic")).toBe("NR");
@@ -124,7 +130,9 @@ describe("CatalogueGrid", () => {
     expect(screen.queryByText("GitHub")).toBeNull();
     expect(screen.getByText("Notion")).toBeTruthy();
 
+    expect(screen.getByRole("status").textContent).toBe("1 of 2 connectors");
+
     fireEvent.change(search, { target: { value: "spreadsheets" } });
-    expect(screen.getByText("No connectors match that search.")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("No connectors match that search.");
   });
 });
