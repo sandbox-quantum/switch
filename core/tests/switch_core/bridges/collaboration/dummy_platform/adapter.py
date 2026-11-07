@@ -141,6 +141,15 @@ def sign(secret: str, body: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+class DummySelfHookAdapter(DummyChatAdapter):
+    """A webhook platform whose adapter registers the address itself."""
+
+    display_name: ClassVar[str] = "Dummy Self Hook"
+    docs_slug: ClassVar[str | None] = "dummy-self-hook"
+    receives_webhooks: ClassVar[bool] = True
+    registers_own_webhooks: ClassVar[bool] = True
+
+
 class DummyHookAdapter(DummyChatAdapter):
     display_name: ClassVar[str] = "Dummy Hook"
     docs_slug: ClassVar[str | None] = "dummy-hook"

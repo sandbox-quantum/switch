@@ -143,7 +143,9 @@ serve the requests and webhooks that reach them. So:
 Some platforms can't keep a connection open to Switch: email, SMS, WhatsApp,
 Google Chat. Instead they call an address for every event. To support that:
 
-1. Set `receives_webhooks = True`.
+1. Set `receives_webhooks = True`. If your adapter registers the address with
+   the platform itself when it starts, also set `registers_own_webhooks = True`,
+   so Switch Console doesn't ask anyone to paste it.
 2. Implement `verify_webhook(request)`. Check the request against **this
    connection's own secret**, from your config: an HMAC header over
    `request.body`, a signed token, or a token in the query string for a GET
