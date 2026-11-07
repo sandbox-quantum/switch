@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `auggie` | `auggie --acp` (Augment Code's CLI), ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection, HTTP MCP registration and approvals. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -67,12 +68,13 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
+| auggie (ACP) | 0.37.0 | not recorded | Verified by hand against the CLI signed out: `initialize`, `session/new` and the indexing request. No signed-in run yet; set `AUGMENT_SESSION_AUTH` in the shell to run the suite headless, the test passes it through. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Auggie run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -86,7 +88,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/auggie/auggie-adapter.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -121,6 +124,21 @@ approved by the adapter. A session that advertises no modes is left in its
 own. A hosted Antigravity login (the token file of the legacy runtime) is
 refused for an `agy` target with an error saying how to sign in there,
 rather than written where `agy` never reads it.
+**Auggie** runs Augment's `auggie --acp` with the user's own sign-in
+(`~/.augment/session.json`, or `AUGMENT_SESSION_AUTH`). It offers no
+`authenticate` method: signed out, `session/new` fails with `Authentication
+required`, so the sign-in check runs `auggie account status --json`, which
+never prints the session. Its `initialize` leaves `mcpCapabilities` out
+although `session/new` takes `http` servers, so its hooks set `httpMcp`.
+Its `default` and `ask` modes are workflows, not permission levels, so the
+session stays in its own and every runtime mode is the adapter's answer to
+Auggie's per-tool requests. Before it indexes a workspace with no stored
+answer, Auggie sends a permission request with the tool call id
+`workspace-indexing-permission`. Indexing uploads the workspace to Augment,
+so it is never auto-approved, full access included: the owner is offered
+indexing or skipping for this session only, and a request outside a turn is
+cancelled, which Auggie takes as skip. `--allow-indexing` is not passed.
+
 A legacy `antigravity-acp` install still runs in its own profile directory
 (`GEMINI_HOME`) with its `auto_edit` and `yolo` modes, questions as permission
 requests whose tool call id starts with `interaction_`, and its old sign-in
