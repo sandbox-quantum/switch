@@ -24,7 +24,7 @@ a cluster.
 
 1. Sign in at [developer.webex.com](https://developer.webex.com), open the menu
    under your avatar, and choose **My Webex Apps**.
-2. Select **Create a New App**, then **Create a Bot**.
+2. Select **Create a New App**, then **Onboard Bot** on the **Bot** card.
 3. Fill in the form:
    - **Bot name**: what people see beside its messages, for example
      "Switch".
