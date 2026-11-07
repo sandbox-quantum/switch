@@ -414,6 +414,21 @@ may not read the current user. A Datadog administrator turns MCP access on for
 the organization (Organization Settings, Preferences), and the application key
 needs `mcp_read`, and `mcp_write` for changes.
 
+### PagerDuty
+
+PagerDuty's hosted MCP server takes a key as `Authorization: Token
+token=<key>`, at `https://mcp.pagerduty.com/mcp`, or
+`https://mcp.eu.pagerduty.com/mcp` for accounts in the EU service region; the
+region is the entry's one choice and names the REST host too. It also takes a
+static OAuth client, but offers no dynamic registration, so the entry asks for
+a user key, which needs Advanced Permissions on the account. The identity call
+is the REST API's `/users/me`, which answers only for a user's key or an OAuth
+sign-in: a general access (account-wide) key is refused at connect, so every
+connection acts as one person, with that person's role. The API version
+follows the key, and new keys get v2, so the identity call needs no
+PagerDuty `Accept` header. The server lists every tool to every key; there is
+no read-only mode, and PagerDuty refuses what the person may not do.
+
 ## Adding a connector
 
 A connector is a catalog entry and a skill, with no code, when the vendor fits
