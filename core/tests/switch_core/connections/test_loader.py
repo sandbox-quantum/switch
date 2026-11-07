@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_completed_entries():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "hubspot",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "hubspot",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["hubspot"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +179,56 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_hubspot_entry_connects_as_hubspot_documents():
+    definition = CATALOG["hubspot"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # No dynamic registration: the operator creates an MCP connector in
+    # HubSpot and stores its client.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "HUBSPOT",
+    )
+    # Redirect URLs are matched exactly, port included, so Console's ports
+    # are pinned; endpoints are discovered from the MCP server's metadata.
+    assert oauth.redirect == ["loopback", "core"]
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.authorization_url is None and oauth.token_url is None
+    assert oauth.unchecked is not None
+    # No revocation endpoint is advertised and the documented revoke is not
+    # one Switch can make, so disconnect says where people uninstall Switch.
+    assert oauth.revocation_url is None and not oauth.revocation_discovered
+    assert oauth.remove_access is not None and "Connected Apps" in oauth.remove_access
+    assert definition.auth.refresh == "rotating"
+    # HubSpot documents 30-minute access tokens.
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        1800,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("hubspot", "https://mcp.hubspot.com")
+    ]
+    # No REST lookup is known to accept HubSpot's MCP token (maintainer
+    # direction on #830), so identity comes from the server's read-only,
+    # no-argument get_user_details tool through identity.mcp_tool.
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url is None
+    assert definition.auth.identity.mcp_tool == "get_user_details"
+    # Maintainer direction on #830: key by user id plus HubSpot account id,
+    # via the list form of account_id added to the shared identity PR.
+    assert definition.auth.identity.account_id == ["userId", "accountId"]
+    assert definition.auth.identity.label == "userId"
+    # HubSpot's metadata lists scopes_supported: [], so access is unscoped:
+    # empty read and write scope lists, write consent implied, and the real
+    # boundary is the signed-in user's HubSpot permissions.
+    assert definition.access is not None and definition.access.unscoped is True
+    assert definition.access.read.scopes == []
+    assert definition.access.write is not None and definition.access.write.scopes == []
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -1139,6 +1192,13 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
         load_catalog(catalog_copy)
 
 
+def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(raw.replace(b"\n", b"\r\n"))
+    assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()
+
+
 def _rewrite_google(catalog_copy, old, new):
     path = catalog_copy / "google-workspace" / "connection.yaml"
     text = path.read_text()
@@ -1200,3 +1260,41 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {
+            "registration": "dynamic",
+            "client_settings": None,
+            "unchecked": "Confirm it",
+            "inconclusive_probe": [{"error": "unknown_error"}],
+        },
+        {"unchecked": None, "inconclusive_probe": [{"error": "unknown_error"}]},
+        {
+            "unchecked": "Confirm it",
+            "inconclusive_probe": [{"error": "invalid_client"}],
+        },
+        {
+            "unchecked": "Confirm it",
+            "inconclusive_probe": [
+                {"error": "invalid_grant"},
+                {"error": "invalid_grant"},
+            ],
+        },
+    ],
+)
+def test_inconclusive_probe_requires_static_explicit_nondefinite_optin(changes):
+    from switch_core.connections.loader import OAuthClient
+
+    body = {
+        "registration": "static",
+        "client_settings": "EXAMPLE",
+        "redirect": ["core"],
+        "remove_access": "Remove Switch",
+        "unchecked": "Confirm it",
+        **changes,
+    }
+    with pytest.raises(ValueError):
+        OAuthClient.model_validate(body)
