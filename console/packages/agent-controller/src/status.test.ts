@@ -10,6 +10,7 @@ import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
+import { PROVIDERS } from './providers';
 import { type AgentObservation, emptyObservation } from './runtime';
 import {
   type AgentAssignment,
@@ -310,21 +311,23 @@ describe('ProviderStatuses', () => {
       log: silentLogger,
       onChange: () => changes++,
     });
+    // Every provider but the missing one is checked, and each is a change.
+    const installed = PROVIDERS.length - 1;
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(installed);
+    expect(changes).toBe(PROVIDERS.length);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(installed);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(2 * installed);
+    expect(changes).toBe(PROVIDERS.length);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(PROVIDERS.length + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -429,7 +432,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(PROVIDERS.length - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 
