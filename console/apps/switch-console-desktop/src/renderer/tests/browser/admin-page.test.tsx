@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { page as browserPage } from 'vitest/browser';
 import type { WorkspaceService } from '@shared/core/switch-servers/connection-catalog';
 import type { ConnectorApp } from '@shared/core/switch-servers/connector-apps';
 
@@ -551,4 +552,62 @@ it('marks the value the vendor refused, and saves once it is right', async () =>
   expect(client.getQueryData(['connector-app-checks', 'server', 'google-workspace'])).toEqual([
     SAVED_CHECK,
   ]);
+});
+
+it('saves a public Dropbox client ID without asking for a secret', async () => {
+  const publicApp = connectorApp({
+    slug: 'dropbox',
+    name: 'Dropbox',
+    source: 'none',
+    client_id: null,
+    saved_client_id: null,
+    secrets: {},
+  });
+  const onSuccess = vi.fn();
+  switchServers.saveConnectorApp.mockResolvedValue({ kind: 'saved', app: publicApp, checks: [] });
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () =>
+    root!.render(
+      <QueryClientProvider client={client}>
+        <Dialog open>
+          <DialogContent>
+            <ConnectorAppSetupDialog
+              serverId="server"
+              app={publicApp}
+              publicUrl={null}
+              mode="set_up"
+              onSuccess={onSuccess}
+              onClose={() => {}}
+            />
+          </DialogContent>
+        </Dialog>
+      </QueryClientProvider>
+    )
+  );
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  while (!dialog.querySelector('#connector-app-client_id')) {
+    await act(async () => button(/^Next$/, dialog)!.click());
+  }
+  expect(dialog.querySelector('#connector-app-client_secret')).toBeNull();
+  const input = dialog.querySelector<HTMLInputElement>('#connector-app-client_id')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+      input,
+      ' public-client '
+    );
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const save = button(/^Check and save$/, dialog)!;
+  expect(save.disabled).toBe(false);
+  await browserPage.screenshot({ path: '__screenshots__/dropbox-public-client-admin.png' });
+  await act(async () => save.click());
+  await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledWith('Dropbox is ready.'));
+  expect(switchServers.saveConnectorApp).toHaveBeenCalledWith({
+    serverId: 'server',
+    service: 'dropbox',
+    input: { client_id: 'public-client', replace: false },
+  });
 });
