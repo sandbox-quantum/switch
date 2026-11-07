@@ -116,6 +116,9 @@ describe('what a restarted session is told about its services', () => {
     expect(servicesChangeSince(shape('atlassian'), services('atlassian', 'datadog'))).toBe(
       "Datadog was added to this agent's tools."
     );
+    expect(servicesChangeSince(shape('atlassian'), services('atlassian', 'vercel'))).toBe(
+      "Vercel was added to this agent's tools."
+    );
     expect(
       servicesChangeSince(shape('datadog', 'github', 'google-workspace'), services('atlassian'))
     ).toBe(
