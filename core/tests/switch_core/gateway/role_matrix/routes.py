@@ -505,6 +505,41 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/rooms/{room_id}/roles/{name}": delete(
         f"{G}/rooms/{{room_role}}/roles/reviewer", owner_or_admins()
     ),
+    "GET /gateway/rooms/{room_id}/schedules": get(
+        f"{G}/rooms/{{room}}/schedules", owner_or_admins()
+    ),
+    "POST /gateway/rooms/{room_id}/schedules": post(
+        f"{G}/rooms/{{room_agent}}/schedules",
+        owner_or_admins(),
+        json={
+            "agent_ids": ["{agent}"],
+            "text": "Summarise the new issues.",
+            "cron": "0 9 * * *",
+            "run_at": None,
+            "timezone": "UTC",
+        },
+        why="Changing a room's schedules takes managing it, not writing in it.",
+    ),
+    "PUT /gateway/rooms/{room_id}/schedules/{schedule_id}": put(
+        f"{G}/rooms/{{room_agent}}/schedules/{{room_schedule}}",
+        owner_or_admins(),
+        json={
+            "agent_ids": ["{agent}"],
+            "text": "Summarise the new issues.",
+            "cron": "0 9 * * *",
+            "run_at": None,
+            "timezone": "UTC",
+        },
+    ),
+    "PUT /gateway/rooms/{room_id}/schedules/{schedule_id}/paused": put(
+        f"{G}/rooms/{{room_agent}}/schedules/{{room_schedule}}/paused",
+        owner_or_admins(),
+        json={"paused": True},
+    ),
+    "DELETE /gateway/rooms/{room_id}/schedules/{schedule_id}": delete(
+        f"{G}/rooms/{{room_agent}}/schedules/{{room_schedule}}",
+        owner_or_admins(),
+    ),
     "PUT /gateway/rooms/{room_id}/protection": put(
         f"{G}/rooms/{{room}}/protection",
         owner_or_admins(),
