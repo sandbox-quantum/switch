@@ -21,22 +21,23 @@ PLACEHOLDERS = {
     "linear",
     "salesforce",
     "box",
-    "canva",
     "vercel",
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_canva():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "canva",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "canva",
         "datadog",
         "github",
         "google-workspace",
@@ -46,6 +47,38 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["canva"].skill_files
+
+
+def test_the_shipped_canva_entry_connects_as_the_design_doc_specifies():
+    definition = CATALOG["canva"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["loopback"],
+    )
+    assert oauth.client_settings == "CANVA"
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_url == "https://api.canva.com/rest/v1/oauth/revoke"
+    assert definition.auth.identity.url == "https://api.canva.com/rest/v1/users/me"
+    assert definition.auth.identity.account_id == "team_user.user_id"
+    assert definition.auth.identity.label == "team_user.user_id"
+    assert definition.token.kind == "pass_through"
+    assert definition.token.max_lifetime == 14400
+    assert definition.mcp.servers[0].name == "canva"
+    assert definition.mcp.servers[0].url == "https://api.canva.com/connect/v1/mcp"
+    assert definition.access.read.scopes == [
+        "design:meta:read",
+        "design:content:read",
+    ]
+    assert definition.access.write.scopes == [
+        "design:meta:read",
+        "design:content:read",
+        "design:content:write",
+    ]
+    assert definition.tools.mode == "pass_through"
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
