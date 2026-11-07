@@ -3828,6 +3828,10 @@ class AgentSessionActivityItem(TenantScoped, Base):
             "'tool-activity', 'notice')",
             name="ck_session_activity_items_kind",
         ),
+        CheckConstraint(
+            "subagent IS NULL OR kind = 'tool-activity'",
+            name="ck_session_activity_items_subagent",
+        ),
         Index("ix_session_activity_items_updated_at", "updated_at"),
     )
 
@@ -3846,6 +3850,8 @@ class AgentSessionActivityItem(TenantScoped, Base):
     thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The Switch message that asked, where a platform puts its work marker.
     message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The agent a tool call started, on that call's row.
+    subagent: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

@@ -24,6 +24,9 @@ export function itemParts(item: Item, text: string, minimum: number): Item[] {
       .join(''),
   }));
 }
+
+/** What a subagent is called when its provider did not name it. */
+const SUBAGENT_NAMELESS = 'Subagent';
 type BufferedItem = { item: Item; emittedAt: number; dirty: boolean; parts: number };
 
 /** Projects chat and tool summaries only. The host owns sequencing and durable publication. */
@@ -107,6 +110,9 @@ export class ChatProjector {
           text: kind === 'tool-activity' ? '' : (event.item.text ?? previous?.item.text ?? ''),
           attachments: [],
           origin: kind === 'user-message' ? context.origin : null,
+          ...(event.item.type === 'subagent'
+            ? { subagent: event.item.toolName || SUBAGENT_NAMELESS }
+            : {}),
         };
         const buffered = {
           item,

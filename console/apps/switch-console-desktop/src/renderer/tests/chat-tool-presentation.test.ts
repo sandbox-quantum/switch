@@ -31,6 +31,26 @@ function detail(extra: Partial<ToolDetail>): ToolDetail {
 }
 
 describe('presentTool', () => {
+  it('names the agent a call started, from the room row alone', () => {
+    const shown = presentTool(
+      { ...item('Find the retry setting', 'in-progress'), subagent: 'Explore' },
+      null
+    );
+    expect(shown).toMatchObject({
+      kind: 'agent',
+      verb: 'Running agent:',
+      subject: 'Explore: Find the retry setting',
+    });
+  });
+
+  it('names an agent once when its call is titled with the same name (Codex)', () => {
+    const shown = presentTool(
+      { ...item('spawn_agent', 'in-progress'), subagent: 'spawn_agent' },
+      null
+    );
+    expect(shown).toMatchObject({ kind: 'agent', subject: 'spawn_agent' });
+  });
+
   it('shows a command with its output and a failing exit code', () => {
     const shown = presentTool(
       item('ls -la'),

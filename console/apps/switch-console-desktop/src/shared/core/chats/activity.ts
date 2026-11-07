@@ -57,6 +57,8 @@ export const chatActivityItemSchema = z.object({
   status: z.string(),
   title: z.string(),
   text: z.string(),
+  /** The agent a tool call started, named; absent from a server that predates it. */
+  subagent: z.string().nullable().optional(),
   commandId: z.string().nullable(),
   roomId: z.string().nullable(),
   threadId: z.string().nullable(),

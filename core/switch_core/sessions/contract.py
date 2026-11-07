@@ -122,6 +122,8 @@ class Item(_Model):
     text: str
     attachments: list[Attachment]
     origin: Origin | None
+    # The agent a tool call started, by name; None on every other item.
+    subagent: str | None = Field(default=None, min_length=1)
 
 
 class ApprovalOption(_Model):

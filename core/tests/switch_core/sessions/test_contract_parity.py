@@ -65,6 +65,18 @@ def test_validates_the_agreed_examples() -> None:
         parse_server_event(update)
 
 
+def test_accepts_a_call_naming_the_agent_it_started_and_items_from_before() -> None:
+    call = {
+        **item(1, "").model_dump(by_alias=True, exclude={"subagent"}),
+        "kind": "tool-activity",
+        "title": "Search",
+    }
+    assert Item.model_validate({**call, "subagent": "Explore"}).subagent == "Explore"
+    assert Item.model_validate(call).subagent is None
+    with pytest.raises(ValueError):
+        Item.model_validate({**call, "subagent": ""})
+
+
 def test_rejects_raw_data_reasoning_items_unsafe_counters_and_oversized_events() -> (
     None
 ):

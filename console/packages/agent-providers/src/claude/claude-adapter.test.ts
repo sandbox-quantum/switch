@@ -1292,6 +1292,158 @@ describe('ClaudeAdapter background subagents', () => {
     await vi.waitFor(() => expect(adapter.hasBackgroundWork(SESSION)).toBe(true));
     await adapter.stopAll();
   });
+
+  function spawn(id: string) {
+    return assistantMessage(`msg-${id}`, [
+      {
+        type: 'tool_use',
+        id,
+        name: 'Agent',
+        input: { description: `work ${id}`, subagent_type: 'Explore', run_in_background: true },
+      },
+    ]);
+  }
+
+  function launched(id: string) {
+    return {
+      type: 'user',
+      parent_tool_use_id: null,
+      uuid: `user-${id}`,
+      session_id: 'native-1',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: id, content: 'Async agent launched.' }],
+      },
+    };
+  }
+
+  function agentStarted(taskId: string, toolUseId: string, backgrounded: boolean) {
+    return task('task_started', {
+      task_id: taskId,
+      tool_use_id: toolUseId,
+      task_type: 'local_agent',
+      subagent_type: 'Explore',
+      description: `work ${toolUseId}`,
+      is_backgrounded: backgrounded,
+    });
+  }
+
+  it('keeps a background subagent open until its agent ends, against the turn that started it', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    // The order Claude Code sends them in: the agent's task, then the call's
+    // answer saying it was launched, then the turn ends while it works.
+    query.emit(spawn('call-1'));
+    query.emit(
+      task('background_tasks_changed', {
+        tasks: [{ task_id: 'agent-1', task_type: 'local_agent', description: 'work call-1' }],
+      })
+    );
+    query.emit(agentStarted('agent-1', 'call-1', true));
+    query.emit(launched('call-1'));
+    query.emit(resultMessage([sent!.uuid!]));
+    await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(recorder.ofType('item.completed')).toEqual([]);
+
+    query.emit(task('task_updated', { task_id: 'agent-1', patch: { status: 'completed' } }));
+    query.emit(
+      task('task_notification', {
+        task_id: 'agent-1',
+        tool_use_id: 'call-1',
+        status: 'completed',
+        output_file: '',
+        summary: 'done',
+      })
+    );
+    const closed = await recorder.waitFor('item.completed', () => true, 1_000);
+    expect(closed.turnId).toBe('turn-1');
+    expect(closed.item).toMatchObject({ id: 'call-1', type: 'subagent', status: 'completed' });
+    await adapter.stopAll();
+    expect(recorder.ofType('item.completed')).toHaveLength(1);
+  });
+
+  it('closes a stopped background subagent as declined, and one the session outlived as failed', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    for (const [taskId, id] of [
+      ['agent-1', 'call-1'],
+      ['agent-2', 'call-2'],
+    ] as const) {
+      query.emit(spawn(id));
+      query.emit(agentStarted(taskId, id, true));
+      query.emit(launched(id));
+    }
+    query.emit(
+      task('task_notification', {
+        task_id: 'agent-1',
+        tool_use_id: 'call-1',
+        status: 'stopped',
+        output_file: '',
+        summary: 'stopped',
+      })
+    );
+    await recorder.waitFor('item.completed', (event) => event.item.id === 'call-1', 1_000);
+    await adapter.stopAll();
+    expect(
+      recorder.ofType('item.completed').map((event) => [event.item.id, event.item.status])
+    ).toEqual([
+      ['call-1', 'declined'],
+      ['call-2', 'failed'],
+    ]);
+  });
+
+  it("closes a background subagent's own call against the turn it started in, once it is answered", async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(spawn('call-1'));
+    query.emit(agentStarted('agent-1', 'call-1', true));
+    query.emit(launched('call-1'));
+    // The subagent runs a command of its own, which returns only after the
+    // turn that launched it has ended.
+    query.emit({
+      ...assistantMessage('msg-child', [
+        { type: 'tool_use', id: 'child-1', name: 'Bash', input: { command: 'sleep 20' } },
+      ]),
+      parent_tool_use_id: 'call-1',
+    });
+    query.emit(resultMessage([sent!.uuid!]));
+    await recorder.waitFor('turn.completed', () => true, 1_000);
+    query.emit({
+      type: 'user',
+      parent_tool_use_id: 'call-1',
+      uuid: 'user-child',
+      session_id: 'native-1',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'child-1', content: '' }],
+      },
+    });
+    const closed = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'child-1',
+      1_000
+    );
+    expect(closed.turnId).toBe('turn-1');
+    expect(closed.item.status).toBe('completed');
+    await adapter.stopAll();
+  });
+
+  it('closes a foreground subagent on its answer, as any other call', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    query.emit(spawn('call-1'));
+    query.emit(agentStarted('agent-1', 'call-1', false));
+    query.emit(launched('call-1'));
+    const closed = await recorder.waitFor('item.completed', () => true, 1_000);
+    expect(closed.item).toMatchObject({ id: 'call-1', status: 'completed' });
+    await adapter.stopAll();
+  });
 });
 
 describe('ClaudeAdapter connector tools', () => {

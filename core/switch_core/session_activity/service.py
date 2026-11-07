@@ -60,6 +60,7 @@ MAX_QUESTIONS = 50
 MAX_QUESTION_OPTIONS = 50
 MAX_CUSTOM_ANSWER_CHARS = 4000
 MAX_MODEL_CHARS = 200
+MAX_SUBAGENT_CHARS = 200
 MAX_MODELS_PER_TURN = 50
 # A host counts in JavaScript numbers, exact only up to 2**53 - 1.
 MAX_TOKENS = 2**53 - 1
@@ -199,11 +200,13 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        subagent: str | None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
         `usage` is what the turn spent, and only a turn's own row, reported as
-        ended, carries it.
+        ended, carries it. `subagent` is the agent a tool call started, and only
+        that call's row carries it.
         """
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
@@ -229,6 +232,15 @@ class AgentSessionActivityService:
         if usage and not (kind == "turn" and status in TURN_ENDED):
             raise SessionError(
                 "INVALID_EVENT", "Only an ended turn's own row carries its usage."
+            )
+        if subagent is not None and kind != "tool-activity":
+            raise SessionError(
+                "INVALID_EVENT", "Only a tool call's row names a subagent."
+            )
+        if subagent is not None and not 0 < len(subagent) <= MAX_SUBAGENT_CHARS:
+            raise SessionError(
+                "INVALID_EVENT",
+                f"A subagent's name is 1 to {MAX_SUBAGENT_CHARS} characters.",
             )
         if len(title) > MAX_TITLE_CHARS or len(text) > MAX_TEXT_CHARS:
             raise SessionError(
@@ -264,6 +276,7 @@ class AgentSessionActivityService:
                     room_id=room_id,
                     thread_id=thread_id,
                     message_id=message_id,
+                    subagent=subagent,
                     occurred_at=occurred_at,
                 ),
             )

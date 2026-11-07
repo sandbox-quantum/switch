@@ -60,7 +60,10 @@ from . import (
     Markup,
     RequestReference,
     example_value,
+    step_title,
+    subagents,
     surface_label,
+    tool_calls,
     turn_state,
     unanswerable,
 )
@@ -111,6 +114,15 @@ _LOG_CUT = "…{left} earlier in this turn, not shown."
 # to infer from the outcome. Two columns each answering one question are read
 # faster than one column answering whichever question suits the line.
 _TOOL_MARKER = "⌗"
+
+# A call that started another agent, in the same column: a branch, because the
+# work forked off to someone else rather than being done by the agent here.
+_SUBAGENT_MARKER = "⎇"
+
+# How many of a turn's subagents the status lists. Past this the running ones
+# are kept before the finished ones, and the rest are counted.
+_MAX_SUBAGENT_LINES = 8
+_SUBAGENTS_CUT = "…{left} more subagents not shown."
 
 # What the agent said, and how much of it. The marker is not one of the outcome
 # glyphs because a sentence has no outcome, and a tick beside one would read as
@@ -277,11 +289,12 @@ def turn_status(
     what `turn_summary` does, and why a platform publishing SDK sessions wants
     this instead.
 
-    Three lines at most, and usually one:
+    Usually one line, and three at most besides the agents it started:
 
     - where the turn got to and how long it has taken;
     - what it is doing right now, while it is still doing something;
-    - how the tool calls went, once there is more than one outcome to report.
+    - how the tool calls went, once there is more than one outcome to report;
+    - each agent the turn started, while there is work to watch.
 
     `tool_detail` says whether this platform reports tool activity at all, and
     a platform can decline it. Where the status shares the conversation with
@@ -311,10 +324,13 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
-    did = [item for item in items if item.kind == "tool-activity"]
-    for line in _doing(
-        did, turn, escape=escape, budget=budget, tool_detail=tool_detail
-    ):
+    did = tool_calls(items)
+    for line in [
+        *_doing(did, turn, escape=escape, budget=budget, tool_detail=tool_detail),
+        *_subagent_lines(
+            items, turn, escape=escape, budget=budget, tool_detail=tool_detail
+        ),
+    ]:
         if spent + len(line) + 1 > budget:
             break
         lines.append(line)
@@ -376,6 +392,48 @@ def _doing(
     return lines
 
 
+def _subagent_lines(
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    escape: Callable[[str], str],
+    budget: int,
+    tool_detail: bool,
+) -> list[str]:
+    """The agents the turn started, one to a line, while there is work to watch.
+
+    A running one is listed on every platform: another agent at work is what
+    is happening in the turn, and stopping it is what a reader may want next.
+    A finished one is listed beside them where the platform reports tool
+    activity, so a reader sees each one finish where it was. Once the turn
+    has ended and none is running the list goes, because the state line above
+    counts them and the log keeps each one.
+
+    In the order they were started, so a line does not move when its agent
+    finishes. A turn that started more than fit keeps the running ones first.
+    """
+    started = subagents(items)
+    running = [item for item in started if item.status == "in-progress"]
+    if not running and turn.status in TURN_ENDED:
+        return []
+    listed = started if tool_detail else running
+    kept = {id(item) for item in running[-_MAX_SUBAGENT_LINES:]}
+    for item in reversed(listed):
+        if len(kept) >= _MAX_SUBAGENT_LINES:
+            break
+        kept.add(id(item))
+    lines = [
+        f"{_SUBAGENT_MARKER} {_OUTCOME[item.status]} "
+        f"{_fit(step_title(item), max(1, budget // 4), escape=escape)}"
+        for item in listed
+        if id(item) in kept
+    ]
+    left = len(listed) - len(lines)
+    if left:
+        lines.append(_SUBAGENTS_CUT.format(left=left))
+    return lines
+
+
 def in_activity_log(item: Item) -> bool:
     """Whether this item is one of the turn's own lines in the log.
 
@@ -398,8 +456,10 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
-    title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
-    line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
+    named = step_title(item)
+    title = _fit(named, _LOG_TITLE, escape=escape) if named else _LOG_UNTITLED
+    marker = _TOOL_MARKER if item.subagent is None else _SUBAGENT_MARKER
+    line = f"{marker} {_OUTCOME[item.status]} {title}"
     if item.text:
         line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
     return line

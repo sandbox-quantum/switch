@@ -216,13 +216,14 @@ const VERBS: Record<Exclude<ToolKind, 'switch' | 'mcp' | 'other'>, Verbs> = {
 };
 
 /** What a tool row is drawn from: an activity row's status, title and text. */
-export type ToolItem = { status: string; title: string; text: string };
+/** `subagent` names the agent a call started, where Switch's row says so. */
+export type ToolItem = { status: string; title: string; text: string; subagent?: string | null };
 
 export function presentTool(item: ToolItem, detail: ToolDetail | null): ToolPresentation {
   const running = item.status === 'in-progress';
   const titled = fromTitle(item.title);
   const name = detail?.toolName ?? titled.name;
-  const kind = kindOf(name, detail?.type ?? null);
+  const kind = item.subagent ? 'agent' : kindOf(name, detail?.type ?? null);
   const input = isRecord(detail?.input) ? detail.input : {};
   const output = nonEmpty(detail?.output) ?? nonEmpty(item.text);
   const truncated = detail?.truncated ?? false;
@@ -299,7 +300,13 @@ export function presentTool(item: ToolItem, detail: ToolDetail | null): ToolPres
     case 'agent':
     case 'todo': {
       const subject =
-        kind === 'agent' ? (field(input, 'description') ?? (item.title || null)) : null;
+        kind !== 'agent'
+          ? null
+          : item.subagent
+            ? item.title && item.title !== item.subagent
+              ? `${item.subagent}: ${item.title}`
+              : item.subagent
+            : (field(input, 'description') ?? (item.title || null));
       const shown = pretty(detail?.input);
       return {
         ...base,

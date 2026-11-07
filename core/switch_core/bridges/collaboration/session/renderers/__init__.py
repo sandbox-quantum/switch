@@ -80,34 +80,78 @@ def turn_state(
     reporting — the duration stays, because that is the turn's own. What a
     turn left unfinished is not covered by it: that is an outcome, and it is
     reported wherever the turn is.
+
+    A subagent is counted apart from the calls. One sent to the background
+    outlives the turn that started it, and its host closes it when the agent
+    itself ends, so a subagent still open after its turn is still at work
+    rather than left unfinished, and is reported as running in either tense.
     """
     state = TURN_STATE[turn.status]
+    running = sum(1 for item in subagents(items) if item.status == "in-progress")
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
-            return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
+            state = f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
+        if running:
+            state = f"{state} · {_counted(running, 'subagent')} running"
         return state
     if elapsed_seconds is not None:
         worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
         state = worked if turn.status == "completed" else f"{state} {worked}"
-    unfinished = sum(
-        1
-        for item in items
-        if item.kind == "tool-activity" and item.status == "in-progress"
-    )
-    if not unfinished:
-        return state
-    step = "step" if unfinished == 1 else "steps"
-    return f"{state} {unfinished} {step} left unfinished."
+    unfinished = sum(1 for item in tool_calls(items) if item.status == "in-progress")
+    if unfinished:
+        step = "step" if unfinished == 1 else "steps"
+        state = f"{state} {unfinished} {step} left unfinished."
+    if running:
+        state = f"{state} {_counted(running, 'subagent')} still running."
+    return state
 
 
 def _worked_for(elapsed_seconds: float, items: list[Item], *, tool_detail: bool) -> str:
-    """How long a turn ran, and how much of that was tool calls."""
-    calls = sum(1 for item in items if item.kind == "tool-activity")
+    """How long a turn ran, and how much of that was tool calls and subagents."""
     worked = f"Worked for {_format_duration(elapsed_seconds)}."
-    if not calls or not tool_detail:
+    calls = len(tool_calls(items))
+    started = len(subagents(items))
+    if not tool_detail or not (calls or started):
         return worked
-    noun = "call" if calls == 1 else "calls"
-    return f"{worked} {calls} tool {noun}."
+    parts = [_counted(calls, "tool call")] if calls else []
+    if started:
+        parts.append(_counted(started, "subagent"))
+    return f"{worked} {' and '.join(parts)}."
+
+
+def _counted(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def tool_calls(items: list[Item]) -> list[Item]:
+    """The turn's tool calls, other than those that started another agent."""
+    return [
+        item for item in items if item.kind == "tool-activity" and item.subagent is None
+    ]
+
+
+def subagents(items: list[Item]) -> list[Item]:
+    """The turn's tool calls that started another agent, in the order they did."""
+    return [
+        item
+        for item in items
+        if item.kind == "tool-activity" and item.subagent is not None
+    ]
+
+
+def step_title(item: Item) -> str:
+    """What a step is called on a card: a subagent by its name, then its task.
+
+    The title of a call that started an agent is the task its caller gave it,
+    which on its own reads as one more tool call. The name is what says another
+    agent is doing it. Some providers (Codex) have no task to give and title
+    the call with the name itself, which is then said once.
+    """
+    if item.subagent is None:
+        return item.title
+    if not item.title or item.title == item.subagent:
+        return item.subagent
+    return f"{item.subagent}: {item.title}"
 
 
 def _format_duration(elapsed_seconds: float) -> str:

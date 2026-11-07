@@ -162,6 +162,31 @@ async def test_usage_anywhere_but_an_ended_turn_or_malformed_is_a_422(client, bo
     assert response.status_code == 422
 
 
+async def test_a_tool_call_row_names_the_agent_it_started(client, service):
+    response = await client.post(
+        f"/agent-sessions/{SESSION}/activity",
+        json=_activity(title="Find the retry setting", subagent="Explore"),
+    )
+    assert response.json() == {"recorded": True}
+    [step] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert (step.kind, step.subagent) == ("tool-activity", "Explore")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _ended_turn(subagent="Explore"),
+        _activity(subagent=""),
+        _activity(subagent="x" * 201),
+    ],
+)
+async def test_a_subagent_anywhere_but_a_tool_call_or_malformed_is_refused(
+    client, body
+):
+    response = await client.post(f"/agent-sessions/{SESSION}/activity", json=body)
+    assert response.status_code == 422
+
+
 async def test_a_questions_request_over_http(client, service, people):
     opened = await client.post(
         f"/agent-sessions/{SESSION}/approvals",
