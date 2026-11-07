@@ -219,6 +219,12 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
+  through Meta's Cloud API and people can talk to agents in one-to-one chats,
+  with files, quoted replies as threads and read receipts. Each connection
+  needs its own Meta app, and Switch checks the token's app and permissions
+  when you save it. Replies more than 24 hours after the person's last message
+  are refused by WhatsApp; Switch doesn't send template messages.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
