@@ -154,6 +154,49 @@ async def test_verify_webhook_invalid_token() -> None:
         await adapter.verify_webhook(req)
 
 
+def test_parse_webhook_message_event_id() -> None:
+    adapter = GoogleChatAdapter(config=_make_config())
+    req = WebhookRequest(
+        method="POST",
+        headers={},
+        query={},
+        body=json.dumps(
+            {
+                "type": "MESSAGE",
+                "eventTime": "2026-11-06T10:46:12Z",
+                "message": {
+                    "name": "spaces/AAAABBBB/messages/msg123",
+                    "text": "hello",
+                },
+            }
+        ).encode(),
+    )
+    inbound = adapter.parse_webhook(req)
+    assert inbound.envelope_type == "MESSAGE"
+    # external_event_id must be message.name for deduplication
+    assert inbound.external_event_id == "spaces/AAAABBBB/messages/msg123"
+    assert inbound.answers_inline is False
+
+
+def test_parse_webhook_added_to_space_fallback_event_id() -> None:
+    adapter = GoogleChatAdapter(config=_make_config())
+    req = WebhookRequest(
+        method="POST",
+        headers={},
+        query={},
+        body=json.dumps(
+            {
+                "type": "ADDED_TO_SPACE",
+                "eventTime": "2026-11-06T10:46:12Z",
+                "space": {"name": "spaces/AAAABBBB"},
+            }
+        ).encode(),
+    )
+    inbound = adapter.parse_webhook(req)
+    assert inbound.envelope_type == "ADDED_TO_SPACE"
+    assert inbound.external_event_id == "2026-11-06T10:46:12Z"
+
+
 async def test_dispatch_inbound_message() -> None:
     adapter = GoogleChatAdapter(config=_make_config())
     received_messages: list[InboundMessage] = []

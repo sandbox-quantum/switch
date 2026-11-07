@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -232,14 +231,13 @@ class GoogleChatAdapter(PlatformAdapter):
         except Exception as exc:
             raise ValueError(f"Failed to parse JSON body: {exc}") from exc
 
-        event_id = payload.get("eventTime") or payload.get("message", {}).get("name")
-        event_type = payload.get("type", "MESSAGE")
+        # Use message.name as external_event_id for deduplication across pods and retries
+        msg = payload.get("message", {})
+        event_id = msg.get("name") if isinstance(msg, dict) else None
+        if not event_id:
+            event_id = payload.get("eventTime")
 
-        # Automatically dispatch in background
-        if self._running:
-            asyncio.create_task(
-                self.dispatch_event(envelope_type=event_type, payload=payload)
-            )
+        event_type = payload.get("type", "MESSAGE")
 
         return InboundWebhook(
             envelope_type=event_type,
