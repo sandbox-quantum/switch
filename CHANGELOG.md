@@ -219,6 +219,12 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **SMS through Twilio.** An operator can connect their own Twilio number, and
+  people on its allowed list text agents and get replies by SMS. Each reply
+  opens with the agent's name, request cards are answered by texting their
+  handle, and files people send reach the room. Costs are bounded by a limit
+  per reply and an hourly limit per number; Twilio's own `STOP` handling is
+  left to Twilio. Setup is in `docs/messaging-platforms/sms.md`.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
