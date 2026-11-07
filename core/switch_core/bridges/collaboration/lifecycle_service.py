@@ -1177,6 +1177,19 @@ class CollaborationBridgeLifecycleService:
                 connection_config=bridge.connection_config or {},
             )
             adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
+            adapter.load_adapter_state(bridge.adapter_state or {})
+            if fence is None:
+                adapter.set_adapter_state_persister(
+                    lambda state: self._persist_adapter_state(
+                        bridge_id, tenant_id, state
+                    )
+                )
+            else:
+                adapter.set_adapter_state_persister(
+                    lambda state: self._persist_adapter_state_while_owned(
+                        bridge_id, tenant_id, state, fence
+                    )
+                )
             adapter.set_listening(active)
             adapter.set_tenant_id(tenant_id)
             adapter.set_bridge_id(bridge_id)
@@ -1343,6 +1356,43 @@ class CollaborationBridgeLifecycleService:
         bridge's tenant is carried here explicitly rather than inherited."""
         async with tenant_session(self._session_factory, tenant_id) as session:
             await self._bridge_store.set_service_url(session, bridge_id, service_url)
+            await session.commit()
+
+    async def _persist_adapter_state(
+        self,
+        bridge_id: str,
+        tenant_id: str,
+        state: Mapping[str, object],
+    ) -> None:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._bridge_store.merge_adapter_state(
+                session, bridge_id, dict(state)
+            )
+            await session.commit()
+
+    async def _persist_adapter_state_while_owned(
+        self,
+        bridge_id: str,
+        tenant_id: str,
+        state: Mapping[str, object],
+        fence: Fence,
+    ) -> None:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            persisted = await self._bridge_store.merge_adapter_state_while_owned(
+                session,
+                bridge_id,
+                dict(state),
+                kind=fence.kind,
+                key=fence.key,
+                process_id=fence.process_id,
+                token=fence.token,
+            )
+            if not persisted:
+                logger.info(
+                    "Discarded adapter state from collaboration bridge %s after "
+                    "its ownership changed",
+                    bridge_id,
+                )
             await session.commit()
 
     async def _persist_channel_team(

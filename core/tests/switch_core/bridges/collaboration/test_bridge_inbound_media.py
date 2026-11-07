@@ -218,6 +218,33 @@ async def test_single_attachment_carries_no_group_marker() -> None:
     assert bridge.human_actor.media[0]["caption"] == "here you go"
 
 
+async def test_inbound_file_bytes_and_metadata_reach_the_attachment_transport() -> None:
+    bridge = _fake_bridge()
+    data = b"Synthetic attachment bytes\x00\xff"
+    attachment = Attachment(filename="synthetic.txt", mimetype="text/plain", data=data)
+
+    await CollaborationCore._handle_inbound_message(
+        bridge, _msg(content="", attachments=[attachment])
+    )
+
+    assert bridge.human_actor.uploads == [
+        {"data": data, "mimetype": "text/plain", "filename": "synthetic.txt"}
+    ]
+    assert bridge.human_actor.media == [
+        {
+            "matrix_room_id": "!room:s",
+            "mxc": "mxc://s/synthetic.txt",
+            "filename": "synthetic.txt",
+            "mimetype": "text/plain",
+            "size": len(data),
+            "msgtype": "m.file",
+            "caption": None,
+            "thread_root_id": None,
+            "group": None,
+        }
+    ]
+
+
 async def test_attachment_failures_are_disclosed_alongside_text() -> None:
     bridge = _fake_bridge()
 
