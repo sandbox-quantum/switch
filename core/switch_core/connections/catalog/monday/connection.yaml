@@ -1,0 +1,36 @@
+slug: monday
+name: Monday.com
+category: Project management
+description: Read and update Monday.com boards and items, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    revocation_discovered: true
+  identity:
+    method: POST
+    url: https://api.monday.com/v2
+    body:
+      query: "{ me { id email } }"
+    account_id: data.me.id
+    label: data.me.email
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: monday, url: "https://mcp.monday.com/mcp" }
+access:
+  read:
+    scopes:
+      - me:read
+      - boards:read
+  write:
+    scopes:
+      - me:read
+      - boards:read
+      - boards:write
+tools: { mode: pass_through }
