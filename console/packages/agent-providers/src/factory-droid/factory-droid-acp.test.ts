@@ -431,6 +431,14 @@ it('declines malformed forms and non-form elicitations without opening questions
     { mode: 'url' },
     { requestedSchema: { properties: { q: null } } },
     { requestedSchema: { properties: { q: { oneOf: [null] } } } },
+    { requestedSchema: { properties: { q: { type: 'object' } } } },
+    { requestedSchema: { properties: { q: { type: 'array' } } } },
+    { requestedSchema: { properties: { q: { type: 'array', items: { type: 'string' } } } } },
+    {
+      requestedSchema: {
+        properties: { q: { type: 'array', items: { type: 'object', enum: ['x'] } } },
+      },
+    },
   ];
   forms.forEach((params, n) =>
     server.send({
@@ -440,7 +448,7 @@ it('declines malformed forms and non-form elicitations without opening questions
     })
   );
   await flush();
-  for (const id of [310, 311, 312, 313])
+  for (const id of [310, 311, 312, 313, 314, 315, 316, 317])
     expect(server.received.find((m) => m.id === id)?.result).toEqual({ action: 'decline' });
   expect(events.filter((e) => e.type === 'user-input.requested')).toHaveLength(0);
 });

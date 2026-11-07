@@ -17,7 +17,8 @@ function isDroidForm(params: unknown): params is AcpElicitationRequest {
   const validProperty = (value: unknown): boolean => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const property = value as Record<string, unknown>;
-    if (property.type !== undefined && typeof property.type !== 'string') return false;
+    if (!['string', 'number', 'integer', 'boolean', 'array'].includes(String(property.type)))
+      return false;
     if (property.title !== undefined && typeof property.title !== 'string') return false;
     if (property.description !== undefined && typeof property.description !== 'string')
       return false;
@@ -43,7 +44,19 @@ function isDroidForm(params: unknown): params is AcpElicitationRequest {
         property.enum.some((value) => !['string', 'number'].includes(typeof value)))
     )
       return false;
-    return property.items === undefined || validProperty(property.items);
+    if (property.type !== 'array') return property.items === undefined;
+    if (!property.items || typeof property.items !== 'object' || Array.isArray(property.items))
+      return false;
+    const items = property.items as Record<string, unknown>;
+    if (items.type !== undefined && !['string', 'number', 'integer'].includes(String(items.type)))
+      return false;
+    if (items.items !== undefined) return false;
+    // A multi-select requires scalar choices; an arbitrary array cannot be
+    // represented faithfully as a Switch question.
+    const options = items.oneOf ?? items.anyOf ?? items.enum;
+    if (!Array.isArray(options) || options.length === 0) return false;
+    const normalized = { ...items, type: items.type ?? 'string' };
+    return validProperty(normalized);
   };
   return Object.entries(properties).every(
     ([key, value]) =>
