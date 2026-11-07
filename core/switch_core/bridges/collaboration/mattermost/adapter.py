@@ -567,6 +567,11 @@ class MattermostAdapter(PlatformAdapter):
         self._post_actions: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._post_actions_max = 1000
 
+        # Thread reference -> resolved root post id. In Mattermost, root_id must
+        # be the thread root; passing a reply post's id fails with 'Invalid RootId parameter'.
+        self._thread_roots: OrderedDict[str, str] = OrderedDict()
+        self._thread_roots_max = 1000
+
         self._main_loop: asyncio.AbstractEventLoop | None = None
 
         # channel id -> channel name (URL slug), for building channel deeplinks.
@@ -957,7 +962,9 @@ class MattermostAdapter(PlatformAdapter):
             "message": self.translate_outbound(content),
         }
         if thread_root_id is not None:
-            post["root_id"] = thread_root_id
+            resolved_root = await self._resolve_thread_root(driver, thread_root_id)
+            if resolved_root is not None:
+                post["root_id"] = resolved_root
         await loop.run_in_executor(
             None,
             driver.posts.create_ephemeral_post,
@@ -1188,6 +1195,45 @@ class MattermostAdapter(PlatformAdapter):
             )
             return None
 
+    async def _resolve_thread_root(
+        self,
+        driver: Driver,
+        thread_ref: str | None,
+    ) -> str | None:
+        """Resolve a thread reference to the thread's root post id.
+
+        Mattermost requires root_id to be the thread's root post id;
+        passing a reply post's id fails with 'Invalid RootId parameter' (#1709).
+        When thread_ref is a reply, this resolves and returns its parent root_id.
+        """
+        if not thread_ref:
+            return None
+        cached = self._thread_roots.get(thread_ref)
+        if cached is not None:
+            return cached
+        loop = self._main_loop
+        if loop is None:
+            return thread_ref
+        resolved = thread_ref
+        try:
+            target_post = await loop.run_in_executor(
+                None, driver.posts.get_post, thread_ref
+            )
+            if target_post and isinstance(target_post, dict):
+                parent_root_id = target_post.get("root_id")
+                if parent_root_id:
+                    resolved = str(parent_root_id)
+        except Exception as e:
+            logger.debug(
+                "Could not resolve thread root for %s: %s; using original",
+                thread_ref,
+                e,
+            )
+        self._thread_roots[thread_ref] = resolved
+        while len(self._thread_roots) > self._thread_roots_max:
+            self._thread_roots.popitem(last=False)
+        return resolved
+
     async def _create_post(
         self,
         driver: Driver,
@@ -1224,7 +1270,9 @@ class MattermostAdapter(PlatformAdapter):
             raise RuntimeError("Mattermost is not connected.")
         post: dict[str, Any] = {"channel_id": channel_id, "message": content}
         if thread_root_id is not None:
-            post["root_id"] = thread_root_id
+            resolved_root = await self._resolve_thread_root(driver, thread_root_id)
+            if resolved_root is not None:
+                post["root_id"] = resolved_root
         if props:
             post["props"] = props
         result = await loop.run_in_executor(None, driver.posts.create_post, post)
