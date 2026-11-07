@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <!-- IRC has no official logo. This is the "#" every IRC channel name
+       starts with, not a brand mark — a neutral, honest stand-in. -->
+  <rect width="48" height="48" rx="10" fill="#4A4A4A"/>
+  <text x="24" y="33" text-anchor="middle" font-family="monospace" font-size="26"
+        font-weight="bold" fill="#FFFFFF">#</text>
+</svg>
