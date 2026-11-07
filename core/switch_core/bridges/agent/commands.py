@@ -14,6 +14,7 @@ from switch_core.agent_display_name import (
     agent_label_with_identifier,
     label_after_rename,
 )
+from switch_core.agent_invites import invite_refusal
 from switch_core.aliases import (
     AliasError,
     check_alias_collisions,
@@ -1208,7 +1209,10 @@ async def _cmd_invite(
         return
     token = tokens[0]
 
-    async with client.session_factory() as session:
+    # `invite-agent` is admin-owned, so only the always-present admin client
+    # runs this handler.
+    host = cast("CommandConsumer", client)
+    async with tenant_session(host.session_factory, host.tenant_id) as session:
         # Resolve registry-wide (not room-scoped): the agent is being invited, so
         # by definition it is not in the room yet. Case-insensitive, matching how
         # `@name` mentions are routed.
@@ -1231,15 +1235,16 @@ async def _cmd_invite(
                 f"**{agent_label_with_identifier(target.display_name, target.name)}** is already in this room.",
             )
             return
+        if not await _may_change_membership(
+            host, session, target, meta.room_id, event, command="invite_agent"
+        ):
+            await _reply(client, room, event, invite_refusal(f"**{_label(target)}**"))
+            return
 
-    # `invite-agent` is admin-owned, so only the always-present admin client
-    # runs this handler — the `room_service` reference lives on CommandConsumer.
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
     # MCP tool) so the agent is invited to the room AND added to any bridged
     # channel.
-    await cast("CommandConsumer", client)._room_service.add_agents_to_room(
-        meta.room_id, agent_names=[target.name]
-    )
+    await host._room_service.add_agents_to_room(meta.room_id, agent_names=[target.name])
     await _reply(
         client,
         room,
@@ -1285,7 +1290,9 @@ async def _cmd_remove_agent(
                 f"No agent named `{token}` in this room. Run `!list-agents`.",
             )
             return
-        if not await _may_remove_agent(host, session, target, meta.room_id, event):
+        if not await _may_change_membership(
+            host, session, target, meta.room_id, event, command="remove_agent"
+        ):
             await _reply(
                 client,
                 room,
@@ -1300,17 +1307,20 @@ async def _cmd_remove_agent(
     await _reply(client, room, event, f"Removed **{_label(target)}** from this room.")
 
 
-async def _may_remove_agent(
+async def _may_change_membership(
     host: CommandConsumer,
     session: AsyncSession,
     target: Agent,
     room_id: str,
     event: CommandEvent,
+    *,
+    command: Literal["invite_agent", "remove_agent"],
 ) -> bool:
-    """Whether the command's sender may take `target` out of the room.
+    """Whether the command's sender may bring `target` into the room, or take
+    it out: the rule `switch_core.agent_invites` describes.
 
-    Anyone the agent would take instructions from may; so may a workspace
-    admin, and an agent that manages agents for the target's owner.
+    Anyone the agent would take instructions from in this room may; so may a
+    workspace admin, and an agent that manages agents for the target's owner.
     """
     resolver = AddressingResolver(
         room_store=host._room_store,
@@ -1338,7 +1348,7 @@ async def _may_remove_agent(
                 user,
                 target_type="agent",
                 target_id=target.id,
-                details={"event": "chat_command", "command": "remove_agent"},
+                details={"event": "chat_command", "command": command},
             ):
                 return True
         return False

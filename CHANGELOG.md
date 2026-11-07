@@ -58,6 +58,17 @@ version of their own to them without also giving them a release of their own.
   redacted had no way to know.
 
 #### Changed
+- **Only someone an agent takes instructions from can invite it into a
+  room.** An agent's "who can talk to it" setting now also decides who can
+  bring it into a room, so an owner-only agent can no longer be pulled into a
+  stranger's room, where it could only say it can't act and showed everyone
+  where it is used. `!invite-agent` (and `/invite-agent`), the
+  `invite_agent_to_room` agent tool and the Gateway's room page all ask the
+  same question: would the agent answer the person (or agent) inviting it, in
+  that room? An agent that manages agents for the same owner, and a workspace
+  admin, still can, as with `!remove-agent`. A refused invite says why, and
+  that the agent's owner can invite it or let the person talk to it. Agents
+  already in rooms stay where they are.
 - **Switch Trust notices about a person's own message reach only that
   person.** When someone's message is blocked, redacted, flagged or not fully
   checked, the notice used to be posted in the channel, where everyone could

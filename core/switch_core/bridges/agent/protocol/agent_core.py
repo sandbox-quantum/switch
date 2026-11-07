@@ -33,6 +33,7 @@ from switch_core.agent_icon import (
     prepare_icon_url,
     refuse_third_party_avatar,
 )
+from switch_core.agent_invites import agent_may_invite, invite_refusal
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import (
@@ -3280,20 +3281,32 @@ class AgentCore:
     ) -> None:
         """Invite an agent to a room. Requires room membership (or owner/admin).
 
+        The caller must also be someone the invited agent takes instructions
+        from in that room, or manage agents for its owner
+        (`switch_core.agent_invites`).
+
         When ``include_subagents`` is set, the invited agent's subagents
         (child agents) are added alongside it.
         """
         include_for: list[str] | None = None
         async with self.session_factory() as session:
-            require_membership_changeable_from_outside(
-                await self._require_room_roster_change(session, agent_id, room_id)
-            )
-            if include_subagents:
-                target = await self.agent_store.get_by_name(session, agent_name)
-                if target is None:
-                    raise ValueError(
-                        f"Failed to invite agent: unknown agent {agent_name}"
+            room = await self._require_room_roster_change(session, agent_id, room_id)
+            require_membership_changeable_from_outside(room)
+            target = await self.agent_store.get_by_name(session, agent_name)
+            if target is None:
+                raise ValueError(f"Failed to invite agent: unknown agent {agent_name}")
+            caller = await self.agent_store.get(session, agent_id)
+            if caller is None:
+                raise ValueError(f"Unknown agent: {agent_id}")
+            if not agent_may_invite(
+                target, caller, room_id=room.id, group_id=room.group_id
+            ):
+                raise PermissionError(
+                    invite_refusal(
+                        agent_label_with_identifier(target.display_name, target.name)
                     )
+                )
+            if include_subagents:
                 include_for = [target.id]
         try:
             await self.room_service.add_agents_to_room(
