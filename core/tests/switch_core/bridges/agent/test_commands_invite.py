@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_invite
+from switch_core.room_service import AddressingRefusalError
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
 _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
@@ -104,6 +105,49 @@ class TestInviteCommand:
         await _cmd_invite(client, _Room(room_id="!m:x"), _event(""), False)
         assert added == []
         assert "Usage" in posted[0]
+
+    async def test_invite_refused_by_addressing_policy(self) -> None:
+        agent = _agent("a1", "claude-code.alice", "Alice")
+        agent.owner_id = "user-123"
+        client, posted, added = _build_client(
+            registry={"claude-code.alice": agent}, room_agent_ids=[]
+        )
+
+        async def _refusing_add(*_args: Any, **_kwargs: Any) -> None:
+            raise AddressingRefusalError("claude-code.alice", "user-123")
+
+        client._room_service.add_agents_to_room = _refusing_add
+
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert added == []
+        assert len(posted) == 1
+        assert (
+            "Cannot invite **Alice (`claude-code.alice`)**: addressing policy allows only its owner (user-123) to invite it."
+            == posted[0]
+        )
+
+    async def test_invite_refused_no_owner(self) -> None:
+        agent = _agent("a1", "claude-code.alice")
+        client, posted, added = _build_client(
+            registry={"claude-code.alice": agent}, room_agent_ids=[]
+        )
+
+        async def _refusing_add(*_args: Any, **_kwargs: Any) -> None:
+            raise AddressingRefusalError("claude-code.alice", None)
+
+        client._room_service.add_agents_to_room = _refusing_add
+
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert added == []
+        assert len(posted) == 1
+        assert (
+            "Cannot invite **claude-code.alice**: addressing policy allows only its owner to invite it."
+            == posted[0]
+        )
 
 
 class TestInviteCommandDisplayNames:
