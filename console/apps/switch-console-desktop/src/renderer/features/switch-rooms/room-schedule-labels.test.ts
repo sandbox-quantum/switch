@@ -126,3 +126,61 @@ describe('sameTiming', () => {
     expect(sameTiming(once, rule)).toBe(false);
   });
 });
+
+describe('nextRunLabel', () => {
+  it('puts a pause before the next run, and calls a fired one-off done', () => {
+    expect(nextRunLabel({ paused: true, nextRunAt: '2026-11-02T09:00:00Z' }, stamp)).toBe('Paused');
+    expect(nextRunLabel({ paused: false, nextRunAt: null }, stamp)).toBe('Done');
+    expect(nextRunLabel({ paused: false, nextRunAt: '2026-11-02T09:00:00Z' }, stamp)).toBe(
+      'Next: at 2026-11-02T09:00:00Z'
+    );
+  });
+});
+
+describe('describeTiming for a one-off with no time', () => {
+  it('says it is not scheduled rather than inventing a time', () => {
+    expect(describeTiming({ cron: null, runAt: null, timezone: 'UTC' }, stamp)).toBe(
+      'Not scheduled'
+    );
+  });
+});
+
+describe('timingFromForm edge cases', () => {
+  const now = new Date('2026-10-28T12:00:00Z');
+
+  it('refuses a time that cannot be read', () => {
+    expect(
+      timingFromForm({ repeat: false, cron: '', localDateTime: 'not-a-date', timezone: 'UTC' }, now)
+    ).toEqual({ error: 'That date and time could not be read.' });
+  });
+
+  it('refuses the very moment it is now, not only the past', () => {
+    expect(
+      timingFromForm(
+        {
+          repeat: false,
+          cron: '',
+          localDateTime: toLocalDateTimeInput(now.toISOString()),
+          timezone: 'UTC',
+        },
+        now
+      )
+    ).toEqual({ error: 'Choose a time in the future.' });
+  });
+
+  it('keeps the chosen timezone with a rule', () => {
+    expect(
+      timingFromForm(
+        { repeat: true, cron: '30 7 * * *', localDateTime: '', timezone: 'Asia/Kolkata' },
+        now
+      )
+    ).toEqual({ timing: { runAt: null, cron: '30 7 * * *', timezone: 'Asia/Kolkata' } });
+  });
+});
+
+describe('toLocalDateTimeInput', () => {
+  it('round-trips an instant through the datetime-local value to the minute', () => {
+    const iso = '2026-11-08T03:30:00.000Z';
+    expect(new Date(toLocalDateTimeInput(iso)).toISOString()).toBe(iso);
+  });
+});

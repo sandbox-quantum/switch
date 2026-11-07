@@ -99,10 +99,20 @@ def check_cron(rule: str) -> str:
 
 def next_cron_run(rule: str, timezone: str, after: datetime) -> datetime:
     """The first time strictly after `after` that `rule` matches, read as wall
-    time in `timezone`, returned in UTC."""
+    time in `timezone`, returned in UTC.
+
+    When the clocks go back, an hour of wall time happens twice. A rule fires
+    at the first of the two and not again, so a time that is not later on the
+    wall clock than `after` is passed over.
+    """
     zone = check_timezone(timezone)
     local = after.astimezone(zone)
-    return croniter(rule, local).get_next(datetime).astimezone(UTC)
+    wall = local.replace(tzinfo=None)
+    times = croniter(rule, local)
+    while True:
+        candidate = times.get_next(datetime)
+        if candidate.replace(tzinfo=None) > wall:
+            return candidate.astimezone(UTC)
 
 
 def first_run(

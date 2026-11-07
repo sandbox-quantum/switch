@@ -147,3 +147,59 @@ class TestRoomScheduleStore:
                 assert second is not None and second.id == later.id
                 async with session_factory() as third:
                     assert await STORE.claim_due(third) is None
+
+    async def test_a_claim_that_is_rolled_back_leaves_the_run_due(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # A process that dies after claiming but before committing holds no
+        # lock once its transaction ends, and the run is due again for the next.
+        due = datetime.now(UTC) - timedelta(minutes=1)
+        async with session_factory() as session:
+            owner = await add_user(session, "owner")
+            room = await add_room(session, "r1", owner_id=owner.id)
+            agent = await add_agent(session, "triage", owner=owner)
+            schedule = await _schedule(
+                session, room, owner.id, [agent], next_run_at=due
+            )
+            await session.commit()
+
+        async with session_factory() as crashed:
+            claimed = await STORE.claim_due(crashed)
+            assert claimed is not None and claimed.id == schedule.id
+            claimed.next_run_at = None
+            await crashed.rollback()
+
+        async with session_factory() as session:
+            again = await STORE.claim_due(session)
+            assert again is not None and again.id == schedule.id
+            assert again.next_run_at == due
+
+    async def test_a_claim_skips_finished_one_offs(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, "owner")
+            room = await add_room(session, "r1", owner_id=owner.id)
+            agent = await add_agent(session, "triage", owner=owner)
+            await _schedule(session, room, owner.id, [agent], next_run_at=None)
+            await session.commit()
+            assert await STORE.claim_due(session) is None
+
+    async def test_deleting_a_schedule_takes_its_agents_with_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, "owner")
+            room = await add_room(session, "r1", owner_id=owner.id)
+            agent = await add_agent(session, "triage", owner=owner)
+            schedule = await _schedule(
+                session, room, owner.id, [agent], next_run_at=None
+            )
+            await session.commit()
+
+            await STORE.delete(session, schedule)
+            await session.commit()
+
+            assert await STORE.list_for_room(session, room.id) == []
+            assert await STORE.agent_ids(session, [schedule.id]) == {}
+            assert await session.get(Agent, agent.id) is not None

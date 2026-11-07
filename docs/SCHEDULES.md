@@ -19,6 +19,8 @@ schedule** under **Schedules**. A schedule holds:
   repeat. A repeat is a five-field cron rule (minute, hour, day of month,
   month, weekday), read as wall time in the timezone you choose, so "every
   Monday at 09:00 in Europe/London" stays at 09:00 when the clocks change.
+  A time the clocks skip in spring fires once, just after the gap; a time
+  they repeat in autumn fires once, the first time round.
 
 Each schedule shows when it fires next, who set it, and why its last firing
 posted nothing, if it did not. From there you can pause, resume, edit or

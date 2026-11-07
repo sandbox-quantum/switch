@@ -105,6 +105,7 @@ const {
   createRoomSchedule,
   updateRoomSchedule,
   fetchRoomSchedules,
+  deleteRoomSchedule,
   ensureCloudMachine,
   fetchAuthConfig,
   fetchBridges,
@@ -1360,6 +1361,74 @@ describe('room schedules', () => {
       cron: null,
       timezone: 'UTC',
     });
+  });
+
+  it('keeps who set a schedule, including an agent speaking for its owner', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        { ...wire, author_agent_id: 'ag1', author_name: 'triage' },
+        { ...wire, id: 's2', run_at: '2026-11-01T09:00:00Z', cron: null, next_run_at: null },
+      ]) as never
+    );
+
+    const [byAgent, done] = await fetchRoomSchedules(SERVER, 'r1');
+
+    expect(byAgent).toMatchObject({ authorId: 'u1', authorAgentId: 'ag1', authorName: 'triage' });
+    expect(done).toMatchObject({ runAt: '2026-11-01T09:00:00Z', cron: null, nextRunAt: null });
+  });
+
+  it('carries why the last firing posted nothing', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([{ ...wire, paused: true, last_error: 'The room is archived.' }]) as never
+    );
+
+    const [schedule] = await fetchRoomSchedules(SERVER, 'r1');
+
+    expect(schedule).toMatchObject({ paused: true, lastError: 'The room is archived.' });
+  });
+
+  it('sends a one-off with no rule when creating', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(wire) as never);
+
+    await createRoomSchedule(SERVER, 'r1', {
+      agentIds: ['a1', 'a2'],
+      body: 'Once',
+      runAt: '2026-11-08T03:30:00.000Z',
+      cron: null,
+      timezone: 'Asia/Kolkata',
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(init.body)).toEqual({
+      agent_ids: ['a1', 'a2'],
+      body: 'Once',
+      run_at: '2026-11-08T03:30:00.000Z',
+      cron: null,
+      timezone: 'Asia/Kolkata',
+    });
+  });
+
+  it('deletes with an empty 204 response', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }) as never);
+
+    await expect(deleteRoomSchedule(SERVER, 'r/1', 's/1')).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r%2F1/schedules/s%2F1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('surfaces the gateway’s reason when a change is refused', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Not in this room: a9' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }) as never
+    );
+
+    await expect(updateRoomSchedule(SERVER, 'r1', 's1', { agentIds: ['a9'] })).rejects.toThrow(
+      /Not in this room: a9/
+    );
   });
 });
 

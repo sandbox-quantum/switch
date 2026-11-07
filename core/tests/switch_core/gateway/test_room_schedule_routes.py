@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Agent, Room, User
@@ -268,3 +269,140 @@ class TestRoomScheduleRoutes:
                     RoomScheduleUpdateRequest(paused=True),
                 )
             assert exc.value.status_code == 404
+
+    async def test_a_one_off_is_created_for_its_instant_and_has_no_rule(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner, _, room, agent = await _setup(session)
+            at = (datetime.now(UTC) + timedelta(minutes=2)).replace(microsecond=0)
+            created = await _create(
+                session,
+                room,
+                owner,
+                RoomScheduleCreateRequest(
+                    agent_ids=[agent.id], body="Once", run_at=at, timezone="UTC"
+                ),
+            )
+            assert created.cron is None
+            assert created.run_at == at and created.next_run_at == at
+            assert created.paused is False and created.last_run_at is None
+
+    async def test_a_rule_and_a_one_off_together_are_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner, _, room, agent = await _setup(session)
+            with pytest.raises(HTTPException) as exc:
+                await _create(
+                    session,
+                    room,
+                    owner,
+                    RoomScheduleCreateRequest(
+                        agent_ids=[agent.id],
+                        body="Both",
+                        run_at=datetime.now(UTC) + timedelta(hours=1),
+                        cron="0 9 * * *",
+                        timezone="UTC",
+                    ),
+                )
+            assert exc.value.status_code == 400
+
+    @pytest.mark.parametrize(
+        "req",
+        [
+            {"agent_ids": [], "body": "Ping"},
+            {"agent_ids": ["x"], "body": "   "},
+            {"agent_ids": ["x"], "body": ""},
+        ],
+    )
+    def test_a_request_with_no_agents_or_no_text_is_invalid(
+        self, req: dict[str, object]
+    ) -> None:
+        with pytest.raises(ValidationError):
+            RoomScheduleCreateRequest.model_validate(
+                {**req, "cron": "0 9 * * *", "timezone": "UTC"}
+            )
+
+    async def test_a_schedule_that_is_gone_is_not_found(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner, _, room, agent = await _setup(session)
+            created = await _create(session, room, owner, _weekdays(agent))
+            await delete_room_schedule(
+                room.id, created.id, session, ROOMS, SCHEDULES, owner, False
+            )
+            with pytest.raises(HTTPException) as exc:
+                await delete_room_schedule(
+                    room.id, created.id, session, ROOMS, SCHEDULES, owner, False
+                )
+            assert exc.value.status_code == 404
+            with pytest.raises(HTTPException) as exc:
+                await _update(
+                    session,
+                    room,
+                    owner,
+                    created.id,
+                    RoomScheduleUpdateRequest(paused=True),
+                )
+            assert exc.value.status_code == 404
+
+    async def test_pausing_keeps_the_next_run_and_retiming_moves_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner, _, room, agent = await _setup(session)
+            created = await _create(session, room, owner, _weekdays(agent))
+
+            paused = await _update(
+                session, room, owner, created.id, RoomScheduleUpdateRequest(paused=True)
+            )
+            assert paused.paused is True
+            assert paused.next_run_at == created.next_run_at
+
+            retimed = await _update(
+                session,
+                room,
+                owner,
+                created.id,
+                RoomScheduleUpdateRequest(cron="30 7 * * *", timezone="Asia/Kolkata"),
+            )
+            assert retimed.cron == "30 7 * * *" and retimed.timezone == "Asia/Kolkata"
+            assert retimed.next_run_at is not None
+            assert retimed.next_run_at != created.next_run_at
+            # 07:30 IST is 02:00 UTC.
+            assert (retimed.next_run_at.hour, retimed.next_run_at.minute) == (2, 0)
+
+    async def test_an_edit_cannot_name_an_agent_outside_the_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner, _, room, agent = await _setup(session)
+            outsider = await add_agent(session, "outsider", owner=owner)
+            created = await _create(session, room, owner, _weekdays(agent))
+            with pytest.raises(HTTPException) as exc:
+                await _update(
+                    session,
+                    room,
+                    owner,
+                    created.id,
+                    RoomScheduleUpdateRequest(agent_ids=[outsider.id]),
+                )
+            assert exc.value.status_code == 400
+            [kept] = await list_room_schedules(
+                room.id, session, ROOMS, SCHEDULES, owner, False
+            )
+            assert kept.agent_ids == [agent.id]
+
+    async def test_someone_who_cannot_see_the_room_cannot_list_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner, other, room, agent = await _setup(session)
+            await _create(session, room, owner, _weekdays(agent))
+            with pytest.raises(HTTPException) as exc:
+                await list_room_schedules(
+                    room.id, session, ROOMS, SCHEDULES, other, False
+                )
+            assert exc.value.status_code in (403, 404)
