@@ -87,23 +87,35 @@ read-only consent. Switch passes through Salesforce's tools, subject to the
 person's permissions and the org's activated servers. Turning the connection
 on for an agent is not approval for a particular record change.
 
-Disconnecting in Switch revokes the sign-in at Salesforce. People can also
-remove the app under their Salesforce account's connected-app settings; an
-admin can block it for the whole org in the External Client App's policies.
+Disconnecting removes the local connection and its grants. Switch attempts
+Salesforce revocation, but live QA returned a warning that revocation failed.
+The UI directs the person to revoke in Salesforce settings and warns issued
+access may still work until expiry. Do not treat local Disconnect as proof of
+vendor revocation. People can remove the app in their Salesforce connected-app
+settings; an admin can block it for the org in the External Client App policies.
 
 ## Local QA evidence and remaining checks
 
 Developer Edition live QA completed the client-ID-only PKCE sign-in and
 identified the connected account. A granted room agent completed
 `salesforce-reads.getUserInfo` and `getObjectSchema`; after its grant was
-removed, a fresh request reported the tool unavailable. These were read-side
-calls, not a record-write test. The connection remains honestly write-capable.
+removed, a fresh request reported the tool unavailable. In the later continuous
+recording, the grant changed from one agent to zero between source seconds 140
+and 141; the fresh unavailable response was fully readable by 195 seconds, within
+56 seconds conservatively. These were read-side calls, not a record-write test.
+The connection remains honestly write-capable.
 
 Metadata-only inspection observed a two-hour issued access window. After the
 original expiry, a fresh getUserInfo completed without another sign-in, and
 metadata showed an active connection with a later issued access expiry. This
 verifies renewal, not the number of refreshes or refresh-token value rotation.
-Disconnect and the timed grant-off video remain pending.
+Live Disconnect removed the connection and its agent grants, but the actual
+warning said Salesforce could not revoke the sign-in. Previously issued access
+may remain usable until expiry. A newly submitted room request after Disconnect
+reported the tool unavailable without reusing an earlier result. The privacy edit
+keeps this earlier Disconnect/denial separate from the later reconnect/grant/read/
+grant-off sequence. It cuts personal sign-in footage, labels the accelerated read
+wait, and preserves the final grant-off-to-denial interval continuously at 1x.
 
 The existing org has SObject Reads and Mutations active, Deletes and All
 inactive. Salesforce's Developer Edition announcement states Hosted MCP is
