@@ -294,6 +294,11 @@ version of their own to them without also giving them a release of their own.
   history is kept, and the deletion is recorded in the server audit log. The
   server's default workspace can't be deleted. Deleting your account now also
   deletes a workspace you leave empty.
+- **Email bridges create one room per mailbox and wait on IMAP IDLE when
+  available.** The lease holder falls back to polling on servers without IDLE,
+  marks delivered mail with a durable IMAP keyword where supported, and
+  rescans new mail without changing unread state otherwise; older mail is left
+  in the mailbox when a connection is first created.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -329,6 +334,11 @@ version of their own to them without also giving them a release of their own.
   making someone Org Admin is done in WorkOS, and taking it away in Switch
   lasts only while WorkOS agrees. Adding someone new is done in WorkOS either
   way. Setup and limits: `docs/old/workos-directory.md`.
+- **Email bridges create one room per mailbox and wait on IMAP IDLE when
+  available.** The lease holder falls back to polling on servers without IDLE,
+  marks delivered mail with a durable IMAP keyword where supported to preserve
+  unread state; older mail is left in the mailbox when a connection is first
+  created.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)

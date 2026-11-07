@@ -714,6 +714,12 @@ class PlatformAdapter(ABC):
         self._relay_to_holder: Callable[[dict[str, str]], None] | None = None
         # Set by the lifecycle (`set_gateway_public_url`).
         self._gateway_public_url: str | None = None
+        self._outbound_attempt_loader: (
+            Callable[[str], Awaitable[dict[str, dict[str, str]]]] | None
+        ) = None
+        self._outbound_attempt_persister: (
+            Callable[[str, dict[str, dict[str, str]], bool], Awaitable[None]] | None
+        ) = None
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
@@ -760,6 +766,32 @@ class PlatformAdapter(ABC):
         `switchdash://`. None where the server has none, and those links are
         then named in words (`rewrite_console_links`)."""
         self._gateway_public_url = gateway_public_url
+
+    def set_outbound_attempt_store(
+        self,
+        load: Callable[[str], Awaitable[dict[str, dict[str, str]]]],
+        persist: Callable[[str, dict[str, dict[str, str]], bool], Awaitable[None]],
+    ) -> None:
+        """Store event-keyed outbound attempts durably across bridge restarts."""
+        self._outbound_attempt_loader = load
+        self._outbound_attempt_persister = persist
+
+    async def load_outbound_attempts(
+        self, transport_event_id: str
+    ) -> dict[str, dict[str, str]]:
+        if self._outbound_attempt_loader is None:
+            raise RuntimeError("Outbound attempt store is not configured")
+        return await self._outbound_attempt_loader(transport_event_id)
+
+    async def persist_outbound_attempts(
+        self,
+        transport_event_id: str,
+        attempts: dict[str, dict[str, str]],
+        uncertain: bool,
+    ) -> None:
+        if self._outbound_attempt_persister is None:
+            raise RuntimeError("Outbound attempt store is not configured")
+        await self._outbound_attempt_persister(transport_event_id, attempts, uncertain)
 
     @classmethod
     def describe(cls, key: str) -> MessagingPlatform:
@@ -1077,6 +1109,48 @@ class PlatformAdapter(ABC):
         """
         ...
 
+    async def send_message_with_idempotency_key(
+        self,
+        idempotency_key: str,
+        channel_id: str,
+        sender_name: str,
+        content: str,
+        thread_root_id: str | None = None,
+        *,
+        room_wide_mention: bool = False,
+    ) -> str | None:
+        """Post a message with the stable id of its originating transport event.
+
+        Adapters whose transport supports durable send deduplication can
+        override this. The default preserves existing platform behavior.
+        """
+        return await self.send_message(
+            channel_id,
+            sender_name,
+            content,
+            thread_root_id,
+            room_wide_mention=room_wide_mention,
+        )
+
+    async def admin_message_with_idempotency_key(
+        self,
+        idempotency_key: str,
+        channel_id: str,
+        content: str,
+        thread_root_id: str | None = None,
+        *,
+        message_type: str | None = None,
+        drawn: str | None = None,
+    ) -> str | None:
+        """Post an admin message with its originating transport event id."""
+        return await self.admin_message(
+            channel_id,
+            content,
+            thread_root_id,
+            message_type=message_type,
+            drawn=drawn,
+        )
+
     async def admin_message(
         self,
         channel_id: str,
@@ -1198,6 +1272,28 @@ class PlatformAdapter(ABC):
             channel_id, sender_name, self.translate_outbound(body), thread_root_id
         )
 
+    async def send_attachment_with_idempotency_key(
+        self,
+        idempotency_key: str,
+        channel_id: str,
+        sender_name: str,
+        filename: str,
+        mimetype: str,
+        data: bytes,
+        caption: str | None = None,
+        thread_root_id: str | None = None,
+    ) -> str | None:
+        """Relay one attachment with the id of its originating transport event."""
+        return await self.send_attachment(
+            channel_id,
+            sender_name,
+            filename,
+            mimetype,
+            data,
+            caption=caption,
+            thread_root_id=thread_root_id,
+        )
+
     async def send_attachments(
         self,
         channel_id: str,
@@ -1226,6 +1322,24 @@ class PlatformAdapter(ABC):
             if index == 0:
                 message_ref = ref
         return message_ref
+
+    async def send_attachments_with_idempotency_key(
+        self,
+        idempotency_key: str,
+        channel_id: str,
+        sender_name: str,
+        files: list[OutboundAttachment],
+        caption: str | None = None,
+        thread_root_id: str | None = None,
+    ) -> str | None:
+        """Relay several attachments with their originating event id."""
+        return await self.send_attachments(
+            channel_id,
+            sender_name,
+            files,
+            caption=caption,
+            thread_root_id=thread_root_id,
+        )
 
     @abstractmethod
     async def update_message(
