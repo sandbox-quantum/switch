@@ -28,6 +28,9 @@ the one users act on.
 
 ## Reference pages at this level
 
+- [`contributing/quickstart.md`](contributing/quickstart.md): from a fresh
+  clone to an agent answering in a room, and where to make a first change.
+
 - [`TEMPLATES.md`](TEMPLATES.md): the template language, the one YAML
   document that describes agents and rooms to create and the params a
   deployer fills in. The bundled Switch expert (`switch-expert/template.yaml`)
