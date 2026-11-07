@@ -106,7 +106,11 @@ publish)
         absent) to_push+=("$chart") ;;
         published)
             pulled="$(mktemp -d)"
-            log="$(helm pull "$ref" --version "$version" --destination "$pulled" 2>&1)"
+            if ! log="$(helm pull "$ref" --version "$version" --destination "$pulled" 2>&1)"; then
+                echo "$log" >&2
+                echo "::error::helm pull failed for $ref:$version" >&2
+                exit 1
+            fi
             digest="$(sed -n 's/^Digest: *//p' <<<"$log")"
             rendered_refs "$chart" "$pulled/$chart-$version.tgz" "$registry" >"$pulled/refs"
             if ! diff "$pulled/refs" "$out/$chart.refs" >&2; then
@@ -119,7 +123,11 @@ publish)
         esac
     done
     for chart in ${to_push[@]+"${to_push[@]}"}; do
-        log="$(helm push "$out/$chart-$version.tgz" "$base/charts" 2>&1)"
+        if ! log="$(helm push "$out/$chart-$version.tgz" "$base/charts" 2>&1)"; then
+            echo "$log" >&2
+            echo "::error::helm push failed for $chart:$version" >&2
+            exit 1
+        fi
         echo "$log" >&2
         digest="$(sed -n 's/^Digest: *//p' <<<"$log")"
         flags+=(--chart-digest "$chart=$digest")
