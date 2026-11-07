@@ -558,6 +558,12 @@ class ConnectionAccess(BaseModel):
     def _at_least_one_level(self) -> "ConnectionAccess":
         if self.read is None and self.write is None:
             raise ValueError("an access block needs at least one level")
+        if (
+            self.write is not None
+            and self.write.permissions is not None
+            and self.read is None
+        ):
+            raise ValueError("write permissions require read permissions")
         return self
 
 
