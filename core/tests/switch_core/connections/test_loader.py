@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_supported_connections():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "trello",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "trello",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["trello"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +179,45 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_trello_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["trello"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("trello", "https://mcp.trello.com/v1")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    identity = ["read:me", "read:account", "offline_access"]
+    assert definition.access.read.scopes == identity + [
+        "read:board:trello",
+        "read:member:trello",
+    ]
+    assert definition.access.write.scopes == identity + [
+        "read:board:trello",
+        "write:board:trello",
+        "read:member:trello",
+    ]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.atlassian.com/me"
+    assert definition.auth.identity.account_id == "account_id"
+    assert definition.auth.identity.label == "email"
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -353,6 +395,12 @@ def test_rejects_an_enabled_entry_without_a_skill(catalog_copy):
         load_catalog(catalog_copy)
 
 
+def test_accepts_crlf_skill_frontmatter(catalog_copy):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    assert "SKILL.md" in load_catalog(catalog_copy)["github"].skill_files
+
+
 def test_rejects_a_skill_whose_name_differs_from_the_slug(catalog_copy):
     path = catalog_copy / "github" / "skill" / "SKILL.md"
     path.write_text(path.read_text().replace("name: github", "name: git"))
@@ -374,9 +422,14 @@ def test_rejects_an_oversized_skill(catalog_copy):
 
 def test_rejects_a_symlink_in_a_skill(catalog_copy, tmp_path):
     (tmp_path / "outside.md").write_text("outside")
-    (catalog_copy / "github" / "skill" / "linked.md").symlink_to(
-        tmp_path / "outside.md"
-    )
+    try:
+        (catalog_copy / "github" / "skill" / "linked.md").symlink_to(
+            tmp_path / "outside.md"
+        )
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink creation requires Developer Mode")
+        raise
     with pytest.raises(CatalogError, match="symlink"):
         load_catalog(catalog_copy)
 

@@ -790,7 +790,7 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
                 f"Connection {slug} skill exceeds {MAX_SKILL_BYTES} bytes."
             )
         try:
-            content = raw.decode("utf-8")
+            content = raw.decode("utf-8").replace("\r\n", "\n")
         except UnicodeDecodeError:
             raise CatalogError(
                 f"Connection {slug} skill file is not UTF-8: {relative}"
@@ -814,7 +814,7 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
 
 def _check_frontmatter(slug: str, relative: str, content: str) -> None:
     """A file sessions are given as the entry's skill names it."""
-    match = FRONTMATTER_RE.match(content)
+    match = FRONTMATTER_RE.match(content.replace("\r\n", "\n"))
     frontmatter = yaml.safe_load(match.group(1)) if match else None
     if (
         not isinstance(frontmatter, dict)
