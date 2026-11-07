@@ -28,9 +28,10 @@ port and setting used below.
 For pnpm, `corepack enable` picks up the version pinned in
 `console/package.json`.
 
-**On Windows**, do everything in **WSL2** (Ubuntu) or in **Git Bash**:
-PowerShell has no `bash`, and the recipes need it. See [Windows notes](#windows-notes)
-before you clone.
+**On Windows**, do everything inside **WSL2** (Ubuntu), cloning into the
+Linux filesystem (`~/switch`, not `/mnt/c/...`). PowerShell has no `bash` for
+the recipes, and Git Bash gets as far as `just migrate` but `just run` then
+fails (see [Windows notes](#windows-notes)).
 
 ## 2. Clone and configure
 
@@ -158,6 +159,12 @@ wipes their data.
 
 ## Windows notes
 
+- **switch-core doesn't start natively on Windows.** From Git Bash, `just
+  init-env`, `uv sync --project core`, `just up` and `just migrate` work, but
+  `just run` stops with `ModuleNotFoundError: No module named 'resource'`:
+  `core/switch_core/file_text.py` imports the Unix-only `resource` module at
+  the top. Run the server from WSL2 instead. Switch Console itself runs fine on
+  Windows and can connect to the WSL2 server at `http://localhost:8000`.
 - **Line endings.** Git for Windows converts files to CRLF on checkout by
   default, which breaks shell scripts and the connection catalog. Clone with
   `git clone -c core.autocrlf=false https://github.com/sandbox-quantum/switch.git`,
